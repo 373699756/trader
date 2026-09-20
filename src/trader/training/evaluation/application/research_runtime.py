@@ -10,9 +10,9 @@ from trader.recommendation.application.ports.runtime import CycleRequest, Resear
 from trader.recommendation.application.runtime.cadence import CadencePolicy, PipelineTask, cadence_band
 from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.research_coordination import ResearchCoordinator
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.evaluation.application.research_ports import OfflineResearchReaderPort
 
 

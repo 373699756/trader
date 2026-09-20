@@ -6,6 +6,29 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from trader.recommendation.application.pipeline.downside_action.downside_protection import (
+    RiskControlPort,
+    RiskControlService,
+)
+from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
+    ScoredSelectionIdentity,
+    ScoredSelectionOptions,
+)
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import (
+    RankingSelectionPort,
+    RankingSelectionService,
+)
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.policy_projection import preselection_replay_feature
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
+    ScoredInputQuality,
+    ScoredInputQualityOptions,
+    assess_scored_input_quality,
+)
+from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import (
+    normalize_scored_review_times,
+    scored_decision_policy,
+)
 from trader.recommendation.application.ports.loaded_profile import (
     ModelDiagnostics,
     ModelScoreBatch,
@@ -13,23 +36,9 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringPort,
 )
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort, RankingSelectionService
-from trader.recommendation.application.pipeline.policy_projection import preselection_replay_feature
-from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlPort, RiskControlService
-from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import (
-    normalize_scored_review_times,
-    scored_decision_policy,
-)
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
-    ScoredInputQuality,
-    ScoredInputQualityOptions,
-    assess_scored_input_quality,
-)
-from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
-    ScoredSelectionIdentity,
-    ScoredSelectionOptions,
-)
+from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
+from trader.recommendation.domain.candidate.filters import hard_filter
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionDownside,
@@ -40,7 +49,6 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
     SelectionDiagnostics,
 )
-from trader.recommendation.domain.candidate.filters import hard_filter
 from trader.recommendation.domain.publication.models import RecommendationAction, ScoredSelectionResult, Strategy
 from trader.recommendation.domain.risk.downside import DownsideAssessment
 from trader.recommendation.domain.risk.scored_fusion import (
@@ -53,8 +61,6 @@ from trader.recommendation.domain.risk.scored_fusion import (
     select_scored_review_candidates,
 )
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
-from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
-from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 
 
 @dataclass(frozen=True)

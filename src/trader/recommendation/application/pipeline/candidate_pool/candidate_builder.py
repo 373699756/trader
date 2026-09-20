@@ -7,22 +7,22 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 
-from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
-from trader.recommendation.application.pipeline.stage_output import (
-    PipelineStageOutput,
-    require_previous_stage,
-    stage_output,
-)
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_evaluation_gap
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
     normalize_candidate_discovery_population,
     plan_scored_feature_candidates,
 )
-from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_evaluation_gap
+from trader.recommendation.application.pipeline.stage_output import (
+    PipelineStageOutput,
+    require_previous_stage,
+    stage_output,
+)
+from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
+from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidatePlan
 
@@ -268,9 +268,7 @@ def build_candidate_stage_output(
         raise ValueError("candidate stage cannot select outside the dynamic eligible population")
     records = tuple(by_code[code] for code in selected_codes)
     limited = len(source.records) - len(records)
-    reasons = (
-        (StageReasonAggregate("board_limit", "board limit", limited, Severity.INFO),) if limited else ()
-    )
+    reasons = (StageReasonAggregate("board_limit", "board limit", limited, Severity.INFO),) if limited else ()
     return stage_output(
         PipelineStage.CANDIDATE_POOL,
         records,

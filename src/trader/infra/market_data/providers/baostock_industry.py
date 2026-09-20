@@ -15,8 +15,8 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.infra.market_data.service.observations import SourceObservation
+from trader.recommendation.application.runtime.schedule import shanghai_now
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _EXPECTED_CLASSIFICATION = "证监会行业分类"

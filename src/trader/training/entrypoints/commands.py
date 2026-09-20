@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import ctypes
+import json
 import os
 import sys
 import time
@@ -13,8 +13,6 @@ from typing import TYPE_CHECKING, Protocol
 
 from trader.download.domain.history_archive_status import HistoryArchiveStatus
 from trader.download.infra.history_archive_status import inspect_history_archive
-from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
-from trader.training.infra.research.research_trace_archive import SQLiteResearchTraceArchive
 from trader.infra.settings import RuntimeSettings
 from trader.training.evaluation.application.historical_label import HistoricalLabelPreregistrationService
 from trader.training.evaluation.application.tomorrow_research_artifacts import (
@@ -35,6 +33,8 @@ from trader.training.infra.research.h1_point_in_time_archive import (
     SQLiteH1PointInTimeArchive,
 )
 from trader.training.infra.research.historical_screening_archive import SQLiteHistoricalScreeningArchive
+from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
+from trader.training.infra.research.research_trace_archive import SQLiteResearchTraceArchive
 from trader.training.infra.research.tomorrow_historical_artifacts import (
     TomorrowHistoricalArtifactArchive,
     TomorrowHistoricalArtifactConflictError,
@@ -49,8 +49,8 @@ from trader.training.infra.research.tomorrow_research_artifacts import (
 )
 
 if TYPE_CHECKING:
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.infra.engine import TrainingRunResult
 
 _TRAINING_PRIORITY_LOWERED = False
@@ -253,8 +253,8 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.application.profile_training_secondary import TrainV3UseCase
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.infra.profile.v3.training import run_v3_training
 
     return _run_profile_training_command(
@@ -266,8 +266,8 @@ def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
 
 def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.application.profile_training_primary import TrainV2UseCase
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.infra.profile.v2.training import run_v2_training
 
     return _run_profile_training_command(

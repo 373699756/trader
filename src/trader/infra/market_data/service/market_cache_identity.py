@@ -10,6 +10,9 @@ from datetime import date, datetime
 from typing import ParamSpec, TypeVar
 
 from trader.infra.cache_contracts import canonical_json_bytes
+from trader.infra.market_data.history.history import DailyBar
+from trader.infra.market_data.normalization.merge_quote import source_name, source_priority
+from trader.infra.market_data.service.market_feature_cache_entries import _ResearchEntry
 from trader.recommendation.domain.market.models import (
     Evidence,
     MarketQuote,
@@ -22,9 +25,6 @@ from trader.recommendation.domain.market.research import (
     ResearchObservation,
 )
 from trader.recommendation.domain.market.tail import MinuteBar
-from trader.infra.market_data.history.history import DailyBar
-from trader.infra.market_data.normalization.merge_quote import source_name, source_priority
-from trader.infra.market_data.service.market_feature_cache_entries import _ResearchEntry
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
+from trader.infra.settings import LongWatchlist, StrategySettings
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
+from trader.recommendation.domain.candidate.filters import HardFilterPolicy
+from trader.recommendation.domain.evidence.review import RiskRule
+from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.long_groups import (
     LongGroupDefinition,
     LongGroupSectionDefinition,
     LongWatchItemDefinition,
 )
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
-from trader.recommendation.domain.market.models import Board
-from trader.recommendation.domain.candidate.filters import HardFilterPolicy
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import FusionPolicy
-from trader.recommendation.domain.evidence.review import RiskRule
-from trader.infra.settings import LongWatchlist, StrategySettings
 
 
 def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:

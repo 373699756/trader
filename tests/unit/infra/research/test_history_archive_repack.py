@@ -11,7 +11,6 @@ import pytest
 
 import trader.download.infra.history_archive_repack as repack_module
 import trader.training.infra.history.history_training_due as due_module
-from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
@@ -33,6 +32,7 @@ from trader.download.infra.history_archive_repack_state import (
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.artifacts.canonical import content_hash
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.artifacts.bundle_repository import ActiveHeadBundle
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE

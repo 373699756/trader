@@ -42,9 +42,7 @@ class H1ResearchCompletionArtifactIndex:
             self.daily_close_selection_hash,
         ):
             _hash(value)
-        residuals = tuple(
-            sorted(self.residual_terminal_hashes, key=lambda item: ("tomorrow", "d25").index(item[0]))
-        )
+        residuals = tuple(sorted(self.residual_terminal_hashes, key=lambda item: ("tomorrow", "d25").index(item[0])))
         if tuple(item[0] for item in residuals) != ("tomorrow", "d25"):
             raise ValueError("H1 research terminal index requires every strategy")
         if any(not is_sha256_text(item[1]) for item in residuals):

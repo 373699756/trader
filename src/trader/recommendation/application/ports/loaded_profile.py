@@ -9,9 +9,9 @@ from types import MappingProxyType
 from typing import Literal, Protocol
 
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
-from trader.recommendation.domain.publication.models import Strategy
 
 
 @dataclass(frozen=True)

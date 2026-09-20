@@ -314,9 +314,7 @@ def test_recommendation_scoring_and_publication_are_owned_by_pipeline_stages() -
         assert files <= {path.name for path in root.glob("*.py")}
 
     assert not any(
-        path.is_file()
-        for name in ("recommendation", "decisions")
-        for path in (application_root / name).rglob("*.py")
+        path.is_file() for name in ("recommendation", "decisions") for path in (application_root / name).rglob("*.py")
     )
     retired_files = {
         "scored_projection.py",

@@ -7,8 +7,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
-from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     build_baostock_training_split,
@@ -17,6 +15,8 @@ from trader.download.domain.history_control import HistoryTrainingDueState
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingWindow
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_control_repository import HistoryMaintenanceAlreadyRunningError
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
 from trader.training.domain.tomorrow_training_input import REQUIRED_DAILY_FIELDS, FrozenDailyInputDescriptor
 from trader.training.infra.engine import (

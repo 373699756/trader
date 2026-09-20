@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted, build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
+    DecisionCommitted,
+    build_decision_committed,
+)
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionIdentity,

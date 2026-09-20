@@ -9,11 +9,6 @@ from datetime import date, datetime
 from decimal import Decimal
 from functools import lru_cache
 
-from trader.recommendation.domain.market.models import (
-    Board,
-    MarketQuote,
-)
-from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.infra.market_data.normalization.field_quality import (
     REALTIME_SOURCES as _REALTIME_SOURCES,
 )
@@ -21,6 +16,11 @@ from trader.infra.market_data.normalization.field_quality import (
     select_fields as select_quote_fields,
 )
 from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.recommendation.domain.candidate.filters import board_for_code
+from trader.recommendation.domain.market.models import (
+    Board,
+    MarketQuote,
+)
 
 _BOARD_SOURCES = frozenset({"exchange", "tushare", "akshare", "eastmoney", "sina", "tencent"})
 _BOARD_FIELDS = frozenset(

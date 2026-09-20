@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import BaoStockCalendar, build_baostock_training_split
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import TomorrowTrainingWindow
 from trader.training.infra.engine import ProfileTrainingRequest
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE

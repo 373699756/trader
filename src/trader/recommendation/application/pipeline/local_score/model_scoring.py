@@ -10,7 +10,6 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TypeVar, cast
 
-from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.application.pipeline.static_standardize.static_feature_builder import (
     FeatureComputationPlan,
     FeatureFactRevision,
@@ -30,7 +29,9 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringDeadlineError,
     ScoringHeadRuntimeStatus,
 )
+from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.domain.candidate.filters import board_for_snapshot
 from trader.recommendation.domain.market.factors import round_score
 from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
@@ -39,10 +40,9 @@ from trader.recommendation.domain.market.feature_contracts import (
     V2_TOMORROW_MODEL_FEATURE_MANIFEST,
 )
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
-from trader.recommendation.domain.candidate.filters import board_for_snapshot
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import ExposureContract, residualize_exposure
 from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
-from trader.recommendation.domain.publication.models import Strategy
 
 _AMOUNT_FIELD = "qfq_average_amount_20d"
 _AMIHUD_FIELD = "qfq_amihud_20d"

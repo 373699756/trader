@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from trader.infra.scoring.composition import SingleHeadCombiner
 from trader.recommendation.application.ports.loaded_profile import (
     HeadRuntime,
     LoadedScoringProfile,
     ProfileEvidence,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.infra.scoring.composition import SingleHeadCombiner
 
 
 def profile_for(

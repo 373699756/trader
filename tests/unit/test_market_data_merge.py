@@ -4,7 +4,6 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 from trader.infra.market_data.normalization import columnar_merge as columnar_merge_module
 from trader.infra.market_data.normalization.columnar_merge import (
     CompleteRealtimeNormalization,
@@ -20,6 +19,7 @@ from trader.infra.market_data.normalization.merge import (
 from trader.infra.market_data.normalization.merge_quote import merge_code
 from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.service.observations import SourceObservation
+from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)

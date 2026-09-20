@@ -12,7 +12,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryControlState,
@@ -42,6 +41,7 @@ from trader.download.infra.history_control_repository import (
     SQLiteHistoryControlRepository,
 )
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.infra.artifacts.bundle_repository import inspect_active_head_bundle
 

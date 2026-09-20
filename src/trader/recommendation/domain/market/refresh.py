@@ -31,8 +31,7 @@ class ResearchRefreshResult:
             self.covered_codes,
         )
         if any(
-            len(group) != len(set(group))
-            or any(len(code) != 6 or not code.isdigit() for code in group)
+            len(group) != len(set(group)) or any(len(code) != 6 or not code.isdigit() for code in group)
             for group in groups
         ):
             raise ValueError("research refresh codes must be unique normalized six-digit codes")

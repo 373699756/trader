@@ -89,7 +89,12 @@ def test_active_dependency_direction() -> None:
         "training/infra": ("trader.training.entrypoints", "trader.entrypoints", "trader.web"),
         "infra": ("trader.bootstrap", "trader.entrypoints", "trader.web"),
         "web": ("trader.infra",),
-        "recommendation/domain": ("trader.recommendation.application", "trader.infra", "trader.web", "trader.entrypoints"),
+        "recommendation/domain": (
+            "trader.recommendation.application",
+            "trader.infra",
+            "trader.web",
+            "trader.entrypoints",
+        ),
         "recommendation/application": ("trader.infra", "trader.web", "trader.entrypoints", "trader.training"),
     }
     violations: list[str] = []
@@ -145,9 +150,9 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
 def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific_injection() -> None:
     port = SOURCE_ROOT / "recommendation/application/ports/loaded_profile.py"
     router = SOURCE_ROOT / "recommendation/application/pipeline/local_score/model_router.py"
-    projection = (
-        SOURCE_ROOT / "recommendation/application/pipeline/final_selection/decision_projection.py"
-    ).read_text(encoding="utf-8")
+    projection = (SOURCE_ROOT / "recommendation/application/pipeline/final_selection/decision_projection.py").read_text(
+        encoding="utf-8"
+    )
     input_runtime = (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").read_text(
         encoding="utf-8"
     )

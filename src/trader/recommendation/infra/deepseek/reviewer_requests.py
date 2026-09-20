@@ -10,13 +10,13 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     ReviewCandidateContext,
     ReviewOutcome,
 )
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.challenger import (
     CHALLENGER_PROMPT_VERSION,
     CHALLENGER_SCHEMA_VERSION,

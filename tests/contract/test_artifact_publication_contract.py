@@ -17,7 +17,7 @@ SEALING = SOURCE_ROOT / "infra/artifacts/sealing.py"
 # crash-injectable, directory-fsynced variant owned by the decision-record durability
 # boundary. Folding it in requires the shared durability consolidation instead of this
 # contract, so it stays the single documented exemption.
-DURABILITY_EXEMPT = {SOURCE_ROOT / "infra/persistence/decision_records.py"}
+DURABILITY_EXEMPT = {SOURCE_ROOT / "recommendation/infra/persistence/decision_records.py"}
 
 
 def _hard_link_lines(path: Path) -> list[int]:

@@ -13,11 +13,6 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.recommendation.domain.market.models import (
-    Board,
-    CanonicalMarketSnapshot,
-    MarketQuote,
-)
 from trader.infra.market_data.normalization.columnar_merge import (
     ColumnarMergeError,
     try_merge_complete_realtime,
@@ -30,6 +25,11 @@ from trader.infra.market_data.normalization.merge_quote import (
     source_priority,
 )
 from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.recommendation.domain.market.models import (
+    Board,
+    CanonicalMarketSnapshot,
+    MarketQuote,
+)
 
 
 @dataclass(frozen=True)

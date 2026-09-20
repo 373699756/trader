@@ -15,12 +15,15 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
+from trader.infra.artifacts.fields import as_sequence
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,
     DecisionObservation,
 )
 from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
+from trader.recommendation.domain.publication.decision_identity import DecisionStage
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.evaluation.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     RESEARCH_AUDIT_SCHEMA_VERSION,
@@ -32,9 +35,6 @@ from trader.training.evaluation.application.research_audit import (
     ResearchRiskFactAudit,
     ShadowMode,
 )
-from trader.recommendation.domain.publication.decision_identity import DecisionStage
-from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.infra.artifacts.fields import as_sequence
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
 RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"

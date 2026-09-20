@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
-from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.infra.market_data.providers.baostock_industry import (
     BaoStockIndustryClient,
     BaoStockIndustryHealthStatus,
@@ -21,6 +19,8 @@ from trader.infra.market_data.service.market_cache_identity import _source_batch
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
 from trader.infra.market_data.service.observations import SourceObservation
 from trader.infra.market_data.service.trading_calendar_state_codec import parse_date
+from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
+from trader.recommendation.domain.market.models import ModelIndustryReference
 
 _LOGGER = logging.getLogger(__name__)
 _SOURCE_LANE = "baostock_reference"

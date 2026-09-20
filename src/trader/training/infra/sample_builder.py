@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol, cast
 
+from trader.download.domain.history_revision import HistoryTrainingWindow
 from trader.recommendation.domain.market.feature_contracts import (
     QfqPriceAnchors,
     calculate_profile_qfq_alpha,
@@ -17,7 +18,6 @@ from trader.recommendation.domain.scoring.residualization import (
     create_exposure_context,
     residualize_exposure_with_context,
 )
-from trader.download.domain.history_revision import HistoryTrainingWindow
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,

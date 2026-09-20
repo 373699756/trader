@@ -6,7 +6,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 
-from trader.recommendation.application.ports.market_data import DataPlaneReadPort
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import (
     FeatureCalculationPort,
     FeatureCalculationService,
@@ -14,6 +13,7 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feat
     assemble_scored_features,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.ports.market_data import DataPlaneReadPort
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredSelectionResult, Strategy

@@ -11,8 +11,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
+from trader.bootstrap import _initialize_research_trace, build_system
 from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.read_only_queries import (
     InputQualityStatus,
     SupplySummary,
@@ -26,10 +27,6 @@ from trader.recommendation.application.runtime.cadence import (
 )
 from trader.recommendation.application.runtime.schedule import SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import TradingCalendarRuntimeStatus
-from trader.bootstrap import _initialize_research_trace, build_system
-from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
-from trader.recommendation.infra.status_projection import input_quality_payload, runtime_status
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
@@ -41,7 +38,10 @@ from trader.recommendation.domain.evidence.pipeline import (
     SourceHealthState,
     StageState,
 )
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
+from trader.recommendation.infra.status_projection import input_quality_payload, runtime_status
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -388,7 +388,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
             latest_quote_source_time=source_time,
             highest_final_score=74.25,
         ),
-            pipeline=RecommendationPipelineStatus(
+        pipeline=RecommendationPipelineStatus(
             current_stage="action_gate",
             stages=(
                 PipelineStageStatus("input_readiness", "completed", 5200, 5100),
@@ -448,10 +448,10 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
                     2,
                     facets=(PipelineFacet("selected_observe", 2, 2),),
                 ),
-                ),
             ),
-            stage_snapshots=stage_snapshots[:9],
-            candidate_count=360,
+        ),
+        stage_snapshots=stage_snapshots[:9],
+        candidate_count=360,
         candidate_feature_count=352,
         security_master_covered_count=74,
         history_required_sessions=61,
@@ -496,9 +496,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
     assert "supply_funnel" not in payload["tomorrow"]
     assert "asdict(status.pipeline)" not in (
         PROJECT_ROOT / "src/trader/recommendation/infra/status_projection.py"
-    ).read_text(
-        encoding="utf-8"
-    )
+    ).read_text(encoding="utf-8")
 
 
 def test_bootstrap_wires_real_outcome_settlement_without_eager_database_write(tmp_path) -> None:

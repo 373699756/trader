@@ -4,9 +4,10 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
@@ -20,7 +21,6 @@ from trader.recommendation.domain.publication.decision_identity import (
     formal_scored_decision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=SHANGHAI)
@@ -142,7 +142,9 @@ def test_current_overlay_replaces_every_quote_field_without_changing_decision_id
     overlay = DecisionOverlay(scored.strategy, scored.trade_date, scored.version, NOW, (overlay_quote,))
     assert index.publish_overlay(overlay, expected_version=None).accepted
 
-    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(
+        Strategy.TOMORROW
+    )
 
     assert view.decision_version == scored.version
     assert view.items[0].price == 10.5
@@ -162,7 +164,9 @@ def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons
     scored = replace(_decision(), population_count=82, rejected_count=81)
     assert index.publish(scored, expected_version=None).accepted
 
-    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(
+        Strategy.TOMORROW
+    )
 
     assert view.coverage.candidate_count == 82
     assert view.coverage.evaluated_count == 1
@@ -262,7 +266,9 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
     assert tuple(item.code for item in decision.items) == ("600001", "600002", "600003", "600004")
     assert index.publish(decision, expected_version=None).accepted
 
-    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(
+        Strategy.TOMORROW
+    )
 
     assert [(item.code, item.rank, item.final_score) for item in view.items] == [
         ("600002", 1, 86.0),
@@ -294,7 +300,9 @@ def test_top_scores_break_final_score_ties_by_local_score_then_code() -> None:
     assert index.publish(parent, expected_version=None).accepted
     assert index.publish(decision, expected_version=parent.version).accepted
 
-    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(Strategy.TOMORROW)
+    view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(
+        Strategy.TOMORROW
+    )
 
     assert [item.code for item in view.top_scores] == ["600002", "600003", "600001"]
 
@@ -335,7 +343,9 @@ def test_current_never_exposes_observation_draft_after_freeze_boundary() -> None
         def now(self) -> datetime:
             return NOW.replace(hour=14, minute=50)
 
-    view = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _FrozenClock()).current(Strategy.TOMORROW)
+    view = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _FrozenClock()).current(
+        Strategy.TOMORROW
+    )
 
     assert view.status == "not_ready"
     assert view.draft is None

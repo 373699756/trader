@@ -11,8 +11,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
-from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.evidence.review import DeepSeekReview, RiskFact
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 
 if TYPE_CHECKING:
     from trader.recommendation.domain.risk.downside import DownsideAssessment

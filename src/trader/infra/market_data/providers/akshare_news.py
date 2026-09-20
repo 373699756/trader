@@ -7,7 +7,6 @@ import json
 from datetime import datetime
 from typing import Any
 
-from trader.recommendation.domain.market.models import Evidence
 from trader.infra.market_data.providers.akshare_parsing import (
     _clean_text,
     _content_version,
@@ -17,6 +16,7 @@ from trader.infra.market_data.providers.akshare_parsing import (
     _point_in_time,
     _validate_code,
 )
+from trader.recommendation.domain.market.models import Evidence
 
 
 def fetch_news(client: Any, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:

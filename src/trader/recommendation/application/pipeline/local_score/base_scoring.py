@@ -5,16 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
-from trader.recommendation.application.ports.scoring import ScoredNativeInput
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlPort
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredLocalProjection,
     ScoredProjectionInputs,
     build_scored_local,
 )
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
+from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
 
 

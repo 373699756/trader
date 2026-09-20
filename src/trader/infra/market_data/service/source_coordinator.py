@@ -18,16 +18,6 @@ from trader.infra.cache_contracts import (
     build_cache_identity,
     canonical_json_bytes,
 )
-from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
-from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
-from trader.recommendation.application.runtime.source_lanes import (
-    SourceLaneRegistry,
-    SourceRequestSupersededError,
-)
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.recommendation.domain.market.models import (
-    MarketQuote,
-)
 from trader.infra.market_data.normalization.merge import observation_from_quote
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.sina import SinaClient
@@ -39,6 +29,16 @@ from trader.infra.market_data.service.gateway_runtime import (
     _strip_source,
 )
 from trader.infra.market_data.service.observations import SourceObservation
+from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
+from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
+from trader.recommendation.application.runtime.source_lanes import (
+    SourceLaneRegistry,
+    SourceRequestSupersededError,
+)
+from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.recommendation.domain.market.models import (
+    MarketQuote,
+)
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,17 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias, cast
 from zoneinfo import ZoneInfo
 
+from trader.infra.artifacts.fields import as_sequence
+from trader.recommendation.domain.evidence.pipeline import (
+    PipelineFacet,
+    PipelineMetricName,
+    PipelineMetricRange,
+    PipelineReasonCount,
+    PipelineStageKey,
+    PipelineStageState,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import (
     COMMITTED_RECORD_SCHEMA_VERSION,
@@ -24,17 +35,6 @@ from trader.recommendation.domain.publication.decision_identity import (
     committed_record_identity_payload,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.recommendation.domain.evidence.pipeline import (
-    PipelineFacet,
-    PipelineMetricName,
-    PipelineMetricRange,
-    PipelineReasonCount,
-    PipelineStageKey,
-    PipelineStageState,
-    PipelineStageStatus,
-    RecommendationPipelineStatus,
-)
-from trader.infra.artifacts.fields import as_sequence
 
 _Json: TypeAlias = str | int | float | bool | None | list["_Json"] | dict[str, "_Json"]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")

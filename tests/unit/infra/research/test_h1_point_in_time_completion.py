@@ -18,12 +18,8 @@ from trader.training.infra.research.h1_point_in_time_completion import (
 def _completion(tmp_path):
     capability = build_h1_capability_audit(
         (
-            H1CapabilityProbe(
-                "tencent_qfq_daily", date(2023, 1, 10), False, "qfq", False, 640, 12500, 1000, 0.1
-            ),
-            H1CapabilityProbe(
-                "eastmoney_historical_minute", None, False, "unsupported", False, 0, 8000000, 500, 0.1
-            ),
+            H1CapabilityProbe("tencent_qfq_daily", date(2023, 1, 10), False, "qfq", False, 640, 12500, 1000, 0.1),
+            H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 8000000, 500, 0.1),
         )
     )
     archive = SQLiteH1PointInTimeArchive(tmp_path / "archive")

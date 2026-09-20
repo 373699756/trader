@@ -12,31 +12,39 @@ from tests.unit.application.test_input_runtime import _decision_build, _Market, 
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
 from tests.unit.application.test_tomorrow_selection import _data_snapshot
 from tests.unit.application.test_tomorrow_selection import _policy as snapshot_policy
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.data_source.source_router import DecisionBuildDependencies, MarketDataAdapter
-from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
-from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
-from trader.recommendation.application.ports.runtime import DecisionUnavailableError
+from trader.bootstrap import _recommendation_policy
+from trader.infra.atomic_files.json import atomic_read_json, atomic_write_json
+from trader.infra.clock.shanghai import ShanghaiClock
+from trader.infra.settings import load_strategy_settings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
     CandidateFilteringPort,
     CandidateFilteringService,
 )
-from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import FeatureCalculationPort
-from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringPort, LocalScoringService
-from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort, RankingSelectionService
-from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
+from trader.recommendation.application.pipeline.data_source.source_router import (
+    DecisionBuildDependencies,
+    MarketDataAdapter,
+)
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionUseCase,
     assemble_scored_features,
 )
-from trader.bootstrap import _recommendation_policy
+from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import (
+    FeatureCalculationPort,
+)
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import (
+    RankingSelectionPort,
+    RankingSelectionService,
+)
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringPort, LocalScoringService
+from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
+from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
+from trader.recommendation.application.ports.runtime import DecisionUnavailableError
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
-from trader.infra.atomic_files.json import atomic_read_json, atomic_write_json
-from trader.infra.clock.shanghai import ShanghaiClock
-from trader.infra.settings import load_strategy_settings
 
 
 def _features(factory) -> tuple[FeatureSnapshot, ...]:
@@ -45,6 +53,7 @@ def _features(factory) -> tuple[FeatureSnapshot, ...]:
         for prefix in ("600", "300", "688")
         for index in range(100)
     )
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"

@@ -9,6 +9,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
+from trader.infra.settings import (
+    ConfigurationError,
+    load_long_watchlist,
+    load_runtime_settings,
+    load_strategy_settings,
+)
 from trader.infra.settings.recommendation_policy import _recommendation_policy
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
@@ -16,13 +23,6 @@ from trader.recommendation.domain.scoring.scoring import (
     board_candidate_components,
     board_candidate_score,
     score_board_strategy,
-)
-from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
-from trader.infra.settings import (
-    ConfigurationError,
-    load_long_watchlist,
-    load_runtime_settings,
-    load_strategy_settings,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

@@ -9,14 +9,9 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
-from trader.training.infra.research import research_trace_archive as research_trace_module
-from trader.training.infra.research.research_trace_archive import (
-    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-    ResearchTraceCapacityError,
-    ResearchTraceConflictError,
-    ResearchTraceLimits,
-    SQLiteResearchTraceArchive,
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
+    DecisionObservation,
+    build_decision_committed,
 )
 from trader.training.evaluation.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
@@ -27,7 +22,14 @@ from trader.training.evaluation.application.research_audit import (
     ResearchPopulationAudit,
     point_in_time_population_hash,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
+from trader.training.infra.research import research_trace_archive as research_trace_module
+from trader.training.infra.research.research_trace_archive import (
+    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+    ResearchTraceCapacityError,
+    ResearchTraceConflictError,
+    ResearchTraceLimits,
+    SQLiteResearchTraceArchive,
+)
 
 
 def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_path) -> None:

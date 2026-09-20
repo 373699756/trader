@@ -6,7 +6,11 @@ from collections import Counter
 from collections.abc import Sequence
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, require_previous_stage, stage_output
+from trader.recommendation.application.pipeline.stage_output import (
+    PipelineStageOutput,
+    require_previous_stage,
+    stage_output,
+)
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityDecision, IssuerEligibilityState
 from trader.recommendation.domain.market.models import FeatureSnapshot

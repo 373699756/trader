@@ -9,10 +9,6 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from trader.recommendation.domain.market.news import NewsSignalPolicy
-from trader.recommendation.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
-from trader.recommendation.domain.market.tail import TailSignalPolicy
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId, parse_scoring_profile
 from trader.infra.settings.factor_validation import _parse_factor_definition, _strategy_contract_identity
 from trader.infra.settings.models import (
     ApiSettings,
@@ -63,6 +59,14 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import triple_nested_number_mapping as _triple_nested_number_mapping
 from trader.infra.settings.runtime_loader import load_runtime_settings
 from trader.infra.settings.strategy_validation import _validate_strategy_settings
+from trader.recommendation.domain.market.news import NewsSignalPolicy
+from trader.recommendation.domain.market.research import (
+    FeatureComponentWeightPolicy,
+    LongResearchPolicy,
+    MarketRegimePolicy,
+)
+from trader.recommendation.domain.market.tail import TailSignalPolicy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId, parse_scoring_profile
 
 _STRATEGY_KEYS = {
     "scoring_profile",

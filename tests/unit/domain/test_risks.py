@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.review import RiskRule
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.rules import aggregate_risk_penalty, derive_local_risk_facts
 
 PENALTIES = {

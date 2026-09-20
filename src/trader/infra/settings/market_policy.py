@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from trader.infra.cache_contracts import CacheDatasetPolicy, CacheGroupPolicy, CachePolicy
-from trader.recommendation.application.ports.market_data_contracts import LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES
 from trader.infra.settings.models import (
     PerformanceBudgetSettings,
     PerformanceMemorySettings,
@@ -20,6 +19,10 @@ from trader.infra.settings.parser import (
     number,
     require_exact_keys,
     text,
+)
+from trader.recommendation.application.ports.market_data_contracts import (
+    LOGICAL_CACHE_LIMIT_BYTES,
+    PROCESS_PEAK_RSS_LIMIT_BYTES,
 )
 
 

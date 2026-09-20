@@ -11,14 +11,15 @@ from datetime import datetime
 from itertools import pairwise
 from types import MappingProxyType
 
-from trader.recommendation.domain.market.factors import clamp, round_score
-from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.candidate.filters import (
     FilterTier,
     HardFilterPolicy,
     apply_filters,
     default_filter_rules,
 )
+from trader.recommendation.domain.evidence.review import RiskRule
+from trader.recommendation.domain.market.factors import clamp, round_score
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import (
     BoardStrategyPolicy,
     FilterAudit,
@@ -27,6 +28,7 @@ from trader.recommendation.domain.publication.models import (
     ScoredStockEvaluation,
     Strategy,
 )
+from trader.recommendation.domain.risk.rules import aggregate_risk_penalty, derive_local_risk_facts
 from trader.recommendation.domain.scoring.scoring import (
     BoardCrossSection,
     BoardCrossSectionRequest,
@@ -38,8 +40,6 @@ from trader.recommendation.domain.scoring.scoring import (
     project_board_policy,
     score_board_strategy,
 )
-from trader.recommendation.domain.evidence.review import RiskRule
-from trader.recommendation.domain.risk.rules import aggregate_risk_penalty, derive_local_risk_facts
 
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"

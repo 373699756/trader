@@ -32,4 +32,5 @@ def load_scoring_profile(
             raise RuntimeError("shared strategy-head training models are invalid") from exc
     raise ValueError("unknown scoring profile")
 
+
 __all__ = ["load_scoring_profile"]

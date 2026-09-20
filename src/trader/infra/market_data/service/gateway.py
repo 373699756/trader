@@ -16,20 +16,6 @@ from polars.exceptions import PolarsError
 from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import BoundedCache, canonical_json_bytes
-from trader.recommendation.application.ports.market_data import (
-    MarketDataDeadlineExceededError,
-    MarketDataFailedError,
-    MarketDataNoDataError,
-    MarketDataUnavailableError,
-)
-from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.schedule import shanghai_now
-from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry, SourceRequestSupersededError
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.recommendation.domain.market.models import (
-    CanonicalMarketSnapshot,
-    MarketQuote,
-)
 from trader.infra.market_data.normalization.columnar import (
     ColumnarQuoteBatch,
     NormalizedMarketChangeSet,
@@ -73,6 +59,20 @@ from trader.infra.market_data.service.source_coordinator import (
     MarketSourceDependencies,
     SourceLaneIdentityRequest,
     SourceObservationRequest,
+)
+from trader.recommendation.application.ports.market_data import (
+    MarketDataDeadlineExceededError,
+    MarketDataFailedError,
+    MarketDataNoDataError,
+    MarketDataUnavailableError,
+)
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry, SourceRequestSupersededError
+from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.recommendation.domain.market.models import (
+    CanonicalMarketSnapshot,
+    MarketQuote,
 )
 
 _TARGET_QUOTE_MAX_COMMIT_RESERVE_SECONDS = 0.2

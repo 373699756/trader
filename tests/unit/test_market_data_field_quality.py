@@ -8,7 +8,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
 from trader.infra.market_data.normalization.field_quality import (
     BOARD_FIELDS,
     REALTIME_FIELDS,
@@ -16,6 +15,7 @@ from trader.infra.market_data.normalization.field_quality import (
     select_fields,
 )
 from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OBSERVED_AT = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)

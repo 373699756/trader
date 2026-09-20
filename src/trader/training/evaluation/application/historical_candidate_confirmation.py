@@ -29,6 +29,7 @@ from trader.training.evaluation.domain.preregistered_rule_candidate import (
     evaluate_rule_candidate_family,
     preregister_rule_candidates,
 )
+
 HistoricalStrategy = Literal["tomorrow", "d25"]
 _STRATEGIES: tuple[HistoricalStrategy, ...] = ("tomorrow", "d25")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")

@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TypedDict, cast
 
+from trader.infra.artifacts.canonical import canonical_json_text
+from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data_repository import (
     HistoricalFeatureRecord,
     RiskEvidenceRecord,
@@ -16,8 +18,6 @@ from trader.recommendation.application.ports.market_data_repository import (
     SourceCursorRecord,
     TradingCalendarRecord,
 )
-from trader.recommendation.application.ports.json_values import JsonObject
-from trader.infra.artifacts.canonical import canonical_json_text
 from trader.recommendation.infra.persistence.data_plane_types import Record, _Profile
 
 

@@ -10,16 +10,17 @@ from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.ports.clock import TradingCalendarPort
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _IDENTITY = re.compile(r"^[a-zA-Z0-9_.:-]{1,200}$")
+
 
 @dataclass(frozen=True)
 class SharedDeepSeekRuntimeContract:

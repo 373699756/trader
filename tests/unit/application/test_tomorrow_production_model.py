@@ -9,22 +9,22 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.application.scoring_helpers import profile_for
+from trader.recommendation.application.pipeline.local_score.model_scoring import (
+    ProductionModelScoringService,
+    SharedModelFeatureCache,
+)
 from trader.recommendation.application.ports.loaded_profile import (
     ModelInput,
     ModelPrediction,
     ModelScoringContext,
     ModelScoringDeadlineError,
 )
-from trader.recommendation.application.pipeline.local_score.model_scoring import (
-    ProductionModelScoringService,
-    SharedModelFeatureCache,
-)
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, ModelIndustryReference
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import (
     LEGACY_EXPOSURE_CONTRACT,
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -167,6 +167,7 @@ def test_single_prediction_uses_neutral_rank_for_score_and_cost(application_feat
     assert batch.diagnostics["600001"].signal_score == 50.0
     assert batch.diagnostics["600001"].estimated_cost_pct == pytest.approx(0.3)
     assert batch.diagnostics["600001"].predicted_net_excess_pct == pytest.approx(-0.05)
+
 
 @pytest.mark.parametrize("strategy", (Strategy.D25,))
 def test_v3_trend_heads_do_not_require_the_unselected_one_day_return(

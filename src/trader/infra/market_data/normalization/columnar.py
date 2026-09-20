@@ -11,9 +11,9 @@ import polars as pl
 from polars.datatypes import DataType, DataTypeClass
 
 from trader.infra.cache_contracts import canonical_json_bytes
+from trader.recommendation.application.ports import market_data_contracts
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot, FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.research import ResearchObservation
-from trader.recommendation.application.ports import market_data_contracts
 
 _CHANGE_SCHEMA_VERSION = "market_change_set_legacy"
 _QUOTE_SCHEMA_VERSION = "columnar_quote_batch"

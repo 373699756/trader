@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from trader.recommendation.domain.market.factors import PRODUCTION_FACTOR_IDS
-from trader.recommendation.domain.market.research import MarketRegimePolicy
-from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES, deepseek_risk_rule_code
 from trader.infra.settings.factor_validation import (
     _validate_feature_schema_contract,
     _validate_long_research_factor_contract,
@@ -17,6 +14,9 @@ from trader.infra.settings.models import FactorDefinition, RiskRuleSettings, Str
 from trader.infra.settings.parser import (
     ConfigurationError,
 )
+from trader.recommendation.domain.market.factors import PRODUCTION_FACTOR_IDS
+from trader.recommendation.domain.market.research import MarketRegimePolicy
+from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES, deepseek_risk_rule_code
 
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:

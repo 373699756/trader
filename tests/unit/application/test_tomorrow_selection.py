@@ -13,12 +13,12 @@ from tests.unit.epoch_helpers import (
     market_field_values,
     research_field_values,
 )
-from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionNotReadyError,
     ScoredSelectionUseCase,
     assemble_scored_features,
 )
+from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.epochs import (
     CandidateFeatureRow,
     CandidateQuoteEpoch,

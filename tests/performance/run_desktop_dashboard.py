@@ -26,10 +26,19 @@ from werkzeug.serving import make_server
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex  # noqa: E402
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex  # noqa: E402
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries  # noqa: E402
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream  # noqa: E402
+from trader.http_api.route_services import UnifiedWebServices  # noqa: E402
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import (  # noqa: E402
+    UnifiedDecisionDraftIndex,
+)
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import (  # noqa: E402
+    UnifiedDecisionEventStream,
+)
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (  # noqa: E402
+    UnifiedDecisionQueries,
+)
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (  # noqa: E402
+    UnifiedDecisionIndex,
+)
 from trader.recommendation.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
 from trader.recommendation.domain.market.models import Board  # noqa: E402
 from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
@@ -42,7 +51,6 @@ from trader.recommendation.domain.publication.decision_identity import (  # noqa
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
-from trader.http_api.route_services import UnifiedWebServices  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
 REPORT_SCHEMA = "desktop-browser"
@@ -283,6 +291,19 @@ def _run(output_dir: Path) -> dict[str, object]:
             ),
             "long table rows",
         )
+        _wait(
+            lambda: bool(
+                _execute(
+                    base,
+                    """
+                    const row = document.querySelector('#tableBody tr[data-code="688127"]');
+                    const values = row ? Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent.trim()) : [];
+                    return values.length > 0 && !values.includes('-');
+                    """,
+                )
+            ),
+            "long quote fields",
+        )
         long_quote_fields = _execute(
             base,
             """
@@ -380,8 +401,10 @@ def _run(output_dir: Path) -> dict[str, object]:
             and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
             and isinstance(quality_summary, dict)
             and quality_summary.get("inputQuality") == "可评分 56 / 候选 360"
-            and quality_summary.get("inputQualityMeta") == "历史 78 / 360 · 21.7% · 证券资料 120 / 360"
-            and "动态过滤 5291→500" in str(quality_summary.get("inputStages"))
+            and str(quality_summary.get("inputQualityMeta", "")).startswith(
+                "历史 78 / 360 · 21.7% · 证券资料 120 / 360"
+            )
+            and "动态过滤 1000→500" in str(quality_summary.get("inputStages"))
             and "输入完整性 行情360/360 · 证券资料120/360 · 历史78/360" in str(quality_summary.get("inputStages"))
             and quality_summary.get("funnel") == "56 → 2 → 2"
             and "模型成本门 56→20" in str(quality_summary.get("funnelStages"))

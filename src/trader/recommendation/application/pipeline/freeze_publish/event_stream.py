@@ -10,8 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import DecisionCoverage, scored_decision_coverage
+from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import (
+    DecisionCoverage,
+    scored_decision_coverage,
+)
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted
+from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionItem,
     DecisionOverlay,
@@ -20,7 +24,6 @@ from trader.recommendation.domain.publication.decision_identity import (
     SelectionDiagnostics,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 
 ResyncReason = Literal[
     "cursor_ahead",

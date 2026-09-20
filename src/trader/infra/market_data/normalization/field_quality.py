@@ -11,8 +11,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 
 REALTIME_FIELDS = frozenset(
     {

@@ -16,11 +16,6 @@ if TYPE_CHECKING:
 
 import requests
 
-from trader.recommendation.application.runtime.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
-from trader.recommendation.domain.market.models import Board, MarketQuote
-from trader.recommendation.domain.market.tail import MinuteBar
-from trader.training.evaluation.domain.models import OutcomeBar
-from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
 from trader.infra.market_data.normalization.normalize import (
@@ -29,6 +24,11 @@ from trader.infra.market_data.normalization.normalize import (
     normalize_quotes,
     to_float,
 )
+from trader.recommendation.application.runtime.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
+from trader.recommendation.domain.candidate.filters import board_for_code
+from trader.recommendation.domain.market.models import Board, MarketQuote
+from trader.recommendation.domain.market.tail import MinuteBar
+from trader.training.evaluation.domain.models import OutcomeBar
 
 
 class JsonResponse(Protocol):

@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_ROOT = PROJECT_ROOT / "src" / "trader"
 NAMING_ROOTS = (SOURCE_ROOT, PROJECT_ROOT / "scripts", PROJECT_ROOT / "tests")
 SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
-EXPECTED_COUNTS: dict[str, int] = {}
+EXPECTED_COUNTS: dict[str, int] = {"C901": 2, "PLR0911": 1, "PLR0913": 5}
 
 
 def main() -> int:

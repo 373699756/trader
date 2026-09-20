@@ -7,9 +7,9 @@ from dataclasses import replace
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionPolicy
-from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 
 
 def tomorrow_decision_policy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
@@ -31,6 +31,7 @@ def scored_decision_policy(
     if strategy is Strategy.D25:
         return d25_decision_policy(policy)
     raise ValueError("unsupported scored strategy for DeepSeek policy")
+
 
 def _decision_policy(
     policy: RecommendationPolicy,

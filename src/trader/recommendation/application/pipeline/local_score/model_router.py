@@ -13,8 +13,8 @@ from trader.recommendation.application.ports.loaded_profile import (
     ScoringProfileRuntimeStatus,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 
 class ModelScoringRouter(ModelScoringPort):

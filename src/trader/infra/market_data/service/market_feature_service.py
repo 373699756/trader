@@ -8,6 +8,20 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from trader.infra.market_data.history.daily_history_cache import HistoryCache
+from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
+from trader.infra.market_data.service.candidate_quote_cache import QuoteCache
+from trader.infra.market_data.service.intraday_loader import IntradayLoader
+from trader.infra.market_data.service.market_cache_identity import (
+    _history_population_codes,
+    _normalize_codes,
+    _research_data_version,
+)
+from trader.infra.market_data.service.market_data_health import MarketDataHealth
+from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
+from trader.infra.market_data.service.research_load_status import ResearchLoadReport, research_component_coverage
+from trader.infra.market_data.service.research_observation_loader import ResearchLoader
+from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data import (
@@ -25,23 +39,9 @@ from trader.recommendation.domain.market.models import (
     LiveQuote,
     MarketQuote,
 )
-from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.domain.market.research import ResearchObservation
 from trader.training.evaluation.domain.models import OutcomeBar
-from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
-from trader.infra.market_data.service.candidate_quote_cache import QuoteCache
-from trader.infra.market_data.service.intraday_loader import IntradayLoader
-from trader.infra.market_data.service.market_cache_identity import (
-    _history_population_codes,
-    _normalize_codes,
-    _research_data_version,
-)
-from trader.infra.market_data.service.market_data_health import MarketDataHealth
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.research_load_status import ResearchLoadReport, research_component_coverage
-from trader.infra.market_data.service.research_observation_loader import ResearchLoader
-from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
 
 
 @dataclass(frozen=True)

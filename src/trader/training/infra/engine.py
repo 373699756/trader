@@ -17,8 +17,6 @@ from zoneinfo import ZoneInfo
 
 from lightgbm.basic import LightGBMError
 
-from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
-from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit, build_baostock_training_split
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
@@ -35,6 +33,8 @@ from trader.download.infra.history_control_repository import (
 )
 from trader.download.infra.history_month_partition import HistoryPartitionVerificationPhase
 from trader.infra.artifacts.canonical import content_hash
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,

@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, require_previous_stage, stage_output
+from trader.recommendation.application.pipeline.stage_output import (
+    PipelineStageOutput,
+    require_previous_stage,
+    stage_output,
+)
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot
 

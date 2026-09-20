@@ -11,16 +11,16 @@ from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
 
+from trader.recommendation.domain.evidence.review import (
+    RiskFact,
+    RiskRule,
+)
 from trader.recommendation.domain.market.factors import clamp
 from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.evidence.review import (
-    RiskFact,
-    RiskRule,
-)
 
 DEEPSEEK_STRUCTURED_RISK_CODES = frozenset(
     {

@@ -107,9 +107,7 @@ class H1ResearchCompletion:
 
     def __post_init__(self) -> None:
         _hash(self.capability_hash, "H1 research capability")
-        ledgers = tuple(
-            sorted(self.residual_ledgers, key=lambda item: ("tomorrow", "d25").index(item.strategy))
-        )
+        ledgers = tuple(sorted(self.residual_ledgers, key=lambda item: ("tomorrow", "d25").index(item.strategy)))
         if tuple(item.strategy for item in ledgers) != ("tomorrow", "d25"):
             raise ValueError("H1 research completion requires every residual ledger terminal")
         if any(item.capability_hash != self.capability_hash for item in ledgers):

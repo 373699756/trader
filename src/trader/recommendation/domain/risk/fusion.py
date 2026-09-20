@@ -8,18 +8,18 @@ from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
 
-from trader.recommendation.domain.market.factors import clamp, round_score
-from trader.recommendation.domain.market.models import Evidence
-from trader.recommendation.domain.publication.models import (
-    FusionMode,
-    ScoreBreakdown,
-)
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     ReviewOutcome,
     RiskFact,
     RiskRule,
+)
+from trader.recommendation.domain.market.factors import clamp, round_score
+from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.publication.models import (
+    FusionMode,
+    ScoreBreakdown,
 )
 from trader.recommendation.domain.risk.rules import RiskMappingRequest, aggregate_risk_penalty, map_deepseek_risk_facts
 

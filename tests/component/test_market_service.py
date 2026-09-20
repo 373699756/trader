@@ -48,8 +48,11 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
-from trader.recommendation.application.ports.market_data_repository import DataPlaneConflictError, DataPlaneUnavailableError
 from trader.infra.market_data.service.observations import SourceObservation
+from trader.recommendation.application.ports.market_data_repository import (
+    DataPlaneConflictError,
+    DataPlaneUnavailableError,
+)
 
 
 def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_lock() -> None:

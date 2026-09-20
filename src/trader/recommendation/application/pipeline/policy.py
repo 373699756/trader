@@ -6,14 +6,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.candidate.filters import HardFilterPolicy
+from trader.recommendation.domain.evidence.review import RiskRule
+from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import (
     BoardStrategyPolicy,
     Strategy,
 )
 from trader.recommendation.domain.risk.fusion import FusionPolicy
-from trader.recommendation.domain.evidence.review import RiskRule
 
 
 @dataclass(frozen=True)

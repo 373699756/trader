@@ -5,7 +5,6 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.candidate.filters import (
     FilterTier,
     HardFilterPolicy,
@@ -14,6 +13,7 @@ from trader.recommendation.domain.candidate.filters import (
     level_one_filter_rules,
     level_two_filter_rules,
 )
+from trader.recommendation.domain.market.models import Board
 
 
 @pytest.mark.parametrize(

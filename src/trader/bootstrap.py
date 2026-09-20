@@ -12,64 +12,11 @@ from pathlib import Path
 
 from flask import Flask
 
-from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver, DecisionEventConsumer
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
-from trader.recommendation.application.pipeline.data_source.source_router import DecisionBuildDependencies, MarketDataAdapter
-from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
-from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
-from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
-from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import (
-    ProductionModelScoringService,
-    SharedModelFeatureCache,
-)
-from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
-from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
-from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
-from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
-    DecisionRuntimeIdentity,
-    ScoredFreezeCoordinator,
-)
-from trader.training.evaluation.application.research_runtime import ResearchRuntime
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
-from trader.training.evaluation.application.research_audit import try_build_committed_research_audit
-from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
-from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.resource_orchestration import (
-    ApplicationResources,
-    start_application_resources,
-    stop_application_resources,
-)
-from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
-from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
-from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.infra.clock.utc import utc_now as _utc_now
-from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
-from trader.infra.settings.recommendation_policy import (
-    _long_group_definitions,
-    _long_item_definitions,
-    _recommendation_policy,
-)
-from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
-from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.domain.publication.models import Strategy
+from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
-from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.recommendation.infra.deepseek.cache import ReviewCache
-from trader.recommendation.infra.deepseek.factory import create_deepseek_client
-from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
-from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.infra.clock.utc import utc_now as _utc_now
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup, build_history_warmup_policy
 from trader.infra.market_data.history.history_seed import (
@@ -92,13 +39,7 @@ from trader.infra.market_data.service.market_feature_service import MarketFeatur
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
 from trader.infra.market_data.service.research_observation_loader import ResearchLoader
 from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
-from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
-from trader.training.infra.research.research_trace_archive import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.infra.runtime_resources import RuntimeWorkerResources
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
@@ -107,10 +48,79 @@ from trader.infra.settings import (
     load_runtime_settings,
     load_strategy_settings,
 )
+from trader.infra.settings.recommendation_policy import (
+    _long_group_definitions,
+    _long_item_definitions,
+    _recommendation_policy,
+)
+from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
+from trader.recommendation.application.pipeline.data_source.source_router import (
+    DecisionBuildDependencies,
+    MarketDataAdapter,
+)
+from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
+from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (
+    AsyncDecisionObserver,
+    DecisionEventConsumer,
+)
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
+    DecisionRuntimeIdentity,
+    ScoredFreezeCoordinator,
+)
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
+from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.local_score.model_scoring import (
+    ProductionModelScoringService,
+    SharedModelFeatureCache,
+)
+from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
+from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.resource_orchestration import (
+    ApplicationResources,
+    start_application_resources,
+    stop_application_resources,
+)
+from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
+from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
+from trader.recommendation.application.runtime.supervisor import (
+    RuntimeSupervisor,
+    RuntimeSupervisorConfig,
+    scheduler_interval_seconds,
+)
+from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.cache import ReviewCache
+from trader.recommendation.infra.deepseek.factory import create_deepseek_client
+from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
+from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
+from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
+from trader.training.evaluation.application.research_audit import try_build_committed_research_audit
+from trader.training.evaluation.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
+from trader.training.infra.research.research_trace_archive import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.web import create_app
-from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 
 
 @dataclass(frozen=True)

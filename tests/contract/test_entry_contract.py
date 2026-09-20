@@ -14,11 +14,11 @@ import pytest
 import trader.entrypoints.cli as cli_module
 import trader.entrypoints.server as server_module
 import trader.training.entrypoints.commands as research_commands
-from trader.recommendation.domain.publication.models import Strategy
 from trader.entrypoints.cli import build_parser, main
 from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
 from trader.infra.settings import load_runtime_settings
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
 from trader.training.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError
 from trader.training.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactRepositoryError

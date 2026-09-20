@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 import requests
 
+from trader.infra.failures import classify_adapter_failure
 from trader.recommendation.infra.deepseek.completion_client_contract import (
     CompletionOptions,
     DeepSeekCompletionClient,
@@ -21,7 +22,6 @@ from trader.recommendation.infra.deepseek.completion_client_contract import (
 )
 from trader.recommendation.infra.deepseek.model_capabilities import capabilities as _lookup_capabilities
 from trader.recommendation.infra.deepseek.model_catalog import validate_model
-from trader.infra.failures import classify_adapter_failure
 
 _POST_TYPE = Callable[..., "requests.Response"]
 

@@ -9,13 +9,15 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.bootstrap import _recommendation_policy
+from trader.infra.settings import load_strategy_settings
 from trader.recommendation.application.pipeline.data_source.source_router import (
     DecisionBuildDependencies,
     InputBatch,
     MarketDataAdapter,
     _model_scoring_context,
 )
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -25,12 +27,10 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.bootstrap import _recommendation_policy
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
-from trader.infra.settings import load_strategy_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -780,8 +780,7 @@ def test_three_scored_strategies_share_one_fast_market_input_cycle(
         decision_build=_decision_build(now=lambda: observed_at),
     )
     requests = tuple(
-        _request(observed_at, strategy=strategy, phase="morning")
-        for strategy in (Strategy.TOMORROW, Strategy.D25)
+        _request(observed_at, strategy=strategy, phase="morning") for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
     _prime_scoring_cache(adapter, observed_at)
     entered = threading.Barrier(len(requests))
@@ -943,8 +942,7 @@ def test_three_scored_strategies_use_refresh_completion_as_the_decision_time(
         decision_build=_decision_build(),
     )
     requests = tuple(
-        _request(requested_at, strategy=strategy, phase="morning")
-        for strategy in (Strategy.TOMORROW, Strategy.D25)
+        _request(requested_at, strategy=strategy, phase="morning") for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
 
     _prime_scoring_cache(adapter, requested_at)
@@ -1420,8 +1418,7 @@ def test_two_strategy_candidate_windows_share_deduplicated_quote_io(
 
     _prime_scoring_cache(adapter, observed_at)
     requests = tuple(
-        _request(observed_at, strategy=strategy, phase="morning_main")
-        for strategy in (Strategy.TOMORROW, Strategy.D25)
+        _request(observed_at, strategy=strategy, phase="morning_main") for strategy in (Strategy.TOMORROW, Strategy.D25)
     )
     for request in requests:
         adapter.refresh(request)

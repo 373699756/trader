@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
     CandidatePlanningContext,
     CandidatePlanSet,
@@ -21,6 +20,7 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     refresh_candidate_reserves,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.domain.market.models import FeatureSnapshot
 
 

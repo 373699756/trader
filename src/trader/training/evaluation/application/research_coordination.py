@@ -8,10 +8,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.training.evaluation.application.research_ports import OfflineResearchReaderPort
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.training.evaluation.application.research_ports import OfflineResearchReaderPort
 
 
 @dataclass(frozen=True)

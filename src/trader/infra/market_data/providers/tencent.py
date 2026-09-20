@@ -11,14 +11,6 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
-    BoundedExecutor,
-    borrow_executor,
-    submit_or_run_inline,
-)
-from trader.recommendation.domain.market.models import MarketQuote
-from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
 from trader.infra.market_data.normalization.normalize import (
@@ -27,6 +19,14 @@ from trader.infra.market_data.normalization.normalize import (
     normalize_quotes,
     to_float,
 )
+from trader.recommendation.application.runtime.workers import (
+    BorrowExecutorOptions,
+    BoundedExecutor,
+    borrow_executor,
+    submit_or_run_inline,
+)
+from trader.recommendation.domain.market.models import MarketQuote
+from trader.training.evaluation.domain.models import OutcomeBar
 
 SessionFactory = Callable[[], requests.Session]
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}

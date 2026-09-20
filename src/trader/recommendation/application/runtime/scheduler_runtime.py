@@ -9,14 +9,19 @@ from datetime import date, datetime, timedelta
 from datetime import time as wall_time
 from typing import Literal, cast
 
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted, DecisionObservation
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
+    DecisionCommitted,
+    DecisionObservation,
+)
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (
+    DecisionObserverRuntime,
+    DecisionObserverStatus,
+)
 from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
-from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
+from trader.recommendation.application.ports.publisher import OverlayPublisher
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, ResearchAuditIdentity
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPort,
@@ -36,7 +41,6 @@ from trader.recommendation.application.ports.runtime import (
     SharedDeepSeekRuntimeContract,
     TradingCalendarUnavailableError,
 )
-from trader.recommendation.application.ports.publisher import OverlayPublisher
 from trader.recommendation.application.runtime.cadence import (
     CadencePlanner,
     CadencePlannerStatus,
@@ -73,6 +77,7 @@ from trader.recommendation.application.runtime.schedule_requests import (
 )
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     LongProjection,
@@ -628,8 +633,7 @@ class SchedulerRuntime:
         steps.extend(self._task_lanes[task].stop(deadline=deadline) for task in _DATA_LANES)
         steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
         steps.extend(
-            self._hybrid_lanes[strategy].stop(deadline=deadline)
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
+            self._hybrid_lanes[strategy].stop(deadline=deadline) for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
         steps.append(self._dependencies.observer.stop(deadline=deadline))
         steps.append(self._research.stop(wait=True, deadline=deadline))
@@ -648,8 +652,7 @@ class SchedulerRuntime:
                 config_version=self._config_version,
                 lanes=tuple(self._lanes[strategy].status() for strategy in Strategy),
                 hybrid_lanes=tuple(
-                    self._hybrid_lanes[strategy].status()
-                    for strategy in (Strategy.TOMORROW, Strategy.D25)
+                    self._hybrid_lanes[strategy].status() for strategy in (Strategy.TOMORROW, Strategy.D25)
                 ),
                 task_lanes=tuple(self._task_lanes[task].status() for task in _DATA_LANES),
                 cadence=self._dependencies.cadence.status(),

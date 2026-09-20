@@ -8,7 +8,11 @@ from pathlib import Path
 
 from trader.infra.cache_contracts import CachePolicy
 from trader.recommendation.domain.market.news import NewsSignalPolicy
-from trader.recommendation.domain.market.research import FeatureComponentWeightPolicy, LongResearchPolicy, MarketRegimePolicy
+from trader.recommendation.domain.market.research import (
+    FeatureComponentWeightPolicy,
+    LongResearchPolicy,
+    MarketRegimePolicy,
+)
 from trader.recommendation.domain.market.tail import TailSignalPolicy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 

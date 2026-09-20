@@ -27,9 +27,7 @@ def _seal_h1_research_parent(root):
     archive = SQLiteH1PointInTimeArchive(root / "archive")
     completion = complete_h1_research(
         capability=capability,
-        metadata=tuple(
-            archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")
-        ),
+        metadata=tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")),
     )
     H1CapabilityArtifactArchive(root).write(capability)
     HistoricalLabelArtifactArchive(root).write(completion.labels)

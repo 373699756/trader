@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.recommendation.domain.publication.models import Strategy
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit
+from trader.recommendation.domain.publication.models import Strategy
 
 TomorrowTrainingStage = Literal[
     "resource_preflight",

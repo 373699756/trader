@@ -173,14 +173,14 @@ def test_strategy_factor_registry_is_complete_and_required() -> None:
     path = Path(__file__).parents[2] / "config" / "strategy.json"
     settings = load_strategy_settings(path)
 
-    assert settings.factor_registry["speed_percentile"].factor_id == "speed_percentile"
+    assert settings.factor_registry["atr20_pct"].factor_id == "atr20_pct"
     assert settings.strategy_version.startswith("strategy_sha256_")
 
 
 def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
     source = Path(__file__).parents[2] / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    del raw["factor_registry"]["speed_percentile"]
+    del raw["factor_registry"]["atr20_pct"]
     target = tmp_path / "strategy.json"
     target.write_text(json.dumps(raw), encoding="utf-8")
 

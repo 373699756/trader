@@ -12,6 +12,10 @@ from typing import Any
 
 import pytest
 
+from trader.recommendation.infra.deepseek.candidate_feature_evidence import (
+    render_batch_candidate_feature_evidence,
+    render_candidate_feature_evidence,
+)
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.completion_client_contract import (
     DeepSeekCompletionClient,
@@ -21,10 +25,6 @@ from trader.recommendation.infra.deepseek.completion_client_contract import (
 from trader.recommendation.infra.deepseek.factory import create_deepseek_client
 from trader.recommendation.infra.deepseek.model_capabilities import MODELS, capabilities
 from trader.recommendation.infra.deepseek.model_catalog import validate_model
-from trader.recommendation.infra.deepseek.candidate_feature_evidence import (
-    render_batch_candidate_feature_evidence,
-    render_candidate_feature_evidence,
-)
 
 # ---------------------------------------------------------------------------
 # ModelCapabilities

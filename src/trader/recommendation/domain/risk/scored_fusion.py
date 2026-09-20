@@ -14,6 +14,14 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Literal, TypeAlias
 
+from trader.recommendation.domain.candidate.composition import LocalScoreResult
+from trader.recommendation.domain.evidence.review import (
+    DeepSeekReview,
+    ReviewCandidateContext,
+    ReviewOutcome,
+    RiskFact,
+    RiskRule,
+)
 from trader.recommendation.domain.market.factors import round_score
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import (
@@ -31,14 +39,6 @@ from trader.recommendation.domain.risk.fusion import (
     FusionPolicy,
     FusionRequest,
     fuse_score,
-)
-from trader.recommendation.domain.candidate.composition import LocalScoreResult
-from trader.recommendation.domain.evidence.review import (
-    DeepSeekReview,
-    ReviewCandidateContext,
-    ReviewOutcome,
-    RiskFact,
-    RiskRule,
 )
 
 DECISION_EPOCH_SCHEMA_VERSION = "decision_epoch"

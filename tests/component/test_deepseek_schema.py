@@ -6,6 +6,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from trader.infra.settings import DeepSeekSettings
+from trader.recommendation.domain.evidence.review import (
+    ReviewCandidateContext,
+    ReviewOutcome,
+)
 from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,
@@ -13,17 +18,12 @@ from trader.recommendation.domain.market.models import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
-from trader.recommendation.domain.evidence.review import (
-    ReviewCandidateContext,
-    ReviewOutcome,
-)
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.challenger import parse_challenger_reviews
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.deepseek.schema import SCHEMA_VERSION
-from trader.infra.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 

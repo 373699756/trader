@@ -9,12 +9,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
 
-from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     DimensionAssessment,
 )
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
 from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
 
 CHALLENGER_SCHEMA_VERSION = "deepseek_challenger"

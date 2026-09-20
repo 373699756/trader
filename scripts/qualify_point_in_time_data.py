@@ -100,7 +100,6 @@ def project_point_in_time_data_qualification(
                 "matched_trade_dates": item.matched_trade_dates,
                 "coverage_ratio": item.coverage_ratio,
                 "timezone": item.timezone,
-                "supports_1120": item.supports_1120,
                 "supports_1450": item.supports_1450,
                 "volume_available": item.volume_available,
                 "amount_available": item.amount_available,

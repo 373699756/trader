@@ -7,6 +7,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.recommendation.domain.evidence.pipeline import (
+    PIPELINE_STAGE_ORDER,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
@@ -23,12 +28,10 @@ from trader.recommendation.domain.publication.decision_identity import (
     formal_scored_decision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.recommendation.domain.evidence.pipeline import (
-    PIPELINE_STAGE_ORDER,
-    PipelineStageStatus,
-    RecommendationPipelineStatus,
+from trader.recommendation.infra.persistence.decision_record_codec import (
+    committed_record_bytes,
+    committed_record_from_bytes,
 )
-from trader.recommendation.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 14, 40, tzinfo=SHANGHAI)

@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import BoardStrategyPolicy, ScoredDisposition, Strategy
 from trader.recommendation.domain.selection.scored_selection import (
@@ -12,7 +13,6 @@ from trader.recommendation.domain.selection.scored_selection import (
     plan_scored_candidates,
     select_scored,
 )
-from trader.recommendation.domain.evidence.review import RiskRule
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
 

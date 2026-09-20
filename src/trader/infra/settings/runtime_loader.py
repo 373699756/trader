@@ -415,9 +415,7 @@ def _validate_deepseek_identity(deepseek: DeepSeekSettings) -> None:
 def _validate_deepseek_allocation(deepseek: DeepSeekSettings) -> None:
     required_buckets = {"tomorrow", "d25", "shared_preheat", "emergency"}
     if set(deepseek.strategy_limits) != required_buckets:
-        raise ConfigurationError(
-            "DeepSeek strategy limits must define tomorrow, d25, shared_preheat and emergency"
-        )
+        raise ConfigurationError("DeepSeek strategy limits must define tomorrow, d25, shared_preheat and emergency")
     expected_strategy_limits = {
         "tomorrow": 38,
         "d25": 16,

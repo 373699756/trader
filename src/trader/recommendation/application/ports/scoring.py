@@ -8,8 +8,8 @@ from datetime import date, datetime
 from typing import ClassVar, Protocol
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.application.pipeline.policy_projection import preselection_replay_feature
+from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.models import Strategy
 

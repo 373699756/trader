@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import file_sha256
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import RuntimeSettings, load_strategy_settings
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.evaluation.application.baseline_identity_audit import BaselineIdentityEvidence
 from trader.training.evaluation.domain.baseline_identity import BaselineIdentityClaim, source_hash
 from trader.training.infra.research.tomorrow_historical_artifacts import (

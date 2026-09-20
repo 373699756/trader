@@ -16,17 +16,6 @@ if TYPE_CHECKING:
 
 import requests
 
-from trader.recommendation.domain.market.models import Evidence
-from trader.recommendation.domain.market.research import (
-    CorporateRiskFact,
-    FinancialReport,
-    LongResearchPolicy,
-    ResearchAnnouncement,
-    ResearchObservation,
-    announcement_level,
-    corporate_risk_facts_from_announcements,
-    reduction_level,
-)
 from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 from trader.infra.market_data.providers.akshare_http_contracts import (
     AkshareGetFunction,
@@ -46,6 +35,17 @@ from trader.infra.market_data.providers.akshare_parsing import (
     _source_error,
     _summary_number,
     _validate_code,
+)
+from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.market.research import (
+    CorporateRiskFact,
+    FinancialReport,
+    LongResearchPolicy,
+    ResearchAnnouncement,
+    ResearchObservation,
+    announcement_level,
+    corporate_risk_facts_from_announcements,
+    reduction_level,
 )
 
 _LOGGER = logging.getLogger(__name__)

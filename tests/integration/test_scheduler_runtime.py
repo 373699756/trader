@@ -5,9 +5,8 @@ from dataclasses import replace
 from datetime import date, datetime, timedelta
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -30,7 +29,7 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.recommendation.infra.status_projection import runtime_status
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionOverlay,
@@ -39,6 +38,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.status_projection import runtime_status
 
 
 class TradingCalendar:
@@ -148,7 +148,13 @@ def _cadence(at: datetime) -> CadencePlanner:
                     "afternoon": 60,
                     "final_review": 60,
                 },
-                "market_news": {"warmup": 120, "morning_main": 60, "morning_late": 60, "afternoon": 60, "final_review": 60},
+                "market_news": {
+                    "warmup": 120,
+                    "morning_main": 60,
+                    "morning_late": 60,
+                    "afternoon": 60,
+                    "final_review": 60,
+                },
                 "stock_risk": {
                     "warmup": 300,
                     "morning_main": 180,

@@ -5,6 +5,10 @@ from datetime import datetime, timezone
 
 import pytest
 
+from trader.recommendation.domain.evidence.review import (
+    DeepSeekReview,
+    ReviewOutcome,
+)
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import (
     FusionMode,
@@ -14,6 +18,7 @@ from trader.recommendation.domain.publication.models import (
     Strategy,
 )
 from trader.recommendation.domain.risk.downside import DownsideAssessment
+from trader.recommendation.domain.risk.rules import Rating
 from trader.recommendation.domain.selection.ranking import (
     ActionPolicy,
     PortfolioSelectionPolicy,
@@ -22,11 +27,6 @@ from trader.recommendation.domain.selection.ranking import (
     select_top_k,
     select_top_k_with_audit,
 )
-from trader.recommendation.domain.evidence.review import (
-    DeepSeekReview,
-    ReviewOutcome,
-)
-from trader.recommendation.domain.risk.rules import Rating
 
 
 def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:

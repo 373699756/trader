@@ -10,6 +10,7 @@ from datetime import date, datetime, time
 from typing import Protocol, cast
 from zoneinfo import ZoneInfo
 
+from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.feature_contracts import FeatureValue, FeatureVectorManifest
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredStockEvaluation, Strategy
@@ -18,7 +19,6 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredSelectionRequest,
     select_scored,
 )
-from trader.recommendation.domain.evidence.review import RiskRule
 from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
 from trader.training.evaluation.domain.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest
 from trader.training.evaluation.domain.models import (

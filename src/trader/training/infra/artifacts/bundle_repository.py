@@ -12,8 +12,8 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import content_hash
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.artifacts.contracts import TrainedProfileContract
 
 _ACTIVE_BUNDLE_NAME = "active-bundle.json"

@@ -52,7 +52,9 @@ class QualityAssessment:
         expected_severity = (
             MissingSeverity.CRITICAL
             if any(item.severity is MissingSeverity.CRITICAL for item in self.missing_fields)
-            else MissingSeverity.GENERAL if self.missing_fields else None
+            else MissingSeverity.GENERAL
+            if self.missing_fields
+            else None
         )
         if self.highest_severity is not expected_severity:
             raise ValueError("quality severity must match missing fields")

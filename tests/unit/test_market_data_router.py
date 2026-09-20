@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
 from trader.infra.market_data.service.router import RouteOutcome, VendorRoute, VendorSeverity, route
+from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
 
 
 def test_route_prefers_required_success_after_optional_failure() -> None:

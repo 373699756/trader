@@ -9,17 +9,34 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from typing import Protocol
 
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.long_runtime import LongRuntime
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
+    SCORED_STRATEGIES,
+    CandidatePlanSet,
+)
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
+    CandidateFilteringPort,
+    CandidateFilteringService,
+)
+from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.local_score.base_scoring import (
+    LocalScoringContext,
+    LocalScoringPort,
+    LocalScoringService,
+)
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     build_first_nine_stage_snapshots,
     build_pending_pipeline,
     build_supply_status,
     update_supply_status_decision,
 )
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
+from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
-from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
@@ -32,32 +49,15 @@ from trader.recommendation.application.ports.runtime import (
     ResearchIntent,
 )
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
-from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
-    CandidateFilteringPort,
-    CandidateFilteringService,
-)
-from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
-    SCORED_STRATEGIES,
-    CandidatePlanSet,
-)
-from trader.recommendation.application.pipeline.local_score.base_scoring import (
-    LocalScoringContext,
-    LocalScoringPort,
-    LocalScoringService,
-)
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
 from trader.recommendation.application.runtime.cadence import PipelineTask, task_execution_budget_seconds
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStage,
     SourceHealth,
     StageReasonAggregate,
 )
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,

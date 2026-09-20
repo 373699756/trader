@@ -9,26 +9,26 @@ import pytest
 
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.pipeline.quality_check.pipeline_status import build_supply_status
-from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
-from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
-from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
+from trader.bootstrap import _recommendation_policy
+from trader.infra.settings import load_strategy_settings
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredProjectionInputs,
     build_scored_hybrid,
     build_scored_local,
 )
-from trader.bootstrap import _recommendation_policy
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
+from trader.recommendation.application.pipeline.quality_check.pipeline_status import build_supply_status
+from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
+from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import (
     LEGACY_EXPOSURE_CONTRACT,
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
-from trader.infra.settings import load_strategy_settings
 from trader.training.evaluation.application.research_audit import build_committed_research_audit
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

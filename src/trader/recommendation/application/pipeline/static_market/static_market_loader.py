@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
+from trader.recommendation.application.pipeline.stage_output import stage_output
 from trader.recommendation.application.pipeline.static_market.static_snapshot import StaticMarketSnapshot
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, SourceHealth, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot

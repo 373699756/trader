@@ -10,7 +10,6 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Literal
 
-from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.application.pipeline.quality_check.missing_value_policy import (
     MissingValuePolicy,
     assess_missing_values,
@@ -20,10 +19,15 @@ from trader.recommendation.application.pipeline.stage_output import (
     require_previous_stage,
     stage_output,
 )
+from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.evidence.quality import QualityAssessment, QualityState
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
-from trader.recommendation.domain.publication.models import ScoredDisposition, ScoredSelectionResult, ScoredStockEvaluation
+from trader.recommendation.domain.publication.models import (
+    ScoredDisposition,
+    ScoredSelectionResult,
+    ScoredStockEvaluation,
+)
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
@@ -331,12 +335,8 @@ def assess_quality_stage(
     reasons = tuple(
         reason
         for reason in (
-            StageReasonAggregate("quality_pending", "quality pending", pending, Severity.WARNING)
-            if pending
-            else None,
-            StageReasonAggregate("quality_invalid", "quality invalid", failed, Severity.ERROR)
-            if failed
-            else None,
+            StageReasonAggregate("quality_pending", "quality pending", pending, Severity.WARNING) if pending else None,
+            StageReasonAggregate("quality_invalid", "quality invalid", failed, Severity.ERROR) if failed else None,
         )
         if reason is not None
     )

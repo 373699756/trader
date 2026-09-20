@@ -7,7 +7,8 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
-from trader.recommendation.domain.market.factors import band_score, clamp, weighted_score
+from trader.recommendation.domain.candidate.composition import LocalScoreResult, compose
+from trader.recommendation.domain.market.factors import clamp, weighted_score
 from trader.recommendation.domain.market.models import (
     Board,
     BoardPopulation,
@@ -35,7 +36,6 @@ from trader.recommendation.domain.scoring.scoring_calculations import (
     candidate_fields,
     supported_weight,
 )
-from trader.recommendation.domain.candidate.composition import LocalScoreResult, compose
 
 BOARD_SCHEMA_VERSION = "board_cross_section_score_first"
 

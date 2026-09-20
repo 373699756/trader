@@ -12,6 +12,12 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.infra.market_data.history.daily_history_cache import HistoryCache
+from trader.infra.market_data.history.history import DailyBar
+from trader.infra.market_data.normalization.features import StandardizedFeatureBuilder
+from trader.infra.market_data.service.gateway import MarketDataGateway
+from trader.infra.market_data.service.market_cache_identity import _quote_version
+from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,
@@ -21,12 +27,6 @@ from trader.recommendation.domain.market.models import (
 )
 from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
-from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.history.history import DailyBar
-from trader.infra.market_data.normalization.features import StandardizedFeatureBuilder
-from trader.infra.market_data.service.gateway import MarketDataGateway
-from trader.infra.market_data.service.market_cache_identity import _quote_version
-from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
 
 _AUXILIARY_ACTION_RESTRICTIONS = frozenset(
     {"history_data_degraded", "intraday_data_degraded", "research_data_degraded"}

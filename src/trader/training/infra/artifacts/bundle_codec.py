@@ -8,9 +8,6 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import content_hash
 from trader.infra.artifacts.fields import (
     is_boolean,
@@ -19,6 +16,9 @@ from trader.infra.artifacts.fields import (
     is_non_empty_text,
     is_sha256_text,
 )
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.training.infra.artifacts.contracts import TrainedProfileContract
 
 _MODEL_FIELDS = {

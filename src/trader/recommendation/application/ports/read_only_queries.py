@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal, Protocol
 
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
     PipelineStageSnapshot,
     RecommendationPipelineStatus,
 )
+from trader.recommendation.domain.publication.models import Strategy
 
 InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty", "not_ready"]
 

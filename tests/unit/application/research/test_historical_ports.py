@@ -250,5 +250,5 @@ def _consume_port(port: HistoricalDataPlaneReadPort) -> tuple[str, ...]:
 
 
 def test_two_phase_port_contract_can_be_implemented_without_a_provider_dependency() -> None:
-    assert callable(getattr(HistoricalDataPlaneReadPort, "snapshot"))
+    assert callable(HistoricalDataPlaneReadPort.snapshot)
     assert _consume_port(_PortDouble()) == ("300001", "600001", "688001")

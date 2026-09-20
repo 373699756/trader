@@ -17,51 +17,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
-from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile, ModelScoringPort
-from trader.recommendation.application.ports.scoring import TomorrowNativeInput
-from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
-    SCORED_STRATEGIES,
-    CandidatePlanningContext,
-    CandidatePlanSet,
-    build_candidate_plans,
-)
-from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.local_score.model_scoring import (
-    ProductionModelScoringService,
-    SharedModelFeatureCache,
-)
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
-    ScoredLocalProjection,
-    ScoredProjectionInputs,
-    build_scored_hybrid,
-    build_scored_local,
-)
-from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.infra.settings.recommendation_policy import _recommendation_policy
-from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
-from trader.recommendation.domain.publication.decision_identity import (
-    CommittedDecisionRecord,
-    DecisionItem,
-    DecisionOverlay,
-    DecisionQuote,
-    ScoredDecision,
-)
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.recommendation.domain.scoring.scoring import score_board_strategy
-from trader.recommendation.domain.selection.scored_selection import (
-    ScoredCandidatePlan,
-    ScoredCandidateStageCounts,
-)
-from trader.recommendation.domain.candidate.composition import LocalScoreResult
-from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.infra.market_data.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
 from trader.infra.market_data.normalization.merge import (
     merge_market_observations,
@@ -70,9 +27,53 @@ from trader.infra.market_data.normalization.merge import (
 )
 from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.service.observations import SourceObservation
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
+from trader.infra.settings.recommendation_policy import _recommendation_policy
+from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
+    SCORED_STRATEGIES,
+    CandidatePlanningContext,
+    CandidatePlanSet,
+    build_candidate_plans,
+)
+from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+    ScoredLocalProjection,
+    ScoredProjectionInputs,
+    build_scored_hybrid,
+    build_scored_local,
+)
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.pipeline.local_score.model_scoring import (
+    ProductionModelScoringService,
+    SharedModelFeatureCache,
+)
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile, ModelScoringPort
+from trader.recommendation.application.ports.scoring import TomorrowNativeInput
+from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.domain.candidate.composition import LocalScoreResult
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
+from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
+from trader.recommendation.domain.publication.decision_identity import (
+    CommittedDecisionRecord,
+    DecisionItem,
+    DecisionOverlay,
+    DecisionQuote,
+    ScoredDecision,
+)
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.domain.scoring.scoring import score_board_strategy
+from trader.recommendation.domain.selection.scored_selection import (
+    ScoredCandidatePlan,
+    ScoredCandidateStageCounts,
+)
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.evaluation.application.scoring_hot_path_baseline import (
     ScoringHotPathBaseline,
     ScoringHotPathEquivalence,
@@ -81,7 +82,6 @@ from trader.training.evaluation.application.scoring_hot_path_baseline import (
     build_scoring_hot_path_baseline,
 )
 from trader.web import create_app
-from trader.http_api.route_services import UnifiedWebServices
 
 
 @dataclass(frozen=True)
@@ -381,8 +381,7 @@ def _operations(
         "candidate_union_projection": candidate_union_projection,
         "board_local_scoring": lambda: tuple(active_score(Strategy.TOMORROW, item) for item in candidates),
         "two_strategy_board_scoring": lambda: tuple(
-            tuple(active_score(strategy, item) for strategy in (Strategy.TOMORROW, Strategy.D25))
-            for item in candidates
+            tuple(active_score(strategy, item) for strategy in (Strategy.TOMORROW, Strategy.D25)) for item in candidates
         ),
         "three_board_wall_clock": lambda: tuple(
             tuple(active_score(Strategy.TOMORROW, item) for item in candidates if item.quote.board is board)

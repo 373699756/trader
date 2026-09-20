@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
+from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy
-from trader.recommendation.domain.evidence.review import RiskRule
 
 _TEST_DIRECTORY_MARKERS = frozenset({"unit", "component", "integration", "contract", "performance", "js"})
 

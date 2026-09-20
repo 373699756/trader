@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Literal
 
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 from trader.recommendation.domain.publication.models import ScoredDisposition

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DecisionItemView, DecisionView
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (
     DecisionEventPayload,
     DecisionReplacementPatch,
@@ -12,8 +11,7 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
     ResyncEventPayload,
     UnifiedPublishedEvent,
 )
-from trader.recommendation.domain.publication.decision_identity import DecisionItem, DecisionQuote
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DecisionItemView, DecisionView
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
@@ -21,6 +19,8 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
+from trader.recommendation.domain.publication.decision_identity import DecisionItem, DecisionQuote
+from trader.recommendation.domain.publication.models import Strategy
 
 
 def serialize_decision_view(view: DecisionView) -> dict[str, object]:

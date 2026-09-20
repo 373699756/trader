@@ -19,20 +19,6 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheIdentity
-from trader.recommendation.application.ports.market_data_repository import (
-    DataPlaneConflictError,
-    DataPlaneUnavailableError,
-    HistoricalFeatureRecord,
-)
-from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
-from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
-    BoundedExecutor,
-    borrow_executor,
-    submit_or_run_inline,
-)
-from trader.training.evaluation.domain.models import OutcomeBar
 from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,
@@ -49,6 +35,20 @@ from trader.infra.market_data.service.market_cache_identity import (
 )
 from trader.infra.market_data.service.market_feature_cache_entries import _HistoryEntry
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
+from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
+from trader.recommendation.application.ports.market_data_repository import (
+    DataPlaneConflictError,
+    DataPlaneUnavailableError,
+    HistoricalFeatureRecord,
+)
+from trader.recommendation.application.runtime.workers import (
+    BorrowExecutorOptions,
+    BoundedExecutor,
+    borrow_executor,
+    submit_or_run_inline,
+)
+from trader.training.evaluation.domain.models import OutcomeBar
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

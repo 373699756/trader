@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, require_previous_stage, stage_output
+from trader.recommendation.application.pipeline.stage_output import (
+    PipelineStageOutput,
+    require_previous_stage,
+    stage_output,
+)
 from trader.recommendation.domain.candidate.filters import HardFilterPolicy, apply_filters, level_two_filter_rules
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot

@@ -145,6 +145,7 @@ def _require_shanghai(value: datetime, label: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != "Asia/Shanghai":
         raise ValueError(f"{label} must use Asia/Shanghai")
 
+
 PipelineStageState = Literal["pending", "running", "completed", "degraded", "not_applicable"]
 PipelineStageKey = Literal[
     "input_readiness",

@@ -13,10 +13,10 @@ from typing import cast
 import polars as pl
 
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.recommendation.domain.market.models import Board, MarketQuote
-from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.infra.market_data.normalization.merge_quote import observation_order, source_name
 from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.recommendation.domain.candidate.filters import board_for_code
+from trader.recommendation.domain.market.models import Board, MarketQuote
 
 _QUOTE_FIELDS = (
     "name",

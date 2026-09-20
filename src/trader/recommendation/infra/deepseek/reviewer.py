@@ -10,15 +10,16 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.recommendation.application.ports.json_values import JsonObject
+from trader.infra.settings import DeepSeekSettings
 from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError
-from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     ReviewCandidateContext,
     ReviewOutcome,
 )
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion, BudgetBatchRequest
 from trader.recommendation.infra.deepseek.cache import ReviewCache
@@ -44,7 +45,6 @@ from trader.recommendation.infra.deepseek.schema import (
     build_review_manifest_hash,
     review_cache_key,
 )
-from trader.infra.settings import DeepSeekSettings
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 

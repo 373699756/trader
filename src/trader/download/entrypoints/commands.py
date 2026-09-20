@@ -46,12 +46,10 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
     if command == "download":
         return run_download(repository_root)
     if command == "history-automation-status":
-        from trader.download.infra.history_automation_status import read_history_automation_status
         from trader.download.entrypoints.history_automation_projection import project_history_automation_status
+        from trader.download.infra.history_automation_status import read_history_automation_status
 
-        automation_status = read_history_automation_status(
-            repository_root / "data/history/baostock", _shanghai_now()
-        )
+        automation_status = read_history_automation_status(repository_root / "data/history/baostock", _shanghai_now())
         print(
             json.dumps(
                 project_history_automation_status(automation_status),
@@ -62,6 +60,7 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         return 0
     if command != "scheduled-history-maintenance" or config_path is None:
         raise ValueError(f"unsupported download command: {command}")
+    from trader.download.entrypoints.history_automation_projection import project_history_automation_run_status
     from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
     from trader.download.infra.history_archive_sync import run_history_sync
     from trader.download.infra.history_maintenance_runner import (
@@ -69,7 +68,6 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         RotatingHistoryAutomationLog,
         run_scheduled_history_maintenance,
     )
-    from trader.download.entrypoints.history_automation_projection import project_history_automation_run_status
     from trader.infra.settings import load_runtime_settings
 
     runtime = load_runtime_settings(config_path)

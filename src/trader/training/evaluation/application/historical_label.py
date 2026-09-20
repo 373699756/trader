@@ -21,9 +21,7 @@ class HistoricalLabelPreregistrationService:
         self._metadata = metadata
 
     def execute(self) -> HistoricalLabelPreregistrationBatch:
-        values = tuple(
-            self._metadata.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")
-        )
+        values = tuple(self._metadata.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25"))
         return preregister_historical_labels(values)
 
 

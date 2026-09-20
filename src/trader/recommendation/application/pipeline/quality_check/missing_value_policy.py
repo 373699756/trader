@@ -49,9 +49,7 @@ def assess_missing_values(feature: FeatureSnapshot, policy: MissingValuePolicy) 
     return QualityAssessment(
         code=feature.quote.code,
         missing_fields=missing,
-        highest_severity=(
-            MissingSeverity.CRITICAL if critical else MissingSeverity.GENERAL if missing else None
-        ),
+        highest_severity=(MissingSeverity.CRITICAL if critical else MissingSeverity.GENERAL if missing else None),
         quality_penalty=penalty,
         model_input_eligible=model_input_eligible,
         state=(QualityState.CRITICAL_MISSING if critical else QualityState.DEGRADED if missing else QualityState.READY),

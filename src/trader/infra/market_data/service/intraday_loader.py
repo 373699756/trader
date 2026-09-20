@@ -14,14 +14,6 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheIdentity
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
-    WorkerExecutor,
-    borrow_executor,
-    submit_or_run_inline,
-)
-from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,
@@ -30,6 +22,14 @@ from trader.infra.market_data.service.market_cache_identity import (
 )
 from trader.infra.market_data.service.market_feature_cache_entries import _IntradayEntry
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
+from trader.recommendation.application.runtime.workers import (
+    BorrowExecutorOptions,
+    WorkerExecutor,
+    borrow_executor,
+    submit_or_run_inline,
+)
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

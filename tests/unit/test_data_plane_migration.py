@@ -3,7 +3,11 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from trader.recommendation.infra.persistence.data_plane_sqlite import SCHEMA_VERSION, connection_scope, initialize_database
+from trader.recommendation.infra.persistence.data_plane_sqlite import (
+    SCHEMA_VERSION,
+    connection_scope,
+    initialize_database,
+)
 
 
 def test_initialize_database_sets_schema_to_current_version(tmp_path: Path) -> None:

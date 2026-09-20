@@ -8,12 +8,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
-from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
-from trader.recommendation.domain.publication.models import RecommendationAction, ScoredDisposition, ScoredStockEvaluation
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
     PipelineFacet,
@@ -31,6 +28,13 @@ from trader.recommendation.domain.evidence.pipeline import (
     SourceHealthState,
     StageReasonAggregate,
     StageState,
+)
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
+from trader.recommendation.domain.publication.models import (
+    RecommendationAction,
+    ScoredDisposition,
+    ScoredStockEvaluation,
 )
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,

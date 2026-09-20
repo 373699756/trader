@@ -14,17 +14,6 @@ from typing import Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
-from trader.recommendation.application.ports.market_data_repository import (
-    DataPlaneConflictError,
-    DataPlaneRecoverySummary,
-    DataPlaneUnavailableError,
-    SecurityMasterRecord,
-    SourceCursorRecord,
-)
-from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
-from trader.recommendation.application.runtime.schedule import shanghai_now
-from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
-from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.providers.baostock_industry import (
@@ -54,6 +43,17 @@ from trader.infra.market_data.service.trading_calendar_state_codec import parse_
 from trader.infra.market_data.service.trading_calendar_state_codec import (
     trading_calendar_cursor_from_observations as _trading_calendar_cursor_from_observations,
 )
+from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
+from trader.recommendation.application.ports.market_data_repository import (
+    DataPlaneConflictError,
+    DataPlaneRecoverySummary,
+    DataPlaneUnavailableError,
+    SecurityMasterRecord,
+    SourceCursorRecord,
+)
+from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
+from trader.recommendation.domain.market.models import ModelIndustryReference
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")

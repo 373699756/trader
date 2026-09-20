@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DESIGN = ROOT / "docs" / "02_工程设计.md"
 STRATEGY = ROOT / "docs" / "01_评分逻辑.md"
-MARKET_PORT = ROOT / "src" / "trader" / "application" / "ports" / "market.py"
+MARKET_PORT = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data.py"
 
 
 def test_authoritative_contract_freezes_data_plane_port_lineage_and_coverage() -> None:

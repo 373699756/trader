@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
+from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -59,9 +59,7 @@ def test_v2_router_delegates_both_head_capabilities() -> None:
 
 
 def test_v3_router_delegates_two_independent_head_capabilities() -> None:
-    capabilities = {
-        strategy: _ScoringCapability("v3", strategy) for strategy in (Strategy.TOMORROW, Strategy.D25)
-    }
+    capabilities = {strategy: _ScoringCapability("v3", strategy) for strategy in (Strategy.TOMORROW, Strategy.D25)}
     router = ModelScoringRouter("v3", capabilities)
 
     for strategy in capabilities:

@@ -6,11 +6,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
+from trader.infra.settings.models import DeepSeekSettings
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
-from trader.infra.settings.models import DeepSeekSettings
 
 
 @dataclass(frozen=True)

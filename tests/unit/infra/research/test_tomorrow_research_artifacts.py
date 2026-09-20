@@ -205,6 +205,7 @@ def test_single_invocation_continues_all_available_stages_and_seals_terminal_doc
     assert next_result.next_stage == "development_training"
     assert (run_root / "report.json").is_file()
 
+
 def test_repository_stops_before_committing_when_host_disk_is_below_30gb(tmp_path) -> None:
     repository = TomorrowResearchArtifactRepository(tmp_path, available_disk_gb=lambda _path: 29.999)
     handoff = _handoff()

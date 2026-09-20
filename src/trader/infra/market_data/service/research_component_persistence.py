@@ -10,17 +10,6 @@ from datetime import datetime
 from threading import Lock
 from typing import Protocol, cast
 
-from trader.recommendation.application.ports.market_data_repository import (
-    DataPlaneConflictError,
-    DataPlaneUnavailableError,
-    RiskEvidenceRecord,
-    SourceCursorRecord,
-)
-from trader.recommendation.domain.market.research import (
-    ResearchAnnouncement,
-    ResearchObservation,
-    corporate_risk_facts_from_announcements,
-)
 from trader.infra.market_data.providers.cninfo import (
     CNINFO_ANNOUNCEMENT_PREFIX,
     CNINFO_COMPONENT_PREFIX,
@@ -38,6 +27,17 @@ from trader.infra.market_data.service.research_load_status import (
     ResearchComponentStatus,
     ResearchLoaderStatus,
     research_component_statuses,
+)
+from trader.recommendation.application.ports.market_data_repository import (
+    DataPlaneConflictError,
+    DataPlaneUnavailableError,
+    RiskEvidenceRecord,
+    SourceCursorRecord,
+)
+from trader.recommendation.domain.market.research import (
+    ResearchAnnouncement,
+    ResearchObservation,
+    corporate_risk_facts_from_announcements,
 )
 
 _LOGGER = logging.getLogger(__name__)

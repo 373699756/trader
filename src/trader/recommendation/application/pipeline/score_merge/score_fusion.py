@@ -7,14 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredLocalProjection,
     build_scored_hybrid,
     validate_review_manifests,
 )
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.evidence.review import DeepSeekReview
+from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 
 
 class ScoreFusionPort(Protocol):

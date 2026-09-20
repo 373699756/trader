@@ -13,6 +13,29 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.infra.market_data.history.history import (
+    DailyBar,
+    HistoryContext,
+    HistoryProfile,
+    require_qfq_history,
+    return_pct,
+    summarize_history_metrics,
+)
+from trader.infra.market_data.normalization.feature_math import (
+    _CROSS_SECTION_FIELDS,
+    _breakout_score,
+    _close_location,
+    _if_present,
+    _industry_scores,
+    _ma_deviation_inverse,
+    _ma_position,
+    _missing_quote_fields,
+    _optional_band_score,
+    _price_volume_confirmation,
+    _slope_score,
+    _structured_evidence,
+)
+from trader.infra.market_data.normalization.feature_risks import extreme_structure_risks
 from trader.recommendation.domain.market.factors import clamp, percentile_scores_with_metadata, weighted_score
 from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
@@ -42,29 +65,6 @@ from trader.recommendation.domain.market.tail import (
     tail_signal_evidence,
 )
 from trader.recommendation.domain.risk.downside import derive_entry_setup_values
-from trader.infra.market_data.history.history import (
-    DailyBar,
-    HistoryContext,
-    HistoryProfile,
-    require_qfq_history,
-    return_pct,
-    summarize_history_metrics,
-)
-from trader.infra.market_data.normalization.feature_math import (
-    _CROSS_SECTION_FIELDS,
-    _breakout_score,
-    _close_location,
-    _if_present,
-    _industry_scores,
-    _ma_deviation_inverse,
-    _ma_position,
-    _missing_quote_fields,
-    _optional_band_score,
-    _price_volume_confirmation,
-    _slope_score,
-    _structured_evidence,
-)
-from trader.infra.market_data.normalization.feature_risks import extreme_structure_risks
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 

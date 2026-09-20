@@ -8,7 +8,11 @@ import pytest
 
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline
-from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
+from trader.recommendation.application.runtime.supervisor import (
+    RuntimeSupervisor,
+    RuntimeSupervisorConfig,
+    scheduler_interval_seconds,
+)
 
 
 def test_supervisor_initializes_starts_ticks_and_stops() -> None:

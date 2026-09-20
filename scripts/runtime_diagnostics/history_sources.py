@@ -19,11 +19,11 @@ from .reporting import emit_report, summarize_latency_ms
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord  # noqa: E402
 from trader.infra.market_data.history.history import DailyBar  # noqa: E402
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient  # noqa: E402
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
 from trader.infra.market_data.providers.tencent import TencentClient  # noqa: E402
+from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord  # noqa: E402
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")

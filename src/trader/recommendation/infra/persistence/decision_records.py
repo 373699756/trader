@@ -22,7 +22,10 @@ from trader.recommendation.application.ports.decision_records import (
 )
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
+from trader.recommendation.infra.persistence.decision_record_codec import (
+    committed_record_bytes,
+    committed_record_from_bytes,
+)
 
 FaultInjector = Callable[[str], None]
 _MAX_RECOVERY_PAYLOAD_BYTES = 8 * 1024 * 1024

@@ -17,16 +17,8 @@ from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.cache_contracts import CacheIdentity
-from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
-    WorkerExecutor,
-    borrow_executor,
-    submit_or_run_inline,
-)
-from trader.recommendation.domain.market.research import ResearchObservation
 from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
+from trader.infra.cache_contracts import CacheIdentity
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.service.market_cache_identity import (
     _add_action_restriction,
@@ -58,6 +50,14 @@ from trader.infra.market_data.service.research_load_status import (
     ResearchLoaderStatus,
     ResearchLoadReport,
 )
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
+from trader.recommendation.application.runtime.workers import (
+    BorrowExecutorOptions,
+    WorkerExecutor,
+    borrow_executor,
+    submit_or_run_inline,
+)
+from trader.recommendation.domain.market.research import ResearchObservation
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

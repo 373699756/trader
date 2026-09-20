@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, DecisionStage, ScoredDecision
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 
 
 @dataclass(frozen=True)

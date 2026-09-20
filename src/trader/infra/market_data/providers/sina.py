@@ -16,14 +16,18 @@ import requests
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.recommendation.application.runtime.workers import BorrowExecutorOptions, borrow_executor, submit_or_run_inline
-from trader.recommendation.domain.market.models import MarketQuote
 from trader.infra.market_data.normalization.normalize import (
     MarketQuoteInput,
     build_market_quote,
     normalize_quotes,
     to_float,
 )
+from trader.recommendation.application.runtime.workers import (
+    BorrowExecutorOptions,
+    borrow_executor,
+    submit_or_run_inline,
+)
+from trader.recommendation.domain.market.models import MarketQuote
 
 SessionFactory = Callable[[], requests.Session]
 COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"

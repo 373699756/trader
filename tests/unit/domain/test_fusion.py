@@ -4,9 +4,6 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trader.recommendation.domain.market.models import Evidence
-from trader.recommendation.domain.publication.models import FusionMode
-from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
@@ -15,6 +12,9 @@ from trader.recommendation.domain.evidence.review import (
     RiskFact,
     RiskRule,
 )
+from trader.recommendation.domain.market.models import Evidence
+from trader.recommendation.domain.publication.models import FusionMode
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
 from trader.recommendation.domain.risk.rules import deepseek_risk_rule_code
 
 DIMENSION_WEIGHTS = {name: 0.2 for name in DIMENSION_NAMES}

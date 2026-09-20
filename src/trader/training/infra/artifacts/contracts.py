@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 from trader.recommendation.domain.market.feature_contracts import FeatureVectorManifest
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 
 TrainedTargetColumn = Literal["target_t1", "target_d25_aggregate"]
 

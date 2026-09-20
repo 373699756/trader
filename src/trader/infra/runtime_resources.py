@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
-from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
+from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 
 
 @dataclass(frozen=True)

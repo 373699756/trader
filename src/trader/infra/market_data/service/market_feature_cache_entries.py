@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from trader.infra.market_data.history.history import DailyBar, HistoryContext
 from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
-from trader.infra.market_data.history.history import DailyBar, HistoryContext
 
 
 @dataclass(frozen=True)

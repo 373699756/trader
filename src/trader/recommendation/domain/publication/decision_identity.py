@@ -11,9 +11,9 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
+from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 
 DecisionStage = Literal["local", "hybrid"]
 CommitKind = Literal["scheduled", "checkpoint_recovery", "close_fallback"]

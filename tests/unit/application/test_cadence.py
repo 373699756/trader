@@ -21,7 +21,6 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.schedule import SHANGHAI, SchedulePoint
 
 
-
 def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strategies() -> None:
     restarted = datetime(2026, 7, 16, 14, 50, 1, tzinfo=SHANGHAI)
     planner = CadencePlanner(_policy(), started_at=restarted)
@@ -37,7 +36,6 @@ def test_restart_after_afternoon_cutoff_only_attempts_checkpoint_eligible_strate
     assert status.schedule_points[SchedulePointKey("2026-07-16", SchedulePoint.DEEPSEEK_CUTOFF, "-")].status is (
         SchedulePointStatus.MISSED
     )
-
 
 
 @pytest.mark.parametrize(

@@ -16,37 +16,6 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from trader.recommendation.application.ports.market_data_repository import (
-    DataPlaneRecoverySummary,
-    DataPlaneUnavailableError,
-    HistoricalFeatureRecord,
-    RiskEvidenceRecord,
-    SecurityMasterRecord,
-    SourceCursorRecord,
-)
-from trader.recommendation.application.ports.market_data import (
-    MarketDataDeadlineExceededError,
-    MarketDataFailedError,
-    MarketDataNoDataError,
-    MarketDataUnavailableError,
-)
-from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.source_lanes import (
-    LatestRequestLane,
-    SourceLaneRegistry,
-    SourceRequestSupersededError,
-)
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.recommendation.domain.market.eligibility import IssuerEligibilityRegistryStatus
-from trader.recommendation.domain.market.models import (
-    Board,
-    Evidence,
-    FeatureSnapshot,
-    MarketQuote,
-)
-from trader.recommendation.domain.market.news import NewsSignalPolicy
-from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
-from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
@@ -87,8 +56,39 @@ from trader.infra.market_data.service.tushare_reference_loader import (
     ReferenceLoadRequest,
     _ReferenceLoadOptions,
 )
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
+from trader.recommendation.application.ports.market_data import (
+    MarketDataDeadlineExceededError,
+    MarketDataFailedError,
+    MarketDataNoDataError,
+    MarketDataUnavailableError,
+)
+from trader.recommendation.application.ports.market_data_repository import (
+    DataPlaneRecoverySummary,
+    DataPlaneUnavailableError,
+    HistoricalFeatureRecord,
+    RiskEvidenceRecord,
+    SecurityMasterRecord,
+    SourceCursorRecord,
+)
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.source_lanes import (
+    LatestRequestLane,
+    SourceLaneRegistry,
+    SourceRequestSupersededError,
+)
+from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityRegistryStatus
+from trader.recommendation.domain.market.models import (
+    Board,
+    Evidence,
+    FeatureSnapshot,
+    MarketQuote,
+)
+from trader.recommendation.domain.market.news import NewsSignalPolicy
+from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
+from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 _SHANGHAI = ZoneInfo("Asia/Shanghai")

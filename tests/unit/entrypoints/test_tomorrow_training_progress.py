@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingPartitionValidationProgress,
     TomorrowTrainingProgress,
 )
+from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 
 
 class _Clock:
