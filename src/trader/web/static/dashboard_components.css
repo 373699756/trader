@@ -539,13 +539,6 @@ thead th:nth-child(2) {
   padding: 14px 16px 32px;
 }
 
-.observation-summary-cards {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(150px, 1fr));
-  gap: 8px;
-}
-
-.observation-card,
 .observation-funnel,
 .observation-errors {
   min-width: 0;
@@ -555,53 +548,12 @@ thead th:nth-child(2) {
   background: var(--surface);
 }
 
-.observation-card-label,
 .observation-funnel header span,
 .observation-errors header span {
   display: block;
   color: var(--muted);
   font-size: 10px;
   line-height: 15px;
-}
-
-.observation-card strong {
-  display: block;
-  margin-top: 5px;
-  color: var(--text);
-  font-size: 15px;
-  line-height: 21px;
-  overflow-wrap: anywhere;
-}
-
-.observation-card small {
-  display: block;
-  margin-top: 6px;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 16px;
-  overflow-wrap: anywhere;
-}
-
-.data-status-card .input-quality-live {
-  display: block;
-  color: var(--text);
-  font-size: 13px;
-  line-height: 19px;
-}
-
-.data-status-card .input-quality-coverage {
-  display: block;
-  margin-top: 7px;
-  color: var(--blue);
-  font-size: 11px;
-}
-
-.data-status-card .input-quality-stages {
-  display: none;
-}
-
-.data-status-card small span {
-  display: block;
 }
 
 .observation-funnel,
@@ -619,8 +571,15 @@ thead th:nth-child(2) {
 }
 
 .observation-funnel > header strong {
-  color: var(--text);
-  font-size: 12px;
+  display: none;
+  /* The detailed funnel state is rendered in the stage body. */
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--blue);
+  background: var(--surface-raised);
+  font-size: 10px;
+  font-weight: 600;
 }
 
 .observation-errors > header b {
@@ -629,12 +588,24 @@ thead th:nth-child(2) {
 }
 
 .observation-stage-list {
+  position: relative;
   display: grid;
   gap: 5px;
   margin-top: 10px;
 }
 
+.observation-stage-list::before {
+  position: absolute;
+  top: 16px;
+  bottom: 16px;
+  left: 20px;
+  width: 1px;
+  background: var(--line-strong);
+  content: "";
+}
+
 .observation-stage {
+  position: relative;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   gap: 8px;
@@ -646,16 +617,40 @@ thead th:nth-child(2) {
   background: var(--surface-raised);
 }
 
+.observation-stage:not(:last-child)::after {
+  position: absolute;
+  bottom: -6px;
+  left: 13px;
+  width: 1px;
+  height: 5px;
+  background: var(--line-strong);
+  content: "";
+}
+
 .observation-stage[data-state="failed"] { border-left-color: var(--red); }
 .observation-stage[data-state="degraded"] { border-left-color: var(--amber); }
 .observation-stage[data-state="running"] { border-left-color: var(--blue); }
+.observation-stage[data-state="not_ready"] { border-left-color: var(--muted); }
 
 .observation-stage-index {
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
   color: var(--muted);
+  background: var(--surface-raised);
   font-size: 11px;
-  line-height: 18px;
+  line-height: 1;
   text-align: center;
 }
+
+.observation-stage[data-state="completed"] .observation-stage-index { border-color: #347354; color: var(--green); }
+.observation-stage[data-state="degraded"] .observation-stage-index { border-color: #876b2b; color: var(--amber); }
+.observation-stage[data-state="failed"] .observation-stage-index { border-color: #8b3f45; color: var(--red); }
+.observation-stage[data-state="running"] .observation-stage-index { border-color: #35668c; color: var(--blue); }
 
 .observation-stage-main {
   min-width: 0;
@@ -668,10 +663,43 @@ thead th:nth-child(2) {
   overflow-wrap: anywhere;
 }
 
-.observation-stage-main strong { color: var(--text); font-size: 12px; line-height: 17px; }
+.observation-stage-main strong { color: var(--text); font-size: 12px; line-height: 17px; letter-spacing: 0; }
 .observation-stage-main span { color: var(--muted); font-size: 10px; line-height: 15px; }
+.observation-stage-main strong { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.observation-stage-detail { display: none; }
+.observation-stage.is-expanded .observation-stage-detail { display: block; }
+.observation-stage-chevron {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--muted);
+  border-bottom: 1px solid var(--muted);
+  transform: rotate(45deg) translateY(-2px);
+  transition: transform 120ms ease;
+}
+.observation-stage.is-expanded .observation-stage-chevron { transform: rotate(225deg) translate(-1px, -1px); }
 .observation-stage-main small { margin-top: 2px; color: var(--amber); font-size: 10px; line-height: 15px; }
+.observation-stage-main small.observation-stage-facets { color: var(--blue); }
 .observation-stage-empty { padding: 20px 8px; color: var(--muted); text-align: center; font-size: 11px; }
+
+.observation-stage-errors {
+  display: grid;
+  gap: 3px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--line-strong);
+}
+
+.observation-stage-error {
+  display: grid;
+  gap: 1px;
+  padding-left: 7px;
+  border-left: 2px solid var(--amber);
+}
+
+.observation-stage-error[data-level="error"] { border-left-color: var(--red); }
+.observation-stage-error strong { color: var(--text); font-size: 10px; line-height: 14px; }
+.observation-stage-error span { color: var(--muted); font-size: 10px; line-height: 14px; }
 
 .drawer-header {
   min-height: 68px;

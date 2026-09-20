@@ -149,7 +149,7 @@ def _run(output_dir: Path) -> dict[str, object]:
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
         _wait(
-            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "— → — → —",
+            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "等待评分输入",
             "collecting funnel",
         )
         not_ready_summary = _execute(
@@ -390,12 +390,12 @@ def _run(output_dir: Path) -> dict[str, object]:
             and isinstance(not_ready_summary, dict)
             and bool(re.fullmatch(r"(?:\d+时 )?(?:\d+分 )?\d+秒", str(not_ready_summary.get("age"))))
             and not_ready_summary.get("source") == "腾讯行情"
-            and not_ready_summary.get("inputQuality") == "评分输入准备中"
-            and not_ready_summary.get("inputQualityMeta") == "行情 360 / 360 · 基础资料与历史待计算"
-            and "动态过滤 —→—" in str(not_ready_summary.get("inputStages"))
+            and not_ready_summary.get("inputQuality") == "数据待就绪"
+            and not_ready_summary.get("inputQualityMeta") == "行情 360 / 360 · 基础资料与历史待就绪"
+            and "动态过滤 待开始" in str(not_ready_summary.get("inputStages"))
             and "定向行情 360→360" in str(not_ready_summary.get("inputStages"))
-            and not_ready_summary.get("funnel") == "— → — → —"
-            and not_ready_summary.get("funnelMeta") == "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 已关闭 · 最高 —"
+            and not_ready_summary.get("funnel") == "等待评分输入"
+            and not_ready_summary.get("funnelMeta") == "等待本轮评分完成"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("publicationStatus") == "采集中"
             and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
@@ -406,11 +406,11 @@ def _run(output_dir: Path) -> dict[str, object]:
             )
             and "动态过滤 1000→500" in str(quality_summary.get("inputStages"))
             and "输入完整性 行情360/360 · 证券资料120/360 · 历史78/360" in str(quality_summary.get("inputStages"))
-            and quality_summary.get("funnel") == "56 → 2 → 2"
-            and "模型成本门 56→20" in str(quality_summary.get("funnelStages"))
-            and "动作门 达观察线2 · 达正式线0 · 可执行0 · 观察2 · 不可用54" in str(quality_summary.get("funnelStages"))
+            and quality_summary.get("funnel") == "评分链路已完成"
+            and "模型成本门" not in str(quality_summary.get("funnelStages"))
+            and "动作门 达观察线" not in str(quality_summary.get("funnelStages"))
             and quality_summary.get("scoreRange") == "评分范围 40.00–74.25 · 最高 74.25"
-            and quality_summary.get("funnelMeta") == "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 2 · 最高 74.25"
+            and quality_summary.get("funnelMeta") == "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2 · 最高 74.25"
             and quality_summary.get("source") == "腾讯行情"
             and all(_viewport_passed(viewport) for viewport in viewports)
         )

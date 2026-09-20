@@ -265,6 +265,7 @@ def _pipeline_stage_payload(stage: PipelineStageStatus) -> dict[str, object]:
         "threshold": stage.threshold,
         "facets": [_pipeline_facet_payload(value) for value in stage.facets],
         "reason_counts": [_pipeline_reason_payload(value) for value in stage.reason_counts],
+        "duration_ms": stage.duration_ms,
     }
 
 

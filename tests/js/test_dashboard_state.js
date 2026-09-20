@@ -367,6 +367,7 @@ function summaryFixture() {
     budgetMeta: { textContent: "" },
     inputQualityStrategy: { textContent: "" },
     inputQualityScoreTime: { textContent: "" },
+    dataStatusTopScores: { textContent: "" },
     publicationStatus: { textContent: "" },
     publicationMeta: { textContent: "" },
     topScoresStatus: { textContent: "" },
@@ -426,7 +427,7 @@ assert.strictEqual(
 );
 assert.strictEqual(
   state.decisionPipelineDetails(pipelineFixture),
-  "模型成本门 110→0（净效用-0.38%–-0.04%） ｜ 本地评分 110（39.18–65.42） ｜ DeepSeek 不适用 ｜ 融合评分 110（39.18–65.42） ｜ 动作门 达观察线2 · 达正式线0 · 可执行0 · 观察0 · 不可用110〔主要原因 成本后净超额未转正110〕 ｜ 最终入池 正式0 · 观察0",
+  "本地评分 110（39.18–65.42） ｜ DeepSeek 不适用 ｜ 融合评分 110（39.18–65.42）",
 );
 const summaryElements = summaryFixture();
 state.renderSummary(
@@ -496,9 +497,9 @@ assert.strictEqual(persistedPipelineElements.inputQualityStatus.textContent, "�
 assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("输入准备 5289→320"));
 assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("动态过滤 320→196"));
 assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("完整评分 125→110"));
-assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "110 → 0 → 0");
-assert.ok(persistedPipelineElements.funnelStages.textContent.includes("模型成本门 110→0"));
-assert.ok(persistedPipelineElements.funnelStages.textContent.includes("最终入池 正式0 · 观察0"));
+assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "评分链路已完成");
+assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("模型成本门"));
+assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("最终入池"));
 assert.strictEqual(persistedPipelineElements.funnelScoreRange.textContent, "评分范围 39.18–65.42 · 最高 65.42");
 state.renderSummary(
   summaryElements,
@@ -619,9 +620,9 @@ assert.strictEqual(
 );
 assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 282 只 · 必要资料缺失 240 只");
 assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
-assert.strictEqual(summaryElements.funnelStatus.textContent, "56 → 4 → 4");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完成");
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "评分范围 41.25–74.25 · 最高 74.25");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 2 · 观察 2 · 最高 74.25");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 56 · 动作合格 4 · 最终入池 4 · 正式 2 · 观察 2 · 最高 74.25");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
 assert.strictEqual(summaryElements.budgetMeta.textContent, "已用 / 剩余 · 上限 168 · 复核 0/0");
@@ -656,20 +657,20 @@ state.renderSummary(
     scheduler: { input_quality: {}, lanes: [{ strategy: "tomorrow", running: true, pending: true }] },
   },
 );
-assert.strictEqual(summaryElements.inputQualityStatus.textContent, "评分输入准备中");
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "数据待就绪");
 assert.strictEqual(
   summaryElements.inputQualityMeta.textContent,
-  "行情 360 / 360 · 基础资料与历史待计算",
+  "行情 360 / 360 · 基础资料与历史待就绪",
 );
-assert.strictEqual(summaryElements.funnelStatus.textContent, "— → — → —");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 已关闭 · 最高 —");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "等待评分输入");
+assert.strictEqual(summaryElements.funnelMeta.textContent, "等待本轮评分完成");
 assert.strictEqual(
   summaryElements.funnelStages.textContent,
-  "模型成本门 —→— ｜ 本地评分 — ｜ DeepSeek —→— ｜ 融合评分 — ｜ 动作门 达观察线— · 达正式线— · 可执行— · 观察— · 不可用— ｜ 最终入池 正式— · 观察—",
+  "评分链路尚未开始",
 );
 assert.strictEqual(
   summaryElements.inputQualityStages.textContent,
-  "动态过滤 —→— ｜ 板内总体 — ｜ 策略历史 —→— ｜ 模型输入 —→— ｜ 候选分 —→— ｜ 板内限额 —→— ｜ 定向行情 360→360 ｜ 输入完整性 行情—/— · 证券资料—/— · 历史—/— ｜ 完整评分 —→—",
+  "动态过滤 待开始 ｜ 板内总体 — ｜ 策略历史 待开始 ｜ 模型输入 待开始 ｜ 候选分 待开始 ｜ 板内限额 待开始 ｜ 定向行情 360→360 ｜ 输入完整性 行情待确认 · 证券资料待确认 · 历史待确认 ｜ 完整评分 待开始",
 );
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "采集中");

@@ -191,10 +191,12 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
         item.model_diagnostics.signal_score for item in projection.local.items if item.model_diagnostics is not None
     } == {0.0, 50.0, 100.0}
     assert build_supply_status(projection).primary_blocker == "no_positive_net_utility"
-    assert (
-        build_supply_status(projection, candidate_quote_eligible=0).pipeline.stage("candidate_refresh").output_count
-        == 0
-    )
+    complete_status = build_supply_status(projection)
+    assert complete_status.pipeline.stage("input_readiness").state == "completed"
+    assert complete_status.pipeline.stage("candidate_refresh").state == "completed"
+    degraded_status = build_supply_status(projection, candidate_quote_eligible=0)
+    assert degraded_status.pipeline.stage("candidate_refresh").state == "degraded"
+    assert degraded_status.pipeline.stage("candidate_refresh").output_count == 0
 
 
 def test_tomorrow_model_cross_section_excludes_hard_filter_rejections(

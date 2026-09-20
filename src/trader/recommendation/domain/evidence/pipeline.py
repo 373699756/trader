@@ -248,12 +248,15 @@ class PipelineStageStatus:
     threshold: float | None = None
     facets: tuple[PipelineFacet, ...] = ()
     reason_counts: tuple[PipelineReasonCount, ...] = ()
+    duration_ms: float | None = None
 
     def __post_init__(self) -> None:
         if self.input_count is not None and self.input_count < 0:
             raise ValueError("pipeline input count cannot be negative")
         if self.output_count is not None and self.output_count < 0:
             raise ValueError("pipeline output count cannot be negative")
+        if self.duration_ms is not None and (not math.isfinite(self.duration_ms) or self.duration_ms < 0.0):
+            raise ValueError("pipeline duration must be finite and non-negative")
         if self.input_count is not None and self.output_count is not None and self.output_count > self.input_count:
             raise ValueError("pipeline output count cannot exceed input")
         if self.threshold is not None and not math.isfinite(self.threshold):

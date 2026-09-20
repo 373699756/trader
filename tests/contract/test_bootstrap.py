@@ -405,7 +405,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
                     threshold=50.0,
                 ),
                 PipelineStageStatus("board_limit", "completed", 900, 360),
-                PipelineStageStatus("candidate_refresh", "completed", 360, 352),
+                PipelineStageStatus("candidate_refresh", "completed", 360, 352, duration_ms=128.5),
                 PipelineStageStatus(
                     "input_coverage",
                     "degraded",
@@ -481,6 +481,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
     assert stages["dynamic_filter"]["input_count"] == 5100
     assert stages["dynamic_filter"]["output_count"] == 4800
     assert stages["candidate_refresh"]["output_count"] == 352
+    assert stages["candidate_refresh"]["duration_ms"] == 128.5
     assert stages["evidence_score"]["output_count"] == 65
     assert stages["candidate_score"]["metric_ranges"] == [
         {"metric": "candidate_score", "minimum": 48.5, "maximum": 82.25}

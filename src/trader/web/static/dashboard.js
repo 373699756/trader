@@ -91,8 +91,8 @@
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
       "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta", "topScoresStatus", "topScoresMeta",
-      "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelScoreRange", "funnelMeta",
-      "inputQualityStrategy", "inputQualityScoreTime", "healthBadge", "errorDetailsButton",
+      "refreshButton", "dateSelect", "strategyDescription", "batchSummary", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelScoreRange", "funnelMeta",
+      "inputQualityStrategy", "inputQualityScoreTime", "dataStatusTopScores", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
@@ -130,6 +130,11 @@
         if (event.key === "Enter" || event.key === " ") selectRow(event);
       });
     });
+    els.observationStageList.addEventListener("click", toggleObservationStage);
+    els.observationStageList.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      toggleObservationStage(event);
+    });
     els.drawerClose.addEventListener("click", closeDrawer);
     els.drawerBackdrop.addEventListener("click", () => {
       closeDrawer();
@@ -149,6 +154,14 @@
     window.setInterval(() => {
       if (state.date && document.visibilityState !== "hidden") loadRecommendations("history_overlay");
     }, HISTORY_REFRESH_MS);
+  }
+
+  function toggleObservationStage(event) {
+    const stage = event.target.closest("[data-stage-toggle]");
+    if (!stage || !els.observationStageList.contains(stage)) return;
+    if (event.type === "keydown") event.preventDefault();
+    const expanded = stage.classList.toggle("is-expanded");
+    stage.setAttribute("aria-expanded", String(expanded));
   }
   async function initializeStrategy() {
     const selectionId = state.selectionSequence;

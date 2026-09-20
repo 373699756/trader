@@ -489,12 +489,20 @@ def _completed_pipeline(
     business_reason_counts, readiness_reason_counts = split_filter_reason_counts(
         quality.population_filter_reason_counts
     )
+    input_readiness_state: PipelineStageState = (
+        "degraded" if readiness_reason_counts else "completed"
+    )
+    candidate_refresh_state: PipelineStageState = (
+        "degraded"
+        if candidate_quote_eligible < stage_counts.candidate_limit_selected
+        else "completed"
+    )
     return RecommendationPipelineStatus(
         current_stage=current_stage,
         stages=(
             PipelineStageStatus(
                 "input_readiness",
-                "completed",
+                input_readiness_state,
                 stage_counts.issuer_eligible_population,
                 stage_counts.input_ready_population,
                 reason_counts=_reasons(_expand_reason_counts(readiness_reason_counts)),
@@ -571,7 +579,7 @@ def _completed_pipeline(
             ),
             PipelineStageStatus(
                 "candidate_refresh",
-                "degraded" if candidate_quote_eligible < stage_counts.candidate_limit_selected else "completed",
+                candidate_refresh_state,
                 stage_counts.candidate_limit_selected,
                 candidate_quote_eligible,
                 metric_ranges=_quote_age_ranges(projection),

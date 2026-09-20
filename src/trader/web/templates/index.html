@@ -43,6 +43,15 @@
     </header>
 
     <main class="workspace">
+      <section class="summary-band" aria-label="运行摘要">
+        <div id="inputQualityPanel" class="summary-item data-status-summary" role="status" aria-live="polite">
+          <span>数据状态</span>
+          <strong class="input-quality-live"><b id="inputQualityStrategy">明</b><i aria-hidden="true"> · </i><b id="quoteSource">行情暂不可用</b><i aria-hidden="true"> · </i><b id="quoteFreshness" data-age-state="unknown">● <time id="quoteAge">--</time></b><time id="quoteTime" class="visually-hidden">-</time><i aria-hidden="true"> · </i><span id="inputQualityScoreTime">等待本轮评分完成</span></strong>
+          <small id="dataStatusTopScores">评分待生成</small>
+        </div>
+        <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 · 上限 168 · 复核 0/0</small></div>
+        <div class="summary-item"><span>发布状态</span><strong id="publicationStatus">-</strong><small id="publicationMeta">等待当前策略快照</small></div>
+      </section>
       <section class="control-band" aria-label="策略和日期">
         <div class="strategy-choice">
           <nav class="strategy-tabs" role="tablist" aria-label="推荐策略" aria-describedby="strategyDescription">
@@ -53,6 +62,9 @@
           <p id="strategyDescription" class="strategy-description" aria-live="polite">
             尾盘策略 · 面向 T+1 · 14:50 冻结
           </p>
+          <div id="batchSummary" class="batch-summary" aria-live="polite">
+            当前策略：明 · 评分批次：待生成 · 总输入：— · 最终评分：— · 观察：— · 正式：— · 总耗时：—
+          </div>
           <nav id="longScopeTabs" class="long-scope-tabs" role="tablist" aria-label="长期研究类别" hidden>
             <button class="long-scope-tab is-active" type="button" role="tab" aria-selected="true" data-scope="chokepoint">卡脖子行业</button>
             <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="future_growth">高成长赛道</button>
@@ -145,32 +157,26 @@
         </button>
       </header>
       <div id="observationDrawerContent" class="drawer-content observation-drawer-content">
-        <section class="observation-summary-cards" aria-label="观察摘要">
-          <div id="inputQualityPanel" class="observation-card data-status-card" role="status" aria-live="polite">
-            <span class="observation-card-label">数据状态</span>
-            <strong class="input-quality-live"><b id="inputQualityStrategy">明</b><i aria-hidden="true"> · </i><b id="quoteSource">行情暂不可用</b><i aria-hidden="true"> · </i><b id="quoteFreshness" data-age-state="unknown">● <time id="quoteAge">--</time></b><time id="quoteTime" class="visually-hidden">-</time><i aria-hidden="true"> · </i><span id="inputQualityScoreTime">等待本轮评分完成</span></strong>
-            <span id="inputQualityStatus" class="input-quality-coverage">候选 / 历史 / 证券资料</span>
-            <div id="inputQualityStages" class="input-quality-stages">正在读取评分输入链路</div>
-            <small><span id="inputQualityMeta">数据更新时间待确认</span><span id="inputQualityBlockers">本轮阻断：待计算</span><span id="inputQualityDegradations">仅降级，不代表股票存在风险：待计算</span></small>
-          </div>
-          <div class="observation-card"><span class="observation-card-label">模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 · 上限 168 · 复核 0/0</small></div>
-          <div class="observation-card"><span class="observation-card-label">发布状态</span><strong id="publicationStatus">-</strong><small id="publicationMeta">等待当前策略快照</small></div>
-        </section>
         <section class="observation-funnel" aria-label="14层荐股评分链路">
-          <header><span>14 层荐股评分链路</span><strong id="funnelStatus">-</strong></header>
-          <div id="funnelStages" class="funnel-stages">正在读取评分与决策链路</div>
+          <header><span>14 层荐股评分链路</span><strong id="funnelStatus">等待评分输入</strong></header>
+          <div id="funnelStages" class="funnel-stages">输入、过滤、评分与发布按顺序执行</div>
           <div id="observationStageList" class="observation-stage-list"></div>
           <div id="funnelScoreRange" class="funnel-score-range">评分范围 —</div>
           <strong id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</strong>
-          <small id="topScoresMeta">最终评分 Top 3</small><small id="funnelMeta">完整评分 / 动作门 / 最终入池</small>
+          <small id="topScoresMeta">最终评分 Top 3</small><small id="funnelMeta">评分链路状态</small>
         </section>
         <section class="observation-errors" aria-label="运行异常">
-          <header><span>阶段异常与运行问题</span><b id="observationErrorCount">0</b></header>
+          <header><span>全局异常汇总</span><b id="observationErrorCount">0</b></header>
           <div id="observationErrorContent" class="error-drawer-content"></div>
         </section>
       </div>
     </aside>
 
+    <div id="inputQualityCompat" hidden aria-hidden="true">
+      <small id="inputQualityStatus">数据状态待确认</small>
+      <small id="inputQualityMeta">数据更新时间待确认</small>
+      <span id="inputQualityStages"></span><span id="inputQualityBlockers"></span><span id="inputQualityDegradations"></span>
+    </div>
     <noscript>此看板需要浏览器启用 JavaScript。</noscript>
   </body>
 </html>
