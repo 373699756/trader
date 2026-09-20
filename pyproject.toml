@@ -42,6 +42,7 @@ where = ["src"]
 include = ["trader*"]
 
 [tool.setuptools.package-data]
+"trader.http_api" = ["py.typed"]
 "trader.web" = [
     "templates/*.html",
     "static/*.css",

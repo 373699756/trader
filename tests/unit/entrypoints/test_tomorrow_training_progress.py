@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingPartitionValidationProgress,
     TomorrowTrainingProgress,

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import ctypes
+import os
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -47,14 +49,44 @@ from trader.training.infra.research.tomorrow_research_artifacts import (
 )
 
 if TYPE_CHECKING:
-    from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
     from trader.training.infra.engine import TrainingRunResult
+
+_TRAINING_PRIORITY_LOWERED = False
 
 
 @dataclass(frozen=True)
 class ResearchCommandOptions:
     workers: int = 5
+
+
+def configure_training_resources() -> None:
+    """Apply the bounded process policy before loading either training head."""
+
+    from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
+
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        os.environ[name] = str(TOMORROW_TRAINING_COMPUTE_THREADS)
+    _lower_training_priority()
+
+
+def _lower_training_priority() -> None:
+    global _TRAINING_PRIORITY_LOWERED  # noqa: PLW0603 - one process-level resource policy
+    if _TRAINING_PRIORITY_LOWERED:
+        return
+    if os.name == "posix":
+        os.nice(10)
+        _TRAINING_PRIORITY_LOWERED = True
+        return
+    if os.name != "nt":
+        _TRAINING_PRIORITY_LOWERED = True
+        return
+    below_normal_priority_class = 0x00004000
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    if not kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal_priority_class):
+        raise OSError(ctypes.__dict__["get_last_error"](), "could not lower Tomorrow training priority")
+    _TRAINING_PRIORITY_LOWERED = True
 
 
 class _ProfileTrainingCallable(Protocol):
@@ -221,7 +253,7 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
-    from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.application.profile_training_secondary import TrainV3UseCase
     from trader.training.infra.profile.v3.training import run_v3_training
 
@@ -234,7 +266,7 @@ def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
 
 def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
     del runtime
-    from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
+    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.application.profile_training_primary import TrainV2UseCase
     from trader.training.infra.profile.v2.training import run_v2_training
 

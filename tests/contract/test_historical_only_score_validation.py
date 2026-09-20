@@ -56,7 +56,7 @@ def test_production_tree_has_no_forward_score_validation_owner() -> None:
         path.read_text(encoding="utf-8")
         for path in (
             SOURCE / "bootstrap.py",
-            SOURCE / "bootstrap_status.py",
+            SOURCE / "recommendation/infra/status_projection.py",
             SOURCE / "recommendation/application/pipeline/data_source/source_router.py",
             SOURCE / "recommendation/application/ports/runtime.py",
             SOURCE / "http_api/routes/page_routes.py",

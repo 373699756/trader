@@ -1,6 +1,6 @@
 import json
 
-from trader.entrypoints.h1_point_in_time import main
+from trader.training.entrypoints.h1_point_in_time import main
 
 
 def test_h1_audit_command_is_explicit_read_only_and_strategy_scoped(tmp_path, capsys):

@@ -24,7 +24,7 @@ from trader.infra.market_data.history.history import DailyBar  # noqa: E402
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient  # noqa: E402
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
 from trader.infra.market_data.providers.tencent import TencentClient  # noqa: E402
-from trader.infra.persistence.data_plane import DataPlaneRepository  # noqa: E402
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CODES = ("600519", "000001", "300750", "688981", "601318")

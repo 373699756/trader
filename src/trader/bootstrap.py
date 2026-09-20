@@ -51,10 +51,14 @@ from trader.recommendation.application.runtime.shutdown import ShutdownDeadline,
 from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
 from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
 from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.bootstrap_clock import utc_now as _utc_now
-from trader.bootstrap_data_plane import _initialize_reference_data_plane
-from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
-from trader.bootstrap_status import runtime_status as _runtime_status
+from trader.infra.clock.utc import utc_now as _utc_now
+from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
+from trader.infra.settings.recommendation_policy import (
+    _long_group_definitions,
+    _long_item_definitions,
+    _recommendation_policy,
+)
+from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.publication.models import Strategy

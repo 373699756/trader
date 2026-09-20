@@ -26,12 +26,9 @@ from trader.recommendation.application.runtime.cadence import (
 )
 from trader.recommendation.application.runtime.schedule import SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import TradingCalendarRuntimeStatus
-from trader.bootstrap import (
-    _initialize_reference_data_plane,
-    _initialize_research_trace,
-    build_system,
-)
-from trader.bootstrap_status import input_quality_payload, runtime_status
+from trader.bootstrap import _initialize_research_trace, build_system
+from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
+from trader.recommendation.infra.status_projection import input_quality_payload, runtime_status
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
@@ -497,7 +494,9 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         "missing_listing_date": 221,
     }
     assert "supply_funnel" not in payload["tomorrow"]
-    assert "asdict(status.pipeline)" not in (PROJECT_ROOT / "src/trader/bootstrap_status.py").read_text(
+    assert "asdict(status.pipeline)" not in (
+        PROJECT_ROOT / "src/trader/recommendation/infra/status_projection.py"
+    ).read_text(
         encoding="utf-8"
     )
 

@@ -134,7 +134,7 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
         ROOT / "docs" / "01_评分逻辑.md",
         ROOT / "docs" / "02_工程设计.md",
         ROOT / "docs" / "changelog",
-        ROOT / "src" / "trader" / "application" / "runtime",
+        ROOT / "src" / "trader" / "recommendation" / "application" / "runtime",
         ROOT / "tests" / "integration" / "test_scheduler_runtime.py",
         ROOT / "config" / "runtime.json",
     ):

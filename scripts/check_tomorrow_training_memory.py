@@ -25,7 +25,7 @@ def _configure_resources() -> None:
 
 _configure_resources()
 
-from trader.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
+from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
 from trader.training.infra.profile.v3.training import run_repack_v3_training  # noqa: E402
 
 

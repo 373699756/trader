@@ -14,7 +14,7 @@ from trader.training.infra.research.h1_point_in_time_archive import (
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m trader.entrypoints.h1_point_in_time")
+    parser = argparse.ArgumentParser(prog="python -m trader.training.entrypoints.h1_point_in_time")
     parser.add_argument("--runtime-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     archive = SQLiteH1PointInTimeArchive(args.runtime_dir)

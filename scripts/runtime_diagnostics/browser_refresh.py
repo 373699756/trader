@@ -44,11 +44,11 @@ from trader.recommendation.application.ports.runtime import (  # noqa: E402
     ResearchRuntimeStatus,
     SharedDeepSeekRuntimeContract,
 )
-from trader.application.runtime.cadence import CadencePlanner, CadencePolicy  # noqa: E402
-from trader.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
-from trader.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime  # noqa: E402
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
-from trader.application.runtime.supervisor import (  # noqa: E402
+from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy  # noqa: E402
+from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
+from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime  # noqa: E402
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
+from trader.recommendation.application.runtime.supervisor import (  # noqa: E402
     RuntimeSupervisor,
     RuntimeSupervisorConfig,
     scheduler_interval_seconds,
@@ -66,7 +66,7 @@ from trader.recommendation.domain.publication.models import RecommendationAction
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 from trader.training.evaluation.application.research_audit import CommittedResearchAudit  # noqa: E402
 from trader.web import create_app  # noqa: E402
-from trader.web.api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
+from trader.http_api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
 
 
 class _QuietRequestHandler(WSGIRequestHandler):

@@ -44,7 +44,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
     build_scored_local,
 )
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.bootstrap_policy import _recommendation_policy
+from trader.infra.settings.recommendation_policy import _recommendation_policy
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,

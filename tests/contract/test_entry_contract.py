@@ -87,9 +87,18 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.evaluation.application.research_runtime",
         "trader.training.evaluation.application.outcome_ports",
         "trader.training.evaluation.application.outcome_settlement",
+        "trader.training.evaluation.application.baseline_replay_report",
+        "trader.training.evaluation.application.challenger_replay_report",
+        "trader.training.evaluation.application.historical_extraction_models",
+        "trader.training.evaluation.application.json_values",
+        "trader.training.evaluation.application.research_ports",
         "trader.training.evaluation.domain",
+        "trader.training.evaluation.domain.artifact_identity",
+        "trader.training.evaluation.domain.challengers",
         "trader.training.evaluation.domain.evaluation",
+        "trader.training.evaluation.domain.historical",
         "trader.training.evaluation.domain.models",
+        "trader.training.evaluation.domain.specification",
     }
 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed

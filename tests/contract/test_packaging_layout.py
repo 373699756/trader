@@ -56,6 +56,20 @@ def test_numpy_dependency_upper_bound_keeps_supported_mypy_stub_syntax() -> None
     assert "numpy>=2,<2.5" in project["project"]["dependencies"]
 
 
+def test_http_api_type_resource_and_business_entrypoints_are_packaged() -> None:
+    repository = Path(__file__).parents[2]
+    project = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = project["tool"]["setuptools"]["package-data"]
+
+    assert package_data["trader.http_api"] == ["py.typed"]
+    assert (repository / "src/trader/http_api/py.typed").is_file()
+    assert (repository / "src/trader/download/entrypoints/history_automation_projection.py").is_file()
+    assert (repository / "src/trader/training/entrypoints/tomorrow_training_progress.py").is_file()
+    assert not (repository / "src/trader/entrypoints/history_automation_projection.py").exists()
+    assert not (repository / "src/trader/entrypoints/tomorrow_training_progress.py").exists()
+    assert not (repository / "src/trader/entrypoints/h1_point_in_time.py").exists()
+
+
 def test_hidden_metadata_container_is_not_discovered_as_an_empty_distribution() -> None:
     repository = Path(__file__).parents[2]
     probe = subprocess.run(

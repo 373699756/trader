@@ -96,7 +96,9 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command in {"train-v2", "train-v3"}:
         if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")
-        _configure_tomorrow_training_resources()
+        from trader.training.entrypoints.commands import configure_training_resources
+
+        configure_training_resources()
     config_path = _absolute_config_path(args.config)
     runtime = load_runtime_settings(config_path)
     profile_override = cast(ScoringProfileId | None, args.profile)
@@ -174,68 +176,27 @@ def _run_history_maintenance_command(
             parser.error("download does not accept --profile")
         return _run_history_download()
     if command == "history-automation-status":
-        from trader.download.infra.history_automation_status import read_history_automation_status
-        from trader.entrypoints.history_automation_projection import project_history_automation_status
+        from trader.download.entrypoints.commands import run_download_command
 
-        repository_root = _repository_root_for_validation()
-        status = read_history_automation_status(repository_root / "data" / "history" / "baostock", _shanghai_now())
-        print(json.dumps(project_history_automation_status(status), ensure_ascii=False, sort_keys=True))
-        return 0
+        return run_download_command(command)
     if command != "scheduled-history-maintenance":
         return None
     if profile is not None:
         parser.error(f"{command} does not accept --profile")
     config_path = _absolute_config_path(raw_config_path)
-    runtime = load_runtime_settings(config_path)
-    return _run_scheduled_history_maintenance(runtime.runtime_dir)
+    return _run_scheduled_history_maintenance(config_path)
 
 
 def _run_history_download() -> int:
-    from trader.download.entrypoints.commands import run_download
+    from trader.download.entrypoints.commands import run_download_command
 
-    return run_download(_repository_root_for_validation())
+    return run_download_command("download")
 
 
-def _run_scheduled_history_maintenance(runtime_dir: Path) -> int:
-    from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-    from trader.download.infra.history_archive_sync import run_history_sync
-    from trader.download.infra.history_maintenance_runner import (
-        PlatformHistoryDesktopNotifier,
-        RotatingHistoryAutomationLog,
-        run_scheduled_history_maintenance,
-    )
-    from trader.entrypoints.history_automation_projection import project_history_automation_run_status
+def _run_scheduled_history_maintenance(config_path: Path) -> int:
+    from trader.download.entrypoints.commands import run_download_command
 
-    observed_at = _shanghai_now()
-    repository_root = _repository_root_for_validation()
-    configuration = _history_sync_configuration(repository_root)
-    task_log = RotatingHistoryAutomationLog(runtime_dir / "logs" / "history-automation.log")
-    try:
-        with BaoStockHistorySupplier(configuration, progress=task_log) as supplier:
-            status = run_scheduled_history_maintenance(
-                configuration,
-                lambda progress: run_history_sync(
-                    configuration,
-                    supplier,
-                    clock=lambda: observed_at,
-                    progress=progress,
-                ),
-                PlatformHistoryDesktopNotifier(),
-                observed_at,
-                progress=task_log,
-            )
-        try:
-            task_log.publish_run(status)
-        except OSError:
-            print(
-                '{"reason":"log_write_failed","schema_version":"history_automation_log","state":"degraded"}',
-                file=sys.stderr,
-                flush=True,
-            )
-        print(json.dumps(project_history_automation_run_status(status), ensure_ascii=False, sort_keys=True))
-        return 0 if status.successful else 1
-    finally:
-        task_log.close()
+    return run_download_command("scheduled-history-maintenance", config_path=config_path)
 
 
 def _history_sync_configuration(repository_root: Path) -> HistorySyncConfiguration:

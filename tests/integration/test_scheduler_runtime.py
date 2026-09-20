@@ -30,7 +30,7 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.bootstrap_status import runtime_status
+from trader.recommendation.infra.status_projection import runtime_status
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionOverlay,

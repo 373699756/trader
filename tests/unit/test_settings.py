@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.bootstrap_policy import _recommendation_policy
+from trader.infra.settings.recommendation_policy import _recommendation_policy
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
@@ -821,7 +821,10 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
     changed = load_strategy_settings(changed_path)
     observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     feature = application_feature_factory("600001", observed_at)
-    feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN))
+    values = dict(feature.values)
+    values["low_volatility_score"] = 80.0
+    values["low_drawdown_score"] = 60.0
+    feature = replace(feature, quote=replace(feature.quote, board=Board.MAIN), values=values)
     source_policy = _recommendation_policy(source).board_policy(Strategy.TOMORROW, Board.MAIN)
     changed_policy = _recommendation_policy(changed).board_policy(Strategy.TOMORROW, Board.MAIN)
 

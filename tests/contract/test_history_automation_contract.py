@@ -16,7 +16,7 @@ from trader.download.infra.history_automation_installation import (
     plan_history_automation_installation,
 )
 from trader.entrypoints.cli import build_parser, main
-from trader.entrypoints.history_automation_projection import project_history_automation_status
+from trader.download.entrypoints.history_automation_projection import project_history_automation_status
 
 
 def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_status() -> None:
