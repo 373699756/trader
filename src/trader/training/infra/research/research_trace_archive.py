@@ -8,7 +8,6 @@ import sqlite3
 import threading
 import zlib
 from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
@@ -34,6 +33,13 @@ from trader.training.application.research_audit import (
     ResearchPopulationAudit,
     ResearchRiskFactAudit,
     ShadowMode,
+)
+from trader.training.infra.research.trace_storage import (
+    ArchiveSummary,
+    connection,
+    initialize_database,
+    partition_date,
+    quarantine_row,
 )
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
@@ -366,18 +372,7 @@ class SQLiteResearchTraceArchive:
                 max(0, self._maximum_archive_bytes - summary.retained_bytes),
             )
 
-    @contextmanager
-    def _connection(self, database: Path, *, write: bool) -> Iterator[sqlite3.Connection]:
-        target = str(database) if write else f"file:{database.resolve()}?mode=ro"
-        connection = sqlite3.connect(target, timeout=5.0, uri=not write)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 5000")
-        try:
-            with connection:
-                yield connection
-        finally:
-            connection.close()
-
+    _connection = staticmethod(connection)
     def _database_for(self, trade_date: date) -> Path:
         if self._use_legacy_layout:
             return self._legacy_database
@@ -386,16 +381,14 @@ class SQLiteResearchTraceArchive:
     def _initialize_database(self, database: Path) -> None:
         if database in self._initialized_databases:
             return
-        database.parent.mkdir(parents=True, exist_ok=True)
+        initialize_database(database, self._initialized_databases)
         with self._connection(database, write=True) as connection:
-            connection.executescript(_SCHEMA)
             self._quarantined += self._quarantine_invalid_rows(connection)
-        self._initialized_databases.add(database)
 
     def _partition_databases(self) -> tuple[Path, ...]:
         if not self._partitions.exists():
             return ()
-        return tuple(path for path in sorted(self._partitions.glob("*.sqlite3")) if _partition_date(path) is not None)
+        return tuple(path for path in sorted(self._partitions.glob("*.sqlite3")) if partition_date(path) is not None)
 
     def _source_databases(self, trade_date: date | None = None) -> tuple[Path, ...]:
         databases: list[Path] = []
@@ -422,7 +415,7 @@ class SQLiteResearchTraceArchive:
                 return cast(sqlite3.Row, row)
         return None
 
-    def _archive_summary(self) -> _ArchiveSummary:
+    def _archive_summary(self) -> ArchiveSummary:
         retained = 0
         retained_bytes = 0
         legacy_retained = 0
@@ -439,14 +432,14 @@ class SQLiteResearchTraceArchive:
             dates.update(date.fromisoformat(str(item["trade_date"])) for item in day_rows)
             if database == self._legacy_database:
                 legacy_retained = count
-        return _ArchiveSummary(retained, retained_bytes, frozenset(dates), legacy_retained)
+        return ArchiveSummary(retained, retained_bytes, frozenset(dates), legacy_retained)
 
     def _quarantine_database_row(self, database: Path, decision_version: str, reason: str) -> None:
         if database == self._legacy_database:
             self._quarantined += 1
             return
         with self._connection(database, write=True) as connection:
-            self._quarantine_row(connection, decision_version, reason)
+            quarantine_row(connection, decision_version, reason)
         self._quarantined += 1
 
     def _quarantine_invalid_rows(self, connection: sqlite3.Connection) -> int:
@@ -463,32 +456,7 @@ class SQLiteResearchTraceArchive:
         return quarantined
 
     def _quarantine_row(self, connection: sqlite3.Connection, decision_version: str, reason: str) -> None:
-        connection.execute(
-            """
-            INSERT OR REPLACE INTO committed_event_quarantine (
-                decision_version, reason, payload_hash, payload
-            )
-            SELECT decision_version, ?, payload_hash, payload
-            FROM committed_events WHERE decision_version = ?
-            """,
-            (reason, decision_version),
-        )
-        connection.execute("DELETE FROM committed_events WHERE decision_version = ?", (decision_version,))
-
-
-@dataclass(frozen=True)
-class _ArchiveSummary:
-    retained: int
-    retained_bytes: int
-    trade_dates: frozenset[date]
-    legacy_retained: int
-
-
-def _partition_date(path: Path) -> date | None:
-    try:
-        return date.fromisoformat(path.stem)
-    except ValueError:
-        return None
+        quarantine_row(connection, decision_version, reason)
 
 
 def _verified_event(
@@ -1024,30 +992,6 @@ def _optional_number_pairs(raw: object, label: str) -> tuple[tuple[str, float | 
 
 def _sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
-
-
-_SCHEMA = """
-PRAGMA journal_mode = WAL;
-PRAGMA synchronous = FULL;
-CREATE TABLE IF NOT EXISTS committed_events (
-    decision_version TEXT PRIMARY KEY,
-    strategy TEXT NOT NULL,
-    trade_date TEXT NOT NULL,
-    observed_at TEXT NOT NULL,
-    decision_hash TEXT NOT NULL,
-    schema_version TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    payload BLOB NOT NULL
-);
-CREATE INDEX IF NOT EXISTS committed_events_trade_date
-ON committed_events(trade_date DESC, strategy, observed_at DESC);
-CREATE TABLE IF NOT EXISTS committed_event_quarantine (
-    decision_version TEXT PRIMARY KEY,
-    reason TEXT NOT NULL,
-    payload_hash TEXT NOT NULL,
-    payload BLOB NOT NULL
-);
-"""
 
 
 __all__ = [
