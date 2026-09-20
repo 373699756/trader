@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
 import threading
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime
 from typing import Protocol
 
 from trader.recommendation.application.long_runtime import LongRuntime
@@ -33,8 +32,32 @@ from trader.recommendation.application.pipeline.quality_check.pipeline_status im
     build_supply_status,
     update_supply_status_decision,
 )
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
-from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    candidate_batch_is_complete as _candidate_batch_is_complete,
+    decision_observed_at as _decision_observed_at,
+    merge_overlay_quote as _merge_overlay_quote,
+    model_scoring_context as _model_scoring_context,
+    overlay_observed_at as _overlay_observed_at,
+    quote_order as _quote_order,
+    refresh_completed_at as _refresh_completed_at,
+    require_codes as _require_codes,
+    selected_quote_features as _selected_quote_features,
+    task_deadline as _task_deadline,
+)
+from trader.recommendation.application.pipeline.data_source.input_identity import (
+    changed_version_codes as _changed_version_codes,
+    data_version as _data_version,
+    feature_batch_version as _feature_batch_version,
+    quote_versions as _quote_versions,
+    stable_digest as _stable_digest,
+)
+from trader.recommendation.application.pipeline.data_source.source_quality import (
+    build_source_stage_output,
+    decision_failure_code as _decision_failure_code,
+    failure_code as _failure_code,
+    uses_fallback as _uses_fallback,
+)
+from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
@@ -49,19 +72,12 @@ from trader.recommendation.application.ports.runtime import (
     ResearchIntent,
 )
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
-from trader.recommendation.application.runtime.cadence import PipelineTask, task_execution_budget_seconds
-from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.domain.evidence.pipeline import (
-    PipelineStage,
-    SourceHealth,
-    StageReasonAggregate,
-)
+from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,
-    DecisionQuote,
     ScoredDecision,
     identity_codes,
 )
@@ -900,261 +916,6 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             version = next(iter(self._decisions))
             self._decisions.pop(version, None)
             self._projections.pop(version, None)
-
-
-def _quote_order(feature: FeatureSnapshot) -> tuple[datetime, datetime, str]:
-    quote = feature.quote
-    return quote.source_time, quote.received_time, quote.data_version
-
-
-def _selected_quote_features(
-    batch: InputBatch,
-    selected_codes: Collection[str],
-) -> dict[str, FeatureSnapshot]:
-    features_by_code: dict[str, FeatureSnapshot] = {}
-    for feature in (*batch.market_features, *batch.candidate_features):
-        if feature.quote.code not in selected_codes:
-            continue
-        current = features_by_code.get(feature.quote.code)
-        if current is None or _quote_order(feature) > _quote_order(current):
-            features_by_code[feature.quote.code] = feature
-    return features_by_code
-
-
-def _overlay_observed_at(request: CycleRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:
-    target_zone = request.observed_at.tzinfo
-    if target_zone is None:
-        raise DecisionUnavailableError("overlay_request_time_unavailable")
-    values = [request.observed_at]
-    for feature in features:
-        values.extend((feature.observed_at, feature.quote.received_time))
-    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
-        raise DecisionUnavailableError("overlay_input_time_unavailable")
-    observed_at = max(value.astimezone(target_zone) for value in values)
-    if observed_at.date() != request.trade_date:
-        raise DecisionUnavailableError("overlay_observation_trade_date_mismatch")
-    return observed_at
-
-
-def _merge_overlay_quote(
-    quotes: dict[str, DecisionQuote],
-    feature: FeatureSnapshot,
-    observed_at: datetime,
-) -> bool:
-    quote = feature.quote
-    if quote.price is None or quote.price <= 0.0 or quote.source_time > observed_at:
-        return False
-    candidate = DecisionQuote(
-        code=quote.code,
-        price=quote.price,
-        pct_change=quote.pct_change,
-        amount=quote.amount,
-        turnover_rate=quote.turnover_rate,
-        market_cap=quote.market_cap,
-        source=quote.source,
-        source_time=quote.source_time,
-        data_version=quote.data_version,
-    )
-    existing = quotes.get(quote.code)
-    if existing is not None and (candidate.source_time, candidate.data_version) <= (
-        existing.source_time,
-        existing.data_version,
-    ):
-        return False
-    quotes[quote.code] = candidate
-    return True
-
-
-def _task_deadline(request: PipelineTaskRequest) -> datetime | None:
-    seconds = task_execution_budget_seconds(request.task)
-    return request.observed_at + timedelta(seconds=seconds) if seconds is not None else None
-
-
-def _candidate_batch_is_complete(
-    requested: Mapping[Strategy, tuple[str, ...]],
-    features: Mapping[Strategy, tuple[FeatureSnapshot, ...]],
-) -> bool:
-    if not any(requested.values()):
-        return False
-    return all(
-        tuple(item.quote.code for item in features[strategy]) == requested[strategy] for strategy in SCORED_STRATEGIES
-    )
-
-
-def _require_codes(codes: tuple[str, ...], error_code: str) -> None:
-    if not codes:
-        raise DataRefreshUnavailableError(error_code)
-
-
-def _data_version(
-    request: CycleRequest,
-    market_features: tuple[FeatureSnapshot, ...],
-    candidate_features: tuple[FeatureSnapshot, ...],
-) -> str:
-    versions = (
-        _feature_batch_version("market", market_features),
-        _feature_batch_version("candidate", candidate_features),
-    )
-    return f"{request.input_version}:{_stable_digest(versions)}"
-
-
-def _feature_batch_version(kind: str, features: tuple[FeatureSnapshot, ...]) -> str:
-    material = tuple(sorted(_feature_identity(feature) for feature in features))
-    return f"{kind}:{_stable_digest(material)}"
-
-
-def _feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
-    quote = feature.quote
-    return (
-        quote.code,
-        quote.data_version,
-        quote.source_time.isoformat(),
-        quote.name,
-        quote.industry,
-        quote.board.value,
-        quote.listing_date.isoformat() if quote.listing_date is not None else None,
-        quote.listing_age_sessions,
-        quote.execution_restrictions,
-        tuple(sorted(feature.values.items())),
-        feature.history_days,
-        feature.market_regime,
-        feature.missing_fields,
-        tuple(sorted(feature.missing_reasons.items())),
-        tuple((item.evidence_id, item.data_version, item.published_at.isoformat()) for item in feature.evidence),
-        tuple(repr(item) for item in feature.external_risk_facts),
-        feature.board_policy_version,
-        feature.competition_group_version,
-        feature.parameter_status,
-        feature.selection_skip_reason,
-        (
-            (
-                feature.model_industry.industry_id,
-                feature.model_industry.classification,
-                feature.model_industry.effective_date.isoformat(),
-                feature.model_industry.source,
-                feature.model_industry.data_version,
-            )
-            if feature.model_industry is not None
-            else None
-        ),
-        feature.merge_epoch,
-    )
-
-
-def _quote_versions(features: tuple[FeatureSnapshot, ...]) -> dict[str, str]:
-    return {
-        feature.quote.code: f"{feature.quote.data_version}:{feature.quote.source_time.isoformat()}"
-        for feature in features
-    }
-
-
-def _changed_version_codes(previous: dict[str, str], current: dict[str, str]) -> tuple[str, ...]:
-    return tuple(sorted(code for code in {*previous, *current} if previous.get(code) != current.get(code)))
-
-
-def _refresh_completed_at(
-    request: PipelineTaskRequest,
-    features: tuple[FeatureSnapshot, ...],
-) -> datetime:
-    values = (
-        request.observed_at,
-        *(feature.observed_at for feature in features),
-        *(feature.quote.received_time for feature in features),
-    )
-    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
-        raise ValueError("refresh completion times must be timezone-aware")
-    return max(value.astimezone(SHANGHAI) for value in values)
-
-
-def _uses_fallback(features: tuple[FeatureSnapshot, ...], *, expected_source: str | None) -> bool:
-    return any(
-        (expected_source is not None and feature.quote.source != expected_source)
-        or "market_data_degraded" in feature.quote.execution_restrictions
-        for feature in features
-    )
-
-
-def _decision_observed_at(batch: InputBatch) -> datetime:
-    target_zone = batch.request.observed_at.tzinfo
-    if target_zone is None:
-        raise ValueError("decision request time must be timezone-aware")
-    values = [batch.request.observed_at]
-    for feature in (*batch.market_features, *batch.candidate_features):
-        values.extend((feature.observed_at, feature.quote.received_time))
-        for evidence in feature.evidence:
-            if evidence.received_at is not None:
-                values.append(evidence.received_at)
-        values.extend(fact.observed_at for fact in feature.external_risk_facts)
-    if any(value.tzinfo is None or value.utcoffset() is None for value in values):
-        raise ValueError("decision input times must be timezone-aware")
-    return max(value.astimezone(target_zone) for value in values)
-
-
-def _model_scoring_context(
-    request: CycleRequest,
-    batch: InputBatch,
-    now: datetime,
-) -> ModelScoringContext:
-    if now.tzinfo is None or now.utcoffset() is None:
-        raise ValueError("model scoring clock must be timezone-aware")
-    local_now = now.astimezone(SHANGHAI)
-    input_at = _decision_observed_at(batch).astimezone(SHANGHAI)
-    input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
-    if request.phase == "close_fallback":
-        return ModelScoringContext(input_age_seconds=input_age_seconds)
-    anchor = time(14, 50)
-    deadline = datetime.combine(request.trade_date, anchor, tzinfo=SHANGHAI)
-    return ModelScoringContext(
-        time_budget_seconds=max(0.0, (deadline - local_now).total_seconds()),
-        input_age_seconds=input_age_seconds,
-    )
-
-
-def _stable_digest(value: object) -> str:
-    import hashlib
-
-    return hashlib.sha256(repr(value).encode("utf-8")).hexdigest()[:16]
-
-
-def _failure_code(exc: BaseException) -> str:
-    value = str(exc).strip().lower()
-    if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
-        return value
-    name = type(exc).__name__
-    return "".join((f"_{character.lower()}" if character.isupper() else character) for character in name).lstrip("_")
-
-
-def _decision_failure_code(exc: BaseException) -> str:
-    if str(exc) == "scored native input cannot contain future features":
-        return "future_input_time"
-    return _failure_code(exc)
-
-
-def build_source_stage_output(
-    records: Sequence[FeatureSnapshot],
-    *,
-    as_of: datetime,
-    expected_count: int,
-    failed_count: int,
-    reasons: tuple[StageReasonAggregate, ...],
-    source_health: SourceHealth,
-    latency_ms: int,
-) -> PipelineStageOutput[FeatureSnapshot]:
-    received = tuple(records)
-    pending_count = expected_count - len(received) - failed_count
-    if pending_count < 0:
-        raise ValueError("source stage outcomes exceed the expected population")
-    return stage_output(
-        PipelineStage.DATA_SOURCE,
-        received,
-        as_of=as_of,
-        input_count=expected_count,
-        pending_count=pending_count,
-        failed_count=failed_count,
-        reasons=reasons,
-        source_health=source_health,
-        latency_ms=latency_ms,
-    )
 
 
 __all__ = [

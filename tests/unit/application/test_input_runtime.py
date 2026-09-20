@@ -11,11 +11,11 @@ import pytest
 from tests.unit.domain.test_decision_identity import decision
 from trader.bootstrap import _recommendation_policy
 from trader.infra.settings import load_strategy_settings
+from trader.recommendation.application.pipeline.data_source.input_assembly import model_scoring_context as _model_scoring_context
 from trader.recommendation.application.pipeline.data_source.source_router import (
     DecisionBuildDependencies,
     InputBatch,
     MarketDataAdapter,
-    _model_scoring_context,
 )
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.ports.runtime import (
