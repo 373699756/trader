@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.http_api.decision_serializers import serialize_event
+from trader.http_api.response.decision_projection import serialize_event
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.domain.evidence.pipeline import (

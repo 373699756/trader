@@ -385,14 +385,11 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
 def test_http_api_and_presentation_resources_are_partitioned() -> None:
     web_root = SOURCE_ROOT / "web"
     api_root = SOURCE_ROOT / "http_api"
-    api_files = {
-        "decision_serializers.py",
-        "decision_sse.py",
-        "route_services.py",
-    }
+    api_files = {"route_services.py"}
 
     assert api_root.is_dir()
     assert {path.name for path in api_root.glob("*.py")} >= api_files
+    assert (api_root / "response" / "decision_projection.py").is_file()
     assert (api_root / "routes" / "page_routes.py").is_file()
     assert not any((web_root / "api").glob("*.py"))
     assert not any((web_root / name).exists() for name in api_files | {"routes_v2.py"})

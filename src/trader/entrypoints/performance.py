@@ -416,10 +416,10 @@ def _operations(
         "quote_to_draft": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local",
         "deepseek_to_hybrid": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_hybrid",
         "sse_publish": "trader.recommendation.application.pipeline.freeze_publish.event_stream.UnifiedDecisionEventStream.publish_committed",
-        "snapshot_api": "trader.http_api.routes.page_routes._current",
-        "etag_api": "trader.http_api.routes.page_routes._current",
-        "dates_api": "trader.http_api.routes.page_routes._dates",
-        "status_api": "trader.http_api.routes.page_routes._status",
+        "snapshot_api": "trader.http_api.handlers.product_handler._current",
+        "etag_api": "trader.http_api.handlers.product_handler._current",
+        "dates_api": "trader.http_api.handlers.product_handler._dates",
+        "status_api": "trader.http_api.handlers.product_handler._status",
     }
     return operations, provenance
 

@@ -8,7 +8,7 @@ from collections.abc import Iterator
 
 from flask import Response, stream_with_context
 
-from trader.http_api.decision_serializers import serialize_event
+from trader.http_api.response.decision_projection import serialize_event
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (
     ResyncEventPayload,
     ResyncReason,
