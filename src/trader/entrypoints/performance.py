@@ -74,7 +74,7 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,
 )
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
-from trader.training.evaluation.application.scoring_hot_path_baseline import (
+from trader.training.application.scoring_hot_path_baseline import (
     ScoringHotPathBaseline,
     ScoringHotPathEquivalence,
     ScoringHotPathLatency,

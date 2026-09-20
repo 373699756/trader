@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.domain.terminal_holdout import (
+from trader.training.domain.evaluation.terminal_holdout import (
     TerminalHoldoutEvaluation,
     TerminalHoldoutRow,
     evaluate_terminal_holdout,

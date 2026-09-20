@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.application.tomorrow_daily_close_training import (
+from trader.training.application.tomorrow_daily_close_training import (
     CandidateModelArtifact,
     DailyCloseSourceSample,
     ModelDependencyVersion,
@@ -17,7 +17,7 @@ from trader.training.evaluation.application.tomorrow_daily_close_training import
     select_mature_fold_training_rows,
     select_mature_training_rows,
 )
-from trader.training.evaluation.domain.tomorrow_daily_close import (
+from trader.training.domain.evaluation.tomorrow_daily_close import (
     build_expanding_walk_forward,
     split_complete_trading_dates,
 )

@@ -11,20 +11,20 @@ from trader.recommendation.domain.market.feature_contracts import FeatureId, Fea
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import BoardStrategyPolicy, Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredSelectionPolicy
-from trader.training.evaluation.application.point_in_time_dataset import (
+from trader.training.application.point_in_time_dataset import (
     PointInTimeDatasetBuilder,
     PointInTimeDatasetBuildRequest,
     PointInTimeDaySource,
     PointInTimeSourceRow,
 )
-from trader.training.evaluation.domain.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
-from trader.training.evaluation.domain.point_in_time_data_qualification import (
+from trader.training.domain.evaluation.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.training.domain.evaluation.point_in_time_data_qualification import (
     DailyArchiveQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
     build_point_in_time_data_qualification,
 )
-from trader.training.evaluation.domain.point_in_time_dataset import (
+from trader.training.domain.evaluation.point_in_time_dataset import (
     POINT_IN_TIME_BENCHMARK_ID,
     PointInTimeDateSplit,
     PointInTimeEventFact,

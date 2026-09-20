@@ -41,7 +41,7 @@ from trader.recommendation.domain.market.models import (
 )
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.market.research import ResearchObservation
-from trader.training.evaluation.domain.models import OutcomeBar
+from trader.training.domain.evaluation.models import OutcomeBar
 
 
 @dataclass(frozen=True)

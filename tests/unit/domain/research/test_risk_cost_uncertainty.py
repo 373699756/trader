@@ -12,7 +12,7 @@ from trader.recommendation.domain.risk.decision import (
 )
 from trader.recommendation.domain.scoring.alpha import AlphaScore
 from trader.recommendation.domain.selection.execution_cost import ExecutionCost, ExecutionCostScenario
-from trader.training.evaluation.domain.risk_cost_uncertainty import (
+from trader.training.domain.evaluation.risk_cost_uncertainty import (
     DeepSeekResearchReview,
     RiskCostUncertaintySample,
     build_selection_utility,

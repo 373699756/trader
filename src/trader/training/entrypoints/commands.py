@@ -14,20 +14,20 @@ from typing import TYPE_CHECKING, Protocol
 from trader.download.domain.history_archive_status import HistoryArchiveStatus
 from trader.download.infra.history_archive_status import inspect_history_archive
 from trader.infra.settings import RuntimeSettings
-from trader.training.evaluation.application.historical_label import HistoricalLabelPreregistrationService
-from trader.training.evaluation.application.tomorrow_research_artifacts import (
+from trader.training.application.historical_label import HistoricalLabelPreregistrationService
+from trader.training.application.tomorrow_research_artifacts import (
     TomorrowResearchStage,
     derive_tomorrow_research_run_id,
     next_research_stage,
     production_readiness_audit,
 )
-from trader.training.evaluation.application.tomorrow_research_orchestrator import (
+from trader.training.application.tomorrow_research_orchestrator import (
     TomorrowResearchAdvanceResult,
     TomorrowResearchProgressPort,
 )
-from trader.training.evaluation.application.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
-from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
-from trader.training.evaluation.domain.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
+from trader.training.application.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
+from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.training.infra.research.h1_point_in_time_archive import (
     H1PointInTimeArchiveConflictError,
     SQLiteH1PointInTimeArchive,
@@ -222,7 +222,7 @@ def _project_history_archive_status(status: HistoryArchiveStatus) -> dict[str, o
 
 
 def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
-    from trader.training.evaluation.application.baseline_identity_audit import BaselineIdentityAuditService
+    from trader.training.application.baseline_identity_audit import BaselineIdentityAuditService
     from trader.training.infra.research.baseline_identity_sources import load_baseline_identity_evidence
 
     audit = BaselineIdentityAuditService(load_baseline_identity_evidence(runtime)).execute()

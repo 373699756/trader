@@ -5,12 +5,12 @@ from datetime import datetime, timezone
 import pytest
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.domain.evaluation import (
+from trader.training.domain.evaluation.evaluation import (
     CanonicalOutcomeEvaluator,
     OutcomeEvaluationRequest,
     evaluate_outcome,
 )
-from trader.training.evaluation.domain.models import (
+from trader.training.domain.evaluation.models import (
     BenchmarkConstituentReturn,
     BenchmarkReturn,
     OutcomeBar,

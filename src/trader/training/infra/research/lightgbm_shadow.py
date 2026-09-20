@@ -9,7 +9,7 @@ from typing import Protocol, cast
 
 import lightgbm as lgb
 
-from trader.training.evaluation.application.shadow_model_ports import (
+from trader.training.application.shadow_model_ports import (
     ShadowFitRequest,
     ShadowFitResult,
     ShadowModelFamily,

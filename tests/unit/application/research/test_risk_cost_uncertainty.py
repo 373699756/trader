@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from trader.training.evaluation.application.risk_cost_uncertainty import (
+from trader.training.application.risk_cost_uncertainty import (
     RiskCostUncertaintyPrerequisite,
     RiskCostUncertaintyResearchBuilder,
 )

@@ -9,11 +9,11 @@ from typing import cast
 
 from trader.infra.serialization.fields import is_boolean, is_sha256_text
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.historical_candidate_confirmation import (
+from trader.training.application.historical_candidate_confirmation import (
     HistoricalConfirmationTerminalBatch,
 )
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
-from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 
 _STRATEGIES: tuple[ResearchStrategy, ...] = ("tomorrow", "d25")
 

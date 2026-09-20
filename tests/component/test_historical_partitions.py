@@ -6,7 +6,7 @@ import pytest
 
 from tests.unit.application.research.test_historical_extraction import _Evaluator, _Port
 from tests.unit.application.research.test_historical_ports import TRADE_DATE
-from trader.training.evaluation.application.extraction import HistoricalExtractor
+from trader.training.application.extraction import HistoricalExtractor
 from trader.training.infra.research.historical_partitions import (
     HistoricalPartitionConflictError,
     PolarsHistoricalPartitionArchive,

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.training.evaluation.application.research_coordination import ResearchCoordinator, ResearchCoordinatorOptions
+from trader.training.application.research_coordination import ResearchCoordinator, ResearchCoordinatorOptions
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 29, 19, 30, tzinfo=SHANGHAI)

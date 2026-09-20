@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from trader.training.evaluation.domain.historical_residual_ledger import (
+from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
     ResidualJoinKey,

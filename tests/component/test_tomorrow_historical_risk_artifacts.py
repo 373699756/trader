@@ -4,13 +4,13 @@ import json
 
 import pytest
 
-from trader.training.evaluation.application.tomorrow_historical_validation import (
+from trader.training.application.tomorrow_historical_validation import (
     TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
     TomorrowHistoricalRiskModelArtifact,
     TomorrowHistoricalRiskValidationOutcome,
     TomorrowHistoricalRiskValidationReport,
 )
-from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.training.infra.research.tomorrow_historical_risk_artifacts import (
     TomorrowHistoricalRiskArtifactArchive,
     TomorrowHistoricalRiskArtifactConflictError,

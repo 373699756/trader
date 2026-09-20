@@ -19,7 +19,7 @@ from trader.entrypoints.server import build_parser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
 from trader.infra.settings import load_runtime_settings
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
+from trader.training.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
 from trader.training.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError
 from trader.training.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactRepositoryError
 
@@ -30,7 +30,7 @@ def _research_modules_loaded_by(module_name: str) -> set[str]:
     probe = (
         "import importlib,json,sys;"
         f"importlib.import_module({module_name!r});"
-        "roots=('trader.training.evaluation.application','trader.training.evaluation.domain','trader.training.infra.research');"
+        "roots=('trader.training.application','trader.training.domain.evaluation','trader.training.infra.research');"
         "print(json.dumps(sorted(name for name in sys.modules if name.startswith(roots))))"
     )
     completed = subprocess.run(
@@ -81,24 +81,24 @@ def test_cli_module_does_not_eagerly_load_research_implementations() -> None:
 
 def test_server_module_loads_only_authorized_background_research_consumers() -> None:
     allowed = {
-        "trader.training.evaluation.application",
-        "trader.training.evaluation.application.research_audit",
-        "trader.training.evaluation.application.research_coordination",
-        "trader.training.evaluation.application.research_runtime",
-        "trader.training.evaluation.application.outcome_ports",
-        "trader.training.evaluation.application.outcome_settlement",
-        "trader.training.evaluation.application.baseline_replay_report",
-        "trader.training.evaluation.application.challenger_replay_report",
-        "trader.training.evaluation.application.historical_extraction_models",
-        "trader.training.evaluation.application.json_values",
-        "trader.training.evaluation.application.research_ports",
-        "trader.training.evaluation.domain",
-        "trader.training.evaluation.domain.artifact_identity",
-        "trader.training.evaluation.domain.challengers",
-        "trader.training.evaluation.domain.evaluation",
-        "trader.training.evaluation.domain.historical",
-        "trader.training.evaluation.domain.models",
-        "trader.training.evaluation.domain.specification",
+        "trader.training.application",
+        "trader.training.application.research_audit",
+        "trader.training.application.research_coordination",
+        "trader.training.application.research_runtime",
+        "trader.training.application.outcome_ports",
+        "trader.training.application.outcome_settlement",
+        "trader.training.application.baseline_replay_report",
+        "trader.training.application.challenger_replay_report",
+        "trader.training.application.historical_extraction_models",
+        "trader.training.application.json_values",
+        "trader.training.application.research_ports",
+        "trader.training.domain.evaluation",
+        "trader.training.domain.evaluation.artifact_identity",
+        "trader.training.domain.evaluation.challengers",
+        "trader.training.domain.evaluation.evaluation",
+        "trader.training.domain.evaluation.historical",
+        "trader.training.domain.evaluation.models",
+        "trader.training.domain.evaluation.specification",
         "trader.training.infra.research",
         "trader.training.infra.research.outcome_evidence_repository",
         "trader.training.infra.research.research_trace_archive",

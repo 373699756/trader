@@ -11,9 +11,9 @@ from typing import Literal, cast
 from trader.infra.serialization.canonical import canonical_json_text
 from trader.infra.serialization.fields import is_boolean, is_sha256_text
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.h1_point_in_time_completion import H1ResearchCompletion
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
-from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy
+from trader.training.application.h1_point_in_time_completion import H1ResearchCompletion
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 
 
 class H1ResearchCompletionArtifactConflictError(RuntimeError):

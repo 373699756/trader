@@ -2,8 +2,8 @@ from datetime import date
 
 import pytest
 
-from trader.training.evaluation.application.h1_point_in_time_completion import complete_h1_research
-from trader.training.evaluation.domain.h1_point_in_time import (
+from trader.training.application.h1_point_in_time_completion import complete_h1_research
+from trader.training.domain.evaluation.h1_point_in_time import (
     H1CapabilityProbe,
     H1PointInTimeSpec,
     build_h1_capability_audit,

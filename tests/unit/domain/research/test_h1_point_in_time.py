@@ -2,12 +2,12 @@ from datetime import date, datetime
 
 import pytest
 
-from trader.training.evaluation.domain.h1_point_in_time import (
+from trader.training.domain.evaluation.h1_point_in_time import (
     H1CapabilityProbe,
     H1PointInTimeRecord,
     H1PointInTimeSpec,
 )
-from trader.training.evaluation.domain.historical_screening import HistoricalPriceBar
+from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
 
 
 def _record(strategy: str = "tomorrow", observed_at: str = "2026-08-31T14:50:00+08:00") -> H1PointInTimeRecord:

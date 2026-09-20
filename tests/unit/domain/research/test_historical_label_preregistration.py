@@ -3,7 +3,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.domain.historical_label import (
+from trader.training.domain.evaluation.historical_label import (
     H1CoverageMetadata,
     preregister_historical_label,
     preregister_historical_labels,

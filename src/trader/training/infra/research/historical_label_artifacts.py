@@ -9,9 +9,9 @@ from typing import Literal, cast
 
 from trader.infra.serialization.fields import is_boolean, is_integer, is_text_sequence
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
-from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy
-from trader.training.evaluation.domain.historical_label import (
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
+from trader.training.domain.evaluation.historical_label import (
     HistoricalAnchor,
     HistoricalLabelAggregate,
     HistoricalLabelContract,

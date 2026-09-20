@@ -5,7 +5,7 @@ from trader.training.domain.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     FrozenDailyInputDescriptor,
 )
-from trader.training.evaluation.application.tomorrow_training_input import (
+from trader.training.application.tomorrow_training_input import (
     verify_tomorrow_training_input_port,
 )
 

@@ -6,8 +6,8 @@ import pytest
 
 from tests.unit.application.research.test_historical_extraction import _Evaluator, _Port
 from tests.unit.application.research.test_historical_replay import _ReplayEvaluator
-from trader.training.evaluation.application.extraction import HistoricalExtractor
-from trader.training.evaluation.application.replay import HistoricalBaselineReplayer
+from trader.training.application.extraction import HistoricalExtractor
+from trader.training.application.replay import HistoricalBaselineReplayer
 from trader.training.infra.research.baseline_reports import BaselineReportConflictError, JsonBaselineReportArchive
 
 

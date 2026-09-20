@@ -57,7 +57,7 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 

@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_research_audit_keeps_complete_point_in_time_population() -> None:
-    source = (ROOT / "src/trader/training/evaluation/application/research_audit.py").read_text(encoding="utf-8")
+    source = (ROOT / "src/trader/training/application/research_audit.py").read_text(encoding="utf-8")
 
     for token in (
         'RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"',

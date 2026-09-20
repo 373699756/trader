@@ -13,7 +13,7 @@ from trader.download.infra.history_archive_status import (
     load_active_history_archive,
     verify_active_history_archive,
 )
-from trader.training.evaluation.domain.historical_industry_facts import (
+from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustryCohort,
     HistoricalIndustryDatasetReport,
     HistoricalIndustryFact,

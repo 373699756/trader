@@ -1,11 +1,11 @@
 from datetime import date
 
 from trader.download.domain.history_archive_status import HistoryArchiveStatus
-from trader.training.evaluation.application.point_in_time_data_qualification import (
+from trader.training.application.point_in_time_data_qualification import (
     assemble_point_in_time_data_qualification,
 )
-from trader.training.evaluation.domain.h1_point_in_time import H1CapabilityProbe, build_h1_capability_audit
-from trader.training.evaluation.domain.historical_industry_facts import (
+from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityProbe, build_h1_capability_audit
+from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustrySourceContract,
     build_historical_industry_dataset_report,
     build_historical_industry_source_audit,

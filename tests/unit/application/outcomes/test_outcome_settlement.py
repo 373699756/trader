@@ -7,8 +7,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.training.evaluation.domain.models import (
+from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
+from trader.training.domain.evaluation.models import (
     BenchmarkReturn,
     OutcomeBar,
     OutcomePrice,

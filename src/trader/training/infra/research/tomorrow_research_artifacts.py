@@ -14,7 +14,7 @@ from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.serialization.canonical import file_sha256
 from trader.infra.serialization.fields import as_sequence, is_boolean, is_integer, is_number
 from trader.infra.serialization.sealing import publish_immutable, publish_immutable_file, replace_file
-from trader.training.evaluation.application.tomorrow_research_artifacts import (
+from trader.training.application.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
     TomorrowResearchEvidencePartitionRef,
@@ -27,7 +27,7 @@ from trader.training.evaluation.application.tomorrow_research_artifacts import (
     next_research_stage,
     production_readiness_audit,
 )
-from trader.training.evaluation.domain.artifact_identity import (
+from trader.training.domain.evaluation.artifact_identity import (
     canonical_artifact_hash,
     canonical_artifact_json,
     canonical_artifact_value,

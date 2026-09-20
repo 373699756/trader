@@ -29,7 +29,7 @@ from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
-from trader.training.evaluation.application.research_audit import build_committed_research_audit
+from trader.training.application.research_audit import build_committed_research_audit
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TRADE_DATE = date(2026, 7, 29)

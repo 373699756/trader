@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.training.evaluation.domain.historical import (
+from trader.training.domain.evaluation.historical import (
     CostSettlementBasis,
     HistoricalCandidateSummary,
     ResearchDataLineage,

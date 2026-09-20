@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 
 BAOSTOCK_RESEARCH_IDENTITY = "baostock_daily_core"
 BAOSTOCK_SOURCE_CUTOFF = date(2026, 8, 31)

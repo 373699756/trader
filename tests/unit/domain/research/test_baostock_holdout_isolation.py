@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.domain.baostock_holdout_isolation import (
+from trader.training.domain.evaluation.baostock_holdout_isolation import (
     BAOSTOCK_DAILY_IDENTITY,
     BAOSTOCK_SOURCE_ANCHOR,
     HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY,

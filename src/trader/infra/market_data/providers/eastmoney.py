@@ -28,7 +28,7 @@ from trader.recommendation.application.runtime.workers import BorrowExecutorOpti
 from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.recommendation.domain.market.models import Board, MarketQuote
 from trader.recommendation.domain.market.tail import MinuteBar
-from trader.training.evaluation.domain.models import OutcomeBar
+from trader.training.domain.evaluation.models import OutcomeBar
 
 
 class JsonResponse(Protocol):

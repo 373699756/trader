@@ -6,8 +6,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.application.cross_strategy_conclusion import CrossStrategyConclusionService
-from trader.training.evaluation.domain.terminal_holdout import (
+from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusionService
+from trader.training.domain.evaluation.terminal_holdout import (
     TerminalHoldoutEvaluation,
     TerminalHoldoutRow,
     evaluate_terminal_holdout,

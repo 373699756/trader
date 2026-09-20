@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.training.evaluation.domain.baseline_identity import (
+from trader.training.domain.evaluation.baseline_identity import (
     BaselineIdentityAudit,
     BaselineIdentityClaim,
     source_hash,

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from trader.training.evaluation.application.tomorrow_historical_screening import TomorrowHistoricalRow
-from trader.training.evaluation.domain.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
+from trader.training.application.tomorrow_historical_screening import TomorrowHistoricalRow
+from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
 from trader.training.infra.research.tomorrow_historical_model import TomorrowHistoricalEnsembleTrainer
 
 

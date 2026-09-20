@@ -5,7 +5,7 @@ from datetime import date
 
 import pytest
 
-from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 
 
 def test_historical_screening_preregisters_a_retrospective_screen_without_promotion_authority() -> None:

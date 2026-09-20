@@ -9,8 +9,8 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.training.evaluation.domain.h1_point_in_time import ResearchStrategy
-from trader.training.evaluation.domain.historical_residual_ledger import (
+from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
+from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
     JoinedHistoricalResidual,

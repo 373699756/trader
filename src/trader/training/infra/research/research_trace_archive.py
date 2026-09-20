@@ -24,7 +24,7 @@ from trader.recommendation.application.pipeline.freeze_publish.decision_events i
 from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 from trader.recommendation.domain.publication.decision_identity import DecisionStage
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.training.evaluation.application.research_audit import (
+from trader.training.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,

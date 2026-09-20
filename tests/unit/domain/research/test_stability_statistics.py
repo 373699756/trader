@@ -4,8 +4,8 @@ import hashlib
 
 import pytest
 
-from trader.training.evaluation.domain.specification import PREREGISTERED_RESEARCH_SPEC
-from trader.training.evaluation.domain.statistics import (
+from trader.training.domain.evaluation.specification import PREREGISTERED_RESEARCH_SPEC
+from trader.training.domain.evaluation.statistics import (
     BOOTSTRAP_REPETITIONS,
     bootstrap_seed,
     holm_step_down,

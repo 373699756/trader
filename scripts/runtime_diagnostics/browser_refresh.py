@@ -76,7 +76,7 @@ from trader.recommendation.domain.publication.decision_identity import (  # noqa
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
-from trader.training.evaluation.application.research_audit import CommittedResearchAudit  # noqa: E402
+from trader.training.application.research_audit import CommittedResearchAudit  # noqa: E402
 from trader.web import create_app  # noqa: E402
 
 

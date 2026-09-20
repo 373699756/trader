@@ -2,7 +2,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.application.tomorrow_daily_close_training import DailyCloseFeatureRow
+from trader.training.application.tomorrow_daily_close_training import DailyCloseFeatureRow
 from trader.training.infra.research.tomorrow_daily_close_training import DeterministicDailyCloseBaseModelTrainer
 
 

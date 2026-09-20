@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.training.evaluation.application.tomorrow_research_artifacts import (
+from trader.training.application.tomorrow_research_artifacts import (
     TomorrowResearchArtifactGraph,
     TomorrowResearchArtifactRef,
     TomorrowResearchResourceProbe,
     TomorrowResearchStageHandoff,
 )
-from trader.training.evaluation.application.tomorrow_research_orchestrator import (
+from trader.training.application.tomorrow_research_orchestrator import (
     TomorrowResearchOrchestrator,
     TomorrowResearchPrerequisiteStatus,
 )

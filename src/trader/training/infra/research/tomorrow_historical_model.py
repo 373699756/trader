@@ -8,12 +8,12 @@ from typing import Protocol, cast
 
 import lightgbm as lgb
 
-from trader.training.evaluation.application.tomorrow_historical_screening import (
+from trader.training.application.tomorrow_historical_screening import (
     TOMORROW_HISTORICAL_ALPHA_FEATURE_IDS,
     TomorrowHistoricalModelFit,
     TomorrowHistoricalRow,
 )
-from trader.training.evaluation.domain.tomorrow_historical import (
+from trader.training.domain.evaluation.tomorrow_historical import (
     TomorrowHistoricalCandidate,
     TomorrowHistoricalModelArtifact,
 )

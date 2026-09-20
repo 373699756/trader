@@ -9,7 +9,7 @@ from typing import cast
 
 from trader.infra.serialization.fields import as_sequence
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.factor_diagnostic_report import (
+from trader.training.application.factor_diagnostic_report import (
     DiagnosticStatus,
     FactorAggregateDiagnostic,
     FactorCostQuintiles,
@@ -22,7 +22,7 @@ from trader.training.evaluation.application.factor_diagnostic_report import (
     QuintileValues,
     StratumDimension,
 )
-from trader.training.evaluation.domain.artifact_identity import (
+from trader.training.domain.evaluation.artifact_identity import (
     canonical_artifact_hash,
     canonical_artifact_json,
     canonical_artifact_value,

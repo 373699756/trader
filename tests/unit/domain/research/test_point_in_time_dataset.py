@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.training.evaluation.domain.point_in_time_dataset import (
+from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeDateSplit,
     PointInTimeEventFact,
 )

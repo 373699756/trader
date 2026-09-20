@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from tests.unit.application.research.test_factor_diagnostics import _evidence
-from trader.training.evaluation.application.factor_diagnostics import NativeFactorDiagnosticEvaluator
+from trader.training.application.factor_diagnostics import NativeFactorDiagnosticEvaluator
 from trader.training.infra.research.factor_diagnostic_reports import (
     FactorDiagnosticReportConflictError,
     JsonFactorDiagnosticReportArchive,

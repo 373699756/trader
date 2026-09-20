@@ -7,7 +7,7 @@ from pathlib import Path
 
 from trader.infra.serialization.canonical import canonical_json_text, content_hash
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.shadow_model_report import (
+from trader.training.application.shadow_model_report import (
     ShadowFoldRecord,
     ShadowModelReport,
     ShadowPrediction,

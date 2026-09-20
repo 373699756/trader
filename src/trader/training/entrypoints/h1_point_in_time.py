@@ -6,7 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from trader.training.evaluation.domain.h1_point_in_time import H1PointInTimeSpec
+from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeSpec
 from trader.training.infra.research.h1_point_in_time_archive import (
     H1PointInTimeArchiveConflictError,
     SQLiteH1PointInTimeArchive,

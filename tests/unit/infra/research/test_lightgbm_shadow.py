@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from tests.unit.application.research.test_shadow_model_evaluation import _labeled_day, _RecordingTrainer
-from trader.training.evaluation.application.shadow_model_evaluation import TomorrowShadowModelEvaluator
-from trader.training.evaluation.application.shadow_model_ports import ShadowFitRequest
+from trader.training.application.shadow_model_evaluation import TomorrowShadowModelEvaluator
+from trader.training.application.shadow_model_ports import ShadowFitRequest
 from trader.training.infra.research.lightgbm_shadow import LightGbmShadowTrainer
 from trader.training.infra.research.shadow_model_artifacts import (
     ShadowModelArtifactArchive,

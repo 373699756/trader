@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
-from trader.training.evaluation.application.historical_extraction_models import (
+from trader.training.application.historical_extraction_models import (
     AdjustmentFactorWindow,
     BoardPointInTimeCoverage,
     HardFilterAggregate,
@@ -18,8 +18,8 @@ from trader.training.evaluation.application.historical_extraction_models import 
     HistoricalMinuteBar,
     HistoricalSettlementEvidence,
 )
-from trader.training.evaluation.application.research_ports import HistoricalDataPlaneReadPort
-from trader.training.evaluation.domain.historical import (
+from trader.training.application.research_ports import HistoricalDataPlaneReadPort
+from trader.training.domain.evaluation.historical import (
     CostSettlementBasis,
     HistoricalCandidateSummary,
     ResearchDataLineage,

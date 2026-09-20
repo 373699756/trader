@@ -11,16 +11,16 @@ import pytest
 from trader.recommendation.domain.market.feature_contracts import FeatureVector
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.application.candidate_recall_ledger import CandidateRecallLedgerBuilder
-from trader.training.evaluation.domain.candidate_recall_ledger import (
+from trader.training.application.candidate_recall_ledger import CandidateRecallLedgerBuilder
+from trader.training.domain.evaluation.candidate_recall_ledger import (
     CANDIDATE_RECALL_STAGES,
     CandidateRecallDayTrace,
     CandidateRecallDownstreamBoundary,
     CandidateRecallDownstreamTrace,
     CandidateRecallStageLatency,
 )
-from trader.training.evaluation.domain.models import OutcomeExitStatus, RecommendationOutcome
-from trader.training.evaluation.domain.point_in_time_dataset import (
+from trader.training.domain.evaluation.models import OutcomeExitStatus, RecommendationOutcome
+from trader.training.domain.evaluation.point_in_time_dataset import (
     POINT_IN_TIME_BOUNDARIES,
     PointInTimeBoardPopulation,
     PointInTimeBoundaryCount,

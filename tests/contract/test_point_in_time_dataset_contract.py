@@ -6,10 +6,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_point_in_time_dataset_is_production_isolated_and_uses_canonical_outcomes() -> None:
-    application = (ROOT / "src/trader/training/evaluation/application/point_in_time_dataset.py").read_text(
+    application = (ROOT / "src/trader/training/application/point_in_time_dataset.py").read_text(
         encoding="utf-8"
     )
-    domain = (ROOT / "src/trader/training/evaluation/domain/point_in_time_dataset.py").read_text(encoding="utf-8")
+    domain = (ROOT / "src/trader/training/domain/evaluation/point_in_time_dataset.py").read_text(encoding="utf-8")
 
     assert "CanonicalOutcomeEvaluator" in application
     assert "select_scored" in application
@@ -23,8 +23,8 @@ def test_point_in_time_dataset_is_production_isolated_and_uses_canonical_outcome
 
 def test_point_in_time_dataset_has_no_versioned_non_scoring_identity() -> None:
     paths = (
-        ROOT / "src/trader/training/evaluation/domain/point_in_time_dataset.py",
-        ROOT / "src/trader/training/evaluation/application/point_in_time_dataset.py",
+        ROOT / "src/trader/training/domain/evaluation/point_in_time_dataset.py",
+        ROOT / "src/trader/training/application/point_in_time_dataset.py",
         ROOT / "src/trader/training/infra/research/point_in_time_dataset_artifacts.py",
     )
 

@@ -7,8 +7,8 @@ from importlib.metadata import version
 import lightgbm as lgb
 import numpy as np
 
-from trader.training.evaluation.application.tomorrow_daily_close_model_selection import DailyCloseBaseModelFit
-from trader.training.evaluation.application.tomorrow_daily_close_training import DailyCloseFeatureRow
+from trader.training.application.tomorrow_daily_close_model_selection import DailyCloseBaseModelFit
+from trader.training.application.tomorrow_daily_close_training import DailyCloseFeatureRow
 
 _RIDGE_ALPHA = 10.0
 _LIGHTGBM_ROUNDS = 80

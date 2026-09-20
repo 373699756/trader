@@ -65,9 +65,9 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     research_sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
-            SOURCE / "training/evaluation/application/tomorrow_historical_screening.py",
-            SOURCE / "training/evaluation/application/tomorrow_point_in_time_holdout.py",
-            SOURCE / "training/evaluation/application/tomorrow_historical_validation.py",
+            SOURCE / "training/application/tomorrow_historical_screening.py",
+            SOURCE / "training/application/tomorrow_point_in_time_holdout.py",
+            SOURCE / "training/application/tomorrow_historical_validation.py",
         )
     )
 
@@ -93,7 +93,7 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
     runtime_sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
-            SOURCE / "training/evaluation/domain/tomorrow_historical.py",
+            SOURCE / "training/domain/evaluation/tomorrow_historical.py",
             SOURCE / "recommendation/application/ports/loaded_profile.py",
         )
     )
@@ -108,7 +108,7 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
 def test_historical_evidence_does_not_create_a_running_collection_gate() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
     design = _compact(ROOT / "docs/02_工程设计.md")
-    holdout = _compact(SOURCE / "training/evaluation/application/tomorrow_point_in_time_holdout.py")
+    holdout = _compact(SOURCE / "training/application/tomorrow_point_in_time_holdout.py")
 
     for token in (
         "不能据此断言 V2 未来更能挣钱",

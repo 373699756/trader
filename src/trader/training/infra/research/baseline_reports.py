@@ -8,18 +8,18 @@ from pathlib import Path
 from typing import Literal, cast
 
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.baseline_replay_report import (
+from trader.training.application.baseline_replay_report import (
     BaselineAggregateMetrics,
     BaselineDayMetrics,
     BaselineReportStatus,
     HistoricalBaselineReport,
 )
-from trader.training.evaluation.domain.artifact_identity import (
+from trader.training.domain.evaluation.artifact_identity import (
     canonical_artifact_hash,
     canonical_artifact_json,
     canonical_artifact_value,
 )
-from trader.training.evaluation.domain.specification import HISTORICAL_RESEARCH_SPEC
+from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC
 
 _REPORT_NAME = "historical-baseline-report.json"
 

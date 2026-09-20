@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.application.scoring_hot_path_baseline import (
+from trader.training.application.scoring_hot_path_baseline import (
     ScoringHotPathEquivalence,
     ScoringHotPathLatency,
     ScoringInputEpoch,

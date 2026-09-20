@@ -17,7 +17,7 @@ from typing import Protocol
 from trader.recommendation.application.ports.decision_records import DecisionRecordRepositoryPort
 from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.domain.models import (
+from trader.training.domain.evaluation.models import (
     BenchmarkReturn,
     OutcomeTarget,
     RecommendationOutcome,

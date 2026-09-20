@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.training.evaluation.domain.baseline import (
+from trader.training.domain.evaluation.baseline import (
     mean_rank_ic,
     population_spearman,
     quantile_bucket,

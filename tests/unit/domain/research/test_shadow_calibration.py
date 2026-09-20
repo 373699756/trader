@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 
-from trader.training.evaluation.domain.shadow_calibration import (
+from trader.training.domain.evaluation.shadow_calibration import (
     fit_affine_calibrator,
     fit_logistic_model,
     fit_platt_calibrator,

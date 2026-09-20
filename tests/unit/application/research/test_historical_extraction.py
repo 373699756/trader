@@ -5,14 +5,14 @@ from datetime import date, timedelta
 
 from tests.unit.application.research.test_historical_ports import TRADE_DATE, _bundle, _summary
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
-from trader.training.evaluation.application.extraction import HistoricalExtractor
-from trader.training.evaluation.application.historical_extraction_models import (
+from trader.training.application.extraction import HistoricalExtractor
+from trader.training.application.historical_extraction_models import (
     HistoricalDaySummary,
     HistoricalEvaluatedCandidate,
     HistoricalFullFieldBundle,
 )
-from trader.training.evaluation.domain.historical import ResearchDataLineage, ScoreComponent
-from trader.training.evaluation.domain.specification import PREREGISTERED_RESEARCH_SPEC
+from trader.training.domain.evaluation.historical import ResearchDataLineage, ScoreComponent
+from trader.training.domain.evaluation.specification import PREREGISTERED_RESEARCH_SPEC
 
 
 class _Port:

@@ -12,7 +12,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockTradingStatus,
     BaoStockTrainingRow,
 )
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 
 HISTORY_TRAINING_WINDOW_SESSIONS = 61
 MAX_HISTORY_TRAINING_WINDOW_SESSIONS = 251

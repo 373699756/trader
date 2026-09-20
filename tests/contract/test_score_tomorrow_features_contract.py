@@ -7,9 +7,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> None:
     strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
-    domain = (ROOT / "src/trader/training/evaluation/domain/tomorrow_features.py").read_text(encoding="utf-8")
-    application = (ROOT / "src/trader/training/evaluation/application/tomorrow_features.py").read_text(encoding="utf-8")
-    models = (ROOT / "src/trader/training/evaluation/application/tomorrow_feature_contracts.py").read_text(
+    domain = (ROOT / "src/trader/training/domain/evaluation/tomorrow_features.py").read_text(encoding="utf-8")
+    application = (ROOT / "src/trader/training/application/tomorrow_features.py").read_text(encoding="utf-8")
+    models = (ROOT / "src/trader/training/application/tomorrow_feature_contracts.py").read_text(
         encoding="utf-8"
     )
     combined = domain + application + models
@@ -35,8 +35,8 @@ def test_batch_two_contract_freezes_five_point_in_time_feature_families() -> Non
 
 
 def test_tomorrow_feature_modules_do_not_import_production_or_io_boundaries() -> None:
-    domain = (ROOT / "src/trader/training/evaluation/domain/tomorrow_features.py").read_text(encoding="utf-8")
-    application = (ROOT / "src/trader/training/evaluation/application/tomorrow_features.py").read_text(encoding="utf-8")
+    domain = (ROOT / "src/trader/training/domain/evaluation/tomorrow_features.py").read_text(encoding="utf-8")
+    application = (ROOT / "src/trader/training/application/tomorrow_features.py").read_text(encoding="utf-8")
 
     for forbidden in ("trader.infra", "trader.web", "flask", "deepseek", "requests", "sqlite3"):
         assert forbidden not in domain.lower()

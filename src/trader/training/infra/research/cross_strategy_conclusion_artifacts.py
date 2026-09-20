@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.cross_strategy_conclusion import CrossStrategyConclusion
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.training.infra.research.terminal_holdout_artifacts import (
     TerminalHoldoutArtifactConflictError,
     decode_terminal_holdout_report,

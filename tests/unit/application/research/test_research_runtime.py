@@ -8,7 +8,7 @@ from trader.recommendation.application.runtime.cadence import CadencePolicy
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.application.research_runtime import ResearchRuntime
+from trader.training.application.research_runtime import ResearchRuntime
 
 NOW = datetime(2026, 8, 21, 10, 0, tzinfo=SHANGHAI)
 

@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from trader.training.evaluation.application.tomorrow_daily_close_training import (
+from trader.training.application.tomorrow_daily_close_training import (
     CandidateModelArtifact,
     DailyCloseSourceSample,
     ModelDependencyVersion,
@@ -129,7 +129,7 @@ def test_json_codec_rejects_content_tampering_and_unknown_fields() -> None:
     payload = json.loads(TomorrowDailyCloseArtifactCodec.encode(_artifact()))
     payload["unexpected"] = True
     payload_without_hash = {key: value for key, value in payload.items() if key != "content_hash"}
-    from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
+    from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 
     payload["content_hash"] = canonical_artifact_hash(payload_without_hash)
     with pytest.raises(TomorrowDailyCloseArtifactError, match="schema"):

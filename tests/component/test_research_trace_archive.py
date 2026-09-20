@@ -13,7 +13,7 @@ from trader.recommendation.application.pipeline.freeze_publish.decision_events i
     DecisionObservation,
     build_decision_committed,
 )
-from trader.training.evaluation.application.research_audit import (
+from trader.training.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
     ResearchCandidateAudit,

@@ -13,12 +13,12 @@ from trader.infra.serialization.sealing import publish_immutable
 from trader.recommendation.domain.market.feature_contracts import FeatureVector
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
-from trader.training.evaluation.domain.models import (
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.training.domain.evaluation.models import (
     OutcomeExitStatus,
     RecommendationOutcome,
 )
-from trader.training.evaluation.domain.point_in_time_dataset import (
+from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeBoardPopulation,
     PointInTimeBoundaryCount,
     PointInTimeCostOutcome,

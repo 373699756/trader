@@ -42,7 +42,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.status_projection import input_quality_payload, runtime_status
-from trader.training.evaluation.application.research_runtime import ResearchRuntime
+from trader.training.application.research_runtime import ResearchRuntime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 

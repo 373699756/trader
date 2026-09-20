@@ -17,11 +17,11 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from trader.training.evaluation.application.h1_point_in_time_completion import (  # noqa: E402
+from trader.training.application.h1_point_in_time_completion import (  # noqa: E402
     H1ResearchCompletion,
     complete_h1_research,
 )
-from trader.training.evaluation.domain.h1_point_in_time import H1CapabilityAuditReport, H1PointInTimeSpec  # noqa: E402
+from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityAuditReport, H1PointInTimeSpec  # noqa: E402
 from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive  # noqa: E402
 from trader.training.infra.research.h1_point_in_time_capability import (  # noqa: E402
     FreeSourceH1CapabilityProbe,

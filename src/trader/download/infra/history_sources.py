@@ -7,8 +7,8 @@ from datetime import date
 from trader.infra.market_data.history.history_seed import DailyHistoryClient
 from trader.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.domain.candidate.filters import board_for_code
-from trader.training.evaluation.application.historical_screening import HistoricalSecurity
-from trader.training.evaluation.domain.historical_screening import HistoricalPriceBar
+from trader.training.application.historical_screening import HistoricalSecurity
+from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
 
 
 class SinaHistoricalUniverseProvider:

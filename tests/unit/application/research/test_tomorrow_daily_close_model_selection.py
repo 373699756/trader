@@ -1,15 +1,15 @@
 from datetime import date, timedelta
 
-from trader.training.evaluation.application.tomorrow_daily_close_model_selection import (
+from trader.training.application.tomorrow_daily_close_model_selection import (
     DailyCloseBaseModelFit,
     DailyCloseCandidateEvaluator,
     DailyCloseModelSelectionService,
 )
-from trader.training.evaluation.application.tomorrow_daily_close_training import (
+from trader.training.application.tomorrow_daily_close_training import (
     DailyCloseSourceSample,
     build_feature_dataset,
 )
-from trader.training.evaluation.domain.tomorrow_daily_close import split_complete_trading_dates
+from trader.training.domain.evaluation.tomorrow_daily_close import split_complete_trading_dates
 
 _HASH_A = "a" * 64
 _HASH_B = "b" * 64

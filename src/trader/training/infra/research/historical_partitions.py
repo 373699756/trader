@@ -15,7 +15,7 @@ import polars as pl
 
 from trader.infra.serialization.canonical import canonical_json_text, canonical_value, content_hash, file_sha256
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.historical_extraction_models import (
+from trader.training.application.historical_extraction_models import (
     HistoricalExtractedDay,
     HistoricalExtraction,
 )

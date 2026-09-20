@@ -5,8 +5,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.application.historical_screening import HistoricalSecurity
-from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalPriceBar
+from trader.training.application.historical_screening import HistoricalSecurity
+from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalPriceBar
 from trader.training.infra.research.historical_screening_archive import (
     HistoricalScreeningArchiveConflictError,
     SQLiteHistoricalScreeningArchive,

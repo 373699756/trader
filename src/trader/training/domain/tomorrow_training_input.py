@@ -9,7 +9,7 @@ from datetime import date
 from typing import Literal
 
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 
 TomorrowTrainingInputCompatibilityStatus = Literal["compatible", "incompatible"]
 

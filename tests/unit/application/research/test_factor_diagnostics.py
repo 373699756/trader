@@ -6,19 +6,19 @@ import pytest
 
 from tests.unit.application.research.test_historical_extraction import _Evaluator, _WindowPort
 from tests.unit.application.research.test_historical_ports import TRADE_DATE, _bundle, _summary
-from trader.training.evaluation.application.baseline_replay_report import BaselineReplaySelection
-from trader.training.evaluation.application.extraction import HistoricalExtractor
-from trader.training.evaluation.application.factor_diagnostic_report import (
+from trader.training.application.baseline_replay_report import BaselineReplaySelection
+from trader.training.application.extraction import HistoricalExtractor
+from trader.training.application.factor_diagnostic_report import (
     FactorDiagnosticDimensionRecord,
     FactorDiagnosticDimensions,
 )
-from trader.training.evaluation.application.factor_diagnostics import NativeFactorDiagnosticEvaluator
-from trader.training.evaluation.application.historical_extraction_models import (
+from trader.training.application.factor_diagnostics import NativeFactorDiagnosticEvaluator
+from trader.training.application.historical_extraction_models import (
     HistoricalEvaluatedCandidate,
     HistoricalFullFieldBundle,
 )
-from trader.training.evaluation.application.replay import HistoricalBaselineReplayer
-from trader.training.evaluation.domain.historical import ScoreComponent
+from trader.training.application.replay import HistoricalBaselineReplayer
+from trader.training.domain.evaluation.historical import ScoreComponent
 
 _CODES = tuple(f"60000{index}" for index in range(1, 7))
 

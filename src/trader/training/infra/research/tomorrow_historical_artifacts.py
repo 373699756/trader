@@ -6,13 +6,13 @@ import json
 from pathlib import Path
 
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.tomorrow_historical_report import TomorrowHistoricalReport
-from trader.training.evaluation.domain.artifact_identity import (
+from trader.training.application.tomorrow_historical_report import TomorrowHistoricalReport
+from trader.training.domain.evaluation.artifact_identity import (
     canonical_artifact_hash,
     canonical_artifact_json,
     canonical_artifact_value,
 )
-from trader.training.evaluation.domain.tomorrow_historical import (
+from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalModelArtifact,
 )

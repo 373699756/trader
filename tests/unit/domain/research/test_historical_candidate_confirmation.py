@@ -3,13 +3,13 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.domain.filter_recall_ablation import FilterAblationRow, run_filter_recall_ablation
-from trader.training.evaluation.domain.historical_candidate_confirmation import (
+from trader.training.domain.evaluation.filter_recall_ablation import FilterAblationRow, run_filter_recall_ablation
+from trader.training.domain.evaluation.historical_candidate_confirmation import (
     CandidateConfirmationPlan,
     CandidateConfirmationSeries,
     confirm_rule_candidates,
 )
-from trader.training.evaluation.domain.preregistered_rule_candidate import preregister_rule_candidates
+from trader.training.domain.evaluation.preregistered_rule_candidate import preregister_rule_candidates
 
 
 def test_confirmation_plan_rejects_invalid_statistics() -> None:

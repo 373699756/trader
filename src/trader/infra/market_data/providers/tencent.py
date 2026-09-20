@@ -26,7 +26,7 @@ from trader.recommendation.application.runtime.workers import (
     submit_or_run_inline,
 )
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.training.evaluation.domain.models import OutcomeBar
+from trader.training.domain.evaluation.models import OutcomeBar
 
 SessionFactory = Callable[[], requests.Session]
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}

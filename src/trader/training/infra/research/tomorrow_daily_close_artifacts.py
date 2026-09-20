@@ -7,7 +7,7 @@ from datetime import date
 from typing import cast
 
 from trader.infra.serialization.fields import as_sequence, is_boolean, is_integer, is_number
-from trader.training.evaluation.application.tomorrow_daily_close_training import (
+from trader.training.application.tomorrow_daily_close_training import (
     BaseModelKind,
     CandidateModelArtifact,
     CorrectionDimension,
@@ -22,7 +22,7 @@ from trader.training.evaluation.application.tomorrow_daily_close_training import
     ValidationMetrics,
     ValidationReport,
 )
-from trader.training.evaluation.domain.artifact_identity import (
+from trader.training.domain.evaluation.artifact_identity import (
     canonical_artifact_hash,
     canonical_artifact_json,
     canonical_artifact_value,

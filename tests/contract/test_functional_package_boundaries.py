@@ -33,8 +33,8 @@ TARGET_PACKAGES = (
     "download/entrypoints",
     "training/application",
     "training/domain",
-    "training/evaluation/domain",
-    "training/evaluation/application",
+    "training/domain/evaluation",
+    "training/application",
     "training/infra",
     "training/infra/research",
     "training/entrypoints",
@@ -418,7 +418,7 @@ def test_http_api_and_presentation_resources_are_partitioned() -> None:
 
 
 def test_application_research_and_outcome_services_are_partitioned() -> None:
-    application_root = SOURCE_ROOT / "training/evaluation/application"
+    application_root = SOURCE_ROOT / "training/application"
     research_root = application_root
     outcomes_root = application_root
     research_files = {

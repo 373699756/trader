@@ -8,8 +8,8 @@ from pathlib import Path
 
 from trader.infra.serialization.fields import is_text_sequence
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash, canonical_artifact_json
-from trader.training.evaluation.domain.terminal_holdout import (
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash, canonical_artifact_json
+from trader.training.domain.evaluation.terminal_holdout import (
     TerminalHoldoutMetrics,
     TerminalHoldoutReport,
     TerminalStrategy,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.training.evaluation.domain.cost_aware_selection import (
+from trader.training.domain.evaluation.cost_aware_selection import (
     CostAwareCandidate,
     CostAwareSelectionPolicy,
     select_cost_aware,

@@ -1,9 +1,9 @@
 from datetime import date, timedelta
 
-from trader.training.evaluation.application.historical_label import HistoricalLabelPreregistrationService
-from trader.training.evaluation.application.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
-from trader.training.evaluation.domain.h1_point_in_time import H1PointInTimeSpec
-from trader.training.evaluation.domain.historical_label import H1CoverageMetadata
+from trader.training.application.historical_label import HistoricalLabelPreregistrationService
+from trader.training.application.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
+from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeSpec
+from trader.training.domain.evaluation.historical_label import H1CoverageMetadata
 
 
 class _MetadataPort:

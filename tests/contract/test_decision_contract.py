@@ -31,6 +31,6 @@ def test_committed_event_is_application_owned_and_research_free() -> None:
 
     assert "DecisionCommitted" in classes
     assert all(
-        not name.startswith(("trader.training.evaluation.domain", "trader.training.evaluation.application"))
+        not name.startswith(("trader.training.domain.evaluation", "trader.training.application"))
         for name in imports
     )

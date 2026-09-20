@@ -4,7 +4,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.evaluation.domain.tomorrow_daily_close import (
+from trader.training.domain.evaluation.tomorrow_daily_close import (
     build_expanding_walk_forward,
     split_complete_trading_dates,
 )

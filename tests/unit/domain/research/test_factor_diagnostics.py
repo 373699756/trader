@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from trader.training.evaluation.domain.factor_diagnostics import (
+from trader.training.domain.evaluation.factor_diagnostics import (
     factor_concentration,
     information_coefficient_ratio,
     monotonicity,

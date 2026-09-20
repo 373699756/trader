@@ -113,9 +113,9 @@ from trader.recommendation.infra.persistence.decision_records import SQLiteDecis
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
-from trader.training.evaluation.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.training.evaluation.application.research_audit import try_build_committed_research_audit
-from trader.training.evaluation.application.research_runtime import ResearchRuntime
+from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
+from trader.training.application.research_audit import try_build_committed_research_audit
+from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository

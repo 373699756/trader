@@ -13,8 +13,8 @@ import requests
 from trader.infra.serialization.canonical import canonical_json_text
 from trader.infra.serialization.fields import is_boolean, is_integer, is_text_sequence
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
-from trader.training.evaluation.domain.h1_point_in_time import (
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.h1_point_in_time import (
     H1_SOURCE_CUTOFF,
     H1CapabilityAuditReport,
     H1CapabilityProbe,

@@ -3,14 +3,14 @@ from datetime import date, datetime, time, timedelta
 
 import pytest
 
-from trader.training.evaluation.application.tomorrow_daily_close_h1 import (
+from trader.training.application.tomorrow_daily_close_h1 import (
     TomorrowDailyCloseH1Observation,
     attach_matured_daily_close_labels,
     build_h1_daily_close_features,
 )
-from trader.training.evaluation.application.tomorrow_daily_close_training import build_feature_dataset
-from trader.training.evaluation.domain.h1_point_in_time import SHANGHAI, H1PointInTimeRecord
-from trader.training.evaluation.domain.historical_screening import HistoricalPriceBar
+from trader.training.application.tomorrow_daily_close_training import build_feature_dataset
+from trader.training.domain.evaluation.h1_point_in_time import SHANGHAI, H1PointInTimeRecord
+from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
 
 _HASH = "a" * 64
 

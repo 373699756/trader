@@ -48,7 +48,7 @@ from trader.recommendation.application.runtime.workers import (
     borrow_executor,
     submit_or_run_inline,
 )
-from trader.training.evaluation.domain.models import OutcomeBar
+from trader.training.domain.evaluation.models import OutcomeBar
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

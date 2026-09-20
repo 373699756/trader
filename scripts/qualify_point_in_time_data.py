@@ -18,10 +18,10 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from trader.download.infra.history_archive_status import inspect_history_archive  # noqa: E402
-from trader.training.evaluation.application.point_in_time_data_qualification import (  # noqa: E402
+from trader.training.application.point_in_time_data_qualification import (  # noqa: E402
     assemble_point_in_time_data_qualification,
 )
-from trader.training.evaluation.domain.point_in_time_data_qualification import (  # noqa: E402
+from trader.training.domain.evaluation.point_in_time_data_qualification import (  # noqa: E402
     PointInTimeDataQualificationReport,
 )
 from trader.training.infra.research.h1_point_in_time_capability import (  # noqa: E402

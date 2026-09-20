@@ -12,7 +12,7 @@ from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.domain.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
+from trader.training.domain.evaluation.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
 from trader.training.infra.research.outcome_evidence_repository import (
     OutcomeEvidenceConflictError,
     SQLiteOutcomeEvidenceRepository,

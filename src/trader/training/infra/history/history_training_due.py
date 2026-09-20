@@ -25,7 +25,7 @@ from trader.download.infra.history_control_repository import (
     SQLiteHistoryControlRepository,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.infra.artifacts.bundle_repository import (
     ActiveHeadBundle,
     inspect_active_head_bundle,

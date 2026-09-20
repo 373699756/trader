@@ -7,7 +7,7 @@ from pathlib import Path
 
 from trader.infra.serialization.canonical import canonical_json_text
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.evaluation.application.cost_aware_selection_report import CostAwareSelectionReport
+from trader.training.application.cost_aware_selection_report import CostAwareSelectionReport
 
 
 class CostAwareSelectionArtifactConflictError(RuntimeError):

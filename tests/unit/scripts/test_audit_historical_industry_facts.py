@@ -4,7 +4,7 @@ import json
 from datetime import date
 
 import scripts.audit_historical_industry_facts as script
-from trader.training.evaluation.domain.historical_industry_facts import (
+from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustryFact,
     HistoricalIndustrySourceContract,
     HistoricalIndustryStockWindow,

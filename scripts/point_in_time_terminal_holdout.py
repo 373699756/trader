@@ -14,16 +14,16 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from trader.training.evaluation.application.cross_strategy_conclusion import (  # noqa: E402
+from trader.training.application.cross_strategy_conclusion import (  # noqa: E402
     CrossStrategyConclusion,
     CrossStrategyConclusionService,
 )
-from trader.training.evaluation.application.d25_terminal_holdout import D25TerminalHoldoutService  # noqa: E402
-from trader.training.evaluation.application.tomorrow_point_in_time_holdout import (  # noqa: E402
+from trader.training.application.d25_terminal_holdout import D25TerminalHoldoutService  # noqa: E402
+from trader.training.application.tomorrow_point_in_time_holdout import (  # noqa: E402
     TomorrowPointInTimeHoldoutService,
 )
-from trader.training.evaluation.domain.h1_point_in_time import H1CapabilityAuditReport, ResearchStrategy  # noqa: E402
-from trader.training.evaluation.domain.terminal_holdout import (  # noqa: E402
+from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityAuditReport, ResearchStrategy  # noqa: E402
+from trader.training.domain.evaluation.terminal_holdout import (  # noqa: E402
     TerminalHoldoutParentState,
     TerminalHoldoutReport,
 )

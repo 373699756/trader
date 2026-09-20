@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 
 HistorySecurityBoard = Literal["main", "chinext", "star"]
 HistorySyncState = Literal["pending", "running", "completed", "failed", "cancelled"]

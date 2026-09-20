@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.training.evaluation.application.h1_point_in_time import H1PointInTimeArchivePort
-from trader.training.evaluation.application.historical_screening import HistoricalSecurity, ResearchBoard
-from trader.training.evaluation.domain.artifact_identity import canonical_artifact_hash
-from trader.training.evaluation.domain.h1_point_in_time import (
+from trader.training.application.h1_point_in_time import H1PointInTimeArchivePort
+from trader.training.application.historical_screening import HistoricalSecurity, ResearchBoard
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.h1_point_in_time import (
     H1CoverageAudit,
     H1CoverageManifest,
     H1CoverageState,
@@ -22,7 +22,7 @@ from trader.training.evaluation.domain.h1_point_in_time import (
     H1PointInTimeSpec,
     ResearchStrategy,
 )
-from trader.training.evaluation.domain.historical_label import H1CoverageMetadata
+from trader.training.domain.evaluation.historical_label import H1CoverageMetadata
 
 
 class H1PointInTimeArchiveConflictError(RuntimeError):

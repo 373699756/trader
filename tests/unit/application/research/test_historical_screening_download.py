@@ -3,11 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import timedelta
 
-from trader.training.evaluation.application.historical_screening import (
+from trader.training.application.historical_screening import (
     HistoricalDownloadService,
     HistoricalSecurity,
 )
-from trader.training.evaluation.domain.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalPriceBar
+from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalPriceBar
 
 
 def _bar(code: str) -> HistoricalPriceBar:

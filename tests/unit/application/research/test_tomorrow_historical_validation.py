@@ -6,7 +6,7 @@ import pytest
 
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.domain.scoring.residualization import LEGACY_EXPOSURE_CONTRACT
-from trader.training.evaluation.application.tomorrow_historical_validation import (
+from trader.training.application.tomorrow_historical_validation import (
     TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
     TomorrowHistoricalRiskRow,
     build_historical_risk_probability,
