@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import threading
-import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, time
@@ -41,13 +39,17 @@ from trader.training.infra.research.trace_storage import (
     partition_date,
     quarantine_row,
 )
+from trader.training.infra.research.trace_codec import (
+    DEFAULT_DECODED_PAYLOAD_BYTES,
+    decoded_payload_bytes,
+    persisted_payload_bytes,
+    sha256,
+)
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
 RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"
 _SCHEMA_VERSION = RESEARCH_EVENT_SCHEMA_VERSION
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_COMPRESSED_PAYLOAD_PREFIX = b"trader-zlib\x00"
-_DEFAULT_DECODED_PAYLOAD_BYTES = 64 * 1024 * 1024
 
 
 class ResearchTraceConflictError(RuntimeError):
@@ -88,7 +90,7 @@ class ResearchTradeDateObservation:
 class ResearchTraceLimits:
     events_per_trade_date: int = 4096
     payload_bytes: int = 4 * 1024 * 1024
-    decoded_payload_bytes: int = _DEFAULT_DECODED_PAYLOAD_BYTES
+    decoded_payload_bytes: int = DEFAULT_DECODED_PAYLOAD_BYTES
     trade_date_bytes: int = 1024 * 1024 * 1024
     archive_bytes: int = 20 * 1024 * 1024 * 1024
     trade_dates: int = 120
@@ -157,8 +159,8 @@ class SQLiteResearchTraceArchive:
         logical_payload = _observation_bytes(observation)
         if len(logical_payload) > self._maximum_decoded_payload_bytes:
             raise ResearchTraceCapacityError("research trace decoded payload capacity exhausted")
-        payload = _persisted_payload_bytes(logical_payload)
-        payload_hash = _sha256(logical_payload)
+        payload = persisted_payload_bytes(logical_payload)
+        payload_hash = sha256(logical_payload)
         if len(payload) > self._maximum_payload_bytes:
             raise ResearchTraceCapacityError("research trace payload capacity exhausted")
         database = self._database_for(event.trade_date)
@@ -168,7 +170,7 @@ class SQLiteResearchTraceArchive:
                 existing_payload = bytes(existing["payload"])
                 if (
                     str(existing["payload_hash"]) == payload_hash
-                    and _decoded_payload_bytes(
+                    and decoded_payload_bytes(
                         existing_payload,
                         maximum_bytes=self._maximum_decoded_payload_bytes,
                     )
@@ -179,7 +181,7 @@ class SQLiteResearchTraceArchive:
                 persisted = _observation_from_bytes(
                     existing_payload,
                     str(existing["payload_hash"]),
-                    maximum_decoded_bytes=self._maximum_decoded_payload_bytes,
+                        maximum_decoded_bytes=self._maximum_decoded_payload_bytes,
                 )
                 if persisted.event == event and observation.research_audit is None:
                     self._duplicate += 1
@@ -462,10 +464,10 @@ class SQLiteResearchTraceArchive:
 def _verified_event(
     row: sqlite3.Row,
     *,
-    maximum_decoded_bytes: int = _DEFAULT_DECODED_PAYLOAD_BYTES,
+    maximum_decoded_bytes: int = DEFAULT_DECODED_PAYLOAD_BYTES,
 ) -> DecisionObservation:
     persisted_payload = bytes(row["payload"])
-    payload = _decoded_payload_bytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
+    payload = decoded_payload_bytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
     row_schema = str(row["schema_version"])
     if row_schema not in {LEGACY_RESEARCH_EVENT_SCHEMA_VERSION, RESEARCH_EVENT_SCHEMA_VERSION}:
         raise ValueError("research event row schema is invalid")
@@ -493,38 +495,15 @@ def _observation_from_bytes(
     persisted_payload: bytes,
     payload_hash: str,
     *,
-    maximum_decoded_bytes: int = _DEFAULT_DECODED_PAYLOAD_BYTES,
+    maximum_decoded_bytes: int = DEFAULT_DECODED_PAYLOAD_BYTES,
 ) -> DecisionObservation:
-    payload = _decoded_payload_bytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
-    if _sha256(payload) != payload_hash:
+    payload = decoded_payload_bytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
+    if sha256(payload) != payload_hash:
         raise ValueError("research event payload hash mismatch")
     raw = json.loads(payload)
     if not isinstance(raw, dict):
         raise ValueError("research event payload must be an object")
     return _observation_from_dict(cast(dict[str, object], raw))
-
-
-def _persisted_payload_bytes(payload: bytes) -> bytes:
-    compressed = _COMPRESSED_PAYLOAD_PREFIX + zlib.compress(payload, level=6)
-    return compressed if len(compressed) < len(payload) else payload
-
-
-def _decoded_payload_bytes(payload: bytes, *, maximum_bytes: int) -> bytes:
-    if maximum_bytes < 1:
-        raise ValueError("research trace decoded payload limit must be positive")
-    if not payload.startswith(_COMPRESSED_PAYLOAD_PREFIX):
-        if len(payload) > maximum_bytes:
-            raise ValueError("research trace decoded payload capacity exhausted")
-        return payload
-    compressed = payload[len(_COMPRESSED_PAYLOAD_PREFIX) :]
-    try:
-        decoder = zlib.decompressobj()
-        decoded = decoder.decompress(compressed, maximum_bytes + 1)
-    except zlib.error as exc:
-        raise ValueError("research trace compressed payload is invalid") from exc
-    if len(decoded) > maximum_bytes or not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
-        raise ValueError("research trace decoded payload capacity exhausted")
-    return decoded
 
 
 def _observation_bytes(
@@ -988,10 +967,6 @@ def _optional_number_pairs(raw: object, label: str) -> tuple[tuple[str, float | 
             raise ValueError(f"{label} entries are invalid")
         result.append((values[0], _optional_number(values[1])))
     return tuple(result)
-
-
-def _sha256(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()
 
 
 __all__ = [
