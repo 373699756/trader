@@ -22,7 +22,7 @@ from trader.training.application.research_audit import (
     ResearchPopulationAudit,
     point_in_time_population_hash,
 )
-from trader.training.infra.research import research_trace_archive as research_trace_module
+from trader.infra.serialization.research_trace_projection import observation_bytes
 from trader.training.infra.research.research_trace_archive import (
     LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
     ResearchTraceCapacityError,
@@ -61,9 +61,11 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
     with pytest.raises(ValueError, match="read-only"):
         archive.record(observation)
 
-    payload = research_trace_module._observation_bytes(
+    payload = observation_bytes(
         observation,
         schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+        legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+        current_schema_version="research_committed_event",
     )
     database = tmp_path / "research" / "committed-events.sqlite3"
     with sqlite3.connect(database) as connection:
@@ -214,7 +216,12 @@ def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path)
         point_in_time_population_hash=point_in_time_population_hash(population),
     )
     observation = DecisionObservation(event, expanded_audit)
-    logical_payload = research_trace_module._observation_bytes(observation)
+    logical_payload = observation_bytes(
+        observation,
+        schema_version="research_committed_event",
+        legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+        current_schema_version="research_committed_event",
+    )
     assert len(logical_payload) > 4 * 1024 * 1024
 
     archive = SQLiteResearchTraceArchive(tmp_path)

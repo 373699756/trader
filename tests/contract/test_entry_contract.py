@@ -103,6 +103,7 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.infra.research.trace_storage",
         "trader.training.infra.research.trace_codec",
         "trader.infra.serialization.research_trace_validation",
+        "trader.infra.serialization.research_trace_projection",
         "trader.training.infra.research.outcome_evidence_repository",
         "trader.training.infra.research.research_trace_archive",
     }
