@@ -19,7 +19,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
-from trader.web.api.decision_serializers import serialize_event
+from trader.http_api.decision_serializers import serialize_event
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 

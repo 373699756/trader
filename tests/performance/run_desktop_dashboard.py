@@ -42,7 +42,7 @@ from trader.recommendation.domain.publication.decision_identity import (  # noqa
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
 from trader.web import create_app  # noqa: E402
-from trader.web.api.route_services import UnifiedWebServices  # noqa: E402
+from trader.http_api.route_services import UnifiedWebServices  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
 REPORT_SCHEMA = "desktop-browser"

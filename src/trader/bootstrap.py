@@ -106,7 +106,7 @@ from trader.infra.settings import (
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.web import create_app
-from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
+from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 
 
 @dataclass(frozen=True)

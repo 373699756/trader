@@ -253,10 +253,12 @@ def test_old_production_chain_has_no_active_files() -> None:
 
 def test_active_web_surface_and_fixed_long_tabs_use_unified_routes() -> None:
     web = SOURCE_ROOT / "web"
-    api = web / "api"
-    assert {"routes.py", "route_services.py", "decision_serializers.py", "decision_sse.py"} <= {
+    api = SOURCE_ROOT / "http_api"
+    assert {"route_services.py", "decision_serializers.py", "decision_sse.py"} <= {
         path.name for path in api.glob("*.py")
     }
+    assert (api / "routes" / "page_routes.py").is_file()
+    assert not any((web / "api").glob("*.py"))
     assert not any(
         (web / name).exists()
         for name in ("routes.py", "routes_v2.py", "route_services.py", "decision_serializers.py", "decision_sse.py")

@@ -38,7 +38,8 @@ TARGET_PACKAGES = (
     "training/infra",
     "training/infra/research",
     "training/entrypoints",
-    "web/api",
+    "http_api",
+    "http_api/routes",
 )
 
 
@@ -350,18 +351,19 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
     assert violations == []
 
 
-def test_web_api_and_presentation_resources_are_partitioned() -> None:
+def test_http_api_and_presentation_resources_are_partitioned() -> None:
     web_root = SOURCE_ROOT / "web"
-    api_root = web_root / "api"
+    api_root = SOURCE_ROOT / "http_api"
     api_files = {
         "decision_serializers.py",
         "decision_sse.py",
         "route_services.py",
-        "routes.py",
     }
 
     assert api_root.is_dir()
     assert {path.name for path in api_root.glob("*.py")} >= api_files
+    assert (api_root / "routes" / "page_routes.py").is_file()
+    assert not any((web_root / "api").glob("*.py"))
     assert not any((web_root / name).exists() for name in api_files | {"routes_v2.py"})
     assert (web_root / "app.py").is_file()
     assert (web_root / "static_assets.py").is_file()

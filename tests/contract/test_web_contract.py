@@ -22,7 +22,7 @@ from trader.recommendation.domain.publication.decision_identity import (
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 from trader.web import create_app
-from trader.web.api.route_services import UnifiedWebServices, WebApiConfig
+from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 PIPELINE_STAGE_KEYS = (

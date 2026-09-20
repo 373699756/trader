@@ -15,7 +15,7 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
     UnifiedPublishedEvent,
     UnifiedSubscription,
 )
-from trader.web.api.decision_serializers import serialize_event
+from trader.http_api.decision_serializers import serialize_event
 
 
 def decision_event_response(

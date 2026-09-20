@@ -9,8 +9,8 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, request
 
-from trader.web.api.route_services import UnifiedWebServices
-from trader.web.api.routes import register_routes
+from trader.http_api.route_services import UnifiedWebServices
+from trader.http_api.routes.page_routes import register_routes
 from trader.web.static_assets import web_asset
 
 

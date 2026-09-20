@@ -81,7 +81,7 @@ from trader.training.evaluation.application.scoring_hot_path_baseline import (
     build_scoring_hot_path_baseline,
 )
 from trader.web import create_app
-from trader.web.api.route_services import UnifiedWebServices
+from trader.http_api.route_services import UnifiedWebServices
 
 
 @dataclass(frozen=True)
@@ -417,10 +417,10 @@ def _operations(
         "quote_to_draft": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local",
         "deepseek_to_hybrid": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_hybrid",
         "sse_publish": "trader.recommendation.application.pipeline.freeze_publish.event_stream.UnifiedDecisionEventStream.publish_committed",
-        "snapshot_api": "trader.web.api.routes._current",
-        "etag_api": "trader.web.api.routes._current",
-        "dates_api": "trader.web.api.routes._dates",
-        "status_api": "trader.web.api.routes._status",
+        "snapshot_api": "trader.http_api.routes.page_routes._current",
+        "etag_api": "trader.http_api.routes.page_routes._current",
+        "dates_api": "trader.http_api.routes.page_routes._dates",
+        "status_api": "trader.http_api.routes.page_routes._status",
     }
     return operations, provenance
 
