@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheIdentity
-from trader.application.runtime.workers import (
+from trader.recommendation.application.runtime.workers import (
     BorrowExecutorOptions,
     WorkerExecutor,
     borrow_executor,

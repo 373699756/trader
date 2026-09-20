@@ -17,12 +17,12 @@ from trader.recommendation.domain.evidence.review import (
     ReviewCandidateContext,
     ReviewOutcome,
 )
-from trader.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.infra.deepseek.cache import ReviewCache
-from trader.infra.deepseek.challenger import parse_challenger_reviews
-from trader.infra.deepseek.client import DeepSeekHttpClient
-from trader.infra.deepseek.reviewer import DeepSeekReviewer
-from trader.infra.deepseek.schema import SCHEMA_VERSION
+from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.cache import ReviewCache
+from trader.recommendation.infra.deepseek.challenger import parse_challenger_reviews
+from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
+from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.deepseek.schema import SCHEMA_VERSION
 from trader.infra.settings import DeepSeekSettings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)

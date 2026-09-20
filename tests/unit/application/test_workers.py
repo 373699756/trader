@@ -4,8 +4,8 @@ import threading
 
 import pytest
 
-from trader.application.runtime.shutdown import ShutdownDeadline
-from trader.application.runtime.workers import (
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline
+from trader.recommendation.application.runtime.workers import (
     BorrowExecutorOptions,
     BoundedExecutor,
     BoundedExecutorStatus,

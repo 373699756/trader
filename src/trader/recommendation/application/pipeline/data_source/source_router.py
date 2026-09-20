@@ -49,8 +49,8 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
-from trader.application.runtime.cadence import PipelineTask, task_execution_budget_seconds
-from trader.application.runtime.schedule import SHANGHAI
+from trader.recommendation.application.runtime.cadence import PipelineTask, task_execution_budget_seconds
+from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.evidence.pipeline import (

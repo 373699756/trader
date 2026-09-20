@@ -22,10 +22,10 @@ from trader.recommendation.application.ports.market_data import (
     MarketDataNoDataError,
     MarketDataUnavailableError,
 )
-from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.schedule import shanghai_now
-from trader.application.runtime.source_lanes import SourceLaneRegistry, SourceRequestSupersededError
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry, SourceRequestSupersededError
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,

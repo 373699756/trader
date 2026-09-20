@@ -21,13 +21,13 @@ from trader.infra.persistence.research_trace import (
 from trader.training.evaluation.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
-    DecisionObservation,
     ResearchCandidateAudit,
     ResearchDecisionCandidateAudit,
     ResearchDecisionSetAudit,
     ResearchPopulationAudit,
     point_in_time_population_hash,
 )
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
 
 
 def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_path) -> None:

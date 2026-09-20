@@ -22,8 +22,8 @@ from trader.recommendation.application.ports.market_data_repository import (
     SourceCursorRecord,
 )
 from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
-from trader.application.runtime.schedule import shanghai_now
-from trader.application.runtime.source_lanes import SourceRequestSupersededError
+from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment

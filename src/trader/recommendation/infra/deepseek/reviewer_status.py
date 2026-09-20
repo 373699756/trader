@@ -12,10 +12,10 @@ from zoneinfo import ZoneInfo
 from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.review import ReviewOutcome
-from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
-from trader.infra.deepseek.completion_client_contract import DeepSeekHttpResult
-from trader.infra.deepseek.reviewer_context import ReviewerContext
-from trader.infra.deepseek.reviewer_selection import _physical_call_acceptance
+from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
+from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekHttpResult
+from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
+from trader.recommendation.infra.deepseek.reviewer_selection import _physical_call_acceptance
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
 

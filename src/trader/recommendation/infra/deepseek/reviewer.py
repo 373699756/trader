@@ -19,13 +19,13 @@ from trader.recommendation.domain.evidence.review import (
     ReviewCandidateContext,
     ReviewOutcome,
 )
-from trader.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion, BudgetBatchRequest
-from trader.infra.deepseek.cache import ReviewCache
-from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient, DeepSeekHttpResult
-from trader.infra.deepseek.reviewer_context import ReviewerContext
-from trader.infra.deepseek.reviewer_requests import ReviewerRequestExecutor
-from trader.infra.deepseek.reviewer_selection import (
+from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion, BudgetBatchRequest
+from trader.recommendation.infra.deepseek.cache import ReviewCache
+from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekCompletionClient, DeepSeekHttpResult
+from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
+from trader.recommendation.infra.deepseek.reviewer_requests import ReviewerRequestExecutor
+from trader.recommendation.infra.deepseek.reviewer_selection import (
     _aggregate_batch_status,
     _annotate_review,
     _automatic_emergency_reason,
@@ -38,8 +38,8 @@ from trader.infra.deepseek.reviewer_selection import (
     _thinking_mode,
     _unique_candidates,
 )
-from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
-from trader.infra.deepseek.schema import (
+from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
+from trader.recommendation.infra.deepseek.schema import (
     RAW_FACTS_CACHE_GENERATION,
     build_review_manifest_hash,
     review_cache_key,

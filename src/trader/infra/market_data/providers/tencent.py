@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.application.runtime.workers import (
+from trader.recommendation.application.runtime.workers import (
     BorrowExecutorOptions,
     BoundedExecutor,
     borrow_executor,

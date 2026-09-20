@@ -12,11 +12,11 @@ from typing_extensions import Unpack
 
 from trader.recommendation.domain.market.models import Evidence, FeatureSnapshot
 from trader.recommendation.domain.risk.fusion import STRUCTURED_REVIEW_FEATURES
-from trader.infra.deepseek.evidence_router import event_key as _evidence_event_key
-from trader.infra.deepseek.evidence_router import route_prompt_evidence
-from trader.infra.deepseek.evidence_router import source_tier as _evidence_source_tier
-from trader.infra.deepseek.schema_constants import PROMPT_VERSION, SCHEMA_VERSION
-from trader.infra.deepseek.schema_options import ReviewCacheOptions, StrategyCacheOptions
+from trader.recommendation.infra.deepseek.evidence_router import event_key as _evidence_event_key
+from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.recommendation.infra.deepseek.evidence_router import source_tier as _evidence_source_tier
+from trader.recommendation.infra.deepseek.schema_constants import PROMPT_VERSION, SCHEMA_VERSION
+from trader.recommendation.infra.deepseek.schema_options import ReviewCacheOptions, StrategyCacheOptions
 from trader.infra.market_data.candidate_feature_evidence import render_batch_candidate_feature_evidence
 
 

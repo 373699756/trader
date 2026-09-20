@@ -7,6 +7,7 @@ from datetime import date, datetime
 
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, DecisionStage, ScoredDecision
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,19 @@ class DecisionCommitted:
     items: tuple[CommittedDecisionItem, ...]
     projection_version: str = field(default="", compare=False, repr=False)
     projection: ScoredDecision | None = field(default=None, compare=False, repr=False)
+
+
+@dataclass(frozen=True)
+class DecisionObservation:
+    event: DecisionCommitted
+    research_audit: ResearchAuditIdentity | None
+
+    def __post_init__(self) -> None:
+        audit = self.research_audit
+        if audit is not None and (
+            audit.decision_version != self.event.decision_version or audit.decision_hash != self.event.decision_hash
+        ):
+            raise ValueError("research audit must match committed decision identity")
 
 
 def build_decision_committed(
@@ -90,5 +104,6 @@ def _event_item(item: DecisionItem) -> CommittedDecisionItem:
 __all__ = [
     "CommittedDecisionItem",
     "DecisionCommitted",
+    "DecisionObservation",
     "build_decision_committed",
 ]

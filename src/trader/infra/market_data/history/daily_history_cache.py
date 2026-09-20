@@ -26,7 +26,7 @@ from trader.recommendation.application.ports.market_data_repository import (
 )
 from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.application.runtime.workers import (
+from trader.recommendation.application.runtime.workers import (
     BorrowExecutorOptions,
     BoundedExecutor,
     borrow_executor,

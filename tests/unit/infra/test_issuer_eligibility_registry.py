@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
-from trader.infra.persistence.issuer_eligibility import (
+from trader.recommendation.infra.persistence.issuer_eligibility import (
     IssuerEligibilityConflictError,
     SQLiteIssuerEligibilityRegistry,
 )

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
+from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
 
 
 def create_deepseek_client(*, provider: str = "http") -> DeepSeekCompletionClient:
@@ -21,7 +21,7 @@ def create_deepseek_client(*, provider: str = "http") -> DeepSeekCompletionClien
     """
     normalized = provider.strip().lower()
     if normalized == "http":
-        from trader.infra.deepseek.client import DeepSeekHttpClient
+        from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 
         return DeepSeekHttpClient()
     raise ValueError(f"Unknown DeepSeek provider '{provider}'")

@@ -18,14 +18,14 @@ from trader.recommendation.application.ports.read_only_queries import (
     SupplySummary,
 )
 from trader.recommendation.application.ports.runtime import ResearchRuntimeStatus
-from trader.application.runtime.cadence import (
+from trader.recommendation.application.runtime.cadence import (
     CadencePlannerStatus,
     SchedulePointKey,
     SchedulePointState,
     SchedulePointStatus,
 )
-from trader.application.runtime.schedule import SchedulePoint
-from trader.application.runtime.scheduler_runtime import TradingCalendarRuntimeStatus
+from trader.recommendation.application.runtime.schedule import SchedulePoint
+from trader.recommendation.application.runtime.scheduler_runtime import TradingCalendarRuntimeStatus
 from trader.bootstrap import (
     _initialize_reference_data_plane,
     _initialize_research_trace,
@@ -36,10 +36,15 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
+    PipelineStage,
+    PipelineStageSnapshot,
     PipelineStageStatus,
     RecommendationPipelineStatus,
+    SourceHealth,
+    SourceHealthState,
+    StageState,
 )
-from trader.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -145,7 +150,7 @@ def test_build_system_wires_history_completion_to_scoring_refresh(tmp_path, monk
 
 
 def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:
-    from trader.infra.scoring.profile_factory import load_scoring_profile
+    from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 
     monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
 
@@ -168,7 +173,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
 
 
 def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch) -> None:
-    from trader.infra.scoring.profile_factory import load_scoring_profile
+    from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 
     observed: list[Path] = []
     v2_profile = load_scoring_profile("v2", training_root=PROJECT_ROOT / "data" / "train")
@@ -354,6 +359,24 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
 
 def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
     source_time = datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    stage_snapshots = tuple(
+        PipelineStageSnapshot(
+            stage=stage,
+            stage_order=index,
+            as_of=source_time,
+            state=StageState.READY,
+            input_count=1,
+            output_count=1,
+            rejected_count=0,
+            pending_count=0,
+            failed_count=0,
+            reasons=(),
+            source_health=SourceHealth(SourceHealthState.READY, 1, 1, source_time, 0.0),
+            latency_ms=1,
+            degraded=False,
+        )
+        for index, stage in enumerate(PipelineStage, start=1)
+    )
     status = InputQualityStatus(
         strategy=Strategy.TOMORROW,
         status="not_ready",
@@ -368,7 +391,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
             latest_quote_source_time=source_time,
             highest_final_score=74.25,
         ),
-        pipeline=RecommendationPipelineStatus(
+            pipeline=RecommendationPipelineStatus(
             current_stage="action_gate",
             stages=(
                 PipelineStageStatus("input_readiness", "completed", 5200, 5100),
@@ -428,9 +451,10 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
                     2,
                     facets=(PipelineFacet("selected_observe", 2, 2),),
                 ),
+                ),
             ),
-        ),
-        candidate_count=360,
+            stage_snapshots=stage_snapshots[:9],
+            candidate_count=360,
         candidate_feature_count=352,
         security_master_covered_count=74,
         history_required_sessions=61,

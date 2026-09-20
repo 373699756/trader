@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,

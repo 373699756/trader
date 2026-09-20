@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 

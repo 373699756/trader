@@ -30,13 +30,13 @@ from trader.recommendation.application.ports.market_data import (
     MarketDataNoDataError,
     MarketDataUnavailableError,
 )
-from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.source_lanes import (
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.source_lanes import (
     LatestRequestLane,
     SourceLaneRegistry,
     SourceRequestSupersededError,
 )
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityRegistryStatus
 from trader.recommendation.domain.market.models import (
     Board,
@@ -87,7 +87,7 @@ from trader.infra.market_data.service.tushare_reference_loader import (
     ReferenceLoadRequest,
     _ReferenceLoadOptions,
 )
-from trader.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)

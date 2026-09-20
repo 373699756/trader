@@ -21,9 +21,9 @@ FORBIDDEN_ACTIVE_PATHS = (
     "application/research/tomorrow_historical_models.py",
     "application/research/transparent_candidate.py",
     "application/research/shadow_model_models.py",
-    "application/runtime/runtime.py",
+    "recommendation/application/runtime/runtime.py",
     "domain/research/transparent_candidate.py",
-    "infra/deepseek/base_client.py",
+    "recommendation/infra/deepseek/base_client.py",
     "infra/market_data/ground_truth.py",
     "infra/market_data/history/service_history.py",
     "infra/market_data/history/service_history_warmup.py",
@@ -41,8 +41,8 @@ FORBIDDEN_ACTIVE_PATHS = (
     "infra/research/history_automation_runtime.py",
     "infra/research/history_sync_runtime.py",
     "infra/runtime_support.py",
-    "infra/scoring/profiles/v3/bundle_store.py",
-    "infra/scoring/profiles/v3/sample_store.py",
+    "recommendation/infra/scoring/profiles/v3/bundle_store.py",
+    "recommendation/infra/scoring/profiles/v3/sample_store.py",
     "infra/settings/runtime.py",
 )
 
@@ -192,9 +192,9 @@ def test_module_constants_describe_business_roles() -> None:
 
 def test_tomorrow_training_sample_boundary_uses_repository_responsibility_names() -> None:
     paths = (
-        SOURCE / "infra/scoring/profiles/v3/sample_builder.py",
-        SOURCE / "infra/scoring/profiles/v3/model_fitting.py",
-        SOURCE / "infra/scoring/profiles/v3/training_sample_repository.py",
+        SOURCE / "recommendation/infra/scoring/profiles/v3/sample_builder.py",
+        SOURCE / "recommendation/infra/scoring/profiles/v3/model_fitting.py",
+        SOURCE / "recommendation/infra/scoring/profiles/v3/training_sample_repository.py",
     )
     violations: list[str] = []
     for path in paths:

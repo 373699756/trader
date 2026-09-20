@@ -17,7 +17,7 @@ from scripts.diagnose_runtime import (
 )
 from scripts.runtime_diagnostics.browser_refresh import _seed
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.application.runtime.schedule import SHANGHAI
+from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.publication.models import Strategy
 
 

@@ -13,7 +13,7 @@ from trader.infra.market_data.providers.cninfo import (
 )
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
 from trader.infra.market_data.service.research_observation_loader import ResearchLoader
-from trader.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OBSERVED_AT = datetime(2026, 7, 30, 14, 50, tzinfo=SHANGHAI)

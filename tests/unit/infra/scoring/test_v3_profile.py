@@ -13,7 +13,7 @@ import pytest
 from trader.recommendation.application.ports.loaded_profile import ModelInput
 from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.artifacts.canonical import content_hash
-from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.infra.artifacts.bundle_codec import decode_head_bundle, load_head_bundle
 from trader.training.infra.artifacts.bundle_locator import locate_head_bundles
 from trader.training.infra.artifacts.bundle_repository import (

@@ -10,12 +10,13 @@ from datetime import time as wall_time
 from typing import Literal, cast
 
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted, DecisionObservation
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverRuntime, DecisionObserverStatus
 from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
 from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
+from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPort,
@@ -36,23 +37,22 @@ from trader.recommendation.application.ports.runtime import (
     TradingCalendarUnavailableError,
 )
 from trader.recommendation.application.ports.publisher import OverlayPublisher
-from trader.training.evaluation.application.research_audit import CommittedResearchAudit, DecisionObservation
-from trader.application.runtime.cadence import (
+from trader.recommendation.application.runtime.cadence import (
     CadencePlanner,
     CadencePlannerStatus,
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointResult,
 )
-from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.latest_wins import (
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.latest_wins import (
     LatestWinsOffer,
     LatestWinsStatus,
     LatestWinsTelemetry,
     LatestWinsWorker,
 )
-from trader.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueRegistry
-from trader.application.runtime.schedule import (
+from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueRegistry
+from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
     MarketPhase,
     ScheduleDecision,
@@ -60,7 +60,7 @@ from trader.application.runtime.schedule import (
     decision_at,
     shanghai_now,
 )
-from trader.application.runtime.schedule_requests import (
+from trader.recommendation.application.runtime.schedule_requests import (
     cycle_correlation_id,
     cycle_order_key,
     cycle_phase,
@@ -71,8 +71,8 @@ from trader.application.runtime.schedule_requests import (
     research_input_version,
     validate_cycle_identity,
 )
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     LongProjection,
@@ -909,7 +909,7 @@ class SchedulerRuntime:
         if event is not None:
             try:
                 audit = cast(
-                    CommittedResearchAudit | None,
+                    ResearchAuditIdentity | None,
                     self._dependencies.decisions.research_audit(event.decision_version),
                 )
             except (RuntimeError, TypeError, ValueError) as exc:

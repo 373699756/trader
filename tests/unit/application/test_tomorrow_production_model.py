@@ -25,7 +25,7 @@ from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
 PROJECT_ROOT = Path(__file__).resolve().parents[3]

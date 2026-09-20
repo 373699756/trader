@@ -21,8 +21,8 @@ from trader.recommendation.application.ports.market_data_repository import (
     TradingCalendarRecord,
 )
 from trader.recommendation.application.ports.json_values import JsonObject
-from trader.infra.persistence import data_plane_sqlite
-from trader.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence import data_plane_sqlite
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 

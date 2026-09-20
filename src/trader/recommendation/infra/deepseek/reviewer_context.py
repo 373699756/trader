@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.infra.deepseek.cache import ReviewCache
-from trader.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
+from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.cache import ReviewCache
+from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
 from trader.infra.settings.models import DeepSeekSettings
 
 

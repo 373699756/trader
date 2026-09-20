@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.application.runtime.source_lanes import SourceLaneRegistryStatus, SourceLaneStatus
+from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistryStatus, SourceLaneStatus
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup, build_history_warmup_policy
 
 NOW = datetime(2026, 7, 24, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))

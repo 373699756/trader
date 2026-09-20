@@ -14,7 +14,7 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
 )
 from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
-from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.infra.settings import load_strategy_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

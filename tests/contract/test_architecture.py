@@ -6,7 +6,7 @@ from dataclasses import MISSING, fields
 from pathlib import Path
 
 from trader.recommendation.application.ports.runtime import DecisionBuilderPort
-from trader.application.runtime.scheduler_runtime import RuntimeDependencies
+from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
@@ -162,8 +162,8 @@ def test_model_scoring_router_is_profile_agnostic_and_replaces_tomorrow_specific
 
 
 def test_v1_scoring_profile_is_retired() -> None:
-    v1_root = SOURCE_ROOT / "infra/scoring/profiles/v1"
-    factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
+    v1_root = SOURCE_ROOT / "recommendation/infra/scoring/profiles/v1"
+    factory = (SOURCE_ROOT / "recommendation/infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 
     assert not any(v1_root.rglob("*.py"))
     assert "build_v1_profile" not in factory
@@ -175,7 +175,7 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
     v3_root = SOURCE_ROOT / "training/infra/profile/v3"
     shared_root = SOURCE_ROOT / "training/infra/artifacts"
     model_port = (SOURCE_ROOT / "recommendation/application/ports/loaded_profile.py").read_text(encoding="utf-8")
-    factory = (SOURCE_ROOT / "infra/scoring/profile_factory.py").read_text(encoding="utf-8")
+    factory = (SOURCE_ROOT / "recommendation/infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 
     for relative in (
         "bundle_codec.py",
@@ -308,8 +308,8 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
     exempt_status_paths = {
         Path("recommendation/application/ports/deepseek.py"),
         Path("recommendation/application/ports/market_data.py"),
-        Path("infra/deepseek/reviewer.py"),
-        Path("infra/deepseek/reviewer_status.py"),
+        Path("recommendation/infra/deepseek/reviewer.py"),
+        Path("recommendation/infra/deepseek/reviewer_status.py"),
         Path("infra/market_data/service/market_feature_service.py"),
         Path("infra/market_data/service/market_data_health.py"),
     }
@@ -344,7 +344,7 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
 
 def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> None:
     identity = (SOURCE_ROOT / "recommendation/domain/publication/decision_identity.py").read_text(encoding="utf-8")
-    codec = (SOURCE_ROOT / "infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
+    codec = (SOURCE_ROOT / "recommendation/infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
     audit = (SOURCE_ROOT / "training/evaluation/application/research_audit.py").read_text(encoding="utf-8")
     columnar = (SOURCE_ROOT / "infra/market_data/normalization/columnar.py").read_text(encoding="utf-8")
 
@@ -388,8 +388,8 @@ def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
     decision_adapters = (
         SOURCE_ROOT / "recommendation/application/pipeline/freeze_publish/runtime_adapters.py"
     ).read_text(encoding="utf-8")
-    runtime = (SOURCE_ROOT / "application/runtime/scheduler_runtime.py").read_text(encoding="utf-8")
-    issues = (SOURCE_ROOT / "application/runtime/runtime_issues.py").read_text(encoding="utf-8")
+    runtime = (SOURCE_ROOT / "recommendation/application/runtime/scheduler_runtime.py").read_text(encoding="utf-8")
+    issues = (SOURCE_ROOT / "recommendation/application/runtime/runtime_issues.py").read_text(encoding="utf-8")
 
     assert "class DeepSeekAdapter" not in input_runtime
     assert "class FreezeAdapter" not in input_runtime

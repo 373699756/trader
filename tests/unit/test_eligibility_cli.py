@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.entrypoints import cli
-from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 
 
 def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path, monkeypatch, capsys) -> None:

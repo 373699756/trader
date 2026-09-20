@@ -23,8 +23,8 @@ from trader.recommendation.application.ports.runtime import (
     PipelineTaskRequest,
     RefreshOutcome,
 )
-from trader.application.runtime.cadence import PipelineTask
-from trader.application.runtime.schedule import SHANGHAI
+from trader.recommendation.application.runtime.cadence import PipelineTask
+from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.bootstrap import _recommendation_policy
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay

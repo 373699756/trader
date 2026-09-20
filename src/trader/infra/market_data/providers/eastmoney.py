@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 import requests
 
-from trader.application.runtime.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
+from trader.recommendation.application.runtime.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
 from trader.recommendation.domain.market.models import Board, MarketQuote
 from trader.recommendation.domain.market.tail import MinuteBar
 from trader.training.evaluation.domain.models import OutcomeBar

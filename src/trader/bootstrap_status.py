@@ -7,9 +7,9 @@ from dataclasses import asdict
 
 from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
-from trader.application.runtime.cadence import CadencePlannerStatus
-from trader.application.runtime.runtime_issues import RuntimeIssue
-from trader.application.runtime.scheduler_runtime import SchedulerRuntime
+from trader.recommendation.application.runtime.cadence import CadencePlannerStatus
+from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue
+from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
@@ -17,7 +17,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
-from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 
 
 def runtime_status(

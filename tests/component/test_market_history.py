@@ -50,7 +50,7 @@ from tests.component.market_data_test_support import (
     timezone,
 )
 from trader.recommendation.application.ports.market_data_repository import DataPlaneConflictError
-from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.training.evaluation.domain.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 
 

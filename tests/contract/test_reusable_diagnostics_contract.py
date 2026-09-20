@@ -124,7 +124,7 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
     assert "docs/01_评分逻辑.md" in active_text
     assert "docs/02_工程设计.md" in active_text
     assert "docs/changelog/" in active_text
-    assert "src/trader/application/runtime/" in active_text
+    assert "src/trader/recommendation/application/runtime/" in active_text
     assert "tests/integration/test_scheduler_runtime.py" in active_text
     assert "/api/status" in active_text
     assert "config/runtime.json" in active_text

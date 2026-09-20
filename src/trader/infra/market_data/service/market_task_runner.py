@@ -12,9 +12,9 @@ if TYPE_CHECKING:
 
 from trader.infra.cache_contracts import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.application.runtime.schedule import phase_at, shanghai_now
-from trader.application.runtime.source_lanes import SourceLaneRegistry
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
+from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

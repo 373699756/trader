@@ -17,7 +17,7 @@ from typing import Protocol, cast
 from flask import Flask
 from werkzeug.serving import BaseWSGIServer, make_server
 
-from trader.application.runtime.shutdown import (
+from trader.recommendation.application.runtime.shutdown import (
     ShutdownDeadline,
     ShutdownReport,
     ShutdownSignalController,

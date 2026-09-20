@@ -23,22 +23,22 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.review import ReviewOutcome
 from trader.recommendation.domain.risk.rules import Rating
-from trader.infra.deepseek.budget import SCHEMA_VERSION as BUDGET_SCHEMA_VERSION
-from trader.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
-from trader.infra.deepseek.cache import ReviewCache, ReviewCacheStatus
-from trader.infra.deepseek.challenger import (
+from trader.recommendation.infra.deepseek.budget import SCHEMA_VERSION as BUDGET_SCHEMA_VERSION
+from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchRequest
+from trader.recommendation.infra.deepseek.cache import ReviewCache, ReviewCacheStatus
+from trader.recommendation.infra.deepseek.challenger import (
     ChallengerDimensionVerdict,
     ChallengerReview,
     merge_challenger_review,
 )
-from trader.infra.deepseek.client import DeepSeekHttpClient
-from trader.infra.deepseek.evidence_router import route_prompt_evidence
-from trader.infra.deepseek.reviewer import DeepSeekReviewer
-from trader.infra.deepseek.schema import (
+from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
+from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.deepseek.schema import (
     SCHEMA_VERSION as REVIEW_SCHEMA_VERSION,
 )
-from trader.infra.deepseek.schema import (
+from trader.recommendation.infra.deepseek.schema import (
     DeepSeekSchemaError,
     build_messages,
     classify_review,

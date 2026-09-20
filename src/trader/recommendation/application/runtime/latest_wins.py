@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, TypeVar
 
-from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 
 _T = TypeVar("_T")
 

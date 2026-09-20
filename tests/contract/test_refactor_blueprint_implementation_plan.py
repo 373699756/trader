@@ -32,7 +32,7 @@ def test_refactor_blueprint_has_an_ordered_current_code_migration_plan() -> None
         "application/training/",
         "application/research/",
         "application/recommendation/",
-        "infra/scoring/profiles/",
+        "recommendation/infra/scoring/profiles/",
         "web/api/",
         "bootstrap_clock.py",
         "docs/01_评分逻辑.md",

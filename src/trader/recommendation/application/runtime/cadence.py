@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 from enum import Enum
 from types import MappingProxyType
 
-from trader.application.runtime.schedule import (
+from trader.recommendation.application.runtime.schedule import (
     MarketPhase,
     SchedulePoint,
     decision_at,

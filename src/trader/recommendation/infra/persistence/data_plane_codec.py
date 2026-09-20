@@ -18,7 +18,7 @@ from trader.recommendation.application.ports.market_data_repository import (
 )
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.infra.artifacts.canonical import canonical_json_text
-from trader.infra.persistence.data_plane_types import Record, _Profile
+from trader.recommendation.infra.persistence.data_plane_types import Record, _Profile
 
 
 class _CommonRecordFields(TypedDict):

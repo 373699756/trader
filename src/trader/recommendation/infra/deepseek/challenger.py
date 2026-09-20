@@ -15,7 +15,7 @@ from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     DimensionAssessment,
 )
-from trader.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
 
 CHALLENGER_SCHEMA_VERSION = "deepseek_challenger"
 CHALLENGER_PROMPT_VERSION = "deepseek_challenger_prompt"

@@ -16,8 +16,8 @@ from trader.recommendation.application.ports.decision_records import (
 )
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
-from trader.infra.persistence import decision_records as decision_records_module
-from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.recommendation.infra.persistence import decision_records as decision_records_module
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 
 
 def record(strategy: Strategy = Strategy.TOMORROW, *, sequence: int = 1) -> CommittedDecisionRecord:

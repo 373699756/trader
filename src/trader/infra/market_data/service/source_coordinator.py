@@ -19,12 +19,12 @@ from trader.infra.cache_contracts import (
     canonical_json_bytes,
 )
 from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
-from trader.application.runtime.schedule import phase_at, shanghai_now
-from trader.application.runtime.source_lanes import (
+from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
+from trader.recommendation.application.runtime.source_lanes import (
     SourceLaneRegistry,
     SourceRequestSupersededError,
 )
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import (
     MarketQuote,
 )

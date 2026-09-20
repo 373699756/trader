@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import warnings
 
-from trader.infra.deepseek.model_capabilities import MODELS
+from trader.recommendation.infra.deepseek.model_capabilities import MODELS
 
 KNOWN_MODELS: frozenset[str] = frozenset(MODELS.keys())
 

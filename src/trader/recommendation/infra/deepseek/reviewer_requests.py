@@ -17,7 +17,7 @@ from trader.recommendation.domain.evidence.review import (
     ReviewCandidateContext,
     ReviewOutcome,
 )
-from trader.infra.deepseek.challenger import (
+from trader.recommendation.infra.deepseek.challenger import (
     CHALLENGER_PROMPT_VERSION,
     CHALLENGER_SCHEMA_VERSION,
     ChallengerReview,
@@ -26,9 +26,9 @@ from trader.infra.deepseek.challenger import (
     merge_challenger_review,
     parse_challenger_reviews,
 )
-from trader.infra.deepseek.completion_client_contract import DeepSeekHttpResult
-from trader.infra.deepseek.reviewer_context import ReviewerContext
-from trader.infra.deepseek.reviewer_selection import (
+from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekHttpResult
+from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
+from trader.recommendation.infra.deepseek.reviewer_selection import (
     _automatic_emergency_reason,
     _challenger_failure_status,
     _combine_results,
@@ -40,8 +40,8 @@ from trader.infra.deepseek.reviewer_selection import (
     _thinking_mode,
     _usage_integer,
 )
-from trader.infra.deepseek.reviewer_status import ReviewerStatusTracker
-from trader.infra.deepseek.schema import (
+from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
+from trader.recommendation.infra.deepseek.schema import (
     RAW_FACTS_CACHE_GENERATION,
     DeepSeekSchemaError,
     build_messages,

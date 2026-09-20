@@ -37,19 +37,20 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
     ScoredFreezeCoordinator,
 )
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
-from trader.training.evaluation.application.research_audit import DecisionObservation, try_build_committed_research_audit
-from trader.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
-from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.resource_orchestration import (
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionObservation
+from trader.training.evaluation.application.research_audit import try_build_committed_research_audit
+from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.resource_orchestration import (
     ApplicationResources,
     start_application_resources,
     stop_application_resources,
 )
-from trader.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
-from trader.application.runtime.source_lanes import SourceLaneRegistry
-from trader.application.runtime.supervisor import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
+from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
+from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor, RuntimeSupervisorConfig, scheduler_interval_seconds
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.bootstrap_clock import utc_now as _utc_now
 from trader.bootstrap_data_plane import _initialize_reference_data_plane
 from trader.bootstrap_policy import _long_group_definitions, _long_item_definitions, _recommendation_policy
@@ -60,11 +61,11 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
-from trader.infra.deepseek.budget import DeepSeekBudgetLedger
-from trader.infra.deepseek.cache import ReviewCache
-from trader.infra.deepseek.factory import create_deepseek_client
-from trader.infra.deepseek.health_gate import DeepSeekHealthPolicy
-from trader.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
+from trader.recommendation.infra.deepseek.cache import ReviewCache
+from trader.recommendation.infra.deepseek.factory import create_deepseek_client
+from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
+from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup, build_history_warmup_policy
 from trader.infra.market_data.history.history_seed import (
@@ -87,13 +88,13 @@ from trader.infra.market_data.service.market_feature_service import MarketFeatur
 from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
 from trader.infra.market_data.service.research_observation_loader import ResearchLoader
 from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
-from trader.infra.persistence.data_plane import DataPlaneRepository
-from trader.infra.persistence.decision_records import SQLiteDecisionRecordRepository
-from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 from trader.infra.persistence.outcomes import SQLiteOutcomeEvidenceRepository
 from trader.infra.persistence.research_trace import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.infra.runtime_resources import RuntimeWorkerResources
-from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,

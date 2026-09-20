@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 from trader.infra.cache_contracts import CacheIdentity
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.application.runtime.workers import (
+from trader.recommendation.application.runtime.workers import (
     BorrowExecutorOptions,
     WorkerExecutor,
     borrow_executor,

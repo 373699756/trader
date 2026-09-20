@@ -36,19 +36,6 @@ _STRUCTURED_RISK_FIELDS = (
 
 
 @dataclass(frozen=True)
-class DecisionObservation:
-    event: DecisionCommitted
-    research_audit: CommittedResearchAudit | None
-
-    def __post_init__(self) -> None:
-        audit = self.research_audit
-        if audit is not None and (
-            audit.decision_version != self.event.decision_version or audit.decision_hash != self.event.decision_hash
-        ):
-            raise ValueError("research audit must match committed decision identity")
-
-
-@dataclass(frozen=True)
 class ResearchCandidateAudit:
     code: str
     board: str
@@ -644,7 +631,6 @@ __all__ = [
     "LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION",
     "RESEARCH_AUDIT_SCHEMA_VERSION",
     "CommittedResearchAudit",
-    "DecisionObservation",
     "ResearchCandidateAudit",
     "ResearchDecisionCandidateAudit",
     "ResearchDecisionSetAudit",

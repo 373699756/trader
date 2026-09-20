@@ -9,7 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Generic, Protocol, TypeAlias, TypeVar
 
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
 
 _ObservationT = TypeVar("_ObservationT", contravariant=True)
 DecisionEventConsumer: TypeAlias = Callable[[_ObservationT], None]

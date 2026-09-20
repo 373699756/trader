@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import threading
 
-from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.latest_wins import LatestWinsOffer, LatestWinsTelemetry, LatestWinsWorker
-from trader.application.runtime.shutdown import ShutdownDeadline
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.latest_wins import LatestWinsOffer, LatestWinsTelemetry, LatestWinsWorker
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline
 
 
 def test_latest_wins_keeps_running_item_and_only_the_newest_pending_item() -> None:

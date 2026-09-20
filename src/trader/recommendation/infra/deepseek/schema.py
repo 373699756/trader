@@ -14,9 +14,9 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
 from trader.recommendation.domain.evidence.review import DeepSeekReview, DimensionAssessment, ReviewOutcome, RiskFact
 from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES
-from trader.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
-from trader.infra.deepseek.evidence_router import route_prompt_evidence
-from trader.infra.deepseek.schema_constants import (
+from trader.recommendation.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
+from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.recommendation.infra.deepseek.schema_constants import (
     MAX_ASSESSMENT_CHARACTERS,
     MAX_PROMPT_EVIDENCE_PER_CANDIDATE,
     MAX_RESPONSE_CHARACTERS,
@@ -24,7 +24,7 @@ from trader.infra.deepseek.schema_constants import (
     RAW_FACTS_CACHE_GENERATION,
     SCHEMA_VERSION,
 )
-from trader.infra.deepseek.schema_prompts import (
+from trader.recommendation.infra.deepseek.schema_prompts import (
     build_messages,
     build_repair_messages,
     build_review_manifest_hash,

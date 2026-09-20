@@ -18,12 +18,13 @@ from zoneinfo import ZoneInfo
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,
+    DecisionObservation,
 )
+from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 from trader.training.evaluation.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
-    DecisionObservation,
     ResearchCandidateAudit,
     ResearchDecisionCandidateAudit,
     ResearchDecisionSetAudit,
@@ -592,7 +593,7 @@ def _observation_bytes(
         "filter_aggregates": event.filter_aggregates,
         "degraded_reasons": event.degraded_reasons,
         "items": tuple(_item_dict(item) for item in event.items),
-        "research_audit": _audit_dict(observation.research_audit),
+        "research_audit": _audit_dict(cast(CommittedResearchAudit | None, observation.research_audit)),
     }
     return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
@@ -760,7 +761,7 @@ def _observation_from_dict(raw: dict[str, object]) -> DecisionObservation:
     )
     if audit is not None and audit.schema_version != expected_audit_schema:
         raise ValueError("research event and audit schemas must advance together")
-    return DecisionObservation(event, audit)
+    return DecisionObservation(event, cast(ResearchAuditIdentity | None, audit))
 
 
 def _item(raw: dict[str, object]) -> CommittedDecisionItem:

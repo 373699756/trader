@@ -11,9 +11,9 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import ParamSpec, TypeVar, cast
 
-from trader.application.runtime.latency import LatencyWaterfall
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")

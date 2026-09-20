@@ -17,7 +17,7 @@ TARGET_PACKAGES = (
     "recommendation/domain/publication",
     "recommendation/application/ports",
     "recommendation/application/pipeline",
-    "application/runtime",
+    "recommendation/application/runtime",
     "recommendation/application/pipeline/freeze_publish",
     "infra/settings",
     "infra/market_data/providers",
@@ -25,7 +25,7 @@ TARGET_PACKAGES = (
     "infra/market_data/history",
     "infra/market_data/references",
     "infra/market_data/service",
-    "infra/deepseek",
+    "recommendation/infra/deepseek",
     "infra/persistence",
     "download/domain",
     "download/application",
@@ -318,7 +318,7 @@ def test_recommendation_scoring_and_publication_are_owned_by_pipeline_stages() -
 
 
 def test_application_runtime_and_market_data_are_partitioned() -> None:
-    application_root = SOURCE_ROOT / "application"
+    application_root = SOURCE_ROOT / "recommendation" / "application"
     runtime_root = application_root / "runtime"
     assert runtime_root.is_dir()
     assert not (application_root / "market_data").exists()
@@ -338,7 +338,7 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
     }
     assert {path.name for path in runtime_root.glob("*.py")} >= runtime_files
     assert (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").is_file()
-    assert not any((application_root / name).exists() for name in runtime_files | {"input_runtime.py"})
+    assert not any((SOURCE_ROOT / "application" / name).exists() for name in runtime_files | {"input_runtime.py"})
 
     violations: list[str] = []
     for path in runtime_root.rglob("*.py"):

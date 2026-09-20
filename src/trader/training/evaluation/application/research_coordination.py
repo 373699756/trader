@@ -10,8 +10,8 @@ from datetime import datetime, timedelta
 
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.evaluation.application.research_ports import ResearchReaderPort
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 
 
 @dataclass(frozen=True)

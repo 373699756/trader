@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 
 
 class SupervisorResource(Protocol):

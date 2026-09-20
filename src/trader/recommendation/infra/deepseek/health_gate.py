@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
+from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _MORNING_HALF_OPEN_CUTOFF = time(11, 15)

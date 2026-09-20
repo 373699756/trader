@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.training.evaluation.application.outcome_ports import (
     OutcomeSettlementMarketData,

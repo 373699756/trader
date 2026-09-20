@@ -30,7 +30,7 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringDeadlineError,
     ScoringHeadRuntimeStatus,
 )
-from trader.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.domain.market.factors import round_score
 from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,

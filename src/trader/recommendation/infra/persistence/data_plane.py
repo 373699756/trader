@@ -19,56 +19,56 @@ from trader.recommendation.application.ports.market_data_repository import (
     SourceCursorRecord,
     TradingCalendarRecord,
 )
-from trader.infra.persistence import data_plane_sqlite
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence import data_plane_sqlite
+from trader.recommendation.infra.persistence.data_plane_codec import (
     assert_committed_record_integrity as _assert_committed_record_integrity,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     canonical_json as _canonical_json,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     canonical_json_bytes as _canonical_json_bytes,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     identity_fields_for_table as _identity_fields_for_table,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     identity_values_from_row as _identity_values_from_row,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     iso_datetime as _iso_datetime,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     parse_datetime as _parse_datetime,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     parse_payload_bytes as _parse_payload_bytes,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     pk_fields_from_table as _pk_fields_from_table,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     record_payload_for_table as _record_payload_for_table,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     record_to_row as _record_to_row,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     row_to_record as _row_to_record,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     sha256 as _sha256,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     table_to_record_kind as _table_to_record_kind,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     text as _text,
 )
-from trader.infra.persistence.data_plane_codec import (
+from trader.recommendation.infra.persistence.data_plane_codec import (
     to_payload_dict as _to_payload_dict,
 )
-from trader.infra.persistence.data_plane_types import (
+from trader.recommendation.infra.persistence.data_plane_types import (
     _DEFAULT_SCHEMA_VERSION,
     _MAX_PAYLOAD_BYTES,
     _PROFILES,

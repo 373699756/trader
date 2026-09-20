@@ -6,7 +6,7 @@ import logging
 from datetime import datetime
 
 from trader.infra.market_data.service.market_feature_service import MarketFeatureService
-from trader.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 
 _LOGGER = logging.getLogger(__name__)
 

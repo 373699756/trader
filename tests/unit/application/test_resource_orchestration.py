@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.application.runtime.resource_orchestration import (
+from trader.recommendation.application.runtime.resource_orchestration import (
     ApplicationResources,
     start_application_resources,
     stop_application_resources,
 )
-from trader.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 
 
 @dataclass

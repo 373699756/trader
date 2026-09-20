@@ -18,8 +18,8 @@ TEXT_SUFFIXES = {".css", ".html", ".js", ".json", ".md", ".ps1", ".py", ".sh"}
 # model/training identities. External supplier names and URLs are not
 # project version controls. Everything else must use a stable semantic name.
 ALLOWED_SCORING_PATH = re.compile(
-    r"(?:infra/scoring/profiles/v[123](?:/|$)|training/infra/profile/v[123](?:/|$)|"
-    r"tests/unit/infra/scoring/test_v[123]_[a-z0-9_]+\.py$)"
+    r"(?:recommendation/infra/scoring/profiles/v[123](?:/|$)|training/infra/profile/v[123](?:/|$)|"
+    r"tests/unit/recommendation/infra/scoring/test_v[123]_[a-z0-9_]+\.py$)"
 )
 PROHIBITED_PATH = re.compile(
     r"(?:^|/)(?:v\d+)(?:/|$)|"

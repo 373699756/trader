@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from trader.application.runtime.cadence import (
+from trader.recommendation.application.runtime.cadence import (
     PERIODIC_TASKS,
     CadencePlanner,
     CadencePolicy,
@@ -18,7 +18,7 @@ from trader.application.runtime.cadence import (
     freshness_level,
     task_execution_budget_seconds,
 )
-from trader.application.runtime.schedule import SHANGHAI, SchedulePoint
+from trader.recommendation.application.runtime.schedule import SHANGHAI, SchedulePoint
 
 
 

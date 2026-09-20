@@ -52,7 +52,7 @@ from tests.component.market_data_test_support import (
     timezone,
 )
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
-from trader.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
 
 
 def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:

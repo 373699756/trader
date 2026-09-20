@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.application.runtime.source_lanes import SourceRequestSupersededError
+from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.infra.market_data.providers.baostock_industry import (
     BaoStockIndustryClient,

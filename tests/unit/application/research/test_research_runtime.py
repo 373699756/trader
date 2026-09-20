@@ -5,8 +5,8 @@ from datetime import datetime, timedelta
 
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.application.ports.runtime import CycleRequest, ResearchIntent
-from trader.application.runtime.cadence import CadencePolicy
-from trader.application.runtime.schedule import SHANGHAI, MarketPhase
+from trader.recommendation.application.runtime.cadence import CadencePolicy
+from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.evaluation.application.research_runtime import ResearchRuntime
 

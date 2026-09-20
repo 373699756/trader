@@ -43,7 +43,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
     build_scored_hybrid,
     build_scored_local,
 )
-from trader.application.runtime.schedule import SHANGHAI
+from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.bootstrap_policy import _recommendation_policy
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import (
@@ -70,7 +70,7 @@ from trader.infra.market_data.normalization.merge import (
 )
 from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.service.observations import SourceObservation
-from trader.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.training.evaluation.application.scoring_hot_path_baseline import (

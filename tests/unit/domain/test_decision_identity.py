@@ -28,7 +28,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
-from trader.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
+from trader.recommendation.infra.persistence.decision_record_codec import committed_record_bytes, committed_record_from_bytes
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 8, 11, 14, 40, tzinfo=SHANGHAI)

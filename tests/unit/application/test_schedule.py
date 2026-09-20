@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from trader.application.runtime.schedule import (
+from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
     MarketPhase,
     decision_at,

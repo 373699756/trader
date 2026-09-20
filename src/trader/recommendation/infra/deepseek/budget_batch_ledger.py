@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.review import DeepSeekReview
-from trader.infra.deepseek.budget_audit import _require_aware, _sync_call_audit
+from trader.recommendation.infra.deepseek.budget_audit import _require_aware, _sync_call_audit
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
 _CANDIDATE_TERMINALS = frozenset({"applied", "abstain", "rejected", "late"})
