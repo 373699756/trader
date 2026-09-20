@@ -24,7 +24,7 @@ TARGET_PACKAGES = (
     "infra/market_data/normalization",
     "infra/market_data/history",
     "infra/market_data/references",
-    "infra/market_data/service",
+    "recommendation/infra/market_data",
     "infra/serialization",
     "recommendation/infra/deepseek",
     "download/domain",
@@ -237,24 +237,18 @@ def test_market_history_references_and_services_are_partitioned() -> None:
     market_root = SOURCE_ROOT / "infra" / "market_data"
     history_root = market_root / "history"
     references_root = market_root / "references"
-    service_root = market_root / "service"
+    service_root = SOURCE_ROOT / "recommendation" / "infra" / "market_data"
     assert history_root.is_dir()
     assert references_root.is_dir()
     assert service_root.is_dir()
     assert (service_root / "market_feature_service.py").is_file()
     legacy_files = (
-        "history.py",
-        "history_seed.py",
         "daily_history_cache.py",
         "daily_history_warmup.py",
-        "calendar.py",
-        "security_references.py",
         "gateway.py",
         "gateway_health.py",
         "gateway_runtime.py",
         "market_cache_identity.py",
-        "observations.py",
-        "router.py",
         "service.py",
         "trading_calendar_state_codec.py",
         "candidate_quote_cache.py",

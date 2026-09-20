@@ -14,7 +14,7 @@ from trader.infra.market_data.normalization.field_quality import (
     normalize_source,
     select_fields,
 )
-from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

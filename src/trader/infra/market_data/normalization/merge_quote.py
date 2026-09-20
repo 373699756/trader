@@ -15,7 +15,7 @@ from trader.infra.market_data.normalization.field_quality import (
 from trader.infra.market_data.normalization.field_quality import (
     select_fields as select_quote_fields,
 )
-from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.recommendation.domain.market.models import (
     Board,

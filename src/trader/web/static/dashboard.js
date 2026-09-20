@@ -97,7 +97,7 @@
       "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
-      "errorDrawer", "errorDrawerContent", "errorDrawerClose", "errorDrawerTitle",
+      "observationDrawer", "observationErrorContent", "observationDrawerClose", "observationDrawerTitle", "observationErrorCount", "observationStageList",
     ]) els[id] = document.getElementById(id);
     Object.assign(els, { resultLayout: document.getElementById("recommendation-layout"), longSidebar: document.getElementById("long-sidebar"), longTitle: document.getElementById("long-panel-title"), longMeta: document.getElementById("long-panel-meta") });
     stateRenderer = statusView.createDashboardStateRenderer(els, state, selection, window.TraderRender);

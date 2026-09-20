@@ -11,8 +11,8 @@ from trader.infra.market_data.providers.cninfo import (
     CNINFO_CURSOR_PREFIX,
     CninfoAnnouncementIncrementalSync,
 )
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.research_observation_loader import ResearchLoader
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

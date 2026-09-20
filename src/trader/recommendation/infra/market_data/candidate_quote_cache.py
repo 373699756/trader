@@ -15,9 +15,9 @@ if TYPE_CHECKING:
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.history import DailyBar
 from trader.infra.market_data.normalization.features import StandardizedFeatureBuilder
-from trader.infra.market_data.service.gateway import MarketDataGateway
-from trader.infra.market_data.service.market_cache_identity import _quote_version
-from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.market_cache_identity import _quote_version
+from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,

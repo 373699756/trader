@@ -14,11 +14,11 @@ from trader.infra.market_data.providers.baostock_industry import (
     BaoStockIndustryClient,
     BaoStockIndustryHealthStatus,
 )
-from trader.infra.market_data.service.gateway import MarketDataGateway
-from trader.infra.market_data.service.market_cache_identity import _source_batch_identity
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.observations import SourceObservation
-from trader.infra.market_data.service.trading_calendar_state_codec import parse_date
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.market_cache_identity import _source_batch_identity
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.infra.market_data.observations import SourceObservation
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import parse_date
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
 

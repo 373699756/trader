@@ -31,14 +31,14 @@ from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.references.calendar import ChinaTradingCalendar
-from trader.infra.market_data.service.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
-from trader.infra.market_data.service.gateway import MarketDataGateway
-from trader.infra.market_data.service.intraday_loader import IntradayLoader
-from trader.infra.market_data.service.market_data_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.infra.market_data.service.market_feature_service import MarketFeatureDependencies, MarketFeatureService
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.research_observation_loader import ResearchLoader
-from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureDependencies, MarketFeatureService
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.infra.runtime_resources import RuntimeWorkerResources
 from trader.infra.settings import (
     LongWatchlist,

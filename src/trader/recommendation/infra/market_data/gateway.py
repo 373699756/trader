@@ -33,12 +33,12 @@ from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.references.security_references import security_reference_observations
-from trader.infra.market_data.service.gateway_health import (
+from trader.recommendation.infra.market_data.gateway_health import (
     MarketGatewayHealthStatus,
     MarketSourceHealthStatus,
     SecurityMasterHealthStatus,
 )
-from trader.infra.market_data.service.gateway_runtime import (
+from trader.recommendation.infra.market_data.gateway_runtime import (
     _cache_error_code,
     _CircuitState,
     _cycle_trace_id,
@@ -52,9 +52,9 @@ from trader.infra.market_data.service.gateway_runtime import (
     _SingleFlight,
     _source_degraded_reasons,
 )
-from trader.infra.market_data.service.observations import SourceObservation
-from trader.infra.market_data.service.router import RouteOutcome
-from trader.infra.market_data.service.source_coordinator import (
+from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.router import RouteOutcome
+from trader.recommendation.infra.market_data.source_coordinator import (
     MarketSourceCoordinator,
     MarketSourceDependencies,
     SourceLaneIdentityRequest,

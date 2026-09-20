@@ -18,7 +18,7 @@ from trader.infra.market_data.normalization.merge import (
 )
 from trader.infra.market_data.normalization.merge_quote import merge_code
 from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
-from trader.infra.market_data.service.observations import SourceObservation
+from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")

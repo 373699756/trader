@@ -31,7 +31,7 @@ from trader.infra.market_data.providers.tushare_records import (
     _security_master_observation,
     _ts_code,
 )
-from trader.infra.market_data.service.observations import SourceObservation
+from trader.infra.market_data.observations import SourceObservation
 
 
 class _SdkFactory(Protocol):

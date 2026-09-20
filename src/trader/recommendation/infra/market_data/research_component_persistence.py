@@ -16,13 +16,13 @@ from trader.infra.market_data.providers.cninfo import (
     CNINFO_CURSOR_PREFIX,
     CNINFO_SOURCE,
 )
-from trader.infra.market_data.service.market_cache_identity import (
+from trader.recommendation.infra.market_data.market_cache_identity import (
     _merge_research_observation,
     _research_data_version,
     _research_source_time,
 )
-from trader.infra.market_data.service.market_feature_cache_entries import _ResearchEntry
-from trader.infra.market_data.service.research_load_status import (
+from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
+from trader.recommendation.infra.market_data.research_load_status import (
     RESEARCH_COMPONENT_IDS,
     ResearchComponentStatus,
     ResearchLoaderStatus,

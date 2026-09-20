@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
 from trader.recommendation.application.ports.market_data_repository import SourceCursorRecord
 

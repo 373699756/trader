@@ -21,14 +21,14 @@ from trader.infra.cache_contracts import (
 from trader.infra.market_data.normalization.merge import observation_from_quote
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.sina import SinaClient
-from trader.infra.market_data.service.gateway_runtime import (
+from trader.recommendation.infra.market_data.gateway_runtime import (
     _before_deadline,
     _cache_error_code,
     _elapsed,
     _SourceFetch,
     _strip_source,
 )
-from trader.infra.market_data.service.observations import SourceObservation
+from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
 from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
 from trader.recommendation.application.runtime.source_lanes import (

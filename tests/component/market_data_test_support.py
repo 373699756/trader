@@ -37,21 +37,21 @@ from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient, TushareHealthStatus
 from trader.infra.market_data.references.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
-from trader.infra.market_data.service import gateway as gateway_module
-from trader.infra.market_data.service.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
-from trader.infra.market_data.service.gateway import MarketDataGateway
-from trader.infra.market_data.service.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
-from trader.infra.market_data.service.intraday_loader import IntradayLoader
-from trader.infra.market_data.service.market_cache_identity import _history_population_codes, _history_preload_codes
-from trader.infra.market_data.service.market_data_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.infra.market_data.service.market_feature_service import MarketFeatureDependencies, MarketFeatureService
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.observations import SourceObservation
-from trader.infra.market_data.service.research_component_persistence import persist_research_component_statuses
-from trader.infra.market_data.service.research_load_status import RESEARCH_COMPONENT_IDS
-from trader.infra.market_data.service.research_observation_loader import ResearchLoader
-from trader.infra.market_data.service.router import VendorRoute, VendorSeverity, route
-from trader.infra.market_data.service.tushare_reference_loader import (
+from trader.recommendation.infra.market_data import gateway as gateway_module
+from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
+from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.market_cache_identity import _history_population_codes, _history_preload_codes
+from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureDependencies, MarketFeatureService
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.infra.market_data.observations import SourceObservation
+from trader.recommendation.infra.market_data.research_component_persistence import persist_research_component_statuses
+from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
+from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
+from trader.recommendation.infra.market_data.tushare_reference_loader import (
     ReferenceLoader,
     ReferenceLoadRequest,
     _ReferenceLoadOptions,

@@ -28,13 +28,13 @@ from trader.infra.market_data.history.history import (
     require_qfq_history,
 )
 from trader.infra.market_data.history.history_seed import OutcomeHistoryClient
-from trader.infra.market_data.service.market_cache_identity import (
+from trader.recommendation.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _history_version,
     _source_batch_identity,
 )
-from trader.infra.market_data.service.market_feature_cache_entries import _HistoryEntry
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.market_feature_cache_entries import _HistoryEntry
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.recommendation.application.ports.market_data_repository import (

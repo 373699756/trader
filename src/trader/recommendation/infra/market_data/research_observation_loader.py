@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 from trader.infra.cache_contracts import CacheIdentity
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
-from trader.infra.market_data.service.market_cache_identity import (
+from trader.recommendation.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _degraded_research_observation,
     _deserialize_research_observation,
@@ -31,21 +31,21 @@ from trader.infra.market_data.service.market_cache_identity import (
     _serialize_research_observation,
     _source_batch_identity,
 )
-from trader.infra.market_data.service.market_feature_cache_entries import _ResearchEntry
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.research_component_persistence import (
+from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.research_component_persistence import (
     _ResearchDataPlane as _ResearchDataPlaneProtocol,
 )
-from trader.infra.market_data.service.research_component_persistence import (
+from trader.recommendation.infra.market_data.research_component_persistence import (
     loader_status as _loader_status_from_plane,
 )
-from trader.infra.market_data.service.research_component_persistence import (
+from trader.recommendation.infra.market_data.research_component_persistence import (
     persist_research_component_statuses as _persist_research_component_statuses_from_plane,
 )
-from trader.infra.market_data.service.research_component_persistence import (
+from trader.recommendation.infra.market_data.research_component_persistence import (
     recover_research_component_statuses as _recover_research_component_statuses_from_plane,
 )
-from trader.infra.market_data.service.research_load_status import (
+from trader.recommendation.infra.market_data.research_load_status import (
     ResearchComponentStatus,
     ResearchLoaderStatus,
     ResearchLoadReport,

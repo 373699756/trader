@@ -26,7 +26,7 @@ from trader.infra.market_data.normalization.merge import (
     overlay_canonical_snapshot,
 )
 from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
-from trader.infra.market_data.service.observations import SourceObservation
+from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.infra.settings.recommendation_policy import _recommendation_policy

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from trader.infra.market_data.service.market_feature_service import MarketFeatureService
+from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureService
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 
 _LOGGER = logging.getLogger(__name__)

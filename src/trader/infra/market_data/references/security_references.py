@@ -8,7 +8,7 @@ from dataclasses import replace
 
 from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.normalization.merge_quote import source_name
-from trader.infra.market_data.service.observations import SourceObservation
+from trader.infra.market_data.observations import SourceObservation
 
 _SECURITY_REFERENCE_FIELDS = frozenset(
     {

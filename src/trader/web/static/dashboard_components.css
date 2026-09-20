@@ -530,6 +530,149 @@ thead th:nth-child(2) {
   transform: translateX(0);
 }
 
+.observation-drawer {
+  width: min(760px, 100vw);
+  background: var(--bg);
+}
+
+.observation-drawer-content {
+  padding: 14px 16px 32px;
+}
+
+.observation-summary-cards {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) repeat(2, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.observation-card,
+.observation-funnel,
+.observation-errors {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.observation-card-label,
+.observation-funnel header span,
+.observation-errors header span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.observation-card strong {
+  display: block;
+  margin-top: 5px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 21px;
+  overflow-wrap: anywhere;
+}
+
+.observation-card small {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.data-status-card .input-quality-live {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.data-status-card .input-quality-coverage {
+  display: block;
+  margin-top: 7px;
+  color: var(--blue);
+  font-size: 11px;
+}
+
+.data-status-card .input-quality-stages {
+  display: none;
+}
+
+.data-status-card small span {
+  display: block;
+}
+
+.observation-funnel,
+.observation-errors {
+  margin-top: 10px;
+}
+
+.observation-funnel > header,
+.observation-errors > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.observation-funnel > header strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.observation-errors > header b {
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.observation-stage-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 10px;
+}
+
+.observation-stage {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--surface-raised);
+}
+
+.observation-stage[data-state="failed"] { border-left-color: var(--red); }
+.observation-stage[data-state="degraded"] { border-left-color: var(--amber); }
+.observation-stage[data-state="running"] { border-left-color: var(--blue); }
+
+.observation-stage-index {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+}
+
+.observation-stage-main {
+  min-width: 0;
+}
+
+.observation-stage-main strong,
+.observation-stage-main span,
+.observation-stage-main small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.observation-stage-main strong { color: var(--text); font-size: 12px; line-height: 17px; }
+.observation-stage-main span { color: var(--muted); font-size: 10px; line-height: 15px; }
+.observation-stage-main small { margin-top: 2px; color: var(--amber); font-size: 10px; line-height: 15px; }
+.observation-stage-empty { padding: 20px 8px; color: var(--muted); text-align: center; font-size: 11px; }
+
 .drawer-header {
   min-height: 68px;
   display: flex;

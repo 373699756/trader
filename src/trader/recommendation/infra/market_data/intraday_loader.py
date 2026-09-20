@@ -15,13 +15,13 @@ if TYPE_CHECKING:
 
 from trader.infra.cache_contracts import CacheIdentity
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
-from trader.infra.market_data.service.market_cache_identity import (
+from trader.recommendation.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _minute_version,
     _source_batch_identity,
 )
-from trader.infra.market_data.service.market_feature_cache_entries import _IntradayEntry
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.market_feature_cache_entries import _IntradayEntry
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.application.runtime.workers import (
     BorrowExecutorOptions,
     WorkerExecutor,

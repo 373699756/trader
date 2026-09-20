@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.service.market_cache_identity import _normalize_codes, _source_batch_identity
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 

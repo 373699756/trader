@@ -317,8 +317,8 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
         Path("recommendation/application/ports/market_data.py"),
         Path("recommendation/infra/deepseek/reviewer.py"),
         Path("recommendation/infra/deepseek/reviewer_status.py"),
-        Path("infra/market_data/service/market_feature_service.py"),
-        Path("infra/market_data/service/market_data_health.py"),
+        Path("recommendation/infra/market_data/market_feature_service.py"),
+        Path("recommendation/infra/market_data/market_data_health.py"),
     }
     trader_root = SOURCE_ROOT
     forbidden_status_types = {"Any", "JsonObject", "JsonValue", "Mapping", "MutableMapping", "dict", "object"}

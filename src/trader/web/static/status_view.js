@@ -178,6 +178,7 @@
       els.funnelStages.textContent = "正在读取评分与决策链路";
       els.funnelScoreRange.textContent = "评分范围 —";
       els.funnelMeta.textContent = "正在读取推荐漏斗";
+      if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">正在读取 14 层评分链路</div>';
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
       els.quoteSource.textContent = "来源不可用";
@@ -209,6 +210,7 @@
       els.funnelStages.textContent = "历史快照不重算逐层推荐漏斗";
       els.funnelScoreRange.textContent = "评分范围 —";
       els.funnelMeta.textContent = "正式 0 · 观察 不保存";
+      if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">历史快照不重算评分链路</div>';
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
       els.quoteSource.textContent = "来源不可用";
@@ -273,6 +275,7 @@
       els.funnelStages.textContent = "长期固定观察池不经过短线过滤、评分与正式推荐链路";
       els.funnelScoreRange.textContent = "评分范围 不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
+      renderObservationStages(els, null, true);
     } else if (pipeline) {
       const actionEligible = finiteNonNegativeInteger(action && action.output_count);
       const selected = finiteNonNegativeInteger(concentration && concentration.output_count);
@@ -280,6 +283,7 @@
       els.funnelStages.textContent = decisionPipelineDetails(pipeline);
       els.funnelScoreRange.textContent = finalScoreRange(pipeline);
       els.funnelMeta.textContent = `完整评分 → 动作合格 → 最终入池 · 正式 ${executableCount} · 观察 ${observed} · 最高 ${topScore}`;
+      renderObservationStages(els, pipeline, false);
     } else {
       const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
       els.funnelStatus.textContent = "阶段观测不可用";
@@ -288,6 +292,7 @@
         ? "已保存评分范围不可用"
         : `已保存最高分 ${topScore} · 最低分未保存`;
       els.funnelMeta.textContent = `旧快照聚合：${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
+      renderObservationStages(els, null, false);
     }
     const marketFreshness = currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible);
     const runtimeSource = marketFreshness.source;
@@ -307,6 +312,47 @@
         ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
         : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
     renderPublicationStatus(els, payload, statusPayload);
+  }
+
+  function renderObservationStages(els, pipeline, long) {
+    if (!els.observationStageList) return;
+    if (long) {
+      els.observationStageList.innerHTML = '<div class="observation-stage-empty">长期固定观察池不经过荐股评分链路</div>';
+      return;
+    }
+    const groups = [
+      ["数据源", ["input_readiness"]],
+      ["静态采集与清洗", ["input_readiness"]],
+      ["一级稳定过滤", ["dynamic_filter"]],
+      ["动态采集与清洗", ["candidate_refresh"]],
+      ["二级动态过滤", ["dynamic_filter"]],
+      ["候选生成", ["board_cross_section", "board_limit"]],
+      ["质量评估", ["strategy_history", "model_input", "input_coverage"]],
+      ["评分", ["candidate_score", "evidence_score"]],
+      ["风险复核（含 DeepSeek）", ["local_score", "deepseek_review"]],
+      ["固定 68/32 融合", ["fusion"]],
+      ["下行保护与动作门", ["model_cost_gate", "action_gate"]],
+      ["TopK 与集中度", ["concentration"]],
+      ["冻结", ["concentration"]],
+      ["发布", ["concentration"]],
+    ];
+    const stages = pipeline && Array.isArray(pipeline.stages) ? pipeline.stages : [];
+    const byKey = new Map(stages.map((stage) => [stage.key, stage]));
+    els.observationStageList.innerHTML = groups.map(([label, keys], index) => {
+      const values = keys.map((key) => byKey.get(key)).filter(Boolean);
+      const input = values.reduce((total, stage) => total + (Number.isFinite(stage.input_count) ? stage.input_count : 0), 0);
+      const outputValues = values.map((stage) => stage.output_count).filter((value) => Number.isFinite(value));
+      const output = outputValues.length ? outputValues[outputValues.length - 1] : null;
+      const states = values.map((stage) => stage.state);
+      const state = states.includes("failed") ? "failed" : states.includes("running") ? "running" : states.includes("degraded") ? "degraded" : states.includes("not_ready") ? "not_ready" : states.includes("not_applicable") ? "not_applicable" : "completed";
+      const reasons = values.flatMap((stage) => Array.isArray(stage.reason_counts) ? stage.reason_counts : []);
+      const reasonText = reasons.slice(0, 3).map((reason) => `${reason.reason} ${reason.count}`).join(" · ");
+      return `<article class="observation-stage" data-state="${escapeHtml(state)}"><div class="observation-stage-index">${index + 1}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}</strong><span>${stageStateLabel(state)} · ${displayCount(input)} → ${output == null ? "—" : displayCount(output)}</span>${reasonText ? `<small>${escapeHtml(reasonText)}</small>` : ""}</div></article>`;
+    }).join("");
+  }
+
+  function stageStateLabel(state) {
+    return ({ completed: "已完成", running: "采集中", degraded: "已降级", failed: "失败", not_ready: "未就绪", not_applicable: "不适用" })[state] || "待计算";
   }
 
   function renderInputQuality(els, payload, items, inputQuality, marketWarmup, pipeline, topScore, evaluated) {
@@ -463,9 +509,13 @@
   function renderHealth(els, statusPayload, snapshotReasons, strategy, rememberDiagnostic) {
     const health = healthView(statusPayload, snapshotReasons, strategy);
     const activeIssues = health.issues.filter((issue) => issue.recoveryStatus !== "recovered");
-    els.errorDetailsButton.hidden = activeIssues.length === 0;
+    const alwaysVisible = Boolean(els.errorDetailsButton.classList && els.errorDetailsButton.classList.contains("observation-trigger"));
+    els.errorDetailsButton.hidden = !alwaysVisible && activeIssues.length === 0;
     els.errorDetailsButton.dataset.level = health.level;
-    els.healthBadge.textContent = `${health.level === "error" ? "错误" : "异常"} ${activeIssues.length}`;
+    els.healthBadge.textContent = alwaysVisible
+      ? (activeIssues.length ? `观察 · ${activeIssues.length}项异常` : "观察")
+      : `${health.level === "error" ? "错误" : "异常"} ${activeIssues.length}`;
+    if (els.observationErrorCount) els.observationErrorCount.textContent = String(activeIssues.length);
     if (typeof rememberDiagnostic === "function") {
       health.issues.forEach((issue) => rememberDiagnostic(issue.code));
     }
@@ -653,37 +703,35 @@
       if (typeof onVisibilityChange === "function") onVisibilityChange();
     };
     const close = (restoreFocus) => {
-      const wasOpen = els.errorDrawer.classList.contains("is-open");
-      els.errorDrawer.classList.remove("is-open");
-      els.errorDrawer.setAttribute("aria-hidden", "true");
+      const wasOpen = els.observationDrawer.classList.contains("is-open");
+      els.observationDrawer.classList.remove("is-open");
+      els.observationDrawer.setAttribute("aria-hidden", "true");
       els.errorDetailsButton.setAttribute("aria-expanded", "false");
       notify();
       if (wasOpen && restoreFocus && returnFocus && typeof returnFocus.focus === "function") returnFocus.focus();
       returnFocus = null;
     };
     const open = () => {
-      if (issues.length === 0) return;
       if (typeof beforeOpen === "function") beforeOpen();
       returnFocus = document.activeElement;
-      els.errorDrawerContent.innerHTML = runtimeErrorRows(issues);
-      els.errorDrawerTitle.textContent = issueSummaryTitle(issues);
-      els.errorDrawer.classList.add("is-open");
-      els.errorDrawer.setAttribute("aria-hidden", "false");
+      if (els.observationErrorContent) els.observationErrorContent.innerHTML = runtimeErrorRows(issues);
+      els.observationDrawer.classList.add("is-open");
+      els.observationDrawer.setAttribute("aria-hidden", "false");
       els.errorDetailsButton.setAttribute("aria-expanded", "true");
       notify();
-      els.errorDrawerClose.focus();
+      els.observationDrawerClose.focus();
     };
     els.errorDetailsButton.addEventListener("click", open);
-    els.errorDrawerClose.addEventListener("click", () => close(true));
-    els.errorDrawerContent.addEventListener("click", copyRuntimeCode);
+    els.observationDrawerClose.addEventListener("click", () => close(true));
+    els.observationErrorContent.addEventListener("click", copyRuntimeCode);
     return {
       close,
-      isOpen: () => els.errorDrawer.classList.contains("is-open"),
+      isOpen: () => els.observationDrawer.classList.contains("is-open"),
       setIssues: (nextIssues) => {
         issues = Array.isArray(nextIssues) ? nextIssues : [];
-        if (!els.errorDrawer.classList.contains("is-open")) return;
-        els.errorDrawerContent.innerHTML = runtimeErrorRows(issues);
-        els.errorDrawerTitle.textContent = issueSummaryTitle(issues);
+        if (els.observationErrorCount) els.observationErrorCount.textContent = String(issues.filter((issue) => issue.recoveryStatus !== "recovered").length);
+        if (!els.observationDrawer.classList.contains("is-open")) return;
+        els.observationErrorContent.innerHTML = runtimeErrorRows(issues);
       },
     };
   }

@@ -25,22 +25,22 @@ from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterHealthStatus,
 )
 from trader.infra.market_data.providers.tushare import TushareClient, TushareHealthStatus
-from trader.infra.market_data.service.gateway import MarketDataGateway
-from trader.infra.market_data.service.market_cache_identity import _normalize_codes, _source_batch_identity
-from trader.infra.market_data.service.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.service.model_industry_reference_loader import (
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.model_industry_reference_loader import (
     ModelIndustryReferenceDependencies,
     ModelIndustryReferenceLoader,
 )
-from trader.infra.market_data.service.observations import JsonScalar, SourceObservation
-from trader.infra.market_data.service.trading_calendar_state_codec import (
+from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
     calendar_observations_from_record as _calendar_observations_from_record,
 )
-from trader.infra.market_data.service.trading_calendar_state_codec import (
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
     calendar_sessions_payload as _calendar_sessions_payload,
 )
-from trader.infra.market_data.service.trading_calendar_state_codec import parse_date as _parse_date
-from trader.infra.market_data.service.trading_calendar_state_codec import (
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import parse_date as _parse_date
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
     trading_calendar_cursor_from_observations as _trading_calendar_cursor_from_observations,
 )
 from trader.recommendation.application.ports.json_values import JsonObject, JsonValue

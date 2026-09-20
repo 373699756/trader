@@ -11,13 +11,13 @@ from typing import cast
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
 from trader.infra.market_data.providers.tushare import TushareHealthStatus
-from trader.infra.market_data.service.candidate_quote_cache import QuoteCache
-from trader.infra.market_data.service.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
-from trader.infra.market_data.service.intraday_loader import IntradayLoader
-from trader.infra.market_data.service.market_cache_identity import _quote_age_summary
-from trader.infra.market_data.service.research_observation_loader import ResearchLoader
-from trader.infra.market_data.service.router import RouteOutcome
-from trader.infra.market_data.service.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
+from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
+from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary
+from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.infra.market_data.router import RouteOutcome
+from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
