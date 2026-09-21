@@ -414,9 +414,7 @@
       ["风险复核（含 DeepSeek）", ["local_score", "deepseek_review"]],
       ["固定 68/32 融合", ["fusion"]],
       ["下行保护与动作门", ["model_cost_gate", "action_gate"]],
-      ["TopK 与集中度", ["concentration"]],
-      ["冻结", ["concentration"]],
-      ["发布", ["concentration"]],
+      ["TopK、集中度、冻结与发布", ["concentration"]],
     ];
     const stages = pipeline && Array.isArray(pipeline.stages) ? pipeline.stages : [];
     const byKey = new Map(stages.map((stage) => [stage.key, stage]));
