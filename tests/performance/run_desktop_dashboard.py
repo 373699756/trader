@@ -149,7 +149,11 @@ def _run(output_dir: Path) -> dict[str, object]:
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
         _wait(
-            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "等待评分输入",
+            lambda: (
+                _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "等待评分输入"
+                and _execute(base, 'return document.querySelector("#publicationStatus").textContent;') == "采集中"
+                and _execute(base, 'return document.querySelector("#quoteSource").textContent;') == "腾讯行情"
+            ),
             "collecting funnel",
         )
         not_ready_summary = _execute(
@@ -178,8 +182,14 @@ def _run(output_dir: Path) -> dict[str, object]:
             "tomorrow observation draft",
         )
         _wait(
-            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "56 → 2 → 2",
+            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "评分链路已完成",
             "quality funnel",
+        )
+        _wait(
+            lambda: "600009" in str(
+                _execute(base, 'return document.querySelector("#topScoresStatus").textContent;')
+            ),
+            "data status top scores",
         )
         quality_summary = _execute(
             base,
@@ -192,9 +202,17 @@ def _run(output_dir: Path) -> dict[str, object]:
               funnelStages: document.querySelector('#funnelStages').textContent,
               scoreRange: document.querySelector('#funnelScoreRange').textContent,
               funnelMeta: document.querySelector('#funnelMeta').textContent,
+              topScores: document.querySelector('#topScoresStatus').textContent,
+              topScoresMeta: document.querySelector('#topScoresMeta').textContent,
               source: document.querySelector('#quoteSource').textContent,
             };
             """,
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _set_viewport(base, 1440, 900)
+        quality_screenshot = _screenshot(base)
+        (output_dir / "desktop-data-status-1440x900.png").write_bytes(
+            base64.b64decode(str(quality_screenshot))
         )
         observations: list[_ObservationResult] = []
         expected_top_codes = {"tomorrow": "600009", "d25": "600010"}
@@ -312,45 +330,35 @@ def _run(output_dir: Path) -> dict[str, object]:
             return { code: row && row.dataset.code, values, complete: values.length > 0 && !values.includes('-') };
             """,
         )
-        output_dir.mkdir(parents=True, exist_ok=True)
         _set_viewport(base, 1440, 900)
         _execute(base, 'document.querySelector("#errorDetailsButton").click(); return true;')
         _wait(
             lambda: bool(
-                _execute(base, 'return document.querySelector("#errorDrawer").classList.contains("is-open");')
+                _execute(base, 'return document.querySelector("#observationDrawer").classList.contains("is-open");')
             ),
             "error drawer open",
         )
-        _execute(base, 'document.querySelector("#errorDrawerContent button[data-copy-code]").click(); return true;')
-        _wait(
-            lambda: (
-                _execute(
-                    base,
-                    'return document.querySelector("#errorDrawerContent button[data-copy-code]").textContent;',
-                )
-                != "复制代码"
-            ),
-            "error detail copy",
-        )
         error_details = {
             "visible": bool(
-                _execute(base, 'return document.querySelector("#errorDrawer").classList.contains("is-open");')
-            ),
-            "rows": _integer(
-                _execute(base, 'return document.querySelectorAll("#errorDrawerContent .error-detail-item").length;')
+                _execute(base, 'return document.querySelector("#observationDrawer").classList.contains("is-open");')
             ),
             "raw_code_hidden_from_header": not bool(
                 _execute(base, 'return document.querySelector("#healthBadge").textContent.includes("refresh:");')
             ),
-            "copy_status": str(
+            "scores_absent": bool(
                 _execute(
-                    base, 'return document.querySelector("#errorDrawerContent button[data-copy-code]").textContent;'
+                    base,
+                    """
+                    const drawer = document.querySelector('#observationDrawer');
+                    return !drawer.contains(document.querySelector('#funnelScoreRange'))
+                      && !drawer.contains(document.querySelector('#topScoresStatus'));
+                    """,
                 )
             ),
         }
         detail_screenshot = _screenshot(base)
         (output_dir / "desktop-error-details-1440x900.png").write_bytes(base64.b64decode(str(detail_screenshot)))
-        _execute(base, 'document.querySelector("#errorDrawerClose").click(); return true;')
+        _execute(base, 'document.querySelector("#observationDrawerClose").click(); return true;')
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
         scripts = _execute(base, "return Array.from(document.scripts).map((item) => item.src);")
         expected = "/static/dashboard.js"
@@ -374,7 +382,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
                     "公司风险历史暂不可核验（1只）"
                 ),
-                "summary": "完整评分 → 动作合格 → 最终入池 · 正式 0 · 观察 2 · 最高 74.25",
+                "summary": "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2 · 最高 74.25",
                 "recommendation_message": (
                     "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
@@ -382,9 +390,8 @@ def _run(output_dir: Path) -> dict[str, object]:
                 ),
             }
             and error_details["visible"] is True
-            and error_details["rows"] == 1
             and error_details["raw_code_hidden_from_header"] is True
-            and error_details["copy_status"] in {"已复制", "已选中，请复制"}
+            and error_details["scores_absent"] is True
             and isinstance(long_quote_fields, dict)
             and long_quote_fields.get("complete") is True
             and isinstance(not_ready_summary, dict)
@@ -411,6 +418,8 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "动作门 达观察线" not in str(quality_summary.get("funnelStages"))
             and quality_summary.get("scoreRange") == "评分范围 40.00–74.25 · 最高 74.25"
             and quality_summary.get("funnelMeta") == "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2 · 最高 74.25"
+            and quality_summary.get("topScores") == "74.00 - 600009 - 上海机场\n72.00 - 600001 - 邯郸钢铁"
+            and quality_summary.get("topScoresMeta") == "策略内最终评分 · 2 只"
             and quality_summary.get("source") == "腾讯行情"
             and all(_viewport_passed(viewport) for viewport in viewports)
         )
@@ -729,6 +738,12 @@ def _observation_item(code: str, *, rank: int, final_score: float) -> DecisionIt
         "observation_band",
         Board.MAIN,
         rank,
+        name={
+            "600009": "上海机场",
+            "600001": "邯郸钢铁",
+            "600010": "包钢股份",
+            "600002": "齐鲁石化",
+        }[code],
         quote=DecisionQuote(
             code,
             10.25,
@@ -750,12 +765,17 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
         base,
         r"""
         const header = document.querySelector('.app-header').getBoundingClientRect();
-        const messages = Array.from(document.querySelectorAll('.runtime-message')).map((item) => item.getBoundingClientRect());
         const summary = document.querySelector('.summary-band').getBoundingClientRect();
         const controls = document.querySelector('.control-band').getBoundingClientRect();
         const layout = document.querySelector('#recommendation-layout').getBoundingClientRect();
         const sidebar = document.querySelector('#long-sidebar').getBoundingClientRect();
         const table = document.querySelector('.table-region').getBoundingClientRect();
+        const marketStatus = document.querySelector('.header-market-status');
+        const runtimeStatus = document.querySelector('#runtimeStatus');
+        const dataStatus = document.querySelector('#inputQualityPanel');
+        const observationDrawer = document.querySelector('#observationDrawer');
+        const scoreRange = document.querySelector('#funnelScoreRange');
+        const topScores = document.querySelector('#topScoresStatus');
         return {
           actual: [window.innerWidth, window.innerHeight],
           body: Boolean(document.body && document.body.getBoundingClientRect().height > 0),
@@ -763,9 +783,12 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           ordered: header.bottom <= summary.top && summary.bottom <= controls.top && controls.bottom <= layout.top,
           longVisible: !document.querySelector('#long-sidebar').hidden && !document.querySelector('#longScopeTabs').hidden,
           noLongOverlap: sidebar.right <= table.left,
-          messageColumns: messages.length,
-          messageEqualHeight: messages.length === 1,
           summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
+          marketStatusInHeader: marketStatus.parentElement.matches('.runtime-strip')
+            && Boolean(marketStatus.compareDocumentPosition(runtimeStatus) & Node.DOCUMENT_POSITION_FOLLOWING),
+          quoteTimeVisible: document.querySelector('#quoteTime').getClientRects().length > 0,
+          scoresInDataStatus: dataStatus.contains(scoreRange) && dataStatus.contains(topScores),
+          scoresAbsentFromObservation: !observationDrawer.contains(scoreRange) && !observationDrawer.contains(topScores),
           quoteAge: document.querySelector('#quoteAge').textContent,
           quoteAgeHms: /^\d+(?:时 \d+分 )?\d+秒$/.test(document.querySelector('#quoteAge').textContent),
           inputQuality: document.querySelector('#inputQualityStatus').textContent,
@@ -821,16 +844,18 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("ordered")
         and result.get("longVisible")
         and result.get("noLongOverlap")
-        and result.get("messageColumns") == 1
-        and result.get("messageEqualHeight")
         and result.get("summaryItems") == 3
+        and result.get("marketStatusInHeader")
+        and result.get("quoteTimeVisible")
+        and result.get("scoresInDataStatus")
+        and result.get("scoresAbsentFromObservation")
         and result.get("quoteAgeHms")
         and result.get("inputQuality") == "不适用"
         and result.get("inputQualityMeta") == "长期固定观察池不评分"
         and result.get("publicationStatus") == "不适用"
         and result.get("publicationMeta") == "长期固定观察池，不评分、不冻结"
         and result.get("topScoresStatus") == "暂无评分数据"
-        and result.get("healthBadge") == "异常 1"
+        and result.get("healthBadge") == "观察 · 1项异常"
         and result.get("rows")
         and result.get("scopes") == 3
         and result.get("browserErrors") == []

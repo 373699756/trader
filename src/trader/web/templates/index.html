@@ -31,6 +31,7 @@
         </div>
       </div>
       <div class="runtime-strip" aria-label="运行状态">
+        <strong class="input-quality-live header-market-status"><b id="inputQualityStrategy">明</b><i aria-hidden="true"> · </i><b id="quoteSource">行情暂不可用</b><i aria-hidden="true"> · </i><b id="quoteFreshness" data-age-state="unknown">● <time id="quoteAge">--</time></b> <time id="quoteTime">-</time><i aria-hidden="true"> · </i><span id="inputQualityScoreTime">等待本轮评分完成</span></strong>
         <span><i id="runtimeDot" class="status-dot" data-state="idle"></i><b id="runtimeStatus">未启动</b></span>
         <span>推送 <b id="streamStatus">连接中</b></span>
         <button id="errorDetailsButton" class="runtime-issue-button observation-trigger" type="button" aria-controls="observationDrawer" aria-expanded="false">
@@ -46,8 +47,12 @@
       <section class="summary-band" aria-label="运行摘要">
         <div id="inputQualityPanel" class="summary-item data-status-summary" role="status" aria-live="polite">
           <span>数据状态</span>
-          <strong class="input-quality-live"><b id="inputQualityStrategy">明</b><i aria-hidden="true"> · </i><b id="quoteSource">行情暂不可用</b><i aria-hidden="true"> · </i><b id="quoteFreshness" data-age-state="unknown">● <time id="quoteAge">--</time></b><time id="quoteTime" class="visually-hidden">-</time><i aria-hidden="true"> · </i><span id="inputQualityScoreTime">等待本轮评分完成</span></strong>
-          <small id="dataStatusTopScores">评分待生成</small>
+          <div class="data-status-score-summary" aria-label="评分摘要">
+            <div id="funnelScoreRange" class="funnel-score-range">评分范围 —</div>
+            <strong id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</strong>
+            <small id="topScoresMeta">最终评分 Top 3</small>
+            <small id="funnelMeta">评分链路状态</small>
+          </div>
         </div>
         <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 · 上限 168 · 复核 0/0</small></div>
         <div class="summary-item"><span>发布状态</span><strong id="publicationStatus">-</strong><small id="publicationMeta">等待当前策略快照</small></div>
@@ -161,9 +166,6 @@
           <header><span>14 层荐股评分链路</span><strong id="funnelStatus">等待评分输入</strong></header>
           <div id="funnelStages" class="funnel-stages">输入、过滤、评分与发布按顺序执行</div>
           <div id="observationStageList" class="observation-stage-list"></div>
-          <div id="funnelScoreRange" class="funnel-score-range">评分范围 —</div>
-          <strong id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</strong>
-          <small id="topScoresMeta">最终评分 Top 3</small><small id="funnelMeta">评分链路状态</small>
         </section>
         <section class="observation-errors" aria-label="运行异常">
           <header><span>全局异常汇总</span><b id="observationErrorCount">0</b></header>

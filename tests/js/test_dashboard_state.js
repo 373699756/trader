@@ -367,7 +367,6 @@ function summaryFixture() {
     budgetMeta: { textContent: "" },
     inputQualityStrategy: { textContent: "" },
     inputQualityScoreTime: { textContent: "" },
-    dataStatusTopScores: { textContent: "" },
     publicationStatus: { textContent: "" },
     publicationMeta: { textContent: "" },
     topScoresStatus: { textContent: "" },

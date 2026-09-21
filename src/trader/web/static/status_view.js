@@ -185,7 +185,6 @@
       els.inputQualityStrategy.textContent = selection.strategyLabel(state.strategy);
       els.inputQualityScoreTime.textContent = "等待本轮评分完成";
       renderBatchSummary(els, null, [], selection);
-      setDataStatusTopScores(els, null, []);
       els.publicationStatus.textContent = "未就绪";
       els.publicationMeta.textContent = "等待当前策略快照";
       renderTopScores(els, null, []);
@@ -219,7 +218,6 @@
       els.inputQualityStrategy.textContent = selection.strategyLabel(strategy);
       els.inputQualityScoreTime.textContent = "所选历史日期不重算评分";
       renderBatchSummary(els, null, [], selection, strategy);
-      setDataStatusTopScores(els, null, []);
       els.publicationStatus.textContent = "历史只读";
       els.publicationMeta.textContent = "所选日期无正式快照";
       renderTopScores(els, null, []);
@@ -316,7 +314,6 @@
           : "来源不可用";
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
     renderTopScores(els, payload, items);
-    setDataStatusTopScores(els, payload, items);
     els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.inputQualityScoreTime.textContent = payload.strategy === "long"
       ? "长期策略不评分"
@@ -351,14 +348,6 @@
     if (!Number.isFinite(date.getTime())) return "待生成";
     const pad = (number) => String(number).padStart(2, "0");
     return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-  }
-
-  function setDataStatusTopScores(els, payload, items) {
-    if (!els.dataStatusTopScores) return;
-    const values = topScoredStocks(payload, items);
-    els.dataStatusTopScores.textContent = values.length
-      ? values.map((item) => `${item.score.toFixed(2)}-${item.code} ${item.name}`).join(" · ")
-      : "评分待生成";
   }
 
   function pipelineHasProgress(pipeline) {

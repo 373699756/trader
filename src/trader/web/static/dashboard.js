@@ -92,7 +92,7 @@
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
       "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta", "topScoresStatus", "topScoresMeta",
       "refreshButton", "dateSelect", "strategyDescription", "batchSummary", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelScoreRange", "funnelMeta",
-      "inputQualityStrategy", "inputQualityScoreTime", "dataStatusTopScores", "healthBadge", "errorDetailsButton",
+      "inputQualityStrategy", "inputQualityScoreTime", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody",
       "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",

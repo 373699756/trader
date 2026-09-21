@@ -43,8 +43,8 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="healthPanel"' not in page
     assert 'id="healthBadge"' in page
     assert 'id="errorDetailsButton"' in page
-    assert 'id="errorDrawer"' in page
-    assert "评分输入质量" in page
+    assert 'id="observationDrawer"' in page
+    assert "数据状态" in page
     assert 'id="inputQualityStatus"' in page
     assert 'id="inputQualityMeta"' in page
     assert 'id="inputQualityBlockers"' in page
@@ -52,6 +52,8 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="inputQualityStages"' in page
     assert 'id="inputQualityStrategy"' in page
     assert 'id="inputQualityScoreTime"' in page
+    assert 'id="quoteTime" class="visually-hidden"' not in page
+    assert 'id="dataStatusTopScores"' not in page
     assert 'id="dataReadinessStatus"' not in page
     assert 'id="headerFreeze"' not in page
     assert 'id="snapshotState"' not in page
@@ -60,6 +62,12 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="quoteCoverageMeta"' not in page
     assert 'id="funnelStatus"' in page
     assert 'id="funnelScoreRange"' in page
+    runtime_start = page.index('class="runtime-strip"')
+    assert runtime_start < page.index('id="inputQualityStrategy"') < page.index('id="runtimeStatus"')
+    data_status_start = page.index('id="inputQualityPanel"')
+    observation_start = page.index('id="observationDrawer"')
+    assert data_status_start < page.index('id="funnelScoreRange"') < observation_start
+    assert data_status_start < page.index('id="topScoresStatus"') < observation_start
     assert 'id="snapshotDate"' not in page
     assert 'id="snapshotStrategy"' not in page
     assert 'id="snapshotMeta"' not in page

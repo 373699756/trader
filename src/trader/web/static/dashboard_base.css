@@ -111,6 +111,19 @@ tr:focus-visible {
   text-overflow: ellipsis;
 }
 
+.runtime-strip .header-market-status {
+  flex: 1 1 320px;
+  min-width: 0;
+  max-width: min(52vw, 520px);
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .runtime-strip b {
   color: var(--text);
   font-weight: 600;
@@ -467,24 +480,40 @@ tr:focus-visible {
   white-space: nowrap;
 }
 
-#dataStatusTopScores {
-  min-height: 15px;
-  color: var(--blue);
-  font-variant-numeric: tabular-nums;
-}
-
 .summary-item > small b {
   color: var(--muted);
   font-weight: 600;
 }
 
-.summary-item > strong.top-scores-list {
-  min-height: 0;
+.data-status-score-summary {
+  min-width: 0;
   margin-top: 3px;
+}
+
+.data-status-score-summary .funnel-score-range {
+  margin-top: 0;
+}
+
+.data-status-score-summary > strong.top-scores-list {
+  min-height: 0;
+  display: block;
+  margin-top: 2px;
   overflow: hidden;
+  color: var(--blue);
   font-size: 12px;
   line-height: 17px;
   white-space: pre-line;
+}
+
+.data-status-score-summary > small {
+  display: block;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 15px;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .input-quality-live {
