@@ -143,6 +143,8 @@ class _TopKQuoteBatch:
 
 
 class MarketReader(Protocol):
+    def reference_version(self) -> str: ...
+
     def fetch_market_features(
         self,
         observed_at: datetime,
@@ -465,6 +467,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             if (
                 existing is not None
                 and existing.summary.trade_date == context.observed_at.date()
+                and existing.population_count == context.population_count
                 and existing.primary_blocker not in {"candidate_quotes_pending", "scoring_pending"}
             ):
                 continue
@@ -720,6 +723,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             self._market_version,
             self._candidate_version,
             self._research_version,
+            getattr(self._market, "reference_version", lambda: "reference:unknown")(),
             self._intraday_version if include_intraday_tail else "intraday:not_used",
             self._latest_requested_codes,
             tuple((strategy.value, self._strategy_requested_codes[strategy]) for strategy in SCORED_STRATEGIES),

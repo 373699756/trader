@@ -64,6 +64,7 @@ class FeatureSnapshotEnvelope:
     trade_date: str
     phase: str
     merge_epoch: str
+    reference_epoch: str
     data_version: str
     config_version: str
     feature_schema: str
@@ -88,6 +89,7 @@ class FeatureSnapshotEnvelope:
             _require_text(getattr(self, name), name)
         if self.merge_epoch != self.market_change_set.merge_epoch:
             raise DataPlaneContractError("feature envelope and changes must share merge_epoch")
+        _require_text(self.reference_epoch, "reference_epoch")
         codes = tuple(feature.quote.code for feature in self.feature_snapshots)
         if codes != tuple(sorted(codes)) or len(codes) != len(set(codes)):
             raise DataPlaneContractError("feature snapshots must be sorted and unique")

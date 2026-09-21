@@ -42,6 +42,8 @@ class MarketDataFailedError(RuntimeError):
 @dataclass(frozen=True)
 class MarketSnapshotMetadata:
     merge_epoch: str = ""
+    market_epoch: str = ""
+    reference_epoch: str = ""
     source_versions: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     field_sources: Mapping[str, Mapping[str, str]] = field(default_factory=lambda: MappingProxyType({}))
     conflicts: tuple[str, ...] = ()
@@ -54,6 +56,12 @@ class MarketSnapshotMetadata:
     status: str = "missing"
 
     def __post_init__(self) -> None:
+        if not self.merge_epoch:
+            raise ValueError("market snapshot merge_epoch must not be empty")
+        if not self.market_epoch:
+            object.__setattr__(self, "market_epoch", self.merge_epoch)
+        if not self.reference_epoch:
+            object.__setattr__(self, "reference_epoch", "reference:unknown")
         object.__setattr__(self, "source_versions", MappingProxyType(dict(self.source_versions)))
         object.__setattr__(
             self,

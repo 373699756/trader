@@ -412,6 +412,7 @@ def _empty_snapshot(observed_at: datetime, degraded: set[str]) -> CanonicalMarke
         observed_at,
         merge_epoch,
         (),
+        "reference:unknown",
         {},
         {},
         (),
@@ -435,6 +436,7 @@ class _CanonicalSnapshotRequiredOptions(TypedDict):
 
 class _CanonicalSnapshotOptionalOptions(TypedDict, total=False):
     merge_epoch: str | None
+    reference_epoch: str
     source_ages_seconds: Mapping[str, float]
     failure_categories: tuple[str, ...]
     status: str
@@ -468,6 +470,7 @@ def _canonical_snapshot(
         observed_at=observed_at,
         merge_epoch=resolved_merge_epoch,
         quotes=quotes,
+        reference_epoch=options.get("reference_epoch", "reference:unknown"),
         field_sources=field_sources,
         source_versions=source_versions,
         conflicts=conflicts,
@@ -522,7 +525,13 @@ def _validate_observation_consistency(
             # within the same trade date; cross-date age is surfaced in metadata.
             same_trade_date = item.source_time.astimezone(timezone.utc).date() == observed_at.astimezone(timezone.utc).date()
             age = max(0.0, (observed_at - item.source_time).total_seconds()) if same_trade_date else 0.0
-            if max_age_seconds is not None and age > max_age_seconds:
+            # Realtime quote deadlines must not evict durable security-reference
+            # observations. Reference validity is owned by the reference loader.
+            if (
+                max_age_seconds is not None
+                and source_name(item.source) in {"eastmoney", "sina", "tencent"}
+                and age > max_age_seconds
+            ):
                 reasons.add(f"freshness_expired:{subject}:{source_name(item.source)}")
                 continue
             accepted.append(item)

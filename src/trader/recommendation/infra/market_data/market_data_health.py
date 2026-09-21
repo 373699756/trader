@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -225,6 +227,8 @@ class MarketDataHealth:
         selected = set(codes) if codes is not None else None
         return MarketSnapshotMetadata(
             merge_epoch=snapshot.merge_epoch,
+            market_epoch=snapshot.merge_epoch,
+            reference_epoch=_reference_epoch(self._references.versions()),
             source_versions=snapshot.source_versions,
             field_sources={
                 code: dict(sources)
@@ -248,6 +252,12 @@ class MarketDataHealth:
             failure_categories=snapshot.failure_categories,
             status=snapshot.status,
         )
+
+
+def _reference_epoch(versions: Mapping[str, str]) -> str:
+    return "reference:" + hashlib.sha256(
+        json.dumps(dict(sorted(versions.items())), ensure_ascii=True, separators=(",", ":")).encode()
+    ).hexdigest()[:24]
 
 
 def _gateway_health_payload(status: MarketGatewayHealthStatus) -> dict[str, JsonInput]:

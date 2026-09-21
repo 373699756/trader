@@ -127,7 +127,8 @@ class SinaClient:
             rows.extend(payload)
         received_at = now or self._wall_clock()
         quotes = normalize_quotes(rows, received_at, normalizer=_quote_from_row)
-        if len({quote.code for quote in quotes}) < min(1000, total // 2):
+        unique_codes = {quote.code for quote in quotes}
+        if len(unique_codes) < total:
             raise RuntimeError(f"sina quote coverage is incomplete: {len(quotes)}/{total}")
         return quotes
 

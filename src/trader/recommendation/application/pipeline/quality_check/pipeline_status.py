@@ -245,6 +245,7 @@ def build_first_nine_stage_snapshots(
     return tuple(
         _stage_snapshot(
             stage,
+            batch_id=f"pipeline:{as_of.isoformat()}",
             as_of=as_of,
             input_count=input_count,
             output_count=output_count,
@@ -262,6 +263,7 @@ def build_first_nine_stage_snapshots(
 def _stage_snapshot(
     stage: PipelineStage,
     *,
+    batch_id: str,
     as_of: datetime,
     input_count: int,
     output_count: int,
@@ -276,6 +278,8 @@ def _stage_snapshot(
     return PipelineStageSnapshot(
         stage=stage,
         stage_order=PIPELINE_STAGES.index(stage) + 1,
+        input_batch_id=batch_id,
+        output_batch_id=batch_id,
         as_of=as_of,
         state=state,
         input_count=input_count,

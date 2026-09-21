@@ -59,6 +59,8 @@ def stage_output(
     snapshot = PipelineStageSnapshot(
         stage=stage,
         stage_order=PIPELINE_STAGES.index(stage) + 1,
+        input_batch_id=f"pipeline:{as_of.isoformat()}",
+        output_batch_id=f"pipeline:{as_of.isoformat()}",
         as_of=as_of,
         state=state,
         input_count=input_count,

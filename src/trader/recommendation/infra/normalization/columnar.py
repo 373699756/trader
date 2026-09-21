@@ -235,6 +235,7 @@ class ColumnarFeatureBatch:
             trade_date=options.trade_date,
             phase=options.phase,
             merge_epoch=self.identity.merge_epoch,
+            reference_epoch=options.reference_epoch,
             data_version=options.data_version,
             config_version=self.identity.config_version,
             feature_schema=self.identity.schema_version,
@@ -259,6 +260,7 @@ class FeatureEnvelopeOptions:
     trade_date: str
     phase: str
     data_version: str
+    reference_epoch: str = "reference:unknown"
     snapshot_version: str | None = None
     feature_snapshot_version: str | None = None
 

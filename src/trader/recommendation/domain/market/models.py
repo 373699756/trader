@@ -93,6 +93,7 @@ class MarketQuote:
 class CanonicalMarketSnapshot:
     observed_at: datetime
     merge_epoch: str
+    reference_epoch: str = "reference:unknown"
     quotes: tuple[MarketQuote, ...]
     field_sources: Mapping[str, Mapping[str, str]]
     source_versions: Mapping[str, str]
@@ -108,6 +109,8 @@ class CanonicalMarketSnapshot:
             raise ValueError("canonical snapshot observed_at must be timezone-aware")
         if not self.merge_epoch:
             raise ValueError("canonical snapshot merge_epoch must not be empty")
+        if not self.reference_epoch.strip():
+            raise ValueError("canonical snapshot reference_epoch must not be empty")
         codes = tuple(quote.code for quote in self.quotes)
         if any(left > right for left, right in zip(codes, codes[1:], strict=False)):
             raise ValueError("canonical snapshot quotes must be sorted by code")

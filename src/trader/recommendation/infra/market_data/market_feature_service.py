@@ -75,6 +75,12 @@ class MarketFeatureService:
         self.eligibility = dependencies.eligibility
         self.history_preload_limit = max(1, history_preload_limit)
 
+    def reference_version(self) -> str:
+        """Return the immutable reference epoch used by scoring caches."""
+
+        versions = self.references.versions()
+        return "reference:" + "|".join(f"{key}={versions[key]}" for key in sorted(versions))
+
     def fetch_market_features(
         self,
         observed_at: datetime,

@@ -360,6 +360,8 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         PipelineStageSnapshot(
             stage=stage,
             stage_order=index,
+            input_batch_id="pipeline:test",
+            output_batch_id="pipeline:test",
             as_of=source_time,
             state=StageState.READY,
             input_count=1,

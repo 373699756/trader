@@ -424,7 +424,8 @@
       const input = values.reduce((total, stage) => total + (Number.isFinite(stage.input_count) ? stage.input_count : 0), 0);
       const outputValues = values.map((stage) => stage.output_count).filter((value) => Number.isFinite(value));
       const output = outputValues.length ? outputValues[outputValues.length - 1] : null;
-      const filtered = Math.max(0, input - (output == null ? input : output));
+      const rejectedValues = values.map((stage) => stage.rejected_count).filter((value) => Number.isFinite(value));
+      const filtered = rejectedValues.length ? rejectedValues.reduce((total, value) => total + value, 0) : null;
       const states = values.map((stage) => stage.state);
       const state = !values.length ? "not_ready" : states.includes("failed") ? "failed" : states.includes("running") ? "running" : states.includes("degraded") ? "degraded" : states.includes("not_ready") ? "not_ready" : states.includes("not_applicable") ? "not_applicable" : "completed";
       const reasons = values.flatMap((stage) => Array.isArray(stage.reason_counts) ? stage.reason_counts : []);
@@ -433,7 +434,7 @@
       const facetText = facets.slice(0, 3).map((facet) => `${facet.key} ${displayCount(facet.count)}`).join(" · ");
       const duration = values.reduce((total, stage) => total + (Number.isFinite(stage.duration_ms) ? stage.duration_ms : 0), 0);
       const stageIssues = visibleIssues.filter((issue) => keys.some((key) => issueBelongsToStage(issue, key)));
-      const detail = `${stageStateLabel(state)} · ${displayCount(input)} → ${output == null ? "—" : displayCount(output)} · 淘汰 ${displayCount(filtered)} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
+      const detail = `${stageStateLabel(state)} · ${displayCount(input)} → ${output == null ? "—" : displayCount(output)} · 淘汰 ${filtered == null ? "—" : displayCount(filtered)} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
       const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>主要原因：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}`;
       return `<article class="observation-stage" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(keys.join(","))}" data-stage-toggle="true" tabindex="0" role="button" aria-expanded="false"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span><div class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");

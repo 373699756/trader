@@ -103,6 +103,8 @@ class BusinessRejectionSummary:
 class PipelineStageSnapshot:
     stage: PipelineStage
     stage_order: int
+    input_batch_id: str
+    output_batch_id: str
     as_of: datetime
     state: StageState
     input_count: int
@@ -118,6 +120,8 @@ class PipelineStageSnapshot:
     def __post_init__(self) -> None:
         if self.stage_order != PIPELINE_STAGES.index(self.stage) + 1:
             raise ValueError("pipeline stage order does not match the stage")
+        if not self.input_batch_id.strip() or not self.output_batch_id.strip():
+            raise ValueError("pipeline batch identities are required")
         _require_shanghai(self.as_of, "pipeline stage snapshot")
         counts = (
             self.input_count,
@@ -139,6 +143,15 @@ class PipelineStageSnapshot:
 def _require_unique_reason_codes(reasons: tuple[StageReasonAggregate, ...]) -> None:
     if len({item.code for item in reasons}) != len(reasons):
         raise ValueError("pipeline reason codes must be unique")
+
+
+def validate_stage_batch_continuity(stages: tuple[PipelineStageSnapshot, ...]) -> None:
+    """Reject a stage list whose immutable handoff identities do not line up."""
+    if tuple(item.stage for item in stages) != PIPELINE_STAGES:
+        raise ValueError("pipeline stage snapshots must contain all stages in order")
+    for previous, current in zip(stages, stages[1:]):
+        if previous.output_batch_id != current.input_batch_id:
+            raise ValueError("pipeline stage batch identities are not continuous")
 
 
 def _require_shanghai(value: datetime, label: str) -> None:
@@ -294,6 +307,7 @@ __all__ = [
     "PipelineStage",
     "PipelineStageKey",
     "PipelineStageSnapshot",
+    "validate_stage_batch_continuity",
     "PipelineStageState",
     "PipelineStageStatus",
     "RecommendationPipelineStatus",
