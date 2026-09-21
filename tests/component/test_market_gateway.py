@@ -587,6 +587,9 @@ def test_gateway_keeps_last_valid_snapshot_when_both_free_full_market_sources_fa
     assert "all_sources_failed:last_valid_snapshot" in snapshot.degraded_reasons
     assert "eastmoney:source_failed" in snapshot.degraded_reasons
     assert "sina:source_failed" in snapshot.degraded_reasons
+    assert snapshot.status == "stale"
+    assert "failed" in snapshot.failure_categories
+    assert "stale" in snapshot.failure_categories
 
 
 def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:

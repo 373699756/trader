@@ -11,7 +11,7 @@ from typing import ParamSpec, TypeVar
 
 from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.history.history import DailyBar
-from trader.infra.market_data.normalization.merge_quote import source_name, source_priority
+from trader.recommendation.infra.normalization.merge_quote import source_name, source_priority
 from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
 from trader.recommendation.domain.market.models import (
     Evidence,

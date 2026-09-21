@@ -7,15 +7,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from functools import lru_cache
 
-from trader.infra.market_data.normalization.field_quality import (
+from trader.recommendation.infra.normalization.field_quality import (
     REALTIME_SOURCES as _REALTIME_SOURCES,
 )
-from trader.infra.market_data.normalization.field_quality import (
+from trader.recommendation.infra.normalization.field_quality import (
     select_fields as select_quote_fields,
 )
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.infra.market_data.source_identity import source_name, source_priority
 from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.recommendation.domain.market.models import (
     Board,
@@ -318,15 +318,6 @@ def _price_deviation(first: float | None, second: float | None) -> float:
     second_decimal = Decimal(str(second))
     baseline = min(first_decimal, second_decimal)
     return float(abs(first_decimal - second_decimal) / baseline * Decimal("100"))
-
-
-@lru_cache(maxsize=32)
-def source_name(source: str) -> str:
-    return source.strip().lower().split("_", 1)[0].split("-", 1)[0]
-
-
-def source_priority(source: str) -> int:
-    return _SOURCE_PRIORITY.get(source_name(source), 0)
 
 
 def _board_value(value: JsonScalar) -> Board:

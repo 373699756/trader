@@ -47,7 +47,7 @@ def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     assert (
         '"candidate_union_projection": '
         '"trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + '
-        'trader.infra.market_data.normalization.merge.overlay_canonical_snapshot"' in performance
+        'trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot"' in performance
     )
     assert '"candidate_rows": 1080' in _read("config/runtime.json")
 

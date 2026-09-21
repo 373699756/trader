@@ -18,7 +18,7 @@ from trader.infra.cache_contracts import (
     build_cache_identity,
     canonical_json_bytes,
 )
-from trader.infra.market_data.normalization.merge import observation_from_quote
+from trader.recommendation.infra.normalization.merge import observation_from_quote
 from trader.recommendation.infra.market_data.gateway_runtime import (
     _before_deadline,
     _cache_error_code,

@@ -49,6 +49,9 @@ class MarketSnapshotMetadata:
     degraded_reasons: tuple[str, ...] = ()
     observed_at: datetime | None = None
     reference_versions: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
+    source_ages_seconds: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    failure_categories: tuple[str, ...] = ()
+    status: str = "missing"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_versions", MappingProxyType(dict(self.source_versions)))
@@ -59,6 +62,8 @@ class MarketSnapshotMetadata:
         )
         object.__setattr__(self, "missing_reasons", MappingProxyType(dict(self.missing_reasons)))
         object.__setattr__(self, "reference_versions", MappingProxyType(dict(self.reference_versions)))
+        object.__setattr__(self, "source_ages_seconds", MappingProxyType(dict(self.source_ages_seconds)))
+        object.__setattr__(self, "failure_categories", tuple(sorted(set(self.failure_categories))))
 
 
 class FullMarketReaderPort(Protocol):

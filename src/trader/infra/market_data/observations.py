@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from types import MappingProxyType
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 JsonScalar = str | float | bool | None
 ObservationStatus = Literal["success", "no_data", "failed", "late"]
@@ -27,6 +28,9 @@ class SourceObservation:
     payload_hash: str
     status: ObservationStatus
     error_code: str | None
+    trade_date: date | None = None
+    observation_point: datetime | None = None
+    security_identity: str = ""
 
     def __post_init__(self) -> None:
         if not self.source.strip() or not self.subject_key.strip():
@@ -39,6 +43,18 @@ class SourceObservation:
         ):
             if time_value.tzinfo is None or time_value.utcoffset() is None:
                 raise ValueError(f"observation {name} must be timezone-aware")
+        if self.trade_date is None:
+            object.__setattr__(self, "trade_date", self.observed_at.astimezone(ZoneInfo("Asia/Shanghai")).date())
+        elif not isinstance(self.trade_date, date):
+            raise TypeError("observation trade_date must be a date")
+        if self.observation_point is None:
+            object.__setattr__(self, "observation_point", self.observed_at)
+        elif self.observation_point.tzinfo is None or self.observation_point.utcoffset() is None:
+            raise ValueError("observation observation_point must be timezone-aware")
+        if not self.security_identity:
+            object.__setattr__(self, "security_identity", self.subject_key)
+        if not self.security_identity.strip():
+            raise ValueError("observation security_identity must not be empty")
         if self.status not in {"success", "no_data", "failed", "late"}:
             raise ValueError("unsupported observation status")
         normalized_fields = _normalize_fields(self.fields)

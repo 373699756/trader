@@ -22,7 +22,7 @@ from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup,
 from trader.infra.market_data.history.history_seed import (
     FallbackHistoryClient,
 )
-from trader.infra.market_data.normalization.features import FeatureBuilder
+from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient

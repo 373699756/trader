@@ -244,6 +244,9 @@ class MarketDataHealth:
             degraded_reasons=snapshot.degraded_reasons,
             observed_at=snapshot.observed_at,
             reference_versions=self._references.versions(),
+            source_ages_seconds=snapshot.source_ages_seconds,
+            failure_categories=snapshot.failure_categories,
+            status=snapshot.status,
         )
 
 
@@ -273,6 +276,9 @@ def _gateway_health_payload(status: MarketGatewayHealthStatus) -> dict[str, Json
             "conflicts": snapshot.conflicts if snapshot is not None else (),
             "missing_reasons": dict(snapshot.missing_reasons) if snapshot is not None else {},
             "degraded_reasons": snapshot.degraded_reasons if snapshot is not None else (),
+            "source_ages_seconds": dict(snapshot.source_ages_seconds) if snapshot is not None else {},
+            "failure_categories": snapshot.failure_categories if snapshot is not None else (),
+            "status": snapshot.status if snapshot is not None else "missing",
         },
         "route": _route_payload(status.route),
         "source_lanes": (

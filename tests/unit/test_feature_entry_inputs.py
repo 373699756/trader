@@ -10,7 +10,7 @@ from trader.infra.market_data.history.history import (
     build_history_context,
     summarize_history_metrics,
 )
-from trader.infra.market_data.normalization.features import FeatureBuilder
+from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.infra.settings import load_strategy_settings
 from trader.recommendation.domain.market.models import MarketQuote
 

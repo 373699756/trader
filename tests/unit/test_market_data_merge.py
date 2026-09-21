@@ -4,20 +4,20 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from trader.infra.market_data.normalization import columnar_merge as columnar_merge_module
-from trader.infra.market_data.normalization.columnar_merge import (
+from trader.recommendation.infra.normalization import columnar_merge as columnar_merge_module
+from trader.recommendation.infra.normalization.columnar_merge import (
     CompleteRealtimeNormalization,
     try_merge_complete_realtime,
     try_normalize_complete_realtime_rows,
 )
-from trader.infra.market_data.normalization.merge import (
+from trader.recommendation.infra.normalization.merge import (
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
     snapshot_payload_hash,
 )
-from trader.infra.market_data.normalization.merge_quote import merge_code
-from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
+from trader.recommendation.infra.normalization.merge_quote import merge_code
+from trader.infra.market_data.quote_normalization import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 
@@ -513,6 +513,60 @@ def test_all_sources_failed_preserves_last_valid_snapshot() -> None:
     assert recovered.merge_epoch == previous.merge_epoch
     assert recovered.observed_at == previous.observed_at
     assert "all_sources_failed:last_valid_snapshot" in recovered.degraded_reasons
+
+
+def test_merge_rejects_trade_date_and_observation_point_conflicts() -> None:
+    conflicting_date = replace(
+        _observation("sina"),
+        trade_date=NOW.date() - timedelta(days=1),
+    )
+    conflicting_point = replace(
+        _observation("tencent"),
+        observation_point=NOW + timedelta(seconds=1),
+    )
+
+    snapshot = merge_market_observations(
+        (_observation("eastmoney"), conflicting_date, conflicting_point),
+        observed_at=NOW,
+    )
+
+    assert snapshot.quotes == ()
+    assert "trade_date_conflict:600001" in snapshot.degraded_reasons
+    assert "observation_point_conflict:600001" in snapshot.degraded_reasons
+    assert snapshot.status == "missing"
+    assert "conflicting" in snapshot.failure_categories
+
+
+def test_merge_rejects_security_identity_and_expired_observations() -> None:
+    identity_conflict = replace(_observation("sina"), security_identity="different-security")
+    expired = _observation(
+        "eastmoney",
+        source_time=NOW - timedelta(seconds=301),
+        received_at=NOW - timedelta(seconds=301),
+    )
+
+    identity_snapshot = merge_market_observations(
+        (identity_conflict,), observed_at=NOW, max_age_seconds=300.0
+    )
+    expired_snapshot = merge_market_observations(
+        (expired,), observed_at=NOW, max_age_seconds=300.0
+    )
+
+    assert "security_identity_conflict:600001" in identity_snapshot.degraded_reasons
+    assert "freshness_expired:600001:eastmoney" in expired_snapshot.degraded_reasons
+    assert expired_snapshot.status == "missing"
+    assert "stale" in expired_snapshot.failure_categories
+
+
+def test_snapshot_exposes_source_age_and_operational_failure_metadata() -> None:
+    snapshot = merge_market_observations(
+        (_observation("eastmoney", source_time=NOW - timedelta(seconds=12)),),
+        observed_at=NOW,
+    )
+
+    assert snapshot.source_ages_seconds == {"eastmoney": 12.0}
+    assert snapshot.status == "fresh"
+    assert snapshot.failure_categories == ()
 
 
 def test_slow_source_cannot_overwrite_realtime_price_and_can_supply_board_identity() -> None:

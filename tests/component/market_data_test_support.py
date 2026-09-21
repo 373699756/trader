@@ -26,8 +26,8 @@ from trader.infra.market_data.history.history import (
     build_history_context,
 )
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient
-from trader.infra.market_data.normalization.columnar import NormalizedMarketChangeSet
-from trader.infra.market_data.normalization.features import FeatureBuilder
+from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
+from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers import tushare_records as tushare_records_module
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from trader.infra.cache_contracts import CacheStatus
-from trader.infra.market_data.normalization.columnar import NormalizedMarketChangeSet
+from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
 from trader.infra.market_data.router import RouteOutcome
 from trader.recommendation.application.runtime.latency import LatencyWaterfallStatus
 from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistryStatus

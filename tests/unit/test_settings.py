@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.infra.market_data.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
+from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 from trader.infra.settings import (
     ConfigurationError,
     load_long_watchlist,

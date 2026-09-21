@@ -19,13 +19,13 @@ from typing import cast
 
 from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.infra.market_data.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
-from trader.infra.market_data.normalization.merge import (
+from trader.recommendation.infra.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
+from trader.recommendation.infra.normalization.merge import (
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
 )
-from trader.infra.market_data.normalization.normalize import MarketQuoteInput, build_market_quote
+from trader.infra.market_data.quote_normalization import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
@@ -402,12 +402,12 @@ def _operations(
         **api_operations,
     }
     provenance = {
-        "market_normalization": "trader.infra.market_data.normalization.normalize.build_market_quote",
-        "market_merge": "trader.infra.market_data.normalization.merge.merge_market_observations",
-        "canonical_snapshot": "trader.infra.market_data.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
-        "targeted_overlay_commit": "trader.infra.market_data.normalization.merge.overlay_canonical_snapshot + trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedDecisionIndex.publish_overlay",
+        "market_normalization": "trader.infra.market_data.quote_normalization.build_market_quote",
+        "market_merge": "trader.recommendation.infra.normalization.merge.merge_market_observations",
+        "canonical_snapshot": "trader.recommendation.infra.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
+        "targeted_overlay_commit": "trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot + trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedDecisionIndex.publish_overlay",
         "board_preselection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans",
-        "candidate_union_projection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + trader.infra.market_data.normalization.merge.overlay_canonical_snapshot",
+        "candidate_union_projection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot",
         "board_local_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "two_strategy_board_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "three_board_wall_clock": "trader.recommendation.domain.scoring.scoring.score_board_strategy",

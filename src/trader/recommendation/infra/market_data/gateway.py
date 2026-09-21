@@ -16,19 +16,19 @@ from polars.exceptions import PolarsError
 from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import BoundedCache, canonical_json_bytes
-from trader.infra.market_data.normalization.columnar import (
+from trader.recommendation.infra.normalization.columnar import (
     ColumnarQuoteBatch,
     NormalizedMarketChangeSet,
     market_changes,
     targeted_market_changes,
 )
-from trader.infra.market_data.normalization.merge import (
+from trader.recommendation.infra.normalization.merge import (
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
     snapshot_payload_hash,
 )
-from trader.infra.market_data.normalization.merge_quote import rejection_reason, source_name
+from trader.recommendation.infra.normalization.merge_quote import rejection_reason, source_name
 from trader.infra.market_data.references.security_references import security_reference_observations
 from trader.recommendation.infra.market_data.gateway_health import (
     MarketGatewayHealthStatus,
@@ -116,6 +116,7 @@ class _TargetQuoteRequest:
     dataset: str = "candidate_quotes"
     lane: str = "tencent"
     urgent: bool = False
+    max_observation_age_seconds: float | None = None
 
 
 class MarketDataGateway:
@@ -242,10 +243,20 @@ class MarketDataGateway:
         self._latency.enter(trace_id)
         try:
             if self._source_lanes is not None:
-                result = self._fetch_market_once(requested_at, force=force, deadline=deadline)
+                result = self._fetch_market_once(
+                    requested_at,
+                    force=force,
+                    deadline=deadline,
+                    max_observation_age_seconds=300.0 if observed_at is not None else None,
+                )
             else:
                 result = self._market_flight.run(
-                    lambda: self._fetch_market_once(requested_at, force=force, deadline=deadline)
+                    lambda: self._fetch_market_once(
+                        requested_at,
+                        force=force,
+                        deadline=deadline,
+                        max_observation_age_seconds=300.0 if observed_at is not None else None,
+                    )
                 )
         except MarketDataDeadlineExceededError:
             self._latency.finish(trace_id, outcome="timeout")
@@ -265,6 +276,7 @@ class MarketDataGateway:
         *,
         force: bool,
         deadline: datetime | None,
+        max_observation_age_seconds: float | None = None,
     ) -> Sequence[MarketQuote]:
         results = self._sources.fetch_market_sources(observed_at, force=force, deadline=deadline)
         successes = tuple(result for result in results if result.status == "success")
@@ -279,17 +291,12 @@ class MarketDataGateway:
                 self._last_route_outcome = outcome
                 cached = tuple(self._latest_by_code.values())
                 if self._latest_snapshot is not None:
-                    self._latest_snapshot = replace(
+                    self._latest_snapshot = _with_snapshot_degradation(
                         self._latest_snapshot,
-                        degraded_reasons=tuple(
-                            sorted(
-                                {
-                                    *self._latest_snapshot.degraded_reasons,
-                                    *_source_degraded_reasons(results),
-                                    "all_sources_failed:last_valid_snapshot",
-                                }
-                            )
-                        ),
+                        {
+                            *_source_degraded_reasons(results),
+                            "all_sources_failed:last_valid_snapshot",
+                        },
                     )
             if cached:
                 return cached
@@ -309,12 +316,10 @@ class MarketDataGateway:
             (*observations, *references),
             observed_at=completed_at,
             previous=previous,
+            max_age_seconds=max_observation_age_seconds,
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
-        snapshot = replace(
-            snapshot,
-            degraded_reasons=tuple(sorted({*snapshot.degraded_reasons, *_source_degraded_reasons(results)})),
-        )
+        snapshot = _with_snapshot_degradation(snapshot, _source_degraded_reasons(results))
         while True:
             commit_started = self._monotonic()
             with self._state_lock:
@@ -361,10 +366,26 @@ class MarketDataGateway:
         self._latency.enter(trace_id)
         try:
             if self._source_lanes is not None:
-                result = self._fetch_candidates_once(_TargetQuoteRequest(codes, requested_at, force, deadline))
+                result = self._fetch_candidates_once(
+                    _TargetQuoteRequest(
+                        codes,
+                        requested_at,
+                        force,
+                        deadline,
+                        max_observation_age_seconds=300.0 if observed_at is not None else None,
+                    )
+                )
             else:
                 with self._candidate_fetch_lock:
-                    result = self._fetch_candidates_once(_TargetQuoteRequest(codes, requested_at, force, deadline))
+                    result = self._fetch_candidates_once(
+                        _TargetQuoteRequest(
+                            codes,
+                            requested_at,
+                            force,
+                            deadline,
+                            max_observation_age_seconds=300.0 if observed_at is not None else None,
+                        )
+                    )
         except MarketDataDeadlineExceededError:
             self._latency.finish(trace_id, outcome="timeout")
             raise
@@ -401,6 +422,7 @@ class MarketDataGateway:
                     dataset="topk_quotes",
                     lane="tencent_topk",
                     urgent=True,
+                    max_observation_age_seconds=300.0 if observed_at is not None else None,
                 )
             )
         except BaseException:
@@ -427,7 +449,15 @@ class MarketDataGateway:
         self._latency.enter(trace_id)
         try:
             result = self._fetch_candidates_once(
-                _TargetQuoteRequest(codes, requested_at, force, deadline, isolated=True, dataset="long_quotes")
+                _TargetQuoteRequest(
+                    codes,
+                    requested_at,
+                    force,
+                    deadline,
+                    isolated=True,
+                    dataset="long_quotes",
+                    max_observation_age_seconds=300.0 if observed_at is not None else None,
+                )
             )
         except MarketDataDeadlineExceededError:
             self._latency.finish(trace_id, outcome="timeout")
@@ -498,6 +528,7 @@ class MarketDataGateway:
             (*raw_baseline, *baseline_observations, *observations, *references),
             observed_at=completed_at,
             targeted_codes=codes,
+            max_age_seconds=request.max_observation_age_seconds,
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         with self._state_lock:
@@ -709,10 +740,7 @@ class MarketDataGateway:
         with self._state_lock:
             if self._latest_snapshot is None:
                 return
-            self._latest_snapshot = replace(
-                self._latest_snapshot,
-                degraded_reasons=tuple(sorted({*self._latest_snapshot.degraded_reasons, reason})),
-            )
+            self._latest_snapshot = _with_snapshot_degradation(self._latest_snapshot, {reason})
 
     def current_quotes(self, codes: Sequence[str]) -> Sequence[MarketQuote]:
         with self._state_lock:
@@ -928,10 +956,7 @@ def _try_columnar_snapshot(
             schema_version=schema_version,
         )
     except (PolarsError, RuntimeError, TypeError, ValueError):
-        degraded = replace(
-            snapshot,
-            degraded_reasons=tuple(sorted({*snapshot.degraded_reasons, "columnar_projection_failed"})),
-        )
+        degraded = _with_snapshot_degradation(snapshot, {"columnar_projection_failed"})
         return degraded, None
     return snapshot, columnar
 
@@ -959,6 +984,35 @@ def _columnar_failure_changes(
         overlay_only=False,
         full_invalidation_reason="columnar_projection_failed",
         content_hash=snapshot_payload_hash(current),
+    )
+
+
+def _with_snapshot_degradation(
+    snapshot: CanonicalMarketSnapshot,
+    reasons: set[str],
+) -> CanonicalMarketSnapshot:
+    merged_reasons = tuple(sorted({*snapshot.degraded_reasons, *reasons}))
+    categories = set(snapshot.failure_categories)
+    if any("last_valid_snapshot" in reason or "late" in reason for reason in merged_reasons):
+        categories.add("stale")
+    if any(
+        marker in reason
+        for reason in merged_reasons
+        for marker in ("failed", "unavailable", "circuit_open", "no_data")
+    ):
+        categories.add("failed")
+    if merged_reasons and not categories:
+        categories.add("degraded")
+    status = snapshot.status
+    if "stale" in categories:
+        status = "stale"
+    elif status == "fresh" and merged_reasons:
+        status = "degraded"
+    return replace(
+        snapshot,
+        degraded_reasons=merged_reasons,
+        failure_categories=tuple(sorted(categories)),
+        status=status,
     )
 
 

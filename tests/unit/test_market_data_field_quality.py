@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.infra.market_data.normalization.field_quality import (
+from trader.recommendation.infra.normalization.field_quality import (
     BOARD_FIELDS,
     REALTIME_FIELDS,
     normalize_source,

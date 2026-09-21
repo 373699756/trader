@@ -16,7 +16,7 @@ import requests
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.market_data.normalization.normalize import (
+from trader.infra.market_data.quote_normalization import (
     MarketQuoteInput,
     build_market_quote,
     normalize_quotes,

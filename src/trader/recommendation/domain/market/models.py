@@ -99,6 +99,9 @@ class CanonicalMarketSnapshot:
     conflicts: tuple[str, ...]
     missing_reasons: Mapping[str, str]
     degraded_reasons: tuple[str, ...]
+    source_ages_seconds: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    failure_categories: tuple[str, ...] = ()
+    status: Literal["fresh", "degraded", "stale", "missing", "conflicting"] = "fresh"
 
     def __post_init__(self) -> None:
         if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
@@ -115,6 +118,13 @@ class CanonicalMarketSnapshot:
         object.__setattr__(self, "field_sources", MappingProxyType(nested))
         object.__setattr__(self, "source_versions", MappingProxyType(dict(self.source_versions)))
         object.__setattr__(self, "missing_reasons", MappingProxyType(dict(self.missing_reasons)))
+        ages = {str(source): float(age) for source, age in self.source_ages_seconds.items()}
+        if any(not math.isfinite(age) or age < 0.0 for age in ages.values()):
+            raise ValueError("canonical snapshot source ages must be finite and non-negative")
+        if self.status not in {"fresh", "degraded", "stale", "missing", "conflicting"}:
+            raise ValueError("unsupported canonical snapshot status")
+        object.__setattr__(self, "source_ages_seconds", MappingProxyType(ages))
+        object.__setattr__(self, "failure_categories", tuple(sorted(set(self.failure_categories))))
 
 
 @dataclass(frozen=True)

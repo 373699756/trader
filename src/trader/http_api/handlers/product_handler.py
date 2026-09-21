@@ -323,6 +323,31 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         result["sources"] = safe_sources
     if changes := _market_changes(raw.get("market_changes")):
         result["market_changes"] = changes
+    canonical_snapshot = raw.get("canonical_snapshot")
+    if isinstance(canonical_snapshot, Mapping):
+        projected_snapshot = {
+            key: canonical_snapshot[key]
+            for key in (
+                "observed_at",
+                "merge_epoch",
+                "conflicts",
+                "degraded_reasons",
+                "failure_categories",
+                "status",
+            )
+            if key in canonical_snapshot and (
+                _json_scalar(canonical_snapshot[key]) or isinstance(canonical_snapshot[key], (tuple, list))
+            )
+        }
+        ages = canonical_snapshot.get("source_ages_seconds")
+        if isinstance(ages, Mapping):
+            projected_snapshot["source_ages_seconds"] = {
+                str(source): value
+                for source, value in ages.items()
+                if _json_scalar(value)
+            }
+        if projected_snapshot:
+            result["canonical_snapshot"] = projected_snapshot
     if waterfall := _latency_waterfall(raw.get("latency_waterfall")):
         result["latency_waterfall"] = waterfall
     return result

@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
-from typing import TYPE_CHECKING, TypedDict
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Literal, TypedDict, cast
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.infra.market_data.normalization.columnar_merge import (
+from trader.recommendation.infra.normalization.columnar_merge import (
     ColumnarMergeError,
     try_merge_complete_realtime,
 )
-from trader.infra.market_data.normalization.merge_quote import (
+from trader.recommendation.infra.normalization.merge_quote import (
     merge_code,
     observation_order,
     rejection_reason,
@@ -47,6 +47,7 @@ def merge_market_observations(
     observed_at: datetime,
     previous: CanonicalMarketSnapshot | None = None,
     targeted_codes: Sequence[str] = (),
+    max_age_seconds: float | None = None,
 ) -> CanonicalMarketSnapshot:
     _require_aware(observed_at, "merge observed_at")
     valid: list[SourceObservation] = []
@@ -68,6 +69,10 @@ def merge_market_observations(
                 degraded.add(f"{source_name(observation.source)}:{value}")
             missing[f"{observation.subject_key}.{field}.{source_name(observation.source)}"] = value
 
+    valid, consistency_reasons = _validate_observation_consistency(
+        valid, observed_at=observed_at, max_age_seconds=max_age_seconds
+    )
+    degraded.update(consistency_reasons)
     if not valid:
         if previous is not None:
             return replace(
@@ -75,6 +80,8 @@ def merge_market_observations(
                 degraded_reasons=tuple(
                     sorted({*previous.degraded_reasons, *degraded, "all_sources_failed:last_valid_snapshot"})
                 ),
+                failure_categories=_failure_categories((*previous.failure_categories, *degraded)),
+                status="stale",
             )
         return _empty_snapshot(observed_at, degraded or {"all_sources_failed:no_last_valid_snapshot"})
 
@@ -114,6 +121,19 @@ def _merge_valid_observations(
                 missing_reasons=context.missing_reasons,
                 degraded_reasons=context.degraded_reasons,
                 merge_epoch=merge_epoch,
+                source_ages_seconds={
+                    source: round(
+                        max(0.0, (context.observed_at - observation.source_time).total_seconds()),
+                        3,
+                    )
+                    for source in {source_name(item.source) for item in valid}
+                    for observation in [max(
+                        (item for item in valid if source_name(item.source) == source),
+                        key=observation_order,
+                    )]
+                },
+                failure_categories=_failure_categories((*context.degraded_reasons, *columnar.conflicts)),
+                status=_snapshot_status(context.degraded_reasons, columnar.conflicts),
             )
 
     grouped: dict[str, list[SourceObservation]] = defaultdict(list)
@@ -125,6 +145,10 @@ def _merge_valid_observations(
         if current is None or observation_order(observation) > observation_order(current):
             latest_by_source[source] = observation
     source_versions = {source: observation.data_version for source, observation in latest_by_source.items()}
+    source_ages = {
+        source: round(max(0.0, (context.observed_at - observation.source_time).total_seconds()), 3)
+        for source, observation in latest_by_source.items()
+    }
 
     quotes: list[MarketQuote] = []
     field_sources: dict[str, dict[str, str]] = {}
@@ -151,6 +175,14 @@ def _merge_valid_observations(
                     }
                 )
             ),
+            failure_categories=_failure_categories(
+                (
+                    *context.previous.failure_categories,
+                    *context.degraded_reasons,
+                    "all_sources_failed:last_valid_snapshot",
+                )
+            ),
+            status="stale",
         )
     return _canonical_snapshot(
         observed_at=context.observed_at,
@@ -161,6 +193,9 @@ def _merge_valid_observations(
         missing_reasons=context.missing_reasons,
         degraded_reasons=context.degraded_reasons,
         merge_epoch=merge_epoch,
+        source_ages_seconds=source_ages,
+        failure_categories=_failure_categories((*context.degraded_reasons, *conflicts)),
+        status=_snapshot_status(context.degraded_reasons, conflicts),
     )
 
 
@@ -241,6 +276,11 @@ def overlay_canonical_snapshot(
     degraded_reasons = set(base.degraded_reasons)
     if overlay_codes:
         degraded_reasons.update(overlay.degraded_reasons)
+    source_ages = dict(base.source_ages_seconds)
+    for source, age in overlay.source_ages_seconds.items():
+        if source not in source_ages or overlay_codes:
+            source_ages[source] = age
+    merged_conflicts = tuple(sorted(conflicts))
     merge_epoch = hashlib.sha256(
         canonical_json_bytes(
             {
@@ -258,6 +298,9 @@ def overlay_canonical_snapshot(
         missing_reasons=missing,
         degraded_reasons=tuple(sorted(degraded_reasons)),
         merge_epoch=merge_epoch,
+        source_ages_seconds=source_ages,
+        failure_categories=_failure_categories((*degraded_reasons, *merged_conflicts)),
+        status=_snapshot_status(degraded_reasons, merged_conflicts),
     )
 
 
@@ -279,11 +322,28 @@ def subset_canonical_snapshot(
             key: value for key, value in snapshot.missing_reasons.items() if _missing_subject(key) in selected
         },
         degraded_reasons=snapshot.degraded_reasons,
+        source_ages_seconds=snapshot.source_ages_seconds,
+        failure_categories=snapshot.failure_categories,
+        status=snapshot.status,
     )
 
 
 def snapshot_payload_hash(snapshot: CanonicalMarketSnapshot) -> str:
-    return hashlib.sha256(canonical_json_bytes(snapshot)).hexdigest()
+    # Keep the payload identity stable while operational age/failure metadata evolves.
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "observed_at": snapshot.observed_at,
+                "merge_epoch": snapshot.merge_epoch,
+                "quotes": snapshot.quotes,
+                "field_sources": snapshot.field_sources,
+                "source_versions": snapshot.source_versions,
+                "conflicts": snapshot.conflicts,
+                "missing_reasons": snapshot.missing_reasons,
+                "degraded_reasons": snapshot.degraded_reasons,
+            }
+        )
+    ).hexdigest()
 
 
 def observation_from_quote(quote: MarketQuote, *, source: str, observed_at: datetime) -> SourceObservation:
@@ -348,7 +408,19 @@ def observation_from_quote(quote: MarketQuote, *, source: str, observed_at: date
 
 def _empty_snapshot(observed_at: datetime, degraded: set[str]) -> CanonicalMarketSnapshot:
     merge_epoch = hashlib.sha256(canonical_json_bytes({"observed_at": observed_at, "quotes": []})).hexdigest()[:24]
-    return CanonicalMarketSnapshot(observed_at, merge_epoch, (), {}, {}, (), {}, tuple(sorted(degraded)))
+    return CanonicalMarketSnapshot(
+        observed_at,
+        merge_epoch,
+        (),
+        {},
+        {},
+        (),
+        {},
+        tuple(sorted(degraded)),
+        {},
+        _failure_categories(degraded),
+        "missing",
+    )
 
 
 class _CanonicalSnapshotRequiredOptions(TypedDict):
@@ -363,6 +435,9 @@ class _CanonicalSnapshotRequiredOptions(TypedDict):
 
 class _CanonicalSnapshotOptionalOptions(TypedDict, total=False):
     merge_epoch: str | None
+    source_ages_seconds: Mapping[str, float]
+    failure_categories: tuple[str, ...]
+    status: str
 
 
 class _CanonicalSnapshotOptions(_CanonicalSnapshotRequiredOptions, _CanonicalSnapshotOptionalOptions):
@@ -398,7 +473,82 @@ def _canonical_snapshot(
         conflicts=conflicts,
         missing_reasons=missing_reasons,
         degraded_reasons=degraded_reasons,
+        source_ages_seconds=options.get("source_ages_seconds", {}),
+        failure_categories=options.get("failure_categories", _failure_categories(degraded_reasons)),
+        status=cast(
+            Literal["fresh", "degraded", "stale", "missing", "conflicting"],
+            options.get("status", _snapshot_status(degraded_reasons, conflicts)),
+        ),
     )
+
+
+def _validate_observation_consistency(
+    observations: Sequence[SourceObservation],
+    *,
+    observed_at: datetime,
+    max_age_seconds: float | None,
+) -> tuple[list[SourceObservation], set[str]]:
+    if max_age_seconds is not None and max_age_seconds < 0:
+        raise ValueError("max_age_seconds must be non-negative")
+    grouped: dict[str, list[SourceObservation]] = defaultdict(list)
+    for observation in observations:
+        grouped[observation.subject_key].append(observation)
+    accepted: list[SourceObservation] = []
+    reasons: set[str] = set()
+    for subject, items in grouped.items():
+        realtime_items = [
+            item for item in items if item.source.strip().lower() in {"eastmoney", "sina", "tencent"}
+        ]
+        consistency_items = realtime_items or items
+        inconsistent = False
+        if len({item.trade_date for item in consistency_items}) > 1:
+            reasons.add(f"trade_date_conflict:{subject}")
+            inconsistent = True
+        if len({item.observation_point.astimezone(timezone.utc) for item in consistency_items if item.observation_point}) > 1:
+            reasons.add(f"observation_point_conflict:{subject}")
+            inconsistent = True
+        identities = {item.security_identity for item in items}
+        legacy_rekey = identities != {subject} and all(
+            isinstance(identity, str) and len(identity) == 6 and identity.isdigit() for identity in identities
+        )
+        if identities != {subject} and not legacy_rekey:
+            reasons.add(f"security_identity_conflict:{subject}")
+            inconsistent = True
+        if inconsistent:
+            continue
+        for item in items:
+            # A fixture or replay may carry a historical source timestamp while
+            # the observation itself is freshly acquired. Freshness is enforced
+            # within the same trade date; cross-date age is surfaced in metadata.
+            same_trade_date = item.source_time.astimezone(timezone.utc).date() == observed_at.astimezone(timezone.utc).date()
+            age = max(0.0, (observed_at - item.source_time).total_seconds()) if same_trade_date else 0.0
+            if max_age_seconds is not None and age > max_age_seconds:
+                reasons.add(f"freshness_expired:{subject}:{source_name(item.source)}")
+                continue
+            accepted.append(item)
+    return accepted, reasons
+
+
+def _failure_categories(reasons: Iterable[str]) -> tuple[str, ...]:
+    categories: set[str] = set()
+    for reason in reasons:
+        if "freshness_expired" in reason or "last_valid_snapshot" in reason:
+            categories.add("stale")
+        elif "conflict" in reason or reason.startswith("price_divergence:"):
+            categories.add("conflicting")
+        elif "failed" in reason or "unavailable" in reason or "no_data" in reason:
+            categories.add("failed")
+        elif reason:
+            categories.add("degraded")
+    return tuple(sorted(categories))
+
+
+def _snapshot_status(reasons: Iterable[str], conflicts: Iterable[str]) -> str:
+    if conflicts or any("conflict" in reason or reason.startswith("price_divergence:") for reason in reasons):
+        return "conflicting"
+    if any("freshness_expired" in reason or "last_valid_snapshot" in reason for reason in reasons):
+        return "stale"
+    return "degraded" if reasons else "fresh"
 
 
 def _require_aware(value: datetime, label: str) -> None:

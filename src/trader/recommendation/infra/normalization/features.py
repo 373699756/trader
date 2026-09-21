@@ -21,7 +21,7 @@ from trader.infra.market_data.history.history import (
     return_pct,
     summarize_history_metrics,
 )
-from trader.infra.market_data.normalization.feature_math import (
+from trader.recommendation.infra.normalization.feature_math import (
     _CROSS_SECTION_FIELDS,
     _breakout_score,
     _close_location,
@@ -35,7 +35,7 @@ from trader.infra.market_data.normalization.feature_math import (
     _slope_score,
     _structured_evidence,
 )
-from trader.infra.market_data.normalization.feature_risks import extreme_structure_risks
+from trader.recommendation.infra.normalization.feature_risks import extreme_structure_risks
 from trader.recommendation.domain.market.factors import clamp, percentile_scores_with_metadata, weighted_score
 from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
