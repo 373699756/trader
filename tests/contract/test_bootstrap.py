@@ -4,6 +4,7 @@ import json
 import shutil
 import sqlite3
 import threading
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from trader.recommendation.application.ports.read_only_queries import (
     InputQualityStatus,
     SupplySummary,
 )
+from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.recommendation.application.ports.runtime import ResearchRuntimeStatus
 from trader.recommendation.application.runtime.cadence import (
     CadencePlannerStatus,
@@ -37,6 +39,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     SourceHealth,
     SourceHealthState,
     StageState,
+    validate_stage_batch_continuity,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
@@ -53,6 +56,42 @@ def test_recommendation_pipeline_requires_every_canonical_stage() -> None:
             current_stage="dynamic_filter",
             stages=(PipelineStageStatus("dynamic_filter", "completed", 1, 1),),
         )
+
+
+def test_missing_market_snapshot_metadata_is_explicitly_representable() -> None:
+    metadata = MarketSnapshotMetadata()
+    assert metadata.status == "missing"
+    assert metadata.merge_epoch == ""
+
+    with pytest.raises(ValueError, match="merge_epoch"):
+        MarketSnapshotMetadata(status="stale")
+
+
+def test_pipeline_batch_continuity_requires_matching_counts() -> None:
+    observed_at = datetime(2026, 8, 24, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    source_health = SourceHealth(SourceHealthState.READY, 1, 1, observed_at, 0.0)
+    stages = tuple(
+        PipelineStageSnapshot(
+            stage=stage,
+            stage_order=index,
+            input_batch_id=f"pipeline:{index - 1}",
+            output_batch_id=f"pipeline:{index}",
+            as_of=observed_at,
+            state=StageState.READY,
+            input_count=1,
+            output_count=1,
+            rejected_count=0,
+            pending_count=0,
+            failed_count=0,
+            reasons=(),
+            source_health=source_health,
+            latency_ms=1,
+            degraded=False,
+        )
+        for index, stage in enumerate(PipelineStage, start=1)
+    )
+    with pytest.raises(ValueError, match="counts are not continuous"):
+        validate_stage_batch_continuity((*stages[:3], replace(stages[3], input_count=2), *stages[4:]))
 
 
 def _config(tmp_path: Path) -> Path:
@@ -407,7 +446,14 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
                     threshold=50.0,
                 ),
                 PipelineStageStatus("board_limit", "completed", 900, 360),
-                PipelineStageStatus("candidate_refresh", "completed", 360, 352, duration_ms=128.5),
+                PipelineStageStatus(
+                    "candidate_refresh",
+                    "completed",
+                    360,
+                    352,
+                    duration_ms=128.5,
+                    rejected_count=3,
+                ),
                 PipelineStageStatus(
                     "input_coverage",
                     "degraded",
@@ -484,6 +530,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
     assert stages["dynamic_filter"]["output_count"] == 4800
     assert stages["candidate_refresh"]["output_count"] == 352
     assert stages["candidate_refresh"]["duration_ms"] == 128.5
+    assert stages["candidate_refresh"]["rejected_count"] == 3
     assert stages["evidence_score"]["output_count"] == 65
     assert stages["candidate_score"]["metric_ranges"] == [
         {"metric": "candidate_score", "minimum": 48.5, "maximum": 82.25}

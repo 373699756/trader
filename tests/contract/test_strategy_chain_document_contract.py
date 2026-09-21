@@ -104,7 +104,7 @@ def test_fixed_scoring_and_freeze_invariants_remain_explicit() -> None:
         "- deepseek_risk_penalty",
         "ROUND_HALF_UP",
         "83.40",
-        "Tomorrow/D25 14:50",
+        "Tomorrow/D25 15:00",
         "单一板块最多 `ceil(top_n * 60%)`",
         "同一行业最多 2 只",
     ):

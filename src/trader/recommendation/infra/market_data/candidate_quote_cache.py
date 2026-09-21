@@ -87,6 +87,7 @@ class QuoteCache:
             {}
         )
         self._market_expires_at = 0.0
+        self._market_reference_epoch = ""
         self._candidate_quotes: dict[str, MarketQuote] = {}
         self._candidate_cycle: datetime | None = None
         self._active_candidate_codes: set[str] = set()
@@ -155,9 +156,14 @@ class QuoteCache:
             action_restrictions,
         )
 
-    def cached_market_features(self, *, force: bool) -> tuple[FeatureSnapshot, ...] | None:
+    def cached_market_features(self, *, force: bool, reference_epoch: str) -> tuple[FeatureSnapshot, ...] | None:
         with self._lock:
-            if not force and self._market_features and self._market_expires_at > self._monotonic():
+            if (
+                not force
+                and self._market_features
+                and self._market_expires_at > self._monotonic()
+                and self._market_reference_epoch == reference_epoch
+            ):
                 cached = self._market_features
             else:
                 cached = None
@@ -183,7 +189,9 @@ class QuoteCache:
             for feature in features
         )
 
-    def publish_market_features(self, features: Sequence[FeatureSnapshot]) -> tuple[FeatureSnapshot, ...]:
+    def publish_market_features(
+        self, features: Sequence[FeatureSnapshot], *, reference_epoch: str
+    ) -> tuple[FeatureSnapshot, ...]:
         published = tuple(features)
         with self._lock:
             self._market_features = published
@@ -194,6 +202,7 @@ class QuoteCache:
             self._cross_section_normalization_reference = MappingProxyType(
                 {feature.quote.code: feature.normalization for feature in published}
             )
+            self._market_reference_epoch = reference_epoch
             self._market_expires_at = self._monotonic() + self._market_ttl_seconds
         return published
 

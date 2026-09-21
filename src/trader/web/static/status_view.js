@@ -184,7 +184,6 @@
       els.quoteSource.textContent = "来源不可用";
       els.inputQualityStrategy.textContent = selection.strategyLabel(state.strategy);
       els.inputQualityScoreTime.textContent = "等待本轮评分完成";
-      renderBatchSummary(els, null, [], selection);
       els.publicationStatus.textContent = "未就绪";
       els.publicationMeta.textContent = "等待当前策略快照";
       renderTopScores(els, null, []);
@@ -217,7 +216,6 @@
       els.quoteSource.textContent = "来源不可用";
       els.inputQualityStrategy.textContent = selection.strategyLabel(strategy);
       els.inputQualityScoreTime.textContent = "所选历史日期不重算评分";
-      renderBatchSummary(els, null, [], selection, strategy);
       els.publicationStatus.textContent = "历史只读";
       els.publicationMeta.textContent = "所选日期无正式快照";
       renderTopScores(els, null, []);
@@ -285,7 +283,6 @@
         els.funnelStatus.textContent = "等待评分输入";
         els.funnelStages.textContent = "评分链路尚未开始";
         els.funnelScoreRange.textContent = "评分范围 —";
-        els.funnelMeta.textContent = "等待本轮评分完成";
       } else {
         els.funnelStatus.textContent = "评分链路已完成";
         els.funnelStages.textContent = decisionPipelineDetails(pipeline);
@@ -321,33 +318,6 @@
         ? `评分于 ${render.formatTime(payload.observed_at)} 完成`
         : payload.status === "not_ready" ? "等待本轮评分完成" : "评分时间不可用";
     renderPublicationStatus(els, payload, statusPayload);
-    renderBatchSummary(els, payload, items, selection);
-  }
-
-  function renderBatchSummary(els, payload, items, selection, fallbackStrategy) {
-    if (!els.batchSummary) return;
-    const strategy = payload && payload.strategy || fallbackStrategy || "tomorrow";
-    const strategyText = selection.strategyLabel(strategy);
-    if (!payload) {
-      els.batchSummary.textContent = `当前策略：${strategyText} · 评分批次：待生成 · 总输入：— · 最终评分：— · 观察：— · 正式：— · 总耗时：—`;
-      return;
-    }
-    const coverage = payload.coverage || {};
-    const pipeline = payload.pipeline;
-    const firstStage = pipeline && Array.isArray(pipeline.stages) ? pipeline.stages[0] : null;
-    const totalInput = finiteNonNegativeInteger(firstStage && firstStage.input_count) ?? finiteNonNegativeInteger(coverage.candidate_count);
-    const finalScored = finiteNonNegativeInteger(coverage.evaluated_count);
-    const observed = finiteNonNegativeInteger(coverage.observation_count) ?? items.filter((item) => item && item.action === "observe").length;
-    const executable = finiteNonNegativeInteger(coverage.executable_count) ?? items.filter((item) => item && item.action === "executable").length;
-    const batch = payload.observed_at ? formatBatchTime(payload.observed_at) : payload.trade_date || "待生成";
-    els.batchSummary.textContent = `当前策略：${strategyText} · 评分批次：${batch} · 总输入：${displayCount(totalInput)} · 最终评分：${displayCount(finalScored)} · 观察：${displayCount(observed)} · 正式：${displayCount(executable)} · 总耗时：—`;
-  }
-
-  function formatBatchTime(value) {
-    const date = new Date(value);
-    if (!Number.isFinite(date.getTime())) return "待生成";
-    const pad = (number) => String(number).padStart(2, "0");
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
   }
 
   function pipelineHasProgress(pipeline) {
@@ -403,8 +373,7 @@
       return;
     }
     const groups = [
-      ["数据源", ["input_readiness"]],
-      ["静态采集与清洗", ["input_readiness"]],
+      ["数据源与静态采集", ["input_readiness"]],
       ["一级稳定过滤", ["dynamic_filter"]],
       ["动态采集与清洗", ["candidate_refresh"]],
       ["二级动态过滤", ["dynamic_filter"]],
@@ -647,7 +616,7 @@
       els.publicationMeta.textContent = "长期固定观察池，不评分、不冻结";
       return;
     }
-    const cutoff = "14:50";
+    const cutoff = "15:00";
     const strategy = STRATEGIES.has(payload.strategy) ? strategyLabel(payload.strategy) : "当前策略";
     if (payload.frozen) {
       els.publicationStatus.textContent = "已冻结";
@@ -673,7 +642,7 @@
     const scoreEvidenceMissing = tomorrowCostBlocked && Number.isInteger(evaluated) && evaluated === 0;
     const maximum = scoreEvidenceMissing ? null : finiteNumber(diagnostics.maximum_final_score);
     els.topScoresStatus.textContent = scoredItems.length
-      ? scoredItems.map((item) => `${item.score.toFixed(2)} - ${item.code} - ${item.name}`).join("\n")
+      ? scoredItems.map((item) => `${item.score.toFixed(2)} · ${item.code} ${item.name}`).join("  /  ")
       : scoreEvidenceMissing
         ? "暂无可核验评分"
         : maximum == null

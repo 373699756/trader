@@ -56,11 +56,11 @@ class MarketSnapshotMetadata:
     status: str = "missing"
 
     def __post_init__(self) -> None:
-        if not self.merge_epoch:
+        if self.status != "missing" and not self.merge_epoch:
             raise ValueError("market snapshot merge_epoch must not be empty")
-        if not self.market_epoch:
+        if self.status != "missing" and not self.market_epoch:
             object.__setattr__(self, "market_epoch", self.merge_epoch)
-        if not self.reference_epoch:
+        if self.status != "missing" and not self.reference_epoch:
             object.__setattr__(self, "reference_epoch", "reference:unknown")
         object.__setattr__(self, "source_versions", MappingProxyType(dict(self.source_versions)))
         object.__setattr__(

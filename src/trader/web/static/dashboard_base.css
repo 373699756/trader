@@ -487,26 +487,35 @@ tr:focus-visible {
 
 .data-status-score-summary {
   min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  column-gap: 12px;
+  align-items: baseline;
   margin-top: 3px;
 }
 
 .data-status-score-summary .funnel-score-range {
   margin-top: 0;
+  min-width: 0;
 }
 
 .data-status-score-summary > strong.top-scores-list {
-  min-height: 0;
+  min-width: 0;
+  height: 17px;
+  min-height: 17px;
   display: block;
   margin-top: 2px;
   overflow: hidden;
   color: var(--blue);
   font-size: 12px;
   line-height: 17px;
-  white-space: pre-line;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .data-status-score-summary > small {
   display: block;
+  min-width: 0;
   margin-top: 2px;
   overflow: hidden;
   color: var(--muted);

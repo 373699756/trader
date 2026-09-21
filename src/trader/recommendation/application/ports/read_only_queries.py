@@ -11,7 +11,6 @@ from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
     PipelineStageSnapshot,
     RecommendationPipelineStatus,
-    validate_stage_batch_continuity,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -98,6 +97,8 @@ class InputQualityStatus:
         for previous, current in zip(self.stage_snapshots, self.stage_snapshots[1:]):
             if previous.output_batch_id != current.input_batch_id:
                 raise ValueError("input quality stage batch identities are not continuous")
+            if previous.output_count != current.input_count:
+                raise ValueError("input quality stage counts are not continuous")
         counts = (
             self.population_count,
             self.candidate_count,

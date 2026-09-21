@@ -30,6 +30,7 @@ from trader.recommendation.application.runtime.schedule import (
         ("14:48:00", MarketPhase.DEEPSEEK_CUTOFF),
         ("14:49:50", MarketPhase.FINAL_QUOTE),
         ("14:59:59", MarketPhase.FINAL_QUOTE),
+        ("14:50:00", MarketPhase.FINAL_QUOTE),
         ("15:00:00", MarketPhase.AFTER_CLOSE),
     ],
 )
@@ -79,6 +80,7 @@ def test_deepseek_cutoff_keeps_local_scoring_open_without_model_review() -> None
         ("11:19:59", ()),
         ("11:20:00", ()),
         ("14:49:59", ()),
+        ("14:50:00", ()),
         ("15:00:00", ("tomorrow", "d25")),
         ("15:00:01", ("tomorrow", "d25")),
         ("19:30:00", ("tomorrow", "d25")),

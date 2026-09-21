@@ -88,7 +88,8 @@ class MarketFeatureService:
         force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
-        cached = self.quotes.cached_market_features(force=force)
+        reference_epoch = self.reference_version()
+        cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
         if cached is not None:
             self._record_quote_eligibility(tuple(feature.quote for feature in cached), observed_at)
             cached = self._eligible_features(cached, observed_at)
@@ -133,7 +134,7 @@ class MarketFeatureService:
             action_restrictions=action_restrictions,
         )
         self.runner.ensure_before_deadline(deadline)
-        published = self.quotes.publish_market_features(features)
+        published = self.quotes.publish_market_features(features, reference_epoch=reference_epoch)
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
         return published
 
@@ -313,7 +314,7 @@ class MarketFeatureService:
             observed_at,
             action_restrictions=action_restrictions,
         )
-        return self.quotes.publish_market_features(features)
+        return self.quotes.publish_market_features(features, reference_epoch=self.reference_version())
 
     def refresh_market_news(
         self,

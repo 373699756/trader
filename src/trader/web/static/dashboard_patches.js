@@ -245,14 +245,14 @@
     if (blocked) return { message: blocked, notice: blocked, level: "warn" };
     if (reason === "afternoon_freeze_pending") {
       return {
-        message: "14:50 正式快照尚未形成",
+        message: "15:00 正式快照尚未形成",
         notice: "冻结流程尚未完成；不会展示上一交易日结果",
         level: "warn",
       };
     }
     if (reason === "afternoon_close_recovery_pending") {
       return {
-        message: "14:50 正式快照缺失",
+        message: "15:00 正式快照缺失",
         notice: "正在等待允许的收盘恢复；不会展示上一交易日结果",
         level: "warn",
       };
@@ -323,7 +323,7 @@
       };
     }
     if (payload.frozen) {
-      const anchor = ["tomorrow", "d25"].includes(payload.strategy) ? "14:50 已冻结" : "已冻结";
+      const anchor = ["tomorrow", "d25"].includes(payload.strategy) ? "15:00 已冻结" : "已冻结";
       return {
         level: degraded ? "warning" : "ok",
         message: `${anchor} · 名单与评分不变 · 行情按最新可用报价展示${degraded ? ` · 冻结时降级：${degraded}` : ""}`,

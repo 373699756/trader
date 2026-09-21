@@ -148,6 +148,7 @@ def _serialize_pipeline_stage(stage: PipelineStageStatus) -> dict[str, object]:
         "facets": [_serialize_pipeline_facet(value) for value in stage.facets],
         "reason_counts": [_serialize_pipeline_reason(value) for value in stage.reason_counts],
         "duration_ms": stage.duration_ms,
+        "rejected_count": stage.rejected_count,
     }
 
 

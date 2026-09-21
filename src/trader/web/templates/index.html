@@ -50,8 +50,8 @@
           <div class="data-status-score-summary" aria-label="评分摘要">
             <div id="funnelScoreRange" class="funnel-score-range">评分范围 —</div>
             <strong id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</strong>
-            <small id="topScoresMeta">最终评分 Top 3</small>
-            <small id="funnelMeta">评分链路状态</small>
+            <small id="topScoresMeta">策略内最终评分 · 当前无可用数据</small>
+            <small id="funnelMeta"></small>
           </div>
         </div>
         <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 · 上限 168 · 复核 0/0</small></div>
@@ -65,11 +65,8 @@
             <button class="strategy-tab" type="button" role="tab" aria-selected="false" data-strategy="long">长期</button>
           </nav>
           <p id="strategyDescription" class="strategy-description" aria-live="polite">
-            尾盘策略 · 面向 T+1 · 14:50 冻结
+            尾盘策略 · 面向 T+1 · 15:00 冻结
           </p>
-          <div id="batchSummary" class="batch-summary" aria-live="polite">
-            当前策略：明 · 评分批次：待生成 · 总输入：— · 最终评分：— · 观察：— · 正式：— · 总耗时：—
-          </div>
           <nav id="longScopeTabs" class="long-scope-tabs" role="tablist" aria-label="长期研究类别" hidden>
             <button class="long-scope-tab is-active" type="button" role="tab" aria-selected="true" data-scope="chokepoint">卡脖子行业</button>
             <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="future_growth">高成长赛道</button>

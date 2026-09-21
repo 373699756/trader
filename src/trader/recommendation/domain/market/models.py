@@ -93,13 +93,13 @@ class MarketQuote:
 class CanonicalMarketSnapshot:
     observed_at: datetime
     merge_epoch: str
-    reference_epoch: str = "reference:unknown"
     quotes: tuple[MarketQuote, ...]
     field_sources: Mapping[str, Mapping[str, str]]
     source_versions: Mapping[str, str]
     conflicts: tuple[str, ...]
     missing_reasons: Mapping[str, str]
     degraded_reasons: tuple[str, ...]
+    reference_epoch: str = "reference:unknown"
     source_ages_seconds: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     failure_categories: tuple[str, ...] = ()
     status: Literal["fresh", "degraded", "stale", "missing", "conflicting"] = "fresh"

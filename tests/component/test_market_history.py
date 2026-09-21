@@ -563,6 +563,35 @@ def test_market_service_reloads_expired_history_and_reports_failed_coverage() ->
     assert service.health()["history_error_count"] == 2
 
 
+def test_reference_epoch_change_invalidates_market_feature_cache() -> None:
+    class CountingGateway(StaticGateway):
+        def __init__(self, quotes):
+            super().__init__(quotes)
+            self.market_calls = 0
+
+        def fetch_market(self, **kwargs):
+            self.market_calls += 1
+            return super().fetch_market(**kwargs)
+
+    gateway = CountingGateway((_quote(),))
+    service = _service(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        market_ttl_seconds=60,
+        wall_clock=lambda: NOW,
+    )
+
+    service.fetch_market_features(NOW)
+    assert gateway.market_calls == 1
+    service.fetch_market_features(NOW + timedelta(seconds=1))
+    assert gateway.market_calls == 1
+
+    service.references._reference_versions = {"valuation": "reference-updated"}
+    service.fetch_market_features(NOW + timedelta(seconds=2))
+    assert gateway.market_calls == 2
+
+
 def test_history_cache_recover_from_data_plane_restores_context_and_window(tmp_path: Path) -> None:
     observed_at = datetime(2026, 7, 16, 15, 0, tzinfo=_SHANGHAI)
     source_time = observed_at - timedelta(minutes=1)

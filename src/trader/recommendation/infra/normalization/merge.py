@@ -409,18 +409,18 @@ def observation_from_quote(quote: MarketQuote, *, source: str, observed_at: date
 def _empty_snapshot(observed_at: datetime, degraded: set[str]) -> CanonicalMarketSnapshot:
     merge_epoch = hashlib.sha256(canonical_json_bytes({"observed_at": observed_at, "quotes": []})).hexdigest()[:24]
     return CanonicalMarketSnapshot(
-        observed_at,
-        merge_epoch,
-        (),
-        "reference:unknown",
-        {},
-        {},
-        (),
-        {},
-        tuple(sorted(degraded)),
-        {},
-        _failure_categories(degraded),
-        "missing",
+        observed_at=observed_at,
+        merge_epoch=merge_epoch,
+        quotes=(),
+        reference_epoch="reference:unknown",
+        field_sources={},
+        source_versions={},
+        conflicts=(),
+        missing_reasons={},
+        degraded_reasons=tuple(sorted(degraded)),
+        source_ages_seconds={},
+        failure_categories=_failure_categories(degraded),
+        status="missing",
     )
 
 

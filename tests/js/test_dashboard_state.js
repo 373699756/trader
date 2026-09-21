@@ -13,6 +13,9 @@ const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatt
 const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
 const patchesSource = fs.readFileSync(patchesPath, "utf8");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
+const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
+assert(statusViewSource.includes('["数据源与静态采集", ["input_readiness"]]'));
+assert(!statusViewSource.includes('["静态采集与清洗", ["input_readiness"]]'));
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
 const streamSource = fs.readFileSync(streamPath, "utf8");
@@ -462,14 +465,13 @@ assert.strictEqual(summaryElements.inputQualityMeta.textContent, "最高 82.00 �
 assert.strictEqual(summaryElements.funnelStatus.textContent, "阶段观测不可用");
 assert.strictEqual(summaryElements.funnelStages.textContent, "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗");
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "已保存最高分 82.00 · 最低分未保存");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "旧快照聚合：总体 120 · 已评分 80 · 拒绝 40 · 正式 1 · 观察 1");
 assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "明");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
-assert.strictEqual(summaryElements.publicationMeta.textContent, "明 14:50 固化");
+assert.strictEqual(summaryElements.publicationMeta.textContent, "明 15:00 固化");
 assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
-  "82.00 - 600001 - 正式股票\n75.00 - 600002 - 观察股票",
+  "82.00 · 600001 正式股票  /  75.00 · 600002 观察股票",
 );
 const persistedPipelineElements = summaryFixture();
 state.renderSummary(
@@ -621,7 +623,6 @@ assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻�
 assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完成");
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "评分范围 41.25–74.25 · 最高 74.25");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "完整评分 56 · 动作合格 4 · 最终入池 4 · 正式 2 · 观察 2 · 最高 74.25");
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
 assert.strictEqual(summaryElements.budgetMeta.textContent, "已用 / 剩余 · 上限 168 · 复核 0/0");
@@ -662,7 +663,6 @@ assert.strictEqual(
   "行情 360 / 360 · 基础资料与历史待就绪",
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "等待评分输入");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "等待本轮评分完成");
 assert.strictEqual(
   summaryElements.funnelStages.textContent,
   "评分链路尚未开始",
@@ -747,14 +747,14 @@ assert.strictEqual(emptyTomorrowElements.quoteSource.textContent, "腾讯行情"
 assert.strictEqual(emptyTomorrowElements.quoteAge.textContent, "1分 5秒");
 assert.strictEqual(emptyTomorrowElements.inputQualityScoreTime.textContent, "评分于 11:19:00 完成");
 assert.strictEqual(emptyTomorrowElements.publicationStatus.textContent, "实时滚动");
-assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "明 14:50 固化");
+assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "明 15:00 固化");
 state.renderPublicationStatus(
   emptyTomorrowElements,
   { status: "ready", strategy: "d25", frozen: true },
   {},
 );
 assert.strictEqual(emptyTomorrowElements.publicationStatus.textContent, "已冻结");
-assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "2-5 14:50 已固化");
+assert.strictEqual(emptyTomorrowElements.publicationMeta.textContent, "2-5 15:00 已固化");
 state.renderSummary(
   summaryElements,
   {
@@ -776,7 +776,6 @@ state.renderSummary(
   { deepseek_budget: { limit: 168, used: 2, remaining: 166 } },
 );
 assert.strictEqual(summaryElements.funnelStatus.textContent, "不适用");
-assert.strictEqual(summaryElements.funnelMeta.textContent, "长期固定观察池不评分、不产生推荐");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "长期策略不评分");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "不适用");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "长期固定观察池，不评分、不冻结");
@@ -986,7 +985,7 @@ assert.deepStrictEqual(
     readiness_reason: "afternoon_freeze_pending",
   }))),
   {
-    message: "14:50 正式快照尚未形成",
+    message: "15:00 正式快照尚未形成",
     notice: "冻结流程尚未完成；不会展示上一交易日结果",
     level: "warn",
   },
@@ -997,7 +996,7 @@ assert.deepStrictEqual(
     readiness_reason: "afternoon_close_recovery_pending",
   }))),
   {
-    message: "14:50 正式快照缺失",
+    message: "15:00 正式快照缺失",
     notice: "正在等待允许的收盘恢复；不会展示上一交易日结果",
     level: "warn",
   },
@@ -1410,7 +1409,6 @@ state.renderSummary(
   null,
 );
 assert.strictEqual(replacementSummary.funnelStatus.textContent, "阶段观测不可用");
-assert.strictEqual(replacementSummary.funnelMeta.textContent, "旧快照聚合：总体 360 · 已评分 229 · 拒绝 89 · 正式 0 · 观察 0");
 assert.strictEqual(
   state.recommendationPatchDecision(patch, payload, "tomorrow-base", "tomorrow", "current"),
   "apply",
@@ -1626,7 +1624,7 @@ assert.deepStrictEqual(
   }))),
   {
     level: "warning",
-    message: "14:50 已冻结 · 名单与评分不变 · 行情按最新可用报价展示 · 冻结时降级：主板板块数据可靠度不足、模型复核未在冻结前完成（已按本地评分固化）",
+    message: "15:00 已冻结 · 名单与评分不变 · 行情按最新可用报价展示 · 冻结时降级：主板板块数据可靠度不足、模型复核未在冻结前完成（已按本地评分固化）",
   },
 );
 assert.deepStrictEqual(
