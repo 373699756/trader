@@ -77,6 +77,32 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert "eastmoney:source_failed" in gateway.canonical_snapshot().degraded_reasons
 
 
+def test_gateway_uses_composed_full_market_fetcher_for_deadline_and_cancellation() -> None:
+    quote = _quote()
+    calls: list[tuple[object, threading.Event]] = []
+
+    def fetch_eastmoney(deadline, cancel_event):
+        calls.append((deadline, cancel_event))
+        return (quote,)
+
+    gateway = MarketDataGateway(
+        StaticMarketClient(()),
+        StaticMarketClient((quote,)),
+        StaticTencentClient((quote,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=2,
+        circuit_breaker_seconds=60,
+        full_market_fetchers={"eastmoney": fetch_eastmoney},
+        wall_clock=lambda: NOW,
+    )
+
+    deadline = NOW + timedelta(seconds=1)
+    fetched = tuple(gateway.fetch_market(observed_at=NOW, deadline=deadline))
+    assert [(item.code, item.source) for item in fetched] == [(quote.code, "eastmoney")]
+    assert calls and calls[0][0] == deadline
+    assert isinstance(calls[0][1], threading.Event)
+
+
 def test_candidate_request_reserves_deadline_for_normalization_and_commit() -> None:
     quote = replace(_quote(), source="tencent")
 

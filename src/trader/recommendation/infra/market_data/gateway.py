@@ -29,9 +29,6 @@ from trader.infra.market_data.normalization.merge import (
     snapshot_payload_hash,
 )
 from trader.infra.market_data.normalization.merge_quote import rejection_reason, source_name
-from trader.infra.market_data.providers.eastmoney import EastmoneyClient
-from trader.infra.market_data.providers.sina import SinaClient
-from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.references.security_references import security_reference_observations
 from trader.recommendation.infra.market_data.gateway_health import (
     MarketGatewayHealthStatus,
@@ -59,6 +56,11 @@ from trader.recommendation.infra.market_data.source_coordinator import (
     MarketSourceDependencies,
     SourceLaneIdentityRequest,
     SourceObservationRequest,
+)
+from trader.recommendation.infra.market_data.provider_ports import (
+    CandidateQuoteSource,
+    FullMarketFetcher,
+    FullMarketSource,
 )
 from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
@@ -97,6 +99,7 @@ class _GatewayOptionalOptions(TypedDict, total=False):
     latency: LatencyWaterfall
     full_market_hedge_delay_seconds: float
     listing_open_dates: Callable[[], Sequence[date]]
+    full_market_fetchers: Mapping[str, FullMarketFetcher]
 
 
 class _GatewayOptions(_GatewayRequiredOptions, _GatewayOptionalOptions):
@@ -118,9 +121,9 @@ class _TargetQuoteRequest:
 class MarketDataGateway:
     def __init__(
         self,
-        eastmoney: EastmoneyClient,
-        sina: SinaClient,
-        tencent: TencentClient,
+        eastmoney: FullMarketSource,
+        sina: FullMarketSource,
+        tencent: CandidateQuoteSource,
         **options: Unpack[_GatewayOptions],
     ) -> None:
         self._eastmoney = eastmoney
@@ -193,6 +196,7 @@ class MarketDataGateway:
                 wall_clock=self._wall_clock,
                 full_market_hedge_delay_seconds=options.get("full_market_hedge_delay_seconds", 1.0),
                 full_market_observation_sink=self._promote_full_market_security_references,
+                full_market_fetchers=options.get("full_market_fetchers"),
             ),
             self,
         )

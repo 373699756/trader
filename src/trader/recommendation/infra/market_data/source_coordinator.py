@@ -19,14 +19,16 @@ from trader.infra.cache_contracts import (
     canonical_json_bytes,
 )
 from trader.infra.market_data.normalization.merge import observation_from_quote
-from trader.infra.market_data.providers.eastmoney import EastmoneyClient
-from trader.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.gateway_runtime import (
     _before_deadline,
     _cache_error_code,
     _elapsed,
     _SourceFetch,
     _strip_source,
+)
+from trader.recommendation.infra.market_data.provider_ports import (
+    FullMarketFetcher,
+    FullMarketSource,
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
@@ -43,8 +45,8 @@ from trader.recommendation.domain.market.models import (
 
 @dataclass(frozen=True)
 class MarketSourceDependencies:
-    eastmoney: EastmoneyClient
-    sina: SinaClient
+    eastmoney: FullMarketSource
+    sina: FullMarketSource
     minimum_market_rows: int
     worker_pool: BoundedExecutor | None
     source_lanes: SourceLaneRegistry | None
@@ -56,6 +58,7 @@ class MarketSourceDependencies:
     wall_clock: Callable[[], datetime]
     full_market_hedge_delay_seconds: float
     full_market_observation_sink: Callable[[Sequence[SourceObservation]], None] | None = None
+    full_market_fetchers: Mapping[str, FullMarketFetcher] | None = None
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,7 @@ class MarketSourceCoordinator:
         self._wall_clock = dependencies.wall_clock
         self._full_market_hedge_delay_seconds = dependencies.full_market_hedge_delay_seconds
         self._full_market_observation_sink = dependencies.full_market_observation_sink
+        self._full_market_fetchers = dict(dependencies.full_market_fetchers or {})
         self._telemetry = telemetry
 
     def fetch_market_sources(
@@ -339,8 +343,9 @@ class MarketSourceCoordinator:
         cancellation: threading.Event,
     ) -> Callable[[], Sequence[MarketQuote]]:
         client = self._eastmoney if source == "eastmoney" else self._sina
-        if isinstance(client, (EastmoneyClient, SinaClient)):
-            return lambda: client.fetch_market(deadline=deadline, cancel_event=cancellation)
+        fetcher = self._full_market_fetchers.get(source)
+        if fetcher is not None:
+            return lambda: fetcher(deadline, cancellation)
         return client.fetch_market
 
     def _market_source_result(

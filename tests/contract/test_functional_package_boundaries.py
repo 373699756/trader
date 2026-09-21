@@ -233,6 +233,26 @@ def test_market_provider_and_normalization_packages_are_partitioned() -> None:
     assert violations == []
 
 
+def test_recommendation_and_download_adapters_do_not_import_provider_clients() -> None:
+    roots = (
+        SOURCE_ROOT / "recommendation" / "infra" / "market_data",
+        SOURCE_ROOT / "download" / "infra",
+    )
+    violations: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.ImportFrom) or not node.module:
+                    continue
+                if not node.module.startswith("trader.infra.market_data.providers"):
+                    continue
+                for alias in node.names:
+                    if alias.name.endswith("Client"):
+                        violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {node.module}.{alias.name}")
+    assert violations == []
+
+
 def test_market_history_references_and_services_are_partitioned() -> None:
     market_root = SOURCE_ROOT / "infra" / "market_data"
     history_root = market_root / "history"

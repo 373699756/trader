@@ -518,23 +518,35 @@ def _build_market_data(
         cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
         wall_clock=now,
     )
+    sina = SinaClient(
+        timeout_seconds=settings.market_data.sina_timeout_seconds,
+        cancel_requested=lambda: source_lanes.is_stopped("sina"),
+        wall_clock=now,
+    )
+    tencent = TencentClient(
+        timeout_seconds=settings.market_data.candidate_timeout_seconds,
+        cancel_requested=lambda: source_lanes.is_stopped("tencent"),
+        wall_clock=now,
+        worker_pool=workers.quote_pool,
+    )
     gateway = MarketDataGateway(
         eastmoney,
-        SinaClient(
-            timeout_seconds=settings.market_data.sina_timeout_seconds,
-            cancel_requested=lambda: source_lanes.is_stopped("sina"),
-            wall_clock=now,
-        ),
-        TencentClient(
-            timeout_seconds=settings.market_data.candidate_timeout_seconds,
-            cancel_requested=lambda: source_lanes.is_stopped("tencent"),
-            wall_clock=now,
-            worker_pool=workers.quote_pool,
-        ),
+        sina,
+        tencent,
         minimum_market_rows=settings.market_data.minimum_market_rows,
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
         circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
         full_market_hedge_delay_seconds=settings.market_data.full_market_hedge_delay_seconds,
+        full_market_fetchers={
+            "eastmoney": lambda deadline, cancel_event: eastmoney.fetch_market(
+                deadline=deadline,
+                cancel_event=cancel_event,
+            ),
+            "sina": lambda deadline, cancel_event: sina.fetch_market(
+                deadline=deadline,
+                cancel_event=cancel_event,
+            ),
+        },
         worker_pool=data_pool,
         source_lanes=source_lanes,
         cache=market_cache,

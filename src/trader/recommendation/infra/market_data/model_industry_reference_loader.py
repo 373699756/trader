@@ -10,13 +10,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.infra.market_data.providers.baostock_industry import (
-    BaoStockIndustryClient,
-    BaoStockIndustryHealthStatus,
-)
+from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryHealthStatus
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.market_cache_identity import _source_batch_identity
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.provider_ports import ModelIndustrySource
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.infra.market_data.trading_calendar_state_codec import parse_date
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
@@ -30,7 +28,7 @@ _SOURCE_LANE = "baostock_reference"
 class ModelIndustryReferenceDependencies:
     gateway: MarketDataGateway
     runner: MarketTaskRunner
-    client: BaoStockIndustryClient | None
+    client: ModelIndustrySource | None
     persistence_sink: Callable[[Sequence[SourceObservation]], None]
 
 

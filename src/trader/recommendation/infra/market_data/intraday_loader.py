@@ -14,12 +14,12 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheIdentity
-from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _minute_version,
     _source_batch_identity,
 )
+from trader.recommendation.infra.market_data.provider_ports import IntradaySource
 from trader.recommendation.infra.market_data.market_feature_cache_entries import _IntradayEntry
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.application.runtime.workers import (
@@ -74,7 +74,7 @@ class IntradayLoaderOptions(TypedDict):
 class IntradayLoader:
     def __init__(
         self,
-        client: EastmoneyClient | None,
+        client: IntradaySource | None,
         runner: MarketTaskRunner,
         **options: Unpack[IntradayLoaderOptions],
     ) -> None:

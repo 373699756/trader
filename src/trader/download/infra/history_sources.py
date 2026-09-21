@@ -2,17 +2,29 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import date
+from typing import Protocol
 
 from trader.infra.market_data.history.history_seed import DailyHistoryClient
-from trader.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.training.application.historical_screening import HistoricalSecurity
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
 
 
+class HistoricalQuote(Protocol):
+    code: str
+    name: str
+    is_st: bool
+    is_suspended: bool
+
+
+class HistoricalUniverseSource(Protocol):
+    def fetch_market(self) -> Sequence[HistoricalQuote]: ...
+
+
 class SinaHistoricalUniverseProvider:
-    def __init__(self, client: SinaClient) -> None:
+    def __init__(self, client: HistoricalUniverseSource) -> None:
         self._client = client
 
     def fetch(self) -> tuple[HistoricalSecurity, ...]:

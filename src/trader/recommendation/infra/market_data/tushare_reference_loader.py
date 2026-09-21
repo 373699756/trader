@@ -16,21 +16,22 @@ from zoneinfo import ZoneInfo
 from trader.infra.cache_contracts import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
 from trader.infra.market_data.history.daily_history_cache import HistoryCache
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
-from trader.infra.market_data.providers.baostock_industry import (
-    BaoStockIndustryClient,
-    BaoStockIndustryHealthStatus,
-)
+from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryHealthStatus
 from trader.infra.market_data.providers.exchange_security_master import (
-    ExchangeSecurityMasterClient,
     ExchangeSecurityMasterHealthStatus,
 )
-from trader.infra.market_data.providers.tushare import TushareClient, TushareHealthStatus
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.model_industry_reference_loader import (
     ModelIndustryReferenceDependencies,
     ModelIndustryReferenceLoader,
+)
+from trader.recommendation.infra.market_data.provider_ports import (
+    ModelIndustrySource,
+    ReferenceSource,
+    SecurityMasterSource,
+    TushareHealthStatus,
 )
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
@@ -110,10 +111,10 @@ class ReferenceLoader:
         gateway: MarketDataGateway,
         history: HistoryCache,
         runner: MarketTaskRunner,
-        client: TushareClient | None,
+        client: ReferenceSource | None,
         *,
-        security_master_client: ExchangeSecurityMasterClient | None = None,
-        model_industry_client: BaoStockIndustryClient | None = None,
+        security_master_client: SecurityMasterSource | None = None,
+        model_industry_client: ModelIndustrySource | None = None,
         security_master_refresh_ttl_seconds: float = 86_400.0,
         security_master_retry_seconds: float = 300.0,
         data_plane: _ReferenceDataPlane | None = None,

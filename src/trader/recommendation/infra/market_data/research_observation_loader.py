@@ -19,7 +19,6 @@ if TYPE_CHECKING:
 
 from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 from trader.infra.cache_contracts import CacheIdentity
-from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _degraded_research_observation,
@@ -33,6 +32,7 @@ from trader.recommendation.infra.market_data.market_cache_identity import (
 )
 from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.provider_ports import ResearchSource
 from trader.recommendation.infra.market_data.research_component_persistence import (
     _ResearchDataPlane as _ResearchDataPlaneProtocol,
 )
@@ -118,7 +118,7 @@ class _ResearchLoadOptions(_ResearchLoadRequiredOptions, _ResearchLoadOptionalOp
 class ResearchLoader:
     def __init__(
         self,
-        client: AkshareResearchClient | None,
+        client: ResearchSource | None,
         runner: MarketTaskRunner,
         *,
         data_plane: _ResearchDataPlaneProtocol | None = None,
@@ -779,7 +779,7 @@ class ResearchLoader:
             return dict(self._entries)
 
     @property
-    def client(self) -> AkshareResearchClient | None:
+    def client(self) -> ResearchSource | None:
         return self._client
 
 
