@@ -23,6 +23,10 @@
     grid-template-columns: repeat(2, minmax(100px, 1fr));
   }
 
+  .score-leaders-summary {
+    grid-column: 1 / -1;
+  }
+
   .funnel-item {
     grid-column: 1 / -1;
   }
@@ -65,6 +69,20 @@
   .runtime-strip .header-market-status {
     flex-basis: 100%;
     max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .runtime-strip .header-market-primary {
+    flex: 1 1 100%;
+  }
+
+  .runtime-strip .header-funnel-separator {
+    display: none;
+  }
+
+  .runtime-strip .header-funnel-summary {
+    flex-basis: 100%;
+    white-space: normal;
   }
 
   .control-band {
@@ -107,12 +125,16 @@
   }
 
   .summary-band {
-    grid-template-columns: repeat(2, minmax(100px, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .summary-item {
-    min-height: 58px;
+    min-height: 78px;
     padding: 9px 12px;
+  }
+
+  .score-leaders-summary {
+    grid-column: 1;
   }
 
   .detail-drawer {

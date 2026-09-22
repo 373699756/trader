@@ -30,8 +30,8 @@
       els.inputQualityStages.textContent = "正在读取评分输入链路";
       els.funnelStatus.textContent = "等待评分输入";
       els.funnelStages.textContent = "输入、过滤、评分与发布按顺序执行";
-      els.funnelScoreRange.textContent = "评分范围 —";
-      els.funnelMeta.textContent = "正在读取推荐漏斗";
+      els.funnelScoreRange.textContent = "—";
+      els.funnelMeta.textContent = emptyFunnelSummary();
       if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">正在读取 14 层评分链路</div>';
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
@@ -62,8 +62,8 @@
       els.inputQualityStages.textContent = "历史快照不重算评分输入链路";
       els.funnelStatus.textContent = "历史只读";
       els.funnelStages.textContent = "历史快照不重算逐层推荐漏斗";
-      els.funnelScoreRange.textContent = "评分范围 —";
-      els.funnelMeta.textContent = "正式 0 · 观察 不保存";
+      els.funnelScoreRange.textContent = "—";
+      els.funnelMeta.textContent = funnelSummary(null, null, null, 0, "不保存");
       if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">历史快照不重算评分链路</div>';
       els.quoteTime.textContent = "-";
       els.quoteAge.textContent = "-";
@@ -127,7 +127,7 @@
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
       els.funnelStages.textContent = "长期固定观察池不经过短线过滤、评分与正式推荐链路";
-      els.funnelScoreRange.textContent = "评分范围 不适用";
+      els.funnelScoreRange.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
       renderObservationStages(els, null, true, []);
     } else if (pipeline) {
@@ -136,22 +136,20 @@
       if (!pipelineHasProgress(pipeline) || evaluated == null || actionEligible == null || selected == null) {
         els.funnelStatus.textContent = "等待评分输入";
         els.funnelStages.textContent = "评分链路尚未开始";
-        els.funnelScoreRange.textContent = "评分范围 —";
+        els.funnelScoreRange.textContent = "—";
       } else {
         els.funnelStatus.textContent = "评分链路已完成";
         els.funnelStages.textContent = decisionPipelineDetails(pipeline);
         els.funnelScoreRange.textContent = finalScoreRange(pipeline);
-        els.funnelMeta.textContent = `完整评分 ${displayCount(evaluated)} · 动作合格 ${displayCount(actionEligible)} · 最终入池 ${displayCount(selected)} · 正式 ${executableCount} · 观察 ${observed}`;
       }
+      els.funnelMeta.textContent = funnelSummary(evaluated, actionEligible, selected, executableCount, observed);
       renderObservationStages(els, pipeline, false, runtimeIssues(statusPayload, payload.strategy));
     } else {
       const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
       els.funnelStatus.textContent = "阶段观测不可用";
       els.funnelStages.textContent = "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗";
-      els.funnelScoreRange.textContent = topScore === "—"
-        ? "已保存评分范围不可用"
-        : `已保存最高分 ${topScore} · 最低分未保存`;
-      els.funnelMeta.textContent = `旧快照聚合：${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
+      els.funnelScoreRange.textContent = topScore === "—" ? "—" : `${topScore} · 最低未保存`;
+      els.funnelMeta.textContent = `旧快照 · ${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
       renderObservationStages(els, null, false, runtimeIssues(statusPayload, payload.strategy));
     }
     const marketFreshness = currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible);
@@ -182,6 +180,14 @@
       || (Array.isArray(stage && stage.facets) && stage.facets.length > 0)
       || (Array.isArray(stage && stage.reason_counts) && stage.reason_counts.length > 0)
     ));
+  }
+
+  function funnelSummary(evaluated, actionEligible, selected, executable, observed) {
+    return `完整评分 ${displayCount(evaluated)} · 动作合格 ${displayCount(actionEligible)} · 最终入池 ${displayCount(selected)} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
+  }
+
+  function emptyFunnelSummary() {
+    return funnelSummary(null, null, null, null, null);
   }
 
   function runtimeIssues(statusPayload, strategy) {
@@ -502,7 +508,7 @@
     const scoreEvidenceMissing = tomorrowCostBlocked && Number.isInteger(evaluated) && evaluated === 0;
     const maximum = scoreEvidenceMissing ? null : finiteNumber(diagnostics.maximum_final_score);
     els.topScoresStatus.textContent = scoredItems.length
-      ? scoredItems.map((item) => `${item.score.toFixed(2)} · ${item.code} ${item.name}`).join("\n")
+      ? scoredItems.map((item, index) => `${index + 1}  ${item.score.toFixed(2)} · ${item.code} ${item.name}`).join("\n")
       : scoreEvidenceMissing
         ? "暂无可核验评分"
         : maximum == null
@@ -783,9 +789,9 @@
 
   function finalScoreRange(pipeline) {
     const fusion = pipelineStage(pipeline, "fusion");
-    if (!fusion || !["completed", "degraded"].includes(fusion.state)) return "评分范围 —";
+    if (!fusion || !["completed", "degraded"].includes(fusion.state)) return "—";
     const range = metricRange(fusion, "final_score");
-    return range ? `评分范围 ${formatRange(range, 2)} · 最高 ${range.maximum.toFixed(2)}` : "评分范围 无样本";
+    return range ? formatRange(range, 2) : "无样本";
   }
 
   function pipelineStage(pipeline, key) {

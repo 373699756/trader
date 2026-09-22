@@ -39,7 +39,7 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
-    assert page.count("summary-item") == 3
+    assert page.count("summary-item") == 4
     assert 'id="healthPanel"' not in page
     assert 'id="healthBadge"' in page
     assert 'id="errorDetailsButton"' in page
@@ -64,10 +64,16 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="funnelScoreRange"' in page
     runtime_start = page.index('class="runtime-strip"')
     assert runtime_start < page.index('id="inputQualityStrategy"') < page.index('id="runtimeStatus"')
+    assert runtime_start < page.index('id="funnelMeta"') < page.index('id="runtimeStatus"')
     data_status_start = page.index('id="inputQualityPanel"')
+    score_leaders_start = page.index('id="scoreLeadersPanel"')
+    model_budget_start = page.index('id="budgetStatus"')
     observation_start = page.index('id="observationDrawer"')
-    assert data_status_start < page.index('id="funnelScoreRange"') < observation_start
-    assert data_status_start < page.index('id="topScoresStatus"') < observation_start
+    assert data_status_start < page.index('id="inputQualityStatus"') < score_leaders_start
+    assert data_status_start < page.index('id="inputQualityMeta"') < score_leaders_start
+    assert score_leaders_start < page.index('id="funnelScoreRange"') < model_budget_start
+    assert score_leaders_start < page.index('id="topScoresStatus"') < model_budget_start
+    assert page.index('id="topScoresStatus"') < observation_start
     assert 'id="snapshotDate"' not in page
     assert 'id="snapshotStrategy"' not in page
     assert 'id="snapshotMeta"' not in page

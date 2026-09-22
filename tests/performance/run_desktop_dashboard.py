@@ -404,7 +404,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "动态过滤 待开始" in str(not_ready_summary.get("inputStages"))
             and "定向行情 360→360" in str(not_ready_summary.get("inputStages"))
             and not_ready_summary.get("funnel") == "等待评分输入"
-            and not_ready_summary.get("funnelMeta") == "正在读取推荐漏斗"
+            and not_ready_summary.get("funnelMeta") == "完整评分 — · 动作合格 — · 最终入池 — · 正式 0 · 观察 已关闭"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("publicationStatus") == "采集中"
             and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
@@ -418,9 +418,9 @@ def _run(output_dir: Path) -> dict[str, object]:
             and quality_summary.get("funnel") == "评分链路已完成"
             and "模型成本门" not in str(quality_summary.get("funnelStages"))
             and "动作门 达观察线" not in str(quality_summary.get("funnelStages"))
-            and quality_summary.get("scoreRange") == "评分范围 40.00–74.25 · 最高 74.25"
+            and quality_summary.get("scoreRange") == "40.00–74.25"
             and quality_summary.get("funnelMeta") == "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2"
-            and quality_summary.get("topScores") == "74.00 · 600009 上海机场\n72.00 · 600001 邯郸钢铁"
+            and quality_summary.get("topScores") == "1  74.00 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁"
             and float(quality_summary.get("topScoresHeight", 0))
             >= 2 * float(quality_summary.get("topScoresLineHeight", 0))
             and quality_summary.get("topScoresMeta") == "策略内最终评分 · 2 只"
@@ -777,6 +777,7 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
         const marketStatus = document.querySelector('.header-market-status');
         const runtimeStatus = document.querySelector('#runtimeStatus');
         const dataStatus = document.querySelector('#inputQualityPanel');
+        const scoreLeaders = document.querySelector('#scoreLeadersPanel');
         const observationDrawer = document.querySelector('#observationDrawer');
         const scoreRange = document.querySelector('#funnelScoreRange');
         const topScores = document.querySelector('#topScoresStatus');
@@ -791,7 +792,14 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           marketStatusInHeader: marketStatus.parentElement.matches('.runtime-strip')
             && Boolean(marketStatus.compareDocumentPosition(runtimeStatus) & Node.DOCUMENT_POSITION_FOLLOWING),
           quoteTimeVisible: document.querySelector('#quoteTime').getClientRects().length > 0,
-          scoresInDataStatus: dataStatus.contains(scoreRange) && dataStatus.contains(topScores),
+          dataStatusOwnsReadiness: dataStatus.contains(document.querySelector('#inputQualityStatus'))
+            && dataStatus.contains(document.querySelector('#inputQualityMeta')),
+          scoresInScoreLeaders: scoreLeaders.contains(scoreRange) && scoreLeaders.contains(topScores),
+          funnelInHeader: marketStatus.contains(document.querySelector('#funnelMeta')),
+          equalSummaryHeights: new Set(
+            Array.from(document.querySelectorAll('.summary-band > .summary-item'))
+              .map((item) => item.getBoundingClientRect().height),
+          ).size === 1,
           scoresAbsentFromObservation: !observationDrawer.contains(scoreRange) && !observationDrawer.contains(topScores),
           quoteAge: document.querySelector('#quoteAge').textContent,
           quoteAgeHms: /^\d+(?:时 \d+分 )?\d+秒$/.test(document.querySelector('#quoteAge').textContent),
@@ -848,10 +856,13 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("ordered")
         and result.get("longVisible")
         and result.get("noLongOverlap")
-        and result.get("summaryItems") == 3
+        and result.get("summaryItems") == 4
         and result.get("marketStatusInHeader")
         and result.get("quoteTimeVisible")
-        and result.get("scoresInDataStatus")
+        and result.get("dataStatusOwnsReadiness")
+        and result.get("scoresInScoreLeaders")
+        and result.get("funnelInHeader")
+        and result.get("equalSummaryHeights")
         and result.get("scoresAbsentFromObservation")
         and result.get("quoteAgeHms")
         and result.get("inputQuality") == "不适用"

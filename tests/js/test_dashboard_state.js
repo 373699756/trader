@@ -466,14 +466,14 @@ assert.strictEqual(summaryElements.inputQualityStatus.textContent, "已评分 80
 assert.strictEqual(summaryElements.inputQualityMeta.textContent, "最高 82.00 · 阶段范围与门槛未保存");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "阶段观测不可用");
 assert.strictEqual(summaryElements.funnelStages.textContent, "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗");
-assert.strictEqual(summaryElements.funnelScoreRange.textContent, "已保存最高分 82.00 · 最低分未保存");
+assert.strictEqual(summaryElements.funnelScoreRange.textContent, "82.00 · 最低未保存");
 assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "明");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "明 15:00 固化");
 assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
-  "82.00 · 600001 正式股票\n75.00 · 600002 观察股票",
+  "1  82.00 · 600001 正式股票\n2  75.00 · 600002 观察股票",
 );
 const persistedPipelineElements = summaryFixture();
 state.renderSummary(
@@ -503,7 +503,7 @@ assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("完
 assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "评分链路已完成");
 assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("模型成本门"));
 assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("最终入池"));
-assert.strictEqual(persistedPipelineElements.funnelScoreRange.textContent, "评分范围 39.18–65.42 · 最高 65.42");
+assert.strictEqual(persistedPipelineElements.funnelScoreRange.textContent, "39.18–65.42");
 state.renderSummary(
   summaryElements,
   {
@@ -624,7 +624,7 @@ assert.strictEqual(
 assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 282 只 · 必要资料缺失 240 只");
 assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完成");
-assert.strictEqual(summaryElements.funnelScoreRange.textContent, "评分范围 41.25–74.25 · 最高 74.25");
+assert.strictEqual(summaryElements.funnelScoreRange.textContent, "41.25–74.25");
 assert.strictEqual(
   summaryElements.funnelMeta.textContent,
   "完整评分 56 · 动作合格 4 · 最终入池 4 · 正式 2 · 观察 2",

@@ -114,7 +114,9 @@ tr:focus-visible {
 .runtime-strip .header-market-status {
   flex: 1 1 320px;
   min-width: 0;
-  max-width: min(52vw, 520px);
+  max-width: none;
+  display: flex;
+  align-items: center;
   overflow: hidden;
   color: var(--muted);
   font-size: 12px;
@@ -122,6 +124,27 @@ tr:focus-visible {
   line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.header-market-primary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-strip .header-funnel-separator,
+.runtime-strip .header-funnel-summary {
+  flex: 0 0 auto;
+}
+
+.runtime-strip .header-funnel-summary {
+  overflow: visible;
+  color: var(--text);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  text-overflow: clip;
 }
 
 .runtime-strip b {
@@ -411,7 +434,9 @@ tr:focus-visible {
 
 .summary-band {
   display: grid;
-  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  grid-template-columns:
+    minmax(220px, 0.95fr) minmax(400px, 1.65fr)
+    minmax(180px, 0.75fr) minmax(210px, 0.9fr);
   gap: 1px;
   border-bottom: 1px solid var(--line);
   background: var(--line);
@@ -485,58 +510,67 @@ tr:focus-visible {
   font-weight: 600;
 }
 
-.data-status-score-summary {
+.score-leaders-summary {
+  position: relative;
+  background: var(--surface-raised);
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+
+.score-leaders-summary > span {
+  color: color-mix(in srgb, var(--blue) 78%, var(--text));
+  font-weight: 650;
+}
+
+.score-leaders-content {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-  grid-template-areas:
-    "score-range top-scores"
-    "score-meta top-scores"
-    "funnel-meta funnel-meta";
-  column-gap: 12px;
-  row-gap: 2px;
-  align-items: start;
-  margin-top: 3px;
+  grid-template-columns: minmax(128px, 0.78fr) minmax(230px, 1.45fr);
+  gap: 14px;
+  align-items: center;
 }
 
-.data-status-score-summary .funnel-score-range {
-  grid-area: score-range;
+.score-range-summary {
+  min-width: 0;
+}
+
+.score-range-summary .funnel-score-range {
+  display: block;
   margin-top: 0;
   min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.data-status-score-summary > strong.top-scores-list {
-  grid-area: top-scores;
+.score-leaders-content > strong.top-scores-list {
   min-width: 0;
-  height: auto;
-  min-height: 17px;
+  height: 42px;
   display: block;
-  margin-top: 2px;
-  overflow: visible;
+  overflow: hidden;
   color: var(--blue);
-  font-size: 12px;
-  line-height: 17px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 14px;
+  text-overflow: clip;
   white-space: pre-line;
 }
 
-.data-status-score-summary > small {
+.score-range-summary > small {
   display: block;
   min-width: 0;
-  margin-top: 2px;
+  margin-top: 3px;
   overflow: hidden;
   color: var(--muted);
   font-size: 10px;
   line-height: 15px;
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
-.data-status-score-summary > #topScoresMeta {
-  grid-area: score-meta;
-}
-
-.data-status-score-summary > #funnelMeta {
-  grid-area: funnel-meta;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .input-quality-live {
