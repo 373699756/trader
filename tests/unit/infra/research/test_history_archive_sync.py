@@ -28,6 +28,7 @@ from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveRea
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -159,21 +160,28 @@ def test_history_sync_requests_only_completed_daily_data(
     assert requested_dates == [expected_as_of]
 
 
-def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(tmp_path: Path) -> None:
+def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(dates)
 
     completed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
+    snapshot = state.active_snapshot
+    assert snapshot is not None
+    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)) == 2
+    monkeypatch.setattr(
+        SQLiteHistoryMonthPartitionRepository,
+        "verify",
+        classmethod(lambda _cls, _path, _reference, _progress=None: pytest.fail("routine sync reverified snapshot")),
+    )
     repeated = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
 
     assert completed.state == "completed"
     assert completed.data_cutoff == dates[-1]
     assert repeated.state == "already_current"
     assert len(supplier.calls) == 2
-    state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
-    snapshot = state.active_snapshot
-    assert snapshot is not None
-    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)) == 2
     assert tuple(item.relative_path for item in snapshot.partitions) == ("partitions/2026/09.sqlite3",)
 
 
@@ -265,7 +273,7 @@ def test_history_sync_cancels_cleanly_during_supplier_context_loading(tmp_path: 
     assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().checkpoints == ()
 
 
-def test_daily_sync_rereads_recent_dates_and_full_window_only_for_qfq_revision(tmp_path: Path) -> None:
+def test_daily_sync_keeps_recent_window_when_qfq_values_change(tmp_path: Path) -> None:
     original = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
     assert run_history_sync(_configuration(tmp_path), FakeSupplier(original), clock=lambda: NOW).state == "completed"
     old_snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
@@ -277,12 +285,7 @@ def test_daily_sync_rereads_recent_dates_and_full_window_only_for_qfq_revision(t
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
 
     assert result.state == "completed"
-    assert ("600001", updated) in supplier.calls
-    assert ("600002", updated[-2:]) in supplier.calls
-    assert [call for call in supplier.calls if call[0] == "600001"] == [
-        ("600001", updated[-2:]),
-        ("600001", updated),
-    ]
+    assert supplier.calls == [("600001", updated[-2:]), ("600002", updated[-2:])]
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
     assert state.active_snapshot is not None
     assert state.active_snapshot.sequence == 2
@@ -386,7 +389,7 @@ def test_supplier_failure_and_cancellation_keep_active_pointer_and_resume_comple
     assert resumed_supplier.calls == []
 
 
-def test_historical_industry_revision_refreshes_the_complete_active_window(tmp_path: Path) -> None:
+def test_historical_industry_revision_stays_within_the_recent_window(tmp_path: Path) -> None:
     original = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
     assert (
         run_history_sync(_configuration(tmp_path), FakeSupplier(original, industry="bank"), clock=lambda: NOW).state
@@ -398,10 +401,12 @@ def test_historical_industry_revision_refreshes_the_complete_active_window(tmp_p
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
 
     assert result.state == "completed"
-    assert supplier.calls == [("600001", updated), ("600002", updated)]
+    assert supplier.calls == [("600001", updated[-2:]), ("600002", updated[-2:])]
 
 
-def test_daily_sync_reuses_untouched_immutable_months(tmp_path: Path) -> None:
+def test_daily_sync_reuses_untouched_immutable_months(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     configuration = HistorySyncConfiguration(tmp_path, sessions=5, reread_sessions=2, minimum_free_bytes=0)
     original = (
         date(2026, 6, 30),
@@ -416,6 +421,19 @@ def test_daily_sync_reuses_untouched_immutable_months(tmp_path: Path) -> None:
     assert first is not None
     august = next(item for item in first.partitions if Path(item.relative_path).stem == "08")
     updated = (original[1], original[2], original[3], original[4], date(2026, 9, 3))
+
+    original_verify = SQLiteHistoryMonthPartitionRepository.verify.__func__
+
+    def reject_untouched_month(cls, path, reference, progress=None) -> None:
+        if Path(path).stem == "08":
+            pytest.fail("untouched month was reverified")
+        original_verify(cls, path, reference, progress)
+
+    monkeypatch.setattr(
+        SQLiteHistoryMonthPartitionRepository,
+        "verify",
+        classmethod(reject_untouched_month),
+    )
 
     assert run_history_sync(configuration, FakeSupplier(updated), clock=lambda: NOW).state == "completed"
 

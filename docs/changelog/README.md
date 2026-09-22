@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Bound routine history maintenance to changed data](2026-09-22-bounded-history-incremental-maintenance.md)
 - [Show the 14-stage funnel counts on the dashboard](2026-09-22-dashboard-14-stage-count-funnel.md)
 - [Separate score leaders and restore the header funnel summary](2026-09-22-score-leaders-header-funnel.md)
 - [Unify recommendation history with the published download archive](2026-09-22-published-history-single-owner.md)

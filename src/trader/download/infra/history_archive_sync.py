@@ -74,8 +74,6 @@ class _CodeDownloadContext:
     supplier_context: HistorySupplierContext
     active: HistoryActiveSnapshot | None
     previous_codes: frozenset[str]
-    full_refresh_codes: frozenset[str]
-    existing_qfq: dict[tuple[str, date], str | None]
 
 
 @dataclass(frozen=True)
@@ -160,7 +158,6 @@ def _run_locked(
         _publish_progress(progress, "loading_context", "completed", (1, 1))
         _validate_context(context, configuration.sessions)
         source, calendar, universe = _control_identities(context)
-        _verify_snapshot(root, active)
         previous_codes = _active_universe(control, active)
         if not previous_codes.issubset(item.code for item in universe.securities):
             raise RuntimeError("supplier_universe_regressed")
@@ -219,19 +216,11 @@ def _synchronize(  # noqa: PLR0913
             )
             ordinal += 1
         old_universe = _active_universe(control, active)
-        full_refresh_codes = _full_refresh_codes(control, active, source, universe)
-        existing_qfq = _existing_qfq(
-            configuration.archive_root,
-            active,
-            calendar.open_dates[-configuration.reread_sessions :],
-        )
         download_context = _CodeDownloadContext(
             configuration,
             context,
             active,
             old_universe,
-            full_refresh_codes,
-            existing_qfq,
         )
         for index, security in enumerate(context.universe[completed:], start=completed):
             _publish_progress(progress, "downloading_codes", "started", (index, total), security.code)
@@ -345,7 +334,6 @@ def _download_for_security(
     if (
         context.active is None
         or security.code not in context.previous_codes
-        or security.code in context.full_refresh_codes
     ):
         requested = expected
     else:
@@ -357,49 +345,7 @@ def _download_for_security(
         )
     download = supplier.fetch_code(security, requested)
     _validate_download(download, security.code, requested)
-    if context.active is not None and _qfq_revised(context.active, download, context.existing_qfq):
-        download = supplier.fetch_code(security, expected)
-        _validate_download(download, security.code, expected)
     return download
-
-
-def _qfq_revised(
-    active: HistoryActiveSnapshot,
-    download: BaoStockCodeDownload,
-    existing_qfq: dict[tuple[str, date], str | None],
-) -> bool:
-    return any(
-        (cell.code, cell.trade_date) in existing_qfq
-        and existing_qfq[(cell.code, cell.trade_date)] != (cell.qfq.content_hash if cell.qfq is not None else None)
-        for cell in download.batch.cells
-        if cell.trade_date <= active.data_cutoff
-    )
-
-
-def _existing_qfq(
-    root: Path,
-    active: HistoryActiveSnapshot | None,
-    recent_dates: tuple[date, ...],
-) -> dict[tuple[str, date], str | None]:
-    if active is None:
-        return {}
-    values: dict[tuple[str, date], str | None] = {}
-    dates_by_month: dict[tuple[int, int], list[date]] = defaultdict(list)
-    for day in recent_dates:
-        if day <= active.data_cutoff:
-            dates_by_month[(day.year, day.month)].append(day)
-    references = {_partition_month(item): item for item in active.partitions}
-    for (year, month), dates in dates_by_month.items():
-        reference = references.get((year, month))
-        if reference is None:
-            raise RuntimeError("history_snapshot_month_missing")
-        path = root / reference.relative_path
-        SQLiteHistoryMonthPartitionRepository.verify(path, reference)
-        repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
-        for day in dates:
-            for revision in repository.read_day(day, snapshot_sequence=active.sequence):
-                values[(revision.code, day)] = revision.cell.qfq.content_hash if revision.cell.qfq is not None else None
-    return values
 
 
 def _validate_download(download: BaoStockCodeDownload, code: str, expected: tuple[date, ...]) -> None:
@@ -533,7 +479,6 @@ def _seal_pending(
                 if existing_reference is None:
                     raise RuntimeError("history_snapshot_month_missing")
                 reference = existing_reference
-            SQLiteHistoryMonthPartitionRepository.verify(root / reference.relative_path, reference)
             references.append(reference)
             _publish_progress(progress, "sealing_partitions", "completed", (index + 1, total), current_item)
     except BaseException:
@@ -693,40 +638,12 @@ def _is_current(
     )
 
 
-def _verify_snapshot(root: Path, active: HistoryActiveSnapshot | None) -> None:
-    if active is None:
-        return
-    for reference in active.partitions:
-        SQLiteHistoryMonthPartitionRepository.verify(root / reference.relative_path, reference)
-
-
 def _active_universe(control: SQLiteHistoryControlRepository, active: HistoryActiveSnapshot | None) -> frozenset[str]:
     if active is None:
         return frozenset()
     state = control.load_state()
     universe = next(item for item in state.universes if item.content_hash == active.universe_hash)
     return frozenset(item.code for item in universe.securities)
-
-
-def _full_refresh_codes(
-    control: SQLiteHistoryControlRepository,
-    active: HistoryActiveSnapshot | None,
-    source: HistorySourceIdentity,
-    universe: HistoryUniverseIdentity,
-) -> frozenset[str]:
-    if active is None:
-        return frozenset()
-    state = control.load_state()
-    previous_source = next(item for item in state.sources if item.content_hash == active.source_identity_hash)
-    previous_universe = next(item for item in state.universes if item.content_hash == active.universe_hash)
-    previous_by_code = {item.code: item for item in previous_universe.securities}
-    if previous_source.supplier_contract != source.supplier_contract:
-        return frozenset(previous_by_code)
-    return frozenset(
-        item.code
-        for item in universe.securities
-        if item.code in previous_by_code and item != previous_by_code[item.code]
-    )
 
 
 def _latest_completed_daily_date(observed_at: datetime) -> date:
