@@ -266,6 +266,8 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     assert status["deepseek_budget"]["limit"] == 168
     assert status["market_data"] == {
         "active_source": "sina",
+        "market_epoch": "market:merge-22",
+        "reference_epoch": "reference:fixture",
         "candidate_quote_age": {
             "latest_source_time": NOW.isoformat(),
             "p50_seconds": 1.0,
@@ -504,6 +506,8 @@ def _app():
             "deepseek_budget": {"used": 12, "remaining": 156, "planned_limit": 71},
             "market_data": {
                 "active_source": "sina",
+                "market_epoch": "market:merge-22",
+                "reference_epoch": "reference:fixture",
                 "market_feature_rows": 5567,
                 "candidate_quote_cache_entries": 120,
                 "candidate_quote_latest_source": "tencent",

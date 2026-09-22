@@ -584,10 +584,15 @@ def test_reference_epoch_change_invalidates_market_feature_cache() -> None:
 
     service.fetch_market_features(NOW)
     assert gateway.market_calls == 1
+    first_reference_epoch = service.reference_version()
+    health = service.health()
+    assert health["reference_epoch"] == first_reference_epoch
+    assert health["market_epoch"] == health["canonical_snapshot"]["merge_epoch"]
     service.fetch_market_features(NOW + timedelta(seconds=1))
     assert gateway.market_calls == 1
 
     service.references._reference_versions = {"valuation": "reference-updated"}
+    assert service.reference_version() != first_reference_epoch
     service.fetch_market_features(NOW + timedelta(seconds=2))
     assert gateway.market_calls == 2
 

@@ -14,6 +14,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 def load_static_market(
     records: Sequence[FeatureSnapshot],
     *,
+    input_batch_id: str,
     as_of: datetime,
     source_health: SourceHealth,
     expected_count: int,
@@ -24,6 +25,7 @@ def load_static_market(
     return stage_output(
         PipelineStage.STATIC_MARKET,
         records,
+        input_batch_id=input_batch_id,
         as_of=as_of,
         input_count=expected_count,
         pending_count=pending_count,

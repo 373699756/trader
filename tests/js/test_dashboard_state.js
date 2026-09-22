@@ -12,6 +12,7 @@ const longGroupsPath = path.join(path.dirname(dashboardPath), "long_groups.js");
 const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatters.js");
 const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
 const patchesSource = fs.readFileSync(patchesPath, "utf8");
+const statusHealthPath = path.join(path.dirname(dashboardPath), "status_health.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
 assert(statusViewSource.includes('["数据源与静态采集", ["input_readiness"]]'));
@@ -49,6 +50,7 @@ vm.runInNewContext(fs.readFileSync(selectionPath, "utf8"), sandbox, { filename: 
 vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename: longGroupsPath });
 vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename: formattersPath });
 vm.runInNewContext(patchesSource, sandbox, { filename: patchesPath });
+vm.runInNewContext(fs.readFileSync(statusHealthPath, "utf8"), sandbox, { filename: statusHealthPath });
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(streamSource, sandbox, { filename: streamPath });

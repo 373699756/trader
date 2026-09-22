@@ -343,6 +343,7 @@ def assess_quality_stage(
     return stage_output(
         PipelineStage.QUALITY_CHECK,
         output,
+        input_batch_id=source.snapshot.output_batch_id,
         as_of=as_of,
         input_count=len(source.records),
         pending_count=pending,

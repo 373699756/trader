@@ -27,6 +27,7 @@ def normalize_static_market(
     return stage_output(
         PipelineStage.STATIC_STANDARDIZE,
         normalized,
+        input_batch_id=source.snapshot.output_batch_id,
         as_of=as_of,
         input_count=len(source.records),
         pending_count=len(source.records) - len(normalized),

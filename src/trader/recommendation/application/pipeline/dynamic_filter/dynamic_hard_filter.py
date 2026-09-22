@@ -47,6 +47,7 @@ def filter_dynamic_market(
     return stage_output(
         PipelineStage.DYNAMIC_FILTER,
         accepted,
+        input_batch_id=source.snapshot.output_batch_id,
         as_of=as_of,
         input_count=len(source.records),
         rejected_count=sum(rejected.values()),

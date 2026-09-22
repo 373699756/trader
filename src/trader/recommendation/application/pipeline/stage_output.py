@@ -44,6 +44,7 @@ def stage_output(
     stage: PipelineStage,
     records: Sequence[_RecordT],
     *,
+    input_batch_id: str,
     as_of: datetime,
     input_count: int,
     rejected_count: int = 0,
@@ -59,8 +60,8 @@ def stage_output(
     snapshot = PipelineStageSnapshot(
         stage=stage,
         stage_order=PIPELINE_STAGES.index(stage) + 1,
-        input_batch_id=f"pipeline:{as_of.isoformat()}",
-        output_batch_id=f"pipeline:{as_of.isoformat()}",
+        input_batch_id=input_batch_id,
+        output_batch_id=f"{input_batch_id}:{stage.value}",
         as_of=as_of,
         state=state,
         input_count=input_count,

@@ -31,6 +31,13 @@ _T = TypeVar("_T")
 _HISTORY_PRELOAD_PER_BOARD_LIMIT = 120
 
 
+def _reference_epoch(versions: Mapping[str, str]) -> str:
+    """Return the single immutable identity for the active static reference set."""
+
+    digest = hashlib.sha256(canonical_json_bytes(dict(sorted(versions.items())))).hexdigest()[:24]
+    return f"reference:{digest}"
+
+
 def _source_batch_identity(
     dataset: str,
     subjects: Sequence[str],

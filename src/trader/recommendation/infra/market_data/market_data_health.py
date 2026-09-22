@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import math
-import hashlib
-import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,7 +14,7 @@ from trader.infra.market_data.providers.tushare import TushareHealthStatus
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
-from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary
+from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary, _reference_epoch
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.infra.market_data.router import RouteOutcome
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
@@ -61,7 +59,8 @@ class MarketDataHealth:
         research = self._research.status()
         intraday = self._intraday.status()
         gateway_status = self._quotes.gateway.health()
-        gateway_health = _gateway_health_payload(gateway_status)
+        reference_epoch = _reference_epoch(self._references.versions())
+        gateway_health = _gateway_health_payload(gateway_status, reference_epoch=reference_epoch)
         sources = {
             name: _market_source_payload(source_status) for name, source_status in gateway_status.sources.items()
         }
@@ -254,13 +253,11 @@ class MarketDataHealth:
         )
 
 
-def _reference_epoch(versions: Mapping[str, str]) -> str:
-    return "reference:" + hashlib.sha256(
-        json.dumps(dict(sorted(versions.items())), ensure_ascii=True, separators=(",", ":")).encode()
-    ).hexdigest()[:24]
-
-
-def _gateway_health_payload(status: MarketGatewayHealthStatus) -> dict[str, JsonInput]:
+def _gateway_health_payload(
+    status: MarketGatewayHealthStatus,
+    *,
+    reference_epoch: str,
+) -> dict[str, JsonInput]:
     snapshot = status.snapshot
     changes = status.changes
     security_master = status.security_master
@@ -272,6 +269,8 @@ def _gateway_health_payload(status: MarketGatewayHealthStatus) -> dict[str, Json
         "merge_count": status.merge_count,
         "conflict_count": status.conflict_count,
         "merge_epoch": snapshot.merge_epoch if snapshot is not None else None,
+        "market_epoch": snapshot.merge_epoch if snapshot is not None else None,
+        "reference_epoch": reference_epoch,
         "market_changes": {
             "merge_epoch": changes.merge_epoch,
             "inserted": len(changes.inserted_codes),
@@ -282,6 +281,8 @@ def _gateway_health_payload(status: MarketGatewayHealthStatus) -> dict[str, Json
         "canonical_snapshot": {
             "observed_at": snapshot.observed_at.isoformat() if snapshot is not None else None,
             "merge_epoch": snapshot.merge_epoch if snapshot is not None else None,
+            "market_epoch": snapshot.merge_epoch if snapshot is not None else None,
+            "reference_epoch": reference_epoch,
             "source_versions": dict(snapshot.source_versions) if snapshot is not None else {},
             "conflicts": snapshot.conflicts if snapshot is not None else (),
             "missing_reasons": dict(snapshot.missing_reasons) if snapshot is not None else {},

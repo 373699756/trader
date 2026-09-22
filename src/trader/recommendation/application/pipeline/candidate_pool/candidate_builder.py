@@ -272,6 +272,7 @@ def build_candidate_stage_output(
     return stage_output(
         PipelineStage.CANDIDATE_POOL,
         records,
+        input_batch_id=source.snapshot.output_batch_id,
         as_of=as_of,
         input_count=len(source.records),
         reasons=reasons,

@@ -32,6 +32,7 @@ def build_dynamic_market_snapshot(
     return stage_output(
         PipelineStage.DYNAMIC_MARKET,
         loaded,
+        input_batch_id=source.snapshot.output_batch_id,
         as_of=as_of,
         input_count=len(source.records),
         pending_count=pending,

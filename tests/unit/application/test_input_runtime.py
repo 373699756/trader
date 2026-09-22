@@ -11,7 +11,9 @@ import pytest
 from tests.unit.domain.test_decision_identity import decision
 from trader.bootstrap import _recommendation_policy
 from trader.infra.settings import load_strategy_settings
-from trader.recommendation.application.pipeline.data_source.input_assembly import model_scoring_context as _model_scoring_context
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    model_scoring_context as _model_scoring_context,
+)
 from trader.recommendation.application.pipeline.data_source.source_router import (
     DecisionBuildDependencies,
     InputBatch,
@@ -27,7 +29,7 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER, PIPELINE_STAGES, StageState
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import Strategy
@@ -517,6 +519,9 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     assert all(status.pipeline.stage("candidate_refresh").output_count is None for status in statuses)
     assert all(status.pipeline.stage("candidate_refresh").state == "running" for status in statuses)
     assert all(status.pipeline.stage("input_coverage").state == "pending" for status in statuses)
+    assert all(tuple(stage.stage for stage in status.stage_snapshots) == PIPELINE_STAGES for status in statuses)
+    assert all(status.stage_snapshots[9].state is StageState.NOT_READY for status in statuses)
+    assert all(status.stage_snapshots[-1].stage.value == "final_selection" for status in statuses)
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 

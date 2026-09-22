@@ -27,6 +27,7 @@ from trader.recommendation.application.pipeline.local_score.base_scoring import 
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
+    build_complete_stage_snapshots,
     build_first_nine_stage_snapshots,
     build_pending_pipeline,
     build_supply_status,
@@ -462,6 +463,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         )
 
     def _record_pending_quality_locked(self, context: _PendingQualityContext) -> None:
+        batch_id = self._scoring_epoch_locked(include_intraday_tail=False)
         for strategy in SCORED_STRATEGIES:
             existing = self._input_quality.get(strategy)
             if (
@@ -475,6 +477,20 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             requested_count = stage_counts.candidate_limit_selected
             candidate_feature_count = min(requested_count, context.candidate_feature_counts[strategy])
             covered = candidate_feature_count
+            pipeline = build_pending_pipeline(
+                stage_counts,
+                candidate_feature_count=candidate_feature_count,
+                primary_blocker=context.primary_blocker,
+                candidate_score_threshold=self._policy.selection.candidate_min_score,
+            )
+            first_nine = build_first_nine_stage_snapshots(
+                stage_counts,
+                batch_id=f"{batch_id}:{strategy.value}",
+                as_of=context.observed_at,
+                population_count=context.population_count,
+                candidate_feature_count=candidate_feature_count,
+                refresh_pending_count=max(0, requested_count - candidate_feature_count),
+            )
             self._input_quality[strategy] = InputQualityStatus(
                 strategy=strategy,
                 status="not_ready",
@@ -486,19 +502,8 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     quote_missing_count=requested_count - covered,
                     security_identity_missing_count=0,
                 ),
-                pipeline=build_pending_pipeline(
-                    stage_counts,
-                    candidate_feature_count=candidate_feature_count,
-                    primary_blocker=context.primary_blocker,
-                    candidate_score_threshold=self._policy.selection.candidate_min_score,
-                ),
-                stage_snapshots=build_first_nine_stage_snapshots(
-                    stage_counts,
-                    as_of=context.observed_at,
-                    population_count=context.population_count,
-                    candidate_feature_count=candidate_feature_count,
-                    refresh_pending_count=max(0, requested_count - candidate_feature_count),
-                ),
+                pipeline=pipeline,
+                stage_snapshots=build_complete_stage_snapshots(first_nine, pipeline),
                 population_count=context.population_count,
                 candidate_count=requested_count,
                 candidate_feature_count=candidate_feature_count,

@@ -259,9 +259,7 @@ def test_old_production_chain_has_no_active_files() -> None:
 def test_active_web_surface_and_fixed_long_tabs_use_unified_routes() -> None:
     web = SOURCE_ROOT / "web"
     api = SOURCE_ROOT / "http_api"
-    assert {"route_services.py"} <= {
-        path.name for path in api.glob("*.py")
-    }
+    assert {"route_services.py"} <= {path.name for path in api.glob("*.py")}
     assert (api / "response" / "decision_projection.py").is_file()
     assert (api / "handlers" / "event_handler.py").is_file()
     assert (api / "routes" / "page_routes.py").is_file()
@@ -355,7 +353,7 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
     identity = (SOURCE_ROOT / "recommendation/domain/publication/decision_identity.py").read_text(encoding="utf-8")
     codec = (SOURCE_ROOT / "recommendation/infra/persistence/decision_record_codec.py").read_text(encoding="utf-8")
     audit = (SOURCE_ROOT / "training/application/research_audit.py").read_text(encoding="utf-8")
-    columnar = (SOURCE_ROOT / "infra/market_data/normalization/columnar.py").read_text(encoding="utf-8")
+    columnar = (SOURCE_ROOT / "recommendation/infra/normalization/columnar.py").read_text(encoding="utf-8")
 
     assert "def committed_record_identity_payload(" in identity
     assert "committed_record_identity_payload(record)" in codec

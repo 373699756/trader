@@ -8,9 +8,9 @@ from datetime import date, datetime
 from typing import Literal, Protocol
 
 from trader.recommendation.domain.evidence.pipeline import (
-    PIPELINE_STAGES,
     PipelineStageSnapshot,
     RecommendationPipelineStatus,
+    validate_stage_batch_continuity,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -91,14 +91,7 @@ class InputQualityStatus:
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("input quality requires a scored strategy")
-        expected = PIPELINE_STAGES[:9]
-        if tuple(item.stage for item in self.stage_snapshots) != expected:
-            raise ValueError("input quality requires the ordered first nine pipeline snapshots")
-        for previous, current in zip(self.stage_snapshots, self.stage_snapshots[1:]):
-            if previous.output_batch_id != current.input_batch_id:
-                raise ValueError("input quality stage batch identities are not continuous")
-            if previous.output_count != current.input_count:
-                raise ValueError("input quality stage counts are not continuous")
+        validate_stage_batch_continuity(self.stage_snapshots)
         counts = (
             self.population_count,
             self.candidate_count,

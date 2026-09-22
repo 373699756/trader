@@ -30,6 +30,7 @@ def normalize_dynamic_market(
     return stage_output(
         PipelineStage.DYNAMIC_STANDARDIZE,
         normalized,
+        input_batch_id=source.snapshot.output_batch_id,
         as_of=as_of,
         input_count=len(source.records),
         pending_count=pending,

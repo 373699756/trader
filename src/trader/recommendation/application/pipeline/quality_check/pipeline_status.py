@@ -104,22 +104,24 @@ def build_supply_status(
             reasons[item.selection_skip_reason] += 1
     reasons.update(item.reason for item in decision_items if item.reason)
     reasons.update(risk for item in decision_items for risk in item.risk_codes)
+    first_nine = build_first_nine_stage_snapshots(
+        stage_counts,
+        batch_id=projection.native_input.input_version,
+        as_of=projection.local.observed_at,
+        population_count=quality.population_count,
+        candidate_feature_count=quality.candidate_feature_count,
+        data_pending_count=quality.data_pending_count,
+        refresh_pending_count=quality.refresh_pending_count,
+        invalid_count=sum(quality.candidate_transient_reason_counts.values()),
+        degraded_reasons=quality.degraded_reasons,
+    )
     return InputQualityStatus(
         strategy=projection.local.strategy,
         status=quality.status,
         publishable=quality.publishable,
         summary=_supply_summary(projection, decision=active_decision),
         pipeline=pipeline,
-        stage_snapshots=build_first_nine_stage_snapshots(
-            stage_counts,
-            as_of=projection.local.observed_at,
-            population_count=quality.population_count,
-            candidate_feature_count=quality.candidate_feature_count,
-            data_pending_count=quality.data_pending_count,
-            refresh_pending_count=quality.refresh_pending_count,
-            invalid_count=sum(quality.candidate_transient_reason_counts.values()),
-            degraded_reasons=quality.degraded_reasons,
-        ),
+        stage_snapshots=build_complete_stage_snapshots(first_nine, pipeline),
         population_count=quality.population_count,
         candidate_count=quality.candidate_count,
         candidate_feature_count=quality.candidate_feature_count,
@@ -147,6 +149,7 @@ def build_supply_status(
 def build_first_nine_stage_snapshots(
     stage_counts: ScoredCandidateStageCounts,
     *,
+    batch_id: str,
     as_of: datetime,
     population_count: int,
     candidate_feature_count: int,
@@ -242,28 +245,132 @@ def build_first_nine_stage_snapshots(
             ),
         ),
     )
-    return tuple(
-        _stage_snapshot(
-            stage,
-            batch_id=f"pipeline:{as_of.isoformat()}",
-            as_of=as_of,
-            input_count=input_count,
-            output_count=output_count,
-            rejected_count=rejected_count,
-            pending_count=pending_count,
-            failed_count=failed_count,
-            reasons=reasons,
-            source_health=source_health,
-            source_degraded=source_degraded and stage is PipelineStage.DATA_SOURCE,
+    snapshots: list[PipelineStageSnapshot] = []
+    input_batch_id = batch_id
+    for stage, input_count, output_count, rejected_count, pending_count, failed_count, reasons in rows:
+        output_batch_id = f"{batch_id}:{stage.value}"
+        snapshots.append(
+            _stage_snapshot(
+                stage,
+                input_batch_id=input_batch_id,
+                output_batch_id=output_batch_id,
+                as_of=as_of,
+                input_count=input_count,
+                output_count=output_count,
+                rejected_count=rejected_count,
+                pending_count=pending_count,
+                failed_count=failed_count,
+                reasons=reasons,
+                source_health=source_health,
+                source_degraded=source_degraded and stage is PipelineStage.DATA_SOURCE,
+            )
         )
-        for stage, input_count, output_count, rejected_count, pending_count, failed_count, reasons in rows
+        input_batch_id = output_batch_id
+    return tuple(snapshots)
+
+
+def build_complete_stage_snapshots(
+    first_nine: tuple[PipelineStageSnapshot, ...],
+    pipeline: RecommendationPipelineStatus,
+) -> tuple[PipelineStageSnapshot, ...]:
+    """Join the input chain to the five scored runtime stages without inventing counts."""
+
+    if tuple(item.stage for item in first_nine) != PIPELINE_STAGES[:9]:
+        raise ValueError("complete pipeline snapshots require the ordered first nine stages")
+    previous = first_nine[-1]
+    batch_root = first_nine[0].input_batch_id
+    stage_groups = (
+        (
+            PipelineStage.LOCAL_SCORE,
+            (pipeline.stage("evidence_score"), pipeline.stage("model_cost_gate"), pipeline.stage("local_score")),
+        ),
+        (
+            PipelineStage.RISK_REVIEW,
+            (pipeline.stage("deepseek_review"),),
+        ),
+        (
+            PipelineStage.SCORE_MERGE,
+            (pipeline.stage("fusion"),),
+        ),
+        (
+            PipelineStage.DOWNSIDE_ACTION,
+            (pipeline.stage("action_gate"),),
+        ),
+        (
+            PipelineStage.FINAL_SELECTION,
+            (pipeline.stage("concentration"),),
+        ),
     )
+    snapshots = list(first_nine)
+    for stage, statuses in stage_groups:
+        output_count = _runtime_output_count(stage, statuses, previous.output_count)
+        pending_count = previous.output_count if output_count == 0 and _runtime_stage_pending(statuses) else 0
+        state = _runtime_stage_state(statuses, output_count)
+        output_batch_id = f"{batch_root}:{stage.value}"
+        snapshot = PipelineStageSnapshot(
+            stage=stage,
+            stage_order=PIPELINE_STAGES.index(stage) + 1,
+            input_batch_id=previous.output_batch_id,
+            output_batch_id=output_batch_id,
+            as_of=previous.as_of,
+            state=state,
+            input_count=previous.output_count,
+            output_count=output_count,
+            rejected_count=0,
+            pending_count=pending_count,
+            failed_count=0,
+            reasons=_runtime_stage_reasons(statuses),
+            source_health=previous.source_health,
+            latency_ms=round(sum(item.duration_ms or 0.0 for item in statuses)),
+            degraded=state is StageState.DEGRADED,
+        )
+        snapshots.append(snapshot)
+        previous = snapshot
+    return tuple(snapshots)
+
+
+def _runtime_output_count(
+    stage: PipelineStage,
+    statuses: tuple[PipelineStageStatus, ...],
+    previous_output_count: int,
+) -> int:
+    if stage is PipelineStage.RISK_REVIEW:
+        return previous_output_count
+    output = statuses[-1].output_count
+    if output is None:
+        return 0
+    return min(previous_output_count, output)
+
+
+def _runtime_stage_pending(statuses: tuple[PipelineStageStatus, ...]) -> bool:
+    return any(item.state in {"pending", "running"} for item in statuses)
+
+
+def _runtime_stage_state(
+    statuses: tuple[PipelineStageStatus, ...],
+    output_count: int,
+) -> StageState:
+    if not output_count and _runtime_stage_pending(statuses):
+        return StageState.NOT_READY
+    if any(item.state == "degraded" for item in statuses) or _runtime_stage_pending(statuses):
+        return StageState.DEGRADED
+    return StageState.READY
+
+
+def _runtime_stage_reasons(
+    statuses: tuple[PipelineStageStatus, ...],
+) -> tuple[StageReasonAggregate, ...]:
+    counts: Counter[str] = Counter()
+    for status in statuses:
+        counts.update({item.reason: item.count for item in status.reason_counts})
+    return _stage_reasons(*tuple(sorted(counts.items())))
 
 
 def _stage_snapshot(
     stage: PipelineStage,
     *,
-    batch_id: str,
+    input_batch_id: str,
+    output_batch_id: str,
     as_of: datetime,
     input_count: int,
     output_count: int,
@@ -278,8 +385,8 @@ def _stage_snapshot(
     return PipelineStageSnapshot(
         stage=stage,
         stage_order=PIPELINE_STAGES.index(stage) + 1,
-        input_batch_id=batch_id,
-        output_batch_id=batch_id,
+        input_batch_id=input_batch_id,
+        output_batch_id=output_batch_id,
         as_of=as_of,
         state=state,
         input_count=input_count,
@@ -493,13 +600,9 @@ def _completed_pipeline(
     business_reason_counts, readiness_reason_counts = split_filter_reason_counts(
         quality.population_filter_reason_counts
     )
-    input_readiness_state: PipelineStageState = (
-        "degraded" if readiness_reason_counts else "completed"
-    )
+    input_readiness_state: PipelineStageState = "degraded" if readiness_reason_counts else "completed"
     candidate_refresh_state: PipelineStageState = (
-        "degraded"
-        if candidate_quote_eligible < stage_counts.candidate_limit_selected
-        else "completed"
+        "degraded" if candidate_quote_eligible < stage_counts.candidate_limit_selected else "completed"
     )
     return RecommendationPipelineStatus(
         current_stage=current_stage,
@@ -906,4 +1009,10 @@ def _required_count(value: int | None) -> int:
     return value
 
 
-__all__ = ["build_pending_pipeline", "build_supply_status", "update_supply_status_decision"]
+__all__ = [
+    "build_complete_stage_snapshots",
+    "build_first_nine_stage_snapshots",
+    "build_pending_pipeline",
+    "build_supply_status",
+    "update_supply_status_decision",
+]

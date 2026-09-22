@@ -101,6 +101,7 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert client.get("/static/release_contract.js").status_code == 200
     assert client.get("/static/dashboard_stream.js").status_code == 200
     assert client.get("/static/render.js").status_code == 200
+    assert client.get("/static/status_health.js").status_code == 200
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")

@@ -15,6 +15,7 @@ from trader.recommendation.infra.market_data.intraday_loader import IntradayLoad
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _history_population_codes,
     _normalize_codes,
+    _reference_epoch,
     _research_data_version,
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
@@ -78,8 +79,7 @@ class MarketFeatureService:
     def reference_version(self) -> str:
         """Return the immutable reference epoch used by scoring caches."""
 
-        versions = self.references.versions()
-        return "reference:" + "|".join(f"{key}={versions[key]}" for key in sorted(versions))
+        return _reference_epoch(self.references.versions())
 
     def fetch_market_features(
         self,

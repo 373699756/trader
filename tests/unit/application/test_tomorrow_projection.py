@@ -22,6 +22,7 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import build_supply_status
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, validate_stage_batch_continuity
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import (
@@ -192,6 +193,9 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     } == {0.0, 50.0, 100.0}
     assert build_supply_status(projection).primary_blocker == "no_positive_net_utility"
     complete_status = build_supply_status(projection)
+    assert tuple(stage.stage for stage in complete_status.stage_snapshots) == tuple(PipelineStage)
+    validate_stage_batch_continuity(complete_status.stage_snapshots)
+    assert complete_status.stage_snapshots[-1].stage is PipelineStage.FINAL_SELECTION
     assert complete_status.pipeline.stage("input_readiness").state == "completed"
     assert complete_status.pipeline.stage("candidate_refresh").state == "completed"
     degraded_status = build_supply_status(projection, candidate_quote_eligible=0)

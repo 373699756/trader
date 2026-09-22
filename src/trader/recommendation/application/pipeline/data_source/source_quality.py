@@ -36,6 +36,7 @@ def decision_failure_code(exc: BaseException) -> str:
 def build_source_stage_output(
     records: Sequence[FeatureSnapshot],
     *,
+    input_batch_id: str,
     as_of: datetime,
     expected_count: int,
     failed_count: int,
@@ -50,6 +51,7 @@ def build_source_stage_output(
     return stage_output(
         PipelineStage.DATA_SOURCE,
         received,
+        input_batch_id=input_batch_id,
         as_of=as_of,
         input_count=expected_count,
         pending_count=pending_count,

@@ -498,7 +498,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
                 ),
             ),
         ),
-        stage_snapshots=stage_snapshots[:9],
+        stage_snapshots=stage_snapshots,
         candidate_count=360,
         candidate_feature_count=352,
         security_master_covered_count=74,
@@ -536,6 +536,9 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         {"metric": "candidate_score", "minimum": 48.5, "maximum": 82.25}
     ]
     assert payload["tomorrow"]["history_required_sessions"] == 61
+    snapshots = payload["tomorrow"]["stage_snapshots"]
+    assert [stage["stage"] for stage in snapshots] == [stage.value for stage in PipelineStage]
+    assert snapshots[-1]["stage"] == "final_selection"
     action_facets = {facet["key"]: facet for facet in stages["action_gate"]["facets"]}
     assert action_facets["observation_threshold_met"]["count"] == 12
     assert action_facets["executable_threshold_met"]["count"] == 3

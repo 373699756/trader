@@ -236,6 +236,8 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
     scalar_fields = (
         "status",
         "active_source",
+        "market_epoch",
+        "reference_epoch",
         "market_feature_rows",
         "candidate_quote_cache_entries",
         "candidate_quote_latest_source",
@@ -330,21 +332,20 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
             for key in (
                 "observed_at",
                 "merge_epoch",
+                "market_epoch",
+                "reference_epoch",
                 "conflicts",
                 "degraded_reasons",
                 "failure_categories",
                 "status",
             )
-            if key in canonical_snapshot and (
-                _json_scalar(canonical_snapshot[key]) or isinstance(canonical_snapshot[key], (tuple, list))
-            )
+            if key in canonical_snapshot
+            and (_json_scalar(canonical_snapshot[key]) or isinstance(canonical_snapshot[key], (tuple, list)))
         }
         ages = canonical_snapshot.get("source_ages_seconds")
         if isinstance(ages, Mapping):
             projected_snapshot["source_ages_seconds"] = {
-                str(source): value
-                for source, value in ages.items()
-                if _json_scalar(value)
+                str(source): value for source, value in ages.items() if _json_scalar(value)
             }
         if projected_snapshot:
             result["canonical_snapshot"] = projected_snapshot
