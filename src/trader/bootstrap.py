@@ -12,16 +12,17 @@ from pathlib import Path
 
 from flask import Flask
 
+from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.clock.utc import utc_now as _utc_now
-from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup, build_history_warmup_policy
-from trader.infra.market_data.history.history_seed import (
-    FallbackHistoryClient,
-)
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
+from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
@@ -37,6 +38,7 @@ from trader.recommendation.infra.market_data.intraday_loader import IntradayLoad
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureDependencies, MarketFeatureService
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.infra.runtime_resources import RuntimeWorkerResources
@@ -91,7 +93,7 @@ from trader.recommendation.application.runtime.resource_orchestration import (
     stop_application_resources,
 )
 from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
 from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisor,
@@ -133,7 +135,6 @@ class ApplicationSystem:
     scheduler: SchedulerRuntime
     repository: SQLiteDecisionRecordRepository
     market_cache: BoundedLruCache[object]
-    history_pool: BoundedExecutor
     research_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry
     data_pool: BoundedExecutor
@@ -145,6 +146,7 @@ class ApplicationSystem:
     tomorrow_records: SQLiteDecisionRecordRepository
     research_trace: SQLiteResearchTraceArchive
     outcome_evidence: SQLiteOutcomeEvidenceRepository
+    history_maintenance: _StartupHistoryMaintenance
 
     def _application_resources(self) -> ApplicationResources:
         return ApplicationResources(
@@ -152,9 +154,8 @@ class ApplicationSystem:
             self.source_lanes,
             self.data_pool,
             self.quote_pool,
-            self.history_pool,
             self.research_pool,
-            (self.long_runtime,),
+            (self.long_runtime, self.history_maintenance),
             self.market_cache,
         )
 
@@ -171,6 +172,90 @@ class ApplicationSystem:
             deadline=shared_deadline,
         )
 
+
+class _StartupHistoryProgress:
+    def __init__(self, history: PublishedHistoryCache) -> None:
+        self._history = history
+
+    def publish(self, progress: HistorySyncProgress) -> None:
+        self._history.record_maintenance(
+            "running",
+            stage=progress.stage,
+            completed_units=progress.completed_units,
+            total_units=progress.total_units,
+        )
+
+
+class _StartupHistoryMaintenance:
+    """Run the download-owned synchronizer once without blocking Web startup."""
+
+    def __init__(self, configuration: HistorySyncConfiguration, history: PublishedHistoryCache) -> None:
+        self._configuration = configuration
+        self._history = history
+        self._cancel = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._supplier: BaoStockHistorySupplier | None = None
+        self._started = False
+
+    def start(self) -> bool:
+        with self._lock:
+            if self._started:
+                return False
+            self._started = True
+            self._cancel.clear()
+            self._thread = threading.Thread(
+                target=self._run,
+                name="history-ensure-current",
+                daemon=False,
+            )
+            self._thread.start()
+            return True
+
+    def stop(
+        self,
+        *,
+        wait: bool,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep:
+        self._cancel.set()
+        with self._lock:
+            supplier = self._supplier
+            thread = self._thread
+        if supplier is not None:
+            supplier.close()
+        if wait and thread is not None:
+            thread.join(None if deadline is None else deadline.remaining_seconds())
+        alive = thread is not None and thread.is_alive()
+        return ShutdownStep(
+            "history_ensure_current",
+            not alive,
+            bool(alive and deadline is not None and deadline.expired),
+            detail="history maintenance remains active" if alive else "",
+        )
+
+    def _run(self) -> None:
+        progress = _StartupHistoryProgress(self._history)
+        self._history.record_maintenance("loading", stage="reading_active_snapshot")
+        self._history.refresh()
+        try:
+            with BaoStockHistorySupplier(self._configuration, progress=progress) as supplier:
+                with self._lock:
+                    self._supplier = supplier
+                status = DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
+                    self._configuration,
+                    supplier,
+                    progress=progress,
+                    cancel_requested=self._cancel.is_set,
+                )
+            if status.state in {"completed", "already_current"}:
+                self._history.refresh()
+            self._history.record_maintenance(status.state, status.reason)
+        except Exception as exc:
+            self._history.record_maintenance("failed", type(exc).__name__)
+        finally:
+            with self._lock:
+                self._supplier = None
 
 @dataclass(frozen=True)
 class _BuildContext:
@@ -357,11 +442,10 @@ def build_system(
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
     )
 
-    def notify_scoring_after_history(_codes: tuple[str, ...]) -> None:
-        native_data.invalidate_history()
-        scheduler.notify_history_warmup()
-
-    market_data.warmup.set_completion_callback(notify_scoring_after_history)
+    history_maintenance = _StartupHistoryMaintenance(
+        HistorySyncConfiguration.for_repository(settings.project_root),
+        market_data.history,
+    )
     supervisor = RuntimeSupervisor(
         scheduler,
         RuntimeSupervisorConfig(
@@ -406,7 +490,6 @@ def build_system(
         scheduler=scheduler,
         repository=persistence.repository,
         market_cache=workers.market_cache,
-        history_pool=workers.history_pool,
         research_pool=workers.research_pool,
         source_lanes=workers.source_lanes,
         data_pool=workers.data_pool,
@@ -418,6 +501,7 @@ def build_system(
         tomorrow_records=publication.tomorrow_repository,
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
+        history_maintenance=history_maintenance,
     )
 
 
@@ -434,11 +518,6 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         worker_count=4,
         queue_capacity=4,
         thread_name_prefix="candidate-quotes",
-    )
-    history_pool = BoundedExecutor(
-        worker_count=settings.pipeline.market_workers,
-        queue_capacity=settings.market_data.candidate_pool_size,
-        thread_name_prefix="history-data",
     )
     research_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
@@ -459,7 +538,6 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
     return RuntimeWorkerResources(
         data_pool=data_pool,
         quote_pool=quote_pool,
-        history_pool=history_pool,
         research_pool=research_pool,
         persistence_pool=persistence_pool,
         source_lanes=source_lanes,
@@ -483,33 +561,12 @@ def _build_market_data(
     data_pool = workers.data_pool
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
-    history_warmup_policy = build_history_warmup_policy(
-        worker_count=settings.pipeline.market_workers,
-        source_timeout_seconds=settings.market_data.history_timeout_seconds,
-        maximum_batch_size=30,
-        maximum_batch_timeout_seconds=20.0,
-    )
     eastmoney = EastmoneyClient(
         timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
         workers=settings.pipeline.market_workers,
         worker_pool=data_pool,
         cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
         wall_clock=now,
-    )
-    remote_history = EastmoneyClient(
-        timeout_seconds=history_warmup_policy.source_attempt_timeout_seconds,
-        workers=settings.pipeline.market_workers,
-        worker_pool=data_pool,
-        cancel_requested=lambda: source_lanes.is_stopped("history"),
-        wall_clock=now,
-    )
-    history_client = FallbackHistoryClient(
-        TencentClient(
-            timeout_seconds=history_warmup_policy.source_attempt_timeout_seconds,
-            cancel_requested=lambda: source_lanes.is_stopped("history"),
-            wall_clock=now,
-        ),
-        remote_history,
     )
     intraday_client = EastmoneyClient(
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
@@ -600,20 +657,14 @@ def _build_market_data(
         schema_version="market_snapshot",
         wall_clock=now,
     )
-    history_cache = HistoryCache(
-        history_client,
-        runner,
-        history_worker_pool=workers.history_pool,
-        workers=settings.pipeline.market_workers,
-        ttl_seconds=_fixed_cache_ttl(settings, "daily_history"),
-        capacity=settings.market_data.cache_policy.datasets["daily_history"].capacity,
-        history_data_plane=data_plane,
-        monotonic=time.monotonic,
-        history_lookback_sessions=history_lookback_sessions,
+    history_cache = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(
+            SQLitePublishedHistoryArchive(settings.project_root / "data" / "history" / "baostock")
+        ),
+        lookback_sessions=history_lookback_sessions,
     )
     references = ReferenceLoader(
         gateway,
-        history_cache,
         runner,
         tushare_client,
         security_master_client=ExchangeSecurityMasterClient(
@@ -639,15 +690,6 @@ def _build_market_data(
     except RuntimeError:
         # The typed registry retains any facts it could verify; persistence degradation stays observable.
         pass
-    warmup = HistoryWarmup(
-        history_cache,
-        references,
-        runner,
-        eligibility_filter=eligibility.filter_codes,
-        batch_size=history_warmup_policy.batch_size,
-        batch_timeout_seconds=history_warmup_policy.batch_timeout_seconds,
-        monotonic=time.monotonic,
-    )
     research = ResearchLoader(
         research_client,
         research_runner,
@@ -680,7 +722,6 @@ def _build_market_data(
         MarketDataHealthDependencies(
             quote_cache,
             history_cache,
-            warmup,
             research,
             intraday_loader,
             references,
@@ -692,15 +733,13 @@ def _build_market_data(
         MarketFeatureDependencies(
             quote_cache,
             history_cache,
-            warmup,
             research,
             intraday_loader,
             references,
             runner,
             market_health,
             eligibility,
-        ),
-        history_preload_limit=settings.market_data.candidate_pool_size * 3,
+        )
     )
     return market_data
 
@@ -710,7 +749,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     runtime_database_lock = threading.Lock()
     repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
     data_plane = DataPlaneRepository(settings.runtime_dir)
-    outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, repository, data_plane)
+    outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, repository)
     budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "deepseek-budget.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,

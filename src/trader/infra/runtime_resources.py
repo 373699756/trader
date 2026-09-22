@@ -14,7 +14,6 @@ from trader.recommendation.application.runtime.workers import BoundedExecutor
 class RuntimeWorkerResources:
     data_pool: BoundedExecutor
     quote_pool: BoundedExecutor
-    history_pool: BoundedExecutor
     research_pool: BoundedExecutor
     persistence_pool: BoundedExecutor
     source_lanes: SourceLaneRegistry

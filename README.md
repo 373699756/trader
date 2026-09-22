@@ -98,8 +98,7 @@ active snapshot 身份，不会触发下载、训练或文件写入。
 `runtime` 只检查运行中的 Web，`sources` 只实测数据源，默认 `live` 合并两者；`full` 额外执行 Firefox
 刷新链与离线生产性能门禁。命令会在单项失败后继续扫描，最终报告使用
 `trader-runtime-diagnostics`，只保留聚合计数、延迟、状态和定位结论，不转发股票代码、价格、Token、
-供应商原始载荷或子进程 stderr。需要留档时，`--output` 和 `--persistence-runtime-dir` 只能指向仓库外
-绝对路径。
+供应商原始载荷或子进程 stderr。需要留档时，`--output` 只能指向仓库外绝对路径。
 也可执行 `make diagnose-live`；耗时更长的浏览器与性能组合必须显式执行 `make diagnose-full`。
 
 历史为空时可继续通过统一入口拆分生产组合路由和单一供应商；默认值为 `composite`，该参数只影响
@@ -196,9 +195,10 @@ chmod 600 .token_key
 ./run.sh
 ```
 
-Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。历史特征由腾讯前复权日线
-主源和东方财富回退源重新预热，不读取或写入旧历史 SQLite；每只临时计算最多 61 根，
-进程内只保留最近 20 根原始日线及紧凑长周期摘要。东方财富/新浪全市场实时行情、腾讯
+Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。服务启动后在后台调用一次与
+`./run.sh download` 相同的 BaoStock 下载用例，并从 `data/history/baostock` 的活动快照构造历史特征；
+服务运行期间不再通过腾讯、东方财富或 Tushare 补抓历史。活动快照暂不可用时页面明确显示待下载/待更新，
+已有最近有效视图则继续降级使用。东方财富/新浪全市场实时行情、腾讯
 候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会写入配置、
 日志、SQLite、快照或 API。
 

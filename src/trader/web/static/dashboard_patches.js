@@ -221,7 +221,7 @@
           && inputQuality.population_filter_reason_counts.missing_liquidity_history,
       ) || 0;
       const population = nonNegativeInteger(inputQuality && inputQuality.population_count) || missing;
-      const message = `暂不可发布｜全市场流动性历史未就绪 ${missing} / ${population}，等待运行期预热`;
+      const message = `暂不可发布｜全市场流动性历史未就绪 ${missing} / ${population}，等待历史档案同步`;
       return { message, notice: message, level: "warn" };
     }
     if (blocker === "model_input_unavailable") {

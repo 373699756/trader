@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from typing import Final, Literal, TypeAlias
 
 from trader.recommendation.application.ports.market_data_repository import (
-    HistoricalFeatureRecord,
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
@@ -16,9 +15,7 @@ from trader.recommendation.application.ports.market_data_repository import (
 Mode: TypeAlias = Literal["recent", "formal"]
 
 
-Record: TypeAlias = (
-    SecurityMasterRecord | HistoricalFeatureRecord | RiskEvidenceRecord | SourceCursorRecord | TradingCalendarRecord
-)
+Record: TypeAlias = SecurityMasterRecord | RiskEvidenceRecord | SourceCursorRecord | TradingCalendarRecord
 
 
 _MAX_PAYLOAD_BYTES: Final[int] = 8 * 1024 * 1024
@@ -39,12 +36,6 @@ _PROFILES: dict[str, _Profile] = {
         recent_table="security_master_recent",
         formal_table="security_master_formal",
         identity_fields=("code",),
-    ),
-    "historical_feature": _Profile(
-        family="historical_feature",
-        recent_table="historical_feature_recent",
-        formal_table="historical_feature_formal",
-        identity_fields=("code", "trade_date"),
     ),
     "risk_evidence": _Profile(
         family="risk_evidence",

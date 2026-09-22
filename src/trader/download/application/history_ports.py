@@ -37,6 +37,7 @@ class HistoryArchivePort(Protocol):
         *,
         progress: HistorySyncProgressPort | None = None,
         clock: Callable[[], datetime] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> HistoryMaintenanceStatus: ...
 
     def update(
@@ -46,6 +47,7 @@ class HistoryArchivePort(Protocol):
         *,
         progress: HistorySyncProgressPort | None = None,
         clock: Callable[[], datetime] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> HistoryMaintenanceStatus: ...
 
 

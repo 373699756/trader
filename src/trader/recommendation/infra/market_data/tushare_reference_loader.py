@@ -9,13 +9,11 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from typing import Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
-from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryHealthStatus
 from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterHealthStatus,
@@ -63,7 +61,6 @@ _DAY_END = time(23, 59, 59)
 _REFERENCE_SOURCE = "reference"
 _TUSHARE_SOURCE = "tushare"
 _TRADING_CALENDAR_CURSOR_NAME = "tushare.trading_calendar"
-_DAILY_CAPABILITY_AUDIT_CODE = "000001"
 
 
 class _ReferenceDataPlane(Protocol):
@@ -109,7 +106,6 @@ class ReferenceLoader:
     def __init__(  # noqa: PLR0913
         self,
         gateway: MarketDataGateway,
-        history: HistoryCache,
         runner: MarketTaskRunner,
         client: ReferenceSource | None,
         *,
@@ -121,7 +117,6 @@ class ReferenceLoader:
         monotonic: Callable[[], float],
     ) -> None:
         self._gateway = gateway
-        self._history_cache = history
         self._runner = runner
         self._client = client
         self._security_master_client = security_master_client
@@ -178,7 +173,6 @@ class ReferenceLoader:
                 observed_at,
                 force=force,
             )
-            self._history_cache.load(normalized, force=force)
             return
         if lanes.owns_current_thread("tushare"):
             self._refresh_tushare_reference_data(
@@ -347,7 +341,6 @@ class ReferenceLoader:
             force=force,
         )
         self._model_industries.schedule(observed_at, force=force)
-        self._history_cache.load(normalized, force=force)
 
     def _refresh_tushare_reference_data(
         self,
@@ -358,15 +351,9 @@ class ReferenceLoader:
     ) -> None:
         masters: tuple[SourceObservation, ...] = ()
         calendars: tuple[SourceObservation, ...] = ()
-        tushare_history: tuple[SourceObservation, ...] = ()
         calendar_start_date = observed_at.date()
         if self._client is not None:
             if not self._client.supports("security_master"):
-                if normalized and self._client.supports("forward_adjusted_daily"):
-                    tushare_history = self.load_history_batch(normalized, observed_at, force=force)
-                elif normalized and self._client.supports("daily_history"):
-                    self.load_history_batch((_DAILY_CAPABILITY_AUDIT_CODE,), observed_at, force=force)
-                self.apply_history(tushare_history)
                 return
             masters = self.load(
                 ReferenceLoadRequest(
@@ -418,8 +405,6 @@ class ReferenceLoader:
             financial_observations: tuple[SourceObservation, ...] = ()
             if normalized:
                 valuation_trade_date = _latest_effective_trade_date(calendars, observed_at)
-                if self._client.supports("forward_adjusted_daily"):
-                    tushare_history = self.load_history_batch(normalized, observed_at, force=force)
                 valuation_observations = (
                     self.load(
                         ReferenceLoadRequest(
@@ -458,7 +443,6 @@ class ReferenceLoader:
                 )
             self.apply_fields("valuation", valuation_observations)
             self.apply_fields("financial", financial_observations)
-        self.apply_history(tushare_history)
         self._persist_reference_data(observed_at, masters=masters, calendars=calendars)
 
     def recover(self) -> DataPlaneRecoverySummary:
@@ -776,23 +760,6 @@ class ReferenceLoader:
 
         lanes.submit("tushare", refresh_identity, request.options.observed_at, refresh)
 
-    def apply_history(self, observations: Sequence[SourceObservation]) -> None:
-        grouped: dict[str, list[DailyBar]] = {}
-        applied_observations: list[SourceObservation] = []
-        for observation in observations:
-            if observation.fields.get("reference_data_degraded") is True:
-                continue
-            bar = _tushare_daily_bar(observation)
-            if bar is None or bar.adjustment is not PriceAdjustment.QFQ:
-                continue
-            grouped.setdefault(observation.subject_key, []).append(bar)
-            applied_observations.append(observation)
-        if not grouped:
-            return
-        self._history_cache.apply_source_bars(grouped, source="tushare")
-        with self._lock:
-            self._record_tushare_version_locked("daily_history", applied_observations)
-
     def apply_fields(
         self,
         namespace: str,
@@ -838,44 +805,6 @@ class ReferenceLoader:
         if current is None or order > current:
             self._reference_version_order[namespace] = order
             self._reference_versions[namespace] = latest.data_version
-
-    def load_history_batch(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        force: bool,
-    ) -> tuple[SourceObservation, ...]:
-        client = self._client
-        normalized = _normalize_codes(codes)
-        if client is None or not normalized:
-            return ()
-        trade_date = shanghai_now(observed_at).date()
-        start_date = trade_date - timedelta(days=120)
-        forward_adjusted = client.supports("forward_adjusted_daily")
-        dataset = "forward_adjusted_daily" if forward_adjusted else "daily_history"
-        adjust = "qfq" if forward_adjusted else "none"
-        loader = client.fetch_forward_adjusted_daily if forward_adjusted else client.fetch_daily_history
-        return self.load(
-            ReferenceLoadRequest(
-                "daily_history",
-                ",".join(normalized),
-                {
-                    "dataset": dataset,
-                    "codes": normalized,
-                    "start_date": start_date.isoformat(),
-                    "end_date": trade_date.isoformat(),
-                    "adjust": adjust,
-                },
-                _ReferenceLoadOptions(
-                    observed_at=observed_at,
-                    function=loader,
-                    args=(normalized, start_date, trade_date, observed_at),
-                    force=force,
-                    kwargs={},
-                ),
-            )
-        )
 
     def fields(self, codes: Sequence[str]) -> Mapping[str, Mapping[str, float]]:
         selected = set(codes)
@@ -966,50 +895,6 @@ def _latest_effective_trade_date(
         if effective_at <= local:
             available.append(parsed)
     return max(available, default=None)
-
-
-def _tushare_daily_bar(observation: SourceObservation) -> DailyBar | None:
-    fields = observation.fields
-    trade_date_value = fields.get("trade_date")
-    if not isinstance(trade_date_value, str):
-        return None
-    numbers = {
-        name: _finite_number(fields.get(source_name))
-        for name, source_name in {
-            "open_price": "open",
-            "close": "close",
-            "high": "high",
-            "low": "low",
-            "volume": "vol",
-            "amount": "amount",
-            "pct_change": "pct_chg",
-        }.items()
-    }
-    required = ("open_price", "close", "high", "low", "volume", "amount", "pct_change")
-    if any(numbers[name] is None for name in required):
-        return None
-    try:
-        parsed_date = date.fromisoformat(trade_date_value.replace("/", "-"))
-    except ValueError:
-        compact = trade_date_value.replace("-", "")
-        if len(compact) != 8 or not compact.isdigit():
-            return None
-        parsed_date = datetime.strptime(compact, "%Y%m%d").date()
-    return DailyBar(
-        trade_date=parsed_date.isoformat(),
-        open_price=cast(float, numbers["open_price"]),
-        close=cast(float, numbers["close"]),
-        high=cast(float, numbers["high"]),
-        low=cast(float, numbers["low"]),
-        volume=cast(float, numbers["volume"]) * 100.0,
-        amount=cast(float, numbers["amount"]) * 1000.0,
-        pct_change=cast(float, numbers["pct_change"]),
-        turnover_rate=_finite_number(fields.get("turnover_rate")),
-        adjustment=(
-            PriceAdjustment.QFQ if fields.get("price_adjustment") == PriceAdjustment.QFQ.value else PriceAdjustment.RAW
-        ),
-        source="tushare",
-    )
 
 
 def _finite_number(value: object) -> float | None:

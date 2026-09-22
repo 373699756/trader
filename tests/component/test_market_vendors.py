@@ -12,7 +12,6 @@ from tests.component.market_data_test_support import (
     BoundedExecutor,
     CountingHistoryClient,
     CountingMarketClient,
-    DailyBar,
     DataPlaneRepository,
     EastmoneyClient,
     FailingMarketClient,
@@ -28,7 +27,6 @@ from tests.component.market_data_test_support import (
     PriceAdjustment,
     SinaClient,
     SourceLaneRegistry,
-    SourceObservation,
     StaticGateway,
     StaticHistoryClient,
     StaticMarketClient,
@@ -687,84 +685,6 @@ def test_targeted_partial_result_keeps_sina_full_market_quote_for_missing_code()
     }
     assert gateway.health().route is not None
     assert gateway.health().route.vendor == "sina"
-
-
-def test_eastmoney_history_completion_cannot_overwrite_newer_tushare_history() -> None:
-    eastmoney_bar = DailyBar(
-        "2026-07-14",
-        10.0,
-        10.1,
-        10.2,
-        9.9,
-        1000.0,
-        10000.0,
-        1.0,
-        adjustment=PriceAdjustment.QFQ,
-        source="eastmoney",
-    )
-
-    class BlockingHistory:
-        def __init__(self) -> None:
-            self.started = threading.Event()
-            self.release = threading.Event()
-
-        def fetch_history(self, _code, *, days):
-            assert days == 61
-            self.started.set()
-            assert self.release.wait(1.0)
-            return (eastmoney_bar,)
-
-    history = BlockingHistory()
-    service = _service(
-        StaticGateway((_quote(),)),
-        history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        wall_clock=lambda: NOW,
-    )
-    result: dict[str, tuple[DailyBar, ...]] = {}
-    errors: list[BaseException] = []
-
-    def load_eastmoney() -> None:
-        try:
-            result.update(service.history.load(("600001",)))
-        except BaseException as exc:
-            errors.append(exc)
-
-    thread = threading.Thread(target=load_eastmoney)
-    thread.start()
-    assert history.started.wait(1.0)
-    tushare = SourceObservation(
-        source="tushare",
-        subject_key="600001",
-        observed_at=NOW,
-        source_time=NOW,
-        received_at=NOW,
-        effective_at=NOW,
-        data_version="tushare-history",
-        fields={
-            "trade_date": "2026-07-15",
-            "open": 10.1,
-            "close": 10.2,
-            "high": 10.3,
-            "low": 10.0,
-            "vol": 11.0,
-            "amount": 12.0,
-            "pct_chg": 1.0,
-            "price_adjustment": "qfq",
-        },
-        missing_reasons={},
-        payload_hash="tushare-history",
-        status="success",
-        error_code=None,
-    )
-    service.references.apply_history((tushare,))
-    history.release.set()
-    thread.join(1.0)
-
-    assert not thread.is_alive()
-    assert errors == []
-    assert result["600001"][-1].trade_date == "2026-07-15"
-    assert service.history.entries()["600001"].bars[-1].trade_date == "2026-07-15"
 
 
 def test_market_data_router_prefers_no_data_over_failures() -> None:

@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Unify recommendation history with the published download archive](docs/changelog/2026-09-22-published-history-single-owner.md)
 - [Stack dashboard Top scores vertically](docs/changelog/2026-09-22-dashboard-top-scores-vertical-layout.md)
 - [Expose immutable market epochs and complete pipeline snapshots](docs/changelog/2026-09-22-market-epochs-complete-pipeline-snapshots.md)
 - [Reposition dashboard market and score status](docs/changelog/2026-09-21-dashboard-status-information-placement.md)

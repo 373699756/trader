@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
+from trader.recommendation.domain.publication.decision_identity import DecisionDownside
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
 from trader.training.infra.research.outcome_evidence_repository import (
@@ -35,21 +35,8 @@ class _Decisions:
         return None
 
 
-class _Historical:
-    def load_historical_feature_recent(self, code, trade_date):
-        return HistoricalFeatureRecord(
-            code=code,
-            trade_date=trade_date,
-            data_version="history-fixture",
-            source="fixture",
-            source_time=NOW,
-            observed_at=NOW,
-            payload={"history_summary": {"profile": {"atr20_pct": 2.5}}},
-        )
-
-
 def _repository(tmp_path: Path, record: CommittedDecisionRecord | None = None):
-    return SQLiteOutcomeEvidenceRepository(tmp_path, _Decisions(record), _Historical())
+    return SQLiteOutcomeEvidenceRepository(tmp_path, _Decisions(record))
 
 
 def _outcome(
@@ -88,7 +75,17 @@ def test_pending_targets_are_derived_only_from_selected_formal_decisions(tmp_pat
     original = decision(Strategy.TOMORROW)
     item = original.items[0]
     formal = CommittedDecisionRecord(
-        replace(original, items=(replace(item, selected=True, rank=1),)),
+        replace(
+            original,
+            items=(
+                replace(
+                    item,
+                    selected=True,
+                    rank=1,
+                    downside=DecisionDownside("pass", (), 2.5, None, None),
+                ),
+            ),
+        ),
         NOW,
         "scheduled",
     )

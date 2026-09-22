@@ -73,22 +73,6 @@ class ReferenceSource(Protocol):
         observed_at: datetime,
     ) -> Sequence[SourceObservation]: ...
 
-    def fetch_forward_adjusted_daily(
-        self,
-        codes: Sequence[str],
-        start_date: date,
-        end_date: date,
-        observed_at: datetime,
-    ) -> Sequence[SourceObservation]: ...
-
-    def fetch_daily_history(
-        self,
-        codes: Sequence[str],
-        start_date: date,
-        end_date: date,
-        observed_at: datetime,
-    ) -> Sequence[SourceObservation]: ...
-
     def fetch_daily_valuations(
         self,
         codes: Sequence[str],

@@ -1554,37 +1554,6 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
     assert runtime.status().publish_rejection_count == 1
 
 
-def test_history_warmup_completion_schedules_afternoon_scored_strategies() -> None:
-    data = DataRefresh()
-    runtime = SchedulerRuntime(
-        RuntimeDependencies(
-            clock=FixedClock(NOW),
-            calendar=TradingCalendar(),
-            cadence=_cadence(NOW),
-            data=data,
-            decisions=Decisions(),
-            reviews=SharedReviews(),
-            index=UnifiedDecisionIndex(),
-            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-history-ready-observer"),
-            freezes=Freezes(),
-            settlement=Settlement(),
-            research_factory=noop_research_factory,
-            publish_decision=lambda _event: None,
-            publish_overlay=lambda _overlay: None,
-        ),
-        config_version="runtime-current",
-    )
-    runtime.start()
-
-    runtime.notify_history_warmup()
-
-    try:
-        assert runtime.wait_idle(2.0)
-        assert sorted(data.calls, key=lambda strategy: strategy.value) == [Strategy.D25, Strategy.TOMORROW]
-    finally:
-        runtime.stop(ShutdownDeadline.start(2.0))
-
-
 def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() -> None:
     audit_entered = threading.Event()
     audit_release = threading.Event()

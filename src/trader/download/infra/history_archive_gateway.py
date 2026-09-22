@@ -8,7 +8,6 @@ from datetime import datetime
 from trader.download.application.history_ports import HistorySupplierPort
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
-from trader.download.infra import history_archive_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 
 
@@ -28,12 +27,16 @@ class HistoryArchiveGateway:
         *,
         progress: HistorySyncProgressPort | None = None,
         clock: Callable[[], datetime] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> HistoryMaintenanceStatus:
-        return history_archive_sync.run_history_sync(
+        from trader.download.infra.history_archive_sync import run_history_sync
+
+        return run_history_sync(
             configuration,
             supplier,
             progress=progress,
             clock=clock,
+            cancel_requested=cancel_requested,
         )
 
     def update(
@@ -43,7 +46,10 @@ class HistoryArchiveGateway:
         *,
         progress: HistorySyncProgressPort | None = None,
         clock: Callable[[], datetime] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> HistoryMaintenanceStatus:
+        from trader.download.infra.history_archive_sync import run_history_sync
+
         control_path = configuration.archive_root / "control.sqlite3"
         if not control_path.exists():
             return _blocked_without_active(configuration)
@@ -54,11 +60,12 @@ class HistoryArchiveGateway:
                 return _blocked_without_active(configuration)
         except (OSError, RuntimeError, ValueError):
             return _blocked_without_active(configuration, reason="history_control_unavailable")
-        return history_archive_sync.run_history_sync(
+        return run_history_sync(
             configuration,
             supplier,
             progress=progress,
             clock=clock,
+            cancel_requested=cancel_requested,
         )
 
 

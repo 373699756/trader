@@ -711,34 +711,17 @@ def _regression_findings(samples: Sequence[WebSample], strategies: tuple[str, ..
         previous_status = previous.status
         current_status = current.status
         if previous_status is not None and current_status is not None:
-            before = previous_status.history_warmup.failure_count
-            after = current_status.history_warmup.failure_count
+            before = previous_status.history_archive.error_count
+            after = current_status.history_archive.error_count
             if before is not None and after is not None and after > before:
                 findings.append(
                     _finding(
                         "warning",
-                        "history_warmup_failures_increased",
+                        "history_archive_errors_increased",
                         current,
                         None,
-                        "history warmup failure counter increased while sampling",
+                        "published history archive error counter increased while sampling",
                         {"previous": before, "current": after, "delta": after - before},
-                    )
-                )
-            before_timeout = previous_status.history_warmup.timeout_count
-            after_timeout = current_status.history_warmup.timeout_count
-            if before_timeout is not None and after_timeout is not None and after_timeout > before_timeout:
-                findings.append(
-                    _finding(
-                        "error",
-                        "history_warmup_timeouts_increased",
-                        current,
-                        None,
-                        "history warmup timeout counter increased while sampling",
-                        {
-                            "previous": before_timeout,
-                            "current": after_timeout,
-                            "delta": after_timeout - before_timeout,
-                        },
                     )
                 )
         for strategy in strategies:
@@ -1139,21 +1122,20 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
                 if status is not None
                 else None
             ),
-            "history_warmup": (
+            "history_archive": (
                 {
-                    "universe_rows": status.history_warmup.universe_rows,
-                    "covered_rows": status.history_warmup.covered_rows,
-                    "coverage_ratio": status.history_warmup.coverage_ratio,
-                    "planned_count": status.history_warmup.planned_count,
-                    "completed_count": status.history_warmup.completed_count,
-                    "failure_count": status.history_warmup.failure_count,
-                    "inflight_count": status.history_warmup.inflight_count,
-                    "retry_deferred_count": status.history_warmup.retry_deferred_count,
-                    "unique_failure_count": status.history_warmup.unique_failure_count,
-                    "timeout_count": status.history_warmup.timeout_count,
-                    "inflight_age_seconds": status.history_warmup.inflight_age_seconds,
-                    "batch_timeout_seconds": status.history_warmup.batch_timeout_seconds,
-                    "last_source": status.history_warmup.last_source,
+                    "state": status.history_archive.state,
+                    "snapshot_hash": status.history_archive.snapshot_hash,
+                    "data_cutoff": status.history_archive.data_cutoff,
+                    "universe_rows": status.history_archive.universe_rows,
+                    "covered_rows": status.history_archive.covered_rows,
+                    "coverage_ratio": status.history_archive.coverage_ratio,
+                    "error_count": status.history_archive.error_count,
+                    "maintenance_state": status.history_archive.maintenance_state,
+                    "maintenance_reason": status.history_archive.maintenance_reason,
+                    "maintenance_stage": status.history_archive.maintenance_stage,
+                    "maintenance_completed_units": status.history_archive.maintenance_completed_units,
+                    "maintenance_total_units": status.history_archive.maintenance_total_units,
                 }
                 if status is not None
                 else None

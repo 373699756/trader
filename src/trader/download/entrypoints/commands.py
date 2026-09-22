@@ -33,10 +33,7 @@ def run_download(repository_root: Path) -> int:
 
 
 def history_sync_configuration(repository_root: Path) -> HistorySyncConfiguration:
-    return HistorySyncConfiguration(
-        archive_root=repository_root / "data" / "history" / "baostock",
-        training_root=repository_root / "data" / "train",
-    )
+    return HistorySyncConfiguration.for_repository(repository_root)
 
 
 def run_download_command(command: str, *, config_path: Path | None = None) -> int:
@@ -62,7 +59,6 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         raise ValueError(f"unsupported download command: {command}")
     from trader.download.entrypoints.history_automation_projection import project_history_automation_run_status
     from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-    from trader.download.infra.history_archive_sync import run_history_sync
     from trader.download.infra.history_maintenance_runner import (
         PlatformHistoryDesktopNotifier,
         RotatingHistoryAutomationLog,
@@ -78,7 +74,7 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         with BaoStockHistorySupplier(configuration, progress=task_log) as supplier:
             run_status = run_scheduled_history_maintenance(
                 configuration,
-                lambda progress: run_history_sync(
+                lambda progress: DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
                     configuration,
                     supplier,
                     clock=lambda: observed_at,

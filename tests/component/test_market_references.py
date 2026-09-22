@@ -52,84 +52,6 @@ from tests.component.market_data_test_support import (
 )
 
 
-def test_scheduled_reference_refresh_uses_bounded_history_warmup_instead_of_full_duplicate_batch() -> None:
-    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
-
-    class ReferenceGateway(StaticGateway):
-        @staticmethod
-        def update_reference_observations(_observations):
-            return None
-
-    class BlockingTushareClient:
-        def __init__(self) -> None:
-            self.started = threading.Event()
-            self.release = threading.Event()
-
-        def fetch_security_master(self, _observed_at):
-            self.started.set()
-            assert self.release.wait(1.0)
-            return ()
-
-        @staticmethod
-        def supports(dataset):
-            return dataset != "forward_adjusted_daily"
-
-        @staticmethod
-        def health():
-            return _tushare_health(enabled=False, history_mode="raw")
-
-        @staticmethod
-        def fetch_forward_adjusted_daily(*_args):
-            return ()
-
-        @staticmethod
-        def fetch_daily_valuations(*_args):
-            return ()
-
-        @staticmethod
-        def fetch_financial_indicators(*_args):
-            return ()
-
-    class RecordingHistoryClient:
-        def __init__(self) -> None:
-            self.started = threading.Event()
-            self.release = threading.Event()
-            self.calls: list[str] = []
-
-        def fetch_history(self, code, *, days):
-            assert days == 61
-            self.calls.append(code)
-            self.started.set()
-            assert self.release.wait(1.0)
-            return ()
-
-    tushare = BlockingTushareClient()
-    history = RecordingHistoryClient()
-    service = _service(
-        ReferenceGateway((_quote(),)),
-        history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        tushare_client=tushare,
-        worker_pool=pool,
-        source_lanes=lanes,
-        history_warmup_batch_size=1,
-        wall_clock=lambda: NOW,
-    )
-    pool.start()
-
-    try:
-        service.schedule_reference_data(("600001", "600002"), NOW)
-        assert tushare.started.wait(1.0)
-        assert history.started.wait(0.2)
-        assert history.calls == ["600001"]
-    finally:
-        history.release.set()
-        tushare.release.set()
-        lanes.stop(wait=True, timeout_seconds=1.0)
-        pool.stop(wait=True, cancel_futures=True)
-
-
 def test_reference_loader_recover_restores_security_master_and_calendar_cursor(tmp_path: Path) -> None:
     class CapturingGateway(StaticGateway):
         def __init__(self) -> None:
@@ -661,7 +583,7 @@ def test_reference_degradation_replaces_same_version_verified_identity_conservat
     assert "board_identity_degraded" in refreshed[0].execution_restrictions
 
 
-def test_reference_refresh_structures_tushare_history_valuation_and_financial_data() -> None:
+def test_reference_refresh_does_not_query_tushare_history() -> None:
     runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -764,139 +686,15 @@ def test_reference_refresh_structures_tushare_history_valuation_and_financial_da
     assert [name for name, _arguments in pro.calls] == [
         "stock_basic",
         "trade_cal",
-        "pro_bar",
         "daily_basic",
         "fina_indicator",
     ]
     daily_basic_arguments = next(arguments for name, arguments in pro.calls if name == "daily_basic")
     assert daily_basic_arguments["trade_date"] == "20260715"
-    history_entries = service.history.entries()
-    assert history_entries["600001"].bars[-1].trade_date == "2026-07-15"
-    assert history_entries["600001"].bars[-1].volume == 100_000.0
-    assert history_entries["600001"].bars[-1].amount == 1_020_000_000.0
+    assert service.history.entries() == {}
     reference_fields = service.references.fields(("600001",))
     assert reference_fields["600001"]["tushare_valuation_pe"] == 12.0
     assert reference_fields["600001"]["tushare_financial_eps"] == 1.0
-
-
-def test_unadjusted_tushare_history_is_not_consumed_and_warmup_uses_qfq_fallback() -> None:
-    quotes = (_quote(), _quote(code="300001"), _quote(code="688001"))
-
-    class HistoryPro:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def daily(self, **kwargs):
-            self.calls += 1
-            assert kwargs["ts_code"] == "000001.SZ"
-            rows = [
-                {
-                    "ts_code": code,
-                    "trade_date": (date(2026, 7, 15) - timedelta(days=index)).strftime("%Y%m%d"),
-                    "open": 10.0,
-                    "close": 10.5,
-                    "high": 10.8,
-                    "low": 9.9,
-                    "vol": 1000.0,
-                    "amount": 10500.0,
-                    "pct_chg": 1.0,
-                }
-                for code in str(kwargs["ts_code"]).split(",")
-                for index in range(60)
-            ]
-            return FakeTushareFrame(rows)
-
-    pro = HistoryPro()
-    history = CountingHistoryClient(_history_bars())
-    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
-    service = _service(
-        StaticGateway(quotes),
-        history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        tushare_client=TushareClient(
-            token="secret-token",
-            timeout_seconds=8,
-            points=120,
-            sdk_factory=lambda _token, _timeout: pro,
-            wall_clock=lambda: NOW,
-        ),
-        worker_pool=pool,
-        source_lanes=lanes,
-        history_warmup_batch_size=3,
-        market_ttl_seconds=1,
-        wall_clock=lambda: NOW,
-    )
-    pool.start()
-
-    try:
-        first = service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
-        assert all(feature.history_days == 0 for feature in first)
-        service.schedule_reference_data(tuple(quote.code for quote in quotes), NOW)
-        timeout_at = time.monotonic() + 1.0
-        while service.health()["history_warmup_completed_count"] < len(quotes) and time.monotonic() < timeout_at:
-            time.sleep(0.01)
-        while pro.calls == 0 and time.monotonic() < timeout_at:
-            time.sleep(0.01)
-        second = service.fetch_market_features(NOW + timedelta(seconds=2), force=True)
-    finally:
-        lanes.stop(wait=True, timeout_seconds=1.0)
-        pool.stop(wait=True, cancel_futures=True)
-
-    assert all(feature.history_days == 60 for feature in second)
-    assert service.health()["history_coverage_ratio"] == 1.0
-    assert service.health()["history_warmup_completed_count"] == 3
-    assert service.health()["history_warmup_last_source"] == "tencent"
-    assert service.health()["history_warmup_timeout_count"] == 0
-    assert service.health()["history_warmup_inflight_age_seconds"] is None
-    assert service.health()["history_warmup_batch_timeout_seconds"] == 20.0
-    assert sorted(history.calls) == sorted(quote.code for quote in quotes)
-    assert pro.calls == 1
-    assert service.references.health().history_mode == "unadjusted_daily"
-    assert service.references.health().process_api_attempts_today == 1
-
-
-def test_permission_denied_tushare_falls_back_to_batched_history_lane() -> None:
-    codes = ("600001", "600002", "300001", "300002", "688001", "688002")
-    quotes = tuple(_quote(code=code) for code in codes)
-
-    class PermissionDeniedTushare:
-        @staticmethod
-        def health():
-            return _tushare_health(
-                enabled=True,
-                history_mode="unadjusted_daily",
-                degraded_reason="permission_denied",
-            )
-
-    history = CountingHistoryClient(_history_bars())
-    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
-    service = _service(
-        StaticGateway(quotes),
-        history,
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        tushare_client=PermissionDeniedTushare(),
-        worker_pool=pool,
-        source_lanes=lanes,
-        history_warmup_batch_size=3,
-        market_ttl_seconds=1,
-        wall_clock=lambda: NOW,
-    )
-    pool.start()
-
-    try:
-        service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
-        timeout_at = time.monotonic() + 1.0
-        while service.health()["history_warmup_completed_count"] < len(codes) and time.monotonic() < timeout_at:
-            time.sleep(0.01)
-    finally:
-        lanes.stop(wait=True, timeout_seconds=1.0)
-        pool.stop(wait=True, cancel_futures=True)
-
-    assert sorted(history.calls) == sorted(codes)
-    assert service.health()["history_warmup_completed_count"] == len(codes)
-    assert service.health()["history_warmup_last_source"] == "tencent"
 
 
 def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:

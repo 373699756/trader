@@ -413,7 +413,6 @@ def test_market_component_suite_remains_partitioned_by_behavior() -> None:
         "test_market_features.py",
         "test_market_exchange_references.py",
         "test_market_gateway.py",
-        "test_market_history.py",
         "test_market_intraday.py",
         "test_market_lanes.py",
         "test_market_references.py",

@@ -11,7 +11,7 @@ DOMAIN = ROOT / "src/trader/training/domain/evaluation/evaluation.py"
 MODELS = ROOT / "src/trader/training/domain/evaluation/models.py"
 APPLICATION = ROOT / "src/trader/training/application/outcome_settlement.py"
 PERSISTENCE = ROOT / "src/trader/training/infra/research/outcome_evidence_repository.py"
-HISTORY = ROOT / "src/trader/infra/market_data/history/daily_history_cache.py"
+HISTORY = ROOT / "src/trader/recommendation/infra/market_data/published_history_cache.py"
 WORK = ROOT / "docs/03_工程实施.md"
 
 
@@ -64,4 +64,5 @@ def test_outcome_contract_owns_explicit_price_basis_and_exit_tradability() -> No
     assert "_settlement_window" in domain
     assert "expected_trade_dates=expected_dates" in application
     assert '"exit_untradable": outcome.exit_untradable' in persistence
-    assert "fetch_outcome_history" in history
+    assert "read_windows" in history
+    assert "pair_outcome_history" in history

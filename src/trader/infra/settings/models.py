@@ -45,7 +45,6 @@ class MarketDataSettings:
     sina_timeout_seconds: float
     full_market_hedge_delay_seconds: float
     candidate_timeout_seconds: float
-    history_timeout_seconds: float
     research_timeout_seconds: float
     minimum_market_rows: int
     candidate_pool_size: int

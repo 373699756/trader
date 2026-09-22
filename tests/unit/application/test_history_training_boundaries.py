@@ -5,6 +5,7 @@ from pathlib import Path
 
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.history_status import HistoryStatusUseCase
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_history import UpdateHistoryUseCase
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration
@@ -52,6 +53,19 @@ class _Status:
         return _status()
 
 
+class _Publication:
+    def manifest(self):
+        return None
+
+    def iter_windows(self, manifest, *, sessions):
+        del manifest, sessions
+        return iter(())
+
+    def read_windows(self, manifest, codes, *, sessions):
+        del manifest, codes, sessions
+        return ()
+
+
 def test_history_use_cases_delegate_to_their_single_port() -> None:
     archive = _Archive()
     configuration = HistorySyncConfiguration()
@@ -61,6 +75,7 @@ def test_history_use_cases_delegate_to_their_single_port() -> None:
     assert UpdateHistoryUseCase(archive).execute(configuration, supplier) is not None  # type: ignore[arg-type]
     assert HistoryStatusUseCase(_Status()).execute(Path("archive")).state == "completed"
     assert archive.calls == ["download", "update"]
+    assert ReadPublishedHistoryUseCase(_Publication()).manifest() is None
 
 
 def test_profile_training_use_cases_never_share_runner_state() -> None:

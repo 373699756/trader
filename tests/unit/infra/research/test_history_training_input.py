@@ -24,8 +24,11 @@ from trader.download.domain.history_control import HistoryActiveSnapshot, Histor
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
+from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.training.infra.artifacts.bundle_repository import ActiveHeadBundle
 from trader.training.infra.history.history_training_due import (
     HistoryTrainingDueQuery,
@@ -130,6 +133,60 @@ def test_training_input_streams_windows_in_date_code_order_without_per_code_quer
     assert all(len(window.points) == 61 for window in windows)
     assert progress[-1] == len(dates)
     assert archive.training_row_upper_bound(frozenset(dates)) >= progress[-1]
+
+
+def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path: Path) -> None:
+    archive_root = tmp_path / "history" / "baostock"
+    dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(251))
+    configuration = HistorySyncConfiguration(archive_root, sessions=251, reread_sessions=2, minimum_free_bytes=0)
+    result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(archive_root)),
+        lookback_sessions=251,
+    )
+
+    assert history.refresh() is True
+    loaded = history.load(("600001",))
+    status = history.status()
+
+    assert status.snapshot_hash == result.active_snapshot_hash
+    assert status.universe_rows == 1
+    assert status.covered_rows == 1
+    assert len(loaded["600001"]) == 20
+    assert history.summaries(loaded, NOW)["600001"].sample_count == 251
+    assert history.summaries(loaded, NOW)["600001"].profile.median_amount_20d == 1000.0
+
+
+def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricates_history(tmp_path: Path) -> None:
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(tmp_path / "history" / "baostock")),
+        lookback_sessions=61,
+    )
+    restrictions: dict[str, set[str]] = {}
+
+    assert history.load(("600001",), action_restrictions=restrictions) == {}
+    assert history.status().state == "unavailable"
+    assert restrictions == {"600001": {"history_data_pending"}}
+
+
+def test_recommendation_retains_the_last_valid_projection_when_the_archive_becomes_unreadable(tmp_path: Path) -> None:
+    archive_root = tmp_path / "history" / "baostock"
+    dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
+    configuration = HistorySyncConfiguration(archive_root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
+    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(archive_root)),
+        lookback_sessions=61,
+    )
+    assert history.refresh() is True
+    before = history.entries()
+
+    (archive_root / "control.sqlite3").write_bytes(b"invalid")
+
+    assert history.refresh() is False
+    assert history.entries() == before
+    assert history.status().state == "active"
+    assert history.status().error_count == 1
 
 
 def test_history_archive_performance_diagnostic_is_bounded_and_never_writes_active_archive(

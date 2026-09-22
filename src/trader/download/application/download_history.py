@@ -24,8 +24,15 @@ class DownloadHistoryUseCase:
         *,
         progress: HistorySyncProgressPort | None = None,
         clock: Callable[[], datetime] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> HistoryMaintenanceStatus:
-        return self.archive.download(configuration, supplier, progress=progress, clock=clock)
+        return self.archive.download(
+            configuration,
+            supplier,
+            progress=progress,
+            clock=clock,
+            cancel_requested=cancel_requested,
+        )
 
 
 def download_history(
@@ -35,6 +42,7 @@ def download_history(
     *,
     progress: HistorySyncProgressPort | None = None,
     clock: Callable[[], datetime] | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> HistoryMaintenanceStatus:
     """Functional entry point kept thin so callers can inject an archive port."""
 
@@ -43,6 +51,7 @@ def download_history(
         supplier,
         progress=progress,
         clock=clock,
+        cancel_requested=cancel_requested,
     )
 
 

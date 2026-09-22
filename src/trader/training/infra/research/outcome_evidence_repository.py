@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import sqlite3
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
-
 from trader.recommendation.application.ports.decision_records import DecisionRecordRepositoryPort
-from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.models import (
     BenchmarkReturn,
@@ -23,10 +19,6 @@ from trader.training.domain.evaluation.models import (
     RecommendationOutcome,
     outcome_horizons,
 )
-
-
-class HistoricalFeatureReader(Protocol):
-    def load_historical_feature_recent(self, code: str, trade_date: str) -> HistoricalFeatureRecord | None: ...
 
 
 class OutcomeEvidenceConflictError(RuntimeError):
@@ -48,11 +40,9 @@ class SQLiteOutcomeEvidenceRepository:
         self,
         runtime_root: Path,
         decisions: DecisionRecordRepositoryPort,
-        historical: HistoricalFeatureReader,
     ) -> None:
         self._database = runtime_root / "research" / "outcomes.sqlite3"
         self._decisions = decisions
-        self._historical = historical
         self._lock = threading.RLock()
         self._initialized = False
 
@@ -111,7 +101,9 @@ class SQLiteOutcomeEvidenceRepository:
                             trade_date.isoformat(),
                             item.code,
                             item.quote.price,
-                            self._atr20_pct(item.code, trade_date.isoformat()),
+                            item.downside.atr20_pct
+                            if item.downside is not None and item.downside.atr20_pct is not None
+                            else 0.0,
                             pending_horizons,
                         )
                     )
@@ -194,16 +186,6 @@ class SQLiteOutcomeEvidenceRepository:
             ).fetchall()
         settled = {int(row["horizon"]) for row in rows}
         return tuple(horizon for horizon in horizons if horizon not in settled)
-
-    def _atr20_pct(self, code: str, trade_date: str) -> float:
-        record = self._historical.load_historical_feature_recent(code, trade_date)
-        if record is None:
-            return 0.0
-        summary = record.payload.get("history_summary")
-        profile = summary.get("profile") if isinstance(summary, Mapping) else None
-        value = profile.get("atr20_pct") if isinstance(profile, Mapping) else None
-        numeric = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
-        return numeric if math.isfinite(numeric) and numeric > 0.0 else 0.0
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

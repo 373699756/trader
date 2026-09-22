@@ -262,6 +262,7 @@ def test_market_history_references_and_services_are_partitioned() -> None:
     assert references_root.is_dir()
     assert service_root.is_dir()
     assert (service_root / "market_feature_service.py").is_file()
+    assert (service_root / "published_history_cache.py").is_file()
     legacy_files = (
         "daily_history_cache.py",
         "daily_history_warmup.py",

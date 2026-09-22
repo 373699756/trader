@@ -176,20 +176,19 @@ class InputQualitySnapshot:
 
 
 @dataclass(frozen=True)
-class HistoryWarmupSnapshot:
+class HistoryArchiveSnapshot:
+    state: str | None
+    snapshot_hash: str | None
+    data_cutoff: str | None
     universe_rows: int | None
     covered_rows: int | None
     coverage_ratio: float | None
-    planned_count: int | None
-    completed_count: int | None
-    failure_count: int | None
-    inflight_count: int | None
-    retry_deferred_count: int | None
-    unique_failure_count: int | None
-    timeout_count: int | None
-    inflight_age_seconds: float | None
-    batch_timeout_seconds: float | None
-    last_source: str | None
+    error_count: int | None
+    maintenance_state: str | None
+    maintenance_reason: str | None
+    maintenance_stage: str | None
+    maintenance_completed_units: int | None
+    maintenance_total_units: int | None
 
 
 @dataclass(frozen=True)
@@ -282,7 +281,7 @@ class StatusSnapshot:
     candidate_quote_source: str | None
     candidate_quote_age: CandidateQuoteAgeSnapshot
     model_industry_source: ModelIndustrySourceSnapshot
-    history_warmup: HistoryWarmupSnapshot
+    history_archive: HistoryArchiveSnapshot
     company_research: CompanyResearchSnapshot
     scoring_profile: ScoringProfileSnapshot
     recent_errors: tuple[WebRuntimeIssue, ...]
@@ -370,20 +369,19 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
             timeout_count=_nonnegative_int(model_industry_source.get("timeout_count")),
             last_error_code=_text(model_industry_source.get("last_error_code")),
         ),
-        history_warmup=HistoryWarmupSnapshot(
+        history_archive=HistoryArchiveSnapshot(
+            state=_text(market.get("history_archive_state")),
+            snapshot_hash=_text(market.get("history_archive_snapshot_hash")),
+            data_cutoff=_text(market.get("history_archive_data_cutoff")),
             universe_rows=_nonnegative_int(market.get("history_universe_rows")),
             covered_rows=_nonnegative_int(market.get("history_covered_rows")),
             coverage_ratio=_nonnegative_number(market.get("history_coverage_ratio")),
-            planned_count=_nonnegative_int(market.get("history_warmup_planned_count")),
-            completed_count=_nonnegative_int(market.get("history_warmup_completed_count")),
-            failure_count=_nonnegative_int(market.get("history_warmup_failure_count")),
-            inflight_count=_nonnegative_int(market.get("history_warmup_inflight_count")),
-            retry_deferred_count=_nonnegative_int(market.get("history_warmup_retry_deferred_count")),
-            unique_failure_count=_nonnegative_int(market.get("history_warmup_unique_failure_count")),
-            timeout_count=_nonnegative_int(market.get("history_warmup_timeout_count")),
-            inflight_age_seconds=_nonnegative_number(market.get("history_warmup_inflight_age_seconds")),
-            batch_timeout_seconds=_nonnegative_number(market.get("history_warmup_batch_timeout_seconds")),
-            last_source=_text(market.get("history_warmup_last_source")),
+            error_count=_nonnegative_int(market.get("history_error_count")),
+            maintenance_state=_text(market.get("history_maintenance_state")),
+            maintenance_reason=_text(market.get("history_maintenance_reason")),
+            maintenance_stage=_text(market.get("history_maintenance_stage")),
+            maintenance_completed_units=_nonnegative_int(market.get("history_maintenance_completed_units")),
+            maintenance_total_units=_nonnegative_int(market.get("history_maintenance_total_units")),
         ),
         company_research=CompanyResearchSnapshot(
             state=_text(company_research.get("state")),

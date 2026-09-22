@@ -7,8 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 REPORT = ROOT / "docs" / "reports" / "v2-p1-source-capability-baseline.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
-GATEWAY = ROOT / "src" / "trader" / "infra" / "market_data" / "service" / "gateway.py"
-COORDINATOR = ROOT / "src" / "trader" / "infra" / "market_data" / "service" / "source_coordinator.py"
+GATEWAY = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_data" / "gateway.py"
+COORDINATOR = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_data" / "source_coordinator.py"
 SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings" / "runtime_loader.py"
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
 MARKET_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data.py"

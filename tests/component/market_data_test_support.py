@@ -10,6 +10,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -17,8 +18,6 @@ import pytest
 import requests
 
 from trader.infra.cache import BoundedLruCache
-from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
 from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryAdjustmentError,
@@ -66,7 +65,6 @@ from trader.recommendation.application.ports.market_data import (
 from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
-    HistoricalFeatureRecord,
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
@@ -139,6 +137,85 @@ class _AllowAllEligibility:
         return ()
 
 
+class _FixtureHistory:
+    """Test-only history projection; production uses the published BaoStock archive."""
+
+    def __init__(self, client: Any, monotonic: Any) -> None:
+        self._client = client
+        self._monotonic = monotonic
+        self._lock = threading.RLock()
+        self._bars: dict[str, tuple[DailyBar, ...]] = {}
+        self._contexts = {}
+        self._universe = 0
+
+    def refresh(self) -> bool:
+        return False
+
+    def load(self, codes, **_kwargs):
+        for code in tuple(dict.fromkeys(codes)):
+            try:
+                bars = tuple(self._client.fetch_history(code, days=61))
+            except Exception:
+                continue
+            if bars:
+                ordered = tuple(sorted(bars, key=lambda item: item.trade_date))
+                self._bars[code] = ordered[-20:]
+                self._contexts[code] = build_history_context(ordered, lookback_sessions=61)
+        return self.cached(codes)
+
+    def cached(self, codes, **_kwargs):
+        return {code: self._bars[code] for code in codes if code in self._bars}
+
+    def summaries(self, histories, _observed_at):
+        return {code: self._contexts[code] for code in histories if code in self._contexts}
+
+    def update_coverage(self, codes, _versions=None):
+        self._universe = len(tuple(codes))
+
+    def apply_source_bars(self, bars_by_code, *, source):
+        del source
+        for code, bars in bars_by_code.items():
+            ordered = tuple(sorted(bars, key=lambda item: item.trade_date))
+            if ordered:
+                self._bars[code] = ordered[-20:]
+                self._contexts[code] = build_history_context(ordered, lookback_sessions=61)
+
+    def recover_from_data_plane(self):
+        return None
+
+    def entries(self):
+        return {
+            code: SimpleNamespace(bars=bars, context=self._contexts.get(code), expires_at=self._monotonic() + 60)
+            for code, bars in self._bars.items()
+        }
+
+    def status(self):
+        return SimpleNamespace(
+            state="active" if self._bars else "unavailable",
+            snapshot_hash="fixture" if self._bars else None,
+            data_cutoff=None,
+            entries=len(self._bars),
+            raw_rows=sum(len(bars) for bars in self._bars.values()),
+            profile_entries=len(self._contexts),
+            universe_rows=self._universe,
+            covered_rows=sum(len(bars) >= 20 for bars in self._bars.values()),
+            error_count=0,
+            data_versions=(),
+            out_of_order_count=0,
+            maintenance_state="idle",
+            maintenance_reason=None,
+            maintenance_stage=None,
+            maintenance_completed_units=0,
+            maintenance_total_units=0,
+        )
+
+    def read_outcome_bars(self, codes, _observed_at):
+        fetch = getattr(self._client, "fetch_outcome_history", None)
+        if not callable(fetch):
+            return {}
+        return {code: tuple(fetch(code, days=61)) for code in codes}
+
+
 def _service(
     gateway: Any,
     history_client: Any,
@@ -160,19 +237,13 @@ def _service(
         schema_version=kwargs.pop("schema_version", "market_snapshot"),
         wall_clock=wall_clock,
     )
-    history = HistoryCache(
-        history_client,
-        runner,
-        history_worker_pool=kwargs.pop("history_worker_pool", None),
-        workers=kwargs.pop("history_workers", 6),
-        ttl_seconds=kwargs.pop("history_ttl_seconds", 21_600),
-        capacity=kwargs.pop("history_cache_limit", 360),
-        history_data_plane=data_plane,
-        monotonic=monotonic,
-    )
+    history = _FixtureHistory(history_client, monotonic)
+    kwargs.pop("history_worker_pool", None)
+    kwargs.pop("history_workers", 6)
+    kwargs.pop("history_ttl_seconds", 21_600)
+    kwargs.pop("history_cache_limit", 360)
     references = ReferenceLoader(
         gateway,
-        history,
         runner,
         kwargs.pop("tushare_client", None),
         security_master_client=kwargs.pop("exchange_security_master_client", None),
@@ -181,15 +252,6 @@ def _service(
         monotonic=monotonic,
     )
     eligibility = kwargs.pop("eligibility", _AllowAllEligibility())
-    warmup = HistoryWarmup(
-        history,
-        references,
-        runner,
-        eligibility_filter=eligibility.filter_codes,
-        batch_size=kwargs.pop("history_warmup_batch_size", 30),
-        batch_timeout_seconds=kwargs.pop("history_warmup_batch_timeout_seconds", 20.0),
-        monotonic=monotonic,
-    )
     research = ResearchLoader(
         kwargs.pop("research_client", None),
         runner,
@@ -221,15 +283,14 @@ def _service(
         monotonic=monotonic,
     )
     health = MarketDataHealth(
-        MarketDataHealthDependencies(quotes, history, warmup, research, intraday, references, eligibility),
+        MarketDataHealthDependencies(quotes, history, research, intraday, references, eligibility),
         wall_clock=wall_clock,
     )
-    history_preload_limit = kwargs.pop("history_preload_limit", 360)
     assert kwargs == {}
-    return MarketFeatureService(
-        MarketFeatureDependencies(quotes, history, warmup, research, intraday, references, runner, health, eligibility),
-        history_preload_limit=history_preload_limit,
+    service = MarketFeatureService(
+        MarketFeatureDependencies(quotes, history, research, intraday, references, runner, health, eligibility)
     )
+    return service
 
 
 class FakeResponse:

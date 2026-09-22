@@ -16,6 +16,7 @@ from tests.component.market_data_test_support import (
     Board,
     BoundedExecutor,
     BoundedLruCache,
+    CountingHistoryClient,
     CountingMarketClient,
     DataPlaneRepository,
     Evidence,
@@ -65,7 +66,6 @@ def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_l
     component_locks = (
         service.quotes._lock,
         service.history._lock,
-        service.warmup._lock,
         service.research._lock,
         service.intraday._lock,
         service.references._lock,
@@ -343,7 +343,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
     quote = replace(_quote(), source_time=measured_at, received_time=measured_at)
     service = _service(
         StaticGateway((quote,)),
-        StaticHistoryClient(),
+        CountingHistoryClient(_history_bars()),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         cache=cache,
         source_contracts=runtime.market_data.source_contracts,
@@ -351,7 +351,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
         wall_clock=lambda: measured_at,
     )
     service.quotes.update_candidate_quotes((quote,))
-    history = _history_bars()
+    service.history.load((quote.code,))
     intraday = tuple(
         replace(
             bar,
@@ -372,18 +372,6 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
                 data_version="news-old",
             ),
         )
-    )
-    cache.put(
-        service.runner.cache_identity(
-            "daily_history",
-            "eastmoney",
-            quote.code,
-            {"code": quote.code, "days": 61, "retained_days": 20, "adjust": "qfq"},
-            measured_at,
-        ),
-        history,
-        data_version="history-old",
-        source_time=measured_at - timedelta(seconds=86401),
     )
     cache.put(
         service.runner.cache_identity(
@@ -418,7 +406,6 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
     )
 
     assert features[0].quote.execution_restrictions == (
-        "history_data_degraded",
         "intraday_data_degraded",
         "research_data_degraded",
     )
@@ -553,7 +540,7 @@ def test_feature_service_current_quote_index_reads_canonical_quote_before_featur
     assert quotes["600001"].data_version == "canonical-snapshot"
 
 
-def test_market_service_uses_injected_runtime_data_pool() -> None:
+def test_market_service_uses_injected_runtime_data_pool_for_market_gateway() -> None:
     pool = BoundedExecutor(worker_count=1, queue_capacity=8, thread_name_prefix="shared-data")
     history = ThreadRecordingHistoryClient(_history_bars())
     gateway = ThreadRecordingGateway((_quote(), _quote(code="600002")))
@@ -571,8 +558,6 @@ def test_market_service_uses_injected_runtime_data_pool() -> None:
         pool.stop()
 
     assert len(features) == 2
-    assert len(history.thread_names) == 2
-    assert all(name.startswith("shared-data") for name in history.thread_names)
     assert gateway.thread_names and all(name.startswith("shared-data") for name in gateway.thread_names)
     assert not any(thread.name.startswith("shared-data") for thread in threading.enumerate())
 

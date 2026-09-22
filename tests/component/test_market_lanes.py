@@ -378,45 +378,6 @@ def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
     assert [feature.quote.code for feature in refreshed] == ["600001"]
 
 
-def test_dedicated_history_workers_do_not_consume_realtime_source_workers() -> None:
-    source_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="source-data")
-    history_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="history-data")
-    lanes = SourceLaneRegistry(source_pool)
-    history_started = threading.Event()
-    release_history = threading.Event()
-
-    class BlockingRemoteHistory:
-        @staticmethod
-        def fetch_history(_code, *, days):
-            assert days == 61
-            history_started.set()
-            assert release_history.wait(1.0)
-            return _history_bars()
-
-    service = _service(
-        StaticGateway((_quote(),)),
-        BlockingRemoteHistory(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        worker_pool=source_pool,
-        history_worker_pool=history_pool,
-        source_lanes=lanes,
-        history_warmup_batch_size=1,
-        wall_clock=lambda: NOW,
-    )
-    source_pool.start()
-    history_pool.start()
-    try:
-        service.fetch_market_features(NOW, deadline=NOW + timedelta(seconds=1))
-        assert history_started.wait(1.0)
-        realtime = lanes.submit("eastmoney", "realtime-during-history", NOW, lambda: "fresh")
-        assert realtime.result(timeout=0.2) == "fresh"
-    finally:
-        release_history.set()
-        lanes.stop(wait=True, timeout_seconds=1.0)
-        source_pool.stop(wait=True, cancel_futures=True)
-        history_pool.stop(wait=True, cancel_futures=True)
-
-
 def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneRegistry(pool)

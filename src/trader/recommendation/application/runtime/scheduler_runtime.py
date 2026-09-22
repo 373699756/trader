@@ -438,12 +438,6 @@ class SchedulerRuntime:
                 return LatestWinsOffer.REJECTED
         return self._lanes[request.strategy].offer(request)
 
-    def notify_history_warmup(self) -> None:
-        with self._lock:
-            if not self._running:
-                return
-        self._trigger_scoring_after_input()
-
     def _process_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
         if scheduled.task is PipelineTask.CLOSE_QUOTES and not self._missing_after_close_scored_strategies(
             scheduled.scheduled_at

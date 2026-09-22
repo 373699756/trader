@@ -94,13 +94,12 @@ def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
     service.research.load(("600001",), NOW, include_structured=False)
 
     status = cache.status().datasets
-    assert status["daily_history"]["eastmoney"].entries == 1
-    assert status["daily_history"]["eastmoney"].hit == 1
+    assert "daily_history" not in status
     assert status["intraday_minutes"]["eastmoney"].entries == 1
     assert status["intraday_minutes"]["eastmoney"].hit == 1
     assert status["research_success"]["akshare"].entries == 1
     assert status["research_success"]["akshare"].hit == 1
-    assert history.calls == ["600001"]
+    assert history.calls == ["600001", "600001"]
     assert intraday.calls == ["600001"]
     assert research.calls == 1
 

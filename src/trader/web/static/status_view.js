@@ -257,7 +257,13 @@
       const facetText = facets.slice(0, 3).map((facet) => `${facet.key} ${displayCount(facet.count)}`).join(" · ");
       const duration = values.reduce((total, stage) => total + (Number.isFinite(stage.duration_ms) ? stage.duration_ms : 0), 0);
       const stageIssues = visibleIssues.filter((issue) => keys.some((key) => issueBelongsToStage(issue, key)));
-      const detail = `${stageStateLabel(state)} · ${displayCount(input)} → ${output == null ? "—" : displayCount(output)} · 淘汰 ${filtered == null ? "—" : displayCount(filtered)} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
+      const readinessPending = keys.includes("input_readiness") && output != null
+        ? Math.max(0, input - output)
+        : null;
+      const disposition = keys.includes("input_readiness")
+        ? `待就绪 ${readinessPending == null ? "—" : displayCount(readinessPending)}`
+        : `淘汰 ${filtered == null ? "—" : displayCount(filtered)}`;
+      const detail = `${stageStateLabel(state)} · ${displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
       const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>主要原因：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}`;
       return `<article class="observation-stage" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(keys.join(","))}" data-stage-toggle="true" tabindex="0" role="button" aria-expanded="false"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span><div class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");

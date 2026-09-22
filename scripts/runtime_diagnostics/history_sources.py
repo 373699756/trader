@@ -9,7 +9,6 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
-from datetime import time as datetime_time
 from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -23,8 +22,6 @@ from trader.infra.market_data.history.history import DailyBar  # noqa: E402
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient  # noqa: E402
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
 from trader.infra.market_data.providers.tencent import TencentClient  # noqa: E402
-from trader.recommendation.application.ports.market_data_repository import HistoricalFeatureRecord  # noqa: E402
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CODES = ("600519", "000001", "300750", "688981", "601318")
@@ -76,10 +73,6 @@ def _parser() -> argparse.ArgumentParser:
         default="proxy",
         help="Tencent K-line host; direct is a bounded fallback probe only",
     )
-    parser.add_argument(
-        "--persistence-runtime-dir",
-        help="optional absolute directory outside the repository for an isolated batch-persistence measurement",
-    )
     return parser
 
 
@@ -91,11 +84,6 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
         raise ValueError("--samples, --workers and --days must be positive")
     if args.timeout_seconds <= 0.0:
         raise ValueError("--timeout-seconds must be positive")
-    if args.persistence_runtime_dir:
-        requested_target = Path(args.persistence_runtime_dir).expanduser()
-        target = requested_target.resolve()
-        if not requested_target.is_absolute() or target == PROJECT_ROOT or PROJECT_ROOT in target.parents:
-            raise ValueError("--persistence-runtime-dir must be an absolute path outside the repository")
     return codes
 
 
@@ -199,82 +187,10 @@ def _latency_summary(observations: tuple[HistoryObservation, ...]) -> dict[str, 
     return summarize_latency_ms([item.latency_ms for item in observations])
 
 
-def _measure_persistence(observations: tuple[HistoryObservation, ...], runtime_dir: str) -> dict[str, object]:
-    record_batches: list[tuple[HistoricalFeatureRecord, ...]] = []
-    for observation in observations:
-        if not observation.bars:
-            continue
-        observed_at = datetime.now(_SHANGHAI)
-        version = f"{observation.selected_source}:{observation.bars[-1].trade_date}"
-        records = tuple(
-            HistoricalFeatureRecord(
-                code=observation.code,
-                trade_date=bar.trade_date,
-                observed_at=observed_at,
-                source_time=min(
-                    datetime.combine(datetime.fromisoformat(bar.trade_date).date(), datetime_time(15), _SHANGHAI),
-                    observed_at,
-                ),
-                source=observation.selected_source or observation.source,
-                data_version=version,
-                payload={
-                    "trade_date": bar.trade_date,
-                    "open_price": bar.open_price,
-                    "close": bar.close,
-                    "high": bar.high,
-                    "low": bar.low,
-                    "volume": bar.volume,
-                    "amount": bar.amount,
-                    "pct_change": bar.pct_change,
-                    "turnover_rate": bar.turnover_rate,
-                    "adjustment": bar.adjustment.value,
-                    "source": bar.source,
-                },
-            )
-            for bar in observation.bars
-        )
-        record_batches.append(records)
-    root = Path(runtime_dir).expanduser().resolve()
-    batched = _persist_record_batches(DataPlaneRepository(root / "batched"), record_batches, batched=True)
-    single = _persist_record_batches(DataPlaneRepository(root / "single"), record_batches, batched=False)
-    batched_latency = float(batched["latency_ms"])
-    single_latency = float(single["latency_ms"])
-    return {
-        "batched": batched,
-        "single_record_baseline": single,
-        "latency_reduction_ratio": round(single_latency / batched_latency, 2) if batched_latency > 0.0 else None,
-    }
-
-
-def _persist_record_batches(
-    repository: DataPlaneRepository,
-    record_batches: list[tuple[HistoricalFeatureRecord, ...]],
-    *,
-    batched: bool,
-) -> dict[str, float | int]:
-    started = time.monotonic()
-    transaction_count = 0
-    if batched:
-        for records in record_batches:
-            repository.save_historical_feature_recent_records(records)
-            transaction_count += 1
-    else:
-        for records in record_batches:
-            for record in records:
-                repository.save_historical_feature_recent(record)
-                transaction_count += 1
-    return {
-        "record_count": sum(len(records) for records in record_batches),
-        "transaction_count": transaction_count,
-        "latency_ms": round((time.monotonic() - started) * 1000.0, 1),
-    }
-
-
 def build_report(
     codes: tuple[str, ...],
     observations: tuple[HistoryObservation, ...],
     args: argparse.Namespace,
-    persistence: dict[str, object] | None = None,
 ) -> dict[str, object]:
     feature_usable = sum(item.row_count >= 20 for item in observations)
     outcome_usable = sum(item.outcome_pair_count >= 20 for item in observations)
@@ -301,7 +217,6 @@ def build_report(
                 item.error is not None or item.outcome_error is not None for item in observations
             ),
             "latency": _latency_summary(observations),
-            "persistence": persistence,
         },
         "observations": [
             {
@@ -337,10 +252,7 @@ def main() -> int:
                 tencent_history_host=args.tencent_history_host,
             ),
         )
-        persistence = (
-            _measure_persistence(observations, args.persistence_runtime_dir) if args.persistence_runtime_dir else None
-        )
-        report = build_report(codes, observations, args, persistence)
+        report = build_report(codes, observations, args)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
             "schema_version": "history-source-sampling",

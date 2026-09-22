@@ -114,7 +114,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     market_keys = {
         "eastmoney_timeout_seconds",
         "candidate_timeout_seconds",
-        "history_timeout_seconds",
         "research_timeout_seconds",
         "minimum_market_rows",
         "candidate_pool_size",
@@ -217,7 +216,6 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
                 maximum=5.0,
             ),
             candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
-            history_timeout_seconds=_number(market_raw, "history_timeout_seconds", minimum=0.1),
             research_timeout_seconds=_number(
                 market_raw,
                 "research_timeout_seconds",

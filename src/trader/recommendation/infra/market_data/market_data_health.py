@@ -8,13 +8,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
 from trader.infra.market_data.providers.tushare import TushareHealthStatus
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary, _reference_epoch
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.infra.market_data.router import RouteOutcome
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
@@ -26,8 +25,7 @@ from trader.recommendation.application.ports.market_data import MarketSnapshotMe
 @dataclass(frozen=True)
 class MarketDataHealthDependencies:
     quotes: QuoteCache
-    history: HistoryCache
-    warmup: HistoryWarmup
+    history: PublishedHistoryCache
     research: ResearchLoader
     intraday: IntradayLoader
     references: ReferenceLoader
@@ -43,7 +41,6 @@ class MarketDataHealth:
     ) -> None:
         self._quotes = dependencies.quotes
         self._history = dependencies.history
-        self._warmup = dependencies.warmup
         self._research = dependencies.research
         self._intraday = dependencies.intraday
         self._references = dependencies.references
@@ -54,7 +51,6 @@ class MarketDataHealth:
         measured_at = self._wall_clock()
         quote_status = self._quotes.status()
         history = self._history.status()
-        warmup = self._warmup.status()
         eligibility = self._eligibility.status()
         research = self._research.status()
         intraday = self._intraday.status()
@@ -184,18 +180,16 @@ class MarketDataHealth:
                     "history_coverage_ratio": history_covered / history_rows if history_rows else 0.0,
                     "history_error_count": history.error_count,
                     "history_data_versions": history.data_versions,
-                    "history_warmup_planned_count": warmup.planned_count,
-                    "history_warmup_completed_count": warmup.completed_count,
-                    "history_warmup_failure_count": warmup.failure_count,
-                    "history_warmup_inflight_count": warmup.inflight_count,
-                    "history_warmup_retry_deferred_count": warmup.retry_deferred_count,
-                    "history_warmup_unique_failure_count": warmup.unique_failure_count,
-                    "history_warmup_next_retry_seconds": warmup.next_retry_seconds,
-                    "history_warmup_last_source": warmup.last_source or None,
-                    "history_warmup_timeout_count": warmup.timeout_count,
-                    "history_warmup_inflight_age_seconds": warmup.inflight_age_seconds,
-                    "history_warmup_batch_timeout_seconds": warmup.batch_timeout_seconds,
-                    "history_warmup_excluded_count": warmup.excluded_count,
+                    "history_archive_state": history.state,
+                    "history_archive_snapshot_hash": history.snapshot_hash,
+                    "history_archive_data_cutoff": (
+                        history.data_cutoff.isoformat() if history.data_cutoff is not None else None
+                    ),
+                    "history_maintenance_state": history.maintenance_state,
+                    "history_maintenance_reason": history.maintenance_reason,
+                    "history_maintenance_stage": history.maintenance_stage,
+                    "history_maintenance_completed_units": history.maintenance_completed_units,
+                    "history_maintenance_total_units": history.maintenance_total_units,
                     "issuer_eligibility": {
                         "schema_version": eligibility.schema_version,
                         "fact_count": eligibility.fact_count,

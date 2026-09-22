@@ -13,7 +13,6 @@ from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
-    HistoricalFeatureRecord,
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
@@ -135,51 +134,6 @@ class DataPlaneRepository:
         return cast(
             tuple[SecurityMasterRecord, ...],
             self._load_records("security_master", mode="formal", freeze_id=freeze_id, codes=codes),
-        )
-
-    def save_historical_feature_recent(self, record: HistoricalFeatureRecord) -> None:
-        self._save("historical_feature", mode="recent", record=record)
-
-    def save_historical_feature_recent_records(self, records: Sequence[HistoricalFeatureRecord]) -> None:
-        self._save_many("historical_feature", mode="recent", records=records)
-
-    def save_historical_feature_formal(self, freeze_id: str, record: HistoricalFeatureRecord) -> None:
-        self._save("historical_feature", mode="formal", freeze_id=freeze_id, record=record)
-
-    def load_historical_feature_recent(self, code: str, trade_date: str) -> HistoricalFeatureRecord | None:
-        return cast(
-            HistoricalFeatureRecord | None,
-            self._load("historical_feature", mode="recent", code=code, trade_date=trade_date),
-        )
-
-    def load_historical_feature_recent_records(
-        self,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[HistoricalFeatureRecord, ...]:
-        return cast(
-            tuple[HistoricalFeatureRecord, ...],
-            self._load_records("historical_feature", mode="recent", codes=codes),
-        )
-
-    def load_historical_feature_formal(
-        self,
-        freeze_id: str,
-        code: str,
-        trade_date: str,
-    ) -> HistoricalFeatureRecord | None:
-        return cast(
-            HistoricalFeatureRecord | None,
-            self._load("historical_feature", mode="formal", freeze_id=freeze_id, code=code, trade_date=trade_date),
-        )
-
-    def load_historical_feature_formal_records(
-        self,
-        freeze_id: str,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[HistoricalFeatureRecord, ...]:
-        return cast(
-            tuple[HistoricalFeatureRecord, ...],
-            self._load_records("historical_feature", mode="formal", freeze_id=freeze_id, codes=codes),
         )
 
     def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None:

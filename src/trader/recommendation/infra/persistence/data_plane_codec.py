@@ -12,7 +12,6 @@ from typing import TypedDict, cast
 from trader.infra.serialization.canonical import canonical_json_text
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data_repository import (
-    HistoricalFeatureRecord,
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
@@ -34,8 +33,6 @@ class _CommonRecordFields(TypedDict):
 def record_to_row(profile: _Profile, record: Record, *, freeze_id: str | None = None) -> dict[str, object]:
     if profile.family == "security_master":
         base = _security_master_identity(record)
-    elif profile.family == "historical_feature":
-        base = _historical_feature_identity(record)
     elif profile.family == "risk_evidence":
         base = _risk_evidence_identity(record)
     elif profile.family == "source_cursor":
@@ -53,12 +50,6 @@ def _security_master_identity(record: Record) -> dict[str, object]:
     if not isinstance(record, SecurityMasterRecord):
         raise TypeError("security master family requires SecurityMasterRecord")
     return {"code": record.code}
-
-
-def _historical_feature_identity(record: Record) -> dict[str, object]:
-    if not isinstance(record, HistoricalFeatureRecord):
-        raise TypeError("historical feature family requires HistoricalFeatureRecord")
-    return {"code": record.code, "trade_date": record.trade_date}
 
 
 def _risk_evidence_identity(record: Record) -> dict[str, object]:
@@ -102,12 +93,6 @@ def row_to_record(table: str, row: sqlite3.Row) -> Record:
     }
     if table in {"security_master_recent", "security_master_formal"}:
         return SecurityMasterRecord(code=text(row["code"]), **common)
-    if table in {"historical_feature_recent", "historical_feature_formal"}:
-        return HistoricalFeatureRecord(
-            code=text(row["code"]),
-            trade_date=text(row["trade_date"]),
-            **common,
-        )
     if table in {"risk_evidence_recent", "risk_evidence_formal"}:
         return RiskEvidenceRecord(
             code=text(row["code"]),
@@ -130,7 +115,6 @@ def record_payload_for_table(table: str, payload: JsonObject) -> None:
         raise TypeError("payload root must be an object")
     supported = (
         "security_master_",
-        "historical_feature_",
         "risk_evidence_",
         "source_cursor_",
         "trading_calendar_",
@@ -146,7 +130,6 @@ def record_payload_for_table(table: str, payload: JsonObject) -> None:
 def table_to_record_kind(table: str) -> str:
     for prefix, kind in (
         ("security_master_", "security_master"),
-        ("historical_feature_", "historical_feature"),
         ("risk_evidence_", "risk_evidence"),
         ("source_cursor_", "source_cursor"),
         ("trading_calendar_", "trading_calendar"),
@@ -168,8 +151,6 @@ def pk_fields_from_table(table: str) -> tuple[str, ...]:
 def identity_fields_for_table(table: str) -> tuple[str, ...]:
     if table.startswith("security_master_"):
         return ("code",)
-    if table.startswith("historical_feature_"):
-        return ("code", "trade_date")
     if table.startswith("risk_evidence_"):
         return ("code", "evidence_id")
     if table.startswith("source_cursor_"):

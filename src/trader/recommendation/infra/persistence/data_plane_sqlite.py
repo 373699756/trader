@@ -78,43 +78,6 @@ def initialize_database(database_path: Path) -> None:
                 PRIMARY KEY(freeze_id, code)
             );
 
-            CREATE TABLE IF NOT EXISTS historical_feature_recent(
-                code TEXT NOT NULL,
-                trade_date TEXT NOT NULL,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined')),
-                PRIMARY KEY(code, trade_date)
-            );
-
-            CREATE TABLE IF NOT EXISTS historical_feature_formal(
-                freeze_id TEXT NOT NULL,
-                code TEXT NOT NULL,
-                trade_date TEXT NOT NULL,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined')),
-                PRIMARY KEY(freeze_id, code, trade_date)
-            );
-
             CREATE TABLE IF NOT EXISTS risk_evidence_recent(
                 code TEXT NOT NULL,
                 evidence_id TEXT NOT NULL,

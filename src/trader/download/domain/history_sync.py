@@ -50,6 +50,14 @@ class HistorySyncConfiguration:
     progress_heartbeat_seconds: float = 5.0
     training_root: Path = Path("data/train")
 
+    @classmethod
+    def for_repository(cls, repository_root: Path) -> HistorySyncConfiguration:
+        root = repository_root.resolve()
+        return cls(
+            archive_root=root / "data" / "history" / "baostock",
+            training_root=root / "data" / "train",
+        )
+
     def __post_init__(self) -> None:
         if (
             not 1 <= self.sessions <= 2000

@@ -82,6 +82,10 @@ WHERE latest.revision_rank = 1
 ORDER BY records.trade_date, records.code
 """
 _LATEST_RANGE_SQL = _LATEST_WINDOW.format(observation_filter="", record_filter="")
+_LATEST_RANGE_BY_CODE_SQL = _LATEST_RANGE_SQL.replace(
+    "ORDER BY records.trade_date, records.code",
+    "ORDER BY records.code, records.trade_date",
+)
 _LATEST_CODE_SQL = _LATEST_WINDOW.format(
     observation_filter="      AND code = ?",
     record_filter="",
@@ -286,6 +290,32 @@ class SQLiteHistoryMonthPartitionRepository:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month query failed") from exc
+
+    def iter_range_by_code(
+        self,
+        start: date,
+        end: date,
+        *,
+        snapshot_sequence: int,
+    ) -> Iterator[HistoryRevision]:
+        """Stream a partition in code/date order for bounded cross-month merging."""
+
+        if start > end or snapshot_sequence < 1:
+            raise ValueError("history month query range is invalid")
+        try:
+            with closing(self._read_connection()) as connection:
+                self._require_metadata(connection)
+                cursor = connection.execute(
+                    _LATEST_RANGE_BY_CODE_SQL,
+                    (snapshot_sequence, start.isoformat(), end.isoformat()),
+                )
+                while rows := cursor.fetchmany(512):
+                    for row in rows:
+                        yield _decode_row(row)
+        except HistoryMonthPartitionError:
+            raise
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryMonthPartitionError("history month code-ordered query failed") from exc
 
     def seal(self) -> HistorySnapshotPartition:
         try:

@@ -12,7 +12,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.bootstrap import _initialize_research_trace, build_system
+from trader.bootstrap import _StartupHistoryMaintenance, _initialize_research_trace, build_system
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.read_only_queries import (
@@ -172,17 +174,77 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert 'content="35000"' in page
 
 
-def test_build_system_wires_history_completion_to_scoring_refresh(tmp_path, monkeypatch) -> None:
+def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None:
+    from trader.download.domain.history_sync import HistorySyncConfiguration
+    from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+
     system = build_system(_config(tmp_path))
     native_data = system.scheduler._dependencies.data
     assert isinstance(native_data, MarketDataAdapter)
-    calls: list[str] = []
-    monkeypatch.setattr(native_data, "invalidate_history", lambda: calls.append("invalidate"))
-    monkeypatch.setattr(system.scheduler, "notify_history_warmup", lambda: calls.append("schedule"))
+    assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
+    assert system.history_maintenance._configuration == HistorySyncConfiguration.for_repository(  # noqa: SLF001
+        system.settings.project_root
+    )
 
-    native_data._market.warmup._on_batch_complete(("600001",))  # noqa: SLF001 - composition-root wiring contract
 
-    assert calls == ["invalidate", "schedule"]
+def test_startup_history_maintenance_runs_the_download_use_case_once(tmp_path, monkeypatch) -> None:
+    events: list[object] = []
+
+    class History:
+        def refresh(self) -> bool:
+            events.append("refresh")
+            return True
+
+        def record_maintenance(self, state, reason=None, **details) -> None:
+            events.append((state, reason, details))
+
+    class Supplier:
+        def __init__(self, configuration, *, progress) -> None:
+            events.append(("supplier", configuration, progress))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    calls: list[tuple[object, ...]] = []
+
+    def execute(_self, configuration, supplier, *, progress, cancel_requested):
+        calls.append((configuration, supplier, progress, cancel_requested))
+        return HistoryMaintenanceStatus(
+            "already_current",
+            None,
+            configuration.archive_root,
+            "baostock",
+            None,
+            "a" * 64,
+            date(2026, 9, 22),
+            date(2026, 9, 21),
+            0,
+            False,
+            "cadence_not_due",
+            False,
+        )
+
+    monkeypatch.setattr("trader.bootstrap.BaoStockHistorySupplier", Supplier)
+    monkeypatch.setattr("trader.bootstrap.DownloadHistoryUseCase.execute", execute)
+    configuration = HistorySyncConfiguration(
+        tmp_path / "data/history/baostock",
+        sessions=61,
+        minimum_free_bytes=0,
+    )
+    maintenance = _StartupHistoryMaintenance(configuration, History())
+
+    assert maintenance.start() is True
+    assert maintenance.stop(wait=True).completed is True
+    assert maintenance.start() is False
+    assert len(calls) == 1
+    assert calls[0][0] == configuration
+    assert events.count("refresh") == 2
 
 
 def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:
@@ -265,7 +327,6 @@ def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -
     _initialize_reference_data_plane(market_data, DataPlaneRepository(tmp_path))
 
     market_data.references.recover.assert_not_called()
-    market_data.history.recover_from_data_plane.assert_not_called()
     market_data.research.recover_from_data_plane.assert_not_called()
 
 

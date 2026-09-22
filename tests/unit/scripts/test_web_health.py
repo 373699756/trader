@@ -224,16 +224,14 @@ def _sample(
             "history_universe_rows": 360,
             "history_covered_rows": warmup[1],
             "history_coverage_ratio": warmup[1] / 360,
-            "history_warmup_planned_count": warmup[0],
-            "history_warmup_completed_count": warmup[1],
-            "history_warmup_failure_count": warmup[2],
-            "history_warmup_inflight_count": warmup[3],
-            "history_warmup_retry_deferred_count": warmup[2],
-            "history_warmup_unique_failure_count": warmup[2],
-            "history_warmup_timeout_count": warmup_timeout_count,
-            "history_warmup_inflight_age_seconds": 1.5 if warmup[3] else None,
-            "history_warmup_batch_timeout_seconds": 20.0,
-            "history_warmup_last_source": "tencent",
+            "history_error_count": warmup[2] + warmup_timeout_count,
+            "history_archive_state": "active",
+            "history_archive_snapshot_hash": "b" * 64,
+            "history_archive_data_cutoff": _TRADE_DATE,
+            "history_maintenance_state": "running" if warmup[3] else "already_current",
+            "history_maintenance_stage": "downloading_codes",
+            "history_maintenance_completed_units": warmup[1],
+            "history_maintenance_total_units": warmup[0],
             "sources": {
                 "baostock_industry": {
                     "snapshot_rows": model_industry_source[0],
@@ -956,7 +954,7 @@ def test_runtime_restart_splits_persistent_zero_window() -> None:
     assert not any(finding.code.endswith("persistently_zero") for finding in findings)
 
 
-def test_history_warmup_failure_growth_is_reported_with_counter_delta() -> None:
+def test_history_archive_error_growth_is_reported_with_counter_delta() -> None:
     samples = (
         _sample(1, warmup=(100, 75, 20, 5), event_sequence=10),
         _sample(2, warmup=(105, 75, 25, 5), event_sequence=11),
@@ -965,26 +963,10 @@ def test_history_warmup_failure_growth_is_reported_with_counter_delta() -> None:
     findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=2)
 
     assert any(
-        finding.code == "history_warmup_failures_increased"
+        finding.code == "history_archive_errors_increased"
         and finding.severity == "warning"
         and finding.evidence.get("previous") == 20
         and finding.evidence.get("current") == 25
-        for finding in findings
-    )
-
-
-def test_history_warmup_timeout_growth_is_reported_as_error() -> None:
-    samples = (
-        _sample(1, warmup_timeout_count=2, event_sequence=10),
-        _sample(2, warmup_timeout_count=3, event_sequence=11),
-    )
-
-    findings = analyze_samples(samples, strategies=(_STRATEGY,), consecutive_zero_threshold=2)
-
-    assert any(
-        finding.code == "history_warmup_timeouts_increased"
-        and finding.severity == "error"
-        and finding.evidence.get("delta") == 1
         for finding in findings
     )
 
@@ -1004,8 +986,8 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert "items" not in rendered
     assert report["schema_version"] == "web_recommendation_health"
     assert report["status"] == "passed"
-    assert report["samples"][0]["market"]["history_warmup"]["planned_count"] == 20
-    assert report["samples"][0]["market"]["history_warmup"]["batch_timeout_seconds"] == 20.0
+    assert report["samples"][0]["market"]["history_archive"]["maintenance_total_units"] == 20
+    assert report["samples"][0]["market"]["history_archive"]["state"] == "active"
     assert report["samples"][0]["market"]["candidate_quote_age"] == {
         "p50_seconds": 1.0,
         "p95_seconds": 2.0,

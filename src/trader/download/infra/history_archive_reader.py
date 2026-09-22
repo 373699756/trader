@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import heapq
 import re
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
@@ -184,6 +185,26 @@ class SQLiteHistoryArchiveReader:
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)
             yield from repository.iter_range(start, end, snapshot_sequence=snapshot.sequence)
+
+    def iter_range_by_code(
+        self,
+        start: date,
+        end: date,
+        snapshot: HistoryActiveSnapshot,
+    ) -> Iterator[HistoryRevision]:
+        """Merge code/date ordered month streams without retaining a market-wide window."""
+
+        if start > end or end > snapshot.data_cutoff:
+            raise ValueError("history range scan is invalid")
+        streams = tuple(
+            self._verified_repository(self._reference(snapshot, year, month)).iter_range_by_code(
+                start,
+                end,
+                snapshot_sequence=snapshot.sequence,
+            )
+            for year, month in route_history_months(start, end)
+        )
+        yield from heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
 
     def revised_dates(
         self,

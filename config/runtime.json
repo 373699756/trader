@@ -95,7 +95,6 @@
     "sina_timeout_seconds": 8,
     "full_market_hedge_delay_seconds": 1,
     "candidate_timeout_seconds": 3,
-    "history_timeout_seconds": 12,
     "research_timeout_seconds": 8,
     "minimum_market_rows": 1000,
     "candidate_pool_size": 120,
@@ -167,16 +166,6 @@
           "group": "observation",
           "persisted": false
         },
-        "daily_history": {
-          "refresh_ttl_seconds": 21600,
-          "action_max_age_seconds": 86400,
-          "cadence_task": null,
-          "action_max_age_multiplier": null,
-          "negative_ttl_seconds": 60,
-          "capacity": 360,
-          "group": "observation",
-          "persisted": false
-        },
         "security_master_calendar": {
           "refresh_ttl_seconds": 86400,
           "action_max_age_seconds": 86400,
@@ -195,16 +184,6 @@
           "negative_ttl_seconds": 300,
           "capacity": 360,
           "group": "observation",
-          "persisted": false
-        },
-        "history_summary": {
-          "refresh_ttl_seconds": 21600,
-          "action_max_age_seconds": 86400,
-          "cadence_task": null,
-          "action_max_age_multiplier": null,
-          "negative_ttl_seconds": 60,
-          "capacity": 360,
-          "group": "feature_batches",
           "persisted": false
         },
         "board_cross_section": {

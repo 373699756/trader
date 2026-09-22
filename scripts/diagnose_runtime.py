@@ -98,7 +98,6 @@ class DiagnosticOptions:
     browser_duration_seconds: float
     browser_minimum_updates: int
     command_timeout_seconds: float
-    persistence_runtime_dir: Path | None
     archive_root: Path
     archive_page_sample_count: int
     archive_query_rounds: int
@@ -169,11 +168,6 @@ def _parser() -> argparse.ArgumentParser:
         help="hard wall-clock timeout for each child diagnostic",
     )
     parser.add_argument(
-        "--persistence-runtime-dir",
-        type=Path,
-        help="optional absolute repository-external directory for history persistence comparison",
-    )
-    parser.add_argument(
         "--archive-root",
         type=Path,
         default=PROJECT_ROOT / "data/history/baostock",
@@ -228,7 +222,6 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--archive-query-rounds must be within 1..9")
     if not 1 <= args.archive_revision_write_sample_count <= 5_000:
         raise ValueError("--archive-revision-write-sample-count must be within 1..5000")
-    persistence = _external_path(args.persistence_runtime_dir, "--persistence-runtime-dir")
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
@@ -251,7 +244,6 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             browser_duration_seconds=args.browser_duration_seconds,
             browser_minimum_updates=args.browser_minimum_updates,
             command_timeout_seconds=args.command_timeout_seconds,
-            persistence_runtime_dir=persistence,
             archive_root=args.archive_root.expanduser().resolve(),
             archive_page_sample_count=args.archive_page_sample_count,
             archive_query_rounds=args.archive_query_rounds,
@@ -414,7 +406,7 @@ def build_commands(
 
 
 def _history_command(options: DiagnosticOptions, python_executable: str) -> tuple[str, ...]:
-    command = [
+    return (
         python_executable,
         "-m",
         "scripts.runtime_diagnostics.history_sources",
@@ -432,10 +424,7 @@ def _history_command(options: DiagnosticOptions, python_executable: str) -> tupl
         options.tencent_history_host,
         "--timeout-seconds",
         str(options.source_timeout_seconds),
-    ]
-    if options.persistence_runtime_dir is not None:
-        command.extend(("--persistence-runtime-dir", str(options.persistence_runtime_dir)))
-    return tuple(command)
+    )
 
 
 def execute_command(command: DiagnosticCommand) -> DiagnosticResult:
@@ -527,7 +516,7 @@ def _web_health_details(_result: DiagnosticResult, source: Mapping[str, object],
             "degraded_reasons": _safe_string_list(latest.get("degraded_reasons"), limit=32),
             "scoring_profile": _scoring_profile_summary(latest.get("scoring_profile")),
             "candidate_quote_age": _mapping(_mapping(latest.get("market")).get("candidate_quote_age")),
-            "history_warmup": _mapping(_mapping(latest.get("market")).get("history_warmup")),
+            "history_archive": _mapping(_mapping(latest.get("market")).get("history_archive")),
             "company_research": _mapping(latest.get("company_research")),
             "strategies": _mapping(latest.get("strategies")),
         }

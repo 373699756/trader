@@ -52,18 +52,6 @@ class SecurityMasterRecord(DataPlaneRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class HistoricalFeatureRecord(DataPlaneRecord):
-    """Historical feature payload for a specific trading date."""
-
-    trade_date: str
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if not self.trade_date:
-            raise ValueError("trade_date must not be empty")
-
-
-@dataclass(frozen=True, kw_only=True)
 class RiskEvidenceRecord(DataPlaneRecord):
     """Per-code risk evidence payload for a specific evidence component."""
 
@@ -152,21 +140,6 @@ class SecurityMasterRepositoryPort(Protocol):
     def load_formal(self, freeze_id: str, code: str) -> SecurityMasterRecord | None: ...
 
 
-class HistoricalFeatureRepositoryPort(Protocol):
-    def save_recent(self, record: HistoricalFeatureRecord) -> None: ...
-
-    def load_recent(self, code: str, trade_date: str) -> HistoricalFeatureRecord | None: ...
-
-    def save_formal(self, freeze_id: str, record: HistoricalFeatureRecord) -> None: ...
-
-    def load_formal(
-        self,
-        freeze_id: str,
-        code: str,
-        trade_date: str,
-    ) -> HistoricalFeatureRecord | None: ...
-
-
 class RiskEvidenceRepositoryPort(Protocol):
     def save_recent(self, record: RiskEvidenceRecord) -> None: ...
 
@@ -225,12 +198,6 @@ class DataPlaneWriterPort(Protocol):
 
     def save_security_master_formal(self, freeze_id: str, record: SecurityMasterRecord) -> None: ...
 
-    def save_historical_feature_recent(self, record: HistoricalFeatureRecord) -> None: ...
-
-    def save_historical_feature_recent_records(self, records: Sequence[HistoricalFeatureRecord]) -> None: ...
-
-    def save_historical_feature_formal(self, freeze_id: str, record: HistoricalFeatureRecord) -> None: ...
-
     def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None: ...
 
     def save_risk_evidence_formal(self, freeze_id: str, record: RiskEvidenceRecord) -> None: ...
@@ -261,23 +228,6 @@ class DataPlaneReaderPort(Protocol):
         freeze_id: str,
         codes: Sequence[str] | None = None,
     ) -> tuple[SecurityMasterRecord, ...]: ...
-
-    def load_historical_feature_recent(self, code: str, trade_date: str) -> HistoricalFeatureRecord | None: ...
-
-    def load_historical_feature_recent_records(
-        self,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[HistoricalFeatureRecord, ...]: ...
-
-    def load_historical_feature_formal(
-        self, freeze_id: str, code: str, trade_date: str
-    ) -> HistoricalFeatureRecord | None: ...
-
-    def load_historical_feature_formal_records(
-        self,
-        freeze_id: str,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[HistoricalFeatureRecord, ...]: ...
 
     def load_risk_evidence_recent(self, code: str, evidence_id: str) -> RiskEvidenceRecord | None: ...
 
@@ -334,7 +284,6 @@ class DataPlanePorts(DataPlaneWriterPort, DataPlaneReaderPort, Protocol):
 
 
 __all__ = [
-    "HistoricalFeatureRecord",
     "RiskEvidenceRecord",
     "SecurityMasterRecord",
     "SourceCursorRecord",
@@ -344,7 +293,6 @@ __all__ = [
     "DataPlaneConflictError",
     "DataPlaneRepositoryError",
     "SecurityMasterRepositoryPort",
-    "HistoricalFeatureRepositoryPort",
     "RiskEvidenceRepositoryPort",
     "SourceCursorRepositoryPort",
     "TradingCalendarRepositoryPort",

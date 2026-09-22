@@ -40,7 +40,6 @@ def _options(**overrides: object) -> DiagnosticOptions:
         browser_duration_seconds=8.0,
         browser_minimum_updates=3,
         command_timeout_seconds=180.0,
-        persistence_runtime_dir=None,
         archive_root=Path("data/history/baostock"),
         archive_page_sample_count=1,
         archive_query_rounds=3,
@@ -256,7 +255,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
                                 "maximum_seconds": 3.0,
                                 "sample_count": 360,
                             },
-                            "history_warmup": {"completed_count": 20},
+                            "history_archive": {"maintenance_completed_units": 20},
                         },
                         "company_research": {
                             "state": "idle",
@@ -306,7 +305,7 @@ def test_combined_report_is_bounded_and_does_not_forward_prices_or_vendor_payloa
     assert "secret vendor payload" not in rendered
     assert "must-not-escape" not in rendered
     assert report["checks"][0]["latest_runtime"]["candidate_quote_age"]["p95_seconds"] == 2.0
-    assert report["checks"][0]["latest_runtime"]["history_warmup"]["completed_count"] == 20
+    assert report["checks"][0]["latest_runtime"]["history_archive"]["maintenance_completed_units"] == 20
     assert report["checks"][0]["latest_runtime"]["company_research"] == {
         "state": "idle",
         "running_codes": 0,

@@ -19,7 +19,6 @@ def _initialize_reference_data_plane(
     try:
         data_plane.initialize()
         market_data.references.recover()
-        market_data.history.recover_from_data_plane()
         market_data.research.recover_from_data_plane()
         if observed_at is not None:
             market_data.references.schedule_security_master_refresh(observed_at)

@@ -8,8 +8,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.infra.market_data.history.daily_history_cache import HistoryCache
-from trader.infra.market_data.history.daily_history_warmup import HistoryWarmup
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
@@ -20,6 +18,7 @@ from trader.recommendation.infra.market_data.market_cache_identity import (
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_load_status import ResearchLoadReport, research_component_coverage
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
@@ -48,8 +47,7 @@ from trader.training.domain.evaluation.models import OutcomeBar
 @dataclass(frozen=True)
 class MarketFeatureDependencies:
     quotes: QuoteCache
-    history: HistoryCache
-    warmup: HistoryWarmup
+    history: PublishedHistoryCache
     research: ResearchLoader
     intraday: IntradayLoader
     references: ReferenceLoader
@@ -62,19 +60,15 @@ class MarketFeatureService:
     def __init__(
         self,
         dependencies: MarketFeatureDependencies,
-        *,
-        history_preload_limit: int,
     ) -> None:
         self.quotes = dependencies.quotes
         self.history = dependencies.history
-        self.warmup = dependencies.warmup
         self.research = dependencies.research
         self.intraday = dependencies.intraday
         self.references = dependencies.references
         self.runner = dependencies.runner
         self.health_reporter = dependencies.health
         self.eligibility = dependencies.eligibility
-        self.history_preload_limit = max(1, history_preload_limit)
 
     def reference_version(self) -> str:
         """Return the immutable reference epoch used by scoring caches."""
@@ -93,9 +87,6 @@ class MarketFeatureService:
         if cached is not None:
             self._record_quote_eligibility(tuple(feature.quote for feature in cached), observed_at)
             cached = self._eligible_features(cached, observed_at)
-            if self.runner.source_lanes is not None:
-                history_codes = _history_population_codes(tuple(feature.quote for feature in cached))
-                self.warmup.schedule_history_warmup(history_codes, observed_at)
             return cached
         quotes = tuple(
             self.runner.run_data_task_until(
@@ -110,21 +101,11 @@ class MarketFeatureService:
         self._record_quote_eligibility(quotes, observed_at)
         quotes = self._eligible_quotes(quotes, observed_at)
         history_codes = _history_population_codes(quotes)
-        if self.runner.source_lanes is not None:
-            self.warmup.schedule_history_warmup(history_codes, observed_at)
         action_restrictions: dict[str, set[str]] = {}
-        histories = (
-            self.history.load(
-                history_codes,
-                deadline=deadline,
-                action_restrictions=action_restrictions,
-            )
-            if self.runner.source_lanes is None
-            else self.history.cached(
-                history_codes,
-                fresh_only=False,
-                action_restrictions=action_restrictions,
-            )
+        histories = self.history.load(
+            history_codes,
+            deadline=deadline,
+            action_restrictions=action_restrictions,
         )
         self.runner.ensure_before_deadline(deadline)
         features = self.quotes.build_market_features(
@@ -394,7 +375,7 @@ class MarketFeatureService:
             force=force,
             security_master_codes=eligible_master,
         )
-        self.warmup.schedule_history_warmup(eligible, observed_at)
+        self.history.refresh()
 
     def refresh_intraday_tail(self, codes: Sequence[str], observed_at: datetime) -> None:
         self.intraday.load(self._eligible_codes(codes, observed_at), observed_at)

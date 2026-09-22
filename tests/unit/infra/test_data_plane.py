@@ -15,7 +15,6 @@ from trader.recommendation.application.ports.market_data_repository import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
-    HistoricalFeatureRecord,
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
@@ -32,7 +31,6 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     repository.initialize()
 
     repository.save_security_master_recent(_security_master_record("600001", payload={"field": "sm"}))
-    repository.save_historical_feature_recent(_historical_feature_record("600001", payload={"field": "hf"}))
     repository.save_risk_evidence_recent(_risk_evidence_record("600001", "r1"))
     repository.save_source_cursor_recent(_source_cursor_record("cursor-1"))
     repository.save_trading_calendar_recent(_trading_calendar_record())
@@ -40,9 +38,6 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
 
     assert repository.load_security_master_recent("600001") == _security_master_record(
         "600001", payload={"field": "sm"}
-    )
-    assert repository.load_historical_feature_recent("600001", "2026-07-30") == _historical_feature_record(
-        "600001", payload={"field": "hf"}
     )
     assert repository.load_risk_evidence_recent("600001", "r1") == _risk_evidence_record("600001", "r1")
     assert repository.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
@@ -75,34 +70,6 @@ def test_security_master_batch_uses_one_write_transaction(
 
     assert connection_count == 2
     assert repository.load_security_master_recent_records() == records
-    assert connection_count == 4
-
-
-def test_historical_feature_batch_uses_one_write_transaction(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    repository = DataPlaneRepository(tmp_path)
-    original_connection_scope = data_plane_sqlite.connection_scope
-    connection_count = 0
-
-    @contextmanager
-    def counting_connection_scope(database_path: Path) -> Iterator[object]:
-        nonlocal connection_count
-        connection_count += 1
-        with original_connection_scope(database_path) as connection:
-            yield connection
-
-    monkeypatch.setattr(data_plane_sqlite, "connection_scope", counting_connection_scope)
-    records = tuple(
-        _historical_feature_record("600001", trade_date=f"2026-07-{day:02d}", payload={"close": day})
-        for day in range(1, 21)
-    )
-
-    repository.save_historical_feature_recent_records(records)
-
-    assert connection_count == 2
-    assert repository.load_historical_feature_recent_records(codes=("600001",)) == records
     assert connection_count == 4
 
 
@@ -322,26 +289,6 @@ def _security_master_record(
         source_time=_timestamp(9, 29),
         source="unit",
         data_version=data_version,
-        payload=payload_data,
-        payload_hash=_payload_hash(payload_data),
-        schema_version="data_plane",
-    )
-
-
-def _historical_feature_record(
-    code: str,
-    *,
-    trade_date: str = "2026-07-30",
-    payload: JsonObject | None = None,
-) -> HistoricalFeatureRecord:
-    payload_data = payload or {"code": code, "trade_date": trade_date}
-    return HistoricalFeatureRecord(
-        code=code,
-        trade_date=trade_date,
-        observed_at=_timestamp(9, 30),
-        source_time=_timestamp(9, 29),
-        source="unit",
-        data_version="fixture",
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
         schema_version="data_plane",
