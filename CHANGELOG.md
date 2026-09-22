@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Show the 14-stage funnel counts on the dashboard](docs/changelog/2026-09-22-dashboard-14-stage-count-funnel.md)
 - [Separate score leaders and restore the header funnel summary](docs/changelog/2026-09-22-score-leaders-header-funnel.md)
 - [Unify recommendation history with the published download archive](docs/changelog/2026-09-22-published-history-single-owner.md)
 - [Stack dashboard Top scores vertically](docs/changelog/2026-09-22-dashboard-top-scores-vertical-layout.md)

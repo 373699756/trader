@@ -37,7 +37,7 @@
 
   例如：
 
-  config/reference_rules/
+  config/
   ├── market_structure.json
   ├── trading_rules.json
   ├── industry_taxonomy.json
@@ -216,7 +216,7 @@
 
   调整为：
 
-  config/reference_rules/
+  config/
   ├── market_structure.json
   ├── trading_rules.json
   ├── industry_taxonomy.json

@@ -142,7 +142,11 @@
         els.funnelStages.textContent = decisionPipelineDetails(pipeline);
         els.funnelScoreRange.textContent = finalScoreRange(pipeline);
       }
-      els.funnelMeta.textContent = funnelSummary(evaluated, actionEligible, selected, executableCount, observed);
+      els.funnelMeta.textContent = pipelineFunnelSummary(
+        inputQuality && inputQuality.stage_snapshots,
+        executableCount,
+        observed,
+      ) || pendingFunnelSummary(executableCount, observed);
       renderObservationStages(els, pipeline, false, runtimeIssues(statusPayload, payload.strategy));
     } else {
       const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
@@ -184,6 +188,21 @@
 
   function funnelSummary(evaluated, actionEligible, selected, executable, observed) {
     return `完整评分 ${displayCount(evaluated)} · 动作合格 ${displayCount(actionEligible)} · 最终入池 ${displayCount(selected)} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
+  }
+
+  function pipelineFunnelSummary(stageSnapshots, executable, observed) {
+    if (!Array.isArray(stageSnapshots) || stageSnapshots.length !== 14) return null;
+    const counts = stageSnapshots.map((stage) => stageSnapshotCount(stage));
+    return `14 层荐股评分链路 ${counts.join("→")} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
+  }
+
+  function pendingFunnelSummary(executable, observed) {
+    const counts = Array.from({ length: 14 }, () => "—");
+    return `14 层荐股评分链路 ${counts.join("→")} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
+  }
+
+  function stageSnapshotCount(stage) {
+    return displayCount(stage && stage.output_count);
   }
 
   function emptyFunnelSummary() {
@@ -1023,6 +1042,8 @@
     decisionPipelineDetails,
     healthView,
     inputPipelineDetails,
+    pendingFunnelSummary,
+    pipelineFunnelSummary,
     issueSummaryTitle,
     quoteAvailabilitySummary,
     recommendationReadinessStatus,

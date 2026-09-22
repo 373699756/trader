@@ -513,7 +513,6 @@ tr:focus-visible {
 .score-leaders-summary {
   position: relative;
   background: var(--surface-raised);
-  box-shadow: inset 3px 0 0 var(--blue);
 }
 
 .score-leaders-summary > span {

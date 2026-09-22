@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Show the 14-stage funnel counts on the dashboard](2026-09-22-dashboard-14-stage-count-funnel.md)
 - [Separate score leaders and restore the header funnel summary](2026-09-22-score-leaders-header-funnel.md)
 - [Unify recommendation history with the published download archive](2026-09-22-published-history-single-owner.md)
 - [Stack dashboard Top scores vertically](2026-09-22-dashboard-top-scores-vertical-layout.md)

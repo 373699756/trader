@@ -80,6 +80,7 @@ const state = {
   sourceLabel: sandbox.window.TraderRender.sourceLabel,
   formatDurationHms: sandbox.window.TraderStatusView.formatDurationHms,
   inputPipelineDetails: sandbox.window.TraderStatusView.inputPipelineDetails,
+  pipelineFunnelSummary: sandbox.window.TraderStatusView.pipelineFunnelSummary,
   decisionPipelineDetails: sandbox.window.TraderStatusView.decisionPipelineDetails,
   healthView: sandbox.window.TraderStatusView.healthView,
   quoteAvailabilitySummary: sandbox.window.TraderStatusView.quoteAvailabilitySummary,
@@ -430,6 +431,25 @@ assert.strictEqual(
   "输入准备 5289→320〔主要原因 流动性历史待下载/更新4969〕 ｜ 动态过滤 320→196 ｜ 板内总体 196（可靠度0.72–0.99）（仅观察125） ｜ 策略历史 196→195（60–248日） ｜ 模型输入 195→188（完整率84.0%–100.0%） ｜ 候选分 188→134（43.18–82.64，门槛50.00） ｜ 板内限额 134→134 ｜ 定向行情 134→125（年龄1.2–8.6秒） ｜ 输入完整性 行情125/125 · 证券资料125/125 · 历史125/125 ｜ 完整评分 125→110（基础分41.18–67.42）",
 );
 assert.strictEqual(
+  state.pipelineFunnelSummary(
+    Array.from({ length: 14 }, (_value, index) => ({
+      state: "ready",
+      output_count: [5291, 5291, 5291, 4000, 4000, 3600, 3000, 360, 350, 56, 20, 20, 20, 2][index],
+    })),
+    0,
+    2,
+  ),
+  "14 层荐股评分链路 5291→5291→5291→4000→4000→3600→3000→360→350→56→20→20→20→2 · 正式 0 · 观察 2",
+);
+assert.strictEqual(
+  state.pipelineFunnelSummary(
+    [{ state: "not_ready", pending_count: 12, output_count: 0 }],
+    0,
+    "已关闭",
+  ),
+  null,
+);
+assert.strictEqual(
   state.decisionPipelineDetails(pipelineFixture),
   "本地评分 110（39.18–65.42） ｜ DeepSeek 不适用 ｜ 融合评分 110（39.18–65.42）",
 );
@@ -627,7 +647,7 @@ assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "41.25–74.25");
 assert.strictEqual(
   summaryElements.funnelMeta.textContent,
-  "完整评分 56 · 动作合格 4 · 最终入池 4 · 正式 2 · 观察 2",
+  "14 层荐股评分链路 —→—→—→—→—→—→—→—→—→—→—→—→—→— · 正式 2 · 观察 2",
 );
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
