@@ -204,6 +204,8 @@ def _run(output_dir: Path) -> dict[str, object]:
               funnelMeta: document.querySelector('#funnelMeta').textContent,
               topScores: document.querySelector('#topScoresStatus').textContent,
               topScoresMeta: document.querySelector('#topScoresMeta').textContent,
+              topScoresHeight: document.querySelector('#topScoresStatus').getBoundingClientRect().height,
+              topScoresLineHeight: parseFloat(getComputedStyle(document.querySelector('#topScoresStatus')).lineHeight),
               source: document.querySelector('#quoteSource').textContent,
             };
             """,
@@ -382,7 +384,7 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
                     "公司风险历史暂不可核验（1只）"
                 ),
-                "summary": "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2 · 最高 74.25",
+                "summary": "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2",
                 "recommendation_message": (
                     "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
@@ -402,7 +404,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "动态过滤 待开始" in str(not_ready_summary.get("inputStages"))
             and "定向行情 360→360" in str(not_ready_summary.get("inputStages"))
             and not_ready_summary.get("funnel") == "等待评分输入"
-            and not_ready_summary.get("funnelMeta") == "等待本轮评分完成"
+            and not_ready_summary.get("funnelMeta") == "正在读取推荐漏斗"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("publicationStatus") == "采集中"
             and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
@@ -417,8 +419,10 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "模型成本门" not in str(quality_summary.get("funnelStages"))
             and "动作门 达观察线" not in str(quality_summary.get("funnelStages"))
             and quality_summary.get("scoreRange") == "评分范围 40.00–74.25 · 最高 74.25"
-            and quality_summary.get("funnelMeta") == "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2 · 最高 74.25"
-            and quality_summary.get("topScores") == "74.00 - 600009 - 上海机场\n72.00 - 600001 - 邯郸钢铁"
+            and quality_summary.get("funnelMeta") == "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2"
+            and quality_summary.get("topScores") == "74.00 · 600009 上海机场\n72.00 · 600001 邯郸钢铁"
+            and float(quality_summary.get("topScoresHeight", 0))
+            >= 2 * float(quality_summary.get("topScoresLineHeight", 0))
             and quality_summary.get("topScoresMeta") == "策略内最终评分 · 2 只"
             and quality_summary.get("source") == "腾讯行情"
             and all(_viewport_passed(viewport) for viewport in viewports)

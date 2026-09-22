@@ -473,7 +473,7 @@ assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动"
 assert.strictEqual(summaryElements.publicationMeta.textContent, "明 15:00 固化");
 assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
-  "82.00 · 600001 正式股票  /  75.00 · 600002 观察股票",
+  "82.00 · 600001 正式股票\n75.00 · 600002 观察股票",
 );
 const persistedPipelineElements = summaryFixture();
 state.renderSummary(
@@ -625,6 +625,10 @@ assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻�
 assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完成");
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "评分范围 41.25–74.25 · 最高 74.25");
+assert.strictEqual(
+  summaryElements.funnelMeta.textContent,
+  "完整评分 56 · 动作合格 4 · 最终入池 4 · 正式 2 · 观察 2",
+);
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
 assert.strictEqual(summaryElements.budgetMeta.textContent, "已用 / 剩余 · 上限 168 · 复核 0/0");

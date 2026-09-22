@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Stack dashboard Top scores vertically](2026-09-22-dashboard-top-scores-vertical-layout.md)
 - [Expose immutable market epochs and complete pipeline snapshots](2026-09-22-market-epochs-complete-pipeline-snapshots.md)
 - [Reposition dashboard market and score status](2026-09-21-dashboard-status-information-placement.md)
 - [Retire Today and V1 from the active recommendation product](2026-09-19-recommendation-identity-cutover.md)

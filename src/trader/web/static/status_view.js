@@ -141,7 +141,7 @@
         els.funnelStatus.textContent = "评分链路已完成";
         els.funnelStages.textContent = decisionPipelineDetails(pipeline);
         els.funnelScoreRange.textContent = finalScoreRange(pipeline);
-        els.funnelMeta.textContent = `完整评分 ${displayCount(evaluated)} · 动作合格 ${displayCount(actionEligible)} · 最终入池 ${displayCount(selected)} · 正式 ${executableCount} · 观察 ${observed} · 最高 ${topScore}`;
+        els.funnelMeta.textContent = `完整评分 ${displayCount(evaluated)} · 动作合格 ${displayCount(actionEligible)} · 最终入池 ${displayCount(selected)} · 正式 ${executableCount} · 观察 ${observed}`;
       }
       renderObservationStages(els, pipeline, false, runtimeIssues(statusPayload, payload.strategy));
     } else {
@@ -496,7 +496,7 @@
     const scoreEvidenceMissing = tomorrowCostBlocked && Number.isInteger(evaluated) && evaluated === 0;
     const maximum = scoreEvidenceMissing ? null : finiteNumber(diagnostics.maximum_final_score);
     els.topScoresStatus.textContent = scoredItems.length
-      ? scoredItems.map((item) => `${item.score.toFixed(2)} · ${item.code} ${item.name}`).join("  /  ")
+      ? scoredItems.map((item) => `${item.score.toFixed(2)} · ${item.code} ${item.name}`).join("\n")
       : scoreEvidenceMissing
         ? "暂无可核验评分"
         : maximum == null

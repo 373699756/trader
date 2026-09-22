@@ -489,28 +489,34 @@ tr:focus-visible {
   min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
+  grid-template-areas:
+    "score-range top-scores"
+    "score-meta top-scores"
+    "funnel-meta funnel-meta";
   column-gap: 12px;
-  align-items: baseline;
+  row-gap: 2px;
+  align-items: start;
   margin-top: 3px;
 }
 
 .data-status-score-summary .funnel-score-range {
+  grid-area: score-range;
   margin-top: 0;
   min-width: 0;
 }
 
 .data-status-score-summary > strong.top-scores-list {
+  grid-area: top-scores;
   min-width: 0;
-  height: 17px;
+  height: auto;
   min-height: 17px;
   display: block;
   margin-top: 2px;
-  overflow: hidden;
+  overflow: visible;
   color: var(--blue);
   font-size: 12px;
   line-height: 17px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre-line;
 }
 
 .data-status-score-summary > small {
@@ -523,6 +529,14 @@ tr:focus-visible {
   line-height: 15px;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.data-status-score-summary > #topScoresMeta {
+  grid-area: score-meta;
+}
+
+.data-status-score-summary > #funnelMeta {
+  grid-area: funnel-meta;
 }
 
 .input-quality-live {
