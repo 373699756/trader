@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import platform
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -27,6 +28,7 @@ from trader.download.domain.baostock_daily import (
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
 _DAILY_FACT_FIELDS = "date,code,tradestatus,isST"
+_QFQ_FACTOR_QUANTUM = Decimal("0.000001")
 
 
 @dataclass(frozen=True)
@@ -187,12 +189,13 @@ class BaoStockRowGateway:
         expected = calendar.expected_dates(security)
         if not expected:
             return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
-        raw, facts, raw_nulls, raw_future = self._daily_sides(
+        raw, facts, raw_nulls, raw_future, _raw_unavailable = self._daily_sides(
             spec,
             security,
             _DailySideQuery("unadjusted", "3", expected),
         )
-        qfq, qfq_nulls, qfq_future = self._qfq_sides(spec, security, expected)
+        qfq, qfq_nulls, qfq_future, unavailable = self._qfq_sides(spec, security, expected)
+        qfq = _reconstruct_unavailable_qfq(raw, qfq, unavailable, expected)
         batch = join_baostock_daily_sides(
             BaoStockDailyJoinRequest(
                 security.code,
@@ -223,19 +226,26 @@ class BaoStockRowGateway:
         spec: BaoStockDailySpec,
         security: BaoStockSecurity,
         expected: tuple[date, ...],
-    ) -> tuple[tuple[BaoStockDailySide, ...], int, int]:
+    ) -> tuple[tuple[BaoStockDailySide, ...], int, int, tuple[date, ...]]:
         combined_sides: list[BaoStockDailySide] = []
+        unavailable_dates: list[date] = []
         null_rows = future_rows = 0
         for source_code, dates in qfq_source_windows(security.source_code, expected):
-            values, _facts, invalid, future = self._daily_sides(
+            values, _facts, invalid, future, unavailable = self._daily_sides(
                 spec,
                 security,
                 _DailySideQuery("qfq", "2", dates, source_code),
             )
             combined_sides.extend(values)
+            unavailable_dates.extend(unavailable)
             null_rows += invalid
             future_rows += future
-        return tuple(sorted(combined_sides, key=lambda item: item.trade_date)), null_rows, future_rows
+        return (
+            tuple(sorted(combined_sides, key=lambda item: item.trade_date)),
+            null_rows,
+            future_rows,
+            tuple(sorted(unavailable_dates)),
+        )
 
     def fetch_daily_facts(
         self,
@@ -322,7 +332,7 @@ class BaoStockRowGateway:
         spec: BaoStockDailySpec,
         security: BaoStockSecurity,
         query: _DailySideQuery,
-    ) -> tuple[tuple[BaoStockDailySide, ...], tuple[BaoStockDailyFact, ...], int, int]:
+    ) -> tuple[tuple[BaoStockDailySide, ...], tuple[BaoStockDailyFact, ...], int, int, tuple[date, ...]]:
         query_code = query.source_code or security.source_code
         result = self._sdk.query_history_k_data_plus(
             query_code,
@@ -336,14 +346,20 @@ class BaoStockRowGateway:
         sides: list[BaoStockDailySide] = []
         facts: list[BaoStockDailyFact] = []
         null_rows = future_rows = 0
+        unavailable_dates: list[date] = []
         for row in rows:
             try:
                 trade_date = _date(row.get("date"), "BaoStock daily date is missing")
                 if trade_date > spec.source_cutoff:
                     future_rows += 1
                     continue
-                if row.get("code") != query_code or row.get("adjustflag") != query.adjustflag:
+                if row.get("code") != query_code:
                     raise ValueError("BaoStock daily row identity is invalid")
+                if query.adjustment == "qfq" and row.get("adjustflag") == "3":
+                    unavailable_dates.append(trade_date)
+                    continue
+                if row.get("adjustflag") != query.adjustflag:
+                    raise ValueError("BaoStock daily row adjustment is invalid")
                 side = _daily_side(security.code, trade_date, query.adjustment, row)
                 if query.adjustment == "unadjusted":
                     facts.append(BaoStockDailyFact(security.code, trade_date, _is_st(row.get("isST"))))
@@ -351,7 +367,119 @@ class BaoStockRowGateway:
                 null_rows += 1
                 continue
             sides.append(side)
-        return tuple(sides), tuple(facts), null_rows, future_rows
+        return tuple(sides), tuple(facts), null_rows, future_rows, tuple(sorted(unavailable_dates))
+
+
+def _reconstruct_unavailable_qfq(
+    raw: tuple[BaoStockDailySide, ...],
+    qfq: tuple[BaoStockDailySide, ...],
+    unavailable: tuple[date, ...],
+    expected: tuple[date, ...],
+) -> tuple[BaoStockDailySide, ...]:
+    """Rebuild only BaoStock's explicit early-listing qfq adjustment gaps."""
+    if not unavailable:
+        return qfq
+    missing = tuple(sorted(set(unavailable)))
+    expected_set = set(expected)
+    if len(missing) != len(unavailable) or not set(missing).issubset(expected_set):
+        raise RuntimeError("supplier_adjustment_unavailable")
+    raw_by_date = {item.trade_date: item for item in raw}
+    qfq_by_date = {item.trade_date: item for item in qfq}
+    if any(day not in raw_by_date or day in qfq_by_date for day in missing):
+        raise RuntimeError("supplier_adjustment_unavailable")
+    suspended = {day for day in missing if raw_by_date[day].trading_status == "suspended"}
+    repaired = [_scaled_qfq(raw_by_date[day], Decimal("1")) for day in sorted(suspended)]
+    requested = set(missing) - suspended
+    if not requested:
+        return tuple(sorted((*qfq, *repaired), key=lambda item: item.trade_date))
+    missing_indices = [expected.index(day) for day in requested]
+    last_gap = max(missing_indices)
+    anchor_index = next(
+        (
+            index
+            for index in range(last_gap + 1, len(expected))
+            if _has_qfq_anchor(raw_by_date.get(expected[index]), qfq_by_date.get(expected[index]))
+        ),
+        None,
+    )
+    if anchor_index is None:
+        raise RuntimeError("supplier_adjustment_unavailable")
+    anchor_day = expected[anchor_index]
+    anchor_raw = raw_by_date[anchor_day]
+    anchor_qfq = qfq_by_date[anchor_day]
+    assert anchor_qfq is not None
+    factor = _qfq_factor(anchor_qfq, anchor_raw)
+    for index in range(anchor_index - 1, min(missing_indices) - 1, -1):
+        current_raw = raw_by_date.get(expected[index + 1])
+        previous_day = expected[index]
+        previous_raw = raw_by_date.get(previous_day)
+        if (
+            current_raw is None
+            or previous_raw is None
+            or current_raw.preclose is None
+            or previous_raw.close_price is None
+            or current_raw.preclose <= 0
+            or previous_raw.close_price <= 0
+        ):
+            raise RuntimeError("supplier_adjustment_unavailable")
+        try:
+            factor = (factor * Decimal(str(current_raw.preclose)) / Decimal(str(previous_raw.close_price))).quantize(
+                _QFQ_FACTOR_QUANTUM, rounding=ROUND_HALF_UP
+            )
+        except (InvalidOperation, ZeroDivisionError) as exc:
+            raise RuntimeError("supplier_adjustment_unavailable") from exc
+        previous_qfq = qfq_by_date.get(previous_day)
+        if previous_qfq is not None:
+            factor = _qfq_factor(previous_qfq, previous_raw)
+        if previous_day in requested:
+            repaired.append(_scaled_qfq(previous_raw, factor))
+    if {item.trade_date for item in repaired} != requested:
+        raise RuntimeError("supplier_adjustment_unavailable")
+    return tuple(sorted((*qfq, *repaired), key=lambda item: item.trade_date))
+
+
+def _has_qfq_anchor(raw: BaoStockDailySide | None, qfq: BaoStockDailySide | None) -> bool:
+    return bool(
+        raw is not None
+        and qfq is not None
+        and raw.close_price is not None
+        and qfq.close_price is not None
+        and raw.close_price > 0
+        and qfq.close_price > 0
+    )
+
+
+def _qfq_factor(qfq: BaoStockDailySide, raw: BaoStockDailySide) -> Decimal:
+    if qfq.close_price is None or raw.close_price is None or qfq.close_price <= 0 or raw.close_price <= 0:
+        raise RuntimeError("supplier_adjustment_unavailable")
+    try:
+        return (Decimal(str(qfq.close_price)) / Decimal(str(raw.close_price))).quantize(
+            _QFQ_FACTOR_QUANTUM,
+            rounding=ROUND_HALF_UP,
+        )
+    except (InvalidOperation, ZeroDivisionError) as exc:
+        raise RuntimeError("supplier_adjustment_unavailable") from exc
+
+
+def _scaled_qfq(raw: BaoStockDailySide, factor: Decimal) -> BaoStockDailySide:
+    def scale(value: float | None) -> float | None:
+        return None if value is None else float(Decimal(str(value)) * factor)
+
+    return BaoStockDailySide(
+        raw.code,
+        raw.trade_date,
+        "qfq",
+        scale(raw.open_price),
+        scale(raw.high_price),
+        scale(raw.low_price),
+        scale(raw.close_price),
+        raw.volume,
+        raw.amount,
+        None,
+        None,
+        None,
+        raw.trading_status,
+    )
 
 
 def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:

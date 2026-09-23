@@ -161,6 +161,56 @@ def test_gateway_uses_real_historical_code_for_qfq_before_code_identity_change()
     ]
 
 
+def test_gateway_reconstructs_explicit_early_listing_qfq_gap() -> None:
+    class _UnavailableFirstQfqSdk(_Sdk):
+        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+            result = super().query_history_k_data_plus(code, fields, start_date, end_date, **kwargs)
+            if kwargs["adjustflag"] != "2":
+                return result
+            rows = []
+            while result.next():
+                row = list(result.get_row_data())
+                if row[0] == "2026-08-29":
+                    row[9] = "3"
+                rows.append(tuple(row))
+            return _Result(tuple(fields.split(",")), tuple(rows))
+
+    gateway = BaoStockRowGateway(_UnavailableFirstQfqSdk(), python_version="3.14.0")
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+    security = gateway.fetch_universe(spec)[0]
+
+    batch = gateway.fetch_code_download(spec, security, calendar).batch
+
+    assert all(cell.status == "complete" for cell in batch.cells)
+    assert batch.cells[0].qfq is not None
+    assert batch.cells[0].qfq.close_price == pytest.approx(9.9)
+
+
+def test_gateway_preserves_explicit_suspended_qfq_gap() -> None:
+    class _SuspendedQfqSdk(_Sdk):
+        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+            result = super().query_history_k_data_plus(code, fields, start_date, end_date, **kwargs)
+            rows = []
+            while result.next():
+                row = list(result.get_row_data())
+                if row[0] == "2026-08-29":
+                    row[11] = "0"
+                    if kwargs["adjustflag"] == "2":
+                        row[9] = "3"
+                rows.append(tuple(row))
+            return _Result(tuple(fields.split(",")), tuple(rows))
+
+    gateway = BaoStockRowGateway(_SuspendedQfqSdk(), python_version="3.14.0")
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+    security = gateway.fetch_universe(spec)[0]
+
+    batch = gateway.fetch_code_download(spec, security, calendar).batch
+
+    assert batch.cells[0].status == "supplier_marked_suspended"
+
+
 def test_qfq_source_windows_follow_the_confirmed_001872_code_change() -> None:
     dates = (date(2018, 12, 25), date(2018, 12, 26))
 
