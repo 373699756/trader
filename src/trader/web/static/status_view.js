@@ -133,7 +133,12 @@
     } else if (pipeline) {
       const actionEligible = finiteNonNegativeInteger(action && action.output_count);
       const selected = finiteNonNegativeInteger(concentration && concentration.output_count);
-      if (!pipelineHasProgress(pipeline) || evaluated == null || actionEligible == null || selected == null) {
+      const hasPipelineProgress = pipelineHasProgress(pipeline);
+      const hasFunnelProgress = hasPipelineProgress
+        && evaluated != null
+        && actionEligible != null
+        && selected != null;
+      if (!hasFunnelProgress) {
         els.funnelStatus.textContent = "等待评分输入";
         els.funnelStages.textContent = "评分链路尚未开始";
         els.funnelScoreRange.textContent = "—";
@@ -146,7 +151,8 @@
         inputQuality && inputQuality.stage_snapshots,
         executableCount,
         observed,
-      ) || pendingFunnelSummary(executableCount, observed);
+        hasFunnelProgress,
+      ) || pendingFunnelSummary(executableCount, observed, hasFunnelProgress);
       renderObservationStages(
         els,
         inputQuality && inputQuality.stage_snapshots,
@@ -196,15 +202,22 @@
     return `完整评分 ${displayCount(evaluated)} · 动作合格 ${displayCount(actionEligible)} · 最终入池 ${displayCount(selected)} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
   }
 
-  function pipelineFunnelSummary(stageSnapshots, executable, observed) {
+  function pipelineFunnelSummary(stageSnapshots, executable, observed, hasProgress = false) {
     if (!Array.isArray(stageSnapshots) || stageSnapshots.length !== 14) return null;
     const counts = stageSnapshots.map((stage) => stageSnapshotCount(stage));
+    if (counts.every((count) => count === "—")) {
+      return compactPendingFunnelSummary(executable, observed, hasProgress);
+    }
     return `14 层荐股评分链路 ${counts.join("→")} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
   }
 
-  function pendingFunnelSummary(executable, observed) {
-    const counts = Array.from({ length: 14 }, () => "—");
-    return `14 层荐股评分链路 ${counts.join("→")} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
+  function pendingFunnelSummary(executable, observed, hasProgress = false) {
+    return compactPendingFunnelSummary(executable, observed, hasProgress);
+  }
+
+  function compactPendingFunnelSummary(executable, observed, hasProgress) {
+    const status = hasProgress ? "计数待就绪" : "待启动";
+    return `14 层链路${status} · 正式 ${displayCount(executable)} · 观察 ${observed == null ? "—" : observed}`;
   }
 
   function stageSnapshotCount(stage) {

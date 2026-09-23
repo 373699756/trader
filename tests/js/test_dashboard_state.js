@@ -692,7 +692,7 @@ assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "41.25–74.25");
 assert.strictEqual(
   summaryElements.funnelMeta.textContent,
-  "14 层荐股评分链路 —→—→—→—→—→—→—→—→—→—→—→—→—→— · 正式 2 · 观察 2",
+  "14 层链路计数待就绪 · 正式 2 · 观察 2",
 );
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
@@ -737,6 +737,10 @@ assert.strictEqual(summaryElements.funnelStatus.textContent, "等待评分输入
 assert.strictEqual(
   summaryElements.funnelStages.textContent,
   "评分链路尚未开始",
+);
+assert.strictEqual(
+  summaryElements.funnelMeta.textContent,
+  "14 层链路待启动 · 正式 0 · 观察 已关闭",
 );
 assert.strictEqual(
   summaryElements.inputQualityStages.textContent,

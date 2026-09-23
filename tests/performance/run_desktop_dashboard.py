@@ -186,9 +186,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "quality funnel",
         )
         _wait(
-            lambda: "600009" in str(
-                _execute(base, 'return document.querySelector("#topScoresStatus").textContent;')
-            ),
+            lambda: "600009" in str(_execute(base, 'return document.querySelector("#topScoresStatus").textContent;')),
             "data status top scores",
         )
         quality_summary = _execute(
@@ -213,9 +211,7 @@ def _run(output_dir: Path) -> dict[str, object]:
         output_dir.mkdir(parents=True, exist_ok=True)
         _set_viewport(base, 1440, 900)
         quality_screenshot = _screenshot(base)
-        (output_dir / "desktop-data-status-1440x900.png").write_bytes(
-            base64.b64decode(str(quality_screenshot))
-        )
+        (output_dir / "desktop-data-status-1440x900.png").write_bytes(base64.b64decode(str(quality_screenshot)))
         observations: list[_ObservationResult] = []
         expected_top_codes = {"tomorrow": "600009", "d25": "600010"}
         for strategy in ("tomorrow", "d25"):
@@ -384,7 +380,9 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
                     "公司风险历史暂不可核验（1只）"
                 ),
-                "summary": "完整评分 56 · 动作合格 2 · 最终入池 2 · 正式 0 · 观察 2",
+                "summary": (
+                    "14 层荐股评分链路 5291→5291→5291→1000→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
+                ),
                 "recommendation_message": (
                     "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
@@ -404,7 +402,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "动态过滤 待开始" in str(not_ready_summary.get("inputStages"))
             and "定向行情 360→360" in str(not_ready_summary.get("inputStages"))
             and not_ready_summary.get("funnel") == "等待评分输入"
-            and not_ready_summary.get("funnelMeta") == "14 层荐股评分链路 —→—→—→—→—→—→—→—→—→—→—→—→—→— · 正式 0 · 观察 已关闭"
+            and not_ready_summary.get("funnelMeta") == "14 层链路待启动 · 正式 0 · 观察 已关闭"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("publicationStatus") == "采集中"
             and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
@@ -419,7 +417,8 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "模型成本门" not in str(quality_summary.get("funnelStages"))
             and "动作门 达观察线" not in str(quality_summary.get("funnelStages"))
             and quality_summary.get("scoreRange") == "40.00–74.25"
-            and quality_summary.get("funnelMeta") == "14 层荐股评分链路 5291→5291→5291→1000→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
+            and quality_summary.get("funnelMeta")
+            == "14 层荐股评分链路 5291→5291→5291→1000→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
             and quality_summary.get("topScores") == "1  74.00 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁"
             and float(quality_summary.get("topScoresHeight", 0))
             >= 2 * float(quality_summary.get("topScoresLineHeight", 0))
