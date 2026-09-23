@@ -501,9 +501,12 @@
     const health = healthView(statusPayload, snapshotReasons, strategy);
     const activeIssues = health.issues.filter((issue) => issue.recoveryStatus !== "recovered");
     const alwaysVisible = Boolean(els.errorDetailsButton.classList && els.errorDetailsButton.classList.contains("observation-trigger"));
+    const observationAvailable = setObservationTriggerAvailability(els, strategy);
     els.errorDetailsButton.hidden = !alwaysVisible && activeIssues.length === 0;
     els.errorDetailsButton.dataset.level = health.level;
-    els.healthBadge.textContent = alwaysVisible
+    els.healthBadge.textContent = !observationAvailable
+      ? "观察不适用"
+      : alwaysVisible
       ? (activeIssues.length ? `观察 · ${activeIssues.length}项异常` : "观察")
       : `${health.level === "error" ? "错误" : "异常"} ${activeIssues.length}`;
     if (els.observationErrorCount) els.observationErrorCount.textContent = String(activeIssues.length);
@@ -511,6 +514,16 @@
       health.issues.forEach((issue) => rememberDiagnostic(issue.code));
     }
     return { ...health, visibleIssues: activeIssues };
+  }
+
+  function setObservationTriggerAvailability(els, strategy) {
+    const available = strategy !== "long";
+    els.errorDetailsButton.disabled = !available;
+    els.errorDetailsButton.title = available
+      ? "查看评分链路观察面板"
+      : "长期策略不展示评分链路观察面板";
+    if (!available) els.errorDetailsButton.setAttribute?.("aria-expanded", "false");
+    return available;
   }
 
   function renderBudgetSummary(els, budget, payload) {
@@ -703,6 +716,7 @@
       returnFocus = null;
     };
     const open = () => {
+      if (els.errorDetailsButton.disabled) return;
       if (typeof beforeOpen === "function") beforeOpen();
       returnFocus = document.activeElement;
       if (els.observationErrorContent) els.observationErrorContent.innerHTML = runtimeErrorRows(unassignedIssues(issues));
@@ -1101,6 +1115,7 @@
     renderPublicationStatus,
     renderTopScores,
     renderSummary,
+    setObservationTriggerAvailability,
     topScoredStocks,
     runtimeErrorRows,
     updateQuoteAge,

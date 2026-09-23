@@ -186,6 +186,7 @@
     }
     closeDrawer();
     errorDrawer.close(false);
+    statusView.setObservationTriggerAvailability(els, nextStrategy);
     els.dateSelect.disabled = true;
     els.strategyDescription.textContent = selection.descriptions[nextStrategy];
     stateRenderer.setLongControls(nextStrategy === "long");

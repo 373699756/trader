@@ -328,6 +328,26 @@ def _run(output_dir: Path) -> dict[str, object]:
             return { code: row && row.dataset.code, values, complete: values.length > 0 && !values.includes('-') };
             """,
         )
+        long_observation_guard = _execute(
+            base,
+            """
+            const button = document.querySelector('#errorDetailsButton');
+            const drawer = document.querySelector('#observationDrawer');
+            const result = {
+              disabled: button.disabled,
+              label: document.querySelector('#healthBadge').textContent,
+              drawerOpenBefore: drawer.classList.contains('is-open'),
+            };
+            button.click();
+            result.drawerOpenAfter = drawer.classList.contains('is-open');
+            return result;
+            """,
+        )
+        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
+        _wait(
+            lambda: not bool(_execute(base, 'return document.querySelector("#errorDetailsButton").disabled;')),
+            "tomorrow observation trigger enabled",
+        )
         _set_viewport(base, 1440, 900)
         _execute(base, 'document.querySelector("#errorDetailsButton").click(); return true;')
         _wait(
@@ -357,6 +377,13 @@ def _run(output_dir: Path) -> dict[str, object]:
         detail_screenshot = _screenshot(base)
         (output_dir / "desktop-error-details-1440x900.png").write_bytes(base64.b64decode(str(detail_screenshot)))
         _execute(base, 'document.querySelector("#observationDrawerClose").click(); return true;')
+        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
+        _wait(
+            lambda: (
+                _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
+            ),
+            "long table rows after observation guard",
+        )
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
         scripts = _execute(base, "return Array.from(document.scripts).map((item) => item.src);")
         expected = "/static/dashboard.js"
@@ -394,6 +421,13 @@ def _run(output_dir: Path) -> dict[str, object]:
             and error_details["scores_absent"] is True
             and isinstance(long_quote_fields, dict)
             and long_quote_fields.get("complete") is True
+            and long_observation_guard
+            == {
+                "disabled": True,
+                "label": "观察不适用",
+                "drawerOpenBefore": False,
+                "drawerOpenAfter": False,
+            }
             and isinstance(not_ready_summary, dict)
             and bool(re.fullmatch(r"(?:\d+时 )?(?:\d+分 )?\d+秒", str(not_ready_summary.get("age"))))
             and not_ready_summary.get("source") == "腾讯行情"
@@ -436,6 +470,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "quality_summary": quality_summary,
             "error_details": error_details,
             "long_quote_fields": long_quote_fields,
+            "long_observation_guard": long_observation_guard,
             "viewports": viewports,
             "scripts": scripts,
             "external_network_calls": 0,
@@ -818,6 +853,7 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           publicationMeta: document.querySelector('#publicationMeta').textContent,
           topScoresStatus: document.querySelector('#topScoresStatus').textContent,
           healthBadge: document.querySelector('#healthBadge').textContent,
+          observationDisabled: document.querySelector('#errorDetailsButton').disabled,
           rows: document.querySelectorAll('#tableBody tr[data-code]').length,
           scopes: document.querySelectorAll('#longScopeTabs button[data-scope]').length,
           browserErrors: window.TraderDashboardDiagnostics.snapshot().browserErrors,
@@ -878,7 +914,8 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("publicationStatus") == "不适用"
         and result.get("publicationMeta") == "长期固定观察池，不评分、不冻结"
         and result.get("topScoresStatus") == "暂无评分数据"
-        and result.get("healthBadge") == "观察 · 1项异常"
+        and result.get("healthBadge") == "观察不适用"
+        and result.get("observationDisabled") is True
         and result.get("rows")
         and result.get("scopes") == 3
         and result.get("browserErrors") == []

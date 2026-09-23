@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Disable the scoring observation trigger for Long](docs/changelog/2026-09-23-long-observation-trigger.md)
 - [Compact the unstarted dashboard funnel](docs/changelog/2026-09-23-compact-unstarted-dashboard-funnel.md)
 - [Render the canonical 14-stage recommendation snapshots](docs/changelog/2026-09-23-canonical-14-stage-observation.md)
 - [Recover missing recommendation history at runtime](docs/changelog/2026-09-23-recommendation-history-recovery.md)

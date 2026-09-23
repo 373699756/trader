@@ -913,7 +913,7 @@ const normalHealth = state.healthView({ health: { level: "normal", issue_count: 
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
 assert.strictEqual(normalHealth.primary, null);
 const healthElements = {
-  errorDetailsButton: { hidden: false, dataset: {} },
+  errorDetailsButton: { hidden: false, disabled: false, dataset: {}, title: "" },
   healthBadge: { textContent: "" },
 };
 const recoveredHealth = state.renderHealth(healthElements, {
@@ -939,8 +939,23 @@ const activeHealth = state.renderHealth(healthElements, {
   }],
 }, [], "tomorrow");
 assert.strictEqual(healthElements.errorDetailsButton.hidden, false);
+assert.strictEqual(healthElements.errorDetailsButton.disabled, false);
 assert.strictEqual(healthElements.healthBadge.textContent, "异常 1");
 assert.strictEqual(activeHealth.visibleIssues.length, 1);
+const longHealth = state.renderHealth(healthElements, {
+  health: { level: "degraded", issue_count: 1 },
+  recent_errors: [{
+    code: "refresh:source_unavailable",
+    severity: "degraded",
+    strategy: null,
+    stage: "refresh",
+    recovery_status: "active",
+  }],
+}, [], "long");
+assert.strictEqual(healthElements.errorDetailsButton.disabled, true);
+assert.strictEqual(healthElements.errorDetailsButton.title, "长期策略不展示评分链路观察面板");
+assert.strictEqual(healthElements.healthBadge.textContent, "观察不适用");
+assert.strictEqual(longHealth.visibleIssues.length, 1);
 assert.strictEqual(
   sandbox.window.TraderStatusView.issueSummaryTitle(degradedHealth.issues),
   "最近错误 · 活动2项",

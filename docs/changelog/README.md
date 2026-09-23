@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Disable the scoring observation trigger for Long](2026-09-23-long-observation-trigger.md)
 - [Compact the unstarted dashboard funnel](2026-09-23-compact-unstarted-dashboard-funnel.md)
 - [Reconstruct explicit early-listing BaoStock qfq gaps](2026-09-23-baostock-early-listing-qfq-reconstruction.md)
 - [Bound routine history maintenance to changed data](2026-09-22-bounded-history-incremental-maintenance.md)
