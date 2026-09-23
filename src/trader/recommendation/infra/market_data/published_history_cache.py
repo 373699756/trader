@@ -19,6 +19,10 @@ from trader.infra.market_data.history.history import (
     require_qfq_history,
 )
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
+from trader.recommendation.infra.market_data.history_recovery import (
+    HistoryRecovery,
+    HistoryRecoveryStatus,
+)
 from trader.training.domain.evaluation.models import OutcomeBar
 
 _RAW_RETENTION_SESSIONS = 20
@@ -42,6 +46,7 @@ class PublishedHistoryStatus:
     maintenance_stage: str | None
     maintenance_completed_units: int
     maintenance_total_units: int
+    recovery: HistoryRecoveryStatus = HistoryRecoveryStatus(0, 0, 0, 0, None, None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,9 +63,11 @@ class PublishedHistoryCache:
         history: ReadPublishedHistoryUseCase,
         *,
         lookback_sessions: int,
+        recovery: HistoryRecovery | None = None,
     ) -> None:
         self._history = history
         self._lookback_sessions = max(61, lookback_sessions)
+        self._recovery = recovery
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._manifest: PublishedHistoryManifest | None = None
@@ -130,9 +137,24 @@ class PublishedHistoryCache:
         deadline: datetime | None = None,
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
-        del force, deadline
+        del force
         self.refresh()
-        return self.cached(codes, action_restrictions=action_restrictions)
+        result = self.cached(codes)
+        if self._recovery is not None:
+            missing = tuple(code for code in dict.fromkeys(codes) if code not in result)
+            if missing:
+                result.update(
+                    self._recovery.recover(
+                        missing,
+                        days=self._lookback_sessions,
+                        deadline=deadline,
+                    )
+                )
+        if action_restrictions is not None:
+            for code in dict.fromkeys(codes):
+                if code not in result:
+                    action_restrictions.setdefault(code, set()).add("history_data_pending")
+        return result
 
     def cached(
         self,
@@ -159,11 +181,12 @@ class PublishedHistoryCache:
         del observed_at
         require_qfq_history(histories)
         with self._lock:
-            return {
-                code: self._entries[code].context
-                for code in histories
-                if code in self._entries
-            }
+            entries = dict(self._entries)
+        return {
+            code: entries[code].context if code in entries else build_history_context(bars, lookback_sessions=self._lookback_sessions)
+            for code, bars in histories.items()
+            if bars
+        }
 
     def update_coverage(self, codes: Sequence[str], data_versions: Sequence[str] | None = None) -> None:
         del data_versions
@@ -195,6 +218,11 @@ class PublishedHistoryCache:
                 maintenance_stage=self._maintenance_stage,
                 maintenance_completed_units=self._maintenance_completed_units,
                 maintenance_total_units=self._maintenance_total_units,
+                recovery=(
+                    self._recovery.status()
+                    if self._recovery is not None
+                    else HistoryRecoveryStatus(0, 0, 0, 0, None, None)
+                ),
             )
 
     def entries(self) -> Mapping[str, PublishedHistoryEntry]:

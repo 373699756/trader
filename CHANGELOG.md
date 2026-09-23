@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Recover missing recommendation history at runtime](docs/changelog/2026-09-23-recommendation-history-recovery.md)
 - [Reconstruct explicit early-listing BaoStock qfq gaps](docs/changelog/2026-09-23-baostock-early-listing-qfq-reconstruction.md)
 - [Bound routine history maintenance to changed data](docs/changelog/2026-09-22-bounded-history-incremental-maintenance.md)
 - [Show the 14-stage funnel counts on the dashboard](docs/changelog/2026-09-22-dashboard-14-stage-count-funnel.md)

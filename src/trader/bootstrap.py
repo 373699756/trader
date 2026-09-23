@@ -39,6 +39,7 @@ from trader.recommendation.infra.market_data.market_data_health import MarketDat
 from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureDependencies, MarketFeatureService
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.infra.runtime_resources import RuntimeWorkerResources
@@ -662,6 +663,14 @@ def _build_market_data(
             SQLitePublishedHistoryArchive(settings.project_root / "data" / "history" / "baostock")
         ),
         lookback_sessions=history_lookback_sessions,
+        recovery=HistoryRecovery(
+            tencent,
+            eastmoney,
+            worker_pool=data_pool,
+            workers=settings.pipeline.market_workers,
+            batch_timeout_seconds=max(1.0, settings.market_data.eastmoney_timeout_seconds * 1.5),
+            wall_clock=now,
+        ),
     )
     references = ReferenceLoader(
         gateway,
