@@ -139,6 +139,7 @@ class RuntimeSettings:
     config_path: Path
     project_root: Path
     runtime_dir: Path
+    freeze_dir: Path
     strategy_config_path: Path
     long_watchlist_path: Path
     server: ServerSettings

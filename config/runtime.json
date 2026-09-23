@@ -1,5 +1,6 @@
 {
   "runtime_dir": ".runtime/trader",
+  "freeze_dir": "data/freeze",
   "strategy_config": "strategy.json",
   "long_watchlist": "long_watchlist.json",
   "server": {

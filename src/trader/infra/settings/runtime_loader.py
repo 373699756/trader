@@ -74,6 +74,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         raw,
         {
             "runtime_dir",
+            "freeze_dir",
             "strategy_config",
             "long_watchlist",
             "server",
@@ -174,6 +175,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     host = os.environ.get("TRADER_HOST", _text(server_raw, "host"))
     port = _environment_integer("TRADER_PORT", _integer(server_raw, "port", minimum=1, maximum=65535))
     runtime_dir = _resolve_project_path(project_root, _text(raw, "runtime_dir"))
+    freeze_dir = _resolve_project_path(project_root, _text(raw, "freeze_dir"))
     strategy_config_path = _resolve_config_path(config_dir, _text(raw, "strategy_config"))
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
 
@@ -186,6 +188,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         config_path=path,
         project_root=project_root,
         runtime_dir=runtime_dir,
+        freeze_dir=freeze_dir,
         strategy_config_path=strategy_config_path,
         long_watchlist_path=long_watchlist_path,
         server=ServerSettings(

@@ -41,6 +41,7 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.api.default_top_n == 12
     assert runtime.api.maximum_top_n == 12
     assert runtime.runtime_dir == PROJECT_ROOT / ".runtime" / "trader"
+    assert runtime.freeze_dir == PROJECT_ROOT / "data" / "freeze"
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.market_data.eastmoney_timeout_seconds == 8
     assert runtime.market_data.sina_timeout_seconds == 8

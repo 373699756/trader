@@ -36,7 +36,10 @@ from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteC
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureDependencies, MarketFeatureService
+from trader.recommendation.infra.market_data.market_feature_service import (
+    MarketFeatureDependencies,
+    MarketFeatureService,
+)
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
@@ -257,6 +260,7 @@ class _StartupHistoryMaintenance:
         finally:
             with self._lock:
                 self._supplier = None
+
 
 @dataclass(frozen=True)
 class _BuildContext:
@@ -756,7 +760,7 @@ def _build_market_data(
 def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     settings = context.settings
     runtime_database_lock = threading.Lock()
-    repository = SQLiteDecisionRecordRepository(settings.runtime_dir)
+    repository = SQLiteDecisionRecordRepository(settings.freeze_dir)
     data_plane = DataPlaneRepository(settings.runtime_dir)
     outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, repository)
     budget = DeepSeekBudgetLedger(

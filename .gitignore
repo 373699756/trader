@@ -7,6 +7,9 @@
 .build-metadata/
 # Runtime history shards, training evidence, WAL files, and manifests are never committed.
 /data/history/
+# Formal recommendation records are runtime data; keep only the directory placeholder.
+/data/freeze/**/*
+!/data/freeze/.gitkeep
 # Only explicitly named portable model bundles are versioned; temporary samples,
 # staging directories, and logs stay local.
 /data/train/**/*

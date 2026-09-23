@@ -133,8 +133,10 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
 
     assert started == []
     assert not (tmp_path / "runtime").exists()
+    assert not (tmp_path / "data" / "freeze").exists()
     assert system.scheduler is not None
     assert system.repository is not None
+    assert system.repository._root == tmp_path / "data" / "freeze" / "decisions"  # noqa: SLF001
     assert system.research_trace is not None
     assert system.quote_pool.status().workers == 4
     assert system.quote_pool.is_running() is False
@@ -172,6 +174,19 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     page = system.app.test_client().get("/").get_data(as_text=True)
     assert 'name="trader-web-snapshot-retention-ms"' in page
     assert 'content="35000"' in page
+
+
+def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_path) -> None:
+    system = build_system(_config(tmp_path))
+
+    system.repository.initialize()
+
+    freeze_root = tmp_path / "data" / "freeze" / "decisions"
+    assert (freeze_root / "decisions.sqlite3").is_file()
+    assert (freeze_root / "records").is_dir()
+    assert (freeze_root / "checkpoints").is_dir()
+    assert (freeze_root / "quarantine").is_dir()
+    assert not (tmp_path / "runtime" / "decisions").exists()
 
 
 def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None:

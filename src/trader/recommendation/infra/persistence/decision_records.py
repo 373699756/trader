@@ -83,11 +83,11 @@ class SQLiteDecisionRecordRepository:
 
     def __init__(
         self,
-        runtime_dir: Path,
+        freeze_dir: Path,
         *,
         fault_injector: FaultInjector | None = None,
     ) -> None:
-        self._root = runtime_dir / "decisions"
+        self._root = freeze_dir / "decisions"
         self._database = self._root / "decisions.sqlite3"
         self._records = self._root / "records"
         self._checkpoints = self._root / "checkpoints"
