@@ -12,6 +12,7 @@ from trader.recommendation.domain.candidate.filters import (
     hard_filter,
     level_one_filter_rules,
     level_two_filter_rules,
+    apply_filters,
 )
 from trader.recommendation.domain.market.models import Board
 
@@ -207,11 +208,25 @@ def test_non_finite_and_structurally_invalid_quotes_are_rejected(feature_factory
     assert "invalid_pct_change" in {
         item.filter_code for item in hard_filter(non_finite, observed_at, max_age_seconds=20).deferred
     }
+    assert "invalid_pct_change" not in {
+        item.filter_code for item in hard_filter(non_finite, observed_at, max_age_seconds=20).reasons
+    }
     assert "invalid_quote_structure" in {
         item.filter_code for item in hard_filter(invalid_ohlc, observed_at, max_age_seconds=20).deferred
     }
     assert "invalid_cross_source_deviation" in {
         item.filter_code for item in hard_filter(invalid_deviation, observed_at, max_age_seconds=20).deferred
+    }
+
+    finalized = level_two_filter_rules(max_age_seconds=20, finalized_inputs=True)
+    assert "invalid_pct_change" in {
+        item.filter_code for item in apply_filters(non_finite, finalized, now=observed_at).reasons
+    }
+    assert "invalid_quote_structure" in {
+        item.filter_code for item in apply_filters(invalid_ohlc, finalized, now=observed_at).reasons
+    }
+    assert "invalid_cross_source_deviation" in {
+        item.filter_code for item in apply_filters(invalid_deviation, finalized, now=observed_at).deferred
     }
 
 

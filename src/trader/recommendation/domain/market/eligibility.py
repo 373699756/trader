@@ -111,6 +111,23 @@ class IssuerEligibilityRegistryStatus:
 
 
 @dataclass(frozen=True)
+class IssuerEligibilityBatch:
+    """Point-in-time level-one result for one full-market population."""
+
+    input_count: int
+    eligible_count: int
+    reason_counts: tuple[IssuerEligibilityReasonCount, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.input_count < 0 or not 0 <= self.eligible_count <= self.input_count:
+            raise ValueError("issuer eligibility batch counts are invalid")
+        if len({item.reason for item in self.reason_counts}) != len(self.reason_counts):
+            raise ValueError("issuer eligibility batch reasons must be unique")
+        if sum(item.count for item in self.reason_counts) != self.input_count - self.eligible_count:
+            raise ValueError("issuer eligibility batch reasons must explain every exclusion")
+
+
+@dataclass(frozen=True)
 class _FactEvidence:
     evidence_id: str
     source: str
@@ -286,6 +303,7 @@ def _sha256(payload: dict[str, str]) -> str:
 
 
 __all__ = [
+    "IssuerEligibilityBatch",
     "IssuerEligibilityDecision",
     "IssuerEligibilityFact",
     "IssuerEligibilityReason",

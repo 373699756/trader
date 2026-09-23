@@ -24,7 +24,7 @@ def filter_dynamic_market(
     latency_ms: int,
 ) -> PipelineStageOutput[FeatureSnapshot]:
     require_previous_stage(source, PipelineStage.DYNAMIC_FILTER)
-    rules = level_two_filter_rules(max_age_seconds=max_age_seconds, policy=policy)
+    rules = level_two_filter_rules(max_age_seconds=max_age_seconds, policy=policy, finalized_inputs=True)
     accepted: list[FeatureSnapshot] = []
     rejected: Counter[str] = Counter()
     pending: Counter[str] = Counter()

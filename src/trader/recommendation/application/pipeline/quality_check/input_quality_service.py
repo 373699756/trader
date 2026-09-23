@@ -190,7 +190,11 @@ def assess_scored_input_quality(
         }
     )
     transient_counts: Counter[str] = Counter(
-        {code: count for code, count in candidate_filter_counts.items() if code in _TRANSIENT_FILTER_REASONS}
+        reason.code
+        for item in candidate_evaluations
+        if item.disposition is not ScoredDisposition.REJECT
+        for reason in item.filter_reasons
+        if reason.code in _TRANSIENT_FILTER_REASONS
     )
     transient_counts.update(
         item.selection_skip_reason
@@ -288,7 +292,10 @@ def has_transient_candidate_gap(plan: ScoredCandidatePlan) -> bool:
 
 def has_transient_evaluation_gap(evaluation: ScoredStockEvaluation) -> bool:
     return bool(
-        _TRANSIENT_FILTER_REASONS.intersection(reason.code for reason in evaluation.filter_reasons)
+        (
+            evaluation.disposition is not ScoredDisposition.REJECT
+            and _TRANSIENT_FILTER_REASONS.intersection(reason.code for reason in evaluation.filter_reasons)
+        )
         or evaluation.selection_skip_reason in _TRANSIENT_SELECTION_REASONS
     )
 

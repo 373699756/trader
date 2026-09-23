@@ -15,7 +15,8 @@ from trader.recommendation.domain.candidate.filters import (
     FilterTier,
     HardFilterPolicy,
     apply_filters,
-    default_filter_rules,
+    level_one_filter_rules,
+    level_two_filter_rules,
 )
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.factors import clamp, round_score
@@ -355,6 +356,7 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         request,
         evaluated_at=request.population_evaluated_at,
         max_age_seconds=request.population_max_age_seconds,
+        finalized_inputs=False,
     )
     population_evaluations = population_filtered.evaluations
     evaluations = dict(population_evaluations)
@@ -366,6 +368,7 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
             request,
             evaluated_at=request.evaluated_at,
             max_age_seconds=request.policy.max_age_seconds,
+            finalized_inputs=True,
         )
     )
     candidate_evaluations = candidate_filtered.evaluations
@@ -508,10 +511,18 @@ def _filter_features(
     *,
     evaluated_at: datetime | None = None,
     max_age_seconds: float | None = None,
+    finalized_inputs: bool = False,
 ) -> _FilteredFeatures:
     filter_time = evaluated_at or request.evaluated_at
     quote_max_age = request.policy.max_age_seconds if max_age_seconds is None else max_age_seconds
-    rules = default_filter_rules(max_age_seconds=quote_max_age, policy=request.policy.hard_filter)
+    rules = (
+        *level_one_filter_rules(max_age_seconds=quote_max_age, policy=request.policy.hard_filter),
+        *level_two_filter_rules(
+            max_age_seconds=quote_max_age,
+            policy=request.policy.hard_filter,
+            finalized_inputs=finalized_inputs,
+        ),
+    )
     permanent_filter_codes = frozenset(rule.name for rule in rules if rule.tier is FilterTier.ISSUER_PERMANENT)
     result: dict[str, ScoredStockEvaluation] = {}
     issuer_eligible_count = 0

@@ -20,6 +20,7 @@ from trader.recommendation.application.pipeline.data_source.source_router import
     MarketDataAdapter,
 )
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.ports.market_data import FullMarketFeatureBatch
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -30,6 +31,7 @@ from trader.recommendation.application.ports.runtime import (
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER, PIPELINE_STAGES, StageState
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import Strategy
@@ -60,6 +62,10 @@ class _Market:
         del force, deadline
         self.market_fetch_count += 1
         return self._features
+
+    def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None):
+        features = tuple(self.fetch_market_features(observed_at, force=force, deadline=deadline))
+        return FullMarketFeatureBatch(features, IssuerEligibilityBatch(len(features), len(features)))
 
     def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
         del force, deadline
@@ -642,6 +648,11 @@ def test_production_adapter_does_not_publish_business_empty_when_all_candidate_h
     assert status.status == "transient_invalid_empty"
     assert status.publishable is False
     assert status.primary_blocker == "strategy_history_unavailable"
+    quality_stage = status.stage_snapshots[8]
+    scoring_stage = status.stage_snapshots[9]
+    assert quality_stage.input_count == status.pipeline.stage("board_limit").output_count
+    assert (scoring_stage.input_count, scoring_stage.output_count) == (0, 0)
+    assert scoring_stage.state is StageState.NOT_READY
 
 
 def test_production_adapter_rejects_candidate_security_identity_degradation(

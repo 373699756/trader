@@ -30,6 +30,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
 from trader.recommendation.domain.publication.models import (
     RecommendationAction,
@@ -55,6 +56,7 @@ def build_supply_status(
     candidate_quote_eligible: int | None = None,
     candidate_score_threshold: float | None = None,
     decision: ScoredDecision | None = None,
+    issuer_eligibility: IssuerEligibilityBatch | None = None,
 ) -> InputQualityStatus:
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
@@ -112,8 +114,9 @@ def build_supply_status(
         candidate_feature_count=quality.candidate_feature_count,
         data_pending_count=quality.data_pending_count,
         refresh_pending_count=quality.refresh_pending_count,
-        invalid_count=sum(quality.candidate_transient_reason_counts.values()),
         degraded_reasons=quality.degraded_reasons,
+        issuer_eligibility=issuer_eligibility,
+        quality_ready_count=quality.candidate_scored_count,
     )
     return InputQualityStatus(
         strategy=projection.local.strategy,
@@ -155,24 +158,38 @@ def build_first_nine_stage_snapshots(
     candidate_feature_count: int,
     data_pending_count: int = 0,
     refresh_pending_count: int = 0,
-    invalid_count: int = 0,
     degraded_reasons: tuple[str, ...] = (),
+    issuer_eligibility: IssuerEligibilityBatch | None = None,
+    quality_ready_count: int | None = None,
 ) -> tuple[PipelineStageSnapshot, ...]:
     """Project the active first-nine-stage counters without mixing readiness and rejection."""
 
-    issuer_count = min(population_count, stage_counts.issuer_eligible_population)
-    static_pending = min(max(0, population_count - issuer_count), data_pending_count)
-    static_rejected = max(0, population_count - issuer_count - static_pending)
-    dynamic_pending = min(
-        max(0, issuer_count - stage_counts.input_ready_population),
-        refresh_pending_count,
+    raw_population_count = issuer_eligibility.input_count if issuer_eligibility is not None else population_count
+    registry_eligible_count = issuer_eligibility.eligible_count if issuer_eligibility is not None else population_count
+    issuer_count = min(registry_eligible_count, stage_counts.issuer_eligible_population)
+    static_pending = 0
+    static_rejected = max(0, raw_population_count - issuer_count - static_pending)
+    static_reason_counts = Counter(
+        {item.reason.value: item.count for item in issuer_eligibility.reason_counts}
+        if issuer_eligibility is not None
+        else {}
     )
-    dynamic_failed = max(0, issuer_count - stage_counts.input_ready_population - dynamic_pending)
+    unexplained_static_rejections = static_rejected - sum(static_reason_counts.values())
+    if unexplained_static_rejections > 0:
+        static_reason_counts["stable_rejected"] += unexplained_static_rejections
+    dynamic_gap = max(0, issuer_count - stage_counts.input_ready_population)
+    dynamic_refresh_pending = min(dynamic_gap, refresh_pending_count)
+    dynamic_data_pending = min(dynamic_gap - dynamic_refresh_pending, data_pending_count)
+    dynamic_pending = dynamic_refresh_pending + dynamic_data_pending
+    dynamic_failed = max(0, dynamic_gap - dynamic_pending)
     dynamic_rejected = max(0, stage_counts.input_ready_population - stage_counts.dynamic_filter_eligible)
     candidate_output = stage_counts.candidate_limit_selected
-    quality_output = min(candidate_output, candidate_feature_count)
-    quality_pending = max(0, candidate_output - quality_output - invalid_count)
-    quality_invalid = min(invalid_count, candidate_output - quality_output)
+    quality_output = min(
+        candidate_output,
+        candidate_feature_count,
+        candidate_output if quality_ready_count is None else quality_ready_count,
+    )
+    quality_pending = max(0, candidate_output - quality_output)
     source_degraded = bool(degraded_reasons)
     source_health = SourceHealth(
         SourceHealthState.DEGRADED if source_degraded else SourceHealthState.READY,
@@ -182,17 +199,17 @@ def build_first_nine_stage_snapshots(
         age_seconds=0.0,
     )
     rows = (
-        (PipelineStage.DATA_SOURCE, population_count, population_count, 0, 0, 0, ()),
-        (PipelineStage.STATIC_MARKET, population_count, population_count, 0, 0, 0, ()),
-        (PipelineStage.STATIC_STANDARDIZE, population_count, population_count, 0, 0, 0, ()),
+        (PipelineStage.DATA_SOURCE, raw_population_count, raw_population_count, 0, 0, 0, ()),
+        (PipelineStage.STATIC_MARKET, raw_population_count, raw_population_count, 0, 0, 0, ()),
+        (PipelineStage.STATIC_STANDARDIZE, raw_population_count, raw_population_count, 0, 0, 0, ()),
         (
             PipelineStage.STATIC_FILTER,
-            population_count,
+            raw_population_count,
             issuer_count,
             static_rejected,
             static_pending,
             0,
-            _stage_reasons(("data_pending", static_pending), ("stable_rejected", static_rejected)),
+            _stage_reasons(("data_pending", static_pending), *tuple(sorted(static_reason_counts.items()))),
         ),
         (
             PipelineStage.DYNAMIC_MARKET,
@@ -201,7 +218,11 @@ def build_first_nine_stage_snapshots(
             0,
             dynamic_pending,
             dynamic_failed,
-            _stage_reasons(("refresh_pending", dynamic_pending), ("source_failed", dynamic_failed)),
+            _stage_reasons(
+                ("data_pending", dynamic_data_pending),
+                ("refresh_pending", dynamic_refresh_pending),
+                ("source_failed", dynamic_failed),
+            ),
         ),
         (
             PipelineStage.DYNAMIC_STANDARDIZE,
@@ -238,11 +259,8 @@ def build_first_nine_stage_snapshots(
             quality_output,
             0,
             quality_pending,
-            quality_invalid,
-            _stage_reasons(
-                ("quality_pending", quality_pending),
-                ("quality_invalid", quality_invalid),
-            ),
+            0,
+            _stage_reasons(("quality_pending", quality_pending)),
         ),
     )
     snapshots: list[PipelineStageSnapshot] = []

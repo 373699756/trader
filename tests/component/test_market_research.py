@@ -155,6 +155,17 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
 
     monkeypatch.setattr(service.references, "schedule_reference_data", record_reference)
 
+    batch = service.fetch_market_feature_batch(NOW)
+    market = batch.features
+    eligibility_batch = batch.issuer_eligibility
+
+    assert tuple(item.quote.code for item in market) == ("600002",)
+    assert eligibility_batch.input_count == 2
+    assert eligibility_batch.eligible_count == 1
+    assert [(item.reason, item.count) for item in eligibility_batch.reason_counts] == [
+        (IssuerEligibilityReason.HISTORICAL_ST, 1)
+    ]
+
     service.refresh_candidate_quotes(("600001", "600002"), NOW)
     service.refresh_market_news(("600001", "600002"), NOW)
     service.refresh_stock_risk(("600001", "600002"), NOW)

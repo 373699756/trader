@@ -352,11 +352,11 @@ class _DefaultFilterRules:
         _reject_invalid_quote_structure(snapshot, set_audit)
         return audit
 
-    def invalid_pct_change(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+    def price_heat_limit(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         board = board_for_snapshot(snapshot)
         pct_change = snapshot.quote.pct_change
         if pct_change is None or not math.isfinite(pct_change):
-            return _make_audit(snapshot, "invalid_pct_change", "finite percentage points", pct_change)
+            return None
         if board is Board.MAIN and pct_change > 8.0:
             return _make_audit(snapshot, "main_board_too_hot", "<= 8.00", pct_change)
         if board is Board.CHINEXT and pct_change > 16.0:
@@ -480,7 +480,12 @@ def level_one_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy |
     )
 
 
-def level_two_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+def level_two_filter_rules(
+    *,
+    max_age_seconds: float,
+    policy: HardFilterPolicy | None = None,
+    finalized_inputs: bool = False,
+) -> tuple[FilterRule, ...]:
     """Build default filter rule registry for all strategies.
 
     Required rules are preserved from ``hard_filter`` behavior. Optional rules
@@ -490,12 +495,13 @@ def level_two_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy |
         raise ValueError("max_age_seconds must be finite and non-negative")
     policy = policy or HardFilterPolicy()
     registry = _DefaultFilterRules(max_age_seconds, policy)
+    normalized_value_severity = FilterSeverity.REQUIRED if finalized_inputs else FilterSeverity.DEFERRED
 
     return (
         FilterRule("unsupported_code", FilterSeverity.REQUIRED, registry.unsupported_code),
         FilterRule("suspended", FilterSeverity.REQUIRED, registry.suspended),
-        FilterRule("invalid_price", FilterSeverity.DEFERRED, registry.invalid_price),
-        FilterRule("invalid_amount", FilterSeverity.DEFERRED, registry.invalid_amount),
+        FilterRule("invalid_price", normalized_value_severity, registry.invalid_price),
+        FilterRule("invalid_amount", normalized_value_severity, registry.invalid_amount),
         FilterRule("invalid_quote_time", FilterSeverity.DEFERRED, registry.invalid_quote_time),
         FilterRule("invalid_cross_source_deviation", FilterSeverity.DEFERRED, registry.cross_source_deviation),
         FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, registry.cross_source_deviation_optional),
@@ -521,9 +527,9 @@ def level_two_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy |
             FilterSeverity.OPTIONAL,
             registry.corporate_risk_history_unavailable,
         ),
-        FilterRule("invalid_quote_structure", FilterSeverity.DEFERRED, registry.invalid_quote_structure),
-        FilterRule("invalid_pct_change_value", FilterSeverity.DEFERRED, registry.invalid_pct_change_value),
-        FilterRule("price_heat_limit", FilterSeverity.REQUIRED, registry.invalid_pct_change),
+        FilterRule("invalid_quote_structure", normalized_value_severity, registry.invalid_quote_structure),
+        FilterRule("invalid_pct_change_value", normalized_value_severity, registry.invalid_pct_change_value),
+        FilterRule("price_heat_limit", FilterSeverity.REQUIRED, registry.price_heat_limit),
     )
 
 

@@ -10,6 +10,7 @@ from typing import Protocol
 
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot as _MarketDataPlaneSnapshot
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, LiveQuote
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult as _ResearchRefreshResult
 
@@ -74,7 +75,26 @@ class MarketSnapshotMetadata:
         object.__setattr__(self, "failure_categories", tuple(sorted(set(self.failure_categories))))
 
 
+@dataclass(frozen=True)
+class FullMarketFeatureBatch:
+    """One immutable full-market read and its level-one eligibility result."""
+
+    features: tuple[FeatureSnapshot, ...]
+    issuer_eligibility: IssuerEligibilityBatch
+
+    def __post_init__(self) -> None:
+        codes = tuple(item.quote.code for item in self.features)
+        if len(codes) != len(set(codes)):
+            raise ValueError("full-market feature batch codes must be unique")
+        if len(codes) != self.issuer_eligibility.eligible_count:
+            raise ValueError("full-market features must match the level-one eligible population")
+
+
 class FullMarketReaderPort(Protocol):
+    def fetch_market_feature_batch(
+        self, observed_at: datetime, *, force: bool = False, deadline: datetime | None = None
+    ) -> FullMarketFeatureBatch: ...
+
     def fetch_market_features(
         self, observed_at: datetime, *, force: bool = False, deadline: datetime | None = None
     ) -> Sequence[FeatureSnapshot]: ...

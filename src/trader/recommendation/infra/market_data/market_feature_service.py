@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections import deque
+import threading
+from collections import Counter, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,11 +26,14 @@ from trader.recommendation.infra.market_data.tushare_reference_loader import Ref
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data import (
+    FullMarketFeatureBatch,
     MarketDataDeadlineExceededError,
     MarketSnapshotMetadata,
 )
 from trader.recommendation.domain.market.eligibility import (
+    IssuerEligibilityBatch,
     IssuerEligibilityFact,
+    IssuerEligibilityReasonCount,
     eligibility_facts_from_quote,
     eligibility_facts_from_research,
 )
@@ -69,6 +73,8 @@ class MarketFeatureService:
         self.runner = dependencies.runner
         self.health_reporter = dependencies.health
         self.eligibility = dependencies.eligibility
+        self._eligibility_lock = threading.Lock()
+        self._latest_market_codes: tuple[str, ...] = ()
 
     def reference_version(self) -> str:
         """Return the immutable reference epoch used by scoring caches."""
@@ -82,12 +88,28 @@ class MarketFeatureService:
         force: bool = False,
         deadline: datetime | None = None,
     ) -> Sequence[FeatureSnapshot]:
+        return self.fetch_market_feature_batch(observed_at, force=force, deadline=deadline).features
+
+    def fetch_market_feature_batch(
+        self,
+        observed_at: datetime,
+        *,
+        force: bool = False,
+        deadline: datetime | None = None,
+    ) -> FullMarketFeatureBatch:
         reference_epoch = self.reference_version()
         cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
         if cached is not None:
-            self._record_quote_eligibility(tuple(feature.quote for feature in cached), observed_at)
-            cached = self._eligible_features(cached, observed_at)
-            return cached
+            cached_features = tuple(cached)
+            self._record_quote_eligibility(tuple(feature.quote for feature in cached_features), observed_at)
+            with self._eligibility_lock:
+                raw_codes = self._latest_market_codes
+            if not raw_codes:
+                raw_codes = tuple(feature.quote.code for feature in cached_features)
+            eligibility_batch, eligible_codes = self._resolve_market_eligibility(raw_codes, observed_at)
+            features = tuple(feature for feature in cached_features if feature.quote.code in eligible_codes)
+            self._commit_market_population(raw_codes)
+            return FullMarketFeatureBatch(features, eligibility_batch)
         quotes = tuple(
             self.runner.run_data_task_until(
                 deadline,
@@ -99,7 +121,9 @@ class MarketFeatureService:
             )
         )
         self._record_quote_eligibility(quotes, observed_at)
-        quotes = self._eligible_quotes(quotes, observed_at)
+        raw_codes = tuple(quote.code for quote in quotes)
+        eligibility_batch, eligible_codes = self._resolve_market_eligibility(raw_codes, observed_at)
+        quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
         history_codes = _history_population_codes(quotes)
         action_restrictions: dict[str, set[str]] = {}
         histories = self.history.load(
@@ -117,7 +141,32 @@ class MarketFeatureService:
         self.runner.ensure_before_deadline(deadline)
         published = self.quotes.publish_market_features(features, reference_epoch=reference_epoch)
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
-        return published
+        self._commit_market_population(raw_codes)
+        return FullMarketFeatureBatch(tuple(published), eligibility_batch)
+
+    def _resolve_market_eligibility(
+        self,
+        market_codes: Sequence[str],
+        observed_at: datetime,
+    ) -> tuple[IssuerEligibilityBatch, frozenset[str]]:
+        population = frozenset(market_codes)
+        exclusions = tuple(item for item in self.eligibility.exclusions(observed_at) if item.code in population)
+        exclusions_by_code = {item.code: item for item in exclusions}
+        reason_counts = Counter(item.reason for item in exclusions_by_code.values() if item.reason is not None)
+        eligible_codes = population.difference(exclusions_by_code)
+        batch = IssuerEligibilityBatch(
+            input_count=len(population),
+            eligible_count=len(eligible_codes),
+            reason_counts=tuple(
+                IssuerEligibilityReasonCount(reason, reason_counts[reason])
+                for reason in sorted(reason_counts, key=lambda item: item.value)
+            ),
+        )
+        return batch, eligible_codes
+
+    def _commit_market_population(self, market_codes: Sequence[str]) -> None:
+        with self._eligibility_lock:
+            self._latest_market_codes = tuple(dict.fromkeys(market_codes))
 
     def fetch_candidate_features(
         self,
@@ -419,14 +468,6 @@ class MarketFeatureService:
     def _eligible_quotes(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> tuple[MarketQuote, ...]:
         eligible = set(self._eligible_codes(tuple(quote.code for quote in quotes), observed_at))
         return tuple(quote for quote in quotes if quote.code in eligible)
-
-    def _eligible_features(
-        self,
-        features: Sequence[FeatureSnapshot],
-        observed_at: datetime,
-    ) -> tuple[FeatureSnapshot, ...]:
-        eligible = set(self._eligible_codes(tuple(item.quote.code for item in features), observed_at))
-        return tuple(item for item in features if item.quote.code in eligible)
 
     def _record_quote_eligibility(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> None:
         eligible = set(self._eligible_codes(tuple(quote.code for quote in quotes), observed_at))
