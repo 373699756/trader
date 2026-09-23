@@ -31,14 +31,76 @@ def test_makefile_is_the_single_test_command_source() -> None:
         )
         assert f"pytest -q -n 4 {test_path}" in result.stdout
 
-    default_result = subprocess.run(
-        ["make", "-n", "test-fast"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert 'pytest -q -n 4 tests -m "not slow and not slow_history and not slow_migration and not slow_runtime and not slow_supplier"' in default_result.stdout
+    business_targets = {
+        "test-fast": 'pytest -q -n 4 tests -m "not slow"',
+        "test-train": 'pytest -q -n 4 tests -m "train"',
+        "test-history": 'pytest -q -n 4 tests -m "history"',
+        "test-recommendation": 'pytest -q -n 4 tests -m "recommendation"',
+        "test-recommendation-runtime": 'pytest -q -n 4 tests -m "recommendation and slow_runtime"',
+        "test-recommendation-suppliers": 'pytest -q -n 4 tests -m "recommendation and slow_supplier"',
+    }
+    for target, command in business_targets.items():
+        result = subprocess.run(
+            ["make", "-n", target],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert command in result.stdout
+
+
+def test_business_markers_are_registered_and_selectable() -> None:
+    expected_files = {
+        "train": "tests/unit/application/research/test_baseline_identity_audit.py",
+        "history": "tests/unit/infra/research/test_history_archive_sync.py",
+        "recommendation": "tests/unit/application/test_tomorrow_freezing.py",
+        "crosscut": "tests/contract/test_test_command_contract.py",
+    }
+    for marker, test_path in expected_files.items():
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-m",
+                marker,
+                test_path,
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert test_path in result.stdout
+
+
+def test_slow_recommendation_subsets_are_selectable() -> None:
+    expected_files = {
+        "recommendation and slow_runtime": "tests/unit/application/test_input_runtime.py",
+        "recommendation and slow_supplier": "tests/component/test_market_gateway.py",
+    }
+    for marker, test_path in expected_files.items():
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "--collect-only",
+                "-q",
+                "-m",
+                marker,
+                test_path,
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert test_path in result.stdout
+
 
 def test_pytest_directory_markers_are_registered_and_selectable() -> None:
     result = subprocess.run(

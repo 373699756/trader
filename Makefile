@@ -13,7 +13,7 @@ SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/gener
 	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
 	scripts/runtime_diagnostics/tushare_daily.py scripts/runtime_diagnostics/history_archive_performance.py
 
-.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-history test-runtime test-suppliers test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
+.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-train test-history test-recommendation test-recommendation-runtime test-recommendation-suppliers test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
 
 help:
 	@echo "make install-dev   - install editable package and development tools"
@@ -21,11 +21,13 @@ help:
 	@echo "make long-watchlist-check - verify the packaged long-watchlist asset"
 	@echo "make quality       - format, lint, type and test gates"
 	@echo "make test          - run the default fast test set"
-	@echo "make test-fast     - run unit, contract and lightweight component tests"
-	@echo "make test-history  - run history/archive/conversion tests"
-	@echo "make test-runtime  - run scheduler/worker timing tests"
-	@echo "make test-suppliers - run supplier/gateway/reference/cache tests"
-	@echo "make test-full     - run all tests, including slow archive stress checks"
+	@echo "make test-fast     - run the fast local test set across business owners"
+	@echo "make test-train    - run training, research and evaluation tests"
+	@echo "make test-history  - run download, archive and conversion tests"
+	@echo "make test-recommendation - run recommendation, delivery and Web tests"
+	@echo "make test-recommendation-runtime - run recommendation scheduler and worker timing tests"
+	@echo "make test-recommendation-suppliers - run recommendation supplier and gateway timing tests"
+	@echo "make test-full     - run every test, including all slow tests"
 	@echo "make test-unit     - run unit tests"
 	@echo "make test-component - run component tests"
 	@echo "make test-contract  - run contract tests"
@@ -60,16 +62,22 @@ type-check:
 test: test-fast
 
 test-fast:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "not slow and not slow_history and not slow_migration and not slow_runtime and not slow_supplier"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "not slow"
+
+test-train:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "train"
 
 test-history:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "slow_history or slow_migration"
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "history"
 
-test-runtime:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "slow_runtime"
+test-recommendation:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "recommendation"
 
-test-suppliers:
-	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "slow_supplier"
+test-recommendation-runtime:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "recommendation and slow_runtime"
+
+test-recommendation-suppliers:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "recommendation and slow_supplier"
 
 test-full:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests

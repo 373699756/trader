@@ -71,4 +71,6 @@
 
 ## 当前状态
 
-这是测试优化方案，尚未实施 marker/Makefile 重分组、用例删除或等待替换。当前 `slow_history`、`slow_migration`、`slow_runtime`、`slow_supplier` 仍按路径映射，一级命令仍是 `test-fast/history/runtime/suppliers/full`。执行代码变更时应作为独立批次登记，并保留工作树中已有的蓝图修改。
+已完成第一批：pytest collection 为每个测试附加一个 `train`、`history`、`recommendation` 或 `crosscut` owner marker，并保留 `slow_*` 作为独立运行特征；Makefile 一级命令已改为 `test-fast`、`test-train`、`test-history`、`test-recommendation` 和 `test-full`。推荐的 scheduler/worker 与 supplier/gateway 子集分别使用 `test-recommendation-runtime`、`test-recommendation-suppliers`，不再把 runtime、suppliers 作为并列业务任务。
+
+尚未实施测试删除、固定等待替换、测试物理目录迁移和重复契约合并。后续批次必须先记录覆盖或退役合同证据，再删除测试；每一批继续保留工作树中已有的蓝图修改。

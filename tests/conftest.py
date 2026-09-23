@@ -15,10 +15,130 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy
 
 _TEST_DIRECTORY_MARKERS = frozenset({"unit", "component", "integration", "contract", "performance", "js"})
+_BUSINESS_OWNERS = frozenset({"train", "history", "recommendation", "crosscut"})
+_TRAINING_COMPONENT_PATHS = frozenset(
+    {
+        "component/test_factor_diagnostic_reports.py",
+        "component/test_historical_baseline_reports.py",
+        "component/test_historical_label_artifacts.py",
+        "component/test_historical_partitions.py",
+        "component/test_research_trace_archive.py",
+        "component/test_terminal_holdout_artifacts.py",
+        "component/test_tomorrow_historical_artifact_archive.py",
+        "component/test_tomorrow_historical_risk_artifacts.py",
+    }
+)
+_HISTORY_PATHS = frozenset(
+    {
+        "contract/test_baostock_history_cli.py",
+        "contract/test_history_archive_repack_contract.py",
+        "contract/test_history_automation_contract.py",
+        "unit/application/research/test_history_automation.py",
+        "unit/application/research/test_history_sync.py",
+        "unit/domain/research/test_history_control.py",
+        "unit/domain/research/test_history_revision.py",
+        "unit/entrypoints/test_history_sync_progress.py",
+        "unit/infra/research/test_baostock_gap_supplier.py",
+        "unit/infra/research/test_baostock_gateway.py",
+        "unit/infra/research/test_baostock_sync_supplier.py",
+        "unit/infra/research/test_history_archive_reader.py",
+        "unit/infra/research/test_history_archive_repack.py",
+        "unit/infra/research/test_history_archive_status.py",
+        "unit/infra/research/test_history_archive_sync.py",
+        "unit/infra/research/test_history_automation_installation.py",
+        "unit/infra/research/test_history_control_repository.py",
+        "unit/infra/research/test_history_maintenance_runner.py",
+        "unit/infra/research/test_history_month_partition.py",
+        "unit/infra/test_baostock_industry.py",
+        "unit/scripts/test_convert_baostock_history.py",
+        "unit/scripts/test_history_daily_capability.py",
+        "unit/scripts/test_history_sources.py",
+        "unit/scripts/test_tushare_daily.py",
+    }
+)
+_TRAINING_CONTRACT_PATHS = frozenset(
+    {
+        "contract/test_baseline_identity_audit_contract.py",
+        "contract/test_candidate_recall_ledger_contract.py",
+        "contract/test_historical_industry_facts_contract.py",
+        "contract/test_historical_only_score_validation.py",
+        "contract/test_limited_factor_family_research_contract.py",
+        "contract/test_point_in_time_dataset_contract.py",
+        "contract/test_risk_cost_uncertainty_contract.py",
+        "contract/test_score_cost_aware_selection_contract.py",
+        "contract/test_score_plan_contract.py",
+        "contract/test_score_point_in_time_population_contract.py",
+        "contract/test_score_research_detailed_strategy_contract.py",
+        "contract/test_score_shadow_model_contract.py",
+        "contract/test_score_tomorrow_features_contract.py",
+        "contract/test_scoring_hot_path_efficiency_contract.py",
+        "contract/test_scoring_weight_configuration_contract.py",
+    }
+)
+_RECOMMENDATION_CONTRACT_PATHS = frozenset(
+    {
+        "contract/test_candidate_planning_contract.py",
+        "contract/test_current_product_contract.py",
+        "contract/test_d25_contract.py",
+        "contract/test_decision_contract.py",
+        "contract/test_feature_contract_unification.py",
+        "contract/test_long_contract.py",
+        "contract/test_realtime_pipeline_contract.py",
+        "contract/test_recommendation_sections.py",
+        "contract/test_runtime_contract.py",
+        "contract/test_source_capability.py",
+        "contract/test_tomorrow_contract.py",
+        "contract/test_two_level_hard_filter_contract.py",
+        "contract/test_web_contract.py",
+    }
+)
+_TRAINING_SCRIPT_PATHS = frozenset(
+    {
+        "unit/scripts/test_audit_historical_industry_facts.py",
+        "unit/scripts/test_check_tomorrow_training_memory.py",
+        "unit/scripts/test_h1_capability_execution.py",
+        "unit/scripts/test_point_in_time_terminal_holdout.py",
+        "unit/scripts/test_qualify_point_in_time_data.py",
+    }
+)
+_TRAINING_ENTRYPOINT_PATHS = frozenset(
+    {
+        "unit/entrypoints/test_h1_point_in_time.py",
+        "unit/entrypoints/test_tomorrow_training_progress.py",
+    }
+)
+_RECOMMENDATION_INFRA_PATHS = frozenset(
+    {
+        "unit/infra/test_cninfo_incremental.py",
+        "unit/infra/test_data_plane.py",
+        "unit/infra/test_decision_records.py",
+        "unit/infra/test_issuer_eligibility_registry.py",
+    }
+)
+_RECOMMENDATION_SCRIPT_PATHS = frozenset(
+    {
+        "unit/scripts/test_desktop_dashboard.py",
+        "unit/scripts/test_diagnose_runtime.py",
+        "unit/scripts/test_migrate_runtime_data.py",
+        "unit/scripts/test_runtime_diagnostics_reporting.py",
+        "unit/scripts/test_security_master_probe.py",
+        "unit/scripts/test_web_health.py",
+    }
+)
+_CROSSCUT_PATHS = frozenset(
+    {
+        "component/test_process_lock.py",
+        "unit/application/test_history_training_boundaries.py",
+        "unit/infra/test_artifact_publication.py",
+        "unit/infra/test_exchange_security_master.py",
+        "unit/test_infra_failures.py",
+        "unit/test_server_entrypoint.py",
+        "unit/test_settings.py",
+    }
+)
 _SLOW_MARKERS_BY_PATH = {
     "slow_history": frozenset(
         {
-            "component/test_market_history.py",
             "unit/infra/research/test_history_archive_sync.py",
             "unit/infra/research/test_history_archive_repack.py",
             "unit/infra/research/test_history_control_repository.py",
@@ -32,7 +152,6 @@ _SLOW_MARKERS_BY_PATH = {
             "unit/infra/research/test_history_control_repository.py",
             "unit/infra/research/test_history_training_input.py",
             "unit/scripts/test_convert_baostock_history.py",
-            "component/test_market_history.py",
         }
     ),
     "slow_runtime": frozenset(
@@ -57,12 +176,62 @@ _SLOW_MARKERS_BY_PATH = {
 }
 
 
+def _business_owner(relative_path: str) -> str:
+    if relative_path in _CROSSCUT_PATHS:
+        return "crosscut"
+    if relative_path in _HISTORY_PATHS:
+        return "history"
+    if relative_path in (
+        _TRAINING_COMPONENT_PATHS | _TRAINING_CONTRACT_PATHS | _TRAINING_SCRIPT_PATHS | _TRAINING_ENTRYPOINT_PATHS
+    ):
+        return "train"
+    if relative_path in _RECOMMENDATION_CONTRACT_PATHS | _RECOMMENDATION_INFRA_PATHS | _RECOMMENDATION_SCRIPT_PATHS:
+        return "recommendation"
+    if relative_path.startswith("unit/application/outcomes/"):
+        return "train"
+    if relative_path.startswith("unit/application/research/"):
+        return "train"
+    if relative_path.startswith("unit/domain/research/"):
+        return "train"
+    if relative_path.startswith("unit/infra/research/"):
+        return "train"
+    if relative_path.startswith("unit/infra/scoring/"):
+        return "train"
+    if relative_path.startswith("unit/training/"):
+        return "train"
+    if relative_path == "unit/domain/test_outcomes.py":
+        return "train"
+    if relative_path == "unit/infra/test_historical_screening_archive.py":
+        return "train"
+    if relative_path == "unit/infra/test_outcomes.py":
+        return "train"
+    if relative_path.startswith("component/"):
+        return "recommendation"
+    if relative_path.startswith("integration/"):
+        return "recommendation"
+    if relative_path.startswith("performance/"):
+        return "recommendation"
+    if relative_path.startswith("unit/application/"):
+        return "recommendation"
+    if relative_path.startswith("unit/domain/"):
+        return "recommendation"
+    if relative_path.startswith("unit/"):
+        return "recommendation"
+    if relative_path.startswith("contract/"):
+        return "crosscut"
+    raise pytest.UsageError(f"Test has no registered business owner: tests/{relative_path}")
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         relative = item.path.relative_to(Path(__file__).parent)
         category = relative.parts[0]
         if category in _TEST_DIRECTORY_MARKERS:
             item.add_marker(category)
+        business_owner = _business_owner(relative.as_posix())
+        if business_owner not in _BUSINESS_OWNERS:
+            raise pytest.UsageError(f"Invalid business owner {business_owner!r} for {relative}")
+        item.add_marker(business_owner)
         if category == "performance":
             item.add_marker("slow")
         for marker, paths in _SLOW_MARKERS_BY_PATH.items():
