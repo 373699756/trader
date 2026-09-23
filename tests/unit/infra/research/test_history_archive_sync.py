@@ -386,7 +386,11 @@ def test_supplier_failure_and_cancellation_keep_active_pointer_and_resume_comple
     resumed = run_history_sync(_configuration(tmp_path), resumed_supplier, clock=lambda: NOW)
 
     assert resumed.state == "completed"
-    assert resumed_supplier.calls == []
+    # A partial batch never advances the checkpoint; resume re-fetches the whole bounded batch.
+    assert resumed_supplier.calls == [
+        ("600001", (date(2026, 9, 10), date(2026, 9, 11))),
+        ("600002", (date(2026, 9, 10), date(2026, 9, 11))),
+    ]
 
 
 def test_historical_industry_revision_stays_within_the_recent_window(tmp_path: Path) -> None:
@@ -404,9 +408,7 @@ def test_historical_industry_revision_stays_within_the_recent_window(tmp_path: P
     assert supplier.calls == [("600001", updated[-2:]), ("600002", updated[-2:])]
 
 
-def test_daily_sync_reuses_untouched_immutable_months(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_daily_sync_reuses_untouched_immutable_months(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     configuration = HistorySyncConfiguration(tmp_path, sessions=5, reread_sessions=2, minimum_free_bytes=0)
     original = (
         date(2026, 6, 30),

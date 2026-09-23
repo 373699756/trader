@@ -222,22 +222,29 @@ def _synchronize(  # noqa: PLR0913
             active,
             old_universe,
         )
-        for index, security in enumerate(context.universe[completed:], start=completed):
-            _publish_progress(progress, "downloading_codes", "started", (index, total), security.code)
-            if cancel_requested():
-                _publish_progress(progress, "downloading_codes", "cancelled", (index, total), security.code)
-                control.save_checkpoint(
-                    HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, index, total, "cancelled")
-                )
-                return _status("cancelled", "cancelled", configuration, active, observed_at)
-            download = _download_for_security(supplier, download_context, security)
-            revisions = _revisions(download, security, context.industry_intervals, sequence)
-            _write_revisions(pending, revisions)
-            completed = index + 1
+        for batch_start in range(completed, total, configuration.download_batch_size):
+            batch_end = min(batch_start + configuration.download_batch_size, total)
+            batch_revisions: list[HistoryRevision] = []
+            for index, security in enumerate(context.universe[batch_start:batch_end], start=batch_start):
+                _publish_progress(progress, "downloading_codes", "started", (index, total), security.code)
+                if cancel_requested():
+                    _publish_progress(progress, "downloading_codes", "cancelled", (index, total), security.code)
+                    control.save_checkpoint(
+                        HistorySyncCheckpoint(
+                            sync_identity, ordinal, "cancelled", observed_at, batch_start, total, "cancelled"
+                        )
+                    )
+                    return _status("cancelled", "cancelled", configuration, active, observed_at)
+                download = _download_for_security(supplier, download_context, security)
+                batch_revisions.extend(_revisions(download, security, context.industry_intervals, sequence))
+                _publish_progress(progress, "downloading_codes", "completed", (index + 1, total), security.code)
+
+            # Keep the in-memory batch bounded; only a fully validated batch reaches the pending month copies.
+            _write_revision_batch(pending, tuple(batch_revisions))
+            completed = batch_end
             control.save_checkpoint(
                 HistorySyncCheckpoint(sync_identity, ordinal, "running", observed_at, completed, total, None)
             )
-            _publish_progress(progress, "downloading_codes", "completed", (completed, total), security.code)
             ordinal += 1
         if cancel_requested():
             _publish_progress(progress, "downloading_codes", "cancelled", (completed, total))
@@ -331,10 +338,7 @@ def _download_for_security(
     expected = context.supplier_context.calendar.expected_dates(security)
     if not expected:
         return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
-    if (
-        context.active is None
-        or security.code not in context.previous_codes
-    ):
+    if context.active is None or security.code not in context.previous_codes:
         requested = expected
     else:
         requested = tuple(
@@ -443,7 +447,7 @@ def _ensure_pending(pending: _PendingPartitions, month: tuple[int, int]) -> Path
     return path
 
 
-def _write_revisions(pending: _PendingPartitions, revisions: tuple[HistoryRevision, ...]) -> None:
+def _write_revision_batch(pending: _PendingPartitions, revisions: tuple[HistoryRevision, ...]) -> None:
     grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
     for value in revisions:
         grouped[(value.trade_date.year, value.trade_date.month)].append(value)

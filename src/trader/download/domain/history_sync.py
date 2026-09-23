@@ -42,6 +42,7 @@ class HistorySyncConfiguration:
     archive_root: Path = Path("data/history/baostock")
     sessions: int = 2000
     reread_sessions: int = 5
+    download_batch_size: int = 32
     minimum_free_bytes: int = 10 * 1024**3
     supplier_timeout_seconds: float = 45.0
     supplier_retries: int = 2
@@ -62,6 +63,7 @@ class HistorySyncConfiguration:
         if (
             not 1 <= self.sessions <= 2000
             or not 1 <= self.reread_sessions <= self.sessions
+            or not 1 <= self.download_batch_size <= 256
             or self.minimum_free_bytes < 0
             or self.supplier_timeout_seconds <= 0
             or not 0 <= self.supplier_retries <= 2

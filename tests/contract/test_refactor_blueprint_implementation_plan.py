@@ -41,7 +41,7 @@ def test_refactor_blueprint_has_an_ordered_current_code_migration_plan() -> None
         "tests/contract/test_professional_naming_contract.py",
         "Store`、`Repository`、`Archive`、`Registry",
         "data/history/baostock/",
-        "data/history/control.sqlite3",
+        "data/history/baostock/control.sqlite3",
     ):
         assert required in section
     for obsolete in ("<approved-plan-commit>", "HEAD == @{upstream}", "上游 hash", "获批 hash"):
