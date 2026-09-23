@@ -82,3 +82,19 @@ def test_registry_migrates_legacy_single_file_once(tmp_path) -> None:
     assert SQLiteIssuerEligibilityRegistry.migrate_legacy_database(legacy, root) == 0
     migrated = SQLiteIssuerEligibilityRegistry(root, read_only=True)
     assert migrated.filter_codes(("600001",), OBSERVED_AT) == ()
+
+
+def test_registry_refresh_boundary_is_friday_at_1500(tmp_path) -> None:
+    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "blacklist")
+    before = datetime(2026, 9, 25, 14, 59, 59, tzinfo=SHANGHAI)
+    after = datetime(2026, 9, 25, 15, 0, tzinfo=SHANGHAI)
+
+    assert registry.refresh_due(before) is False
+    assert registry.refresh_due(after) is True
+
+    registry.refresh_snapshot(after, source="full_market")
+    status = registry.status()
+    assert status.refresh_state == "ready"
+    assert status.last_refresh_at == after
+    assert status.next_refresh_at == datetime(2026, 10, 2, 15, 0, tzinfo=SHANGHAI)
+    assert registry.refresh_due(after) is False

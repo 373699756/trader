@@ -41,9 +41,15 @@ from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteC
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
-from trader.recommendation.infra.market_data.market_cache_identity import _history_population_codes, _history_preload_codes
+from trader.recommendation.infra.market_data.market_cache_identity import (
+    _history_population_codes,
+    _history_preload_codes,
+)
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.recommendation.infra.market_data.market_feature_service import MarketFeatureDependencies, MarketFeatureService
+from trader.recommendation.infra.market_data.market_feature_service import (
+    MarketFeatureDependencies,
+    MarketFeatureService,
+)
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.infra.market_data.research_component_persistence import persist_research_component_statuses
@@ -135,6 +141,15 @@ class _AllowAllEligibility:
 
     def facts(self):
         return ()
+
+    def refresh_due(self, _observed_at):
+        return False
+
+    def refresh_snapshot(self, _observed_at, *, source):
+        return None
+
+    def refresh_failed(self, _observed_at, _reason):
+        return None
 
 
 class _FixtureHistory:

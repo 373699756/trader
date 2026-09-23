@@ -207,6 +207,14 @@ class MarketDataHealth:
                         "integrity_ok": eligibility.integrity_ok,
                         "persistence_error_count": eligibility.persistence_error_count,
                         "last_error": eligibility.last_error,
+                        "refresh_state": eligibility.refresh_state,
+                        "last_refresh_at": (
+                            eligibility.last_refresh_at.isoformat() if eligibility.last_refresh_at is not None else None
+                        ),
+                        "next_refresh_at": (
+                            eligibility.next_refresh_at.isoformat() if eligibility.next_refresh_at is not None else None
+                        ),
+                        "refresh_failure_count": eligibility.refresh_failure_count,
                     },
                     "quote_out_of_order_count": quote_status.out_of_order_count,
                     "research_out_of_order_count": research.out_of_order_count,

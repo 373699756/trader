@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import sqlite3
 import threading
 from collections import Counter, deque
 from collections.abc import Mapping, Sequence
@@ -102,6 +103,7 @@ class MarketFeatureService:
         if cached is not None:
             cached_features = tuple(cached)
             self._record_quote_eligibility(tuple(feature.quote for feature in cached_features), observed_at)
+            self._refresh_eligibility_if_due(observed_at)
             with self._eligibility_lock:
                 raw_codes = self._latest_market_codes
             if not raw_codes:
@@ -121,6 +123,7 @@ class MarketFeatureService:
             )
         )
         self._record_quote_eligibility(quotes, observed_at)
+        self._refresh_eligibility_if_due(observed_at)
         raw_codes = tuple(quote.code for quote in quotes)
         eligibility_batch, eligible_codes = self._resolve_market_eligibility(raw_codes, observed_at)
         quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
@@ -492,6 +495,14 @@ class MarketFeatureService:
             self.eligibility.record(facts)
         except RuntimeError:
             return
+
+    def _refresh_eligibility_if_due(self, observed_at: datetime) -> None:
+        if not self.eligibility.refresh_due(observed_at):
+            return
+        try:
+            self.eligibility.refresh_snapshot(observed_at, source="full_market")
+        except (OSError, RuntimeError, sqlite3.Error, ValueError) as exc:
+            self.eligibility.refresh_failed(observed_at, f"eligibility_refresh_failed:{type(exc).__name__.lower()}")
 
     def current_quotes(self, codes: Sequence[str]) -> Mapping[str, LiveQuote]:
         normalized = _normalize_codes(codes)

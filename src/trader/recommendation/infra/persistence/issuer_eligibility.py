@@ -9,7 +9,7 @@ import sqlite3
 import threading
 from collections import Counter
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from trader.recommendation.domain.market.eligibility import (
@@ -59,6 +59,10 @@ class SQLiteIssuerEligibilityRegistry:
         self._integrity_ok = True
         self._persistence_error_count = 0
         self._last_error: str | None = None
+        self._refresh_state = "not_ready"
+        self._last_refresh_at: datetime | None = None
+        self._next_refresh_at: datetime | None = None
+        self._refresh_failure_count = 0
 
     @classmethod
     def migrate_legacy_database(cls, database_path: Path, root: Path) -> int:
@@ -115,6 +119,37 @@ class SQLiteIssuerEligibilityRegistry:
                 raise RuntimeError("issuer eligibility persistence failed") from exc
             self._last_error = None
             return inserted
+
+    def refresh_due(self, observed_at: datetime) -> bool:
+        with self._lock:
+            self._ensure_loaded()
+            if self._next_refresh_at is None:
+                self._next_refresh_at = _next_friday_refresh(observed_at - timedelta(microseconds=1))
+            return observed_at >= self._next_refresh_at
+
+    def refresh_snapshot(self, observed_at: datetime, *, source: str) -> None:
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("issuer eligibility refresh time must be timezone-aware")
+        with self._lock:
+            self._ensure_loaded()
+            self._ensure_snapshot()
+            self._last_refresh_at = observed_at
+            self._next_refresh_at = _next_friday_refresh(observed_at)
+            self._refresh_state = "ready"
+            self._last_error = None
+            self._write_manifest(source=source)
+
+    def refresh_failed(self, observed_at: datetime, reason: str) -> None:
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("issuer eligibility refresh time must be timezone-aware")
+        with self._lock:
+            self._ensure_loaded()
+            self._ensure_snapshot()
+            self._refresh_failure_count += 1
+            self._refresh_state = "failed"
+            self._last_error = reason
+            self._next_refresh_at = observed_at + timedelta(hours=1)
+            self._write_manifest(source="refresh_failure")
 
     def record_manual_blacklist(
         self,
@@ -173,6 +208,10 @@ class SQLiteIssuerEligibilityRegistry:
                 integrity_ok=self._integrity_ok,
                 persistence_error_count=self._persistence_error_count,
                 last_error=self._last_error,
+                refresh_state=self._refresh_state,
+                last_refresh_at=self._last_refresh_at,
+                next_refresh_at=self._next_refresh_at,
+                refresh_failure_count=self._refresh_failure_count,
             )
 
     def _validate_incoming(self, facts: tuple[IssuerEligibilityFact, ...]) -> None:
@@ -197,6 +236,10 @@ class SQLiteIssuerEligibilityRegistry:
                 raise ValueError("active eligibility snapshot directory is missing")
             self._snapshot_id = snapshot_id
             self._snapshot_dir = snapshot_dir
+            self._refresh_state = str(manifest.get("refresh_state", "not_ready"))
+            self._last_refresh_at = _optional_datetime(manifest.get("last_refresh_at"))
+            self._next_refresh_at = _optional_datetime(manifest.get("next_refresh_at"))
+            self._refresh_failure_count = int(manifest.get("refresh_failure_count", 0))
             for category in _CATEGORY_BY_REASON.values():
                 database_path = snapshot_dir / f"{category}.sqlite3"
                 if not database_path.exists():
@@ -298,7 +341,7 @@ class SQLiteIssuerEligibilityRegistry:
                 connection.commit()
         return inserted
 
-    def _write_manifest(self) -> None:
+    def _write_manifest(self, *, source: str = "incremental") -> None:
         assert self._snapshot_dir is not None
         assert self._snapshot_id is not None
         payload = {
@@ -311,6 +354,11 @@ class SQLiteIssuerEligibilityRegistry:
                 for category in sorted(set(_CATEGORY_BY_REASON.values()))
             },
             "manifest_hash": _manifest_hash(tuple(self._facts.values())),
+            "refresh_state": self._refresh_state,
+            "last_refresh_at": self._last_refresh_at.isoformat() if self._last_refresh_at else None,
+            "next_refresh_at": self._next_refresh_at.isoformat() if self._next_refresh_at else None,
+            "refresh_failure_count": self._refresh_failure_count,
+            "last_source": source,
         }
         temporary = self._manifest_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
@@ -362,6 +410,25 @@ def _active_facts_by_code(
         if current is None or fact < current:
             active[fact.code] = fact
     return active
+
+
+def _next_friday_refresh(value: datetime) -> datetime:
+    candidate = value.replace(hour=15, minute=0, second=0, microsecond=0)
+    days = (4 - value.weekday()) % 7
+    if days == 0 and value >= candidate:
+        days = 7
+    return candidate + timedelta(days=days)
+
+
+def _optional_datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("issuer eligibility refresh timestamp is invalid")
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("issuer eligibility refresh timestamp must be timezone-aware")
+    return parsed
 
 
 __all__ = [
