@@ -15,8 +15,9 @@ const patchesSource = fs.readFileSync(patchesPath, "utf8");
 const statusHealthPath = path.join(path.dirname(dashboardPath), "status_health.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
-assert(statusViewSource.includes('["数据源与静态采集", ["input_readiness"]]'));
-assert(!statusViewSource.includes('["静态采集与清洗", ["input_readiness"]]'));
+assert(statusViewSource.includes('["static_filter", "一级稳定过滤", true]'));
+assert(statusViewSource.includes('["dynamic_filter", "二级动态过滤", true]'));
+assert(!statusViewSource.includes('["一级稳定过滤", ["dynamic_filter"]]'));
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
 const streamSource = fs.readFileSync(streamPath, "utf8");
@@ -377,6 +378,7 @@ function summaryFixture() {
     publicationMeta: { textContent: "" },
     topScoresStatus: { textContent: "" },
     topScoresMeta: { textContent: "" },
+    observationStageList: { innerHTML: "" },
   };
 }
 const pipelineFixture = {
@@ -426,6 +428,49 @@ const pipelineFixture = {
         { key: "selected_observe", count: 0, total: 0 }] },
   ],
 };
+const canonicalObservationElements = summaryFixture();
+state.renderSummary(
+  canonicalObservationElements,
+  { status: "ready", strategy: "tomorrow", trade_date: "2026-08-14", coverage: {}, items: [] },
+  [],
+  "open",
+  null,
+  sandbox.window.TraderSelection,
+  sandbox.window.TraderRender,
+  {
+    scheduler: {
+      input_quality: {
+        tomorrow: {
+          summary: { trade_date: "2026-08-14" },
+          pipeline: pipelineFixture,
+          stage_snapshots: Array.from({ length: 14 }, (_value, index) => ({
+            stage: [
+              "data_source", "static_market", "static_standardize", "static_filter",
+              "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
+              "quality_check", "local_score", "risk_review", "score_merge", "downside_action",
+              "final_selection",
+            ][index],
+            state: "ready",
+            input_count: index === 0 ? 5289 : 320,
+            output_count: index === 3 ? 320 : index === 6 ? 196 : 320,
+            rejected_count: index === 3 ? 4969 : index === 6 ? 124 : 0,
+            pending_count: 0,
+            failed_count: 0,
+            reasons: [],
+            latency_ms: 0,
+          })),
+        },
+      },
+    },
+  },
+);
+assert.strictEqual(
+  (canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length,
+  14,
+);
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级稳定过滤"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes("动态采集与清洗"));
 assert.strictEqual(
   state.inputPipelineDetails(pipelineFixture),
   "输入准备 5289→320〔主要原因 流动性历史待下载/更新4969〕 ｜ 动态过滤 320→196 ｜ 板内总体 196（可靠度0.72–0.99）（仅观察125） ｜ 策略历史 196→195（60–248日） ｜ 模型输入 195→188（完整率84.0%–100.0%） ｜ 候选分 188→134（43.18–82.64，门槛50.00） ｜ 板内限额 134→134 ｜ 定向行情 134→125（年龄1.2–8.6秒） ｜ 输入完整性 行情125/125 · 证券资料125/125 · 历史125/125 ｜ 完整评分 125→110（基础分41.18–67.42）",

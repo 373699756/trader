@@ -129,7 +129,7 @@
       els.funnelStages.textContent = "长期固定观察池不经过短线过滤、评分与正式推荐链路";
       els.funnelScoreRange.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
-      renderObservationStages(els, null, true, []);
+      renderObservationStages(els, null, null, true, []);
     } else if (pipeline) {
       const actionEligible = finiteNonNegativeInteger(action && action.output_count);
       const selected = finiteNonNegativeInteger(concentration && concentration.output_count);
@@ -147,14 +147,20 @@
         executableCount,
         observed,
       ) || pendingFunnelSummary(executableCount, observed);
-      renderObservationStages(els, pipeline, false, runtimeIssues(statusPayload, payload.strategy));
+      renderObservationStages(
+        els,
+        inputQuality && inputQuality.stage_snapshots,
+        pipeline,
+        false,
+        runtimeIssues(statusPayload, payload.strategy),
+      );
     } else {
       const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
       els.funnelStatus.textContent = "阶段观测不可用";
       els.funnelStages.textContent = "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗";
       els.funnelScoreRange.textContent = topScore === "—" ? "—" : `${topScore} · 最低未保存`;
       els.funnelMeta.textContent = `旧快照 · ${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
-      renderObservationStages(els, null, false, runtimeIssues(statusPayload, payload.strategy));
+      renderObservationStages(els, null, null, false, runtimeIssues(statusPayload, payload.strategy));
     }
     const marketFreshness = currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible);
     const runtimeSource = marketFreshness.source;
@@ -179,8 +185,8 @@
   function pipelineHasProgress(pipeline) {
     const stages = pipeline && Array.isArray(pipeline.stages) ? pipeline.stages : [];
     return stages.some((stage) => (
-      Number.isFinite(stage && stage.input_count)
-      || Number.isFinite(stage && stage.output_count)
+      (Number.isFinite(stage && stage.input_count) && stage.input_count > 0)
+      || (Number.isFinite(stage && stage.output_count) && stage.output_count > 0)
       || (Array.isArray(stage && stage.facets) && stage.facets.length > 0)
       || (Array.isArray(stage && stage.reason_counts) && stage.reason_counts.length > 0)
     ));
@@ -245,57 +251,86 @@
     }).join("");
   }
 
-  function renderObservationStages(els, pipeline, long, issues) {
+  const OBSERVATION_STAGE_DEFINITIONS = Object.freeze([
+    ["data_source", "数据源", false],
+    ["static_market", "静态采集", false],
+    ["static_standardize", "静态清洗", false],
+    ["static_filter", "一级稳定过滤", true],
+    ["dynamic_market", "动态采集", false],
+    ["dynamic_standardize", "动态清洗", false],
+    ["dynamic_filter", "二级动态过滤", true],
+    ["candidate_pool", "候选生成", false],
+    ["quality_check", "质量评估", false],
+    ["local_score", "评分", false],
+    ["risk_review", "风险复核（含 DeepSeek）", false],
+    ["score_merge", "固定 68/32 融合", false],
+    ["downside_action", "下行保护与动作门", false],
+    ["final_selection", "TopK、集中度、冻结与发布", false],
+  ]);
+
+  function renderObservationStages(els, stageSnapshots, pipeline, long, issues) {
     if (!els.observationStageList) return;
     if (long) {
       els.observationStageList.innerHTML = '<div class="observation-stage-empty">长期固定观察池不经过荐股评分链路</div>';
       return;
     }
-    const groups = [
-      ["数据源与静态采集", ["input_readiness"]],
-      ["一级稳定过滤", ["dynamic_filter"]],
-      ["动态采集与清洗", ["candidate_refresh"]],
-      ["二级动态过滤", ["dynamic_filter"]],
-      ["候选生成", ["board_cross_section", "board_limit"]],
-      ["质量评估", ["strategy_history", "model_input", "input_coverage"]],
-      ["评分", ["candidate_score", "evidence_score"]],
-      ["风险复核（含 DeepSeek）", ["local_score", "deepseek_review"]],
-      ["固定 68/32 融合", ["fusion"]],
-      ["下行保护与动作门", ["model_cost_gate", "action_gate"]],
-      ["TopK、集中度、冻结与发布", ["concentration"]],
-    ];
-    const stages = pipeline && Array.isArray(pipeline.stages) ? pipeline.stages : [];
-    const byKey = new Map(stages.map((stage) => [stage.key, stage]));
+    const stages = Array.isArray(stageSnapshots) && stageSnapshots.length === OBSERVATION_STAGE_DEFINITIONS.length
+      ? stageSnapshots
+      : _pendingObservationStages(pipeline);
     const visibleIssues = Array.isArray(issues) ? issues : [];
-    els.observationStageList.innerHTML = groups.map(([label, keys], index) => {
-      const values = keys.map((key) => byKey.get(key)).filter(Boolean);
-      const input = values.reduce((total, stage) => total + (Number.isFinite(stage.input_count) ? stage.input_count : 0), 0);
-      const outputValues = values.map((stage) => stage.output_count).filter((value) => Number.isFinite(value));
-      const output = outputValues.length ? outputValues[outputValues.length - 1] : null;
-      const rejectedValues = values.map((stage) => stage.rejected_count).filter((value) => Number.isFinite(value));
-      const filtered = rejectedValues.length ? rejectedValues.reduce((total, value) => total + value, 0) : null;
-      const states = values.map((stage) => stage.state);
-      const state = !values.length ? "not_ready" : states.includes("failed") ? "failed" : states.includes("running") ? "running" : states.includes("degraded") ? "degraded" : states.includes("not_ready") ? "not_ready" : states.includes("not_applicable") ? "not_applicable" : "completed";
-      const reasons = values.flatMap((stage) => Array.isArray(stage.reason_counts) ? stage.reason_counts : []);
-      const reasonText = reasons.slice(0, 3).map((reason) => `${reason.reason} ${reason.count}`).join(" · ");
-      const facets = values.flatMap((stage) => Array.isArray(stage.facets) ? stage.facets : []);
+    els.observationStageList.innerHTML = stages.map((stage, index) => {
+      const [stageKey, label, isFilter] = OBSERVATION_STAGE_DEFINITIONS[index];
+      const input = finiteNonNegativeInteger(stage && stage.input_count);
+      const output = finiteNonNegativeInteger(stage && stage.output_count);
+      const rejected = finiteNonNegativeInteger(stage && stage.rejected_count) || 0;
+      const pending = finiteNonNegativeInteger(stage && stage.pending_count) || 0;
+      const failed = finiteNonNegativeInteger(stage && stage.failed_count) || 0;
+      const state = stage && stage.state || "not_ready";
+      const reasons = Array.isArray(stage && stage.reasons)
+        ? stage.reasons
+        : Array.isArray(stage && stage.reason_counts) ? stage.reason_counts : [];
+      const reasonText = reasons.slice(0, 3).map((reason) => `${reason.reason || reason.code} ${reason.count}`).join(" · ");
+      const facets = Array.isArray(stage && stage.facets) ? stage.facets : [];
       const facetText = facets.slice(0, 3).map((facet) => `${facet.key} ${displayCount(facet.count)}`).join(" · ");
-      const duration = values.reduce((total, stage) => total + (Number.isFinite(stage.duration_ms) ? stage.duration_ms : 0), 0);
-      const stageIssues = visibleIssues.filter((issue) => keys.some((key) => issueBelongsToStage(issue, key)));
-      const readinessPending = keys.includes("input_readiness") && output != null
-        ? Math.max(0, input - output)
-        : null;
-      const disposition = keys.includes("input_readiness")
-        ? `待就绪 ${readinessPending == null ? "—" : displayCount(readinessPending)}`
-        : `淘汰 ${filtered == null ? "—" : displayCount(filtered)}`;
-      const detail = `${stageStateLabel(state)} · ${displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
+      const duration = Number.isFinite(stage && stage.latency_ms)
+        ? stage.latency_ms
+        : Number.isFinite(stage && stage.duration_ms) ? stage.duration_ms : 0;
+      const stageIssues = visibleIssues.filter((issue) => issueBelongsToStage(issue, stageKey));
+      const disposition = isFilter
+        ? `淘汰 ${displayCount(rejected)}`
+        : `待就绪 ${displayCount(pending + failed)}`;
+      const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
       const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>主要原因：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}`;
-      return `<article class="observation-stage" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(keys.join(","))}" data-stage-toggle="true" tabindex="0" role="button" aria-expanded="false"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span><div class="observation-stage-detail">${detailMarkup}</div></div></article>`;
+      return `<article class="observation-stage" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}" data-stage-toggle="true" tabindex="0" role="button" aria-expanded="false"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span><div class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");
   }
 
+  function _pendingObservationStages(pipeline) {
+    const statusByKey = new Map(
+      pipeline && Array.isArray(pipeline.stages) ? pipeline.stages.map((stage) => [stage.key, stage]) : [],
+    );
+    const fallback = {
+      dynamic_market: "candidate_refresh",
+      dynamic_filter: "dynamic_filter",
+      quality_check: "input_coverage",
+      local_score: "evidence_score",
+      risk_review: "deepseek_review",
+      score_merge: "fusion",
+      downside_action: "action_gate",
+      final_selection: "concentration",
+    };
+    return OBSERVATION_STAGE_DEFINITIONS.map(([stageKey]) => {
+      const status = statusByKey.get(fallback[stageKey]);
+      if (!status) return { state: "not_ready", input_count: null, output_count: null };
+      const input = finiteNonNegativeInteger(status.input_count);
+      const output = finiteNonNegativeInteger(status.output_count);
+      const zeroWork = input === 0 && output === 0 && status.state === "completed";
+      return { ...status, state: zeroWork ? "not_ready" : status.state };
+    });
+  }
+
   function stageStateLabel(state) {
-    return ({ completed: "已完成", running: "采集中", degraded: "已降级", failed: "失败", not_ready: "未就绪", not_applicable: "不适用" })[state] || "待计算";
+    return ({ ready: "已完成", completed: "已完成", running: "采集中", degraded: "已降级", failed: "失败", not_ready: "未就绪", not_applicable: "不适用" })[state] || "待计算";
   }
 
   function renderInputQuality(els, payload, items, inputQuality, marketWarmup, pipeline, topScore, evaluated) {

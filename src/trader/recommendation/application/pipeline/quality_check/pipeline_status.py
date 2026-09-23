@@ -305,7 +305,7 @@ def build_complete_stage_snapshots(
     for stage, statuses in stage_groups:
         output_count = _runtime_output_count(stage, statuses, previous.output_count)
         pending_count = previous.output_count if output_count == 0 and _runtime_stage_pending(statuses) else 0
-        state = _runtime_stage_state(statuses, output_count)
+        state = _runtime_stage_state(statuses, previous.output_count, output_count)
         output_batch_id = f"{batch_root}:{stage.value}"
         snapshot = PipelineStageSnapshot(
             stage=stage,
@@ -348,8 +348,14 @@ def _runtime_stage_pending(statuses: tuple[PipelineStageStatus, ...]) -> bool:
 
 def _runtime_stage_state(
     statuses: tuple[PipelineStageStatus, ...],
+    input_count: int,
     output_count: int,
 ) -> StageState:
+    # A zero-input downstream stage was not executed; do not present it as a
+    # successful empty result. A legitimate empty selection still has a
+    # positive input count and remains ready.
+    if input_count == 0 and output_count == 0 and not _runtime_stage_pending(statuses):
+        return StageState.NOT_READY
     if not output_count and _runtime_stage_pending(statuses):
         return StageState.NOT_READY
     if any(item.state == "degraded" for item in statuses) or _runtime_stage_pending(statuses):
@@ -381,7 +387,7 @@ def _stage_snapshot(
     source_health: SourceHealth,
     source_degraded: bool,
 ) -> PipelineStageSnapshot:
-    state = _stage_state(output_count, pending_count, failed_count, source_degraded)
+    state = _stage_state(input_count, output_count, pending_count, failed_count, source_degraded)
     return PipelineStageSnapshot(
         stage=stage,
         stage_order=PIPELINE_STAGES.index(stage) + 1,
@@ -409,7 +415,17 @@ def _stage_reasons(*values: tuple[str, int]) -> tuple[StageReasonAggregate, ...]
     )
 
 
-def _stage_state(output_count: int, pending_count: int, failed_count: int, degraded: bool) -> StageState:
+def _stage_state(
+    input_count: int,
+    output_count: int,
+    pending_count: int,
+    failed_count: int,
+    degraded: bool,
+) -> StageState:
+    # Preserve the distinction between an empty result and a stage that never
+    # received an input batch.
+    if input_count == 0 and output_count == 0 and not pending_count and not failed_count:
+        return StageState.NOT_READY
     if failed_count and not output_count:
         return StageState.FAILED
     if not output_count and pending_count:
