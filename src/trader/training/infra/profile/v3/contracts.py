@@ -6,7 +6,7 @@ from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.artifacts.contracts import TrainedHeadContract, TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 
 TOMORROW_HEAD_CONTRACT = TrainedHeadContract(
     Strategy.TOMORROW,

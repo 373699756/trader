@@ -23,7 +23,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
 )
-from trader.training.infra.artifacts.contracts import TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
 from trader.training.infra.sample_repository import (
     SQLiteTrainingSampleRepository,

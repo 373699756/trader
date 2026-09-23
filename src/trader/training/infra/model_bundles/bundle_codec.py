@@ -19,7 +19,7 @@ from trader.infra.serialization.fields import (
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
-from trader.training.infra.artifacts.contracts import TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 _MODEL_FIELDS = {
     "schema_version",

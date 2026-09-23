@@ -192,7 +192,8 @@ def test_v1_scoring_profile_is_retired() -> None:
 def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
     v2_root = SOURCE_ROOT / "training/infra/profile/v2"
     v3_root = SOURCE_ROOT / "training/infra/profile/v3"
-    shared_root = SOURCE_ROOT / "training/infra/artifacts"
+    shared_root = SOURCE_ROOT / "training/infra/model_bundles"
+    assert not (SOURCE_ROOT / "training/infra/artifacts").exists()
     model_port = (SOURCE_ROOT / "recommendation/application/ports/loaded_profile.py").read_text(encoding="utf-8")
     factory = (SOURCE_ROOT / "recommendation/infra/scoring/profile_factory.py").read_text(encoding="utf-8")
 

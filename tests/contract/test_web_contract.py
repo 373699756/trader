@@ -75,6 +75,7 @@ def test_unified_decision_routes_validate_strategy_date_and_etag() -> None:
     assert current.get_json()["schema_version"] == "decision_view"
     assert current.get_json()["draft"] is None
     assert current.get_json()["strategy"] == "tomorrow"
+    assert current.get_json()["publication_id"] == current.get_json()["decision_version"]
     assert current.get_json()["items"][0]["name"] == "浦发银行"
     assert current.get_json()["items"][0]["board"] == "main"
     assert current.get_json()["items"][0]["industry"] == "银行"
@@ -131,6 +132,7 @@ def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_field
     assert payload["strategy"] == "long"
     assert payload["view"] == "current"
     assert payload["score_status"] == "not_applicable"
+    assert payload["publication_id"]
     assert payload["coverage"] == {"item_count": 1, "available_quote_count": 1}
     assert set(payload).isdisjoint({"frozen", "frozen_at", "freeze_kind", "top_scores", "selection_diagnostics"})
     assert set(payload["items"][0]).isdisjoint({"rank", "selection_rank", "scores", "score_status"})
@@ -210,6 +212,7 @@ def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     decision_patch = json.loads(event.split("data: ", 1)[1])
     assert decision_patch["strategy"] == "tomorrow"
     assert decision_patch["patch_schema_version"] == 4
+    assert decision_patch["publication_id"] == _decision().version
     assert decision_patch["replace"] is True
     assert decision_patch["coverage"] == {
         "candidate_count": 11,

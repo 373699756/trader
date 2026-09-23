@@ -86,6 +86,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
     assert payload["patch_schema_version"] == 4
     assert payload["replace"] is True
     assert payload["snapshot_id"] == decision.version
+    assert payload["publication_id"] == decision.version
     assert payload["projection_version"] == decision.content_hash
     assert payload["removed_codes"] == []
     assert payload["removals"] == []
@@ -194,6 +195,7 @@ def test_overlay_event_serializes_row_patch_with_parent_and_projection_identitie
     payload = serialize_event(event)
 
     assert payload["snapshot_id"] == decision.version
+    assert payload["publication_id"] == decision.version
     assert payload["projection_version"] != decision.version
     assert payload["schema_version"] == "decision_event"
     assert payload["patch_schema_version"] == 4

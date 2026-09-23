@@ -14,16 +14,16 @@ from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.application.ports.loaded_profile import ModelInput
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
-from trader.training.infra.artifacts.bundle_codec import decode_head_bundle, load_head_bundle
-from trader.training.infra.artifacts.bundle_locator import locate_head_bundles
-from trader.training.infra.artifacts.bundle_repository import (
+from trader.training.infra.model_bundles.bundle_codec import decode_head_bundle, load_head_bundle
+from trader.training.infra.model_bundles.bundle_locator import locate_head_bundles
+from trader.training.infra.model_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
     inspect_active_head_bundle,
     publish_head_bundle,
     recover_head_bundle_publication,
 )
-from trader.training.infra.artifacts.contracts import TrainedHeadContract, TrainedProfileContract
-from trader.training.infra.artifacts.profile import build_trained_scoring_profile
+from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
+from trader.training.infra.model_bundles.profile import build_trained_scoring_profile
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import (
     HEAD_CONTRACTS,
@@ -367,7 +367,7 @@ def test_v3_failed_replacement_restores_previous_fixed_group(tmp_path: Path, mon
             raise KeyboardInterrupt
         original_replace(source, destination)
 
-    monkeypatch.setattr("trader.training.infra.artifacts.bundle_repository.os.replace", fail_report)
+    monkeypatch.setattr("trader.training.infra.model_bundles.bundle_repository.os.replace", fail_report)
     with pytest.raises(KeyboardInterrupt):
         publish_head_bundle(
             staging,

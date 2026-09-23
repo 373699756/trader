@@ -9,7 +9,7 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput, M
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
-from trader.training.infra.artifacts.bundle_codec import TrainedHeadBundleArtifact, TrainedIndustryModelArtifact
+from trader.training.infra.model_bundles.bundle_codec import TrainedHeadBundleArtifact, TrainedIndustryModelArtifact
 
 
 class TrainedHeadPredictor:

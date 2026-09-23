@@ -13,7 +13,7 @@ from typing import Literal, cast
 import numpy as np
 
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit
-from trader.training.infra.artifacts.contracts import TrainedHeadContract
+from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation"]
 TRAINING_SAMPLE_CACHE_MIB = 32

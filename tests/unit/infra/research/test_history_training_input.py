@@ -29,7 +29,7 @@ from trader.download.infra.published_history_archive import SQLitePublishedHisto
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.training.infra.artifacts.bundle_repository import ActiveHeadBundle
+from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.history.history_training_due import (
     HistoryTrainingDueQuery,
     _revised_dates_since_bundle,

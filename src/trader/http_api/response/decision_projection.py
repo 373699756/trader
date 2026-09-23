@@ -34,6 +34,7 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
         "view": view.view,
         "score_status": view.score_status,
         "decision_version": view.decision_version,
+        "publication_id": view.decision_version,
         "projection_version": view.projection_version,
         "content_hash": view.content_hash,
         "observed_at": _time(view.observed_at),
@@ -94,6 +95,7 @@ def _serialize_long_view(view: DecisionView) -> dict[str, object]:
         "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
         "view": "current",
         "score_status": "not_applicable",
+        "publication_id": view.decision_version,
         "projection_version": view.projection_version,
         "content_hash": view.content_hash,
         "observed_at": _time(view.observed_at),
@@ -240,6 +242,7 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
             version=payload.version,
             content_hash=payload.content_hash,
             stage=payload.stage,
+            publication_id=payload.version,
         )
         if payload.replacement is not None:
             common.update(_serialize_decision_replacement(payload, payload.replacement))
@@ -251,6 +254,7 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
             parent_version=payload.parent_version,
             content_hash=payload.content_hash,
             snapshot_id=payload.parent_version,
+            publication_id=payload.parent_version,
             projection_version=payload.projection_version,
             patch_schema_version=4,
             quotes=[_serialize_overlay_quote(quote) for quote in payload.quotes],
@@ -293,6 +297,7 @@ def _serialize_decision_replacement(
     return {
         "patch_schema_version": 4,
         "snapshot_id": payload.version,
+        "publication_id": payload.version,
         "projection_version": replacement.projection_version,
         "etag": replacement.projection_version,
         "replace": True,

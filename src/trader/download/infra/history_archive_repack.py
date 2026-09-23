@@ -43,7 +43,7 @@ from trader.download.infra.history_control_repository import (
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
-from trader.training.infra.artifacts.bundle_repository import inspect_active_head_bundle
+from trader.training.infra.model_bundles.bundle_repository import inspect_active_head_bundle
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]

@@ -44,13 +44,13 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingWindow,
 )
 from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
-from trader.training.infra.artifacts.bundle_repository import (
+from trader.training.infra.model_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
     make_bundle_staging_directory,
     publish_head_bundle,
     recover_head_bundle_publication,
 )
-from trader.training.infra.artifacts.contracts import TrainedHeadContract, TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.history.history_training_due import (
     HistoryTrainingDueEvaluation,
     HistoryTrainingDueQuery,

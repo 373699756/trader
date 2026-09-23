@@ -14,7 +14,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
 )
-from trader.training.infra.artifacts.contracts import TrainedHeadContract
+from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.sample_repository import (
     SQLiteTrainingSampleRepository,
     TrainingIndustryCounts,

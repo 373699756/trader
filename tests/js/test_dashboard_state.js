@@ -1442,6 +1442,7 @@ const payload = {
 const patch = {
   patch_schema_version: 4,
   schema_version: "decision_event",
+  publication_id: "tomorrow-next",
   base_projection_version: "tomorrow-base",
   projection_version: "tomorrow-next",
   snapshot_id: "tomorrow-next",
@@ -1482,6 +1483,7 @@ assert.strictEqual(
   "apply",
 );
 const replacementPayload = state.replacementPayload(payload, coveragePatch, []);
+assert.strictEqual(replacementPayload.publication_id, coveragePatch.publication_id);
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(replacementPayload.coverage)),
   coveragePatch.coverage,
@@ -1522,6 +1524,10 @@ assert.strictEqual(
   "schema_mismatch",
 );
 assert.strictEqual(
+  state.recommendationPatchDecision({ ...patch, publication_id: "other-publication" }, payload, "tomorrow-base", "tomorrow", "live"),
+  "schema_mismatch",
+);
+assert.strictEqual(
   state.recommendationPatchDecision({ ...patch, trade_date: "2026-07-22" }, payload, "tomorrow-base", "tomorrow", "live"),
   "identity_mismatch",
 );
@@ -1558,6 +1564,7 @@ assert.strictEqual(
 const overlay = {
   patch_schema_version: 4,
   schema_version: "decision_event",
+  publication_id: "tomorrow-decision",
   projection_version: "tomorrow-next",
   snapshot_id: "tomorrow-decision",
   strategy: "tomorrow",
@@ -1567,7 +1574,12 @@ const overlay = {
 const current = { ...payload, snapshot_id: "tomorrow-decision", projection_version: "tomorrow-current" };
 assert.strictEqual(state.overlayPatchDecision(overlay, current, "tomorrow-current", "tomorrow"), "apply");
 assert.strictEqual(
-  state.overlayPatchDecision({ ...overlay, projection_version: "wrong", snapshot_id: "wrong" }, current, "tomorrow-next", "tomorrow"),
+  state.overlayPatchDecision(
+    { ...overlay, publication_id: "wrong", projection_version: "wrong", snapshot_id: "wrong" },
+    current,
+    "tomorrow-next",
+    "tomorrow",
+  ),
   "overlay_projection_mismatch",
 );
 assert.strictEqual(state.eventMatchesCurrent({ strategy: "tomorrow", trade_date: "2026-07-23" }, "tomorrow", "2026-07-23"), true);

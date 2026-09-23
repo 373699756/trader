@@ -14,19 +14,19 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.infra.artifacts.bundle_codec import TrainedHeadBundleArtifact
-from trader.training.infra.artifacts.predictor import TrainedHeadPredictor
+from trader.training.infra.model_bundles.bundle_codec import TrainedHeadBundleArtifact
+from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
 from trader.training.infra.profile.composition import SingleHeadCombiner
 
 
 def build_trained_scoring_profile(
     profile_id: ScoringProfileId,
-    artifacts: tuple[TrainedHeadBundleArtifact, ...],
+    bundles: tuple[TrainedHeadBundleArtifact, ...],
 ) -> LoadedScoringProfile:
     if profile_id not in {"v2", "v3"}:
         raise ValueError("shared trained heads require the V2 or V3 scoring profile")
-    by_strategy = {artifact.strategy: artifact for artifact in artifacts}
-    if len(artifacts) != 2 or set(by_strategy) != {Strategy.TOMORROW, Strategy.D25}:
+    by_strategy = {bundle.strategy: bundle for bundle in bundles}
+    if len(bundles) != 2 or set(by_strategy) != {Strategy.TOMORROW, Strategy.D25}:
         raise ValueError("shared scoring profiles require one Tomorrow and D25 bundle")
     try:
         predictors: dict[Strategy, HeadPredictorPort] = {

@@ -14,7 +14,7 @@ from typing import cast
 
 from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.artifacts.contracts import TrainedProfileContract
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 _ACTIVE_BUNDLE_NAME = "active-bundle.json"
 _PUBLICATION_JOURNAL_NAME = ".bundle-publication.json"
@@ -133,7 +133,7 @@ def _validate_staging(
     profile: TrainedProfileContract,
     identity: HeadBundlePublicationIdentity,
 ) -> dict[str, object]:
-    from trader.training.infra.artifacts.bundle_codec import load_head_bundle
+    from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
 
     artifact = load_head_bundle(staging / "model.json", strategy, profile)
     if (
@@ -175,7 +175,7 @@ def _inspect_active_head_bundle(
     model = output_root / "model.json"
     if not model.is_file() or model.is_symlink():
         raise FileNotFoundError(model)
-    from trader.training.infra.artifacts.bundle_codec import load_head_bundle
+    from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
 
     artifact = load_head_bundle(model, strategy, profile)
     training_input = _read_json(output_root / "training-input.json")

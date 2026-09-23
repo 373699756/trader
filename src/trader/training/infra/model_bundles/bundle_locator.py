@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.artifacts.bundle_repository import locate_active_head_bundle
-from trader.training.infra.artifacts.contracts import TrainedProfileContract
+from trader.training.infra.model_bundles.bundle_repository import locate_active_head_bundle
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 
 def locate_head_bundles(

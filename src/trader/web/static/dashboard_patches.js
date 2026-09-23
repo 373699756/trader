@@ -4,6 +4,8 @@
   function patchVersionValid(patch) {
     return Boolean(
       patch && patch.schema_version === "decision_event" && patch.patch_schema_version === 4
+      && typeof patch.publication_id === "string" && patch.publication_id
+      && patch.publication_id === patch.snapshot_id
     );
   }
 
@@ -52,6 +54,7 @@
     return {
       ...current,
       status: "ready",
+      publication_id: patch.publication_id,
       snapshot_id: patch.snapshot_id,
       projection_version: patch.projection_version || patch.snapshot_id,
       strategy: patch.strategy,

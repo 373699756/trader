@@ -33,7 +33,7 @@ from trader.download.infra.history_control_repository import SQLiteHistoryContro
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.artifacts.bundle_repository import ActiveHeadBundle
+from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training import run_repack_tomorrow_training, run_repack_v3_training

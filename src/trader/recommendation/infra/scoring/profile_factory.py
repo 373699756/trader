@@ -6,9 +6,9 @@ from pathlib import Path
 
 from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.infra.artifacts.bundle_codec import load_head_bundle
-from trader.training.infra.artifacts.bundle_locator import locate_head_bundles
-from trader.training.infra.artifacts.profile import build_trained_scoring_profile
+from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
+from trader.training.infra.model_bundles.bundle_locator import locate_head_bundles
+from trader.training.infra.model_bundles.profile import build_trained_scoring_profile
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -24,8 +24,8 @@ def load_scoring_profile(
         try:
             profile = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
             bundle_paths = locate_head_bundles(training_root or Path("data/train"), profile)
-            artifacts = tuple(load_head_bundle(path, strategy, profile) for strategy, path in bundle_paths)
-            return build_trained_scoring_profile(profile_id, artifacts)
+            bundles = tuple(load_head_bundle(path, strategy, profile) for strategy, path in bundle_paths)
+            return build_trained_scoring_profile(profile_id, bundles)
         except FileNotFoundError as exc:
             raise RuntimeError("shared strategy-head training models are unavailable") from exc
         except (OSError, TypeError, ValueError) as exc:
