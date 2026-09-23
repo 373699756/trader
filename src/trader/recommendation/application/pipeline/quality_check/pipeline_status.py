@@ -39,6 +39,7 @@ from trader.recommendation.domain.publication.models import (
 )
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,
+    StagePopulationFacts,
     split_filter_reason_counts,
 )
 
@@ -198,7 +199,7 @@ def build_first_nine_stage_snapshots(
         latest_success_at=as_of,
         age_seconds=0.0,
     )
-    rows = (
+    legacy_rows = (
         (PipelineStage.DATA_SOURCE, raw_population_count, raw_population_count, 0, 0, 0, ()),
         (PipelineStage.STATIC_MARKET, raw_population_count, raw_population_count, 0, 0, 0, ()),
         (PipelineStage.STATIC_STANDARDIZE, raw_population_count, raw_population_count, 0, 0, 0, ()),
@@ -263,6 +264,37 @@ def build_first_nine_stage_snapshots(
             _stage_reasons(("quality_pending", quality_pending)),
         ),
     )
+    facts = stage_counts.stage_facts
+    if facts:
+        facts = dict(facts)
+        if quality_ready_count is not None and "quality_check" in facts:
+            quality_input = facts["quality_check"].input_count
+            quality_output = min(quality_input, quality_ready_count)
+            facts["quality_check"] = StagePopulationFacts(
+                quality_input,
+                quality_output,
+                pending_count=quality_input - quality_output,
+                reasons={"quality_pending": quality_input - quality_output}
+                if quality_input > quality_output
+                else {},
+            )
+        rows = tuple(
+            (
+                stage,
+                facts[stage.value].input_count,
+                facts[stage.value].output_count,
+                facts[stage.value].rejected_count,
+                facts[stage.value].pending_count,
+                facts[stage.value].failed_count,
+                _stage_reasons(*tuple(sorted(facts[stage.value].reasons.items()))),
+            )
+            for stage in PIPELINE_STAGES[:9]
+            if stage.value in facts
+        )
+        if len(rows) != 9:
+            raise ValueError("production stage facts must cover the first nine stages")
+    else:
+        rows = legacy_rows
     snapshots: list[PipelineStageSnapshot] = []
     input_batch_id = batch_id
     for stage, input_count, output_count, rejected_count, pending_count, failed_count, reasons in rows:

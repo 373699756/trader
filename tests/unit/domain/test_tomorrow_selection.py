@@ -193,9 +193,11 @@ def test_tomorrow_selection_deducts_local_risk_once_and_is_stable(
     assert risky.disposition is ScoredDisposition.OBSERVE_ONLY
     assert risky.selection_skip_reason == "local_risk_veto"
     assert tuple(item.code for item in forward.selected) == tuple(item.code for item in reverse.selected)
-    assert len(forward.selected) == 10
-    assert sum(item.features.quote.industry == "concentrated" for item in forward.selected) <= 2
-    assert [item.rank for item in forward.selected] == list(range(1, 11))
+    # Local selection exposes every executable candidate; final TopK and
+    # concentration are owned by the post-fusion action-pool stage.
+    assert len(forward.selected) == 104
+    assert sum(item.features.quote.industry == "concentrated" for item in forward.selected) == 2
+    assert [item.rank for item in forward.selected] == list(range(1, 105))
 
 
 def test_production_model_ineligible_candidate_does_not_consume_board_limit(
@@ -244,6 +246,18 @@ def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_c
     assert plan.stage_counts.model_input_eligible == 2
     assert plan.stage_counts.candidate_score_eligible == 1
     assert plan.stage_counts.candidate_limit_selected == 1
+    assert tuple(plan.stage_counts.stage_facts) == (
+        "data_source",
+        "static_market",
+        "static_standardize",
+        "static_filter",
+        "dynamic_market",
+        "dynamic_standardize",
+        "dynamic_filter",
+        "candidate_pool",
+        "quality_check",
+    )
+    assert plan.stage_counts.stage_facts["static_filter"].rejected_count == 1
 
 
 def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
@@ -388,6 +402,28 @@ def test_tomorrow_selection_uses_full_population_but_scores_only_explicit_candid
     assert result.scored_candidates[0].features.values["tail_return_30m"] == 99.0
     assert result.scored_candidates[0].features.merge_epoch == request.merge_epoch
     assert result.population_versions
+
+
+def test_stage_facts_keep_explicit_refresh_inside_static_boundary(application_feature_factory) -> None:
+    population = _features(application_feature_factory, count=3)
+    statically_rejected_refresh = replace(
+        population[0],
+        quote=replace(population[0].quote, is_st=True),
+    )
+    request = replace(
+        _request(population, _selection_policy(candidate_limit=3)),
+        candidate_features=(statically_rejected_refresh, population[1]),
+    )
+
+    plan = plan_scored_candidates(request)
+    facts = plan.stage_counts.stage_facts
+
+    assert facts["static_filter"].output_count == 3
+    assert facts["dynamic_market"].output_count == 1
+    assert facts["dynamic_filter"].input_count == 1
+    assert facts["candidate_pool"].output_count == 1
+    for fact in facts.values():
+        assert fact.output_count + fact.rejected_count + fact.pending_count + fact.failed_count <= fact.input_count
 
 
 def test_tomorrow_selection_rejects_feature_observed_after_evaluation(application_feature_factory) -> None:
