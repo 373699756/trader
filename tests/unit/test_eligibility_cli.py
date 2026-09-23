@@ -12,7 +12,7 @@ from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIss
 
 def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path, monkeypatch, capsys) -> None:
     observed_at = datetime(2026, 9, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "issuer-eligibility.sqlite3")
+    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "data" / "blacklist")
     registry.record(
         (
             IssuerEligibilityFact(
@@ -25,7 +25,11 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
             ),
         )
     )
-    monkeypatch.setattr(cli, "load_runtime_settings", lambda _path: SimpleNamespace(runtime_dir=tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "load_runtime_settings",
+        lambda _path: SimpleNamespace(runtime_dir=tmp_path, project_root=tmp_path),
+    )
 
     exit_code = cli.main(
         [

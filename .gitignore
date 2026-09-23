@@ -4,6 +4,7 @@
 .deepseek_key
 .token_key
 .runtime/
+data/blacklist/
 .build-metadata/
 # Runtime history shards, training evidence, WAL files, and manifests are never committed.
 /data/history/

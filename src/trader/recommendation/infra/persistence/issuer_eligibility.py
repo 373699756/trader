@@ -1,8 +1,10 @@
-"""Append-only SQLite registry for issuer-level permanent exclusions."""
+"""Categorized SQLite snapshot registry for issuer-level permanent exclusions."""
 
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import sqlite3
 import threading
 from collections import Counter
@@ -21,8 +23,21 @@ from trader.recommendation.domain.market.eligibility import (
     resolve_issuer_eligibility,
 )
 
-_SCHEMA_VERSION = "issuer_eligibility_registry"
+_SCHEMA_VERSION = "issuer_eligibility_snapshot"
 _EMPTY_MANIFEST_HASH = hashlib.sha256(b"").hexdigest()
+_ACTIVE_MANIFEST = "active-manifest.json"
+_SNAPSHOT_ROOT = "snapshots"
+_CATEGORY_BY_REASON = {
+    IssuerEligibilityReason.HISTORICAL_ST: "st_warning",
+    IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING: "delisting_warning",
+    IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS: "audited_loss",
+    IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD: "financial_fraud",
+    IssuerEligibilityReason.CONFIRMED_MAJOR_ILLEGAL: "major_illegal",
+    IssuerEligibilityReason.CONFIRMED_FUND_OCCUPATION: "fund_occupation",
+    IssuerEligibilityReason.CONFIRMED_ILLEGAL_GUARANTEE: "illegal_guarantee",
+    IssuerEligibilityReason.CONFIRMED_FORCED_DELISTING: "forced_delisting",
+    IssuerEligibilityReason.MANUAL_PERMANENT_BLACKLIST: "manual",
+}
 
 
 class IssuerEligibilityConflictError(RuntimeError):
@@ -30,15 +45,51 @@ class IssuerEligibilityConflictError(RuntimeError):
 
 
 class SQLiteIssuerEligibilityRegistry:
-    def __init__(self, database_path: Path, *, read_only: bool = False) -> None:
-        self._database_path = database_path
+    """Single owner for the categorized active eligibility snapshot."""
+
+    def __init__(self, root: Path, *, read_only: bool = False) -> None:
+        self._root = root
+        self._manifest_path = root / _ACTIVE_MANIFEST
         self._read_only = read_only
         self._lock = threading.RLock()
         self._loaded = False
         self._facts: dict[tuple[str, IssuerEligibilityReason, str], IssuerEligibilityFact] = {}
+        self._snapshot_id: str | None = None
+        self._snapshot_dir: Path | None = None
         self._integrity_ok = True
         self._persistence_error_count = 0
         self._last_error: str | None = None
+
+    @classmethod
+    def migrate_legacy_database(cls, database_path: Path, root: Path) -> int:
+        """Import the retired single-file registry once, without retaining a read path."""
+        if (root / _ACTIVE_MANIFEST).exists() or not database_path.exists():
+            return 0
+        try:
+            with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5.0) as connection:
+                rows = connection.execute(
+                    """
+                    SELECT code, reason, effective_at, evidence_id, source, evidence_hash, content_hash
+                    FROM issuer_eligibility_facts
+                    ORDER BY code, reason, effective_at, evidence_id
+                    """
+                ).fetchall()
+        except (OSError, sqlite3.Error) as exc:
+            raise RuntimeError("legacy issuer eligibility migration failed") from exc
+        facts: list[IssuerEligibilityFact] = []
+        for row in rows:
+            fact = IssuerEligibilityFact(
+                code=str(row[0]),
+                reason=IssuerEligibilityReason(str(row[1])),
+                effective_at=datetime.fromisoformat(str(row[2])),
+                evidence_id=str(row[3]),
+                source=str(row[4]),
+                evidence_hash=str(row[5]),
+            )
+            if issuer_eligibility_fact_hash(fact) != str(row[6]):
+                raise RuntimeError("legacy issuer eligibility migration found invalid content")
+            facts.append(fact)
+        return cls(root).record(tuple(facts))
 
     def record(self, facts: Sequence[IssuerEligibilityFact]) -> int:
         incoming = tuple(sorted(set(facts)))
@@ -50,51 +101,18 @@ class SQLiteIssuerEligibilityRegistry:
             self._ensure_loaded()
             self._validate_incoming(incoming)
             try:
-                self._database_path.parent.mkdir(parents=True, exist_ok=True)
-                with self._connection() as connection:
-                    self._ensure_schema(connection)
-                    inserted = 0
+                snapshot_dir = self._ensure_snapshot()
+                inserted = self._write_facts(snapshot_dir, incoming)
+                if inserted:
                     for fact in incoming:
-                        identity_key = _identity_key(fact)
-                        content_hash = issuer_eligibility_fact_hash(fact)
-                        existing = connection.execute(
-                            "SELECT content_hash FROM issuer_eligibility_facts WHERE identity_key = ?",
-                            (identity_key,),
-                        ).fetchone()
-                        if existing is not None:
-                            if str(existing[0]) != content_hash:
-                                raise IssuerEligibilityConflictError(
-                                    f"issuer eligibility evidence conflict: {fact.code}:{fact.reason.value}"
-                                )
-                            continue
-                        connection.execute(
-                            """
-                            INSERT INTO issuer_eligibility_facts (
-                                identity_key, code, reason, effective_at, evidence_id, source,
-                                evidence_hash, content_hash
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                identity_key,
-                                fact.code,
-                                fact.reason.value,
-                                fact.effective_at.isoformat(),
-                                fact.evidence_id,
-                                fact.source,
-                                fact.evidence_hash,
-                                content_hash,
-                            ),
-                        )
-                        inserted += 1
-                    connection.commit()
+                        self._facts.setdefault(fact.identity, fact)
+                    self._write_manifest()
             except IssuerEligibilityConflictError:
                 raise
             except (OSError, sqlite3.Error) as exc:
                 self._persistence_error_count += 1
                 self._last_error = "eligibility_persistence_error"
                 raise RuntimeError("issuer eligibility persistence failed") from exc
-            for fact in incoming:
-                self._facts.setdefault(fact.identity, fact)
             self._last_error = None
             return inserted
 
@@ -169,21 +187,43 @@ class SQLiteIssuerEligibilityRegistry:
         if self._loaded:
             return
         self._loaded = True
-        if not self._database_path.exists():
+        if not self._manifest_path.exists():
             return
         try:
-            with self._connection(read_only=True) as connection:
-                rows = connection.execute(
-                    """
-                    SELECT code, reason, effective_at, evidence_id, source, evidence_hash, content_hash
-                    FROM issuer_eligibility_facts
-                    ORDER BY code, reason, effective_at, evidence_id
-                    """
-                ).fetchall()
-        except (OSError, sqlite3.Error):
+            manifest = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+            snapshot_id = str(manifest["snapshot_id"])
+            snapshot_dir = self._root / _SNAPSHOT_ROOT / snapshot_id
+            if not snapshot_dir.is_dir():
+                raise ValueError("active eligibility snapshot directory is missing")
+            self._snapshot_id = snapshot_id
+            self._snapshot_dir = snapshot_dir
+            for category in _CATEGORY_BY_REASON.values():
+                database_path = snapshot_dir / f"{category}.sqlite3"
+                if not database_path.exists():
+                    continue
+                self._load_database(database_path)
+            if manifest.get("schema_version") != _SCHEMA_VERSION:
+                raise ValueError("active eligibility snapshot schema is unsupported")
+            if int(manifest.get("fact_count", -1)) != len(self._facts):
+                raise ValueError("active eligibility snapshot fact count is invalid")
+            if str(manifest.get("manifest_hash")) != _manifest_hash(tuple(self._facts.values())):
+                raise ValueError("active eligibility snapshot manifest is invalid")
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError, sqlite3.Error):
             self._integrity_ok = False
             self._last_error = "eligibility_integrity_error"
             return
+
+    def _load_database(self, database_path: Path) -> None:
+        with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5.0) as connection:
+            if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise sqlite3.DatabaseError("eligibility database integrity check failed")
+            rows = connection.execute(
+                """
+                SELECT code, reason, effective_at, evidence_id, source, evidence_hash, content_hash
+                FROM issuer_eligibility_facts
+                ORDER BY code, reason, effective_at, evidence_id
+                """
+            ).fetchall()
         for row in rows:
             try:
                 fact = IssuerEligibilityFact(
@@ -203,10 +243,78 @@ class SQLiteIssuerEligibilityRegistry:
                 self._last_error = "eligibility_integrity_error"
             self._facts[fact.identity] = fact
 
-    def _connection(self, *, read_only: bool = False) -> sqlite3.Connection:
-        if read_only:
-            return sqlite3.connect(f"file:{self._database_path}?mode=ro", uri=True, timeout=5.0)
-        return sqlite3.connect(self._database_path, timeout=5.0)
+    def _ensure_snapshot(self) -> Path:
+        if self._snapshot_dir is not None:
+            return self._snapshot_dir
+        self._root.mkdir(parents=True, exist_ok=True)
+        snapshot_id = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+        snapshot_dir = self._root / _SNAPSHOT_ROOT / snapshot_id
+        snapshot_dir.mkdir(parents=True, exist_ok=False)
+        self._snapshot_id = snapshot_id
+        self._snapshot_dir = snapshot_dir
+        return snapshot_dir
+
+    def _write_facts(self, snapshot_dir: Path, facts: tuple[IssuerEligibilityFact, ...]) -> int:
+        grouped: dict[str, list[IssuerEligibilityFact]] = {}
+        for fact in facts:
+            grouped.setdefault(_CATEGORY_BY_REASON[fact.reason], []).append(fact)
+        inserted = 0
+        for category, category_facts in grouped.items():
+            database_path = snapshot_dir / f"{category}.sqlite3"
+            with sqlite3.connect(database_path, timeout=5.0) as connection:
+                self._ensure_schema(connection)
+                for fact in category_facts:
+                    identity_key = _identity_key(fact)
+                    content_hash = issuer_eligibility_fact_hash(fact)
+                    existing = connection.execute(
+                        "SELECT content_hash FROM issuer_eligibility_facts WHERE identity_key = ?",
+                        (identity_key,),
+                    ).fetchone()
+                    if existing is not None:
+                        if str(existing[0]) != content_hash:
+                            raise IssuerEligibilityConflictError(
+                                f"issuer eligibility evidence conflict: {fact.code}:{fact.reason.value}"
+                            )
+                        continue
+                    connection.execute(
+                        """
+                        INSERT INTO issuer_eligibility_facts (
+                            identity_key, code, reason, effective_at, evidence_id, source,
+                            evidence_hash, content_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            identity_key,
+                            fact.code,
+                            fact.reason.value,
+                            fact.effective_at.isoformat(),
+                            fact.evidence_id,
+                            fact.source,
+                            fact.evidence_hash,
+                            content_hash,
+                        ),
+                    )
+                    inserted += 1
+                connection.commit()
+        return inserted
+
+    def _write_manifest(self) -> None:
+        assert self._snapshot_dir is not None
+        assert self._snapshot_id is not None
+        payload = {
+            "schema_version": _SCHEMA_VERSION,
+            "snapshot_id": self._snapshot_id,
+            "generated_at": datetime.now().astimezone().isoformat(),
+            "fact_count": len(self._facts),
+            "category_counts": {
+                category: sum(1 for fact in self._facts.values() if _CATEGORY_BY_REASON[fact.reason] == category)
+                for category in sorted(set(_CATEGORY_BY_REASON.values()))
+            },
+            "manifest_hash": _manifest_hash(tuple(self._facts.values())),
+        }
+        temporary = self._manifest_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.replace(temporary, self._manifest_path)
 
     @staticmethod
     def _ensure_schema(connection: sqlite3.Connection) -> None:
@@ -238,7 +346,7 @@ def _identity_key(fact: IssuerEligibilityFact) -> str:
 def _manifest_hash(facts: tuple[IssuerEligibilityFact, ...]) -> str:
     if not facts:
         return _EMPTY_MANIFEST_HASH
-    payload = "\n".join(issuer_eligibility_fact_hash(fact) for fact in facts).encode("ascii")
+    payload = "\n".join(issuer_eligibility_fact_hash(fact) for fact in sorted(facts)).encode("ascii")
     return hashlib.sha256(payload).hexdigest()
 
 

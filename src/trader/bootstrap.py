@@ -693,7 +693,12 @@ def _build_market_data(
         monotonic=time.monotonic,
     )
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
-    eligibility = SQLiteIssuerEligibilityRegistry(settings.runtime_dir / "issuer-eligibility.sqlite3")
+    blacklist_root = settings.project_root / "data" / "blacklist"
+    SQLiteIssuerEligibilityRegistry.migrate_legacy_database(
+        settings.runtime_dir / "issuer-eligibility.sqlite3",
+        blacklist_root,
+    )
+    eligibility = SQLiteIssuerEligibilityRegistry(blacklist_root)
     try:
         eligibility.record_manual_blacklist(
             strategy.hard_filters.blacklist_codes,

@@ -28,8 +28,8 @@ def _fact(*, evidence_hash: str = "a" * 64) -> IssuerEligibilityFact:
 
 
 def test_registry_is_idempotent_persistent_and_filters_only_after_effective_time(tmp_path) -> None:
-    database = tmp_path / "issuer-eligibility.sqlite3"
-    registry = SQLiteIssuerEligibilityRegistry(database)
+    root = tmp_path / "blacklist"
+    registry = SQLiteIssuerEligibilityRegistry(root)
 
     assert registry.record((_fact(),)) == 1
     assert registry.record((_fact(),)) == 0
@@ -39,7 +39,7 @@ def test_registry_is_idempotent_persistent_and_filters_only_after_effective_time
     )
     assert registry.filter_codes(("600001", "600002"), OBSERVED_AT) == ("600002",)
 
-    recovered = SQLiteIssuerEligibilityRegistry(database)
+    recovered = SQLiteIssuerEligibilityRegistry(root)
     assert recovered.exclusions(OBSERVED_AT)[0].code == "600001"
     assert recovered.status().excluded_count == 1
     assert recovered.status().fact_count == 1
@@ -47,7 +47,7 @@ def test_registry_is_idempotent_persistent_and_filters_only_after_effective_time
 
 
 def test_registry_rejects_same_evidence_identity_with_different_content(tmp_path) -> None:
-    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "issuer-eligibility.sqlite3")
+    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "blacklist")
     registry.record((_fact(),))
 
     with pytest.raises(IssuerEligibilityConflictError):
@@ -55,15 +55,30 @@ def test_registry_rejects_same_evidence_identity_with_different_content(tmp_path
 
 
 def test_registry_detects_tampering_without_silently_clearing_exclusions(tmp_path) -> None:
-    database = tmp_path / "issuer-eligibility.sqlite3"
-    registry = SQLiteIssuerEligibilityRegistry(database)
+    root = tmp_path / "blacklist"
+    registry = SQLiteIssuerEligibilityRegistry(root)
     registry.record((_fact(),))
+    database = next((root / "snapshots").glob("*/financial_fraud.sqlite3"))
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE issuer_eligibility_facts SET content_hash = ?", ("0" * 64,))
         connection.commit()
 
-    damaged = SQLiteIssuerEligibilityRegistry(database)
+    damaged = SQLiteIssuerEligibilityRegistry(root)
 
     assert damaged.status().integrity_ok is False
     assert damaged.status().last_error == "eligibility_integrity_error"
     assert damaged.filter_codes(("600001",), OBSERVED_AT) == ()
+
+
+def test_registry_migrates_legacy_single_file_once(tmp_path) -> None:
+    legacy = tmp_path / "issuer-eligibility.sqlite3"
+    legacy_registry = SQLiteIssuerEligibilityRegistry(tmp_path / "legacy")
+    legacy_registry.record((_fact(),))
+    legacy_file = next((tmp_path / "legacy" / "snapshots").glob("*/financial_fraud.sqlite3"))
+    legacy_file.replace(legacy)
+
+    root = tmp_path / "blacklist"
+    assert SQLiteIssuerEligibilityRegistry.migrate_legacy_database(legacy, root) == 1
+    assert SQLiteIssuerEligibilityRegistry.migrate_legacy_database(legacy, root) == 0
+    migrated = SQLiteIssuerEligibilityRegistry(root, read_only=True)
+    assert migrated.filter_codes(("600001",), OBSERVED_AT) == ()
