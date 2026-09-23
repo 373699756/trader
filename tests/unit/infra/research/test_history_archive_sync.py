@@ -121,7 +121,7 @@ class ProgressRecorder:
 
 
 def test_history_sync_configuration_owns_bounded_supplier_resources(tmp_path: Path) -> None:
-    assert HistorySyncConfiguration().minimum_free_bytes == 10 * 1024**3
+    assert HistorySyncConfiguration().minimum_free_bytes == 1 * 1024**3
     with pytest.raises(ValueError, match="configuration"):
         HistorySyncConfiguration(tmp_path, query_interval_seconds=1.99)
     with pytest.raises(ValueError, match="configuration"):

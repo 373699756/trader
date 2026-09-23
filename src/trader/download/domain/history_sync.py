@@ -43,7 +43,7 @@ class HistorySyncConfiguration:
     sessions: int = 2000
     reread_sessions: int = 5
     download_batch_size: int = 32
-    minimum_free_bytes: int = 10 * 1024**3
+    minimum_free_bytes: int = 1 * 1024**3
     supplier_timeout_seconds: float = 45.0
     supplier_retries: int = 2
     query_interval_seconds: float = 2.0
