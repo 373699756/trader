@@ -78,7 +78,7 @@ def test_production_feature_contract_has_no_historical_stage_prefixes() -> None:
     production_files = (
         SOURCE / "recommendation" / "domain" / "market" / "factors.py",
         SOURCE / "recommendation" / "application" / "pipeline" / "local_score" / "model_scoring.py",
-        SOURCE / "infra" / "market_data" / "normalization" / "features.py",
+        SOURCE / "recommendation" / "infra" / "normalization" / "features.py",
         SOURCE / "entrypoints" / "performance.py",
     )
     violations = [

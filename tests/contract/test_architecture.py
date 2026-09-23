@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import subprocess
 from dataclasses import MISSING, fields
+from functools import cache
 from pathlib import Path
 
 from trader.recommendation.application.ports.runtime import DecisionBuilderPort
@@ -40,15 +41,21 @@ def test_active_product_tree_uses_precise_resource_and_state_names() -> None:
     assert content_violations == []
 
 
-def _imports(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+@cache
+def _tree(path: Path) -> ast.Module:
+    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+
+
+@cache
+def _imports(path: Path) -> frozenset[str]:
+    tree = _tree(path)
     result: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             result.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             result.add(node.module)
-    return result
+    return frozenset(result)
 
 
 def test_active_code_does_not_import_legacy_package() -> None:
@@ -95,7 +102,14 @@ def test_active_dependency_direction() -> None:
             "trader.web",
             "trader.entrypoints",
         ),
-        "recommendation/application": ("trader.infra", "trader.web", "trader.entrypoints", "trader.training"),
+        "recommendation/application": (
+            "stock_analyzer",
+            "trader.download",
+            "trader.infra",
+            "trader.web",
+            "trader.entrypoints",
+            "trader.training",
+        ),
     }
     violations: list[str] = []
     for boundary, prefixes in forbidden.items():
@@ -119,7 +133,7 @@ def test_shared_technical_primitives_have_one_infra_owner() -> None:
 
     definitions: dict[str, list[Path]] = {name: [] for name in owners}
     for path in SOURCE_ROOT.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _tree(path)
         for node in tree.body:
             name = node.name if isinstance(node, (ast.ClassDef, ast.FunctionDef)) else None
             if name in definitions:
@@ -140,7 +154,7 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
     }
     violations: list[str] = []
     for path in application.rglob("*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _tree(path)
         for node in ast.walk(tree):
             if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in forbidden_names:
                 violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}:{node.name}")
@@ -324,7 +338,7 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
     forbidden_status_types = {"Any", "JsonObject", "JsonValue", "Mapping", "MutableMapping", "dict", "object"}
     for path in trader_root.rglob("*.py"):
         relative = path.relative_to(trader_root)
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _tree(path)
         for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
             for member in class_node.body:
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name in conversion_names:
@@ -378,7 +392,7 @@ def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -
     )
     violations: list[str] = []
     for path in paths:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        tree = _tree(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in {"asdict", "__dict__"}:
                 violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}: automatic field projection")
@@ -454,7 +468,7 @@ def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> Non
     for boundary in ("domain", "application"):
         for path in (SOURCE_ROOT / boundary).rglob("*.py"):
             relative = path.relative_to(SOURCE_ROOT)
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            tree = _tree(path)
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in forbidden_public_codecs:
                     violations.append(f"{relative}:{node.lineno}: persistence codec belongs in infra")

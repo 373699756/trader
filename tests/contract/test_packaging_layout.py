@@ -7,7 +7,10 @@ from shutil import copytree
 
 import tomllib
 
+import pytest
 
+
+@pytest.mark.slow
 def test_install_keeps_setuptools_metadata_out_of_source_tree(tmp_path: Path) -> None:
     repository = Path(__file__).parents[2]
     isolated_repository = tmp_path / "repository"

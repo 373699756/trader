@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import subprocess
-import sys
+from dataclasses import dataclass, field
 from pathlib import Path
+
+import pytest
+
+from conftest import _SLOW_MARKERS_BY_PATH, _business_owner, pytest_collection_modifyitems
 
 ROOT = Path(__file__).resolve().parents[2]
 MAKEFILE = ROOT / "Makefile"
@@ -38,6 +42,7 @@ def test_makefile_is_the_single_test_command_source() -> None:
         "test-recommendation": 'pytest -q -n 4 tests -m "recommendation"',
         "test-recommendation-runtime": 'pytest -q -n 4 tests -m "recommendation and slow_runtime"',
         "test-recommendation-suppliers": 'pytest -q -n 4 tests -m "recommendation and slow_supplier"',
+        "test-static-contracts": 'pytest -q -n 4 tests -m "crosscut and slow_static"',
     }
     for target, command in business_targets.items():
         result = subprocess.run(
@@ -50,77 +55,47 @@ def test_makefile_is_the_single_test_command_source() -> None:
         assert command in result.stdout
 
 
-def test_business_markers_are_registered_and_selectable() -> None:
-    expected_files = {
-        "train": "tests/unit/application/research/test_baseline_identity_audit.py",
-        "history": "tests/unit/infra/research/test_history_archive_sync.py",
-        "recommendation": "tests/unit/application/test_tomorrow_freezing.py",
-        "crosscut": "tests/contract/test_test_command_contract.py",
-    }
-    for marker, test_path in expected_files.items():
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "--collect-only",
-                "-q",
-                "-m",
-                marker,
-                test_path,
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert test_path in result.stdout
+@pytest.mark.parametrize(
+    ("relative_path", "expected_owner"),
+    (
+        ("unit/application/research/test_baseline_identity_audit.py", "train"),
+        ("unit/infra/research/test_history_archive_sync.py", "history"),
+        ("unit/application/test_tomorrow_freezing.py", "recommendation"),
+        ("contract/test_test_command_contract.py", "crosscut"),
+    ),
+)
+def test_business_owner_mapping_is_explicit(relative_path: str, expected_owner: str) -> None:
+    assert _business_owner(relative_path) == expected_owner
 
 
 def test_slow_recommendation_subsets_are_selectable() -> None:
-    expected_files = {
-        "recommendation and slow_runtime": "tests/unit/application/test_input_runtime.py",
-        "recommendation and slow_supplier": "tests/component/test_market_gateway.py",
-    }
-    for marker, test_path in expected_files.items():
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "--collect-only",
-                "-q",
-                "-m",
-                marker,
-                test_path,
-            ],
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        assert test_path in result.stdout
+    runtime_path = "unit/application/test_input_runtime.py"
+    supplier_path = "component/test_market_gateway.py"
+
+    assert _business_owner(runtime_path) == "recommendation"
+    assert runtime_path in _SLOW_MARKERS_BY_PATH["slow_runtime"]
+    assert _business_owner(supplier_path) == "recommendation"
+    assert supplier_path in _SLOW_MARKERS_BY_PATH["slow_supplier"]
+    assert "contract/test_professional_naming_contract.py" in _SLOW_MARKERS_BY_PATH["slow_static"]
 
 
-def test_pytest_directory_markers_are_registered_and_selectable() -> None:
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "--collect-only",
-            "-q",
-            "-m",
-            "unit",
-            "tests/unit/test_server_entrypoint.py",
-        ],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+@dataclass
+class _CollectedItem:
+    path: Path
+    markers: set[str] = field(default_factory=set)
 
-    assert "tests/unit/test_server_entrypoint.py: 3" in result.stdout
+    def add_marker(self, marker: str | pytest.MarkDecorator) -> None:
+        self.markers.add(marker if isinstance(marker, str) else marker.name)
+
+
+def test_collection_hook_adds_directory_owner_and_slow_markers() -> None:
+    unit = _CollectedItem(ROOT / "tests/unit/test_server_entrypoint.py")
+    slow_runtime = _CollectedItem(ROOT / "tests/unit/application/test_input_runtime.py")
+
+    pytest_collection_modifyitems([unit, slow_runtime])  # type: ignore[list-item]
+
+    assert unit.markers == {"unit", "crosscut"}
+    assert slow_runtime.markers == {"unit", "recommendation", "slow", "slow_runtime"}
 
 
 def test_release_target_builds_then_verifies_the_wheel_outside_the_repository() -> None:

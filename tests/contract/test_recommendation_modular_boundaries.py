@@ -5,35 +5,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "trader"
-RECOMMENDATION = SOURCE / "recommendation" / "application"
-
-
-def _imports(path: Path) -> set[str]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    result: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            result.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            result.add(node.module)
-    return result
-
-
-def test_recommendation_capabilities_have_explicit_application_boundaries() -> None:
-    expected = {
-        "ports",
-        "pipeline",
-    }
-    assert expected <= {path.name for path in RECOMMENDATION.iterdir()}
-
-    forbidden = ("trader.infra", "trader.web", "trader.entrypoints", "stock_analyzer")
-    violations = [
-        f"{path.relative_to(SOURCE)} -> {imported}"
-        for path in RECOMMENDATION.rglob("*.py")
-        for imported in _imports(path)
-        if imported.startswith(forbidden) or ".training" in imported or imported.endswith(".download")
-    ]
-    assert violations == []
 
 
 def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> None:

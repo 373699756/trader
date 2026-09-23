@@ -4,11 +4,11 @@
 
 测试计划按 `train`、`history`、`recommendation` 三个业务工作流推进。`runtime`、`supplier` 是测试的执行特征，不是与业务并列的测试任务；`fast` 和 `full` 是总门禁范围。
 
-当前 `make test` 已转为 `test-fast`，但默认仍收集所有未标记为慢速的目录。此前扫描记录的非 slow 集合约有 1945 个用例，并行 4 个 worker 实测约 4 分 43 秒；慢用例主要集中在历史归档、行情历史缓存和转换脚本。该耗时是旧基线记录，优化后应重新测量，不能视为当前实测。
+阶段 35 优化前实测收集 1853 个用例：fast 1580、slow 273；单进程 fast 用时 2 分 57.9 秒并暴露 6 个失败。优化后总数仍为 1853，其中 fast 1565、slow 288；4 worker fast 实测 1 分 32.5 秒，仅保留 1 条真实产品失败。参数化 owner 映射增加了等价独立 case，同时删除或合并 4 个无效/重复测试，所以不能用总数不变误判为没有清理。纯仓库命名扫描和隔离 pip 安装已退出日常 fast，仍由专项或 full 门禁覆盖。
 
 现有 Makefile 的 `test-history`、`test-runtime`、`test-suppliers` 按慢速类型切分：历史归档是业务范围，runtime 和 suppliers 则横跨推荐业务内部的运行时与行情适配边界。因此这些目标适合做专项补充门禁，不适合作为主要测试规划。当前 `slow_*` 主要由 `tests/conftest.py` 按文件路径加标记，不能表达单个用例的业务 owner。
 
-本轮扫描未发现能仅凭文件名或旧版本字样判定为无用的测试。尤其是 legacy 只读兼容、退役版本边界和迁移期架构契约，删除前必须确认对应生产合同或迁移阶段已结束，并检查是否有其它测试覆盖同一行为。此计划不以减少用例数作为目标。
+本轮确认一条测试只读取已删除的 `docs/v1v2.md`，对应 Today/V1 合同已退役且现行 V2/V3 由权威评分文档、profile 和训练契约覆盖，因此删除。另有三条重复架构扫描被并入更强的依赖方向和退役 owner 契约。legacy 只读兼容、冻结、恢复、评分、迁移和公开 schema 仍不得仅凭文件名、失败或耗时删除；此计划不以减少用例总数作为目标。
 
 ## 测试任务和门禁
 
@@ -18,6 +18,7 @@
 | `history` | 历史数据下载、归档、维护与转换 | BaoStock 同步、控制库、月分片、active snapshot、归档读取/重打包、历史转换，以及历史数据边界合同 | `make test-history`；归档、SQLite、转换和供应商时序用例纳入此业务门禁 |
 | `recommendation` | 推荐领域、实时输入、评分、运行时、冻结、持久化、HTTP/Web | 候选到排名、V2/V3 模型消费、DeepSeek、行情接入、调度/worker、first-wins 冻结、恢复、API/SSE 和 Web 投影 | `make test-recommendation`；runtime/supplier 子集可单独运行，但仍归属推荐 |
 | `fast` | 上述业务的快速本地默认集合，加共享架构/命令契约 | 纯函数、轻量单元、无需真实等待或大规模 SQLite 构造的组件、契约 | `make test` / `make test-fast`；日常反馈门禁 |
+| `static` | 跨仓库命名和静态源码卫生 | 全树 AST/文本命名扫描 | `make test-static-contracts`；不进入日常 fast，仍进入 full |
 | `full` | 全部业务门禁、慢速用例及集成测试 | 完整测试树 | `make test-full`；阶段 12 发布验收使用 |
 
 业务 marker 与耗时 marker 应正交：每个测试有一个主要业务归属（`train`、`history`、`recommendation` 或共享 `crosscut`），可另外带 `slow`、`slow_runtime`、`slow_supplier`、`slow_migration` 等执行特征。业务命令按 owner 选择测试，慢速标签用于从 `fast` 排除或运行专项子集。不要再用单一慢速标签替代业务规划。
@@ -26,35 +27,34 @@
 
 ## 实施顺序
 
-### 1. 整理测试归属清单
+### 1. 已完成：整理测试归属和业务门禁
 
-- 为现有测试文件登记主要 owner：`train`、`history`、`recommendation`、`crosscut`。
-- 对一个测试文件覆盖多个 owner 的情况，先拆分独立行为或明确主 owner，不按路径猜测归属。
-- 标出慢速原因：真实 I/O、固定等待、并发/线程时序、大规模 fixture、重复全树扫描；分别登记，不把所有慢测试笼统归为 runtime。
-- 不改测试断言和产品代码；先让每个测试的门禁归属可解释、可复查。
+- pytest collection 已为每个测试登记唯一 `train`、`history`、`recommendation` 或 `crosscut` owner；`slow_*` 继续表示正交执行特征。
+- 一级 Makefile 门禁已按业务 owner 建立；runtime 与 supplier 仍是 recommendation 专项，不是业务 owner。
+- collection hook 由直接伪 item 测试覆盖，不再为六个代表文件重复启动嵌套 pytest。
 
-### 2. 建立业务门禁
+### 2. 已完成：清理无效、重复和过时契约
 
-- 增加 `make test-train`、`make test-history`、`make test-recommendation`，并保留 `make test` 指向快速默认门禁、`make test-full` 覆盖全量。
-- 将原 `test-runtime`、`test-suppliers` 调整为 `test-recommendation-runtime`、`test-recommendation-suppliers` 一类可选子集，或仅以 marker 过滤，不将其作为一级任务。
-- 默认快测排除需要真实等待、压力级 SQLite/归档构造或外部资源的测试；三个业务门禁应覆盖各自全部必要行为，不因默认快测排除而失去日常可运行入口。
-- 更新 Makefile help 和唯一命令契约测试，确保命令选择范围清楚且彼此可组合。
+- 删除只读取退役 `docs/v1v2.md` 的旧计划契约；现行档位合同继续由 V2/V3 权威契约覆盖。
+- 修复四组迁移前源码 owner 路径，不以删除断言掩盖失败。
+- 合并 recommendation application 反向依赖和退役目录的重复扫描；退役目录只检查活动 `.py`，不再被残留 `__pycache__` 空目录误报。
+- qfq 算法只由 `docs/01_评分逻辑.md` 权威测试持有；工程文档不再被要求复制算法文字。Changelog 契约兼容仓库内已采用的两代记录结构。
 
-### 3. 清理无效和重复测试
+### 3. 已完成：消除无意义墙钟等待和日常重型扫描
 
-- 先检查同一行为是否被多个契约重复扫描：重点复核 `test_architecture.py`、`test_functional_package_boundaries.py`、`test_recommendation_modular_boundaries.py`、`test_entry_contract.py`、`test_packaging_layout.py` 和命名契约。
-- 合并重复的目录遍历/源码解析 fixture；每条依赖边界、命名规则和公开行为只保留一个明确 owner 的权威断言集合。
-- 只有在生产路径已删除、合同已退役且没有消费者，或行为已由更靠近边界的测试完整覆盖时，才删除旧测试。Today/V1、旧路径存在性和兼容读取测试按相应迁移阶段处理，不提前清理。
-- 每次删除记录被替代的断言/门禁和剩余覆盖位置；禁止为缩短耗时而删掉唯一的业务失败、恢复、冻结或边界验证。
+- BaoStock 限速与交易所重试测试改用注入的虚拟 sleep，仍断言 2 秒限速和 1 秒重试策略，定向墙钟从约 3 秒降至 5 毫秒内。
+- 同一测试模块的 Python 源码和 AST 只解析一次；受影响契约切片由 48.7 秒降至 33.9 秒。
+- 隔离 pip 安装标记为 slow，由 full 和更强的 `make test-release` 覆盖；全树专业/稳定命名扫描由 `slow_static` 和 `make test-static-contracts` 覆盖。
+- intraday 超时回归先用充足预算确定性建立缓存，再只对目标调用施加 10ms 超时，消除 xdist 负载下的预热竞态。
 
-### 4. 消除不必要的等待和重复成本
+### 4. 下一批：收敛剩余重型 fixture
 
-- 对推荐运行时和行情组件中的固定 `sleep`，优先改为注入时钟、事件屏障或可控调度器；只保留确实需要证明线程/外部 I/O 交互的少量集成用例。
-- 保留对重试、deadline、取消、停止顺序、供应商失败恢复和 SQLite 冲突的行为断言，用确定性控制替代墙钟等待。
-- 缩减重复的大型归档/行情 fixture；按业务门禁并行运行，避免每个专项门禁都收集整棵测试树。
-- 此步骤涉及 Python 测试行为时，只补最小必要测试改造并运行对应 owner 门禁及 Ruff。
+- 对 4–6 秒的 shadow/holdout/cost-aware 工件测试先确认成本来自 fsync、模型拟合还是重复 fixture，再复用最小不可变样本；不得跳过篡改、幂等和冲突证据。
+- `test_reusable_diagnostics_contract.py` 的多个 CLI help 子进程应在保持每个入口可启动证据的前提下合并。
+- cadence 全天秒级枚举保留精确计数合同；只有建立等价事件点算法后才能替换，不能直接删除或放宽计数。
+- 继续用注入时钟、事件屏障和可控调度器替换剩余固定等待；真正的线程/外部 I/O 集成才保留墙钟。
 
-### 5. 与业务迁移阶段同步
+### 5. 持续规则：与业务迁移阶段同步
 
 - `history` 测试随下载业务迁移；归档、BaoStock、转换测试与 download owner 同批迁移。
 - `train` 测试随训练核心和研究/评价迁移；生产 server 不得因测试导入而加载离线研究实现。
@@ -71,6 +71,6 @@
 
 ## 当前状态
 
-已完成第一批：pytest collection 为每个测试附加一个 `train`、`history`、`recommendation` 或 `crosscut` owner marker，并保留 `slow_*` 作为独立运行特征；Makefile 一级命令已改为 `test-fast`、`test-train`、`test-history`、`test-recommendation` 和 `test-full`。推荐的 scheduler/worker 与 supplier/gateway 子集分别使用 `test-recommendation-runtime`、`test-recommendation-suppliers`，不再把 runtime、suppliers 作为并列业务任务。
+业务 owner、业务门禁、首轮退役/重复测试清理、固定等待替换、静态扫描分流和实测基线已完成。完整 fast 仍保留一条真实产品失败：14:50 freeze boundary 后 `UnifiedDecisionQueries.current()` 仍暴露 observation draft；该测试是冻结合同的唯一直接回归保护之一，不属于可删除测试，应由独立产品修复批次处理。
 
-尚未实施测试删除、固定等待替换、测试物理目录迁移和重复契约合并。后续批次必须先记录覆盖或退役合同证据，再删除测试；每一批继续保留工作树中已有的蓝图修改。
+后续优化只处理已经剖析的剩余成本，不再按“文件大、运行慢或当前失败”直接删测试。每次继续记录替代覆盖、collection 数量、fast/full 边界和真实墙钟；工作树中用户的蓝图修改继续排除在测试批次之外。

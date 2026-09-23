@@ -27,7 +27,7 @@ def test_authoritative_documents_define_two_level_filter_before_h1_download() ->
     )
     required_design = (
         "IssuerEligibilityRegistry",
-        "历史预热",
+        "历史投影",
         "候选定向行情",
         "逐股公司研究",
         "分钟行情",

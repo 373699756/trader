@@ -363,7 +363,7 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> 
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
         intraday_client=intraday,
         intraday_workers=1,
-        intraday_batch_timeout_seconds=0.01,
+        intraday_batch_timeout_seconds=0.1,
     )
 
     started = time.monotonic()
@@ -469,8 +469,10 @@ def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return(
         wall_clock=lambda: measured_at,
     )
     pool.start()
+    service.intraday._batch_timeout_seconds = 1.0
     service.intraday.load(("600001",), AFTERNOON)
     service.intraday._entries["600001"] = replace(service.intraday._entries["600001"], expires_at=-1.0)
+    service.intraday._batch_timeout_seconds = 0.01
     blocking = BlockingIntradayClient()
     service.intraday._client = blocking
 

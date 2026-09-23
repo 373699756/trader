@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_cost_aware_selection_is_documented_and_exploratory_only() -> None:
     strategy = (ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
     source_paths = (
-        ROOT / "src" / "trader" / "training" / "evaluation" / "domain" / "cost_aware_selection.py",
-        ROOT / "src" / "trader" / "training" / "evaluation" / "application" / "cost_aware_selection.py",
-        ROOT / "src" / "trader" / "training" / "evaluation" / "application" / "cost_aware_selection_report.py",
+        ROOT / "src" / "trader" / "training" / "domain" / "evaluation" / "cost_aware_selection.py",
+        ROOT / "src" / "trader" / "training" / "application" / "cost_aware_selection.py",
+        ROOT / "src" / "trader" / "training" / "application" / "cost_aware_selection_report.py",
     )
 
     assert COST_AWARE_UTILITY_FIELDS == ("gross_expected_excess", "estimated_cost")

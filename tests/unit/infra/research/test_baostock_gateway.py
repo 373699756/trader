@@ -348,12 +348,23 @@ def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
 
 def test_sdk_queries_report_each_supplier_call_start_and_completion() -> None:
     activity: list[str] = []
-    limited = RateLimitedBaoStockSdk(_Sdk(), activity=activity.append)
+    now = [0.0]
+
+    def advance(seconds: float) -> None:
+        now[0] += seconds
+
+    limited = RateLimitedBaoStockSdk(
+        _Sdk(),
+        activity=activity.append,
+        monotonic=lambda: now[0],
+        sleep=advance,
+    )
 
     limited.query_trade_dates(start_date="2026-08-29", end_date="2026-08-30")
     limited.query_stock_basic()
 
     assert activity == ["started", "completed", "started", "completed"]
+    assert now == [2.0]
 
 
 class _LoginSdk:

@@ -57,7 +57,7 @@ def test_domain_weight_consumers_do_not_multiply_by_numeric_literals() -> None:
     assert "fusion weights are fixed at 0.68/0.32" not in fusion
 
     for relative, function_names in (
-        ("src/trader/infra/market_data/normalization/features.py", ("_raw_features",)),
+        ("src/trader/recommendation/infra/normalization/features.py", ("_raw_features",)),
         ("src/trader/recommendation/domain/market/research.py", ("_industry_policy_score", "_protection_score")),
     ):
         for function_name in function_names:

@@ -139,6 +139,7 @@ def test_official_exchange_request_retries_one_transient_disconnect(
             return None
 
     attempts = 0
+    delays: list[float] = []
 
     def get(*_args: object, **_kwargs: object) -> Response:
         nonlocal attempts
@@ -148,6 +149,7 @@ def test_official_exchange_request_retries_one_transient_disconnect(
         return Response()
 
     monkeypatch.setattr(exchange_module.requests, "get", get)
+    monkeypatch.setattr(exchange_module.time, "sleep", delays.append)
 
     response = exchange_module._official_get(
         "https://example.invalid",
@@ -157,3 +159,4 @@ def test_official_exchange_request_retries_one_transient_disconnect(
 
     assert response.status_code == 200
     assert attempts == 2
+    assert delays == [1.0]

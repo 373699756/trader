@@ -173,6 +173,12 @@ _SLOW_MARKERS_BY_PATH = {
             "unit/test_market_data_cache.py",
         }
     ),
+    "slow_static": frozenset(
+        {
+            "contract/test_professional_naming_contract.py",
+            "contract/test_stable_naming_contract.py",
+        }
+    ),
 }
 
 

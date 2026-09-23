@@ -7,7 +7,6 @@ STRATEGY = ROOT / "docs/01_评分逻辑.md"
 DESIGN = ROOT / "docs/02_工程设计.md"
 WORK = ROOT / "docs/03_工程实施.md"
 REPLAY = ROOT / "docs/04_策略回溯.md"
-V1V2_PLAN = ROOT / "docs/v1v2.md"
 DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
@@ -199,36 +198,3 @@ def test_design_uses_normative_language_instead_of_delivery_chronology() -> None
         "当前代码仍属于 `Unreleased`",
     ):
         assert delivery_statement not in design
-
-
-def test_v1v2_plan_separates_extended_v2_and_baseline_v3_training_bundles() -> None:
-    plan = _read(V1V2_PLAN)
-    normalized = " ".join(plan.split())
-
-    for required in (
-        "V1 的 20/40/60 日因子直接进入 V2 Tomorrow 模型的统一特征矩阵",
-        "`data/train/v2/today/`",
-        "`data/train/v2/tomorrow/`",
-        "`data/train/v2/d25/`",
-        "`data/train/v3/today/`",
-        "`data/train/v3/tomorrow/`",
-        "`data/train/v3/d25/`",
-        "120/250 日长期趋势和市场状态",
-        "251 个连续交易日位置",
-        "V2 与 V3 分别训练、分别发布、分别加载",
-        "V2 与 V3 三头工件分别提交",
-        "V2 同样加载 Today、Tomorrow 和 D25 三个模型头",
-        "工件版本控制完成不代表运行 loader 已切换",
-        "控制组预测必须来自决策日当时已经发布的模型工件或正式冻结记录",
-        "训练完成、工件可加载和生产启用仍是三个不同状态",
-    ):
-        assert required in normalized
-
-    for forbidden in (
-        "V1 冻结线性分支",
-        "加入 V1 冻结输出",
-        "拟合 V1 冻结分支",
-        "V3 只比 V2 额外加载 Today 与 D25 两个独立头",
-        "把现有 V3 工件复制进 `data/train/v2/`",
-    ):
-        assert forbidden not in normalized

@@ -29,11 +29,17 @@ def test_delivery_archive_preserves_legacy_evidence_and_links() -> None:
         assert (DELIVERY_LOG / target).is_file()
 
 
-def test_current_delivery_records_keep_the_required_audit_sections() -> None:
+def test_current_delivery_records_keep_request_change_and_verification_sections() -> None:
     records = sorted(path for path in DELIVERY_LOG.glob("*.md") if path.name != "README.md")
 
     assert records
     for record in records:
         content = record.read_text(encoding="utf-8")
-        for section in ("Added", "Changed", "Fixed", "Removed", "Verification", "Residual Risks"):
-            assert f"## {section}" in content
+        legacy_sections = ("Added", "Changed", "Fixed", "Removed", "Verification", "Residual Risks")
+        has_legacy_schema = all(f"## {section}" in content for section in legacy_sections)
+        has_current_schema = (
+            ("## User request" in content or "## User Request" in content)
+            and any(f"## {section}" in content for section in ("Changed", "Behavior change"))
+            and "## Verification" in content
+        )
+        assert has_legacy_schema or has_current_schema, record.name

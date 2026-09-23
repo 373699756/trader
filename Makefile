@@ -13,7 +13,7 @@ SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/gener
 	scripts/runtime_diagnostics/history_sources.py scripts/runtime_diagnostics/tencent_quotes.py \
 	scripts/runtime_diagnostics/tushare_daily.py scripts/runtime_diagnostics/history_archive_performance.py
 
-.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-train test-history test-recommendation test-recommendation-runtime test-recommendation-suppliers test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
+.PHONY: help install-dev format format-check lint long-watchlist-check type-check test test-fast test-train test-history test-recommendation test-recommendation-runtime test-recommendation-suppliers test-static-contracts test-full test-unit test-component test-contract test-integration test-release quality package performance-check browser-performance-check diagnose-live diagnose-full
 
 help:
 	@echo "make install-dev   - install editable package and development tools"
@@ -27,6 +27,7 @@ help:
 	@echo "make test-recommendation - run recommendation, delivery and Web tests"
 	@echo "make test-recommendation-runtime - run recommendation scheduler and worker timing tests"
 	@echo "make test-recommendation-suppliers - run recommendation supplier and gateway timing tests"
+	@echo "make test-static-contracts - run repository-wide naming and static source scans"
 	@echo "make test-full     - run every test, including all slow tests"
 	@echo "make test-unit     - run unit tests"
 	@echo "make test-component - run component tests"
@@ -78,6 +79,9 @@ test-recommendation-runtime:
 
 test-recommendation-suppliers:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "recommendation and slow_supplier"
+
+test-static-contracts:
+	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests -m "crosscut and slow_static"
 
 test-full:
 	$(PYTHON) -m pytest -q -n $(PYTEST_WORKERS) tests

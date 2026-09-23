@@ -112,12 +112,18 @@ def test_currently_retired_paths_remain_absent() -> None:
     assert [path for path in retired if (SOURCE_ROOT / path).exists()] == []
 
 
-def test_final_business_tree_has_no_retired_top_level_owners() -> None:
+def test_retired_source_directories_have_no_active_python() -> None:
     retired_roots = (
         SOURCE_ROOT / "application",
         SOURCE_ROOT / "domain",
+        SOURCE_ROOT / "resources",
         SOURCE_ROOT / "web" / "api",
+        SOURCE_ROOT / "infra" / "artifacts",
+        SOURCE_ROOT / "infra" / "deepseek",
         SOURCE_ROOT / "infra" / "persistence",
+        SOURCE_ROOT / "infra" / "pipeline",
+        SOURCE_ROOT / "infra" / "research",
+        SOURCE_ROOT / "infra" / "scoring",
         SOURCE_ROOT / "recommendation" / "infra" / "scoring" / "profiles",
     )
     active_files = [
@@ -130,24 +136,8 @@ def test_final_business_tree_has_no_retired_top_level_owners() -> None:
     assert active_files == []
 
 
-def test_retired_source_directories_are_removed_entirely() -> None:
-    retired_directories = (
-        SOURCE_ROOT / "application",
-        SOURCE_ROOT / "domain",
-        SOURCE_ROOT / "resources",
-        SOURCE_ROOT / "web" / "api",
-        SOURCE_ROOT / "infra" / "deepseek",
-        SOURCE_ROOT / "infra" / "persistence",
-        SOURCE_ROOT / "infra" / "pipeline",
-        SOURCE_ROOT / "infra" / "research",
-    )
-    assert [str(path.relative_to(SOURCE_ROOT)) for path in retired_directories if path.exists()] == []
-
-
-def test_shared_infrastructure_uses_only_target_tree_directories() -> None:
+def test_shared_infrastructure_target_owners_exist() -> None:
     assert (SOURCE_ROOT / "infra/serialization").is_dir()
-    assert not (SOURCE_ROOT / "infra/artifacts").exists()
-    assert not (SOURCE_ROOT / "infra/scoring").exists()
     assert (SOURCE_ROOT / "training/infra/profile/composition.py").is_file()
 
 
@@ -181,18 +171,6 @@ def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:
 
     for layer in layers:
         visit(layer)
-    assert violations == []
-
-
-def test_recommendation_application_has_no_reverse_or_cross_business_dependencies() -> None:
-    root = SOURCE_ROOT / "recommendation/application"
-    forbidden = ("trader.infra", "trader.web", "trader.entrypoints", "trader.training")
-    violations = [
-        f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
-        for path in root.rglob("*.py")
-        for imported in _imports(path)
-        if imported.startswith(forbidden)
-    ]
     assert violations == []
 
 

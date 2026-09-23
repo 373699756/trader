@@ -13,7 +13,7 @@ def test_training_online_codec_replay_and_shadow_use_the_catalog_owner() -> None
         "src/trader/training/application/tomorrow_historical_validation.py",
         "src/trader/training/domain/evaluation/tomorrow_features.py",
         "src/trader/training/domain/tomorrow_training_input.py",
-        "src/trader/infra/market_data/normalization/features.py",
+        "src/trader/recommendation/infra/normalization/features.py",
         "src/trader/training/infra/artifacts/contracts.py",
     )
     for relative in consumers:
