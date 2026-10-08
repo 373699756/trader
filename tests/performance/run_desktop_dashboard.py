@@ -466,7 +466,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "动态过滤 待开始" in str(not_ready_summary.get("inputStages"))
             and "定向行情 360→360" in str(not_ready_summary.get("inputStages"))
             and not_ready_summary.get("funnel") == "等待评分输入"
-            and not_ready_summary.get("funnelMeta") == "14 层链路待启动 · 正式 0 · 观察 已关闭"
+            and not_ready_summary.get("funnelMeta") == "荐股链路待启动 · 正式 0 · 观察 已关闭"
             and "上限 168" in str(not_ready_summary.get("budgetMeta"))
             and not_ready_summary.get("publicationStatus") == "采集中"
             and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
@@ -482,7 +482,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and "动作门 达观察线" not in str(quality_summary.get("funnelStages"))
             and quality_summary.get("scoreRange") == "40.00–74.25"
             and quality_summary.get("funnelMeta")
-            == "14 层荐股评分链路 5291→5291→5291→1000→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
+            == "荐股链路 5291→5291→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
             and quality_summary.get("topScores") == "1  74.00 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁"
             and quality_summary.get("topScoresAtCardTop") is True
             and float(quality_summary.get("topScoresHeight", 0))

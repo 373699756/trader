@@ -15,8 +15,8 @@ const patchesSource = fs.readFileSync(patchesPath, "utf8");
 const statusHealthPath = path.join(path.dirname(dashboardPath), "status_health.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
-assert(statusViewSource.includes('["static_filter", "一级稳定过滤", true]'));
-assert(statusViewSource.includes('["dynamic_filter", "二级动态过滤", true]'));
+assert(statusViewSource.includes('[["static_filter"], "一级稳定过滤", true]'));
+assert(statusViewSource.includes('[["dynamic_filter"], "二级动态过滤", true]'));
 assert(!statusViewSource.includes('["一级稳定过滤", ["dynamic_filter"]]'));
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
@@ -88,6 +88,7 @@ const state = {
   renderInputQuality: sandbox.window.TraderStatusView.renderInputQuality,
   renderHealth: sandbox.window.TraderStatusView.renderHealth,
   renderPublicationStatus: sandbox.window.TraderStatusView.renderPublicationStatus,
+  renderObservationStages: sandbox.window.TraderStatusView.renderObservationStages,
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
   topScoredStocks: sandbox.window.TraderStatusView.topScoredStocks,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
@@ -509,10 +510,29 @@ state.renderSummary(
 );
 assert.strictEqual(
   (canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length,
-  14,
+  12,
 );
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级稳定过滤"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("静态数据准备"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("动态数据准备"));
+const combinedObservationElements = summaryFixture();
+state.renderObservationStages(
+  combinedObservationElements,
+  Array.from({ length: 14 }, (_value, index) => ({
+    stage: ["data_source", "static_market", "static_standardize", "static_filter",
+      "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
+      "quality_check", "local_score", "risk_review", "score_merge", "downside_action", "final_selection"][index],
+    state: "ready", input_count: index === 1 ? 360 : 100, output_count: index === 2 ? 0 : 100,
+    rejected_count: 0, pending_count: 0, failed_count: 0, latency_ms: 10, reasons: [],
+  })),
+  null,
+  false,
+  [],
+);
+assert(combinedObservationElements.observationStageList.innerHTML.includes("静态数据准备"));
+assert(combinedObservationElements.observationStageList.innerHTML.includes("360 → 0"));
+assert(combinedObservationElements.observationStageList.innerHTML.includes("动态数据准备"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("TopK、集中度、冻结与发布"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("择优入选、分散限制、冻结与发布"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("动态采集与清洗"));
@@ -552,7 +572,7 @@ assert.strictEqual(
     0,
     2,
   ),
-  "14 层荐股评分链路 5291→5291→5291→4000→4000→3600→3000→360→350→56→20→20→20→2 · 正式 0 · 观察 2",
+  "荐股链路 5291→5291→4000→3600→3000→360→350→56→20→20→20→2 · 正式 0 · 观察 2",
 );
 assert.strictEqual(
   state.pipelineFunnelSummary(
@@ -768,7 +788,7 @@ assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完
 assert.strictEqual(summaryElements.funnelScoreRange.textContent, "41.25–74.25");
 assert.strictEqual(
   summaryElements.funnelMeta.textContent,
-  "14 层链路计数待就绪 · 正式 2 · 观察 2",
+  "荐股链路计数待就绪 · 正式 2 · 观察 2",
 );
 assert.strictEqual(summaryElements.quoteSource.textContent, "腾讯行情");
 assert.strictEqual(summaryElements.budgetStatus.textContent, "0 / 168");
@@ -816,7 +836,7 @@ assert.strictEqual(
 );
 assert.strictEqual(
   summaryElements.funnelMeta.textContent,
-  "14 层链路待启动 · 正式 0 · 观察 已关闭",
+  "荐股链路待启动 · 正式 0 · 观察 已关闭",
 );
 assert.strictEqual(
   summaryElements.inputQualityStages.textContent,
