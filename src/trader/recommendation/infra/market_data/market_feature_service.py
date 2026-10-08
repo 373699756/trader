@@ -24,6 +24,7 @@ from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data import (
     FullMarketFeatureBatch,
     MarketDataDeadlineExceededError,
+    MarketDataUnavailableError,
     MarketSnapshotMetadata,
 )
 from trader.recommendation.application.runtime.schedule import SHANGHAI
@@ -61,6 +62,7 @@ from trader.recommendation.infra.market_data.market_cache_identity import (
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.official_static_reference import StaticReferenceRead
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_load_status import ResearchLoadReport, research_component_coverage
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
@@ -124,18 +126,17 @@ class MarketFeatureService:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("market observation time must be timezone aware")
         observed_at = observed_at.astimezone(SHANGHAI)
-        reference_epoch = self.reference_version()
+        reference = self.references.static_reference()
+        reference_epoch = reference.reference_epoch
         with self._eligibility_lock:
             cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
             original_quotes = self._latest_market_quotes
         if cached is not None:
             cached_features = tuple(cached)
             quotes = original_quotes
-            if not quotes:
-                raise ValueError("cached market features require their original static input")
             started = self._monotonic()
             eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline(
-                quotes, reference_epoch, observed_at
+                quotes, reference, observed_at
             )
             features = tuple(feature for feature in cached_features if feature.quote.code in eligible_codes)
             dynamic = build_dynamic_market_snapshot(
@@ -155,7 +156,7 @@ class MarketFeatureService:
         )
         collection_ms = self._elapsed_ms(acquisition_started)
         eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline(
-            quotes, reference_epoch, observed_at
+            quotes, reference, observed_at
         )
         raw_quotes = quotes
         quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
@@ -177,6 +178,8 @@ class MarketFeatureService:
         self.runner.ensure_before_deadline(deadline)
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
         with self._eligibility_lock:
+            if self.reference_version() != reference_epoch:
+                raise MarketDataUnavailableError("reference_changed_during_market_refresh")
             published = self.quotes.publish_market_features(features, reference_epoch=reference_epoch)
             self._latest_market_quotes = raw_quotes
         dynamic = build_dynamic_market_snapshot(
@@ -190,23 +193,39 @@ class MarketFeatureService:
     def _static_pipeline(
         self,
         quotes: tuple[MarketQuote, ...],
-        reference_epoch: str,
+        reference: StaticReferenceRead,
         observed_at: datetime,
     ) -> tuple[
         IssuerEligibilityBatch, frozenset[str], tuple[PipelineStageSnapshot, ...], PipelineStageOutput[StaticIssuer]
     ]:
         observed_at = observed_at.astimezone(SHANGHAI)
         started = self._monotonic()
-        read = self._static_market.read(quotes, reference_epoch)
+        read = self._static_market.read(reference, observed_at)
         baseline = read.baseline
         root = f"static:{baseline.identity}:{observed_at.isoformat()}"
-        health = baseline.health(observed_at)
+        health = baseline.health(
+            observed_at, refresh_failed=reference.refresh_failed, ttl_seconds=reference.refresh_ttl_seconds
+        )
+        reasons: tuple[StageReasonAggregate, ...] = ()
+        if not baseline.records:
+            reasons = (
+                StageReasonAggregate(
+                    "static_reference_unavailable", "official population unavailable", 1, Severity.WARNING
+                ),
+            )
+        elif health.state.value != "ready":
+            reasons = (
+                StageReasonAggregate(
+                    "static_reference_degraded", "official population refresh failed or expired", 1, Severity.WARNING
+                ),
+            )
         source = stage_output(
             PipelineStage.DATA_SOURCE,
             baseline.records,
             input_batch_id=root,
             as_of=observed_at,
-            input_count=len(quotes),
+            input_count=len(baseline.records),
+            reasons=reasons,
             source_health=health,
             latency_ms=0,
         )

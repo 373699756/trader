@@ -64,6 +64,7 @@ from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
+from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
@@ -259,15 +260,26 @@ def _service(
     kwargs.pop("history_workers", 6)
     kwargs.pop("history_ttl_seconds", 21_600)
     kwargs.pop("history_cache_limit", 360)
+    exchange_client = kwargs.pop("exchange_security_master_client", None)
     references = ReferenceLoader(
         gateway,
         runner,
         kwargs.pop("tushare_client", None),
-        security_master_client=kwargs.pop("exchange_security_master_client", None),
+        security_master_client=exchange_client,
         model_industry_client=kwargs.pop("model_industry_client", None),
         data_plane=data_plane,
         monotonic=monotonic,
     )
+    # Explicit in-memory reference fixture; production never derives population from quotes.
+    if exchange_client is None and isinstance(gateway, StaticGateway) and gateway._quotes:
+        references._security_master = StaticMarketReference(
+            tuple(
+                StaticIssuer(q.code, q.name, q.board, q.exchange, q.listing_date, False, False) for q in gateway._quotes
+            ),
+            "fixture-official-population",
+            NOW,
+        )
+        references._reference_versions["security_master"] = "fixture-official-population"
     eligibility = kwargs.pop("eligibility", _AllowAllEligibility())
     research = ResearchLoader(
         kwargs.pop("research_client", None),

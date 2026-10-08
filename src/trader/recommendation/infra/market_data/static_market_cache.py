@@ -9,8 +9,8 @@ from datetime import datetime
 
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.evidence.pipeline import SourceHealth, SourceHealthState
-from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.static import StaticIssuer
+from trader.recommendation.infra.market_data.official_static_reference import StaticReferenceRead
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,11 +21,20 @@ class StaticIssuerBaseline:
     latest_success_at: datetime | None
     source_count: int
 
-    def health(self, observed_at: datetime) -> SourceHealth:
+    def health(
+        self, observed_at: datetime, *, refresh_failed: bool = False, ttl_seconds: float = 86_400
+    ) -> SourceHealth:
+        usable = self.latest_success_at is not None and self.latest_success_at <= observed_at
+        stale = (
+            self.latest_success_at is not None and (observed_at - self.latest_success_at).total_seconds() >= ttl_seconds
+        )
+        healthy = int(usable and not refresh_failed and not stale)
         return SourceHealth(
-            SourceHealthState.READY if self.source_count else SourceHealthState.UNAVAILABLE,
+            SourceHealthState.READY
+            if healthy
+            else (SourceHealthState.DEGRADED if usable else SourceHealthState.UNAVAILABLE),
             self.source_count,
-            self.source_count,
+            healthy,
             self.latest_success_at,
             max(0.0, (observed_at - self.latest_success_at).total_seconds())
             if self.latest_success_at is not None
@@ -40,42 +49,34 @@ class StaticBaselineRead:
 
 
 class StaticMarketCache:
-    """Reuse a lightweight baseline until accepted issuer fields or references change.
-
-    Population is the accepted market read, not an invented complete exchange
-    universe. Quote prices/timestamps never invalidate this static projection.
-    """
+    """Reuse the accepted official population independently of quote availability."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._baseline: StaticIssuerBaseline | None = None
 
-    def read(self, quotes: tuple[MarketQuote, ...], reference_epoch: str) -> StaticBaselineRead:
-        records = tuple(
-            StaticIssuer(
-                quote.code,
-                quote.name,
-                quote.board,
-                quote.exchange,
-                quote.listing_date,
-                quote.is_st,
-                quote.is_blacklisted,
-            )
-            for quote in sorted(quotes, key=lambda item: item.code)
-        )
-        if len({item.code for item in records}) != len(records):
-            raise ValueError("static market input codes must be unique")
+    def read(self, source: StaticReferenceRead, observed_at: datetime) -> StaticBaselineRead:
+        reference = source.reference
+        if reference is not None and reference.source_time > observed_at:
+            reference = None
+        records = reference.records if reference is not None else ()
+        reference_epoch = source.reference_epoch
+        source_time = reference.source_time.astimezone(SHANGHAI) if reference is not None else None
         with self._lock:
             previous = self._baseline
             if previous is not None and previous.reference_epoch == reference_epoch and previous.records == records:
-                return StaticBaselineRead(previous, True)
+                if previous.latest_success_at == source_time:
+                    return StaticBaselineRead(previous, True)
+                baseline = StaticIssuerBaseline(records, reference_epoch, previous.identity, source_time, 1)
+                self._baseline = baseline
+                return StaticBaselineRead(baseline, True)
             identity = hashlib.sha256(repr((reference_epoch, records)).encode("utf-8")).hexdigest()
             baseline = StaticIssuerBaseline(
                 records,
                 reference_epoch,
                 identity,
-                max((quote.received_time.astimezone(SHANGHAI) for quote in quotes), default=None),
-                len({quote.source for quote in quotes}),
+                source_time,
+                1,
             )
             self._baseline = baseline
             return StaticBaselineRead(baseline, False)

@@ -19,7 +19,15 @@ from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterHealthStatus,
 )
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
-from trader.recommendation.infra.market_data.market_cache_identity import _normalize_codes, _source_batch_identity
+from trader.recommendation.infra.market_data.market_cache_identity import (
+    _normalize_codes,
+    _reference_epoch,
+    _source_batch_identity,
+)
+from trader.recommendation.infra.market_data.official_static_reference import (
+    StaticReferenceRead,
+    parse_official_static_reference,
+)
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.model_industry_reference_loader import (
     ModelIndustryReferenceDependencies,
@@ -53,6 +61,7 @@ from trader.recommendation.application.ports.market_data_repository import (
 from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
+from trader.recommendation.domain.market.static import StaticMarketReference
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -135,6 +144,8 @@ class ReferenceLoader:
         self._trading_calendar_observations: dict[str, SourceObservation] = {}
         self._exchange_refresh_inflight = False
         self._exchange_next_refresh_at = 0.0
+        self._exchange_last_refresh_failed = False
+        self._security_master: StaticMarketReference | None = None
         self._model_industries = ModelIndustryReferenceLoader(
             ModelIndustryReferenceDependencies(
                 gateway,
@@ -210,15 +221,6 @@ class ReferenceLoader:
     ) -> None:
         if self._security_master_client is None:
             return
-        current = {item.subject_key: item for item in self._gateway.reference_observations(normalized_master_codes)}
-        missing_listing_date = not normalized_master_codes
-        for code in normalized_master_codes:
-            observation = current.get(code)
-            if observation is None or not isinstance(observation.fields.get("listing_date"), str):
-                missing_listing_date = True
-                break
-        if not force and not missing_listing_date:
-            return
         with self._lock:
             now = self._monotonic()
             if self._exchange_refresh_inflight or (not force and now < self._exchange_next_refresh_at):
@@ -261,16 +263,23 @@ class ReferenceLoader:
         if client is None:
             return 0
         observations = client.fetch(observed_at)
-        self._gateway.update_reference_observations(observations)
-        self.schedule_security_master_persistence(observations)
-        latest = max(observations, key=lambda item: (item.source_time, item.data_version))
+        reference = parse_official_static_reference(observations)
+        latest = max(observations, key=lambda item: (item.source_time, item.received_at, item.data_version))
         with self._lock:
+            previous = self._security_master
+            if previous is not None and reference.source_time < previous.source_time:
+                raise ValueError("official static population is older than the accepted snapshot")
+            if previous is not None and reference.source_time == previous.source_time and reference != previous:
+                raise ValueError("official static population conflicts at the same source time")
+            self._gateway.update_reference_observations(observations)
+            self._security_master = reference
             self._reference_versions["security_master"] = latest.data_version
             self._reference_version_order["security_master"] = (
                 latest.source_time,
                 latest.received_at,
                 latest.data_version,
             )
+        self.schedule_security_master_persistence(observations)
         return len(observations)
 
     def _observe_exchange_refresh(self, future: Future[int]) -> None:
@@ -288,6 +297,7 @@ class ReferenceLoader:
     def _complete_exchange_refresh(self, succeeded: bool) -> None:
         with self._lock:
             self._exchange_refresh_inflight = False
+            self._exchange_last_refresh_failed = not succeeded
             self._exchange_next_refresh_at = self._monotonic() + (
                 self._security_master_refresh_ttl_seconds if succeeded else self._security_master_retry_seconds
             )
@@ -819,6 +829,18 @@ class ReferenceLoader:
             versions = dict(self._reference_versions)
         versions.update(self._model_industries.versions())
         return versions
+
+    def static_reference(self) -> StaticReferenceRead:
+        """Read the population and its reference identity under the same owner lock."""
+        industry_versions = self._model_industries.versions()
+        with self._lock:
+            versions = {**self._reference_versions, **industry_versions}
+            return StaticReferenceRead(
+                self._security_master,
+                _reference_epoch(versions),
+                self._exchange_last_refresh_failed,
+                self._security_master_refresh_ttl_seconds,
+            )
 
     def health(self) -> TushareHealthStatus | None:
         return self._client.health() if self._client is not None else None

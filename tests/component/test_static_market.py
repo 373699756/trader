@@ -18,27 +18,33 @@ from tests.component.market_data_test_support import (
     _service,
 )
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
+from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
+from trader.recommendation.infra.market_data.official_static_reference import StaticReferenceRead
 from trader.recommendation.infra.market_data.static_market_cache import StaticMarketCache
 
 
 def test_static_baseline_reuses_identity_and_source_age_across_dynamic_changes() -> None:
     cache = StaticMarketCache()
     quote = _quote()
-    first = cache.read((quote,), "reference-a")
-    refreshed = replace(quote, price=quote.price + 1, received_time=NOW + timedelta(seconds=20))
-    second = cache.read((refreshed,), "reference-a")
+    issuer = StaticIssuer(quote.code, quote.name, quote.board, quote.exchange, quote.listing_date, False, False)
+    reference = StaticMarketReference((issuer,), "official-a", NOW)
+    source = StaticReferenceRead(reference, "reference-a", False, 86400)
+    first = cache.read(source, NOW)
+    second = cache.read(source, NOW + timedelta(seconds=20))
 
     assert second.cache_hit
     assert second.baseline is first.baseline
     assert second.baseline.health(NOW + timedelta(seconds=20)).age_seconds == 20
     assert first.baseline.records[0].name == quote.name
-    changed_reference = cache.read((refreshed,), "reference-b")
+    changed_reference = cache.read(replace(source, reference_epoch="reference-b"), NOW)
     assert not changed_reference.cache_hit
     assert changed_reference.baseline.identity != first.baseline.identity
-    changed_fact = cache.read((replace(refreshed, is_st=True),), "reference-b")
+    changed_fact = cache.read(
+        replace(source, reference=replace(reference, records=(replace(issuer, name="new name"),))), NOW
+    )
     assert not changed_fact.cache_hit
-    assert changed_fact.baseline.records[0].is_st
-    assert not first.baseline.records[0].is_st
+    assert changed_fact.baseline.records[0].name == "new name"
+    assert first.baseline.records[0].name == quote.name
 
 
 def test_real_static_stages_leave_missing_identity_pending_before_history() -> None:

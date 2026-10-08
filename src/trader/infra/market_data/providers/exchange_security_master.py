@@ -236,6 +236,7 @@ def _to_observation(
     version: str,
 ) -> SourceObservation:
     fields = {
+        "name": listing.name,
         "board": listing.board,
         "board_reliability": "verified",
         "exchange": listing.exchange,
