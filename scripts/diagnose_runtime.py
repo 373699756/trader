@@ -26,6 +26,7 @@ Profile = Literal[
     "tencent",
     "tushare",
     "history-daily-capability",
+    "baostock-concurrency",
     "history-sqlite",
     "research",
     "browser",
@@ -46,6 +47,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
     "history-daily-capability": ("history_daily_capability",),
+    "baostock-concurrency": ("baostock_concurrency",),
     "history-sqlite": ("history_sqlite_performance",),
     "research": ("research_readiness",),
     "browser": ("browser_refresh",),
@@ -199,8 +201,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     codes = tuple(dict.fromkeys(args.codes))
     if not codes or any(len(code) != 6 or not code.isdigit() for code in codes):
         raise ValueError("--codes must contain six-digit A-share codes")
-    if len(codes) > 50:
-        raise ValueError("--codes accepts at most 50 codes")
+    maximum_codes = 100 if args.profile == "baostock-concurrency" else 50
+    if len(codes) > maximum_codes:
+        raise ValueError(f"--codes accepts at most {maximum_codes} codes for this profile")
     positive = (
         args.web_samples,
         args.source_samples,
@@ -345,6 +348,21 @@ def build_commands(
                 str(options.runtime_config),
             ),
             common_timeout,
+        ),
+        "baostock_concurrency": DiagnosticCommand(
+            "baostock_concurrency",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.baostock_concurrency",
+                "--discover" if len(options.codes) < 100 else "--codes",
+                *(() if len(options.codes) < 100 else options.codes),
+                "--sizes",
+                "10",
+                "50",
+                "100",
+            ),
+            max(common_timeout, 1800.0),
         ),
         "history_sqlite_performance": DiagnosticCommand(
             "history_sqlite_performance",

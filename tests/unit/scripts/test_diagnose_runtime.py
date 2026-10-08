@@ -106,6 +106,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
         ("history-daily-capability", "history_daily_capability"),
+        ("baostock-concurrency", "baostock_concurrency"),
         ("history-sqlite", "history_sqlite_performance"),
         ("research", "research_readiness"),
         ("browser", "browser_refresh"),
@@ -117,6 +118,23 @@ def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, ex
 
     assert tuple(command.name for command in commands) == (expected,)
     assert commands[0].argv[:2] == ("/python", "-m")
+
+
+def test_baostock_concurrency_profile_is_explicitly_non_production() -> None:
+    codes = tuple(f"{index:06d}" for index in range(100))
+    commands = build_commands(_options(profile="baostock-concurrency", codes=codes), python_executable="/python")
+
+    assert tuple(command.name for command in commands) == ("baostock_concurrency",)
+    assert "--sizes" in commands[0].argv
+    assert "--codes" in commands[0].argv
+    assert commands[0].timeout_seconds >= 1800.0
+
+
+def test_baostock_concurrency_profile_discovers_universe_for_default_codes() -> None:
+    commands = build_commands(_options(profile="baostock-concurrency"), python_executable="/python")
+
+    assert "--discover" in commands[0].argv
+    assert "--codes" not in commands[0].argv
 
 
 def test_research_profile_runs_only_research_readiness_probe() -> None:
