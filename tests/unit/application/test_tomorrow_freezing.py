@@ -375,14 +375,15 @@ def test_d25_empty_formal_and_tomorrow_formal_are_isolated_by_strategy(tmp_path:
     assert repository.load(Strategy.D25, d25.trade_date) == d25_result.record
 
 
-def test_d25_close_fallback_rejects_pending_scheduled_seal(tmp_path: Path) -> None:
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_close_fallback_rejects_pending_scheduled_seal(tmp_path: Path, strategy: Strategy) -> None:
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     index = UnifiedDecisionIndex()
-    current = replace(decision(Strategy.D25), observed_at=_at(14, 49, 50))
+    current = replace(decision(strategy), observed_at=_at(14, 49, 50))
     _publish(index, current)
-    assert index.seal_for_freeze(Strategy.D25, boundary_at=_at(15, 0)).accepted
-    coordinator = _coordinator(index, repository, _Clock(_at(15, 0, 1)), Strategy.D25)
+    assert index.seal_for_freeze(strategy, boundary_at=_at(15, 0)).accepted
+    coordinator = _coordinator(index, repository, _Clock(_at(15, 0, 1)), strategy)
 
     result = coordinator.freeze_close_fallback(
         current,
@@ -391,4 +392,20 @@ def test_d25_close_fallback_rejects_pending_scheduled_seal(tmp_path: Path) -> No
     )
 
     assert result.status == "scheduled_freeze_pending"
-    assert repository.load(Strategy.D25, current.trade_date) is None
+    assert repository.load(strategy, current.trade_date) is None
+
+
+def test_close_seal_retry_requires_the_same_source_boundary_and_official_identity() -> None:
+    index = UnifiedDecisionIndex()
+    current = replace(decision(), observed_at=_at(15, 0))
+    _publish(index, current)
+    first = index.seal_close_fallback(current, boundary_at=_at(15, 0), official_close_version="official-close:one")
+    assert first.accepted
+    duplicate = index.seal_close_fallback(current, boundary_at=_at(15, 0), official_close_version="official-close:one")
+    assert duplicate.accepted and duplicate.decision is first.decision
+    for value, boundary, official in (
+        (replace(current, sequence=2), _at(15, 0), "official-close:one"),
+        (current, _at(15, 0, 1), "official-close:one"),
+        (current, _at(15, 0), "official-close:two"),
+    ):
+        assert not index.seal_close_fallback(value, boundary_at=boundary, official_close_version=official).accepted

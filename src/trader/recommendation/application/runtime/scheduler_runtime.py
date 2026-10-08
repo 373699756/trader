@@ -173,6 +173,7 @@ class SchedulerRuntime:
         self._sequences = dict.fromkeys(Strategy, 0)
         self._control_pending: set[str] = set()
         self._control_completed: OrderedDict[str, None] = OrderedDict()
+        self._close_input: RefreshOutcome | None = None
         self._control = BoundedExecutor(
             worker_count=2,
             urgent_worker_count=1,
@@ -364,6 +365,7 @@ class SchedulerRuntime:
         return is_trading_day, 0.0
 
     def _dispatch_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
+        self._dependencies.cadence.record_submission(scheduled, accepted=True, at=scheduled.scheduled_at)
         completed_immediately = False
         rejected_freezes: tuple[str, ...] = ()
         if scheduled.task is PipelineTask.SCORE:
@@ -401,11 +403,8 @@ class SchedulerRuntime:
         else:
             offer = self._task_lanes[pipeline_lane(scheduled.task)].offer(scheduled)
             accepted = offer is not LatestWinsOffer.REJECTED
-        self._dependencies.cadence.record_submission(
-            scheduled,
-            accepted=accepted,
-            at=scheduled.scheduled_at,
-        )
+        if not accepted:
+            self._dependencies.cadence.record_submission(scheduled, accepted=False, at=scheduled.scheduled_at)
         for strategy in rejected_freezes:
             self._dependencies.cadence.record_point_result(
                 scheduled.scheduled_at.date().isoformat(),
@@ -439,11 +438,8 @@ class SchedulerRuntime:
         return self._lanes[request.strategy].offer(request)
 
     def _process_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
-        if scheduled.task is PipelineTask.CLOSE_QUOTES and not self._missing_after_close_scored_strategies(
-            scheduled.scheduled_at
-        ):
-            self._submit_settlement(scheduled.scheduled_at)
-            self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
+        if scheduled.task is PipelineTask.CLOSE_QUOTES:
+            self._process_close_recovery(scheduled)
             return
         selected_codes = self._selected_overlay_codes() if scheduled.task is PipelineTask.TOPK_QUOTES else ()
         request = PipelineTaskRequest(
@@ -460,6 +456,40 @@ class SchedulerRuntime:
         self._after_successful_data_refresh(scheduled, outcome)
         self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
 
+    def _process_close_recovery(self, scheduled: ScheduledPipelineTask) -> None:
+        at = scheduled.scheduled_at
+        missing = self._missing_after_close_scored_strategies(at)
+        with self._lock:
+            close_input = self._close_input
+        if missing and (close_input is None or close_input.completed_at.date() != at.date()):
+            try:
+                outcome = self._dependencies.data.refresh_task(
+                    PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, shanghai_now(self._dependencies.clock.now()), ())
+                )
+                if outcome.completed_at.date() != at.date():
+                    raise DataRefreshUnavailableError("close_input_trade_date_mismatch")
+            except DataRefreshUnavailableError as exc:
+                self._record_failure("refresh", failure_code(exc, "refresh_unavailable"))
+                self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
+                return
+            with self._lock:
+                self._close_input = outcome
+        # Reconcile authoritative formal/control state on later ticks; handoff is not completion.
+        with self._lock:
+            completed = f"settlement:{at.date().isoformat()}" in self._control_completed
+            self._record_pipeline_result(
+                scheduled, SchedulePointResult.COMPLETED if completed else SchedulePointResult.RETRY
+            )
+        if completed:
+            return
+        if not missing:
+            self._submit_settlement(at)
+            return
+        for strategy in missing:
+            lane = self._lanes[strategy].status()
+            if not lane.running and not lane.pending:
+                self.submit_cycle(self._scheduled_request(strategy, at, "close_fallback"))
+
     def _after_successful_data_refresh(
         self,
         scheduled: ScheduledPipelineTask,
@@ -472,12 +502,6 @@ class SchedulerRuntime:
                 if strategy is Strategy.LONG:
                     continue
                 self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, "midday_recovery"))
-        elif scheduled.task is PipelineTask.CLOSE_QUOTES:
-            for strategy in self._after_close_recovery_strategies(scheduled.scheduled_at):
-                if strategy is Strategy.LONG:
-                    continue
-                self.submit_cycle(self._scheduled_request(strategy, scheduled.scheduled_at, "close_fallback"))
-            self._submit_settlement(scheduled.scheduled_at)
         if scheduled.task in _SCORING_INPUT_TASKS and outcome.changed:
             self._trigger_scoring_after_input()
 
@@ -1071,7 +1095,16 @@ class SchedulerRuntime:
                 self._settlement_completed_count += 1
                 self._resolve_issues_locked(stages=frozenset({"settlement"}))
         finally:
-            self._finish_control(key, success=success)
+            with self._lock:
+                self._finish_control(key, success=success)
+                if success:
+                    self._dependencies.cadence.record_point_result(
+                        at.date().isoformat(),
+                        SchedulePoint.CLOSE_QUOTES,
+                        "-",
+                        SchedulePointResult.COMPLETED,
+                        at=shanghai_now(self._dependencies.clock.now()),
+                    )
 
     def _reserve_control(self, key: str) -> bool:
         with self._lock:

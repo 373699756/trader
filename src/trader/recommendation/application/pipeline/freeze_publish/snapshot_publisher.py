@@ -243,7 +243,12 @@ class UnifiedDecisionIndex:
         with self._lock:
             existing = self._seals.get(decision.strategy)
             if existing is not None:
-                if existing.source_version == decision.version:
+                if (
+                    existing.source == "explicit"
+                    and existing.source_version == decision.version
+                    and existing.boundary_at == boundary_at
+                    and ("official_close", official_close_version) in existing.decision.input_versions
+                ):
                     return UnifiedDecisionSealResult(
                         True,
                         "already_sealed",

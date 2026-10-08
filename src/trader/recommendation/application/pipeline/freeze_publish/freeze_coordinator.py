@@ -163,7 +163,6 @@ class ScoredFreezeCoordinator:
     ) -> str | None:
         current = self._current(now.date())
         rejections = (
-            (self._index.is_sealed(self._strategy, now.date()), "scheduled_freeze_pending"),
             (
                 decision.strategy is not self._strategy or decision.trade_date != now.date(),
                 "no_eligible_decision",

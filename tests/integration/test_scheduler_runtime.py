@@ -1130,7 +1130,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour
     assert all(version.startswith("official-close:") for _strategy, _path, version in freezes.close_fallback_calls)
     assert all(index.snapshot(strategy).current is not None for strategy in (Strategy.TOMORROW, Strategy.D25))
     assert index.snapshot(Strategy.LONG).current is not None
-    assert settlement.calls == [after_close]
+    assert settlement.calls == [after_close + timedelta(seconds=10)]
     assert sum(request.task is PipelineTask.CLOSE_QUOTES for request in data.task_requests) == 1
     assert freezes.calls == []
 
@@ -1194,11 +1194,12 @@ def test_after_close_source_failure_retries_before_publishing_formal_records() -
         assert runtime.wait_idle(2.0)
         formal = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
         assert all(record is not None and record.commit_kind == "close_fallback" for record in formal.values())
-        assert runtime.status().cadence.schedule_points[close_key].status is SchedulePointStatus.COMPLETED
+        assert runtime.status().cadence.schedule_points[close_key].status is SchedulePointStatus.RETRY_WAIT
         clock.current = after_close + timedelta(seconds=10)
         runtime.submit_due(clock.current)
         assert runtime.wait_idle(2.0)
         assert {strategy: index.snapshot(strategy).formal for strategy in formal} == formal
+        assert runtime.status().cadence.schedule_points[close_key].status is SchedulePointStatus.COMPLETED
     finally:
         runtime.stop(ShutdownDeadline.start(2.0))
 
@@ -1207,7 +1208,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records() -
     assert freezes.calls == []
     assert reviews.calls == []
     assert index.snapshot(Strategy.LONG).formal is None
-    assert settlement.calls == [after_close + timedelta(seconds=1)]
+    assert settlement.calls == [after_close + timedelta(seconds=10)]
 
 
 def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> None:

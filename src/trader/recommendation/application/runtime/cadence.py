@@ -276,10 +276,13 @@ class CadencePlanner:
         with self._lock:
             for key in _scheduled_point_keys(scheduled):
                 current = self._point_states.get(key)
-                if current is None or current.status not in {
+                eligible = {
                     SchedulePointStatus.PENDING,
                     SchedulePointStatus.RETRY_WAIT,
-                }:
+                }
+                if not accepted:
+                    eligible.add(SchedulePointStatus.INFLIGHT)
+                if current is None or current.status not in eligible:
                     continue
                 self._point_states[key] = replace(
                     current,
