@@ -4,6 +4,8 @@ import threading
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 
+import pytest
+
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
@@ -707,13 +709,19 @@ class Freezes:
     def freeze_close_fallback(
         self,
         strategy: Strategy,
-        _at: datetime,
+        at: datetime,
         current,
         *,
         recovery_path: str,
         official_close_version: str,
     ) -> None:
         self.close_fallback_calls.append((strategy, recovery_path, official_close_version))
+        if self._index is not None:
+            sealed = self._index.seal_close_fallback(
+                current, boundary_at=at, official_close_version=official_close_version
+            )
+            assert sealed.accepted and sealed.decision is not None
+            assert self._index.commit_formal(CommittedDecisionRecord(sealed.decision, at, "close_fallback"))
 
 
 class Settlement:
@@ -989,8 +997,9 @@ def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None
 
 def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     morning = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
-    freeze_at = datetime(2026, 8, 11, 14, 50, tzinfo=SHANGHAI)
+    final_window_at = datetime(2026, 8, 11, 14, 50, tzinfo=SHANGHAI)
     close_at = datetime(2026, 8, 11, 15, 0, tzinfo=SHANGHAI)
+    clock = FixedClock(morning)
     data = DataRefresh()
     reviews = SharedReviews()
     settlement = Settlement()
@@ -1004,7 +1013,7 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
     freezes = Freezes(index)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
-            clock=FixedClock(morning),
+            clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(morning),
             data=data,
@@ -1022,23 +1031,43 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
     )
 
     assert runtime.start()
-    runtime.submit_due()
-    assert runtime.wait_idle(2.0)
-    runtime.submit_due(freeze_at)
-    runtime.submit_due(freeze_at)
-    assert runtime.wait_idle(2.0)
-    runtime.submit_due(close_at)
-    runtime.submit_due(close_at)
-    assert runtime.wait_idle(2.0)
-    status = runtime.status()
-    report = runtime.stop(ShutdownDeadline.start(2.0))
+    try:
+        runtime.submit_due()
+        assert runtime.wait_idle(2.0)
+        assert len(observed) == 4
+        assert len(reviews.calls) == 2
+        clock.current = final_window_at
+        runtime.submit_due(final_window_at)
+        runtime.submit_due(final_window_at)
+        assert runtime.wait_idle(2.0)
+        assert freezes.calls == []
+        assert len(observed) == 8
+        assert len(reviews.calls) == 4
+        final_versions = {
+            strategy: index.snapshot(strategy).current.version for strategy in (Strategy.TOMORROW, Strategy.D25)
+        }
+        clock.current = close_at
+        runtime.submit_due(close_at)
+        assert runtime.wait_idle(2.0)
+        assert dict(freezes.calls) == final_versions
+        assert all(
+            index.snapshot(strategy).formal.commit_kind == "scheduled" for strategy in (Strategy.TOMORROW, Strategy.D25)
+        )
+        clock.current = close_at + timedelta(seconds=1)
+        runtime.submit_due(clock.current)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        status = runtime.status()
+    finally:
+        report = runtime.stop(ShutdownDeadline.start(2.0))
 
     assert report.completed
     assert set(data.calls) == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
     assert set(reviews.calls) == {Strategy.TOMORROW, Strategy.D25}
-    assert len(observed) == 4
+    assert len(observed) == 8
     assert {strategy for strategy, version in freezes.calls if version} == {Strategy.TOMORROW, Strategy.D25}
-    assert settlement.calls == [close_at]
+    assert freezes.close_fallback_calls == []
+    assert settlement.calls == [close_at + timedelta(seconds=1)]
     assert status.freeze_completed_count == 2
     assert status.settlement_completed_count == 1
     assert status.phase is MarketPhase.AFTER_CLOSE
@@ -1049,17 +1078,19 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
     assert runtime.status().control_rejected_count == status.control_rejected_count
 
 
-def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() -> None:
-    after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+@pytest.mark.parametrize("hour,minute,second", ((15, 0, 0), (15, 0, 1), (15, 5, 0), (19, 30, 0)))
+def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour, minute, second) -> None:
+    after_close = datetime(2026, 8, 11, hour, minute, second, tzinfo=SHANGHAI)
     data = DataRefresh()
     decisions = Decisions()
     reviews = SharedReviews()
-    freezes = Freezes()
     settlement = Settlement()
     index = UnifiedDecisionIndex()
+    freezes = Freezes(index)
+    clock = FixedClock(after_close)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
-            clock=FixedClock(after_close),
+            clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
             data=data,
@@ -1077,9 +1108,18 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
     )
 
     runtime.start()
-    runtime.submit_due(after_close)
-    assert runtime.wait_idle(2.0)
-    runtime.stop(ShutdownDeadline.start(2.0))
+    try:
+        runtime.submit_due(after_close)
+        assert runtime.wait_idle(2.0)
+        formal = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
+        assert all(record is not None and record.commit_kind == "close_fallback" for record in formal.values())
+        clock.current = after_close + timedelta(seconds=10)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        assert {strategy: index.snapshot(strategy).formal for strategy in formal} == formal
+        assert index.snapshot(Strategy.LONG).formal is None
+    finally:
+        runtime.stop(ShutdownDeadline.start(2.0))
 
     assert set(data.calls) == {Strategy.TOMORROW, Strategy.D25, Strategy.LONG}
     assert reviews.calls == []
@@ -1091,6 +1131,83 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long() ->
     assert all(index.snapshot(strategy).current is not None for strategy in (Strategy.TOMORROW, Strategy.D25))
     assert index.snapshot(Strategy.LONG).current is not None
     assert settlement.calls == [after_close]
+    assert sum(request.task is PipelineTask.CLOSE_QUOTES for request in data.task_requests) == 1
+    assert freezes.calls == []
+
+
+def test_after_close_source_failure_retries_before_publishing_formal_records() -> None:
+    after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+
+    class FailingOnceCloseData(DataRefresh):
+        def refresh_task(self, request) -> RefreshOutcome:
+            outcome = super().refresh_task(request)
+            if request.task is PipelineTask.CLOSE_QUOTES:
+                attempts = sum(item.task is PipelineTask.CLOSE_QUOTES for item in self.task_requests)
+                if attempts == 1:
+                    raise DataRefreshUnavailableError("controlled_close_source_failure")
+            return outcome
+
+    data = FailingOnceCloseData()
+    reviews = SharedReviews()
+    settlement = Settlement()
+    index = UnifiedDecisionIndex()
+    freezes = Freezes(index)
+    clock = FixedClock(after_close)
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            clock=clock,
+            calendar=TradingCalendar(),
+            cadence=_cadence(after_close),
+            data=data,
+            decisions=Decisions(),
+            reviews=reviews,
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-close-retry-observer"),
+            freezes=freezes,
+            settlement=settlement,
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+    )
+    close_key = SchedulePointKey(after_close.date().isoformat(), SchedulePoint.CLOSE_QUOTES, "-")
+
+    runtime.start()
+    try:
+        runtime.submit_due(after_close)
+        assert runtime.wait_idle(2.0)
+        failed = runtime.status()
+        assert failed.refresh_failure_count == 1
+        assert failed.cadence.schedule_points[close_key].status is SchedulePointStatus.RETRY_WAIT
+        assert all(index.snapshot(strategy).formal is None for strategy in (Strategy.TOMORROW, Strategy.D25))
+        assert index.snapshot(Strategy.LONG).current is not None
+        assert freezes.close_fallback_calls == []
+        assert settlement.calls == []
+
+        clock.current = after_close + timedelta(milliseconds=999)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        assert sum(item.task is PipelineTask.CLOSE_QUOTES for item in data.task_requests) == 1
+        clock.current = after_close + timedelta(seconds=1)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        formal = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
+        assert all(record is not None and record.commit_kind == "close_fallback" for record in formal.values())
+        assert runtime.status().cadence.schedule_points[close_key].status is SchedulePointStatus.COMPLETED
+        clock.current = after_close + timedelta(seconds=10)
+        runtime.submit_due(clock.current)
+        assert runtime.wait_idle(2.0)
+        assert {strategy: index.snapshot(strategy).formal for strategy in formal} == formal
+    finally:
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+    assert sum(item.task is PipelineTask.CLOSE_QUOTES for item in data.task_requests) == 2
+    assert len(freezes.close_fallback_calls) == 2
+    assert freezes.calls == []
+    assert reviews.calls == []
+    assert index.snapshot(Strategy.LONG).formal is None
+    assert settlement.calls == [after_close + timedelta(seconds=1)]
 
 
 def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> None:
@@ -1284,8 +1401,8 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
     before_close = datetime(2026, 8, 11, 14, 49, 55, tzinfo=SHANGHAI)
     after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     data = DataRefresh()
-    freezes = Freezes()
     index = UnifiedDecisionIndex()
+    freezes = Freezes(index)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             clock=FixedClock(after_close),
@@ -1322,6 +1439,11 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
         (Strategy.TOMORROW, "current"),
         (Strategy.D25, "current"),
     }
+    assert all(
+        index.snapshot(strategy).formal.commit_kind == "close_fallback"
+        for strategy in (Strategy.TOMORROW, Strategy.D25)
+    )
+    assert index.snapshot(Strategy.LONG).formal is None
 
 
 def test_after_close_formal_records_only_refresh_selected_overlays_without_full_market_recovery() -> None:
@@ -1332,6 +1454,7 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         formal = replace(decision(strategy, sequence=1), trade_date=after_close.date())
         assert index.restore_formal(CommittedDecisionRecord(formal, after_close, "scheduled"))
+    existing = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             clock=FixedClock(after_close),
@@ -1360,6 +1483,9 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
     topk = next(request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES)
     assert set(topk.selected_codes) == {"600001"}
     assert settlement.calls == [after_close]
+    assert {strategy: index.snapshot(strategy).formal for strategy in existing} == existing
+    assert index.snapshot(Strategy.LONG).current is not None
+    assert index.snapshot(Strategy.LONG).formal is None
 
 
 def test_tomorrow_lane_progresses_while_d25_lane_is_blocked() -> None:

@@ -6,7 +6,8 @@ from collections.abc import Mapping
 
 
 def filter_summary(status: Mapping[str, object]) -> Mapping[str, object]:
-    return status.get("filter_summary", {}) if isinstance(status.get("filter_summary"), Mapping) else {}
+    summary = status.get("filter_summary")
+    return summary if isinstance(summary, Mapping) else {}
 
 
 __all__ = ["filter_summary"]

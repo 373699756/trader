@@ -377,7 +377,7 @@ class CadencePlanner:
                     SchedulePointStatus.RETRY_WAIT,
                 }:
                     continue
-                if key.schedule_point is SchedulePoint.AFTERNOON_FREEZE:
+                if key.schedule_point in {SchedulePoint.AFTERNOON_FREEZE, SchedulePoint.CLOSE_QUOTES}:
                     continue
                 self._point_states[key] = replace(
                     state,
@@ -416,13 +416,16 @@ class CadencePlanner:
             if band is CadenceBand.FINAL_WINDOW:
                 tasks.append(ScheduledPipelineTask(PipelineTask.CURRENT_QUOTES, local, phase))
         due_points = self._due_schedule_points(local)
+        if self._afternoon_freeze_active(trade_date):
+            due_points = tuple(item for item in due_points if item[0] is not SchedulePoint.CLOSE_QUOTES)
         for point, strategies in due_points:
-            tasks.extend(_point_tasks(point, local, phase, strategies=strategies))
+            for task in _point_tasks(point, local, phase, strategies=strategies):
+                if task.task is PipelineTask.REFERENCE_DATA and any(
+                    existing.task is PipelineTask.REFERENCE_DATA for existing in tasks
+                ):
+                    continue
+                tasks.append(task)
         tasks = list(_combine_freeze_tasks(tasks))
-        if self._afternoon_freeze_active(trade_date) and SchedulePoint.AFTERNOON_FREEZE not in {
-            point for point, _strategies in due_points
-        }:
-            tasks = [task for task in tasks if task.task is not PipelineTask.CLOSE_QUOTES]
         self._append_periodic_tasks(tasks, local, phase, tuple(point for point, _strategies in due_points))
         self._append_pending_score(tasks, local, phase)
 
@@ -615,6 +618,7 @@ def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]],
         (SchedulePoint.AFTERNOON_CHECKPOINT, ("tomorrow", "d25")),
         (SchedulePoint.FINAL_CANDIDATE_QUOTES, ("-",)),
         (SchedulePoint.AFTERNOON_FREEZE, ("tomorrow", "d25")),
+        (SchedulePoint.CLOSE_QUOTES, ("-",)),
     )
 
 
@@ -624,6 +628,7 @@ def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
         SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 49, 20),
         SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 49, 50),
         SchedulePoint.AFTERNOON_FREEZE: time(15, 0),
+        SchedulePoint.CLOSE_QUOTES: time(15, 0),
     }[point]
     return local.replace(hour=raw.hour, minute=raw.minute, second=raw.second, microsecond=0)
 
@@ -697,11 +702,12 @@ def _point_tasks(
 ) -> tuple[ScheduledPipelineTask, ...]:
     tasks: tuple[ScheduledPipelineTask, ...]
     if point is SchedulePoint.AFTERNOON_FREEZE:
+        tasks = (ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),)
+    elif point is SchedulePoint.CLOSE_QUOTES:
         tasks = (
             ScheduledPipelineTask(PipelineTask.CLOSE_QUOTES, at, phase, (), point),
             ScheduledPipelineTask(PipelineTask.LONG_QUOTES, at, phase),
             ScheduledPipelineTask(PipelineTask.REFERENCE_DATA, at, phase),
-            ScheduledPipelineTask(PipelineTask.FREEZE, at, phase, strategies, point),
         )
     elif point is SchedulePoint.DEEPSEEK_CUTOFF:
         tasks = (ScheduledPipelineTask(PipelineTask.DEEPSEEK_CUTOFF, at, phase, (), point),)
