@@ -19,6 +19,7 @@ from trader.infra.market_data.history.history import (
     require_qfq_history,
 )
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,
@@ -81,37 +82,44 @@ class PublishedHistoryCache:
         self._maintenance_completed_units = 0
         self._maintenance_total_units = 0
 
-    def refresh(self) -> bool:
-        with self._refresh_lock:
-            try:
-                manifest = self._history.manifest()
-            except RuntimeError as exc:
-                self._record_error(type(exc).__name__)
-                return False
-            if manifest is None:
-                with self._lock:
-                    if self._manifest is None:
-                        self._maintenance_reason = "history_snapshot_unavailable"
-                return False
+    def refresh(self, *, wait: bool = True) -> bool:
+        if not self._refresh_lock.acquire(blocking=wait):
+            return False
+        try:
+            return self._rebuild_projection()
+        finally:
+            self._refresh_lock.release()
+
+    def _rebuild_projection(self) -> bool:
+        try:
+            manifest = self._history.manifest()
+        except RuntimeError as exc:
+            self._record_error(type(exc).__name__)
+            return False
+        if manifest is None:
             with self._lock:
-                if self._manifest is not None and self._manifest.snapshot_hash == manifest.snapshot_hash:
-                    return False
-            try:
-                entries = self._build_entries(manifest)
-                confirmed = self._history.manifest()
-            except (RuntimeError, ValueError) as exc:
-                self._record_error(type(exc).__name__)
+                if self._manifest is None:
+                    self._maintenance_reason = "history_snapshot_unavailable"
+            return False
+        with self._lock:
+            if self._manifest is not None and self._manifest.snapshot_hash == manifest.snapshot_hash:
                 return False
-            if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
-                self._record_error("history_snapshot_changed")
-                return False
-            with self._lock:
-                self._manifest = manifest
-                self._entries = entries
-                self._universe_rows = len(manifest.universe_codes)
-                self._covered_rows = sum(len(entry.bars) >= _RAW_RETENTION_SESSIONS for entry in entries.values())
-                self._maintenance_reason = None
-            return True
+        try:
+            entries = self._build_entries(manifest)
+            confirmed = self._history.manifest()
+        except (RuntimeError, ValueError) as exc:
+            self._record_error(type(exc).__name__)
+            return False
+        if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
+            self._record_error("history_snapshot_changed")
+            return False
+        with self._lock:
+            self._manifest = manifest
+            self._entries = entries
+            self._universe_rows = len(manifest.universe_codes)
+            self._covered_rows = sum(len(entry.bars) >= _RAW_RETENTION_SESSIONS for entry in entries.values())
+            self._maintenance_reason = None
+        return True
 
     def record_maintenance(
         self,
@@ -138,7 +146,13 @@ class PublishedHistoryCache:
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         del force
-        self.refresh()
+        # Deadline-bound market work consumes the background projection. A
+        # full archive verification/rebuild cannot fit its real-time budget.
+        if deadline is None:
+            self.refresh(wait=False)
+        with self._lock:
+            if self._manifest is None and (self._refresh_lock.locked() or self._maintenance_state == "loading"):
+                raise MarketDataUnavailableError("history_projection_loading")
         result = self.cached(codes)
         if self._recovery is not None:
             missing = tuple(code for code in dict.fromkeys(codes) if code not in result)
@@ -183,7 +197,9 @@ class PublishedHistoryCache:
         with self._lock:
             entries = dict(self._entries)
         return {
-            code: entries[code].context if code in entries else build_history_context(bars, lookback_sessions=self._lookback_sessions)
+            code: entries[code].context
+            if code in entries
+            else build_history_context(bars, lookback_sessions=self._lookback_sessions)
             for code, bars in histories.items()
             if bars
         }
@@ -235,7 +251,6 @@ class PublishedHistoryCache:
         observed_at: datetime,
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
         del observed_at
-        self.refresh()
         with self._lock:
             manifest = self._manifest
         if manifest is None:
@@ -249,11 +264,7 @@ class PublishedHistoryCache:
         except (RuntimeError, ValueError) as exc:
             self._record_error(type(exc).__name__)
             return {}
-        return {
-            window.code: paired
-            for window in windows
-            if (paired := _outcome_bars(window.revisions))
-        }
+        return {window.code: paired for window in windows if (paired := _outcome_bars(window.revisions))}
 
     def _build_entries(self, manifest: PublishedHistoryManifest) -> dict[str, PublishedHistoryEntry]:
         entries: dict[str, PublishedHistoryEntry] = {}
@@ -274,25 +285,13 @@ class PublishedHistoryCache:
 
 
 def _qfq_bars(window: PublishedHistoryWindow) -> tuple[DailyBar, ...]:
-    bars = tuple(
-        bar
-        for revision in window.revisions
-        if (bar := _daily_bar(revision, PriceAdjustment.QFQ)) is not None
-    )
+    bars = tuple(bar for revision in window.revisions if (bar := _daily_bar(revision, PriceAdjustment.QFQ)) is not None)
     return tuple(sorted(bars, key=lambda item: item.trade_date))
 
 
 def _outcome_bars(revisions: tuple[HistoryRevision, ...]) -> tuple[OutcomeBar, ...]:
-    qfq = tuple(
-        bar
-        for revision in revisions
-        if (bar := _daily_bar(revision, PriceAdjustment.QFQ)) is not None
-    )
-    raw = tuple(
-        bar
-        for revision in revisions
-        if (bar := _daily_bar(revision, PriceAdjustment.RAW)) is not None
-    )
+    qfq = tuple(bar for revision in revisions if (bar := _daily_bar(revision, PriceAdjustment.QFQ)) is not None)
+    raw = tuple(bar for revision in revisions if (bar := _daily_bar(revision, PriceAdjustment.RAW)) is not None)
     return pair_outcome_history(qfq, raw)
 
 

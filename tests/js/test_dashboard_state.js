@@ -103,6 +103,36 @@ const state = {
   longGroupRenderBar: sandbox.window.TraderLongGroups.renderBar,
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
+
+const historyLoadingStatus = { market_data: {
+  history_archive_state: "unavailable",
+  history_maintenance_state: "loading",
+  history_maintenance_stage: "reading_active_snapshot",
+} };
+const historyLoadingPayload = { strategy: "tomorrow", status: "not_ready", trade_date: "2026-10-08" };
+const historyReadiness = sandbox.window.TraderStatusView.recommendationReadinessStatus(
+  historyLoadingPayload, historyLoadingStatus,
+);
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.notReadyMessage(historyLoadingPayload, historyReadiness))),
+  { message: "正在加载本地历史数据", notice: "历史加载完成后自动重试评分，请稍候", level: "idle" },
+);
+for (const payload of [
+  { ...historyLoadingPayload, historical: true },
+  { ...historyLoadingPayload, strategy: "long" },
+  { ...historyLoadingPayload, status: "ready" },
+]) {
+  assert.notStrictEqual(
+    sandbox.window.TraderStatusView.recommendationReadinessStatus(payload, historyLoadingStatus)?.primary_blocker,
+    "history_projection_loading",
+  );
+}
+assert.notStrictEqual(
+  sandbox.window.TraderStatusView.recommendationReadinessStatus(historyLoadingPayload, {
+    market_data: { ...historyLoadingStatus.market_data, history_archive_state: "active" },
+  })?.primary_blocker,
+  "history_projection_loading",
+);
 assert(state, "dashboard state helpers were not exported into the test sandbox");
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.topScoredStocks(

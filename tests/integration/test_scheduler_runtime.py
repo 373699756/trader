@@ -3,8 +3,15 @@ from __future__ import annotations
 import threading
 from dataclasses import replace
 from datetime import date, datetime, timedelta
+from pathlib import Path
 
 import pytest
+
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
+from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.recommendation.application.pipeline.data_source.source_quality import failure_code
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
@@ -1221,8 +1228,21 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour
     assert freezes.calls == []
 
 
-def test_after_close_source_failure_retries_before_publishing_formal_records() -> None:
-    after_close = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
+@pytest.mark.parametrize("loading_history", (False, True))
+@pytest.mark.parametrize("hour,minute,second", ((15, 0, 0), (15, 0, 1), (15, 5, 0), (19, 30, 0)))
+def test_after_close_source_failure_retries_before_publishing_formal_records(
+    tmp_path: Path,
+    loading_history: bool,
+    hour: int,
+    minute: int,
+    second: int,
+) -> None:
+    after_close = datetime(2026, 8, 11, hour, minute, second, tzinfo=SHANGHAI)
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(tmp_path / "history")),
+        lookback_sessions=61,
+    )
+    history.record_maintenance("loading", stage="reading_active_snapshot")
 
     class FailingOnceCloseData(DataRefresh):
         def refresh_task(self, request) -> RefreshOutcome:
@@ -1230,6 +1250,11 @@ def test_after_close_source_failure_retries_before_publishing_formal_records() -
             if request.task is PipelineTask.CLOSE_QUOTES:
                 attempts = sum(item.task is PipelineTask.CLOSE_QUOTES for item in self.task_requests)
                 if attempts == 1:
+                    if loading_history:
+                        try:
+                            history.load(("600001",), deadline=request.observed_at + timedelta(seconds=20))
+                        except MarketDataUnavailableError as exc:
+                            raise DataRefreshUnavailableError(failure_code(exc)) from exc
                     raise DataRefreshUnavailableError("controlled_close_source_failure")
             return outcome
 

@@ -202,12 +202,20 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     )
 
 
-def test_startup_history_maintenance_runs_the_download_use_case_once(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("observe_later_snapshot", (False, True))
+def test_startup_history_maintenance_runs_the_download_use_case_once(
+    tmp_path,
+    monkeypatch,
+    observe_later_snapshot,
+) -> None:
     events: list[object] = []
+    refreshed_later = threading.Event()
 
     class History:
         def refresh(self) -> bool:
             events.append("refresh")
+            if events.count("refresh") == 3:
+                refreshed_later.set()
             return True
 
         def record_maintenance(self, state, reason=None, **details) -> None:
@@ -253,13 +261,28 @@ def test_startup_history_maintenance_runs_the_download_use_case_once(tmp_path, m
         minimum_free_bytes=0,
     )
     maintenance = _StartupHistoryMaintenance(configuration, History())
+    if observe_later_snapshot:
+        original_wait = maintenance._cancel.wait
+        first_wait = True
+
+        def wait_for_refresh_or_cancel(timeout):
+            nonlocal first_wait
+            assert timeout == 30.0
+            if first_wait:
+                first_wait = False
+                return False
+            return original_wait(timeout)
+
+        monkeypatch.setattr(maintenance._cancel, "wait", wait_for_refresh_or_cancel)
 
     assert maintenance.start() is True
+    if observe_later_snapshot:
+        assert refreshed_later.wait(2)
     assert maintenance.stop(wait=True).completed is True
     assert maintenance.start() is False
     assert len(calls) == 1
     assert calls[0][0] == configuration
-    assert events.count("refresh") == 2
+    assert events.count("refresh") == (3 if observe_later_snapshot else 2)
 
 
 def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:

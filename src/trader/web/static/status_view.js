@@ -1047,6 +1047,14 @@
   }
 
   function recommendationReadinessStatus(payload, statusPayload) {
+    const market = statusPayload && statusPayload.market_data;
+    if (payload && payload.status === "not_ready" && payload.historical !== true
+        && payload.strategy !== "long" && market
+        && market.history_archive_state === "unavailable"
+        && market.history_maintenance_state === "loading"
+        && market.history_maintenance_stage === "reading_active_snapshot") {
+      return { primary_blocker: "history_projection_loading" };
+    }
     const inputQuality = strategyInputQuality(payload, statusPayload);
     if (inputQuality) return inputQuality;
     return payload && payload.status === "not_ready" ? marketWarmupStatus(statusPayload) : null;

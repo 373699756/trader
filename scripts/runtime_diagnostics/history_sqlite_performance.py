@@ -242,6 +242,12 @@ def _measure_queries(
     )
     workloads: tuple[tuple[str, Callable[[], int]], ...] = (
         (
+            "startup_month_by_code",
+            lambda: sum(
+                1 for _ in repository.iter_range_by_code(month_start, month_end, snapshot_sequence=active.sequence)
+            ),
+        ),
+        (
             "latest_month",
             lambda: sum(1 for _ in repository.iter_range(month_start, month_end, snapshot_sequence=active.sequence)),
         ),
@@ -255,6 +261,7 @@ def _measure_queries(
         ),
     )
     traced_workloads: tuple[Callable[[], int], ...] = (
+        lambda: sum(1 for _ in traced.iter_range_by_code(month_start, month_end, snapshot_sequence=active.sequence)),
         lambda: sum(1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=active.sequence)),
         lambda: sum(1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=active.sequence, code=code)),
         lambda: len(traced.read_day(sample_day, snapshot_sequence=active.sequence, board=board)),
@@ -263,7 +270,11 @@ def _measure_queries(
     for (name, workload), traced_workload in zip(workloads, traced_workloads, strict=True):
         trace.clear()
         traced_workload()
-        statement = next(value for value in trace if value.lstrip().upper().startswith("WITH LATEST AS"))
+        statement = next(
+            value
+            for value in trace
+            if value.lstrip().upper().startswith(("WITH LATEST AS", "SELECT RECORDS.TRADE_DATE"))
+        )
         query_plan = _query_plan(path, statement)
         workload_paths = code_paths if name == "single_code_window" else (path,)
         cold = _timings(workload_paths, workload, rounds, cold=True)

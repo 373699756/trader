@@ -257,7 +257,7 @@ class _StartupHistoryProgress:
 
 
 class _StartupHistoryMaintenance:
-    """Run the download-owned synchronizer once without blocking Web startup."""
+    """Synchronize once, then observe published history away from market deadlines."""
 
     def __init__(self, configuration: HistorySyncConfiguration, history: PublishedHistoryCache) -> None:
         self._configuration = configuration
@@ -307,8 +307,8 @@ class _StartupHistoryMaintenance:
     def _run(self) -> None:
         progress = _StartupHistoryProgress(self._history)
         self._history.record_maintenance("loading", stage="reading_active_snapshot")
-        self._history.refresh()
         try:
+            self._history.refresh()
             with BaoStockHistorySupplier(self._configuration, progress=progress) as supplier:
                 with self._lock:
                     self._supplier = supplier
@@ -326,6 +326,11 @@ class _StartupHistoryMaintenance:
         finally:
             with self._lock:
                 self._supplier = None
+        while not self._cancel.wait(30.0):
+            try:
+                self._history.refresh()
+            except Exception as exc:
+                self._history.record_maintenance("failed", type(exc).__name__)
 
 
 @dataclass(frozen=True)

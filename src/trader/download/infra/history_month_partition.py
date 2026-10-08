@@ -82,10 +82,21 @@ WHERE latest.revision_rank = 1
 ORDER BY records.trade_date, records.code
 """
 _LATEST_RANGE_SQL = _LATEST_WINDOW.format(observation_filter="", record_filter="")
-_LATEST_RANGE_BY_CODE_SQL = _LATEST_RANGE_SQL.replace(
-    "ORDER BY records.trade_date, records.code",
-    "ORDER BY records.code, records.trade_date",
-)
+_LATEST_RANGE_BY_CODE_SQL = """
+SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
+       records.board, records.payload_json, records.content_hash
+FROM daily_records AS records INDEXED BY history_month_code_date_idx
+WHERE records.trade_date BETWEEN ? AND ?
+  AND records.revision_id = (
+      SELECT observed.revision_id
+      FROM daily_observations AS observed
+      WHERE observed.code = records.code AND observed.trade_date = records.trade_date
+        AND observed.sync_sequence <= ?
+      ORDER BY observed.sync_sequence DESC
+      LIMIT 1
+  )
+ORDER BY records.code, records.trade_date
+"""
 _LATEST_CODE_SQL = _LATEST_WINDOW.format(
     observation_filter="      AND code = ?",
     record_filter="",
@@ -307,7 +318,7 @@ class SQLiteHistoryMonthPartitionRepository:
                 self._require_metadata(connection)
                 cursor = connection.execute(
                     _LATEST_RANGE_BY_CODE_SQL,
-                    (snapshot_sequence, start.isoformat(), end.isoformat()),
+                    (start.isoformat(), end.isoformat(), snapshot_sequence),
                 )
                 while rows := cursor.fetchmany(512):
                     for row in rows:

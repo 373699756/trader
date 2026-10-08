@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -28,6 +31,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.history.history_training_due import (
@@ -169,6 +173,73 @@ def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricat
     assert restrictions == {"600001": {"history_data_pending"}}
 
 
+@pytest.mark.parametrize("deadline", (None, NOW + timedelta(seconds=20)))
+@pytest.mark.parametrize("previous_projection", (False, True))
+def test_history_consumers_do_not_wait_for_background_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    previous_projection: bool,
+    deadline: datetime | None,
+) -> None:
+    archive_root = tmp_path / "history" / "baostock"
+    dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
+    configuration = HistorySyncConfiguration(archive_root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
+    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    archive = SQLitePublishedHistoryArchive(archive_root)
+    manifest = archive.manifest()
+    assert manifest is not None
+    history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
+    if previous_projection:
+        assert history.refresh()
+    original_windows = archive.iter_windows
+    new_manifest = replace(manifest, snapshot_hash="a" * 64)
+    entered, release = threading.Event(), threading.Event()
+
+    def blocked_windows(_manifest, *, sessions):
+        entered.set()
+        assert release.wait(5)
+        yield from original_windows(manifest, sessions=sessions)
+
+    monkeypatch.setattr(archive, "manifest", lambda: new_manifest)
+    monkeypatch.setattr(archive, "iter_windows", blocked_windows)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        refresh = pool.submit(history.refresh)
+        try:
+            assert entered.wait(2)
+            load = pool.submit(history.load, ("600001",), deadline=deadline)
+            if previous_projection:
+                assert len(load.result(timeout=2)["600001"]) == 20
+                assert history.status().snapshot_hash == manifest.snapshot_hash
+            else:
+                with pytest.raises(MarketDataUnavailableError, match="history_projection_loading"):
+                    load.result(timeout=2)
+                assert history.status().snapshot_hash is None
+            outcomes = pool.submit(history.read_outcome_bars, ("600001",), NOW)
+            assert bool(outcomes.result(timeout=2)) is previous_projection
+            assert not refresh.done()
+        finally:
+            release.set()
+        assert refresh.result(timeout=2)
+    assert history.status().snapshot_hash == new_manifest.snapshot_hash
+    assert len(history.load(("600001",))["600001"]) == 20
+
+
+def test_deadline_bound_history_load_never_starts_an_archive_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive = SQLitePublishedHistoryArchive(tmp_path / "history" / "baostock")
+    history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
+
+    def unexpected_manifest():
+        pytest.fail("market deadline must not start archive verification")
+
+    monkeypatch.setattr(archive, "manifest", unexpected_manifest)
+    restrictions: dict[str, set[str]] = {}
+    assert history.load(("600001",), deadline=NOW, action_restrictions=restrictions) == {}
+    assert restrictions == {"600001": {"history_data_pending"}}
+
+
 def test_recommendation_retains_the_last_valid_projection_when_the_archive_becomes_unreadable(tmp_path: Path) -> None:
     archive_root = tmp_path / "history" / "baostock"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
@@ -209,6 +280,7 @@ def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_activ
     }
     assert before == after
     assert tuple(item.workload for item in report.queries) == (
+        "startup_month_by_code",
         "latest_month",
         "single_code_window",
         "single_day_board",

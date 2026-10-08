@@ -205,6 +205,13 @@
       };
     }
     const blocker = inputQuality && inputQuality.primary_blocker;
+    if (blocker === "history_projection_loading") {
+      return {
+        message: "正在加载本地历史数据",
+        notice: "历史加载完成后自动重试评分，请稍候",
+        level: "idle",
+      };
+    }
     const historyStage = pipelineStage(inputQuality, "strategy_history");
     const modelStage = pipelineStage(inputQuality, "model_input");
     const refreshStage = pipelineStage(inputQuality, "candidate_refresh");

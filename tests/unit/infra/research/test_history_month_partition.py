@@ -106,6 +106,43 @@ def test_month_partition_batches_revision_context_and_uses_specialized_latest_sq
     assert "IS NULL OR" not in latest_sql
 
 
+@pytest.mark.parametrize("sequence", (1, 2, 3, 4))
+def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
+    tmp_path: Path,
+    sequence: int,
+) -> None:
+    path = tmp_path / "09.sqlite3"
+    statements: list[str] = []
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9, statement_trace=statements.append)
+    repository.initialize()
+    original = _revision(date(2026, 9, 10), 1, 10.0)
+    other = replace(
+        original,
+        cell=replace(
+            original.cell,
+            code="600002",
+            unadjusted=replace(original.cell.unadjusted, code="600002"),
+            qfq=replace(original.cell.qfq, code="600002"),
+        ),
+    )
+    repository.save_revisions((original, other, _revision(date(2026, 9, 11), 1, 12.0)))
+    repository.save_revisions((_revision(original.trade_date, 2, 11.0),))
+    repository.save_revisions((_revision(original.trade_date, 3, 10.0),))
+    repository.save_revisions((_revision(date(2026, 9, 9), 4, 9.0),))
+    start, end = date(2026, 9, 10), date(2026, 9, 11)
+    expected = sorted(
+        repository.iter_range(start, end, snapshot_sequence=sequence), key=lambda row: (row.code, row.trade_date)
+    )
+    statements.clear()
+
+    assert tuple(repository.iter_range_by_code(start, end, snapshot_sequence=sequence)) == tuple(expected)
+
+    query = next(value for value in statements if value.lstrip().startswith("SELECT records.trade_date"))
+    with sqlite3.connect(path) as connection:
+        plan = tuple(str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + query))
+    assert not any("TEMP B-TREE" in detail for detail in plan)
+
+
 def test_month_partition_batch_preserves_a_to_b_to_a_snapshot_replay(tmp_path: Path) -> None:
     repository = SQLiteHistoryMonthPartitionRepository(tmp_path / "09.sqlite3", 2026, 9)
     repository.initialize()
