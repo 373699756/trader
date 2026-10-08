@@ -11,7 +11,11 @@ from trader.recommendation.application.pipeline.freeze_publish.draft_index impor
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
+from trader.recommendation.domain.evidence.pipeline import (
+    PIPELINE_STAGE_ORDER,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
+)
 from trader.recommendation.domain.market.models import Board, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionItem,
@@ -25,24 +29,7 @@ from trader.recommendation.domain.publication.models import RecommendationAction
 from trader.web import create_app
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
-PIPELINE_STAGE_KEYS = (
-    "input_readiness",
-    "dynamic_filter",
-    "board_cross_section",
-    "strategy_history",
-    "model_input",
-    "candidate_score",
-    "board_limit",
-    "candidate_refresh",
-    "input_coverage",
-    "evidence_score",
-    "model_cost_gate",
-    "local_score",
-    "deepseek_review",
-    "fusion",
-    "action_gate",
-    "concentration",
-)
+PIPELINE_STAGE_KEYS = PIPELINE_STAGE_ORDER
 
 
 class _Clock:

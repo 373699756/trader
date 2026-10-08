@@ -21,7 +21,6 @@ TARGET_PACKAGES = (
     "recommendation/application/pipeline/freeze_publish",
     "infra/settings",
     "infra/market_data/providers",
-    "infra/market_data/normalization",
     "infra/market_data/history",
     "infra/market_data/references",
     "recommendation/infra/market_data",
@@ -177,9 +176,11 @@ def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:
 def test_market_provider_and_normalization_packages_are_partitioned() -> None:
     market_root = SOURCE_ROOT / "infra" / "market_data"
     provider_root = market_root / "providers"
-    normalization_root = market_root / "normalization"
+    normalization_root = SOURCE_ROOT / "recommendation" / "infra" / "normalization"
     assert provider_root.is_dir()
     assert normalization_root.is_dir()
+    assert (market_root / "quote_normalization.py").is_file()
+    assert not (market_root / "normalization").exists()
     assert not any(
         (market_root / name).exists()
         for name in (
