@@ -91,4 +91,5 @@
 - 所有手工文件修改使用 `apply_patch`。禁止 `git reset --hard`、`git checkout --` 和擅自删除用户修改。
 - 提交前检查 `git status`、完整 diff、`git diff --check` 和暂存区；不得提交 `.runtime/`、`.venv/`、`dist/`、`build/`、缓存、截图或临时数据。
 - 每个独立批次只创建一个新提交并立即推送；禁止 amend、squash 或改写已推送历史。推送失败时保留本地提交并停止，成功核对上游后才能继续。
+- Git 提交日志的标题说明和正文必须使用中文；保留 Conventional Commit 的英文类型前缀及可选作用域，代码标识、命令和专有名词可保留原文。例如：`docs: 明确提交日志使用中文`。
 - 回退必须切换完整旧 release 及匹配数据副本；新数据不得写回旧运行库，不得现场破坏性改库。
