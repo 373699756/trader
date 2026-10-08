@@ -5,11 +5,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.models import (
     BenchmarkConstituentReturn,
     BenchmarkReturn,
+    EntryDayPriceWindow,
     OutcomeBar,
     OutcomeExitStatus,
     OutcomeTarget,
@@ -28,6 +30,7 @@ class OutcomeEvaluationRequest:
     settled_at: datetime
     expected_trade_dates: tuple[str, ...] = ()
     round_trip_cost_pct: float = 0.20
+    entry_day_window: EntryDayPriceWindow | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "bars", tuple(self.bars))
@@ -96,7 +99,10 @@ class CanonicalOutcomeEvaluator:
         if settlement.failure_reason:
             return _insufficient(target, horizon, settled_at, settlement.failure_reason)
         window = settlement.points
-        minimum_low = min(point.qfq_low for point in window)
+        entry_low = _entry_day_low(request, reference)
+        if entry_low is None:
+            return _insufficient(target, horizon, settled_at, "entry_day_price_window_missing")
+        minimum_low = min(anchor_qfq_price, entry_low, *(point.qfq_low for point in window))
         end_close = window[-1].qfq_close
         gross = (end_close / anchor_qfq_price - 1.0) * 100.0
         mae = (minimum_low / anchor_qfq_price - 1.0) * 100.0
@@ -182,6 +188,25 @@ def _anchor_qfq_price(anchor_raw_price: float, reference: OutcomeBar) -> float |
     factor = reference.qfq.close / reference.raw.close
     converted = anchor_raw_price * factor
     return converted if math.isfinite(converted) and converted > 0.0 else None
+
+
+def _entry_day_low(request: OutcomeEvaluationRequest, reference: OutcomeBar) -> float | None:
+    target = request.target
+    evidence = request.entry_day_window
+    if evidence is not None:
+        if evidence.entry_at.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat() != target.recommend_date:
+            return None
+        if target.entry_at is None or evidence.entry_at != target.entry_at:
+            return None
+        if evidence.low_raw_price > target.anchor_raw_price:
+            return None
+        return _anchor_qfq_price(evidence.low_raw_price, reference)
+    if target.entry_at is None:
+        return None
+    entry = target.entry_at.astimezone(ZoneInfo("Asia/Shanghai"))
+    if (entry.hour, entry.minute, entry.second, entry.microsecond) != (15, 0, 0, 0):
+        return None
+    return _anchor_qfq_price(target.anchor_raw_price, reference)
 
 
 def _settlement_window(

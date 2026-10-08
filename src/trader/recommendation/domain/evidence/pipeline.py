@@ -293,11 +293,14 @@ class PipelineStageStatus:
 class RecommendationPipelineStatus:
     current_stage: PipelineStageKey
     stages: tuple[PipelineStageStatus, ...]
+    stage_snapshots: tuple[PipelineStageSnapshot, ...] = ()
 
     def __post_init__(self) -> None:
         keys = tuple(item.key for item in self.stages)
         if keys != PIPELINE_STAGE_ORDER or self.current_stage not in keys:
             raise ValueError("recommendation pipeline stages are invalid")
+        if self.stage_snapshots:
+            validate_stage_batch_continuity(self.stage_snapshots)
 
     def stage(self, key: PipelineStageKey) -> PipelineStageStatus:
         return next(item for item in self.stages if item.key == key)

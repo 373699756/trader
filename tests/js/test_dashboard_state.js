@@ -461,7 +461,7 @@ const pipelineFixture = {
 const canonicalObservationElements = summaryFixture();
 state.renderSummary(
   canonicalObservationElements,
-  { status: "ready", strategy: "tomorrow", trade_date: "2026-08-14", coverage: {}, items: [] },
+  { status: "not_ready", strategy: "tomorrow", trade_date: "2026-08-14", coverage: {}, items: [] },
   [],
   "open",
   null,
@@ -609,6 +609,13 @@ assert.strictEqual(
   "1  82.00 · 600001 正式股票\n2  75.00 · 600002 观察股票",
 );
 const persistedPipelineElements = summaryFixture();
+pipelineFixture.stage_snapshots = Array.from({ length: 14 }, (_value, index) => ({
+  stage: ["data_source", "static_market", "static_standardize", "static_filter",
+    "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
+    "quality_check", "local_score", "risk_review", "score_merge", "downside_action", "final_selection"][index],
+  state: "ready", input_count: 110, output_count: 110,
+  rejected_count: 0, pending_count: 0, failed_count: 0, latency_ms: 10, reasons: [],
+}));
 state.renderSummary(
   persistedPipelineElements,
   {
@@ -677,10 +684,11 @@ state.renderSummary(
     },
   },
 );
-assert.strictEqual(summaryElements.inputQualityStatus.textContent, "可评分 80 / 候选 120");
-assert.strictEqual(summaryElements.inputQualityMeta.textContent, "历史 96 / 120 · 80.0% · 证券资料 118 / 120");
-assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 24 只 · 必要资料缺失 2 只");
-assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：跨源价格偏差 3 只");
+assert.strictEqual(summaryElements.inputQualityStatus.textContent, "已评分 80 / 总体 120");
+assert.strictEqual(summaryElements.funnelStatus.textContent, "阶段观测不可用");
+assert.ok(!summaryElements.inputQualityMeta.textContent.includes("历史 96"));
+assert.ok(!summaryElements.inputQualityBlockers.textContent.includes("历史不足 24"));
+assert.ok(!summaryElements.inputQualityDegradations.textContent.includes("跨源价格偏差 3"));
 state.renderSummary(
   summaryElements,
   {

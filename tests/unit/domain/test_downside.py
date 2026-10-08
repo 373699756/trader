@@ -72,6 +72,30 @@ def test_missing_required_downside_inputs_fail_closed(feature_factory) -> None:
     assert assessment.reasons == ("downside_inputs_missing",)
 
 
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("atr20_pct", 0.0),
+        ("atr20_pct", -1.0),
+        ("volatility_20d", -1.0),
+        ("max_drawdown_20d", 1.0),
+        ("max_drawdown_20d", -101.0),
+        ("low_volatility_score", 101.0),
+        ("low_drawdown_score", -1.0),
+    ],
+)
+def test_invalid_downside_inputs_fail_closed(feature_factory, field, value) -> None:
+    assessment = assess_downside(feature_factory(values={field: value}), Strategy.TOMORROW)
+    assert assessment.status == "observe"
+    assert assessment.reasons == ("downside_inputs_invalid",)
+
+
+def test_stale_downside_inputs_fail_closed_without_affecting_long(feature_factory) -> None:
+    feature = replace(feature_factory(), missing_reasons={"atr20_pct": "stale"})
+    assert assess_downside(feature, Strategy.D25).reasons == ("downside_inputs_stale",)
+    assert assess_downside(feature, Strategy.LONG).status == "pass"
+
+
 def test_shrink_pullback_and_volume_breakout_are_deterministic(feature_factory) -> None:
     pullback = feature_factory(
         price=10.05,

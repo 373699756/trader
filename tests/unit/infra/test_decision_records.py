@@ -3,12 +3,18 @@ from __future__ import annotations
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from tests.unit.domain.test_decision_identity import NOW, decision
+from tests.unit.domain.test_decision_identity import NOW, decision, pipeline, stage_snapshots
+from trader.http_api.response.decision_projection import serialize_decision_view, serialize_event
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.decision_records import (
     DecisionCheckpoint,
     DecisionRecordConflictError,
@@ -22,6 +28,26 @@ from trader.recommendation.infra.persistence.decision_records import SQLiteDecis
 
 def record(strategy: Strategy = Strategy.TOMORROW, *, sequence: int = 1) -> CommittedDecisionRecord:
     return CommittedDecisionRecord(decision(strategy, sequence=sequence), NOW, "scheduled")
+
+
+def test_fourteen_stage_audit_restarts_and_has_identical_get_sse_projections(tmp_path: Path) -> None:
+    class Clock:
+        def now(self) -> datetime:
+            return NOW
+
+    current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()))
+    expected = CommittedDecisionRecord(current, NOW, "scheduled")
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    repository.commit(expected)
+    restarted = SQLiteDecisionRecordRepository(tmp_path)
+    restored = restarted.load(Strategy.TOMORROW, current.trade_date)
+    assert restored == expected
+    queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), restarted, Clock())
+    history = serialize_decision_view(queries.history(Strategy.TOMORROW, current.trade_date))
+    event = serialize_event(UnifiedDecisionEventStream().publish_committed(build_decision_committed(restored.decision)))
+    assert history["pipeline"] == event["pipeline"]
+    assert len(history["pipeline"]["stage_snapshots"]) == 14
 
 
 def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_path: Path) -> None:

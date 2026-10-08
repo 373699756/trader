@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from types import MappingProxyType
 
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
@@ -93,7 +94,7 @@ def fuse_score(request: FusionRequest) -> FusionResult:
     policy = request.policy
     _validate_policy(policy)
     local_risk_penalty = aggregate_risk_penalty(request.local_risk_facts, cap=policy.local_risk_cap)
-    local_score = clamp(request.local.base_score - local_risk_penalty)
+    local_score = _bounded_decimal(Decimal(str(request.local.base_score)) - Decimal(str(local_risk_penalty)))
     deepseek_score, coverage, known_dimensions, review_applies = _review_score(
         request.review,
         request.dimension_weights,
@@ -123,7 +124,11 @@ def fuse_score(request: FusionRequest) -> FusionResult:
     fusion_applied = review_applies and request.fusion_mode is FusionMode.HYBRID and deepseek_score is not None
     if fusion_applied:
         assert deepseek_score is not None
-        raw_final = local_score * policy.local_weight + deepseek_score * policy.deepseek_weight - mapped_penalty
+        raw_final = (
+            local_score * Decimal(str(policy.local_weight))
+            + deepseek_score * Decimal(str(policy.deepseek_weight))
+            - Decimal(str(mapped_penalty))
+        )
         final_score = round_score(raw_final)
         applied_penalty = mapped_penalty
     else:
@@ -151,28 +156,35 @@ def fuse_score(request: FusionRequest) -> FusionResult:
 def _review_score(
     review: DeepSeekReview | None,
     weights: Mapping[str, float],
-) -> tuple[float | None, float, int, bool]:
+) -> tuple[Decimal | None, float, int, bool]:
     if set(weights) != set(DIMENSION_NAMES) or abs(sum(weights.values()) - 1.0) > 1e-9:
         raise ValueError("DeepSeek dimension weights must contain five dimensions and sum to 1.0")
     if review is None or review.outcome is not ReviewOutcome.APPLIED:
         return None, 0.0, 0, False
-    total = 0.0
-    coverage = 0.0
+    total = Decimal("0")
+    coverage = Decimal("0")
     known = 0
     for name in DIMENSION_NAMES:
         if weights[name] == 0.0:
             continue
         dimension = review.dimensions.get(name)
         if dimension is None or dimension.is_unknown:
-            total += 50.0 * weights[name]
+            total += Decimal("50") * Decimal(str(weights[name]))
             continue
-        score = clamp(dimension.score)
-        confidence = clamp(dimension.confidence, 0.0, 1.0)
-        effective = 50.0 + (score - 50.0) * confidence
-        total += effective * weights[name]
-        coverage += confidence * weights[name]
+        score = Decimal(str(clamp(dimension.score)))
+        confidence = Decimal(str(clamp(dimension.confidence, 0.0, 1.0)))
+        effective = Decimal("50") + (score - Decimal("50")) * confidence
+        weight = Decimal(str(weights[name]))
+        total += effective * weight
+        coverage += confidence * weight
         known += 1
-    return clamp(total), coverage, known, True
+    return _bounded_decimal(total), float(coverage), known, True
+
+
+def _bounded_decimal(value: Decimal) -> Decimal:
+    if not value.is_finite():
+        raise ValueError("score must be finite")
+    return min(Decimal("100"), max(Decimal("0"), value))
 
 
 def _validate_policy(policy: FusionPolicy) -> None:

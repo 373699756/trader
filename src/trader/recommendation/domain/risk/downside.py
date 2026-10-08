@@ -113,6 +113,10 @@ def assess_downside(
     atr = snapshot.optional_value("atr20_pct")
     historical_drawdown = snapshot.optional_value("max_drawdown_20d")
     intraday_reversal_atr = _intraday_reversal_atr(snapshot, atr)
+    if any(snapshot.missing_reasons.get(field) in {"stale", "expired"} for field in _REQUIRED_DOWNSIDE_FIELDS):
+        return DownsideAssessment(
+            "observe", ("downside_inputs_stale",), atr, intraday_reversal_atr, historical_drawdown, setup.setup_type
+        )
     if missing:
         return DownsideAssessment(
             "observe",
@@ -121,6 +125,22 @@ def assess_downside(
             intraday_reversal_atr,
             historical_drawdown,
             setup.setup_type,
+        )
+
+    volatility = snapshot.optional_value("volatility_20d")
+    stability_scores = tuple(snapshot.optional_value(field) for field in ("low_volatility_score", "low_drawdown_score"))
+    invalid = (
+        atr is not None
+        and atr <= 0.0
+        or volatility is not None
+        and volatility < 0.0
+        or historical_drawdown is not None
+        and not -100.0 <= historical_drawdown <= 0.0
+        or any(score is not None and not 0.0 <= score <= 100.0 for score in stability_scores)
+    )
+    if invalid:
+        return DownsideAssessment(
+            "observe", ("downside_inputs_invalid",), atr, intraday_reversal_atr, historical_drawdown, setup.setup_type
         )
 
     reasons: list[str] = []

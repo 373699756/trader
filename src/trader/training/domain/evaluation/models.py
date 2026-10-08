@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from enum import Enum
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -93,8 +94,14 @@ class OutcomeTarget:
     anchor_raw_price: float
     atr20_pct: float
     pending_horizons: tuple[int, ...] = ()
+    entry_at: datetime | None = None
 
     def __post_init__(self) -> None:
+        if self.entry_at is not None:
+            if self.entry_at.tzinfo is None or self.entry_at.utcoffset() is None:
+                raise ValueError("outcome entry time must be timezone-aware")
+            if self.entry_at.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat() != self.recommend_date:
+                raise ValueError("outcome entry time must match the recommendation date")
         supplied = tuple(self.pending_horizons)
         pending = tuple(sorted(set(supplied)))
         if supplied != pending:
@@ -102,6 +109,30 @@ class OutcomeTarget:
         if any(horizon not in outcome_horizons(self.strategy) for horizon in pending):
             raise ValueError("pending outcome horizons are incompatible with strategy")
         object.__setattr__(self, "pending_horizons", pending)
+
+
+@dataclass(frozen=True)
+class EntryDayPriceWindow:
+    """Verified raw-price low from the entry instant through the same day's close."""
+
+    entry_at: datetime
+    end_at: datetime
+    low_raw_price: float
+    source: str
+
+    def __post_init__(self) -> None:
+        if any(value.tzinfo is None or value.utcoffset() is None for value in (self.entry_at, self.end_at)):
+            raise ValueError("entry-day window times must be timezone-aware")
+        entry = self.entry_at.astimezone(ZoneInfo("Asia/Shanghai"))
+        end = self.end_at.astimezone(ZoneInfo("Asia/Shanghai"))
+        if (
+            entry.date() != end.date()
+            or entry > end
+            or (end.hour, end.minute, end.second, end.microsecond) != (15, 0, 0, 0)
+        ):
+            raise ValueError("entry-day window must cover entry through the same day's close")
+        if not math.isfinite(self.low_raw_price) or self.low_raw_price <= 0 or not self.source.strip():
+            raise ValueError("entry-day window requires a positive low and source identity")
 
 
 @dataclass(frozen=True)

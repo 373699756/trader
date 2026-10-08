@@ -80,6 +80,20 @@ def test_review_context_marks_only_actual_downside_protection_members() -> None:
     assert contexts[protected.code].in_protection_set is True
 
 
+def test_invalid_downside_input_changes_action_without_changing_score_or_promoting_low_score() -> None:
+    evaluations = (
+        _evaluation(0, local_score=90, values={"atr20_pct": 0}),
+        _evaluation(1, local_score=40, values={"atr20_pct": 0}),
+    )
+    epoch = build_scored_decision_epoch(_request(_selection(evaluations)))
+    by_code = {item.code: item for item in epoch.entries}
+    assert by_code["600000"].score.final_score == 90
+    assert by_code["600000"].action is RecommendationAction.OBSERVE
+    assert by_code["600000"].action_reason == "downside_guard:downside_inputs_invalid"
+    assert by_code["600001"].action is RecommendationAction.UNAVAILABLE
+    assert by_code["600001"].score.final_score == 40
+
+
 def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> None:
     local_fact = _risk_fact("local-risk", "local_rule", penalty=2.0)
     deepseek_fact = _risk_fact(

@@ -13,10 +13,17 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineMetricName,
     PipelineMetricRange,
     PipelineReasonCount,
+    PipelineStage,
     PipelineStageKey,
+    PipelineStageSnapshot,
     PipelineStageState,
     PipelineStageStatus,
     RecommendationPipelineStatus,
+    Severity,
+    SourceHealth,
+    SourceHealthState,
+    StageReasonAggregate,
+    StageState,
 )
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import (
@@ -287,7 +294,7 @@ def _selection_diagnostics_from_json(raw: object) -> SelectionDiagnostics | None
 def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
     if raw is None:
         return None
-    value = _object(raw, "recommendation pipeline", required=_PIPELINE_FIELDS)
+    value = _object(raw, "recommendation pipeline", required=_PIPELINE_FIELDS, optional=frozenset({"stage_snapshots"}))
     stages = []
     for raw_stage in _list(value.get("stages"), "pipeline stages"):
         stage = _object(raw_stage, "pipeline stage", required=_PIPELINE_STAGE_FIELDS)
@@ -335,6 +342,71 @@ def _pipeline_from_json(raw: object) -> RecommendationPipelineStatus | None:
     return RecommendationPipelineStatus(
         cast(PipelineStageKey, _text(value, "current_stage")),
         tuple(stages),
+        tuple(_snapshot_from_json(item) for item in _list(value.get("stage_snapshots", []), "stage snapshots")),
+    )
+
+
+def _snapshot_from_json(raw: object) -> PipelineStageSnapshot:
+    value = _object(
+        raw,
+        "stage snapshot",
+        required=frozenset(
+            {
+                "stage",
+                "stage_order",
+                "input_batch_id",
+                "output_batch_id",
+                "as_of",
+                "state",
+                "input_count",
+                "output_count",
+                "rejected_count",
+                "pending_count",
+                "failed_count",
+                "reasons",
+                "source_health",
+                "latency_ms",
+                "degraded",
+            }
+        ),
+    )
+    health = _object(
+        value.get("source_health"),
+        "source health",
+        required=frozenset({"state", "source_count", "healthy_source_count", "latest_success_at", "age_seconds"}),
+    )
+    success = _optional_text(health.get("latest_success_at"))
+    reasons = tuple(
+        StageReasonAggregate(
+            _text(item, "code"), _text(item, "label"), _integer(item, "count"), Severity(_text(item, "severity"))
+        )
+        for item in (
+            _object(reason, "stage reason", required=frozenset({"code", "label", "count", "severity"}))
+            for reason in _list(value.get("reasons"), "stage reasons")
+        )
+    )
+    return PipelineStageSnapshot(
+        PipelineStage(_text(value, "stage")),
+        _integer(value, "stage_order"),
+        _text(value, "input_batch_id"),
+        _text(value, "output_batch_id"),
+        _shanghai_datetime(_text(value, "as_of")),
+        StageState(_text(value, "state")),
+        _integer(value, "input_count"),
+        _integer(value, "output_count"),
+        _integer(value, "rejected_count"),
+        _integer(value, "pending_count"),
+        _integer(value, "failed_count"),
+        reasons,
+        SourceHealth(
+            SourceHealthState(_text(health, "state")),
+            _integer(health, "source_count"),
+            _integer(health, "healthy_source_count"),
+            _shanghai_datetime(success) if success is not None else None,
+            _optional_number(health.get("age_seconds")),
+        ),
+        _integer(value, "latency_ms"),
+        _boolean(value, "degraded"),
     )
 
 

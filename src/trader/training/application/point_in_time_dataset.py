@@ -23,6 +23,7 @@ from trader.training.domain.evaluation.artifact_identity import canonical_artifa
 from trader.training.domain.evaluation.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest
 from trader.training.domain.evaluation.models import (
     BenchmarkConstituentReturn,
+    EntryDayPriceWindow,
     OutcomeBar,
     OutcomeTarget,
     RecommendationOutcome,
@@ -94,6 +95,7 @@ class PointInTimeSourceRow:
     source_identity: PointInTimeSourceIdentity
     industry_fact: PointInTimeIndustryFact
     event_facts: tuple[PointInTimeEventFact, ...]
+    entry_day_window: EntryDayPriceWindow | None = None
 
     def __post_init__(self) -> None:
         bars = tuple(sorted(self.outcome_bars, key=lambda item: item.trade_date))
@@ -136,6 +138,8 @@ class PointInTimeDaySource:
         if not rows or len({item.feature.quote.code for item in rows}) != len(rows):
             raise ValueError("point-in-time source day requires unique rows")
         for row in rows:
+            if row.entry_day_window is not None and row.entry_day_window.entry_at != self.anchor_at:
+                raise ValueError("point-in-time entry-day window must start at the day anchor")
             if row.feature.observed_at > self.anchor_at:
                 raise ValueError("point-in-time source contains future features")
             if any(fact.anchor_at != self.anchor_at for fact in row.event_facts):
@@ -377,6 +381,7 @@ class PointInTimeDatasetBuilder:
                     stock_code=row.feature.quote.code,
                     anchor_raw_price=row.anchor_raw_price,
                     atr20_pct=row.atr20_pct,
+                    entry_at=datetime.combine(trade_date, time(14, 50), tzinfo=_SHANGHAI),
                 ),
                 bars=row.outcome_bars,
                 horizon=1,
@@ -384,6 +389,7 @@ class PointInTimeDatasetBuilder:
                 settled_at=row.settled_at,
                 expected_trade_dates=row.expected_trade_dates,
                 round_trip_cost_pct=cost_bps / 100.0,
+                entry_day_window=row.entry_day_window,
             )
         )
 

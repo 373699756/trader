@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import replace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -13,6 +15,7 @@ from trader.training.domain.evaluation.evaluation import (
 from trader.training.domain.evaluation.models import (
     BenchmarkConstituentReturn,
     BenchmarkReturn,
+    EntryDayPriceWindow,
     OutcomeBar,
     OutcomeExitStatus,
     OutcomePrice,
@@ -23,7 +26,27 @@ from trader.training.domain.evaluation.models import (
 
 
 def _evaluate_outcome(target: OutcomeTarget, bars: tuple[OutcomeBar, ...], **kwargs):
+    target = replace(
+        target,
+        entry_at=datetime.fromisoformat(target.recommend_date + "T15:00:00").replace(tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
     return evaluate_outcome(OutcomeEvaluationRequest(target=target, bars=bars, **kwargs))
+
+
+def test_mae_includes_verified_entry_day_window_and_never_becomes_positive() -> None:
+    entry = datetime(2026, 7, 20, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
+    target = OutcomeTarget("snapshot", Strategy.TOMORROW, "2026-07-20", "600001", 10.0, 2.0, entry_at=entry)
+    bars = (_bar("2026-07-20", 10, 11, 8, 10), _bar("2026-07-21", 11, 12, 10.5, 11))
+    request = OutcomeEvaluationRequest(target, bars, 1, (0.0,), datetime(2026, 7, 21, 15, tzinfo=entry.tzinfo))
+    assert evaluate_outcome(request).quality_reason == "entry_day_price_window_missing"
+    evidence = EntryDayPriceWindow(entry, entry.replace(hour=15, minute=0), 9.5, "minute-fixture")
+    outcome = evaluate_outcome(replace(request, entry_day_window=evidence))
+    assert outcome.mae_pct == pytest.approx(-5)
+    assert outcome.mae_atr == pytest.approx(-2.5)
+    assert outcome.minimum_qfq_low == 9.5  # Never use the whole entry-day low of 8.
+    positive = evaluate_outcome(replace(request, target=replace(target, entry_at=evidence.end_at)))
+    assert positive.mae_pct == 0
+    assert positive.mae_atr == 0
 
 
 def _bar(
@@ -94,6 +117,7 @@ def test_d25_outcome_uses_all_lows_through_horizon() -> None:
 
 def test_d25_contract_includes_t4_and_canonical_evaluator_is_cost_parameterized() -> None:
     target = OutcomeTarget("snapshot", Strategy.D25, "2026-07-20", "600001", 10.0, 2.0)
+    target = replace(target, entry_at=datetime(2026, 7, 20, 15, tzinfo=ZoneInfo("Asia/Shanghai")))
     bars = (
         _bar("2026-07-20", 10.0, 10.1, 9.9, 10.0),
         _bar("2026-07-21", 10.0, 10.2, 9.8, 10.1),
@@ -155,6 +179,7 @@ def test_canonical_benchmark_requires_one_complete_unique_trade_date_population(
 def test_canonical_d25_aggregate_requires_exact_four_complete_horizons() -> None:
     evaluator = CanonicalOutcomeEvaluator()
     target = OutcomeTarget("snapshot", Strategy.D25, "2026-07-20", "600001", 10.0, 2.0)
+    target = replace(target, entry_at=datetime(2026, 7, 20, 15, tzinfo=ZoneInfo("Asia/Shanghai")))
     bars = tuple(_bar(f"2026-07-{20 + offset:02d}", 10.0, 10.5, 9.8, 10.0 + offset / 10) for offset in range(6))
     outcomes = tuple(
         evaluator.evaluate(

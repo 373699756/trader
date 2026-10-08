@@ -11,7 +11,7 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
+from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
@@ -521,7 +521,7 @@ def _scored_payload(
 
 
 def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, _Json]:
-    return {
+    payload: dict[str, _Json] = {
         "current_stage": pipeline.current_stage,
         "stages": [
             {
@@ -539,6 +539,41 @@ def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, _Json
             }
             for stage in pipeline.stages
         ],
+    }
+    # Absence is part of legacy identities: never rehash old records by adding an empty audit.
+    if pipeline.stage_snapshots:
+        payload["stage_snapshots"] = [pipeline_snapshot_identity_payload(stage) for stage in pipeline.stage_snapshots]
+    return payload
+
+
+def pipeline_snapshot_identity_payload(stage: PipelineStageSnapshot) -> dict[str, _Json]:
+    """Canonical aggregate audit fields; no unselected stock identities."""
+    health = stage.source_health
+    return {
+        "stage": stage.stage.value,
+        "stage_order": stage.stage_order,
+        "input_batch_id": stage.input_batch_id,
+        "output_batch_id": stage.output_batch_id,
+        "as_of": stage.as_of.isoformat(),
+        "state": stage.state.value,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "rejected_count": stage.rejected_count,
+        "pending_count": stage.pending_count,
+        "failed_count": stage.failed_count,
+        "reasons": [
+            {"code": reason.code, "label": reason.label, "count": reason.count, "severity": reason.severity.value}
+            for reason in stage.reasons
+        ],
+        "source_health": {
+            "state": health.state.value,
+            "source_count": health.source_count,
+            "healthy_source_count": health.healthy_source_count,
+            "latest_success_at": health.latest_success_at.isoformat() if health.latest_success_at is not None else None,
+            "age_seconds": float(health.age_seconds) if health.age_seconds is not None else None,
+        },
+        "latency_ms": stage.latency_ms,
+        "degraded": stage.degraded,
     }
 
 

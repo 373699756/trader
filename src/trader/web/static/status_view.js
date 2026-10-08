@@ -90,15 +90,23 @@
 
   function renderSummary(els, payload, items, observationState, firstVisible, selection, render, statusPayload) {
     const coverage = payload && payload.coverage || {};
-    const strategyQuality = strategyInputQuality(payload, statusPayload);
+    const strategyQuality = payload && payload.status === "not_ready"
+      ? strategyInputQuality(payload, statusPayload) : null;
     const inputQuality = strategyQuality;
     const marketWarmup = payload && payload.status === "not_ready" && !inputQuality
       ? marketWarmupStatus(statusPayload)
       : null;
-    const pipeline = payload && payload.pipeline
+    const decisionPipeline = payload && payload.pipeline;
+    const pipeline = decisionPipeline && (
+      payload.status === "not_ready"
+      || Array.isArray(decisionPipeline.stage_snapshots) && decisionPipeline.stage_snapshots.length === 14
+    ) && decisionPipeline
       || inputQuality && inputQuality.pipeline
       || marketWarmup && marketWarmup.pipeline
       || null;
+    const stageSnapshots = payload && payload.status === "not_ready"
+      ? inputQuality && inputQuality.stage_snapshots
+      : pipeline && pipeline.stage_snapshots;
     const runtimeSummary = inputQuality && inputQuality.summary
       || marketWarmup && marketWarmup.summary
       || {};
@@ -148,14 +156,14 @@
         els.funnelScoreRange.textContent = finalScoreRange(pipeline);
       }
       els.funnelMeta.textContent = pipelineFunnelSummary(
-        inputQuality && inputQuality.stage_snapshots,
+        stageSnapshots,
         executableCount,
         observed,
         hasFunnelProgress,
       ) || pendingFunnelSummary(executableCount, observed, hasFunnelProgress);
       renderObservationStages(
         els,
-        inputQuality && inputQuality.stage_snapshots,
+        stageSnapshots,
         pipeline,
         false,
         runtimeIssues(statusPayload, payload.strategy),

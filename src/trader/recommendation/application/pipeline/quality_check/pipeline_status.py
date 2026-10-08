@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import ScoredStageChain
@@ -80,6 +80,8 @@ def build_supply_status(
         stage_counts,
         _PipelineCompletionOptions(quote_eligible, candidate_score_threshold),
     )
+    snapshots = join_stage_snapshots(input_stages, (scored_stages or projection.stages).snapshots)
+    pipeline = replace(pipeline, stage_snapshots=snapshots)
     reasons: Counter[str] = Counter()
     for item in evaluations:
         reasons.update(reason.code for reason in item.filter_reasons)
@@ -96,7 +98,7 @@ def build_supply_status(
         publishable=quality.publishable,
         summary=_supply_summary(projection, decision=active_decision),
         pipeline=pipeline,
-        stage_snapshots=join_stage_snapshots(input_stages, (scored_stages or projection.stages).snapshots),
+        stage_snapshots=snapshots,
         population_count=quality.population_count,
         candidate_count=quality.candidate_count,
         candidate_feature_count=quality.candidate_feature_count,

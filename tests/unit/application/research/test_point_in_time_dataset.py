@@ -17,7 +17,7 @@ from trader.training.application.point_in_time_dataset import (
     PointInTimeDaySource,
     PointInTimeSourceRow,
 )
-from trader.training.domain.evaluation.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
+from trader.training.domain.evaluation.models import EntryDayPriceWindow, OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
     DailyArchiveQualification,
     HistoricalIndustryQualification,
@@ -207,6 +207,9 @@ class _Source:
                     feature=feature,
                     anchor_raw_price=12.0,
                     atr20_pct=2.0,
+                    entry_day_window=EntryDayPriceWindow(
+                        anchor, anchor.replace(hour=15, minute=0), 12.0, "minute-fixture"
+                    ),
                     outcome_bars=(reference, exit_bar),
                     expected_trade_dates=(exit_date.isoformat(),),
                     settled_at=anchor + timedelta(days=2),
@@ -362,6 +365,22 @@ def test_builder_does_not_publish_a_partial_manifest_for_incomplete_benchmark_ou
     application_feature_factory,
 ) -> None:
     report = PointInTimeDatasetBuilder(_IncompleteOutcomeSource(application_feature_factory)).build(
+        _request(_qualification())
+    )
+
+    assert report.state == "historical_data_insufficient"
+    assert report.days == ()
+    assert report.manifest is None
+    assert report.failure_reasons == ("benchmark_population_outcome_incomplete",)
+
+
+def test_builder_rejects_missing_entry_day_minute_window(application_feature_factory) -> None:
+    class MissingWindowSource(_Source):
+        def load_day(self, trade_date: date) -> PointInTimeDaySource:
+            day = super().load_day(trade_date)
+            return replace(day, rows=tuple(replace(row, entry_day_window=None) for row in day.rows))
+
+    report = PointInTimeDatasetBuilder(MissingWindowSource(application_feature_factory)).build(
         _request(_qualification())
     )
 

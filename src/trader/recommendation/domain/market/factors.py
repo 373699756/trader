@@ -97,10 +97,13 @@ def clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
     return min(upper, max(lower, value))
 
 
-def round_score(value: float, decimals: int = 2) -> float:
-    bounded = clamp(value)
+def round_score(value: float | Decimal, decimals: int = 2) -> float:
+    parsed = Decimal(str(value))
+    if not parsed.is_finite():
+        raise ValueError("score must be finite")
+    bounded = min(Decimal("100"), max(Decimal("0"), parsed))
     quantum = Decimal(1).scaleb(-decimals)
-    return float(Decimal(str(bounded)).quantize(quantum, rounding=ROUND_HALF_UP))
+    return float(bounded.quantize(quantum, rounding=ROUND_HALF_UP))
 
 
 def band_score(value: float | None, lower: float, optimal_low: float, optimal_high: float, upper: float) -> float:

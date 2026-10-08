@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+from tests.unit.domain.test_decision_identity import stage_snapshots
 
 from trader.http_api.response.decision_projection import serialize_event
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
@@ -63,6 +64,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
         pipeline=RecommendationPipelineStatus(
             "concentration",
             tuple(PipelineStageStatus(key, "completed", 2, 2) for key in keys),
+            stage_snapshots(NOW, count=2),
         ),
         items=(
             base.items[0],
@@ -106,6 +108,8 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
     }
     assert payload["pipeline"]["current_stage"] == "concentration"
     assert len(payload["pipeline"]["stages"]) == len(PIPELINE_STAGE_ORDER)
+    assert len(payload["pipeline"]["stage_snapshots"]) == 14
+    assert payload["pipeline"]["stage_snapshots"][-1]["stage"] == "final_selection"
     assert payload["upserts"] == [
         {
             "action": "executable",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from decimal import Decimal
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
@@ -214,7 +215,8 @@ def deduplicate_risk_facts(
 
 
 def aggregate_risk_penalty(facts: Iterable[RiskFact], *, cap: float) -> float:
-    return clamp(sum(max(0.0, fact.penalty) for fact in facts), 0.0, cap)
+    total = sum((max(Decimal("0"), Decimal(str(fact.penalty))) for fact in facts), Decimal("0"))
+    return float(min(Decimal(str(cap)), total))
 
 
 def _triggered(actual: float, rule: RiskRule) -> bool:

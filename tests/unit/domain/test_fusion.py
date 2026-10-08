@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 
 import pytest
 
@@ -20,6 +21,23 @@ from trader.recommendation.domain.risk.rules import deepseek_risk_rule_code
 DIMENSION_WEIGHTS = {name: 0.2 for name in DIMENSION_NAMES}
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=timezone.utc)
 FUSION_POLICY = FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0)
+
+
+def test_decimal_fusion_rounds_exact_half_up_without_rounding_dimensions_early() -> None:
+    review = replace(
+        _review(50.02),
+        dimensions={name: DimensionAssessment(name, 50.02, 0.78125, "positive") for name in DIMENSION_NAMES},
+    )
+    result = _fuse_score(
+        LocalScoreResult(components={"test": 60.5}, base_score=60.5),
+        (),
+        review,
+        dict(zip(DIMENSION_NAMES, (0.1875, 0.25, 0.3125, 0.0, 0.25), strict=True)),
+        {},
+        FusionMode.HYBRID,
+    )
+    assert result.score.deepseek_score == 50.02
+    assert result.score.final_score == 57.15
 
 
 def test_fusion_policy_has_no_runtime_weight_defaults() -> None:

@@ -218,6 +218,10 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     adapter.refresh(request)
     local = adapter.build_local(request)
     assert local is not None
+    initial_status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert local.pipeline is not None
+    assert local.pipeline.stage_snapshots == initial_status.stage_snapshots
+    validate_stage_batch_continuity(local.pipeline.stage_snapshots)
     projection = adapter.projection(local.version)
     assert projection is not None and projection.review_candidates
     failed_at = request.review_deadline + timedelta(microseconds=1) if after_deadline else EVALUATED_AT

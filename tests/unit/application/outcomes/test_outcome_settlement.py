@@ -54,7 +54,17 @@ class _Repository:
 
     def pending_outcome_targets(self, *, limit):
         assert limit == 500
-        return (OutcomeTarget("snapshot", Strategy.TOMORROW, "2026-07-20", "600001", 10.0, 2.0),)
+        return (
+            OutcomeTarget(
+                "snapshot",
+                Strategy.TOMORROW,
+                "2026-07-20",
+                "600001",
+                10.0,
+                2.0,
+                entry_at=NOW.replace(day=20, hour=15, minute=0),
+            ),
+        )
 
     def record_benchmark_return(self, benchmark, *, observed_at):
         self.benchmark = (benchmark, observed_at)
@@ -163,6 +173,7 @@ def test_d25_settlement_includes_t4_but_only_evaluates_pending_horizons(applicat
                     10.0,
                     2.0,
                     pending_horizons=(4,),
+                    entry_at=NOW.replace(day=20, hour=15, minute=0),
                 ),
             )
 

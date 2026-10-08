@@ -56,6 +56,8 @@
 
   const DOWNSIDE_REASON_LABELS = {
     downside_inputs_missing: "下行保护输入不完整",
+    downside_inputs_invalid: "下行保护输入数值非法",
+    downside_inputs_stale: "下行保护输入已过期",
     intraday_reversal_atr: "日内回撤超过 1 ATR",
     trend_breakdown: "趋势结构破位",
     low_stability_tail: "波动与历史回撤均处尾部",

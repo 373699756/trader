@@ -16,6 +16,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricRange,
     PipelineReasonCount,
+    PipelineStageSnapshot,
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
@@ -135,7 +136,37 @@ def _serialize_pipeline(pipeline: RecommendationPipelineStatus | None) -> dict[s
         return None
     return {
         "current_stage": pipeline.current_stage,
+        "stage_snapshots": [_serialize_stage_snapshot(stage) for stage in pipeline.stage_snapshots],
         "stages": [_serialize_pipeline_stage(stage) for stage in pipeline.stages],
+    }
+
+
+def _serialize_stage_snapshot(stage: PipelineStageSnapshot) -> dict[str, object]:
+    return {
+        "stage": stage.stage.value,
+        "stage_order": stage.stage_order,
+        "input_batch_id": stage.input_batch_id,
+        "output_batch_id": stage.output_batch_id,
+        "as_of": _time(stage.as_of),
+        "state": stage.state.value,
+        "input_count": stage.input_count,
+        "output_count": stage.output_count,
+        "rejected_count": stage.rejected_count,
+        "pending_count": stage.pending_count,
+        "failed_count": stage.failed_count,
+        "reasons": [
+            {"code": reason.code, "label": reason.label, "count": reason.count, "severity": reason.severity.value}
+            for reason in stage.reasons
+        ],
+        "source_health": {
+            "state": stage.source_health.state.value,
+            "source_count": stage.source_health.source_count,
+            "healthy_source_count": stage.source_health.healthy_source_count,
+            "latest_success_at": _time(stage.source_health.latest_success_at),
+            "age_seconds": stage.source_health.age_seconds,
+        },
+        "latency_ms": stage.latency_ms,
+        "degraded": stage.degraded,
     }
 
 

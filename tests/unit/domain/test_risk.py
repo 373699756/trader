@@ -109,6 +109,15 @@ def test_exclusive_groups_keep_highest_while_additive_rules_stack() -> None:
     assert aggregate_risk_penalty(facts, cap=25.0) == 25.0
 
 
+def test_fractional_risk_penalties_preserve_decimal_sum() -> None:
+    now = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
+    facts = (
+        RiskFact("a", "a", "low", 0.1, "fixture", now),
+        RiskFact("b", "b", "low", 0.2, "fixture", now),
+    )
+    assert aggregate_risk_penalty(facts, cap=25.0) == 0.3
+
+
 def test_parse_rating_supports_aliases_and_fallback() -> None:
     assert parse_rating("bullish") is Rating.BULLISH
     assert parse_rating("看多") is Rating.BULLISH

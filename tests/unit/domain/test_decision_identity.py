@@ -9,6 +9,11 @@ import pytest
 
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
+    PIPELINE_STAGES,
+    PipelineStageSnapshot,
+    SourceHealth,
+    SourceHealthState,
+    StageState,
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
@@ -133,6 +138,48 @@ def test_formal_record_round_trip_preserves_complete_recommendation_pipeline() -
     assert restored.decision.pipeline == current.pipeline
     assert json.loads(encoded)["decision"]["pipeline"]["current_stage"] == "concentration"
     assert len(json.loads(encoded)["decision"]["pipeline"]["stages"]) == len(PIPELINE_STAGE_ORDER)
+
+
+def stage_snapshots(observed_at: datetime = NOW, *, count: int = 1) -> tuple[PipelineStageSnapshot, ...]:
+    return tuple(
+        PipelineStageSnapshot(
+            stage,
+            index + 1,
+            f"batch-{index}",
+            f"batch-{index + 1}",
+            observed_at,
+            StageState.READY,
+            count,
+            count,
+            0,
+            0,
+            0,
+            (),
+            SourceHealth(SourceHealthState.READY, 1, 1, observed_at, 0),
+            10,
+            False,
+        )
+        for index, stage in enumerate(PIPELINE_STAGES)
+    )
+
+
+def test_fourteen_stage_audit_survives_formal_codec_and_participates_in_hash() -> None:
+    snapshots = stage_snapshots()
+    current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=snapshots))
+    record = CommittedDecisionRecord(formal_scored_decision(current), NOW.replace(hour=15, minute=0), "scheduled")
+    restored = committed_record_from_bytes(committed_record_bytes(record))
+    assert restored == record
+    assert restored.decision.pipeline.stage_snapshots == snapshots
+    changed = replace(
+        current,
+        pipeline=replace(current.pipeline, stage_snapshots=(replace(snapshots[0], latency_ms=11), *snapshots[1:])),
+    )
+    assert changed.content_hash != current.content_hash
+    legacy = replace(decision(), pipeline=pipeline())
+    legacy_record = CommittedDecisionRecord(formal_scored_decision(legacy), record.committed_at, "scheduled")
+    encoded = committed_record_bytes(legacy_record)
+    assert "stage_snapshots" not in json.loads(encoded)["decision"]["pipeline"]
+    assert committed_record_bytes(committed_record_from_bytes(encoded)) == encoded
 
 
 def test_legacy_formal_record_without_pipeline_keeps_original_identity() -> None:
