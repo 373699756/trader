@@ -19,6 +19,7 @@ from scripts.runtime_diagnostics.browser_refresh import _seed
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.publication.models import Strategy
+from scripts.runtime_diagnostics import baostock_concurrency
 
 
 def _options(**overrides: object) -> DiagnosticOptions:
@@ -136,6 +137,30 @@ def test_baostock_concurrency_profile_discovers_universe_for_default_codes() -> 
 
     assert "--discover" in commands[0].argv
     assert "--codes" not in commands[0].argv
+
+
+def test_serial_rate_experiment_never_starts_parallel_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[float] = []
+
+    def fake_serial(command: baostock_concurrency.WorkerCommand) -> tuple[baostock_concurrency.CodeResult, ...]:
+        calls.append(command.interval_seconds)
+        return tuple(
+            baostock_concurrency.CodeResult(True, 1, 1, True, 0, 0, 0, None, 1.0)
+            for _ in command.codes
+        )
+
+    monkeypatch.setattr(baostock_concurrency, "_serial", fake_serial)
+    report = baostock_concurrency.run_serial_intervals(
+        ("600001", "600002"),
+        (1, 2),
+        days=5,
+        timeout_seconds=10.0,
+        intervals=(2.0, 1.5),
+    )
+
+    assert calls == [2.0, 2.0, 1.5, 1.5]
+    assert report["parallel_sessions"] == 0
+    assert report["production_eligible"] is False
 
 
 def test_baostock_qfq_shadow_profile_is_read_only_and_uses_active_history_root() -> None:

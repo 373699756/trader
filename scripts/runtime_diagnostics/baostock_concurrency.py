@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run an isolated BaoStock serial-vs-two-session experiment.
+"""Run an isolated BaoStock serial rate-limit experiment.
 
 This diagnostic never opens the repository archive and never calls the history
-sync/checkpoint path. Each parallel worker owns one short-lived BaoStock login.
+sync/checkpoint path. The ``--serial-only`` mode uses one short-lived login and
+never creates worker processes.
 """
 
 from __future__ import annotations
@@ -75,8 +76,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--days", type=int, default=61)
     parser.add_argument("--timeout-seconds", type=float, default=15.0)
     parser.add_argument("--interval-seconds", type=float, default=2.0)
+    parser.add_argument("--intervals", nargs="+", type=float, help="serial-only candidate intervals in seconds")
     parser.add_argument("--sizes", nargs="+", type=int, default=(10, 50, 100))
     parser.add_argument("--discover", action="store_true", help="discover a bounded stock universe from BaoStock")
+    parser.add_argument("--serial-only", action="store_true", help="run only one serial BaoStock session")
     return parser
 
 
@@ -90,6 +93,8 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
         raise ValueError("--sizes must be within 1..100")
     if args.days < 1 or args.timeout_seconds <= 0 or args.interval_seconds < 2.0:
         raise ValueError("days/timeout must be positive and interval must be at least 2 seconds")
+    if args.serial_only and args.intervals is not None and any(interval < 1.0 for interval in args.intervals):
+        raise ValueError("serial-only experiment intervals must be at least 1 second")
     return codes
 
 
@@ -321,19 +326,58 @@ def run(
     }
 
 
+def run_serial_intervals(
+    codes: tuple[str, ...],
+    sizes: tuple[int, ...],
+    *,
+    days: int,
+    timeout_seconds: float,
+    intervals: tuple[float, ...],
+) -> dict[str, object]:
+    """Compare candidate intervals without creating another session or process."""
+
+    experiments: list[dict[str, object]] = []
+    for interval_seconds in intervals:
+        for size in sizes:
+            command = WorkerCommand(codes[:size], days, timeout_seconds, interval_seconds)
+            started = time.monotonic()
+            results = _serial(command)
+            summary = _summary("serial", size, results, (time.monotonic() - started) * 1000.0)
+            summary["interval_seconds"] = interval_seconds
+            experiments.append(summary)
+    return {
+        "schema_version": "baostock-serial-rate-experiment",
+        "status": "passed"
+        if all(item["failure_count"] == 0 and item["raw_qfq_inconsistencies"] == 0 for item in experiments)
+        else "failed",
+        "production_eligible": False,
+        "parallel_sessions": 0,
+        "experiments": experiments,
+    }
+
+
 def main() -> int:
     args = _parser().parse_args()
     try:
         codes = _validate(args)
         if args.discover:
             codes = _discover_codes(max(args.sizes))
-        report = run(
-            codes,
-            tuple(args.sizes),
-            days=args.days,
-            timeout_seconds=args.timeout_seconds,
-            interval_seconds=args.interval_seconds,
-        )
+        if args.serial_only:
+            report = run_serial_intervals(
+                codes,
+                tuple(args.sizes),
+                days=args.days,
+                timeout_seconds=args.timeout_seconds,
+                intervals=tuple(args.intervals or (args.interval_seconds,)),
+            )
+        else:
+            report = run(
+                codes,
+                tuple(args.sizes),
+                days=args.days,
+                timeout_seconds=args.timeout_seconds,
+                interval_seconds=args.interval_seconds,
+            )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
             "schema_version": "baostock-concurrency-experiment",
