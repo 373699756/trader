@@ -279,7 +279,7 @@
     ["risk_review", "风险复核（含 DeepSeek）", false],
     ["score_merge", "固定 68/32 融合", false],
     ["downside_action", "下行保护与动作门", false],
-    ["final_selection", "择优入选、分散限制、冻结与发布", false],
+    ["final_selection", "TopK、集中度、冻结与发布", false],
   ]);
 
   function publicationIo(statusPayload, payload) {

@@ -513,6 +513,8 @@ assert.strictEqual(
 );
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级稳定过滤"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("TopK、集中度、冻结与发布"));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes("择优入选、分散限制、冻结与发布"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("动态采集与清洗"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("输入 1 / 输出 0 / 业务拒绝 0 / 待补充 0 / 失败 1"));
