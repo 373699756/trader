@@ -12,6 +12,7 @@ legacy snapshot for routine delivery work.
 
 ## Records
 
+- [Keep invalid quotes outside business rejection and publication](2026-10-08-invalid-quote-readiness.md)
 - [Execute lightweight static stages with actual observations](2026-10-08-static-pipeline-real-observations.md)
 - [Rotate missing recommendation history fairly](2026-10-08-history-recovery-fair-rotation.md)
 - [Synchronize the refactor blueprint tree with the delivered code](2026-10-08-blueprint-tree-sync.md)

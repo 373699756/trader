@@ -478,17 +478,84 @@ def test_native_projection_does_not_treat_stale_candidate_quotes_as_fresh_popula
     assert projection.input_quality.candidate_transient_reason_counts["stale_quote"] == 100
 
 
+@pytest.mark.parametrize("strategy", (TomorrowNativeInput, D25NativeInput))
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    (
+        ("price", None, "invalid_price"),
+        ("amount", None, "invalid_amount"),
+        ("high", -1.0, "invalid_quote_structure"),
+        ("pct_change", None, "invalid_pct_change"),
+    ),
+)
 def test_native_projection_classifies_an_invalid_candidate_quote_as_transient(
     application_feature_factory,
+    strategy,
+    field,
+    value,
+    reason,
 ) -> None:
     policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
     source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
-    invalid = replace(source, quote=replace(source.quote, price=None))
+    invalid = replace(source, quote=replace(source.quote, **{field: value}))
 
-    projection = build_scored_local(_native_input((invalid,)), policy, sequence=1)
+    projection = build_scored_local(_native_input((invalid,), strategy), policy, sequence=1)
 
     assert projection.input_quality.candidate_scored_count == 0
     assert projection.input_quality.status == "transient_invalid_empty"
+    assert not projection.input_quality.publishable
+    assert projection.input_quality.candidate_rejected_count == 0
+    assert projection.input_quality.data_pending_count == 1
+    assert projection.input_quality.candidate_transient_reason_counts[reason] == 1
+    stage = build_supply_status(projection, static_stages=observed_static_stages(1, EVALUATED_AT)).stage_snapshots[6]
+    assert stage.rejected_count == 0
+    assert stage.pending_count == 1
+    assert stage.input_count == stage.output_count + stage.rejected_count + stage.pending_count + stage.failed_count
+    assert projection.review_candidates == ()
+
+
+@pytest.mark.parametrize("strategy", (TomorrowNativeInput, D25NativeInput))
+@pytest.mark.parametrize("separate_invalid", (False, True))
+def test_business_rejection_takes_precedence_over_the_same_stocks_missing_input(
+    application_feature_factory,
+    strategy,
+    separate_invalid,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
+    suspended = replace(source, quote=replace(source.quote, is_suspended=True, price=None))
+    other = replace(source, quote=replace(source.quote, code="600002", price=None))
+    features = (suspended, other) if separate_invalid else (suspended,)
+
+    projection = build_scored_local(_native_input(features, strategy), policy, sequence=1)
+
+    quality = projection.input_quality
+    assert quality.candidate_rejected_count == 1
+    assert quality.data_pending_count == int(separate_invalid)
+    assert quality.refresh_pending_count == 0
+    assert quality.publishable is not separate_invalid
+    assert quality.status == ("transient_invalid_empty" if separate_invalid else "business_empty")
+    stage = build_supply_status(
+        projection, static_stages=observed_static_stages(len(features), EVALUATED_AT)
+    ).stage_snapshots[6]
+    assert stage.rejected_count == 1
+    assert stage.pending_count == int(separate_invalid)
+    assert stage.input_count == stage.output_count + stage.rejected_count + stage.pending_count + stage.failed_count
+
+
+@pytest.mark.parametrize("strategy", (TomorrowNativeInput, D25NativeInput))
+def test_stale_and_invalid_input_has_one_refresh_pending_terminal_state(application_feature_factory, strategy) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(minutes=1)))
+    invalid = replace(source, quote=replace(source.quote, price=None))
+
+    projection = build_scored_local(_native_input((invalid,), strategy), policy, sequence=1)
+
+    assert projection.input_quality.status == "transient_invalid_empty"
+    assert projection.input_quality.data_pending_count == 0
+    assert projection.input_quality.refresh_pending_count == 1
+    assert projection.input_quality.candidate_rejected_count == 0
+    assert projection.selection.evaluations[0].selection_skip_reason == "refresh_pending"
 
 
 def test_supply_status_rejects_selection_without_immutable_stage_facts(

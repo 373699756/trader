@@ -484,7 +484,6 @@ def level_two_filter_rules(
     *,
     max_age_seconds: float,
     policy: HardFilterPolicy | None = None,
-    finalized_inputs: bool = False,
 ) -> tuple[FilterRule, ...]:
     """Build default filter rule registry for all strategies.
 
@@ -495,13 +494,12 @@ def level_two_filter_rules(
         raise ValueError("max_age_seconds must be finite and non-negative")
     policy = policy or HardFilterPolicy()
     registry = _DefaultFilterRules(max_age_seconds, policy)
-    normalized_value_severity = FilterSeverity.REQUIRED if finalized_inputs else FilterSeverity.DEFERRED
 
     return (
         FilterRule("unsupported_code", FilterSeverity.REQUIRED, registry.unsupported_code),
         FilterRule("suspended", FilterSeverity.REQUIRED, registry.suspended),
-        FilterRule("invalid_price", normalized_value_severity, registry.invalid_price),
-        FilterRule("invalid_amount", normalized_value_severity, registry.invalid_amount),
+        FilterRule("invalid_price", FilterSeverity.DEFERRED, registry.invalid_price),
+        FilterRule("invalid_amount", FilterSeverity.DEFERRED, registry.invalid_amount),
         FilterRule("invalid_quote_time", FilterSeverity.DEFERRED, registry.invalid_quote_time),
         FilterRule("invalid_cross_source_deviation", FilterSeverity.DEFERRED, registry.cross_source_deviation),
         FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, registry.cross_source_deviation_optional),
@@ -527,8 +525,8 @@ def level_two_filter_rules(
             FilterSeverity.OPTIONAL,
             registry.corporate_risk_history_unavailable,
         ),
-        FilterRule("invalid_quote_structure", normalized_value_severity, registry.invalid_quote_structure),
-        FilterRule("invalid_pct_change_value", normalized_value_severity, registry.invalid_pct_change_value),
+        FilterRule("invalid_quote_structure", FilterSeverity.DEFERRED, registry.invalid_quote_structure),
+        FilterRule("invalid_pct_change_value", FilterSeverity.DEFERRED, registry.invalid_pct_change_value),
         FilterRule("price_heat_limit", FilterSeverity.REQUIRED, registry.price_heat_limit),
     )
 

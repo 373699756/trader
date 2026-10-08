@@ -344,6 +344,9 @@ def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
     }
     assert by_code[no_liquidity_history.quote.code].disposition is ScoredDisposition.OBSERVE_ONLY
     assert by_code[no_liquidity_history.quote.code].selection_skip_reason == "data_pending"
+    for item in (invalid_price, invalid_amount):
+        assert by_code[item.quote.code].disposition is ScoredDisposition.OBSERVE_ONLY
+        assert by_code[item.quote.code].selection_skip_reason == "data_pending"
     assert by_code[insufficient_liquidity.quote.code].disposition is ScoredDisposition.REJECT
     assert plan.population_rejected_count == 7
     assert by_code[no_strategy_history.quote.code].selection_skip_reason == "strategy_history_insufficient"

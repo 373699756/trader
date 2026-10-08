@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Keep invalid quotes outside business rejection and publication](docs/changelog/2026-10-08-invalid-quote-readiness.md)
 - [Execute lightweight static stages with actual observations](docs/changelog/2026-10-08-static-pipeline-real-observations.md)
 - [Rotate missing recommendation history fairly](docs/changelog/2026-10-08-history-recovery-fair-rotation.md)
 - [Synchronize the refactor blueprint tree with the delivered code](docs/changelog/2026-10-08-blueprint-tree-sync.md)

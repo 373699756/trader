@@ -401,6 +401,86 @@ def test_production_adapter_preserves_publishable_business_empty_projection(
     assert decision.items == ()
 
 
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize(
+    ("hour", "minute", "second", "phase"),
+    (
+        (9, 25, 0, "morning"),
+        (14, 40, 0, "afternoon"),
+        (14, 59, 59, "final_quote"),
+        (15, 0, 0, "close_fallback"),
+        (15, 5, 0, "close_fallback"),
+    ),
+)
+def test_invalid_candidate_refresh_cannot_replace_the_previous_valid_projection(
+    application_feature_factory,
+    strategy,
+    hour,
+    minute,
+    second,
+    phase,
+) -> None:
+    observed_at = datetime(2026, 8, 12, hour, minute, second, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at - timedelta(seconds=1))
+    market = _Market((feature,))
+    drafts = UnifiedDecisionDraftIndex()
+    adapter = MarketDataAdapter(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(drafts, now=lambda: observed_at),
+    )
+    request = _request(observed_at, strategy=strategy, phase=phase)
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.refresh(request)
+    previous = adapter.build_local(request)
+    assert previous is not None
+    previous_projection = adapter.projection(previous.version)
+
+    market._features = (replace(feature, quote=replace(feature.quote, price=None)),)
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+    updated_request = replace(request, input_version=request.input_version + ":invalid")
+    adapter.refresh(updated_request)
+
+    with pytest.raises(DecisionUnavailableError, match="transient_invalid_empty"):
+        adapter.build_local(updated_request)
+
+    assert adapter.projection(previous.version) is previous_projection
+    assert previous_projection is not None and previous_projection.local is previous
+    draft = drafts.snapshot(strategy)
+    assert draft is not None
+    assert adapter.projection(draft.version) is None
+    status = next(item for item in adapter.input_quality_status() if item.strategy is strategy)
+    assert not status.publishable
+    assert status.status == "transient_invalid_empty"
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_invalid_market_input_does_not_block_another_eligible_stock(application_feature_factory, strategy) -> None:
+    observed_at = datetime(2026, 8, 12, 14, 40, tzinfo=SHANGHAI)
+    complete = application_feature_factory("600001", observed_at - timedelta(seconds=1))
+    source = application_feature_factory("600002", observed_at - timedelta(seconds=1))
+    invalid = replace(source, quote=replace(source.quote, price=None))
+    adapter = MarketDataAdapter(
+        _Market((complete, invalid)),
+        config_version="test-config",
+        candidate_pool_size=2,
+        decision_build=_decision_build(now=lambda: observed_at),
+    )
+    request = _request(observed_at, strategy=strategy, phase="afternoon")
+    _prime_scoring_cache(adapter, observed_at)
+    adapter.refresh(request)
+
+    result = adapter.build_local(request)
+
+    assert result is not None
+    assert {item.code for item in result.items} == {"600001"}
+    status = next(item for item in adapter.input_quality_status() if item.strategy is strategy)
+    assert status.publishable
+    assert status.candidate_scored_count == 1
+    assert status.population_rejected_count == 0
+
+
 def test_production_adapter_builds_current_overlay_from_another_scored_lane_batch(
     application_feature_factory,
 ) -> None:

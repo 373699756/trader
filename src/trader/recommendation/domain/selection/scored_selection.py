@@ -389,7 +389,6 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         request,
         evaluated_at=request.population_evaluated_at,
         max_age_seconds=request.population_max_age_seconds,
-        finalized_inputs=False,
     )
     population_evaluations = population_filtered.evaluations
     evaluations = dict(population_evaluations)
@@ -401,7 +400,6 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
             request,
             evaluated_at=request.evaluated_at,
             max_age_seconds=request.policy.max_age_seconds,
-            finalized_inputs=True,
         )
     )
     candidate_evaluations = candidate_filtered.evaluations
@@ -530,7 +528,6 @@ def _build_stage_facts(
     dynamic_rules = level_two_filter_rules(
         max_age_seconds=request.policy.max_age_seconds,
         policy=request.policy.hard_filter,
-        finalized_inputs=True,
     )
     static_results = tuple(
         apply_filters(item.features, static_rules, now=request.evaluated_at) for item in population.values()
@@ -563,7 +560,7 @@ def _build_stage_facts(
     )
     static_output = sum(not result.reasons and not result.deferred for result in static_results)
     dynamic_rejected = sum(bool(result.reasons) for result in dynamic_results)
-    dynamic_pending = sum(bool(result.deferred) for result in dynamic_results)
+    dynamic_pending = sum(not result.reasons and bool(result.deferred) for result in dynamic_results)
     dynamic_output = sum(not result.reasons and not result.deferred for result in dynamic_results)
     dynamic_output_codes = {
         feature.quote.code
@@ -648,7 +645,6 @@ def _filter_features(
     *,
     evaluated_at: datetime | None = None,
     max_age_seconds: float | None = None,
-    finalized_inputs: bool = False,
 ) -> _FilteredFeatures:
     filter_time = evaluated_at or request.evaluated_at
     quote_max_age = request.policy.max_age_seconds if max_age_seconds is None else max_age_seconds
@@ -657,7 +653,6 @@ def _filter_features(
         *level_two_filter_rules(
             max_age_seconds=quote_max_age,
             policy=request.policy.hard_filter,
-            finalized_inputs=finalized_inputs,
         ),
     )
     permanent_filter_codes = frozenset(rule.name for rule in rules if rule.tier is FilterTier.ISSUER_PERMANENT)
@@ -689,7 +684,9 @@ def _filter_features(
             disposition=disposition,
             filter_reasons=filter_reasons,
             optional_flags=filtered.optional_flags,
-            selection_skip_reason=_deferred_reason_codes(reason.code for reason in deferred),
+            selection_skip_reason=""
+            if filtered.reasons
+            else _deferred_reason_codes(reason.code for reason in deferred),
         )
     return _FilteredFeatures(MappingProxyType(result), issuer_eligible_count, input_ready_count)
 
@@ -821,10 +818,10 @@ def _business_ready(item: ScoredStockEvaluation) -> bool:
 
 
 def _deferred_reason_codes(reasons: Iterable[str]) -> str:
-    reason = next((reason for reason in reasons if reason in _DEFERRED_FILTER_REASONS), None)
-    if reason is None:
+    pending = _DEFERRED_FILTER_REASONS.intersection(reasons)
+    if not pending:
         return ""
-    return "refresh_pending" if reason in {"stale_quote", "future_quote"} else "data_pending"
+    return "refresh_pending" if pending.intersection({"stale_quote", "future_quote"}) else "data_pending"
 
 
 def _model_input_is_eligible(code: str, request: ScoredSelectionRequest) -> bool:

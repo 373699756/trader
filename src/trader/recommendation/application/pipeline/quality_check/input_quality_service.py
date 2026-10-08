@@ -257,10 +257,13 @@ def assess_scored_input_quality(
             - {"stale_quote", "future_quote"}
         )
         for item in selection.evaluations
+        if item.disposition is not ScoredDisposition.REJECT
+        and not {"stale_quote", "future_quote"}.intersection(reason.code for reason in item.filter_reasons)
     )
     refresh_pending_count = sum(
         bool({"stale_quote", "future_quote"}.intersection(reason.code for reason in item.filter_reasons))
         for item in selection.evaluations
+        if item.disposition is not ScoredDisposition.REJECT
     )
     return ScoredInputQuality(
         status=status,
