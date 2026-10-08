@@ -203,6 +203,10 @@ def _run(output_dir: Path) -> dict[str, object]:
               topScores: document.querySelector('#topScoresStatus').textContent,
               topScoresMeta: document.querySelector('#topScoresMeta').textContent,
               topScoresHeight: document.querySelector('#topScoresStatus').getBoundingClientRect().height,
+              topScoresAtCardTop: Math.abs(
+                document.querySelector('#topScoresStatus').getBoundingClientRect().top
+                - document.querySelector('#scoreLeadersPanel > span').getBoundingClientRect().top
+              ) < 1,
               topScoresLineHeight: parseFloat(getComputedStyle(document.querySelector('#topScoresStatus')).lineHeight),
               source: document.querySelector('#quoteSource').textContent,
             };
@@ -299,7 +303,32 @@ def _run(output_dir: Path) -> dict[str, object]:
             "recommendation_message": str(
                 _execute(base, 'return document.querySelector("#tableBody").textContent.trim();')
             ),
+            "top_scores": str(_execute(base, 'return document.querySelector("#topScoresStatus").textContent;')),
+            "top_scores_at_card_top": bool(
+                _execute(
+                    base,
+                    """
+                    return Math.abs(document.querySelector('#topScoresStatus').getBoundingClientRect().top
+                      - document.querySelector('#scoreLeadersPanel > span').getBoundingClientRect().top) < 1;
+                    """,
+                )
+            ),
         }
+        highest_score_layout = _execute(
+            base,
+            """
+            const score = document.querySelector('#topScoresStatus');
+            window.TraderStatusView.renderTopScores({
+              topScoresStatus: score, topScoresMeta: document.querySelector('#topScoresMeta')
+            }, {strategy: 'd25', selection_diagnostics: {maximum_final_score: 70.78}}, []);
+            return {
+              text: score.textContent,
+              aligned: Math.abs(score.getBoundingClientRect().top
+                - document.querySelector('#scoreLeadersPanel > span').getBoundingClientRect().top) < 1
+            };
+            """,
+        )
+        (output_dir / "desktop-highest-score-1440x900.png").write_bytes(base64.b64decode(str(_screenshot(base))))
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
         _wait(
             lambda: (
@@ -415,7 +444,10 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
                     "公司风险历史暂不可核验（1只）"
                 ),
+                "top_scores": "1  74.25 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁",
+                "top_scores_at_card_top": True,
             }
+            and highest_score_layout == {"text": "最高分 70.78", "aligned": True}
             and error_details["visible"] is True
             and error_details["raw_code_hidden_from_header"] is True
             and error_details["scores_absent"] is True
@@ -454,6 +486,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and quality_summary.get("funnelMeta")
             == "14 层荐股评分链路 5291→5291→5291→1000→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
             and quality_summary.get("topScores") == "1  74.00 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁"
+            and quality_summary.get("topScoresAtCardTop") is True
             and float(quality_summary.get("topScoresHeight", 0))
             >= 2 * float(quality_summary.get("topScoresLineHeight", 0))
             and quality_summary.get("topScoresMeta") == "策略内最终评分 · 2 只"
@@ -472,6 +505,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             "long_quote_fields": long_quote_fields,
             "long_observation_guard": long_observation_guard,
             "viewports": viewports,
+            "highest_score_layout": highest_score_layout,
             "scripts": scripts,
             "external_network_calls": 0,
         }
@@ -838,6 +872,8 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           dataStatusOwnsReadiness: dataStatus.contains(document.querySelector('#inputQualityStatus'))
             && dataStatus.contains(document.querySelector('#inputQualityMeta')),
           scoresInScoreLeaders: scoreLeaders.contains(scoreRange) && scoreLeaders.contains(topScores),
+          topScoresAtCardTop: Math.abs(topScores.getBoundingClientRect().top
+            - scoreLeaders.querySelector(':scope > span').getBoundingClientRect().top) < 1,
           funnelInHeader: marketStatus.contains(document.querySelector('#funnelMeta')),
           equalSummaryHeights: new Set(
             Array.from(document.querySelectorAll('.summary-band > .summary-item'))
@@ -905,6 +941,7 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("quoteTimeVisible")
         and result.get("dataStatusOwnsReadiness")
         and result.get("scoresInScoreLeaders")
+        and result.get("topScoresAtCardTop") is True
         and result.get("funnelInHeader")
         and result.get("equalSummaryHeights")
         and result.get("scoresAbsentFromObservation")

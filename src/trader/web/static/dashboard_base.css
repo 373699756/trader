@@ -520,20 +520,22 @@ tr:focus-visible {
 
 .score-leaders-summary {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(128px, 0.78fr) minmax(230px, 1.45fr);
+  column-gap: 14px;
+  align-content: start;
   background: var(--surface-raised);
 }
 
 .score-leaders-summary > span {
+  grid-column: 1;
+  grid-row: 1;
   color: color-mix(in srgb, var(--blue) 78%, var(--text));
   font-weight: 650;
 }
 
 .score-leaders-content {
-  min-width: 0;
-  display: grid;
-  grid-template-columns: minmax(128px, 0.78fr) minmax(230px, 1.45fr);
-  gap: 14px;
-  align-items: start;
+  display: contents;
 }
 
 .publication-version-detail {
@@ -547,6 +549,8 @@ tr:focus-visible {
 }
 
 .score-range-summary {
+  grid-column: 1;
+  grid-row: 2;
   min-width: 0;
 }
 
@@ -565,6 +569,9 @@ tr:focus-visible {
 }
 
 .score-leaders-content > strong.top-scores-list {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: start;
   min-width: 0;
   height: 42px;
   display: block;
