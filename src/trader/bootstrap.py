@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from flask import Flask
 
@@ -64,8 +65,8 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
@@ -128,6 +129,70 @@ from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
 from trader.training.infra.research.research_trace_archive import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.web import create_app
+
+if TYPE_CHECKING:
+    from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
+
+
+def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
+    """Lazily assemble one offline research use case; never build the server runtime."""
+    from trader.training.entrypoints.research_evidence import (
+        CapabilityCommand,
+        HoldoutCommand,
+        IndustryAuditCommand,
+        QualificationCommand,
+    )
+    from trader.training.infra.research.command_evidence import (
+        CapabilityEvidencePublisher,
+        HistoricalIndustryEvidenceReader,
+        TerminalConclusionPublisher,
+        TerminalHoldoutParentsReader,
+    )
+
+    if isinstance(command, IndustryAuditCommand):
+        from trader.training.application.historical_industry_audit import AuditHistoricalIndustry
+
+        return AuditHistoricalIndustry(HistoricalIndustryEvidenceReader(command.history_root)).execute(
+            required_sample_codes=command.required_sample_codes, tushare_access_points=command.tushare_access_points
+        )
+    if isinstance(command, HoldoutCommand):
+        from trader.training.application.terminal_holdout_execution import ExecuteTerminalHoldout
+
+        return ExecuteTerminalHoldout(
+            TerminalHoldoutParentsReader(command.parent_artifact_dir), TerminalConclusionPublisher(command.output_dir)
+        ).execute()
+
+    import requests
+
+    from trader.training.infra.research.capability_http import BoundedCapabilitySession
+    from trader.training.infra.research.h1_point_in_time_capability import FreeSourceH1CapabilityProbe
+
+    with requests.Session() as session:
+        session.trust_env = False
+        session.headers.update({"User-Agent": "Mozilla/5.0"})
+        transport = BoundedCapabilitySession(session, timeout_seconds=command.timeout_seconds, monotonic=time.monotonic)
+        probe = FreeSourceH1CapabilityProbe(transport, timeout_seconds=command.timeout_seconds)
+        if isinstance(command, CapabilityCommand):
+            from trader.training.application.capability_completion import CompleteCapabilityEvidence
+            from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+
+            return CompleteCapabilityEvidence(
+                probe,
+                SQLiteH1PointInTimeArchive(command.runtime_dir),
+                CapabilityEvidencePublisher(command.artifact_dir),
+            ).execute(code=command.code, historical_anchor_date=command.anchor_date)
+        if isinstance(command, QualificationCommand):
+            from functools import partial
+
+            from trader.download.infra.history_archive_status import inspect_history_archive
+            from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
+
+            return QualifyPointInTimeData(
+                partial(inspect_history_archive, command.history_root, verify_partitions=True),
+                HistoricalIndustryEvidenceReader(command.history_root),
+                probe,
+            ).execute(code=command.code, historical_anchor_date=command.anchor_date)
+    raise TypeError("unsupported research evidence command")
 
 
 @dataclass(frozen=True)

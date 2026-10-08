@@ -94,11 +94,7 @@ _RECOMMENDATION_CONTRACT_PATHS = frozenset(
 )
 _TRAINING_SCRIPT_PATHS = frozenset(
     {
-        "unit/scripts/test_audit_historical_industry_facts.py",
         "unit/scripts/test_check_tomorrow_training_memory.py",
-        "unit/scripts/test_h1_capability_execution.py",
-        "unit/scripts/test_point_in_time_terminal_holdout.py",
-        "unit/scripts/test_qualify_point_in_time_data.py",
     }
 )
 _TRAINING_ENTRYPOINT_PATHS = frozenset(

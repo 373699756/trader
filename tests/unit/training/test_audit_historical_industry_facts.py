@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from pathlib import Path
 
-import scripts.audit_historical_industry_facts as script
+from trader import bootstrap
+from trader.entrypoints.cli import main as cli_main
 from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustryFact,
     HistoricalIndustrySourceContract,
@@ -12,6 +14,22 @@ from trader.training.domain.evaluation.historical_industry_facts import (
     build_historical_industry_source_audit,
     merge_historical_industry_facts,
 )
+from trader.training.entrypoints import research_evidence_projection as script
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
+def main(argv):
+    return cli_main(
+        [
+            "--config",
+            str(PROJECT_ROOT / "config/runtime.json"),
+            "research-industry-audit",
+            "--history-root",
+            str(PROJECT_ROOT / "data/history"),
+            *argv,
+        ]
+    )
 
 
 def _report():
@@ -60,9 +78,11 @@ def test_projection_is_bounded_by_default_and_details_preserve_fact_hashes() -> 
 
 
 def test_main_rejects_detailed_stdout_without_running_audit(capsys, monkeypatch) -> None:
-    monkeypatch.setattr(script, "execute", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not run")))
+    monkeypatch.setattr(
+        bootstrap, "execute_research_evidence", lambda _cmd: (_ for _ in ()).throw(AssertionError("must not run"))
+    )
 
-    result = script.main(["--include-details", "--output", "-"])
+    result = main(["--include-details", "--output", "-"])
 
     assert result == 2
     payload = json.loads(capsys.readouterr().out)
@@ -73,10 +93,9 @@ def test_main_rejects_detailed_stdout_without_running_audit(capsys, monkeypatch)
 def test_main_writes_detailed_report_only_to_an_external_path(tmp_path, monkeypatch) -> None:
     report = _report()
     target = tmp_path / "industry-report.json"
-    monkeypatch.setattr(script, "PROJECT_ROOT", tmp_path / "repository")
-    monkeypatch.setattr(script, "execute", lambda **_kwargs: report)
+    monkeypatch.setattr(bootstrap, "execute_research_evidence", lambda _cmd: report)
 
-    result = script.main(["--include-details", "--output", str(target)])
+    result = main(["--include-details", "--output", str(target)])
 
     assert result == 1
     payload = json.loads(target.read_text(encoding="utf-8"))

@@ -26,7 +26,8 @@ from trader.training.domain.evaluation.h1_point_in_time import (
 
 
 class _Response(Protocol):
-    content: bytes
+    @property
+    def content(self) -> bytes: ...
 
     def json(self) -> object: ...
 

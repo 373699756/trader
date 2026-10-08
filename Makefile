@@ -2,7 +2,7 @@ SHELL := /bin/bash
 PYTHON ?= .venv/bin/python3
 PYTEST_WORKERS ?= 4
 SOURCE_PATHS := src/trader tests scripts/check_refactor_quality.py scripts/generate_long_watchlist_asset.py \
-	scripts/audit_historical_industry_facts.py scripts/check_tomorrow_training_memory.py scripts/diagnose_runtime.py \
+	scripts/check_tomorrow_training_memory.py scripts/diagnose_runtime.py \
 	scripts/convert_baostock_history.py \
 	scripts/repack_baostock_history_archive.py \
 	scripts/verify_wheel_install.py \

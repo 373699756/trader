@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import date
+
 from trader.download.domain.history_archive_status import HistoryArchiveStatus
+from trader.training.application.capability_completion import CapabilityProbePort
+from trader.training.application.historical_industry_audit import HistoricalIndustryEvidencePort
 from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityAuditReport, H1CapabilityProbe
 from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustryDatasetReport,
@@ -15,6 +20,24 @@ from trader.training.domain.evaluation.point_in_time_data_qualification import (
     PointInTimeDataQualificationReport,
     build_point_in_time_data_qualification,
 )
+
+
+class QualifyPointInTimeData:
+    def __init__(
+        self,
+        history: Callable[[], HistoryArchiveStatus],
+        industry: HistoricalIndustryEvidencePort,
+        probe: CapabilityProbePort,
+    ) -> None:
+        self._history = history
+        self._industry = industry
+        self._probe = probe
+
+    def execute(self, *, code: str, historical_anchor_date: date) -> PointInTimeDataQualificationReport:
+        archive = self._history()
+        industry = self._industry.audit(required_sample_codes=300, tushare_access_points=0)
+        sources = self._probe.run(code=code, historical_anchor_date=historical_anchor_date)
+        return assemble_point_in_time_data_qualification(archive, sources, industry)
 
 
 def assemble_point_in_time_data_qualification(

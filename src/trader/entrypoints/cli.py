@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, add_research_evidence_parsers
 
 if TYPE_CHECKING:
     from trader.download.domain.history_sync import HistorySyncConfiguration
@@ -38,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Effective scoring profile for this process; config value is used when omitted.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    add_research_evidence_parsers(subparsers)
     subparsers.add_parser(
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
@@ -126,17 +128,24 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command == "eligibility-list":
         return _run_eligibility_list(runtime, as_of=args.as_of)
     if args.command in {"train-v2", "train-v3"} or args.command.startswith("research-"):
-        from trader.training.entrypoints.commands import ResearchCommandOptions, run_research_command
-
-        return run_research_command(
-            args.command,
-            config_path,
-            runtime,
-            ResearchCommandOptions(
-                workers=int(getattr(args, "workers", 5)),
-            ),
-        )
+        return _run_training_command(args, config_path, runtime, parser)
     return _run_config_validation(runtime, profile_override)
+
+
+def _run_training_command(
+    args: argparse.Namespace, config_path: Path, runtime: RuntimeSettings, parser: argparse.ArgumentParser
+) -> int:
+    if args.command in COMMAND_SCHEMAS:
+        if args.profile is not None:
+            parser.error(f"{args.command} does not accept --profile")
+        from trader.training.entrypoints.research_evidence import run_research_evidence
+
+        return run_research_evidence(args, repository_root=runtime.project_root)
+    from trader.training.entrypoints.commands import ResearchCommandOptions, run_research_command
+
+    return run_research_command(
+        args.command, config_path, runtime, ResearchCommandOptions(workers=int(getattr(args, "workers", 5)))
+    )
 
 
 def _configure_tomorrow_training_resources() -> None:

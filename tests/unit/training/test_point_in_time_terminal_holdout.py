@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from scripts.point_in_time_terminal_holdout import main
+from trader.entrypoints.cli import main as cli_main
 from trader.training.application.h1_point_in_time_completion import complete_h1_research
 from trader.training.domain.evaluation.h1_point_in_time import (
     H1CapabilityProbe,
@@ -14,6 +14,13 @@ from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1Poin
 from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityArtifactArchive
 from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactArchive
 from trader.training.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive
+
+
+def main(argv):
+    from pathlib import Path
+
+    config = Path(__file__).resolve().parents[3] / "config/runtime.json"
+    return cli_main(["--config", str(config), "research-terminal-holdout", *argv])
 
 
 def _seal_h1_research_parent(root):

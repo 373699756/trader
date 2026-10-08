@@ -1,8 +1,18 @@
 import json
+from pathlib import Path
 
 import pytest
 
-from scripts.h1_point_in_time_capability import _DirectSession, _request_params, main
+from trader.entrypoints.cli import main as cli_main
+from trader.training.infra.research.capability_http import BoundedCapabilitySession
+from trader.training.infra.research.capability_http import request_params as _request_params
+
+
+def main(argv, *, session_factory, monkeypatch):
+    sample = session_factory()
+    monkeypatch.setattr(BoundedCapabilitySession, "get", lambda _self, url, **kw: sample.get(url, **kw))
+    config = Path(__file__).resolve().parents[3] / "config/runtime.json"
+    return cli_main(["--config", str(config), "research-h1-capability", *argv])
 
 
 class _Response:
@@ -33,14 +43,6 @@ class _PartiallyUnavailableSession(_Session):
         return super().get(url, params=params, timeout=timeout)
 
 
-def test_direct_session_ignores_environment_proxy_configuration() -> None:
-    session = _DirectSession()
-
-    assert session._session.trust_env is False
-    assert session._fallback_session.trust_env is True
-    assert session._session.headers["User-Agent"] == "Mozilla/5.0"
-
-
 def test_request_params_preserve_supported_supplier_shapes() -> None:
     assert _request_params({"secid": "1.600519", "param": ("sh600519,day",)}) == {
         "secid": "1.600519",
@@ -50,7 +52,7 @@ def test_request_params_preserve_supported_supplier_shapes() -> None:
         _request_params({"invalid": object()})
 
 
-def test_script_seals_sanitized_insufficient_terminal_chain_outside_repository(tmp_path, capsys) -> None:
+def test_script_seals_sanitized_insufficient_terminal_chain_outside_repository(tmp_path, capsys, monkeypatch) -> None:
     archive = tmp_path / "archive"
     artifacts = tmp_path / "artifacts"
 
@@ -66,6 +68,7 @@ def test_script_seals_sanitized_insufficient_terminal_chain_outside_repository(t
             "-",
         ],
         session_factory=_Session,
+        monkeypatch=monkeypatch,
     )
 
     payload = json.loads(capsys.readouterr().out)
@@ -80,7 +83,7 @@ def test_script_seals_sanitized_insufficient_terminal_chain_outside_repository(t
     assert (artifacts / "h1_research_terminal.json").is_file()
 
 
-def test_script_reports_partial_probe_failure_without_discarding_success(tmp_path, capsys) -> None:
+def test_script_reports_partial_probe_failure_without_discarding_success(tmp_path, capsys, monkeypatch) -> None:
     result = main(
         [
             "--h1-runtime-dir",
@@ -91,6 +94,7 @@ def test_script_reports_partial_probe_failure_without_discarding_success(tmp_pat
             "-",
         ],
         session_factory=_PartiallyUnavailableSession,
+        monkeypatch=monkeypatch,
     )
 
     payload = json.loads(capsys.readouterr().out)

@@ -73,6 +73,45 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
             capture_output=True,
             text=True,
         )
+        evidence_commands = (
+            "research-h1-capability",
+            "research-data-qualification",
+            "research-industry-audit",
+            "research-terminal-holdout",
+        )
+        for command in evidence_commands:
+            subprocess.run(
+                (str(cli), command, "--help"),
+                cwd=temporary,
+                env=clean_environment,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        missing_history = temporary / "missing-history"
+        smoke = subprocess.run(
+            (
+                str(cli),
+                "--config",
+                str(runtime_config.resolve()),
+                "research-industry-audit",
+                "--history-root",
+                str(missing_history),
+            ),
+            cwd=temporary,
+            env=clean_environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        smoke_report = json.loads(smoke.stdout)
+        if (
+            smoke.returncode != 2
+            or smoke_report.get("status") != "audit_failed"
+            or smoke_report.get("production_authority") is not False
+            or missing_history.exists()
+        ):
+            raise RuntimeError("installed industry audit did not fail closed without archive writes")
         subprocess.run(
             (str(python), "-m", "pip", "check"),
             cwd=temporary,
@@ -98,6 +137,8 @@ def verify_wheel_install(*, dist_dir: Path, runtime_config: Path) -> dict[str, o
         "wheel": wheel.name,
         "resource_count": payload["resource_count"],
         "installed_outside_repository": payload["installed_outside_repository"],
+        "research_evidence_commands_verified": len(evidence_commands),
+        "missing_history_read_only_smoke": "passed",
     }
 
 

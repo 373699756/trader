@@ -9,15 +9,11 @@ The remaining top-level scripts are explicit tools with one owner:
 
 | Tool | Class | Side effects and boundary |
 | --- | --- | --- |
-| `audit_historical_industry_facts.py` | Research audit | Read-only supplier/archive audit; emits a report only. |
 | `check_refactor_quality.py` | Quality gate | Read-only repository/Ruff gate; no business data. |
 | `check_tomorrow_training_memory.py` | Release/research gate | Runs the explicitly requested bounded training evidence check. |
 | `convert_baostock_history.py` | Migration | Explicit legacy conversion; never called by runtime or Web. |
 | `generate_long_watchlist_asset.py` | Build asset | Deterministically generates the packaged Long watchlist asset. |
-| `h1_point_in_time_capability.py` | Research audit | Bounded point-in-time capability audit. |
 | `migrate_runtime_data.py` | Migration | Operates only on an explicit repository-external copy. |
-| `point_in_time_terminal_holdout.py` | Research audit | Explicit terminal holdout sealing command. |
-| `qualify_point_in_time_data.py` | Research audit | Read-only point-in-time data qualification. |
 | `repack_baostock_history_archive.py` | Archive maintenance | Explicit build/activate/rollback/finalize operation under the archive lock. |
 | `verify_wheel_install.py` | Release gate | Installs and checks a wheel outside the repository. |
 
@@ -26,6 +22,30 @@ Repeated download, training, scoring, or status workflows belong to
 Every retained or newly added tool must have a bounded input/output contract,
 an explicit network/write declaration, and an entry in this table before it is
 used by a gate or documented command.
+
+Research execution belongs to `trader-cli`; the four former standalone research
+scripts have been removed. Pass `--config /absolute/path/config/runtime.json`
+before the subcommand. Dependency construction and HTTP session lifetime belong
+to `bootstrap.py`; the use cases live under `training/application/`.
+
+| Command | Network | Writes and output | Resource boundary |
+| --- | --- | --- | --- |
+| `research-h1-capability` | Tencent and Eastmoney sample requests | Reads `--h1-runtime-dir`; seals existing H1 formats into explicit external `--artifact-dir`; summary to stdout or external `--output` | One code, two attempts, no retries/redirects/proxy fallback; default 8 s per request, maximum 60 s; deadline from first request at twice that timeout, checked between chunks with finite socket timeouts; 4 MiB per response; two strategies |
+| `research-data-qualification` | Same two sample requests | Explicit `--history-root` read-only; summary only; no archive download/write | Same HTTP limits; archive validation and industry audit scan the full existing snapshot |
+| `research-industry-audit` | None; `--tushare-access-points` is metadata | Explicit `--history-root` read-only; stdout aggregation or external report; details require external `--output` | One sequential full-snapshot audit; sample count is an eligibility threshold, not a scan cap |
+| `research-terminal-holdout` | None | Reads external `--parent-artifact-dir`; writes immutable Tomorrow/D25/conclusion reports into separate external `--output-dir`; summary to stdout or external `--output` | Two strategy evaluations; preserves insufficient-parent closure, hash verification, conflict and repeat-run semantics |
+
+Exit codes: `0` qualified/validated, `1` insufficient evidence, `2` invalid
+arguments/evidence or execution/output failure. Execution failures emit a bounded
+error report to stdout, including when the requested report path cannot be written;
+the failed destination is never retried. Summary paths must be separate from
+evidence input and artifact directories. The capability closure produces
+only insufficient evidence, so its normal exit code remains `1`. No command
+grants production authority. Ordinary CLI help/config checks do not load these
+research implementations. The HTTP deadline is checked during transport; socket
+timeouts and deadline checks do not guarantee a hard wall-clock limit. Full archive
+audits and report I/O have no hard RSS or total offline execution limit.
+Use isolated external copies for refactor acceptance, not active data.
 
 History SQLite performance is available through the unified read-only diagnostic:
 

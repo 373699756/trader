@@ -33,7 +33,7 @@ BaoStock 封存事实具有代码、行业、分类体系、生效边界、失�
 股票清单。
 
 ```bash
-.venv/bin/python scripts/audit_historical_industry_facts.py \
+.venv/bin/trader-cli --config "$PWD/config/runtime.json" research-industry-audit \
   --history-root "$PWD/data/history" \
   --required-sample-codes 300 \
   --tushare-access-points 120 \
@@ -41,7 +41,7 @@ BaoStock 封存事实具有代码、行业、分类体系、生效边界、失�
   --output /tmp/trader-historical-industry-report.json
 ```
 
-命令以预期退出码 1 完成，耗时约 318.67 秒、峰值 RSS 约 120.0 MiB；执行期间无网络请求、无下载、无训练、
+原实测使用已退役的独立脚本，以上示例为现行 CLI 调用；旧耗时不代表新入口复测。原命令以预期退出码 1 完成，耗时约 318.67 秒、峰值 RSS 约 120.0 MiB；执行期间无网络请求、无下载、无训练、
 无 SQLite/manifest 写入。该结果来自跨来源整体冲突字段加入前的完整审计；最终 schema 的复跑在约 90 秒时
 被中断，未产生部分报告。本次继续执行已通过完整代码门禁，但工作区只剩旧布局 22 个根级分片、268/5453 个
 checkpoint，缺少正式 `manifest.json`、`catalog.sqlite3` 与 92 个封存分片；复跑在信任边界以
