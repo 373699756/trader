@@ -26,7 +26,7 @@ Profile = Literal[
     "tencent",
     "tushare",
     "history-daily-capability",
-    "history-archive",
+    "history-sqlite",
     "research",
     "browser",
     "performance",
@@ -46,7 +46,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent": ("tencent_quotes",),
     "tushare": ("tushare_daily",),
     "history-daily-capability": ("history_daily_capability",),
-    "history-archive": ("history_archive_performance",),
+    "history-sqlite": ("history_sqlite_performance",),
     "research": ("research_readiness",),
     "browser": ("browser_refresh",),
     "performance": ("production_performance",),
@@ -98,10 +98,10 @@ class DiagnosticOptions:
     browser_duration_seconds: float
     browser_minimum_updates: int
     command_timeout_seconds: float
-    archive_root: Path
-    archive_page_sample_count: int
-    archive_query_rounds: int
-    archive_revision_write_sample_count: int
+    history_root: Path
+    sqlite_page_sample_count: int
+    sqlite_query_rounds: int
+    sqlite_revision_write_sample_count: int
 
 
 @dataclass(frozen=True)
@@ -168,25 +168,25 @@ def _parser() -> argparse.ArgumentParser:
         help="hard wall-clock timeout for each child diagnostic",
     )
     parser.add_argument(
-        "--archive-root",
+        "--history-root",
         type=Path,
         default=PROJECT_ROOT / "data/history/baostock",
-        help="stable BaoStock archive used by the read-only history-archive profile",
+        help="stable BaoStock monthly SQLite data used by the read-only history-sqlite profile",
     )
     parser.add_argument(
-        "--archive-page-sample-count",
+        "--sqlite-page-sample-count",
         type=int,
         default=1,
         help="monthly files sampled for expensive dbstat page classification",
     )
     parser.add_argument(
-        "--archive-query-rounds",
+        "--sqlite-query-rounds",
         type=int,
         default=3,
-        help="cold and warm rounds per history-archive query workload",
+        help="cold and warm rounds per history-sqlite query workload",
     )
     parser.add_argument(
-        "--archive-revision-write-sample-count",
+        "--sqlite-revision-write-sample-count",
         type=int,
         default=512,
         help="rows copied into the disposable revision batch-write probe",
@@ -216,12 +216,12 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("sample, worker, duration and timeout values must be positive")
     if args.web_interval_seconds < 0 or args.source_interval_seconds < 0:
         raise ValueError("sample intervals must not be negative")
-    if not 1 <= args.archive_page_sample_count <= 100:
-        raise ValueError("--archive-page-sample-count must be within 1..100")
-    if not 1 <= args.archive_query_rounds <= 9:
-        raise ValueError("--archive-query-rounds must be within 1..9")
-    if not 1 <= args.archive_revision_write_sample_count <= 5_000:
-        raise ValueError("--archive-revision-write-sample-count must be within 1..5000")
+    if not 1 <= args.sqlite_page_sample_count <= 100:
+        raise ValueError("--sqlite-page-sample-count must be within 1..100")
+    if not 1 <= args.sqlite_query_rounds <= 9:
+        raise ValueError("--sqlite-query-rounds must be within 1..9")
+    if not 1 <= args.sqlite_revision_write_sample_count <= 5_000:
+        raise ValueError("--sqlite-revision-write-sample-count must be within 1..5000")
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
@@ -244,10 +244,10 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             browser_duration_seconds=args.browser_duration_seconds,
             browser_minimum_updates=args.browser_minimum_updates,
             command_timeout_seconds=args.command_timeout_seconds,
-            archive_root=args.archive_root.expanduser().resolve(),
-            archive_page_sample_count=args.archive_page_sample_count,
-            archive_query_rounds=args.archive_query_rounds,
-            archive_revision_write_sample_count=args.archive_revision_write_sample_count,
+            history_root=args.history_root.expanduser().resolve(),
+            sqlite_page_sample_count=args.sqlite_page_sample_count,
+            sqlite_query_rounds=args.sqlite_query_rounds,
+            sqlite_revision_write_sample_count=args.sqlite_revision_write_sample_count,
         ),
         output,
     )
@@ -346,20 +346,20 @@ def build_commands(
             ),
             common_timeout,
         ),
-        "history_archive_performance": DiagnosticCommand(
-            "history_archive_performance",
+        "history_sqlite_performance": DiagnosticCommand(
+            "history_sqlite_performance",
             (
                 python_executable,
                 "-m",
-                "scripts.runtime_diagnostics.history_archive_performance",
-                "--archive-root",
-                str(options.archive_root),
+                "scripts.runtime_diagnostics.history_sqlite_performance",
+                "--history-root",
+                str(options.history_root),
                 "--page-sample-count",
-                str(options.archive_page_sample_count),
+                str(options.sqlite_page_sample_count),
                 "--query-rounds",
-                str(options.archive_query_rounds),
+                str(options.sqlite_query_rounds),
                 "--revision-write-sample-count",
-                str(options.archive_revision_write_sample_count),
+                str(options.sqlite_revision_write_sample_count),
             ),
             common_timeout,
         ),
@@ -602,7 +602,7 @@ def _history_daily_capability_details(
     }
 
 
-def _history_archive_performance_details(
+def _history_sqlite_performance_details(
     _result: DiagnosticResult,
     source: Mapping[str, object],
     payload: dict[str, object],
@@ -690,7 +690,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,
     "history_daily_capability": _history_daily_capability_details,
-    "history_archive_performance": _history_archive_performance_details,
+    "history_sqlite_performance": _history_sqlite_performance_details,
     "research_readiness": _research_details,
     "browser_refresh": _browser_details,
     "production_performance": _performance_details,

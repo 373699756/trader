@@ -27,15 +27,15 @@ Every retained or newly added tool must have a bounded input/output contract,
 an explicit network/write declaration, and an entry in this table before it is
 used by a gate or documented command.
 
-History archive performance is available through the unified read-only diagnostic:
+History SQLite performance is available through the unified read-only diagnostic:
 
 ```bash
-.venv/bin/python3 scripts/diagnose_runtime.py --profile history-archive --output -
+.venv/bin/python3 scripts/diagnose_runtime.py --profile history-sqlite --output -
 ```
 
 It reads monthly SQLite headers, samples page classes, benchmarks latest-row
 queries, and writes a bounded revision fixture only to a disposable temporary
-database. It does not compact or switch the active archive. Maintenance rules
+database. It does not compact or switch the active history database. Maintenance rules
 are in [the architecture contract](../docs/项目重构详细.md), section 3.5.1.1;
 training performance is explained in [the training guide](../docs/04_策略回溯.md),
 section 12.4. The repack tool remains a separate explicit maintenance operation;

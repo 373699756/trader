@@ -1,4 +1,4 @@
-"""Read-only physical layout summary for the active monthly history archive."""
+"""Read-only physical layout summary for the active monthly history SQLite databases."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ class _RevisionWriteMeasurement:
 
 
 @dataclass(frozen=True)
-class _ArchivePerformanceReport:
+class _HistorySQLitePerformanceReport:
     physical: _PhysicalSummary
     queries: tuple[_QueryMeasurement, ...]
     revision_write: _RevisionWriteMeasurement
@@ -68,7 +68,7 @@ class _ArchivePerformanceReport:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--archive-root", type=Path, required=True)
+    parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--page-sample-count", type=int, default=1)
     parser.add_argument("--query-rounds", type=int, default=3)
     parser.add_argument("--revision-write-sample-count", type=int, default=512)
@@ -79,22 +79,22 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         if not 1 <= args.page_sample_count <= 100 or not 1 <= args.query_rounds <= 9:
-            raise ValueError("history archive sample counts are invalid")
+            raise ValueError("history SQLite sample counts are invalid")
         if not 1 <= args.revision_write_sample_count <= 5_000:
             raise ValueError("revision write sample count must be within 1..5000")
-        report = inspect_history_archive_performance(
-            args.archive_root.resolve(),
+        report = inspect_history_sqlite_performance(
+            args.history_root.resolve(),
             args.page_sample_count,
             args.query_rounds,
             args.revision_write_sample_count,
         )
     except (HistoryControlError, OSError, RuntimeError, sqlite3.Error, TypeError, ValueError):
-        emit_report({"schema_version": "history_archive_performance", "status": "failed"})
+        emit_report({"schema_version": "history_sqlite_performance", "status": "failed"})
         return 1
     summary = report.physical
     compact = summary.page_sizes == (8192,)
     payload = {
-        "schema_version": "history_archive_performance",
+        "schema_version": "history_sqlite_performance",
         "status": "passed" if compact else "degraded",
         "summary": {
             "partition_count": summary.partition_count,
@@ -131,11 +131,11 @@ def main() -> int:
     return 0
 
 
-def inspect_history_archive(root: Path, page_sample_count: int = 1) -> _PhysicalSummary:
+def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalSummary:
     state = SQLiteHistoryControlRepository(root / "control.sqlite3").load_state()
     active = state.active_snapshot
     if active is None:
-        raise RuntimeError("history archive has no active snapshot")
+        raise RuntimeError("history SQLite has no active snapshot")
     total_bytes = 0
     page_count = 0
     free_pages = 0
@@ -146,7 +146,7 @@ def inspect_history_archive(root: Path, page_sample_count: int = 1) -> _Physical
     for position, reference in enumerate(active.partitions):
         path = root / reference.relative_path
         if not path.is_file() or path.is_symlink():
-            raise RuntimeError("history archive partition is unavailable")
+            raise RuntimeError("history SQLite partition is unavailable")
         total_bytes += path.stat().st_size
         with closing(
             sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True, timeout=5.0)
@@ -180,20 +180,20 @@ def inspect_history_archive(root: Path, page_sample_count: int = 1) -> _Physical
     )
 
 
-def inspect_history_archive_performance(
+def inspect_history_sqlite_performance(
     root: Path,
     page_sample_count: int = 1,
     query_rounds: int = 3,
     revision_write_sample_count: int = 512,
-) -> _ArchivePerformanceReport:
+) -> _HistorySQLitePerformanceReport:
     control = SQLiteHistoryControlRepository(root / "control.sqlite3").load_state()
     active = control.active_snapshot
     if active is None:
-        raise RuntimeError("history archive has no active snapshot")
+        raise RuntimeError("history SQLite has no active snapshot")
     calendar_identity = next((item for item in control.calendars if item.content_hash == active.calendar_hash), None)
     if calendar_identity is None:
-        raise RuntimeError("history archive calendar is unavailable")
-    physical = inspect_history_archive(root, page_sample_count)
+        raise RuntimeError("history SQLite calendar is unavailable")
+    physical = inspect_history_sqlite(root, page_sample_count)
     queries, sample = _measure_queries(
         root,
         active,
@@ -202,7 +202,7 @@ def inspect_history_archive_performance(
         revision_write_sample_count,
     )
     revision_write = _measure_revision_write(sample)
-    return _ArchivePerformanceReport(physical, queries, revision_write, _peak_rss_bytes())
+    return _HistorySQLitePerformanceReport(physical, queries, revision_write, _peak_rss_bytes())
 
 
 def _measure_queries(
@@ -222,11 +222,11 @@ def _measure_queries(
             "SELECT trade_date, code, board FROM daily_records ORDER BY trade_date DESC, code LIMIT 1"
         ).fetchone()
     if seed is None:
-        raise RuntimeError("history archive query sample is empty")
+        raise RuntimeError("history SQLite query sample is empty")
     sample_day, code, board = date.fromisoformat(str(seed[0])), str(seed[1]), str(seed[2])
     code_dates = tuple(day for day in open_dates if day <= sample_day)[-61:]
     if len(code_dates) != 61:
-        raise RuntimeError("history archive code query window is unavailable")
+        raise RuntimeError("history SQLite code query window is unavailable")
     code_paths = tuple(
         root / item.relative_path
         for item in active.partitions
@@ -314,7 +314,7 @@ def _query_plan(path: Path, statement: str) -> tuple[str, ...]:
 
 def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWriteMeasurement:
     if not sample:
-        raise RuntimeError("history archive revision write sample is empty")
+        raise RuntimeError("history SQLite revision write sample is empty")
     first = sample[0]
     year = first.trade_date.year
     month = first.trade_date.month

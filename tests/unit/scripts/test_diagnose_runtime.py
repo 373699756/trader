@@ -40,10 +40,10 @@ def _options(**overrides: object) -> DiagnosticOptions:
         browser_duration_seconds=8.0,
         browser_minimum_updates=3,
         command_timeout_seconds=180.0,
-        archive_root=Path("data/history/baostock"),
-        archive_page_sample_count=1,
-        archive_query_rounds=3,
-        archive_revision_write_sample_count=512,
+        history_root=Path("data/history/baostock"),
+        sqlite_page_sample_count=1,
+        sqlite_query_rounds=3,
+        sqlite_revision_write_sample_count=512,
     )
     return replace(defaults, **overrides)
 
@@ -106,7 +106,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("tencent", "tencent_quotes"),
         ("tushare", "tushare_daily"),
         ("history-daily-capability", "history_daily_capability"),
-        ("history-archive", "history_archive_performance"),
+        ("history-sqlite", "history_sqlite_performance"),
         ("research", "research_readiness"),
         ("browser", "browser_refresh"),
         ("performance", "production_performance"),

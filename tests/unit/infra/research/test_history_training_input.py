@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.training.infra.history.history_training_due as due_module
-from scripts.runtime_diagnostics.history_archive_performance import inspect_history_archive_performance
+from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_sqlite_performance
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
@@ -189,7 +189,7 @@ def test_recommendation_retains_the_last_valid_projection_when_the_archive_becom
     assert history.status().error_count == 1
 
 
-def test_history_archive_performance_diagnostic_is_bounded_and_never_writes_active_archive(
+def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_active_history(
     tmp_path: Path,
 ) -> None:
     archive_root = tmp_path / "history" / "baostock"
@@ -201,7 +201,7 @@ def test_history_archive_performance_diagnostic_is_bounded_and_never_writes_acti
         for path in archive_root.rglob("*.sqlite3")
     }
 
-    report = inspect_history_archive_performance(archive_root, 1, 1, 10)
+    report = inspect_history_sqlite_performance(archive_root, 1, 1, 10)
 
     after = {
         path.relative_to(archive_root): hashlib.sha256(path.read_bytes()).hexdigest()
