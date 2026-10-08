@@ -65,6 +65,7 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
     ScoredFreezeCoordinator,
 )
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
@@ -376,6 +377,7 @@ def build_system(
         RankingSelectionService(),
         RiskControlService(),
     )
+    publication_io = PublicationIoTracker(now=ShanghaiClock(now).now, monotonic=time.monotonic)
     publication = _build_publication(
         context,
         calendar,
@@ -383,6 +385,7 @@ def build_system(
             persistence.repository,
             market_data,
         ),
+        publication_io=publication_io,
     )
     native_data = MarketDataAdapter(
         market_data,
@@ -443,6 +446,7 @@ def build_system(
             publish_decision=publication.decision_events.publish_committed,
             publish_overlay=publish_overlay_event,
             latency=latency,
+            publication_io=publication_io,
         ),
         config_version=effective_config_version,
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
@@ -817,6 +821,8 @@ def _build_publication(
     context: _BuildContext,
     calendar: ChinaTradingCalendar,
     dependencies: _PublicationDependencies,
+    *,
+    publication_io: PublicationIoTracker,
 ) -> _PublicationContext:
     settings = context.settings
     repository = dependencies.repository
@@ -850,6 +856,7 @@ def _build_publication(
             context.strategy.fusion.version,
         ),
         strategy=Strategy.TOMORROW,
+        publication_io=publication_io,
     )
     d25_freezer = ScoredFreezeCoordinator(
         tomorrow_decisions,
@@ -861,6 +868,7 @@ def _build_publication(
             context.strategy.fusion.version,
         ),
         strategy=Strategy.D25,
+        publication_io=publication_io,
     )
     long_runtime = LongRuntime(
         LongRuntimeDependencies(

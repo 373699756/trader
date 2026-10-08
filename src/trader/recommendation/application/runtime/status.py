@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
+from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoSnapshot
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.recommendation.application.ports.runtime import ResearchRuntimeStatus, SharedDeepSeekRuntimeContract
 from trader.recommendation.application.runtime.cadence import CadencePlannerStatus
@@ -56,6 +57,7 @@ class SchedulerRuntimeStatus:
     strategy_error_codes: tuple[tuple[str, str], ...]
     recent_errors: tuple[RuntimeIssue, ...]
     input_quality: tuple[InputQualityStatus, ...]
+    publication_io: tuple[PublicationIoSnapshot, ...] = ()
     calendar: TradingCalendarRuntimeStatus = TradingCalendarRuntimeStatus(
         state="unknown",
         trade_date=None,

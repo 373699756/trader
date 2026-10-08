@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
 
+from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoSnapshot
 from trader.recommendation.application.ports.loaded_profile import ScoringHeadRuntimeStatus, ScoringProfileRuntimeStatus
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.recommendation.application.runtime.cadence import CadencePlannerStatus
@@ -17,6 +18,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageSnapshot,
     PipelineStageStatus,
     RecommendationPipelineStatus,
+    StageState,
 )
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 
@@ -52,7 +54,11 @@ def runtime_status(
     ]
     if observer_error:
         degraded_reasons.append(f"observer:{observer_error}")
-    issue_count = len(active_issues) + int(bool(observer_error))
+    io_failures = tuple(item for item in status.publication_io if item.state is StageState.FAILED)
+    degraded_reasons.extend(
+        f"{item.target.strategy.value}:publication_io:{item.operation}:{item.reasons[0].code}" for item in io_failures
+    )
+    issue_count = len(active_issues) + int(bool(observer_error)) + len(io_failures)
     health_level = (
         "error"
         if not status.running or any(issue.severity == "error" for issue in active_issues)
@@ -111,6 +117,40 @@ def runtime_status(
             "settlement_completed_count": status.settlement_completed_count,
             "settlement_failure_count": status.settlement_failure_count,
             "input_quality": input_quality_payload(status.input_quality),
+            "publication_io": [publication_io_payload(item) for item in status.publication_io],
+        },
+    }
+
+
+def publication_io_payload(item: PublicationIoSnapshot) -> dict[str, object]:
+    health = item.source_health
+    return {
+        "stage": "final_selection",
+        "count_unit": "operation",
+        "attempt_id": item.attempt_id,
+        "operation": item.operation,
+        "strategy": item.target.strategy.value,
+        "trade_date": item.target.trade_date.isoformat(),
+        "decision_version": item.target.decision_version,
+        "sequence": item.target.sequence,
+        "output_version": item.output_version,
+        "as_of": item.as_of.isoformat(),
+        "state": item.state.value,
+        "input_count": item.input_count,
+        "output_count": item.output_count,
+        "rejected_count": item.rejected_count,
+        "pending_count": item.pending_count,
+        "failed_count": item.failed_count,
+        "reasons": [
+            {"code": reason.code, "count": reason.count, "severity": reason.severity.value} for reason in item.reasons
+        ],
+        "latency_ms": item.latency_ms,
+        "source_health": {
+            "state": health.state.value,
+            "source_count": health.source_count,
+            "healthy_source_count": health.healthy_source_count,
+            "latest_success_at": health.latest_success_at.isoformat() if health.latest_success_at else None,
+            "age_seconds": health.age_seconds,
         },
     }
 

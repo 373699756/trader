@@ -159,6 +159,7 @@
         pipeline,
         false,
         runtimeIssues(statusPayload, payload.strategy),
+        publicationIo(statusPayload, payload),
       );
     } else {
       const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
@@ -166,7 +167,7 @@
       els.funnelStages.textContent = "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗";
       els.funnelScoreRange.textContent = topScore === "—" ? "—" : `${topScore} · 最低未保存`;
       els.funnelMeta.textContent = `旧快照 · ${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
-      renderObservationStages(els, null, null, false, runtimeIssues(statusPayload, payload.strategy));
+      renderObservationStages(els, null, null, false, runtimeIssues(statusPayload, payload.strategy), publicationIo(statusPayload, payload));
     }
     const marketFreshness = currentMarketFreshness(payload, statusPayload, strategySummary, firstVisible);
     const runtimeSource = marketFreshness.source;
@@ -281,7 +282,35 @@
     ["final_selection", "TopK、集中度、冻结与发布", false],
   ]);
 
-  function renderObservationStages(els, stageSnapshots, pipeline, long, issues) {
+  function publicationIo(statusPayload, payload) {
+    if (!payload || payload.view === "history") return [];
+    const receipts = statusPayload && statusPayload.scheduler && statusPayload.scheduler.publication_io;
+    return Array.isArray(receipts)
+      ? receipts.filter((item) => item.strategy === payload.strategy && item.trade_date === payload.trade_date)
+      : [];
+  }
+
+  const PUBLICATION_OPERATIONS = Object.freeze({
+    current_publish: "当前快照发布", decision_event: "决策事件交接", observer_enqueue: "研究观察队列交接",
+    checkpoint_write: "检查点写入", formal_lookup: "正式记录读取", checkpoint_lookup: "检查点读取",
+    freeze_seal: "冻结封口", formal_write: "正式记录写入", formal_publish: "正式快照发布",
+    checkpoint_consume: "检查点清理", formal_restore: "正式快照恢复",
+  });
+
+  function publicationIoMarkup(receipts) {
+    if (!receipts.length) return '<small>冻结与发布 I/O：暂无本进程操作回执</small>';
+    return '<small>冻结与发布 I/O（按操作计数，独立于股票人口；队列交接不代表消费完成）</small>'
+      + receipts.map((item) => {
+        const reason = Array.isArray(item.reasons) ? item.reasons.map((r) => `${r.code} ${r.count}`).join(" · ") : "";
+        const health = item.source_health || {};
+        const duration = Number.isFinite(item.latency_ms) ? `${item.latency_ms}ms` : "进行中";
+        const identity = item.decision_version || "尚未取得决策身份";
+        const text = `${PUBLICATION_OPERATIONS[item.operation] || item.operation} · ${stageStateLabel(item.state)} · 输入 ${item.input_count} / 输出 ${item.output_count} / 业务拒绝 ${item.rejected_count} / 待补充 ${item.pending_count} / 失败 ${item.failed_count} · 耗时 ${duration} · 来源 ${health.state || "—"} · 来源年龄 ${Number.isFinite(health.age_seconds) ? `${health.age_seconds.toFixed(1)}s` : "—"} · ${reason}`;
+        return `<small data-publication-operation="${escapeHtml(item.operation)}" data-state="${escapeHtml(item.state)}">${escapeHtml(text)}</small><small>输入身份：${escapeHtml(identity)}；输出身份：${escapeHtml(item.output_version || "—")}</small>`;
+      }).join("");
+  }
+
+  function renderObservationStages(els, stageSnapshots, pipeline, long, issues, publicationReceipts = []) {
     if (!els.observationStageList) return;
     if (long) {
       els.observationStageList.innerHTML = '<div class="observation-stage-empty">长期固定观察池不经过荐股评分链路</div>';
@@ -298,7 +327,8 @@
       const rejected = finiteNonNegativeInteger(stage && stage.rejected_count) || 0;
       const pending = finiteNonNegativeInteger(stage && stage.pending_count) || 0;
       const failed = finiteNonNegativeInteger(stage && stage.failed_count) || 0;
-      const state = stage && stage.state || "not_ready";
+      const ioFailed = stageKey === "final_selection" && publicationReceipts.some((item) => item.state === "failed");
+      const state = ioFailed && (!stage || stage.state !== "failed") ? "degraded" : stage && stage.state || "not_ready";
       const reasons = Array.isArray(stage && stage.reasons)
         ? stage.reasons
         : Array.isArray(stage && stage.reason_counts) ? stage.reason_counts : [];
@@ -313,7 +343,7 @@
         ? `淘汰 ${displayCount(rejected)}`
         : `待就绪 ${displayCount(pending + failed)}`;
       const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
-      const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>主要原因：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}`;
+      const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>主要原因：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKey === "final_selection" ? publicationIoMarkup(publicationReceipts) : ""}`;
       return `<article class="observation-stage" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}" data-stage-toggle="true" tabindex="0" role="button" aria-expanded="false"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span><div class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");
   }

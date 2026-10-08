@@ -439,6 +439,15 @@ state.renderSummary(
   sandbox.window.TraderRender,
   {
     scheduler: {
+      publication_io: [
+        { operation: "formal_write", strategy: "tomorrow", trade_date: "2026-08-14", state: "failed",
+          input_count: 1, output_count: 0, rejected_count: 0, pending_count: 0, failed_count: 1,
+          latency_ms: 125, reasons: [{ code: "io_oserror", count: 1 }],
+          decision_version: "decision:tomorrow:immutable", output_version: null,
+          source_health: { state: "unavailable", age_seconds: 20 } },
+        { operation: "checkpoint_consume", strategy: "d25", trade_date: "2026-08-14", state: "failed" },
+        { operation: "formal_restore", strategy: "tomorrow", trade_date: "2026-08-13", state: "ready" },
+      ],
       input_quality: {
         tomorrow: {
           summary: { trade_date: "2026-08-14" },
@@ -471,6 +480,13 @@ assert.strictEqual(
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级稳定过滤"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("动态采集与清洗"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("输入 1 / 输出 0 / 业务拒绝 0 / 待补充 0 / 失败 1"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("耗时 125ms · 来源 unavailable · 来源年龄 20.0s"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("按操作计数，独立于股票人口"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("decision:tomorrow:immutable"));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="checkpoint_consume"'));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_restore"'));
 assert.strictEqual(
   state.inputPipelineDetails(pipelineFixture),
   "输入准备 5289→320〔主要原因 流动性历史待下载/更新4969〕 ｜ 动态过滤 320→196 ｜ 板内总体 196（可靠度0.72–0.99）（仅观察125） ｜ 策略历史 196→195（60–248日） ｜ 模型输入 195→188（完整率84.0%–100.0%） ｜ 候选分 188→134（43.18–82.64，门槛50.00） ｜ 板内限额 134→134 ｜ 定向行情 134→125（年龄1.2–8.6秒） ｜ 输入完整性 行情125/125 · 证券资料125/125 · 历史125/125 ｜ 完整评分 125→110（基础分41.18–67.42）",

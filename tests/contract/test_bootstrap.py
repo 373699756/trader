@@ -410,6 +410,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         settlement_failure_count=0,
         last_error_code="",
         input_quality=(),
+        publication_io=(),
         calendar=TradingCalendarRuntimeStatus(
             state="unknown",
             trade_date=None,

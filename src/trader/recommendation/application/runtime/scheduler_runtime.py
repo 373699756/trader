@@ -9,6 +9,12 @@ from datetime import date, datetime, timedelta
 from datetime import time as wall_time
 from typing import Literal, cast
 
+from trader.recommendation.application.pipeline.freeze_publish.current_publisher import publish_current_snapshot
+from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
+    PublicationIoTarget,
+    PublicationIoTracker,
+    observe_publication_io,
+)
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionCommitted,
     DecisionObservation,
@@ -79,6 +85,7 @@ from trader.recommendation.application.runtime.schedule_requests import (
 from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     LongProjection,
@@ -132,6 +139,7 @@ class RuntimeDependencies:
     publish_decision: Callable[[DecisionCommitted], object]
     publish_overlay: OverlayPublisher
     latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
+    publication_io: PublicationIoTracker | None = None
 
 
 @dataclass(frozen=True)
@@ -648,6 +656,9 @@ class SchedulerRuntime:
                 strategy_error_codes=issues.strategy_error_codes,
                 recent_errors=issues.recent_errors,
                 input_quality=self._dependencies.decisions.input_quality_status(),
+                publication_io=self._dependencies.publication_io.snapshots()
+                if self._dependencies.publication_io is not None
+                else (),
                 calendar=TradingCalendarRuntimeStatus(
                     state=self._calendar_state,
                     trade_date=self._calendar_trade_date,
@@ -815,26 +826,21 @@ class SchedulerRuntime:
 
     def _publish(self, identity: DecisionIdentity, *, hybrid: bool) -> bool:
         expected = self._dependencies.index.snapshot(identity.strategy).current
-        if isinstance(identity, ScoredDecision):
-            try:
-                overlay = self._dependencies.decisions.initial_overlay(identity)
-            except DecisionUnavailableError as exc:
-                self._record_failure("decision", failure_code(exc, "decision_quote_unavailable"), identity.strategy)
-                return False
-            published = self._dependencies.index.publish_scored(
-                identity,
-                overlay,
-                expected_version=expected.version if expected is not None else None,
-            )
-        else:
-            published = self._dependencies.index.publish(
+        try:
+            published = publish_current_snapshot(
+                self._dependencies.index,
+                self._dependencies.decisions,
                 identity,
                 expected_version=expected.version if expected is not None else None,
+                publication_io=self._dependencies.publication_io,
             )
+        except DecisionUnavailableError as exc:
+            self._record_failure("decision", failure_code(exc, "decision_quote_unavailable"), identity.strategy)
+            return False
         if not published.accepted:
             self._record_publish_rejection(published.reason, identity.strategy)
             return False
-        self._record_publish(hybrid=hybrid, event=published.event, strategy=identity.strategy)
+        self._record_publish(hybrid=hybrid, event=published.event, identity=identity)
         return True
 
     def _upgrade_hybrid(self, local: ScoredDecision, request: CycleRequest) -> None:
@@ -861,8 +867,9 @@ class SchedulerRuntime:
         *,
         hybrid: bool,
         event: DecisionCommitted | None,
-        strategy: Strategy,
+        identity: DecisionIdentity,
     ) -> None:
+        strategy = identity.strategy
         with self._lock:
             if hybrid:
                 self._hybrid_publish_count += 1
@@ -874,7 +881,12 @@ class SchedulerRuntime:
             )
         if event is not None:
             try:
-                self._dependencies.publish_decision(event)
+                assert isinstance(identity, ScoredDecision)
+                with observe_publication_io(
+                    self._dependencies.publication_io, "decision_event", PublicationIoTarget.decision(identity)
+                ) as receipt:
+                    self._dependencies.publish_decision(event)
+                    receipt.output_version = event.decision_version
             except (RuntimeError, TypeError, ValueError) as exc:
                 self._record_failure("publish", f"decision_event:{type(exc).__name__}", strategy)
         observation = None
@@ -888,9 +900,18 @@ class SchedulerRuntime:
                 self._record_failure("observer", f"research_audit:{type(exc).__name__}", strategy)
                 audit = None
             observation = DecisionObservation(event, audit)
-        if observation is not None and not self._dependencies.observer.offer(observation):
-            with self._lock:
-                self._observer_rejection_count += 1
+        if observation is not None:
+            assert isinstance(identity, ScoredDecision)
+            with observe_publication_io(
+                self._dependencies.publication_io, "observer_enqueue", PublicationIoTarget.decision(identity)
+            ) as receipt:
+                offered = self._dependencies.observer.offer(observation)
+                receipt.state = StageState.READY if offered else StageState.FAILED
+                receipt.reason = "enqueued" if offered else "observer_capacity_rejected"
+                receipt.output_version = observation.event.decision_version if offered else None
+                if not offered:
+                    with self._lock:
+                        self._observer_rejection_count += 1
 
     def _record_publish_rejection(self, reason: str, strategy: Strategy) -> None:
         with self._lock:

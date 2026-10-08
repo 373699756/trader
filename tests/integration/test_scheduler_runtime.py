@@ -9,6 +9,7 @@ import pytest
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -301,8 +302,88 @@ class SharedReviews:
         )
 
 
+@pytest.mark.parametrize("failure", ("overlay", "cas", "event", "observer"))
+def test_publication_failure_receipts_reach_http_without_changing_valid_current(failure: str, tmp_path) -> None:
+    from trader.http_api.route_services import UnifiedWebServices
+    from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+    from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
+    from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+    from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+    from trader.web import create_app
+
+    clock = FixedClock(NOW)
+    tracker = PublicationIoTracker(now=clock.now, monotonic=lambda: 1.0)
+    index = UnifiedDecisionIndex()
+    current = decision()
+    assert index.publish(current, expected_version=None).accepted
+    builder = Decisions()
+
+    class BrokenOverlay(Decisions):
+        def initial_overlay(self, value: ScoredDecision) -> DecisionOverlay:
+            raise DecisionUnavailableError("controlled_overlay_failure")
+
+    class StatusReviewer:
+        def status(self):
+            return {"budget": {"available": True, "limit": 168}}
+
+    def event_sink(_event):
+        if failure == "event":
+            raise RuntimeError("secret external payload")
+
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            clock=clock,
+            calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
+            data=DataRefresh(),
+            decisions=BrokenOverlay() if failure == "overlay" else builder,
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-publication-failure"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=event_sink,
+            publish_overlay=lambda _overlay: None,
+            publication_io=tracker,
+        ),
+        config_version="runtime-current",
+    )
+    # Keeping the observer stopped deterministically models bounded queue rejection.
+    candidate = (
+        replace(current, sequence=3) if failure != "cas" else replace(current, sequence=1, degraded_reasons=("late",))
+    )
+    published = runtime._publish(candidate, hybrid=False)
+    if failure in {"overlay", "cas"}:
+        assert not published and index.snapshot(Strategy.TOMORROW).current == current
+        operation = "current_publish"
+    else:
+        assert published and index.snapshot(Strategy.TOMORROW).current == candidate
+        operation = "decision_event" if failure == "event" else "observer_enqueue"
+    payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
+    assert payload["health"]["issue_count"] > 0
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), repository, clock)
+    stream = UnifiedDecisionEventStream()
+    client = create_app(services=UnifiedWebServices(queries, stream, lambda: payload)).test_client()
+    response = client.get("/api/status").get_json()
+    receipt = next(item for item in response["scheduler"]["publication_io"] if item["operation"] == operation)
+    assert receipt["input_count"] == receipt["failed_count"] == 1
+    assert receipt["rejected_count"] == receipt["output_count"] == 0
+    assert receipt["decision_version"] == candidate.version
+    assert receipt["count_unit"] == "operation" and "rejection_rate" not in receipt
+    assert "secret" not in str(receipt) and "items" not in receipt
+    assert current.content_hash == decision().content_hash
+    visible = client.get("/api/decisions/tomorrow/current").get_json()
+    expected = current if failure in {"overlay", "cas"} else candidate
+    assert visible["decision_version"] == expected.version
+    assert visible["content_hash"] == expected.content_hash
+
+
 def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -> None:
     index = UnifiedDecisionIndex()
+    tracker = PublicationIoTracker(now=lambda: NOW, monotonic=lambda: 1.0)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             clock=FixedClock(NOW),
@@ -318,6 +399,7 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
             research_factory=noop_research_factory,
             publish_decision=lambda _event: None,
             publish_overlay=lambda _overlay: None,
+            publication_io=tracker,
         ),
         config_version="runtime-current",
     )
@@ -340,6 +422,10 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
     snapshot = index.snapshot(Strategy.TOMORROW)
     assert isinstance(snapshot.current, ScoredDecision)
     assert snapshot.current.stage == "hybrid"
+    receipts = runtime.status().publication_io
+    assert {item.operation for item in receipts} == {"current_publish", "decision_event", "observer_enqueue"}
+    assert all(item.target.decision_version == snapshot.current.version for item in receipts)
+    assert all(item.output_count == 1 and item.rejected_count == item.failed_count == 0 for item in receipts)
     assert snapshot.overlay is not None
     assert snapshot.overlay.parent_version == snapshot.current.version
     assert snapshot.overlay.quotes == (snapshot.current.items[0].quote,)
@@ -1884,7 +1970,7 @@ def test_successful_hybrid_publish_recovers_decision_path_issues() -> None:
     )
     runtime._record_failure("review", "review_unavailable", Strategy.TOMORROW)
 
-    runtime._record_publish(hybrid=True, event=None, strategy=Strategy.TOMORROW)
+    runtime._record_publish(hybrid=True, event=None, identity=decision(Strategy.TOMORROW))
     status = runtime.status()
     runtime.stop(ShutdownDeadline.start(1.0))
 
