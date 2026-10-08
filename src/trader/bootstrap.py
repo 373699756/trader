@@ -13,17 +13,16 @@ from pathlib import Path
 from flask import Flask
 
 from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
+from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.clock.utc import utc_now as _utc_now
-from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
-from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.market_data.providers.eastmoney import EastmoneyClient
@@ -32,19 +31,6 @@ from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.references.calendar import ChinaTradingCalendar
-from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
-from trader.recommendation.infra.market_data.gateway import MarketDataGateway
-from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
-from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.recommendation.infra.market_data.market_feature_service import (
-    MarketFeatureDependencies,
-    MarketFeatureService,
-)
-from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
-from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
-from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.infra.runtime_resources import RuntimeWorkerResources
 from trader.infra.settings import (
     LongWatchlist,
@@ -113,6 +99,20 @@ from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.factory import create_deepseek_client
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
+from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.recommendation.infra.market_data.market_feature_service import (
+    MarketFeatureDependencies,
+    MarketFeatureService,
+)
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
@@ -757,6 +757,7 @@ def _build_market_data(
             runner,
             market_health,
             eligibility,
+            time.monotonic,
         )
     )
     return market_data

@@ -532,7 +532,9 @@ def _build_stage_facts(
         policy=request.policy.hard_filter,
         finalized_inputs=True,
     )
-    static_results = tuple(apply_filters(item.features, static_rules, now=request.evaluated_at) for item in population.values())
+    static_results = tuple(
+        apply_filters(item.features, static_rules, now=request.evaluated_at) for item in population.values()
+    )
     static_ready_codes = {
         item.features.quote.code
         for item, result in zip(population.values(), static_results, strict=True)
@@ -556,14 +558,13 @@ def _build_stage_facts(
     # contains a statically rejected security.
     candidate_source_codes = static_ready_codes & candidate_static_ready_codes & requested_candidate_codes
     dynamic_features = tuple(item.features for item in candidates.values() if item.code in candidate_source_codes)
-    dynamic_results = tuple(apply_filters(feature, dynamic_rules, now=request.evaluated_at) for feature in dynamic_features)
-    static_rejected = sum(bool(result.reasons) for result in static_results)
-    static_pending = sum(bool(result.deferred) for result in static_results)
+    dynamic_results = tuple(
+        apply_filters(feature, dynamic_rules, now=request.evaluated_at) for feature in dynamic_features
+    )
     static_output = sum(not result.reasons and not result.deferred for result in static_results)
     dynamic_rejected = sum(bool(result.reasons) for result in dynamic_results)
     dynamic_pending = sum(bool(result.deferred) for result in dynamic_results)
     dynamic_output = sum(not result.reasons and not result.deferred for result in dynamic_results)
-    static_reason_counts = Counter(reason.code for result in static_results for reason in result.reasons)
     dynamic_output_codes = {
         feature.quote.code
         for feature, result in zip(dynamic_features, dynamic_results, strict=True)
@@ -585,16 +586,6 @@ def _build_stage_facts(
     if board_limited:
         candidate_rejection_reasons["board_limit"] = board_limited
     facts = {
-        "data_source": StagePopulationFacts(len(request.features), len(request.features)),
-        "static_market": StagePopulationFacts(len(request.features), len(request.features)),
-        "static_standardize": StagePopulationFacts(len(request.features), len(request.features)),
-        "static_filter": StagePopulationFacts(
-            len(request.features),
-            static_output,
-            static_rejected,
-            static_pending,
-            reasons=dict(static_reason_counts),
-        ),
         "dynamic_market": StagePopulationFacts(
             static_output,
             len(dynamic_features),

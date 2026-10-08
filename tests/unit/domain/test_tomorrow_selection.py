@@ -247,17 +247,13 @@ def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_c
     assert plan.stage_counts.candidate_score_eligible == 1
     assert plan.stage_counts.candidate_limit_selected == 1
     assert tuple(plan.stage_counts.stage_facts) == (
-        "data_source",
-        "static_market",
-        "static_standardize",
-        "static_filter",
         "dynamic_market",
         "dynamic_standardize",
         "dynamic_filter",
         "candidate_pool",
         "quality_check",
     )
-    assert plan.stage_counts.stage_facts["static_filter"].rejected_count == 1
+    assert "static_filter" not in plan.stage_counts.stage_facts
 
 
 def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
@@ -418,7 +414,7 @@ def test_stage_facts_keep_explicit_refresh_inside_static_boundary(application_fe
     plan = plan_scored_candidates(request)
     facts = plan.stage_counts.stage_facts
 
-    assert facts["static_filter"].output_count == 3
+    assert facts["dynamic_market"].input_count == 3
     assert facts["dynamic_market"].output_count == 1
     assert facts["dynamic_filter"].input_count == 1
     assert facts["candidate_pool"].output_count == 1

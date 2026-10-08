@@ -56,7 +56,7 @@ def stage_output(
     latency_ms: int,
 ) -> PipelineStageOutput[_RecordT]:
     values = tuple(records)
-    state = _state(len(values), pending_count, failed_count, source_health)
+    state = _state(input_count, len(values), pending_count, failed_count, source_health)
     snapshot = PipelineStageSnapshot(
         stage=stage,
         stage_order=PIPELINE_STAGES.index(stage) + 1,
@@ -88,6 +88,7 @@ def require_previous_stage(output: PipelineStageOutput[object], stage: PipelineS
 
 
 def _state(
+    input_count: int,
     output_count: int,
     pending_count: int,
     failed_count: int,
@@ -96,6 +97,8 @@ def _state(
     if failed_count and not output_count:
         return StageState.FAILED
     if pending_count and not output_count:
+        return StageState.NOT_READY
+    if not input_count:
         return StageState.NOT_READY
     if pending_count or failed_count or source_health.state.value == "degraded":
         return StageState.DEGRADED

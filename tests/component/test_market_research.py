@@ -165,6 +165,18 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
     assert [(item.reason, item.count) for item in eligibility_batch.reason_counts] == [
         (IssuerEligibilityReason.HISTORICAL_ST, 1)
     ]
+    assert tuple((item.input_count, item.output_count) for item in batch.static_stages) == (
+        (2, 2),
+        (2, 2),
+        (2, 2),
+        (2, 1),
+    )
+    assert batch.static_stages[3].rejected_count == 1
+    assert batch.static_stages[3].reasons[0].code == "historical_st"
+    cached_batch = service.fetch_market_feature_batch(NOW)
+    assert cached_batch.static_stages[3].rejected_count == 1
+    assert cached_batch.static_stages[3].input_count == 2
+    assert cached_batch.static_stages[1].reasons[0].code == "static_baseline_reused"
 
     service.refresh_candidate_quotes(("600001", "600002"), NOW)
     service.refresh_market_news(("600001", "600002"), NOW)

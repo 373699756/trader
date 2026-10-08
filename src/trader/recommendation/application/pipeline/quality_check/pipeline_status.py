@@ -29,8 +29,8 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageReasonAggregate,
     StageState,
 )
-from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
+from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
 from trader.recommendation.domain.publication.models import (
     RecommendationAction,
@@ -58,6 +58,7 @@ def build_supply_status(
     candidate_score_threshold: float | None = None,
     decision: ScoredDecision | None = None,
     issuer_eligibility: IssuerEligibilityBatch | None = None,
+    static_stages: tuple[PipelineStageSnapshot, ...] = (),
 ) -> InputQualityStatus:
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
@@ -105,6 +106,7 @@ def build_supply_status(
         refresh_pending_count=quality.refresh_pending_count,
         degraded_reasons=quality.degraded_reasons,
         issuer_eligibility=issuer_eligibility,
+        static_stages=static_stages,
         quality_ready_count=quality.candidate_scored_count,
     )
     return InputQualityStatus(
@@ -150,22 +152,12 @@ def build_first_nine_stage_snapshots(
     degraded_reasons: tuple[str, ...] = (),
     issuer_eligibility: IssuerEligibilityBatch | None = None,
     quality_ready_count: int | None = None,
+    static_stages: tuple[PipelineStageSnapshot, ...] = (),
 ) -> tuple[PipelineStageSnapshot, ...]:
     """Project the active first-nine-stage counters without mixing readiness and rejection."""
 
-    raw_population_count = issuer_eligibility.input_count if issuer_eligibility is not None else population_count
     registry_eligible_count = issuer_eligibility.eligible_count if issuer_eligibility is not None else population_count
     issuer_count = min(registry_eligible_count, stage_counts.issuer_eligible_population)
-    static_pending = 0
-    static_rejected = max(0, raw_population_count - issuer_count - static_pending)
-    static_reason_counts = Counter(
-        {item.reason.value: item.count for item in issuer_eligibility.reason_counts}
-        if issuer_eligibility is not None
-        else {}
-    )
-    unexplained_static_rejections = static_rejected - sum(static_reason_counts.values())
-    if unexplained_static_rejections > 0:
-        static_reason_counts["stable_rejected"] += unexplained_static_rejections
     dynamic_gap = max(0, issuer_count - stage_counts.input_ready_population)
     dynamic_refresh_pending = min(dynamic_gap, refresh_pending_count)
     dynamic_data_pending = min(dynamic_gap - dynamic_refresh_pending, data_pending_count)
@@ -188,18 +180,6 @@ def build_first_nine_stage_snapshots(
         age_seconds=0.0,
     )
     legacy_rows = (
-        (PipelineStage.DATA_SOURCE, raw_population_count, raw_population_count, 0, 0, 0, ()),
-        (PipelineStage.STATIC_MARKET, raw_population_count, raw_population_count, 0, 0, 0, ()),
-        (PipelineStage.STATIC_STANDARDIZE, raw_population_count, raw_population_count, 0, 0, 0, ()),
-        (
-            PipelineStage.STATIC_FILTER,
-            raw_population_count,
-            issuer_count,
-            static_rejected,
-            static_pending,
-            0,
-            _stage_reasons(("data_pending", static_pending), *tuple(sorted(static_reason_counts.items()))),
-        ),
         (
             PipelineStage.DYNAMIC_MARKET,
             issuer_count,
@@ -262,9 +242,7 @@ def build_first_nine_stage_snapshots(
                 quality_input,
                 quality_output,
                 pending_count=quality_input - quality_output,
-                reasons={"quality_pending": quality_input - quality_output}
-                if quality_input > quality_output
-                else {},
+                reasons={"quality_pending": quality_input - quality_output} if quality_input > quality_output else {},
             )
         rows = tuple(
             (
@@ -276,16 +254,32 @@ def build_first_nine_stage_snapshots(
                 facts[stage.value].failed_count,
                 _stage_reasons(*tuple(sorted(facts[stage.value].reasons.items()))),
             )
-            for stage in PIPELINE_STAGES[:9]
+            for stage in PIPELINE_STAGES[4:9]
             if stage.value in facts
         )
-        if len(rows) != 9:
-            raise ValueError("production stage facts must cover the first nine stages")
+        if len(rows) != 5:
+            raise ValueError("candidate facts must cover dynamic collection through quality check")
     else:
         rows = legacy_rows
-    snapshots: list[PipelineStageSnapshot] = []
-    input_batch_id = batch_id
+    if tuple(item.stage for item in static_stages) != PIPELINE_STAGES[:4]:
+        raise ValueError("static observations must cover the ordered first four stages")
+    if any(
+        left.output_batch_id != right.input_batch_id or left.output_count != right.input_count
+        for left, right in zip(static_stages, static_stages[1:], strict=False)
+    ):
+        raise ValueError("static observations must preserve their immutable handoffs")
+    snapshots = list(static_stages)
+    input_batch_id = snapshots[-1].output_batch_id
     for stage, input_count, output_count, rejected_count, pending_count, failed_count, reasons in rows:
+        if stage is PipelineStage.DYNAMIC_MARKET:
+            actual_input = static_stages[-1].output_count
+            if actual_input < input_count:
+                raise ValueError("dynamic candidate facts exceed the static batch population")
+            gap = actual_input - input_count
+            input_count = actual_input
+            pending_count += gap
+            if gap:
+                reasons = (*reasons, *_stage_reasons(("dynamic_inputs_pending", gap)))
         output_batch_id = f"{batch_id}:{stage.value}"
         snapshots.append(
             _stage_snapshot(
@@ -583,6 +577,7 @@ def update_supply_status_decision(
         candidate_quote_eligible=refresh.output_count,
         candidate_score_threshold=candidate_score_threshold,
         decision=decision,
+        static_stages=current.stage_snapshots[:4],
     )
 
 

@@ -3,6 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
+from tests.unit.application.pipeline_helpers import observed_static_stages
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     build_first_nine_stage_snapshots,
 )
@@ -13,7 +16,6 @@ from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityReasonCount,
 )
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
-
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -34,6 +36,7 @@ def test_zero_input_stages_are_not_ready_instead_of_completed() -> None:
         as_of=datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI),
         population_count=0,
         candidate_feature_count=0,
+        static_stages=observed_static_stages(0, datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI)),
     )
 
     assert all(snapshot.state is StageState.NOT_READY for snapshot in snapshots)
@@ -46,6 +49,7 @@ def test_filtering_all_ready_inputs_is_a_completed_empty_result() -> None:
         as_of=datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI),
         population_count=10,
         candidate_feature_count=0,
+        static_stages=observed_static_stages(10, datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI)),
     )
 
     assert snapshots[6].input_count == 10
@@ -53,25 +57,20 @@ def test_filtering_all_ready_inputs_is_a_completed_empty_result() -> None:
     assert snapshots[6].state is StageState.READY
 
 
-def test_level_one_snapshot_includes_prefiltered_registry_exclusions() -> None:
-    snapshots = build_first_nine_stage_snapshots(
-        _counts(issuer=10, input_ready=10, dynamic=10),
-        batch_id="batch",
-        as_of=datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI),
-        population_count=10,
-        candidate_feature_count=10,
-        issuer_eligibility=IssuerEligibilityBatch(
-            13,
-            10,
-            (IssuerEligibilityReasonCount(IssuerEligibilityReason.HISTORICAL_ST, 3),),
-        ),
-    )
-
-    level_one = snapshots[3]
-    assert level_one.input_count == 13
-    assert level_one.output_count == 10
-    assert level_one.rejected_count == 3
-    assert [(item.code, item.count) for item in level_one.reasons] == [("historical_st", 3)]
+def test_level_one_snapshot_does_not_infer_exclusions_without_actual_observations() -> None:
+    with pytest.raises(ValueError, match="static observations"):
+        build_first_nine_stage_snapshots(
+            _counts(issuer=10, input_ready=10, dynamic=10),
+            batch_id="batch",
+            as_of=datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI),
+            population_count=10,
+            candidate_feature_count=10,
+            issuer_eligibility=IssuerEligibilityBatch(
+                13,
+                10,
+                (IssuerEligibilityReasonCount(IssuerEligibilityReason.HISTORICAL_ST, 3),),
+            ),
+        )
 
 
 def test_dynamic_input_gap_is_data_pending_instead_of_source_failed() -> None:
@@ -83,6 +82,7 @@ def test_dynamic_input_gap_is_data_pending_instead_of_source_failed() -> None:
         candidate_feature_count=3,
         data_pending_count=6,
         refresh_pending_count=2,
+        static_stages=observed_static_stages(10, datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI)),
     )
 
     dynamic_collection = snapshots[4]
@@ -102,6 +102,7 @@ def test_quality_pending_does_not_appear_as_completed_zero_scoring() -> None:
         population_count=10,
         candidate_feature_count=10,
         quality_ready_count=0,
+        static_stages=observed_static_stages(10, datetime(2026, 9, 23, 10, 0, tzinfo=SHANGHAI)),
     )
 
     quality = snapshots[8]

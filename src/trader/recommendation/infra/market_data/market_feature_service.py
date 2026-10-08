@@ -6,10 +6,48 @@ import hashlib
 import sqlite3
 import threading
 from collections import Counter, deque
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
+from trader.recommendation.application.pipeline.static_filter.permanent_filter_service import (
+    filter_permanent_eligibility,
+)
+from trader.recommendation.application.pipeline.static_market.static_market_loader import load_static_market
+from trader.recommendation.application.pipeline.static_standardize.normalization_service import normalize_static_market
+from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
+from trader.recommendation.application.ports.json_values import JsonObject
+from trader.recommendation.application.ports.market_data import (
+    FullMarketFeatureBatch,
+    MarketDataDeadlineExceededError,
+    MarketSnapshotMetadata,
+)
+from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.domain.evidence.pipeline import (
+    PipelineStage,
+    PipelineStageSnapshot,
+    Severity,
+    StageReasonAggregate,
+)
+from trader.recommendation.domain.market.eligibility import (
+    IssuerEligibilityBatch,
+    IssuerEligibilityDecision,
+    IssuerEligibilityFact,
+    IssuerEligibilityReasonCount,
+    IssuerEligibilityState,
+    eligibility_facts_from_quote,
+    eligibility_facts_from_research,
+)
+from trader.recommendation.domain.market.models import (
+    Board,
+    FeatureSnapshot,
+    LiveQuote,
+    MarketQuote,
+)
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.recommendation.domain.market.research import ResearchObservation
+from trader.recommendation.domain.market.static import StaticIssuer, normalize_static_issuer
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
@@ -23,29 +61,8 @@ from trader.recommendation.infra.market_data.market_task_runner import MarketTas
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_load_status import ResearchLoadReport, research_component_coverage
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.recommendation.infra.market_data.static_market_cache import StaticMarketCache
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
-from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
-from trader.recommendation.application.ports.json_values import JsonObject
-from trader.recommendation.application.ports.market_data import (
-    FullMarketFeatureBatch,
-    MarketDataDeadlineExceededError,
-    MarketSnapshotMetadata,
-)
-from trader.recommendation.domain.market.eligibility import (
-    IssuerEligibilityBatch,
-    IssuerEligibilityFact,
-    IssuerEligibilityReasonCount,
-    eligibility_facts_from_quote,
-    eligibility_facts_from_research,
-)
-from trader.recommendation.domain.market.models import (
-    Board,
-    FeatureSnapshot,
-    LiveQuote,
-    MarketQuote,
-)
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.recommendation.domain.market.research import ResearchObservation
 from trader.training.domain.evaluation.models import OutcomeBar
 
 
@@ -59,6 +76,7 @@ class MarketFeatureDependencies:
     runner: MarketTaskRunner
     health: MarketDataHealth
     eligibility: IssuerEligibilityPort
+    monotonic: Callable[[], float]
 
 
 class MarketFeatureService:
@@ -75,7 +93,9 @@ class MarketFeatureService:
         self.health_reporter = dependencies.health
         self.eligibility = dependencies.eligibility
         self._eligibility_lock = threading.Lock()
-        self._latest_market_codes: tuple[str, ...] = ()
+        self._latest_market_quotes: tuple[MarketQuote, ...] = ()
+        self._static_market = StaticMarketCache()
+        self._monotonic = dependencies.monotonic
 
     def reference_version(self) -> str:
         """Return the immutable reference epoch used by scoring caches."""
@@ -98,20 +118,23 @@ class MarketFeatureService:
         force: bool = False,
         deadline: datetime | None = None,
     ) -> FullMarketFeatureBatch:
+        if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+            raise ValueError("market observation time must be timezone aware")
         reference_epoch = self.reference_version()
-        cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
+        with self._eligibility_lock:
+            cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
+            original_quotes = self._latest_market_quotes
         if cached is not None:
             cached_features = tuple(cached)
-            self._record_quote_eligibility(tuple(feature.quote for feature in cached_features), observed_at)
-            self._refresh_eligibility_if_due(observed_at)
-            with self._eligibility_lock:
-                raw_codes = self._latest_market_codes
-            if not raw_codes:
-                raw_codes = tuple(feature.quote.code for feature in cached_features)
-            eligibility_batch, eligible_codes = self._resolve_market_eligibility(raw_codes, observed_at)
+            quotes = original_quotes
+            if not quotes:
+                raise ValueError("cached market features require their original static input")
+            eligibility_batch, eligible_codes, static_stages = self._static_pipeline(
+                quotes, reference_epoch, observed_at
+            )
             features = tuple(feature for feature in cached_features if feature.quote.code in eligible_codes)
-            self._commit_market_population(raw_codes)
-            return FullMarketFeatureBatch(features, eligibility_batch)
+            return FullMarketFeatureBatch(features, eligibility_batch, static_stages)
+        acquisition_started = self._monotonic()
         quotes = tuple(
             self.runner.run_data_task_until(
                 deadline,
@@ -122,10 +145,10 @@ class MarketFeatureService:
                 deadline=deadline,
             )
         )
-        self._record_quote_eligibility(quotes, observed_at)
-        self._refresh_eligibility_if_due(observed_at)
-        raw_codes = tuple(quote.code for quote in quotes)
-        eligibility_batch, eligible_codes = self._resolve_market_eligibility(raw_codes, observed_at)
+        eligibility_batch, eligible_codes, static_stages = self._static_pipeline(
+            quotes, reference_epoch, observed_at, acquisition_started=acquisition_started
+        )
+        raw_quotes = quotes
         quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
         history_codes = _history_population_codes(quotes)
         action_restrictions: dict[str, set[str]] = {}
@@ -142,21 +165,81 @@ class MarketFeatureService:
             action_restrictions=action_restrictions,
         )
         self.runner.ensure_before_deadline(deadline)
-        published = self.quotes.publish_market_features(features, reference_epoch=reference_epoch)
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
-        self._commit_market_population(raw_codes)
-        return FullMarketFeatureBatch(tuple(published), eligibility_batch)
+        with self._eligibility_lock:
+            published = self.quotes.publish_market_features(features, reference_epoch=reference_epoch)
+            self._latest_market_quotes = raw_quotes
+        return FullMarketFeatureBatch(tuple(published), eligibility_batch, static_stages)
 
-    def _resolve_market_eligibility(
+    def _static_pipeline(
         self,
-        market_codes: Sequence[str],
+        quotes: tuple[MarketQuote, ...],
+        reference_epoch: str,
         observed_at: datetime,
-    ) -> tuple[IssuerEligibilityBatch, frozenset[str]]:
-        population = frozenset(market_codes)
+        *,
+        acquisition_started: float | None = None,
+    ) -> tuple[IssuerEligibilityBatch, frozenset[str], tuple[PipelineStageSnapshot, ...]]:
+        observed_at = observed_at.astimezone(SHANGHAI)
+        started = self._monotonic() if acquisition_started is None else acquisition_started
+        read = self._static_market.read(quotes, reference_epoch)
+        baseline = read.baseline
+        root = f"static:{baseline.identity}:{observed_at.isoformat()}"
+        health = baseline.health(observed_at)
+        source = stage_output(
+            PipelineStage.DATA_SOURCE,
+            baseline.records,
+            input_batch_id=root,
+            as_of=observed_at,
+            input_count=len(quotes),
+            source_health=health,
+            latency_ms=0,
+        )
+        source = self._measured_stage(source, started)
+        started = self._monotonic()
+        collected = load_static_market(
+            source.records,
+            input_batch_id=source.snapshot.output_batch_id,
+            as_of=observed_at,
+            source_health=health,
+            expected_count=len(source.records),
+            pending_count=0,
+            reasons=(
+                StageReasonAggregate(
+                    "static_baseline_reused" if read.cache_hit else "static_baseline_loaded",
+                    "static baseline reused" if read.cache_hit else "static baseline loaded",
+                    1,
+                    Severity.INFO,
+                ),
+            )
+            if source.records
+            else (),
+            latency_ms=0,
+        )
+        collected = self._measured_stage(collected, started)
+        started = self._monotonic()
+        normalized = normalize_static_market(
+            collected,
+            normalize_static_issuer,
+            as_of=observed_at,
+            latency_ms=0,
+        )
+        normalized = self._measured_stage(normalized, started)
+        population = frozenset(item.code for item in normalized.records)
+        started = self._monotonic()
+        self._record_quote_eligibility(tuple(quote for quote in quotes if quote.code in population), observed_at)
+        self._refresh_eligibility_if_due(observed_at)
         exclusions = tuple(item for item in self.eligibility.exclusions(observed_at) if item.code in population)
         exclusions_by_code = {item.code: item for item in exclusions}
         reason_counts = Counter(item.reason for item in exclusions_by_code.values() if item.reason is not None)
         eligible_codes = population.difference(exclusions_by_code)
+        decisions = tuple(
+            exclusions_by_code[code]
+            if code in exclusions_by_code
+            else IssuerEligibilityDecision(code, IssuerEligibilityState.ELIGIBLE_UNVERIFIED, observed_at)
+            for code in sorted(population)
+        )
+        filtered = filter_permanent_eligibility(normalized, decisions, as_of=observed_at, latency_ms=0)
+        filtered = self._measured_stage(filtered, started)
         batch = IssuerEligibilityBatch(
             input_count=len(population),
             eligible_count=len(eligible_codes),
@@ -165,11 +248,19 @@ class MarketFeatureService:
                 for reason in sorted(reason_counts, key=lambda item: item.value)
             ),
         )
-        return batch, eligible_codes
+        return (
+            batch,
+            frozenset(item.code for item in filtered.records),
+            (source.snapshot, collected.snapshot, normalized.snapshot, filtered.snapshot),
+        )
 
-    def _commit_market_population(self, market_codes: Sequence[str]) -> None:
-        with self._eligibility_lock:
-            self._latest_market_codes = tuple(dict.fromkeys(market_codes))
+    def _elapsed_ms(self, started: float) -> int:
+        return max(0, int((self._monotonic() - started) * 1000))
+
+    def _measured_stage(
+        self, output: PipelineStageOutput[StaticIssuer], started: float
+    ) -> PipelineStageOutput[StaticIssuer]:
+        return replace(output, snapshot=replace(output.snapshot, latency_ms=self._elapsed_ms(started)))
 
     def fetch_candidate_features(
         self,

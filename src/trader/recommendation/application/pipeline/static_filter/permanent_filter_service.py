@@ -13,25 +13,25 @@ from trader.recommendation.application.pipeline.stage_output import (
 )
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityDecision, IssuerEligibilityState
-from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.static import StaticIssuer
 
 
 def filter_permanent_eligibility(
-    source: PipelineStageOutput[FeatureSnapshot],
+    source: PipelineStageOutput[StaticIssuer],
     decisions: Sequence[IssuerEligibilityDecision],
     *,
     as_of: datetime,
     latency_ms: int,
-) -> PipelineStageOutput[FeatureSnapshot]:
+) -> PipelineStageOutput[StaticIssuer]:
     require_previous_stage(source, PipelineStage.STATIC_FILTER)
     by_code = {item.code: item for item in decisions}
-    if len(by_code) != len(decisions) or set(by_code) != {item.quote.code for item in source.records}:
+    if len(by_code) != len(decisions) or set(by_code) != {item.code for item in source.records}:
         raise ValueError("permanent eligibility must cover the complete static population")
-    accepted: list[FeatureSnapshot] = []
+    accepted: list[StaticIssuer] = []
     rejected: Counter[str] = Counter()
     pending = 0
     for record in source.records:
-        decision = by_code[record.quote.code]
+        decision = by_code[record.code]
         if decision.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED:
             rejected[decision.reason.value if decision.reason is not None else "permanent_excluded"] += 1
         elif decision.state is IssuerEligibilityState.QUALIFICATION_PENDING:

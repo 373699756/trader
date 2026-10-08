@@ -17,6 +17,60 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_se
     CandidateFilteringPort,
     CandidateFilteringService,
 )
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    candidate_batch_is_complete as _candidate_batch_is_complete,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    decision_observed_at as _decision_observed_at,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    merge_overlay_quote as _merge_overlay_quote,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    model_scoring_context as _model_scoring_context,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    overlay_observed_at as _overlay_observed_at,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    refresh_completed_at as _refresh_completed_at,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    require_codes as _require_codes,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    selected_quote_features as _selected_quote_features,
+)
+from trader.recommendation.application.pipeline.data_source.input_assembly import (
+    task_deadline as _task_deadline,
+)
+from trader.recommendation.application.pipeline.data_source.input_identity import (
+    changed_version_codes as _changed_version_codes,
+)
+from trader.recommendation.application.pipeline.data_source.input_identity import (
+    data_version as _data_version,
+)
+from trader.recommendation.application.pipeline.data_source.input_identity import (
+    feature_batch_version as _feature_batch_version,
+)
+from trader.recommendation.application.pipeline.data_source.input_identity import (
+    quote_versions as _quote_versions,
+)
+from trader.recommendation.application.pipeline.data_source.input_identity import (
+    stable_digest as _stable_digest,
+)
+from trader.recommendation.application.pipeline.data_source.source_quality import (
+    build_source_stage_output,
+)
+from trader.recommendation.application.pipeline.data_source.source_quality import (
+    decision_failure_code as _decision_failure_code,
+)
+from trader.recommendation.application.pipeline.data_source.source_quality import (
+    failure_code as _failure_code,
+)
+from trader.recommendation.application.pipeline.data_source.source_quality import (
+    uses_fallback as _uses_fallback,
+)
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.local_score.base_scoring import (
@@ -32,31 +86,6 @@ from trader.recommendation.application.pipeline.quality_check.pipeline_status im
     build_pending_pipeline,
     build_supply_status,
     update_supply_status_decision,
-)
-from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    candidate_batch_is_complete as _candidate_batch_is_complete,
-    decision_observed_at as _decision_observed_at,
-    merge_overlay_quote as _merge_overlay_quote,
-    model_scoring_context as _model_scoring_context,
-    overlay_observed_at as _overlay_observed_at,
-    quote_order as _quote_order,
-    refresh_completed_at as _refresh_completed_at,
-    require_codes as _require_codes,
-    selected_quote_features as _selected_quote_features,
-    task_deadline as _task_deadline,
-)
-from trader.recommendation.application.pipeline.data_source.input_identity import (
-    changed_version_codes as _changed_version_codes,
-    data_version as _data_version,
-    feature_batch_version as _feature_batch_version,
-    quote_versions as _quote_versions,
-    stable_digest as _stable_digest,
-)
-from trader.recommendation.application.pipeline.data_source.source_quality import (
-    build_source_stage_output,
-    decision_failure_code as _decision_failure_code,
-    failure_code as _failure_code,
-    uses_fallback as _uses_fallback,
 )
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.ports.long import LongRefreshRequest
@@ -74,6 +103,7 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
 from trader.recommendation.application.runtime.cadence import PipelineTask
+from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
@@ -98,6 +128,7 @@ class InputBatch:
     candidate_quote_eligible: int = 0
     preselection_transient_invalid: bool = False
     issuer_eligibility: IssuerEligibilityBatch | None = None
+    static_stages: tuple[PipelineStageSnapshot, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -109,6 +140,7 @@ class _SharedInputBatch:
     candidate_quote_eligible: int
     preselection_transient_invalid: bool
     issuer_eligibility: IssuerEligibilityBatch
+    static_stages: tuple[PipelineStageSnapshot, ...]
 
 
 @dataclass(frozen=True)
@@ -253,6 +285,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._batches: dict[tuple[Strategy, str], InputBatch] = {}
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
         self._issuer_eligibility: IssuerEligibilityBatch | None = None
+        self._static_stages: tuple[PipelineStageSnapshot, ...] = ()
         self._latest_requested_codes: tuple[str, ...] = ()
         self._candidate_plans: CandidatePlanSet | None = None
         self._strategy_requested_codes: dict[Strategy, tuple[str, ...]] = {
@@ -353,6 +386,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 self._invalidate_scoring_locked()
             self._latest_market_features = features
             self._issuer_eligibility = issuer_eligibility
+            self._static_stages = market_batch.static_stages
             self._latest_requested_codes = requested
             self._candidate_plans = candidate_plans
             self._strategy_requested_codes = {
@@ -507,6 +541,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 data_pending_count=dynamic_data_pending,
                 refresh_pending_count=max(0, requested_count - candidate_feature_count),
                 issuer_eligibility=context.issuer_eligibility,
+                static_stages=self._static_stages,
             )
             self._input_quality[strategy] = InputQualityStatus(
                 strategy=strategy,
@@ -677,6 +712,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             shared.candidate_quote_eligible,
             shared.preselection_transient_invalid,
             shared.issuer_eligibility,
+            shared.static_stages,
         )
         with self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
@@ -687,6 +723,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         with self._lock:
             market_features = self._latest_market_features
             issuer_eligibility = self._issuer_eligibility
+            static_stages = self._static_stages
             requested = self._strategy_requested_codes[request.strategy]
             candidate_features = self._strategy_candidate_features[request.strategy]
             candidate_plans = self._candidate_plans
@@ -710,6 +747,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             len(candidate_features),
             preselection_transient_invalid,
             issuer_eligibility,
+            static_stages,
         )
 
     def _score_features(
@@ -821,6 +859,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             candidate_quote_eligible=batch.candidate_quote_eligible,
             candidate_score_threshold=self._policy.selection.candidate_min_score,
             issuer_eligibility=batch.issuer_eligibility,
+            static_stages=batch.static_stages,
         )
         projection = replace(
             projection,

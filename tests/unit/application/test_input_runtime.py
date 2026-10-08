@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.application.pipeline_helpers import observed_static_stages
 from tests.unit.domain.test_decision_identity import decision
 from trader.bootstrap import _recommendation_policy
 from trader.infra.settings import load_strategy_settings
@@ -30,7 +31,11 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGE_ORDER, PIPELINE_STAGES, StageState
+from trader.recommendation.domain.evidence.pipeline import (
+    PIPELINE_STAGE_ORDER,
+    PIPELINE_STAGES,
+    StageState,
+)
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
@@ -65,7 +70,11 @@ class _Market:
 
     def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None):
         features = tuple(self.fetch_market_features(observed_at, force=force, deadline=deadline))
-        return FullMarketFeatureBatch(features, IssuerEligibilityBatch(len(features), len(features)))
+        return FullMarketFeatureBatch(
+            features,
+            IssuerEligibilityBatch(len(features), len(features)),
+            observed_static_stages(len(features), observed_at),
+        )
 
     def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
         del force, deadline
@@ -528,6 +537,10 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     assert all(tuple(stage.stage for stage in status.stage_snapshots) == PIPELINE_STAGES for status in statuses)
     assert all(status.stage_snapshots[9].state is StageState.NOT_READY for status in statuses)
     assert all(status.stage_snapshots[-1].stage.value == "final_selection" for status in statuses)
+    assert all(
+        tuple(stage.latency_ms for stage in status.stage_snapshots[:4]) == (11, 12, 13, 14) for status in statuses
+    )
+    assert all(status.stage_snapshots[0].input_batch_id == "observed-static-fixture" for status in statuses)
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 

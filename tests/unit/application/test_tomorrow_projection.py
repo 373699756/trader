@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.unit.application.pipeline_helpers import observed_static_stages
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
 from trader.bootstrap import _recommendation_policy
@@ -19,7 +20,10 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
-from trader.recommendation.application.pipeline.quality_check.pipeline_status import build_supply_status
+from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
+    build_supply_status,
+    update_supply_status_decision,
+)
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, validate_stage_batch_continuity
@@ -191,14 +195,20 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     assert {
         item.model_diagnostics.signal_score for item in projection.local.items if item.model_diagnostics is not None
     } == {0.0, 50.0, 100.0}
-    assert build_supply_status(projection).primary_blocker == "no_positive_net_utility"
-    complete_status = build_supply_status(projection)
+    static_stages = observed_static_stages(3, EVALUATED_AT)
+    complete_status = build_supply_status(projection, static_stages=static_stages)
+    assert complete_status.primary_blocker == "no_positive_net_utility"
+    assert all(complete_status.stage_snapshots[index] is stage for index, stage in enumerate(static_stages))
     assert tuple(stage.stage for stage in complete_status.stage_snapshots) == tuple(PipelineStage)
     validate_stage_batch_continuity(complete_status.stage_snapshots)
+    updated = update_supply_status_decision(
+        complete_status, projection, projection.local, candidate_score_threshold=90.0
+    )
+    assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(static_stages))
     assert complete_status.stage_snapshots[-1].stage is PipelineStage.FINAL_SELECTION
     assert complete_status.pipeline.stage("input_readiness").state == "completed"
     assert complete_status.pipeline.stage("candidate_refresh").state == "completed"
-    degraded_status = build_supply_status(projection, candidate_quote_eligible=0)
+    degraded_status = build_supply_status(projection, candidate_quote_eligible=0, static_stages=static_stages)
     assert degraded_status.pipeline.stage("candidate_refresh").state == "degraded"
     assert degraded_status.pipeline.stage("candidate_refresh").output_count == 0
 
@@ -257,7 +267,7 @@ def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
         ),
     )
 
-    status = build_supply_status(projection, stage_counts)
+    status = build_supply_status(projection, stage_counts, static_stages=observed_static_stages(1, EVALUATED_AT))
 
     assert status.pipeline.stage("strategy_history").output_count == 1
     assert status.pipeline.stage("model_input").output_count == 0

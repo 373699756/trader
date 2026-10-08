@@ -9,6 +9,7 @@ from types import MappingProxyType
 from typing import Protocol
 
 from trader.recommendation.application.ports.json_values import JsonObject
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, PipelineStageSnapshot
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot as _MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, LiveQuote
@@ -81,6 +82,7 @@ class FullMarketFeatureBatch:
 
     features: tuple[FeatureSnapshot, ...]
     issuer_eligibility: IssuerEligibilityBatch
+    static_stages: tuple[PipelineStageSnapshot, ...]
 
     def __post_init__(self) -> None:
         codes = tuple(item.quote.code for item in self.features)
@@ -88,6 +90,17 @@ class FullMarketFeatureBatch:
             raise ValueError("full-market feature batch codes must be unique")
         if len(codes) != self.issuer_eligibility.eligible_count:
             raise ValueError("full-market features must match the level-one eligible population")
+        if tuple(item.stage for item in self.static_stages) != PIPELINE_STAGES[:4]:
+            raise ValueError("full-market batches require actual ordered static stages")
+        if any(
+            left.output_batch_id != right.input_batch_id or left.output_count != right.input_count
+            for left, right in zip(self.static_stages, self.static_stages[1:], strict=False)
+        ):
+            raise ValueError("static stage handoffs must be continuous")
+        if self.static_stages[-1].output_count != self.issuer_eligibility.eligible_count:
+            raise ValueError("static filter output must match the eligible population")
+        if self.static_stages[-1].input_count != self.issuer_eligibility.input_count:
+            raise ValueError("static filter input must match the eligibility batch")
 
 
 class FullMarketReaderPort(Protocol):

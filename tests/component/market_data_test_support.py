@@ -25,8 +25,7 @@ from trader.infra.market_data.history.history import (
     build_history_context,
 )
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient
-from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
-from trader.recommendation.infra.normalization.features import FeatureBuilder
+from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers import tushare_records as tushare_records_module
 from trader.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
@@ -36,32 +35,7 @@ from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient, TushareHealthStatus
 from trader.infra.market_data.references.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
-from trader.recommendation.infra.market_data import gateway as gateway_module
-from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
-from trader.recommendation.infra.market_data.gateway import MarketDataGateway
-from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
-from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
-from trader.recommendation.infra.market_data.history_recovery import HistoryRecoveryStatus
-from trader.recommendation.infra.market_data.market_cache_identity import (
-    _history_population_codes,
-    _history_preload_codes,
-)
-from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
-from trader.recommendation.infra.market_data.market_feature_service import (
-    MarketFeatureDependencies,
-    MarketFeatureService,
-)
-from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.infra.market_data.observations import SourceObservation
-from trader.recommendation.infra.market_data.research_component_persistence import persist_research_component_statuses
-from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
-from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
-from trader.recommendation.infra.market_data.tushare_reference_loader import (
-    ReferenceLoader,
-    ReferenceLoadRequest,
-    _ReferenceLoadOptions,
-)
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
@@ -93,6 +67,32 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
+from trader.recommendation.infra.market_data import gateway as gateway_module
+from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
+from trader.recommendation.infra.market_data.history_recovery import HistoryRecoveryStatus
+from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.market_cache_identity import (
+    _history_population_codes,
+    _history_preload_codes,
+)
+from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.recommendation.infra.market_data.market_feature_service import (
+    MarketFeatureDependencies,
+    MarketFeatureService,
+)
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.research_component_persistence import persist_research_component_statuses
+from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
+from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.recommendation.infra.market_data.tushare_reference_loader import (
+    ReferenceLoader,
+    ReferenceLoadRequest,
+    _ReferenceLoadOptions,
+)
+from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
+from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
@@ -305,7 +305,9 @@ def _service(
     )
     assert kwargs == {}
     service = MarketFeatureService(
-        MarketFeatureDependencies(quotes, history, research, intraday, references, runner, health, eligibility)
+        MarketFeatureDependencies(
+            quotes, history, research, intraday, references, runner, health, eligibility, monotonic
+        )
     )
     return service
 

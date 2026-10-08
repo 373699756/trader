@@ -5,14 +5,13 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import stage_output
-from trader.recommendation.application.pipeline.static_market.static_snapshot import StaticMarketSnapshot
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, SourceHealth, StageReasonAggregate
-from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.static import StaticIssuer
 
 
 def load_static_market(
-    records: Sequence[FeatureSnapshot],
+    records: Sequence[StaticIssuer],
     *,
     input_batch_id: str,
     as_of: datetime,
@@ -21,7 +20,7 @@ def load_static_market(
     pending_count: int,
     reasons: tuple[StageReasonAggregate, ...] = (),
     latency_ms: int,
-) -> StaticMarketSnapshot:
+) -> PipelineStageOutput[StaticIssuer]:
     return stage_output(
         PipelineStage.STATIC_MARKET,
         records,
@@ -35,4 +34,4 @@ def load_static_market(
     )
 
 
-__all__ = ["StaticMarketSnapshot", "load_static_market"]
+__all__ = ["load_static_market"]
