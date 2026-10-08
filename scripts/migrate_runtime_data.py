@@ -15,9 +15,9 @@ import json
 import os
 import shutil
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_NAME = "migration-manifest.json"
@@ -147,7 +147,9 @@ def inspect_layout(source: Path) -> MigrationManifest:
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
         total_bytes += len(payload)
-    return MigrationManifest("trader_data_layout_migration", str(source_path), digest.hexdigest(), len(files), total_bytes)
+    return MigrationManifest(
+        "trader_data_layout_migration", str(source_path), digest.hexdigest(), len(files), total_bytes
+    )
 
 
 def _files(root: Path) -> Iterable[Path]:

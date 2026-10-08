@@ -5,23 +5,44 @@ Its profile implementations live under `scripts/runtime_diagnostics/` and
 must return bounded, sanitized summaries. A new runtime probe is added as a
 module and profile there; it is not added as another top-level script.
 
-The remaining top-level scripts are explicit tools with one owner:
+## Retained tools
 
-| Tool | Class | Side effects and boundary |
-| --- | --- | --- |
-| `check_refactor_quality.py` | Quality gate | Read-only repository/Ruff gate; no business data. |
-| `check_tomorrow_training_memory.py` | Release/research gate | Runs the explicitly requested bounded training evidence check. |
-| `convert_baostock_history.py` | Migration | Explicit legacy conversion; never called by runtime or Web. |
-| `generate_long_watchlist_asset.py` | Build asset | Deterministically generates the packaged Long watchlist asset. |
-| `migrate_runtime_data.py` | Migration | Operates only on an explicit repository-external copy. |
-| `repack_baostock_history_archive.py` | Archive maintenance | Explicit build/activate/rollback/finalize operation under the archive lock. |
-| `verify_wheel_install.py` | Release gate | Installs and checks a wheel outside the repository. |
+This table is the sole declaration of the eight retained top-level tools.
+`check_refactor_quality.py` checks its complete fields, unique inventory and
+agreement with the approved script manifest. Declarations describe actual
+behavior; they do not grant permission to write active data.
+
+| Tool | Owner | Network | Writes | Output | Resource boundary |
+| --- | --- | --- | --- | --- | --- |
+| `check_refactor_quality.py` | Repository quality gate | None | None; Ruff runs with `--no-cache` | stdout success; stderr violations/failure | Two sequential Ruff subprocesses, 60 s timeout each; finite repository scan, no hard RSS/total I/O limit |
+| `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models/reports/sample data under required `--train-root`; atomic result at `--output`, default `data/historyless/training-memory-result.json` | Result JSON to stdout and result file; progress to stderr | Two sequential training invocations; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; no total deadline |
+| `convert_baostock_history.py` | Legacy history conversion; download owns the target format | BaoStock SDK gap supplementation by default; `--offline` disables it | Source read-only; target control/month databases and conversion state, default `data/history/baostock`; partial/resume and replacement files under maintenance lock | Aggregate JSON to stdout; progress/errors to stderr; errors may include local evidence details | Single conversion process and one monitored SDK child; default batch 256 rows, 8 MiB SQLite cache per connection, 4 MiB hash chunks, 5 ms throttle and 2048 MiB extra free space; no hard RSS/whole-job deadline |
+| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `browser` uses an isolated local fixture; `performance` and `history-sqlite` are offline | Combined report only to stdout or explicit external `--output`; browser/performance/SQLite probes use disposable fixtures, never compact/switch active history | Sanitized aggregate JSON; child raw output is not forwarded | Sequential children, default 180 s timeout each; at most 50 input codes; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; child capture has no fixed byte/RSS cap |
+| `generate_long_watchlist_asset.py` | Packaged Long build asset | None | Without `--check`, writes only `src/trader/web/static/long_watchlist_data.js` from `config/long_watchlist.json`; `--check` is read-only | Stale-asset message to stdout; silent success | One JSON document and one asset; no hard byte/RSS/deadline cap; does not fetch quotes |
+| `migrate_runtime_data.py` | Isolated data-layout migration | None | Explicit external source/target/backup paths; `verify` is read-only; build/rollback use sibling lock, staging, previous and failed directories, and may remove previous staging/backup/failed copies | Aggregate manifest/status JSON to stdout | Sequential full tree copy/hash and SQLite integrity scan; hashing reads each file in full; no hard RSS/disk/deadline cap |
+| `repack_baostock_history_archive.py` | Explicit history SQLite maintenance; download owns coordination | None | Source/target state under maintenance lock; build/activate/rollback/finalize may replace paths and finalize releases old files; defaults are repository data paths | Aggregate status JSON to stdout; build progress to stderr | Sequential monthly compaction/verification; SQLite busy timeout 30 s; no hard RSS/disk/whole-job deadline |
+| `verify_wheel_install.py` | Isolated installed-wheel release gate | Local wheel install with `--no-deps` and version check disabled; no supplier requests; pip index access is not explicitly disabled | Temporary external virtualenv and dependency `.pth`, removed on exit; input wheel/config/resources read-only | Aggregate verification JSON to stdout; exceptions can produce stderr traceback | One wheel and sequential CLI/resource checks; subprocesses and virtualenv creation have no timeout; no hard RSS/disk cap |
 
 Repeated download, training, scoring, or status workflows belong to
 `trader-cli` or a business `entrypoints/commands.py`, not to this directory.
 Every retained or newly added tool must have a bounded input/output contract,
 an explicit network/write declaration, and an entry in this table before it is
-used by a gate or documented command.
+used by a gate or documented command. Missing limits must be stated explicitly;
+an RSS acceptance threshold, SQLite busy timeout or HTTP socket timeout must not
+be described as a hard whole-job resource bound. Legacy conversion and repack
+do not enforce repository-external destinations; during refactor acceptance,
+pass explicit isolated external paths. For training evidence, also explicitly
+set external `--history-root`, `--train-root` and `--output`.
+
+Makefile checks all of `src/trader`, `tests` and `scripts`, including internal
+probes and migration tools. Strict source debt is anchored to rule, relative file
+and qualified function, so unchanged aggregate counts cannot hide relocated
+violations. Changing a debt owner requires diff review and an explicit baseline
+update. This gate does not prove the accuracy of declarations or enforce the
+runtime limits of every tool; review and isolated execution evidence remain
+necessary.
+
+## Research commands
 
 Research execution belongs to `trader-cli`; the four former standalone research
 scripts have been removed. Pass `--config /absolute/path/config/runtime.json`

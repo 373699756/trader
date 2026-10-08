@@ -58,7 +58,7 @@ from trader.download.infra.history_archive_sync import (
     _recover_partition_replacements,
     _restore_partition_replacements,
     _seal_pending,
-    _write_revisions,
+    _write_revision_batch,
 )
 from trader.download.infra.history_archive_sync import (
     _remove_pending as _remove_sync_pending,
@@ -2124,7 +2124,7 @@ def _repair_completed_qfq_gaps(  # noqa: PLR0913
     universe = HistoryUniverseIdentity(old_universe.securities, source.content_hash)
     sealed = None
     try:
-        _write_revisions(pending, tuple(repaired_revisions))
+        _write_revision_batch(pending, tuple(repaired_revisions))
         fault_injector("completed_qfq_repair_prepared")
         sealed = _seal_pending(target, pending)
         replacements_by_month = {
