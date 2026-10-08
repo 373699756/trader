@@ -397,6 +397,7 @@ def build_system(
             candidate_filtering,
             local_scoring,
             try_build_committed_research_audit,
+            monotonic=time.monotonic,
         ),
     )
     deepseek = DeepSeekAdapter(reviewer, policy, native_data, ScoreFusionService())

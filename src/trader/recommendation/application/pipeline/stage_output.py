@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Generic, TypeVar
@@ -54,6 +54,7 @@ def stage_output(
     business_reasons: tuple[StageReasonAggregate, ...] = (),
     source_health: SourceHealth,
     latency_ms: int,
+    output_batch_id: str | None = None,
 ) -> PipelineStageOutput[_RecordT]:
     values = tuple(records)
     state = _state(input_count, len(values), pending_count, failed_count, source_health)
@@ -61,7 +62,7 @@ def stage_output(
         stage=stage,
         stage_order=PIPELINE_STAGES.index(stage) + 1,
         input_batch_id=input_batch_id,
-        output_batch_id=f"{input_batch_id}:{stage.value}",
+        output_batch_id=output_batch_id or f"{input_batch_id}:{stage.value}",
         as_of=as_of,
         state=state,
         input_count=input_count,
@@ -100,9 +101,18 @@ def _state(
         return StageState.NOT_READY
     if not input_count:
         return StageState.NOT_READY
-    if pending_count or failed_count or source_health.state.value == "degraded":
+    if pending_count or failed_count or (output_count and source_health.state.value != "ready"):
         return StageState.DEGRADED
     return StageState.READY
 
 
-__all__ = ["PipelineStageOutput", "require_previous_stage", "stage_output"]
+def measured_output(
+    output: PipelineStageOutput[_RecordT],
+    started: float,
+    monotonic: Callable[[], float],
+) -> PipelineStageOutput[_RecordT]:
+    """Attach the elapsed time of the actual operation without mutating its output."""
+    return replace(output, snapshot=replace(output.snapshot, latency_ms=max(0, int((monotonic() - started) * 1000))))
+
+
+__all__ = ["PipelineStageOutput", "require_previous_stage", "stage_output", "measured_output"]

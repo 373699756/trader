@@ -3,25 +3,34 @@
 from __future__ import annotations
 
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,
     require_previous_stage,
     stage_output,
 )
-from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
+from trader.recommendation.domain.evidence.pipeline import (
+    PipelineStage,
+    Severity,
+    SourceHealth,
+    SourceHealthState,
+    StageReasonAggregate,
+)
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.static import StaticIssuer
+from trader.recommendation.application.pipeline.data_source.input_identity import feature_batch_version, stable_digest
 
 
 def build_dynamic_market_snapshot(
-    source: PipelineStageOutput[FeatureSnapshot],
+    source: PipelineStageOutput[StaticIssuer],
     loaded: tuple[FeatureSnapshot, ...],
     *,
     as_of: datetime,
     latency_ms: int,
 ) -> PipelineStageOutput[FeatureSnapshot]:
     require_previous_stage(source, PipelineStage.DYNAMIC_MARKET)
-    requested = {item.quote.code for item in source.records}
+    requested = {item.code for item in source.records}
     loaded_codes = tuple(item.quote.code for item in loaded)
     if len(loaded_codes) != len(set(loaded_codes)) or not set(loaded_codes) <= requested:
         raise ValueError("dynamic market output must be a unique subset of eligible issuers")
@@ -37,9 +46,40 @@ def build_dynamic_market_snapshot(
         input_count=len(source.records),
         pending_count=pending,
         reasons=reasons,
-        source_health=source.snapshot.source_health,
+        source_health=dynamic_source_health(loaded, as_of),
         latency_ms=latency_ms,
+        output_batch_id=f"{source.snapshot.output_batch_id}:dynamic_market:{stable_digest((as_of.isoformat(), feature_batch_version('market', loaded)))}",
     )
 
 
-__all__ = ["build_dynamic_market_snapshot"]
+def dynamic_source_health(features: tuple[FeatureSnapshot, ...], as_of: datetime) -> SourceHealth:
+    """Observe accepted quote sources and their real ages; never invent a success."""
+    sources = {feature.quote.source for feature in features if feature.quote.source}
+    invalid = {
+        feature.quote.source
+        for feature in features
+        if feature.quote.source and (feature.quote.source_time > as_of or feature.quote.age_seconds(as_of) > 30.0)
+    }
+    healthy = {
+        feature.quote.source
+        for feature in features
+        if feature.quote.source and feature.quote.source_time <= as_of and feature.quote.age_seconds(as_of) <= 30.0
+    } - invalid
+    state = (
+        SourceHealthState.READY
+        if sources and sources == healthy
+        else (SourceHealthState.DEGRADED if healthy else SourceHealthState.UNAVAILABLE)
+    )
+    latest = max(
+        (
+            feature.quote.received_time.astimezone(ZoneInfo("Asia/Shanghai"))
+            for feature in features
+            if feature.quote.received_time <= as_of
+        ),
+        default=None,
+    )
+    age = max((feature.quote.age_seconds(as_of) for feature in features), default=None)
+    return SourceHealth(state, len(sources), len(healthy), latest, age)
+
+
+__all__ = ["build_dynamic_market_snapshot", "dynamic_source_health"]

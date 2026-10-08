@@ -8,8 +8,9 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Protocol
 
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput
 from trader.recommendation.application.ports.json_values import JsonObject
-from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, PipelineStageSnapshot
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, PipelineStage, PipelineStageSnapshot
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot as _MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, LiveQuote
@@ -83,13 +84,19 @@ class FullMarketFeatureBatch:
     features: tuple[FeatureSnapshot, ...]
     issuer_eligibility: IssuerEligibilityBatch
     static_stages: tuple[PipelineStageSnapshot, ...]
+    dynamic_stage: PipelineStageOutput[FeatureSnapshot]
 
     def __post_init__(self) -> None:
         codes = tuple(item.quote.code for item in self.features)
         if len(codes) != len(set(codes)):
             raise ValueError("full-market feature batch codes must be unique")
-        if len(codes) != self.issuer_eligibility.eligible_count:
-            raise ValueError("full-market features must match the level-one eligible population")
+        if len(codes) > self.issuer_eligibility.eligible_count:
+            raise ValueError("full-market features exceed the level-one eligible population")
+        if self.features != self.dynamic_stage.records:
+            raise ValueError("market features must be the actual dynamic-stage output")
+        dynamic = self.dynamic_stage.snapshot
+        if dynamic.stage is not PipelineStage.DYNAMIC_MARKET:
+            raise ValueError("market batch requires an actual dynamic collection stage")
         if tuple(item.stage for item in self.static_stages) != PIPELINE_STAGES[:4]:
             raise ValueError("full-market batches require actual ordered static stages")
         if any(
@@ -101,6 +108,11 @@ class FullMarketFeatureBatch:
             raise ValueError("static filter output must match the eligible population")
         if self.static_stages[-1].input_count != self.issuer_eligibility.input_count:
             raise ValueError("static filter input must match the eligibility batch")
+        if (
+            dynamic.input_batch_id != self.static_stages[-1].output_batch_id
+            or dynamic.input_count != self.static_stages[-1].output_count
+        ):
+            raise ValueError("dynamic collection must consume the static filter output")
 
 
 class FullMarketReaderPort(Protocol):

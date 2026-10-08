@@ -70,6 +70,10 @@ class _RecordingCandidateFiltering(CandidateFilteringPort):
         self.plan_calls += 1
         return self._delegate.plan(*args, **kwargs)
 
+    def plan_observed(self, *args, **kwargs):
+        self.plan_calls += 1
+        return self._delegate.plan_observed(*args, **kwargs)
+
     def refresh(self, *args, **kwargs):
         self.refresh_calls += 1
         return self._delegate.refresh(*args, **kwargs)

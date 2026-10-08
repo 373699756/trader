@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.application.pipeline_helpers import observed_static_stages
+from tests.unit.application.pipeline_helpers import observed_market_batch
 from tests.unit.domain.test_decision_identity import decision
 from trader.bootstrap import _recommendation_policy
 from trader.infra.settings import load_strategy_settings
@@ -21,7 +21,6 @@ from trader.recommendation.application.pipeline.data_source.source_router import
     MarketDataAdapter,
 )
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.ports.market_data import FullMarketFeatureBatch
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -36,7 +35,6 @@ from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
     StageState,
 )
-from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import Strategy
@@ -70,11 +68,7 @@ class _Market:
 
     def fetch_market_feature_batch(self, observed_at, *, force=False, deadline=None):
         features = tuple(self.fetch_market_features(observed_at, force=force, deadline=deadline))
-        return FullMarketFeatureBatch(
-            features,
-            IssuerEligibilityBatch(len(features), len(features)),
-            observed_static_stages(len(features), observed_at),
-        )
+        return observed_market_batch(features, observed_at)
 
     def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
         del force, deadline
@@ -132,12 +126,14 @@ def _decision_build(
     drafts: UnifiedDecisionDraftIndex | None = None,
     *,
     now=lambda: TEST_NOW,
+    monotonic=None,
 ) -> DecisionBuildDependencies:
     return DecisionBuildDependencies(
         _LongRuntime(),
         _policy(),
         drafts or UnifiedDecisionDraftIndex(),
         now,
+        **({"monotonic": monotonic} if monotonic is not None else {}),
     )
 
 
@@ -597,11 +593,12 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
     observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
     source = application_feature_factory("600001", observed_at)
     feature = replace(source, quote=replace(source.quote, board=Board.MAIN))
+    ticks = iter(index / 10 for index in range(100))
     adapter = MarketDataAdapter(
         _Market((feature,)),
         config_version="test-config",
         candidate_pool_size=1,
-        decision_build=_decision_build(),
+        decision_build=_decision_build(monotonic=lambda: next(ticks)),
     )
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
@@ -621,6 +618,14 @@ def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown
         tuple(stage.latency_ms for stage in status.stage_snapshots[:4]) == (11, 12, 13, 14) for status in statuses
     )
     assert all(status.stage_snapshots[0].input_batch_id == "observed-static-fixture" for status in statuses)
+    assert all(all(stage.latency_ms > 0 for stage in status.stage_snapshots[4:9]) for status in statuses)
+    assert all(
+        all(
+            left.output_batch_id == right.input_batch_id and left.output_count == right.input_count
+            for left, right in zip(status.stage_snapshots[:9], status.stage_snapshots[1:9])
+        )
+        for status in statuses
+    )
 
     adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
 
@@ -1640,6 +1645,37 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     intent = adapter.research_intent(decision)
     assert intent.priority_codes == tuple(item.code for item in decision.items)
     assert intent.candidate_codes == market.requested_codes
+    next_refresh = observed_at + timedelta(seconds=10)
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, next_refresh))
+    pending = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    assert pending.primary_blocker == "candidate_quotes_pending"
+    assert pending.stage_snapshots[4].as_of == next_refresh
+    assert pending.stage_snapshots[4].output_batch_id != status.stage_snapshots[4].output_batch_id
+    assert adapter.projection(decision.version).local is decision
+
+
+def test_candidate_refresh_rejects_results_from_a_superseded_observed_population(application_feature_factory) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+
+    class SupersedingMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, **kwargs):
+            adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at + timedelta(seconds=1)))
+            return super().refresh_candidate_quotes(codes, observed_at, **kwargs)
+
+    adapter = MarketDataAdapter(
+        SupersedingMarket((feature,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(now=lambda: observed_at),
+    )
+    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    with pytest.raises(DataRefreshUnavailableError, match="candidate_population_superseded"):
+        adapter.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+    assert all(item.primary_blocker == "candidate_quotes_pending" for item in adapter.input_quality_status())
+    assert all(
+        item.stage_snapshots[4].as_of == observed_at + timedelta(seconds=1) for item in adapter.input_quality_status()
+    )
 
 
 def test_unexpected_shared_input_failure_releases_single_flight_owner(

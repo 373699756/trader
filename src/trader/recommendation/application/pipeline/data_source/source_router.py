@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Protocol
 
@@ -17,6 +18,14 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_se
     CandidateFilteringPort,
     CandidateFilteringService,
 )
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
+    CandidatePipelineResult,
+    assemble_candidate_inputs,
+    select_candidate_output,
+)
+from trader.recommendation.domain.selection.scored_selection import SelectedCandidateInput
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, measured_output
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import assess_candidate_input_stage
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     candidate_batch_is_complete as _candidate_batch_is_complete,
 )
@@ -82,7 +91,6 @@ from trader.recommendation.application.pipeline.policy import RecommendationPoli
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     build_complete_stage_snapshots,
-    build_first_nine_stage_snapshots,
     build_pending_pipeline,
     build_supply_status,
     update_supply_status_decision,
@@ -128,7 +136,8 @@ class InputBatch:
     candidate_quote_eligible: int = 0
     preselection_transient_invalid: bool = False
     issuer_eligibility: IssuerEligibilityBatch | None = None
-    static_stages: tuple[PipelineStageSnapshot, ...] = ()
+    input_stages: tuple[PipelineStageSnapshot, ...] = ()
+    candidate_stage: PipelineStageOutput[SelectedCandidateInput] | None = None
 
 
 @dataclass(frozen=True)
@@ -140,7 +149,8 @@ class _SharedInputBatch:
     candidate_quote_eligible: int
     preselection_transient_invalid: bool
     issuer_eligibility: IssuerEligibilityBatch
-    static_stages: tuple[PipelineStageSnapshot, ...]
+    input_stages: tuple[PipelineStageSnapshot, ...]
+    candidate_stage: PipelineStageOutput[SelectedCandidateInput]
 
 
 @dataclass(frozen=True)
@@ -154,6 +164,7 @@ class DecisionBuildDependencies:
     policy: RecommendationPolicy
     draft_index: UnifiedDecisionDraftIndex
     now: Callable[[], datetime]
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
     model_scoring: ModelScoringPort | None = None
     candidate_filtering: CandidateFilteringPort | None = None
     local_scoring: LocalScoringPort | None = None
@@ -265,6 +276,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._policy = decision_build.policy
         self._draft_index = decision_build.draft_index
         self._now = decision_build.now
+        self._monotonic = decision_build.monotonic
         self._research_audit_builder = decision_build.research_audit_builder
         self._model_scoring = decision_build.model_scoring
         self._candidate_filtering = (
@@ -285,7 +297,9 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._batches: dict[tuple[Strategy, str], InputBatch] = {}
         self._latest_market_features: tuple[FeatureSnapshot, ...] = ()
         self._issuer_eligibility: IssuerEligibilityBatch | None = None
-        self._static_stages: tuple[PipelineStageSnapshot, ...] = ()
+        self._market_stages: tuple[PipelineStageSnapshot, ...] = ()
+        self._candidate_pipeline: CandidatePipelineResult | None = None
+        self._candidate_outputs: dict[Strategy, PipelineStageOutput[SelectedCandidateInput]] = {}
         self._latest_requested_codes: tuple[str, ...] = ()
         self._candidate_plans: CandidatePlanSet | None = None
         self._strategy_requested_codes: dict[Strategy, tuple[str, ...]] = {
@@ -364,13 +378,14 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         data_version = _feature_batch_version("market", features)
         completed_at = _refresh_completed_at(request, features)
         apply_model_eligibility = request.task is not PipelineTask.CLOSE_QUOTES
-        candidate_plans = self._candidate_filtering.plan(
-            features,
-            None,
+        candidate_pipeline = self._candidate_filtering.plan_observed(
+            market_batch.dynamic_stage,
             evaluated_at=completed_at,
             data_version=data_version,
+            monotonic=self._monotonic,
             apply_model_eligibility=apply_model_eligibility,
         )
+        candidate_plans = candidate_pipeline.plans
         requested = candidate_plans.physical_union()
         quote_versions = _quote_versions(features)
         self._schedule_reference_data(
@@ -386,7 +401,9 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 self._invalidate_scoring_locked()
             self._latest_market_features = features
             self._issuer_eligibility = issuer_eligibility
-            self._static_stages = market_batch.static_stages
+            self._market_stages = (*market_batch.static_stages, market_batch.dynamic_stage.snapshot)
+            self._candidate_pipeline = candidate_pipeline
+            self._candidate_outputs = dict(candidate_pipeline.candidates)
             self._latest_requested_codes = requested
             self._candidate_plans = candidate_plans
             self._strategy_requested_codes = {
@@ -428,13 +445,16 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             previous_candidate_version = self._candidate_version
             previous_strategy_requested = dict(self._strategy_requested_codes)
             previous_strategy_features = dict(self._strategy_candidate_features)
-        if not population or initial_plans is None or issuer_eligibility is None:
+            candidate_pipeline = self._candidate_pipeline
+            market_version = self._market_version
+        if not population or initial_plans is None or issuer_eligibility is None or candidate_pipeline is None:
             raise DataRefreshUnavailableError("candidate_universe_unavailable")
+        started = self._monotonic()
         refresh_plan = self._candidate_filtering.refresh(
             population,
             initial_plans,
             evaluated_at=request.observed_at,
-            data_version=self._market_version,
+            data_version=market_version,
             refresh_quotes=lambda codes: self._market.refresh_candidate_quotes(
                 codes,
                 request.observed_at,
@@ -468,7 +488,20 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         }
         data_version = _feature_batch_version("candidate", final_features)
         quote_versions = _quote_versions(final_features)
+        refresh_ms = max(0, int((self._monotonic() - started) * 1000))
+        candidate_outputs = {
+            strategy: select_candidate_output(
+                candidate_pipeline.filtered[strategy],
+                final_plans.plans[strategy],
+                final_plans.limit_per_board,
+                request.observed_at,
+                latency_ms=refresh_ms,
+            )
+            for strategy in SCORED_STRATEGIES
+        }
         with self._lock:
+            if candidate_pipeline is not self._candidate_pipeline:
+                raise DataRefreshUnavailableError("candidate_population_superseded")
             changed = data_version != self._candidate_version
             changed_codes = _changed_version_codes(self._candidate_quote_versions, quote_versions)
             self._candidate_version = data_version
@@ -478,6 +511,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             self._latest_requested_codes = requested
             self._strategy_requested_codes = strategy_requested
             self._strategy_candidate_features = strategy_features
+            self._candidate_outputs = candidate_outputs
             self._strategy_preselection_transient_invalid = {
                 strategy: strategy in refresh_plan.transient_invalid_strategies
                 or has_transient_candidate_gap(initial_plans.plans[strategy])
@@ -508,41 +542,34 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         )
 
     def _record_pending_quality_locked(self, context: _PendingQualityContext) -> None:
-        batch_id = self._scoring_epoch_locked(include_intraday_tail=False)
         for strategy in SCORED_STRATEGIES:
-            existing = self._input_quality.get(strategy)
-            if (
-                existing is not None
-                and existing.summary.trade_date == context.observed_at.date()
-                and existing.population_count == context.population_count
-                and existing.primary_blocker not in {"candidate_quotes_pending", "scoring_pending"}
-            ):
-                continue
             stage_counts = context.candidate_plans.plans[strategy].stage_counts
             requested_count = stage_counts.candidate_limit_selected
             candidate_feature_count = min(requested_count, context.candidate_feature_counts[strategy])
             covered = candidate_feature_count
-            dynamic_data_pending = max(
-                0,
-                stage_counts.issuer_eligible_population - stage_counts.input_ready_population,
-            )
             pipeline = build_pending_pipeline(
                 stage_counts,
                 candidate_feature_count=candidate_feature_count,
                 primary_blocker=context.primary_blocker,
                 candidate_score_threshold=self._policy.selection.candidate_min_score,
             )
-            first_nine = build_first_nine_stage_snapshots(
-                stage_counts,
-                batch_id=f"{batch_id}:{strategy.value}",
-                as_of=context.observed_at,
-                population_count=context.population_count,
-                candidate_feature_count=candidate_feature_count,
-                data_pending_count=dynamic_data_pending,
-                refresh_pending_count=max(0, requested_count - candidate_feature_count),
-                issuer_eligibility=context.issuer_eligibility,
-                static_stages=self._static_stages,
+            first_eight, candidates = self._observed_input_locked(strategy)
+            started = self._monotonic()
+            candidates = assemble_candidate_inputs(
+                candidates, self._strategy_candidate_features[strategy], as_of=context.observed_at
             )
+            first_eight = (*first_eight[:7], candidates.snapshot)
+            quality_stage = assess_candidate_input_stage(
+                candidates,
+                as_of=context.observed_at,
+                minimum_history_sessions=self._model_scoring.history_required_sessions(strategy)
+                if self._model_scoring is not None and context.apply_model_eligibility
+                else 20,
+                latency_ms=0,
+                hard_filter=self._policy.hard_filter,
+            )
+            quality_stage = measured_output(quality_stage, started, self._monotonic)
+            first_nine = (*first_eight, quality_stage.snapshot)
             self._input_quality[strategy] = InputQualityStatus(
                 strategy=strategy,
                 status="not_ready",
@@ -702,6 +729,9 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 candidate_features = scoring_batch.features
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise DataRefreshUnavailableError(_failure_code(exc)) from exc
+        candidate_stage = assemble_candidate_inputs(
+            shared.candidate_stage, candidate_features, as_of=request.observed_at
+        )
         batch = InputBatch(
             request,
             shared.market_features,
@@ -712,7 +742,8 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             shared.candidate_quote_eligible,
             shared.preselection_transient_invalid,
             shared.issuer_eligibility,
-            shared.static_stages,
+            (*shared.input_stages[:7], candidate_stage.snapshot),
+            candidate_stage,
         )
         with self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
@@ -723,7 +754,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         with self._lock:
             market_features = self._latest_market_features
             issuer_eligibility = self._issuer_eligibility
-            static_stages = self._static_stages
+            input_stages, candidate_stage = self._observed_input_locked(request.strategy)
             requested = self._strategy_requested_codes[request.strategy]
             candidate_features = self._strategy_candidate_features[request.strategy]
             candidate_plans = self._candidate_plans
@@ -747,7 +778,26 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             len(candidate_features),
             preselection_transient_invalid,
             issuer_eligibility,
-            static_stages,
+            input_stages,
+            candidate_stage,
+        )
+
+    def _observed_input_locked(
+        self,
+        strategy: Strategy,
+    ) -> tuple[tuple[PipelineStageSnapshot, ...], PipelineStageOutput[SelectedCandidateInput]]:
+        pipeline = self._candidate_pipeline
+        if pipeline is None or strategy not in self._candidate_outputs:
+            raise DataRefreshUnavailableError("candidate_observations_unavailable")
+        candidate = self._candidate_outputs[strategy]
+        return (
+            (
+                *self._market_stages,
+                pipeline.normalized.snapshot,
+                pipeline.filtered[strategy].snapshot,
+                candidate.snapshot,
+            ),
+            candidate,
         )
 
     def _score_features(
@@ -826,8 +876,25 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             self._sequences[request.strategy] += 2
         if batch is None:
             raise DecisionUnavailableError("current native input is unavailable")
+        if batch.candidate_stage is None:
+            raise DecisionUnavailableError("candidate observations are unavailable")
         try:
             evaluated_at = _decision_observed_at(batch)
+            started = self._monotonic()
+            quality_stage = assess_candidate_input_stage(
+                batch.candidate_stage,
+                as_of=evaluated_at,
+                minimum_history_sessions=(
+                    self._model_scoring.history_required_sessions(request.strategy)
+                    if self._model_scoring is not None
+                    and request.phase != "close_fallback"
+                    and self._model_scoring.uses_model(request.strategy)
+                    else 20
+                ),
+                latency_ms=0,
+                hard_filter=self._policy.hard_filter,
+            )
+            quality_stage = measured_output(quality_stage, started, self._monotonic)
             native_input = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
                 batch.request.trade_date,
                 batch.request.phase,
@@ -858,8 +925,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             batch.candidate_stage_counts,
             candidate_quote_eligible=batch.candidate_quote_eligible,
             candidate_score_threshold=self._policy.selection.candidate_min_score,
-            issuer_eligibility=batch.issuer_eligibility,
-            static_stages=batch.static_stages,
+            input_stages=(*batch.input_stages, quality_stage.snapshot),
         )
         projection = replace(
             projection,

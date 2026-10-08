@@ -126,33 +126,8 @@ class ScoredSelectionPolicy:
 
 
 @dataclass(frozen=True)
-class StagePopulationFacts:
-    """Directly observed population result for one public pipeline stage."""
-
-    input_count: int
-    output_count: int
-    rejected_count: int = 0
-    pending_count: int = 0
-    failed_count: int = 0
-    reasons: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
-
-    def __post_init__(self) -> None:
-        counts = (self.input_count, self.output_count, self.rejected_count, self.pending_count, self.failed_count)
-        if any(value < 0 for value in counts):
-            raise ValueError("stage population facts cannot be negative")
-        if self.output_count + self.rejected_count + self.pending_count + self.failed_count > self.input_count:
-            raise ValueError("stage population facts exceed input population")
-        reasons = dict(self.reasons)
-        if any(not isinstance(name, str) or not name for name in reasons):
-            raise ValueError("stage population reason names must be non-empty strings")
-        if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in reasons.values()):
-            raise ValueError("stage population reason counts must be non-negative integers")
-        object.__setattr__(self, "reasons", MappingProxyType(reasons))
-
-
-@dataclass(frozen=True)
 class ScoredCandidateStageCounts:
-    """Per-stage candidate population directly counted from one evaluation pass.
+    """Counts from the qualification and ranking pass.
 
     ``input_ready_population`` counts issuer-eligible stocks whose inputs are present and
     fresh, so missing or expired inputs never appear as dynamic-filter rejection.
@@ -165,7 +140,6 @@ class ScoredCandidateStageCounts:
     model_input_eligible: int
     candidate_score_eligible: int
     candidate_limit_selected: int
-    stage_facts: Mapping[str, StagePopulationFacts] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         counts = (
@@ -181,12 +155,6 @@ class ScoredCandidateStageCounts:
             left < right for left, right in pairwise(counts)
         ):
             raise ValueError("candidate stage counts must be non-negative and monotonic")
-        facts = dict(self.stage_facts)
-        if any(not isinstance(name, str) or not name for name in facts):
-            raise ValueError("stage fact names must be non-empty strings")
-        if any(not isinstance(value, StagePopulationFacts) for value in facts.values()):
-            raise ValueError("stage facts must contain StagePopulationFacts")
-        object.__setattr__(self, "stage_facts", MappingProxyType(facts))
 
 
 @dataclass(frozen=True)
@@ -383,15 +351,32 @@ def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
     )
 
 
-def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
+@dataclass(frozen=True)
+class FilteredCandidateInputs:
+    """Immutable result of the qualification pass, consumed by candidate ranking."""
+
+    request: ScoredSelectionRequest
+    population: _FilteredFeatures
+    candidates: _FilteredFeatures
+
+
+@dataclass(frozen=True)
+class SelectedCandidateInput:
+    code: str
+    features: FeatureSnapshot | None = None
+
+    def __post_init__(self) -> None:
+        if self.features is not None and self.features.quote.code != self.code:
+            raise ValueError("directed input must match its selected candidate")
+
+
+def filter_candidate_inputs(request: ScoredSelectionRequest) -> FilteredCandidateInputs:
     population_filtered = _filter_features(
         request.features,
         request,
         evaluated_at=request.population_evaluated_at,
         max_age_seconds=request.population_max_age_seconds,
     )
-    population_evaluations = population_filtered.evaluations
-    evaluations = dict(population_evaluations)
     candidate_filtered = (
         population_filtered
         if request.candidate_features is None
@@ -402,7 +387,20 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
             max_age_seconds=request.policy.max_age_seconds,
         )
     )
+    return FilteredCandidateInputs(request, population_filtered, candidate_filtered)
+
+
+def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
+    return rank_filtered_candidates(filter_candidate_inputs(request))
+
+
+def rank_filtered_candidates(source: FilteredCandidateInputs) -> ScoredCandidatePlan:
+    request = source.request
+    population_filtered = source.population
+    candidate_filtered = source.candidates
+    population_evaluations = population_filtered.evaluations
     candidate_evaluations = candidate_filtered.evaluations
+    evaluations = dict(population_evaluations)
     evaluations.update(candidate_evaluations)
     population_versions: dict[Board, str] = {}
     reserves: dict[Board, tuple[str, ...]] = {}
@@ -470,14 +468,6 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         for item in candidate_evaluations.values()
     )
     candidate_score_eligible = sum(len(codes) for codes in reserves.values())
-    stage_facts = _build_stage_facts(
-        request,
-        population_evaluations,
-        candidate_evaluations,
-        reserves,
-        candidate_score_eligible,
-        sum(min(len(codes), request.policy.candidate_limit_per_board) for codes in reserves.values()),
-    )
     population_filter_reason_counts = dict(
         sorted(
             Counter(reason.code for item in population_evaluations.values() for reason in item.filter_reasons).items()
@@ -502,7 +492,6 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
             candidate_limit_selected=sum(
                 min(len(codes), request.policy.candidate_limit_per_board) for codes in reserves.values()
             ),
-            stage_facts=stage_facts,
         ),
         hard_filter_reason_counts=dict(sorted(hard_filter_reason_counts.items())),
         population_rejected_count=sum(
@@ -510,100 +499,6 @@ def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePl
         ),
         population_filter_reason_counts=population_filter_reason_counts,
     )
-
-
-def _build_stage_facts(
-    request: ScoredSelectionRequest,
-    population: Mapping[str, ScoredStockEvaluation],
-    candidates: Mapping[str, ScoredStockEvaluation],
-    reserves: Mapping[Board, tuple[str, ...]],
-    candidate_score_eligible: int,
-    candidate_limit_selected: int,
-) -> Mapping[str, StagePopulationFacts]:
-    """Capture stage populations from the evaluation pass, never from count deltas."""
-    static_rules = level_one_filter_rules(
-        max_age_seconds=request.policy.max_age_seconds,
-        policy=request.policy.hard_filter,
-    )
-    dynamic_rules = level_two_filter_rules(
-        max_age_seconds=request.policy.max_age_seconds,
-        policy=request.policy.hard_filter,
-    )
-    static_results = tuple(
-        apply_filters(item.features, static_rules, now=request.evaluated_at) for item in population.values()
-    )
-    static_ready_codes = {
-        item.features.quote.code
-        for item, result in zip(population.values(), static_results, strict=True)
-        if not result.reasons and not result.deferred
-    }
-    requested_candidate_codes = (
-        {feature.quote.code for feature in request.candidate_features}
-        if request.candidate_features is not None
-        else static_ready_codes
-    )
-    candidate_static_results = tuple(
-        apply_filters(item.features, static_rules, now=request.evaluated_at) for item in candidates.values()
-    )
-    candidate_static_ready_codes = {
-        item.features.quote.code
-        for item, result in zip(candidates.values(), candidate_static_results, strict=True)
-        if not result.reasons and not result.deferred
-    }
-    # A candidate refresh cannot skip the static boundary.  Intersecting here
-    # keeps the observed stage populations monotonic when a partial refresh
-    # contains a statically rejected security.
-    candidate_source_codes = static_ready_codes & candidate_static_ready_codes & requested_candidate_codes
-    dynamic_features = tuple(item.features for item in candidates.values() if item.code in candidate_source_codes)
-    dynamic_results = tuple(
-        apply_filters(feature, dynamic_rules, now=request.evaluated_at) for feature in dynamic_features
-    )
-    static_output = sum(not result.reasons and not result.deferred for result in static_results)
-    dynamic_rejected = sum(bool(result.reasons) for result in dynamic_results)
-    dynamic_pending = sum(not result.reasons and bool(result.deferred) for result in dynamic_results)
-    dynamic_output = sum(not result.reasons and not result.deferred for result in dynamic_results)
-    dynamic_output_codes = {
-        feature.quote.code
-        for feature, result in zip(dynamic_features, dynamic_results, strict=True)
-        if not result.reasons and not result.deferred
-    }
-    reserve_codes = {code for codes in reserves.values() for code in codes}
-    board_limited = max(0, candidate_score_eligible - candidate_limit_selected)
-    candidate_excluded = max(0, dynamic_output - candidate_score_eligible)
-    candidate_rejection_reasons: Counter[str] = Counter()
-    for item in candidates.values():
-        if item.code not in dynamic_output_codes:
-            continue
-        if item.code in reserve_codes:
-            continue
-        reason = item.selection_skip_reason or item.candidate_audit_pruning_reason or "candidate_not_eligible"
-        candidate_rejection_reasons[reason] += 1
-    if candidate_excluded and not candidate_rejection_reasons:
-        candidate_rejection_reasons["candidate_not_eligible"] = candidate_excluded
-    if board_limited:
-        candidate_rejection_reasons["board_limit"] = board_limited
-    facts = {
-        "dynamic_market": StagePopulationFacts(
-            static_output,
-            len(dynamic_features),
-            pending_count=max(0, static_output - len(dynamic_features)),
-        ),
-        "dynamic_standardize": StagePopulationFacts(len(dynamic_features), len(dynamic_features)),
-        "dynamic_filter": StagePopulationFacts(
-            len(dynamic_features),
-            dynamic_output,
-            dynamic_rejected,
-            dynamic_pending,
-        ),
-        "candidate_pool": StagePopulationFacts(
-            dynamic_output,
-            candidate_limit_selected,
-            max(0, dynamic_output - candidate_limit_selected),
-            reasons=dict(candidate_rejection_reasons),
-        ),
-        "quality_check": StagePopulationFacts(candidate_limit_selected, candidate_limit_selected),
-    }
-    return MappingProxyType(facts)
 
 
 def _audit_board_population(
@@ -893,7 +788,9 @@ __all__ = [
     "BoardCrossSectionFallback",
     "ScoredCandidatePlan",
     "ScoredCandidateStageCounts",
-    "StagePopulationFacts",
+    "FilteredCandidateInputs",
+    "filter_candidate_inputs",
+    "rank_filtered_candidates",
     "ScoredSelectionPolicy",
     "ScoredSelectionRequest",
     "plan_scored_candidates",

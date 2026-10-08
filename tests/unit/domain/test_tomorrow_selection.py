@@ -246,14 +246,6 @@ def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_c
     assert plan.stage_counts.model_input_eligible == 2
     assert plan.stage_counts.candidate_score_eligible == 1
     assert plan.stage_counts.candidate_limit_selected == 1
-    assert tuple(plan.stage_counts.stage_facts) == (
-        "dynamic_market",
-        "dynamic_standardize",
-        "dynamic_filter",
-        "candidate_pool",
-        "quality_check",
-    )
-    assert "static_filter" not in plan.stage_counts.stage_facts
 
 
 def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
@@ -403,7 +395,7 @@ def test_tomorrow_selection_uses_full_population_but_scores_only_explicit_candid
     assert result.population_versions
 
 
-def test_stage_facts_keep_explicit_refresh_inside_static_boundary(application_feature_factory) -> None:
+def test_explicit_refresh_keeps_candidates_inside_static_boundary(application_feature_factory) -> None:
     population = _features(application_feature_factory, count=3)
     statically_rejected_refresh = replace(
         population[0],
@@ -415,14 +407,10 @@ def test_stage_facts_keep_explicit_refresh_inside_static_boundary(application_fe
     )
 
     plan = plan_scored_candidates(request)
-    facts = plan.stage_counts.stage_facts
-
-    assert facts["dynamic_market"].input_count == 3
-    assert facts["dynamic_market"].output_count == 1
-    assert facts["dynamic_filter"].input_count == 1
-    assert facts["candidate_pool"].output_count == 1
-    for fact in facts.values():
-        assert fact.output_count + fact.rejected_count + fact.pending_count + fact.failed_count <= fact.input_count
+    assert plan.stage_counts.dynamic_filter_eligible == 1
+    assert plan.limited_codes(3) == (population[1].quote.code,)
+    rejected = next(item for item in plan.evaluations if item.code == population[0].quote.code)
+    assert rejected.disposition is ScoredDisposition.REJECT
 
 
 def test_tomorrow_selection_rejects_feature_observed_after_evaluation(application_feature_factory) -> None:

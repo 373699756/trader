@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.application.pipeline_helpers import observed_static_stages
+from tests.unit.application.pipeline_helpers import observed_input_stages
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
 from trader.bootstrap import _recommendation_policy
@@ -195,20 +195,20 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     assert {
         item.model_diagnostics.signal_score for item in projection.local.items if item.model_diagnostics is not None
     } == {0.0, 50.0, 100.0}
-    static_stages = observed_static_stages(3, EVALUATED_AT)
-    complete_status = build_supply_status(projection, static_stages=static_stages)
+    input_stages = observed_input_stages(features, policy, EVALUATED_AT)
+    complete_status = build_supply_status(projection, input_stages=input_stages)
     assert complete_status.primary_blocker == "no_positive_net_utility"
-    assert all(complete_status.stage_snapshots[index] is stage for index, stage in enumerate(static_stages))
+    assert all(complete_status.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert tuple(stage.stage for stage in complete_status.stage_snapshots) == tuple(PipelineStage)
     validate_stage_batch_continuity(complete_status.stage_snapshots)
     updated = update_supply_status_decision(
         complete_status, projection, projection.local, candidate_score_threshold=90.0
     )
-    assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(static_stages))
+    assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert complete_status.stage_snapshots[-1].stage is PipelineStage.FINAL_SELECTION
     assert complete_status.pipeline.stage("input_readiness").state == "completed"
     assert complete_status.pipeline.stage("candidate_refresh").state == "completed"
-    degraded_status = build_supply_status(projection, candidate_quote_eligible=0, static_stages=static_stages)
+    degraded_status = build_supply_status(projection, candidate_quote_eligible=0, input_stages=input_stages)
     assert degraded_status.pipeline.stage("candidate_refresh").state == "degraded"
     assert degraded_status.pipeline.stage("candidate_refresh").output_count == 0
 
@@ -267,7 +267,9 @@ def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
         ),
     )
 
-    status = build_supply_status(projection, stage_counts, static_stages=observed_static_stages(1, EVALUATED_AT))
+    status = build_supply_status(
+        projection, stage_counts, input_stages=observed_input_stages((feature,), policy, EVALUATED_AT)
+    )
 
     assert status.pipeline.stage("strategy_history").output_count == 1
     assert status.pipeline.stage("model_input").output_count == 0
@@ -507,7 +509,9 @@ def test_native_projection_classifies_an_invalid_candidate_quote_as_transient(
     assert projection.input_quality.candidate_rejected_count == 0
     assert projection.input_quality.data_pending_count == 1
     assert projection.input_quality.candidate_transient_reason_counts[reason] == 1
-    stage = build_supply_status(projection, static_stages=observed_static_stages(1, EVALUATED_AT)).stage_snapshots[6]
+    stage = build_supply_status(
+        projection, input_stages=observed_input_stages((invalid,), policy, EVALUATED_AT)
+    ).stage_snapshots[6]
     assert stage.rejected_count == 0
     assert stage.pending_count == 1
     assert stage.input_count == stage.output_count + stage.rejected_count + stage.pending_count + stage.failed_count
@@ -536,7 +540,7 @@ def test_business_rejection_takes_precedence_over_the_same_stocks_missing_input(
     assert quality.publishable is not separate_invalid
     assert quality.status == ("transient_invalid_empty" if separate_invalid else "business_empty")
     stage = build_supply_status(
-        projection, static_stages=observed_static_stages(len(features), EVALUATED_AT)
+        projection, input_stages=observed_input_stages(features, policy, EVALUATED_AT)
     ).stage_snapshots[6]
     assert stage.rejected_count == 1
     assert stage.pending_count == int(separate_invalid)

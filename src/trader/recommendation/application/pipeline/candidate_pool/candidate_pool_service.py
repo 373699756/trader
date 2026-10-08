@@ -20,12 +20,27 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     refresh_candidate_reserves,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
+    CandidatePipelineResult,
+    execute_candidate_pipeline,
+)
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
 class CandidateFilteringPort(Protocol):
     """Qualification and bounded reserve operations used by market refresh."""
+
+    def plan_observed(
+        self,
+        source: PipelineStageOutput[FeatureSnapshot],
+        *,
+        evaluated_at: datetime,
+        data_version: str,
+        monotonic: Callable[[], float],
+        apply_model_eligibility: bool = True,
+    ) -> CandidatePipelineResult: ...
 
     def plan(
         self,
@@ -65,6 +80,28 @@ class CandidateFilteringService(CandidateFilteringPort):
     def __post_init__(self) -> None:
         if self.limit_per_board < 1:
             raise ValueError("candidate filtering board limit must be positive")
+
+    def plan_observed(
+        self,
+        source: PipelineStageOutput[FeatureSnapshot],
+        *,
+        evaluated_at: datetime,
+        data_version: str,
+        monotonic: Callable[[], float],
+        apply_model_eligibility: bool = True,
+    ) -> CandidatePipelineResult:
+        return execute_candidate_pipeline(
+            source,
+            CandidatePlanningContext(
+                evaluated_at,
+                data_version,
+                self.policy,
+                self.model_scoring,
+                self.limit_per_board,
+                apply_model_eligibility,
+            ),
+            monotonic,
+        )
 
     def plan(
         self,

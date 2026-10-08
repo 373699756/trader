@@ -6,7 +6,6 @@ import math
 from collections import Counter
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
 
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
@@ -24,12 +23,9 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
     Severity,
-    SourceHealth,
-    SourceHealthState,
     StageReasonAggregate,
     StageState,
 )
-from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
 from trader.recommendation.domain.publication.models import (
@@ -39,7 +35,6 @@ from trader.recommendation.domain.publication.models import (
 )
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,
-    StagePopulationFacts,
     split_filter_reason_counts,
 )
 
@@ -57,8 +52,7 @@ def build_supply_status(
     candidate_quote_eligible: int | None = None,
     candidate_score_threshold: float | None = None,
     decision: ScoredDecision | None = None,
-    issuer_eligibility: IssuerEligibilityBatch | None = None,
-    static_stages: tuple[PipelineStageSnapshot, ...] = (),
+    input_stages: tuple[PipelineStageSnapshot, ...] = (),
 ) -> InputQualityStatus:
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
@@ -96,26 +90,13 @@ def build_supply_status(
             reasons[item.selection_skip_reason] += 1
     reasons.update(item.reason for item in decision_items if item.reason)
     reasons.update(risk for item in decision_items for risk in item.risk_codes)
-    first_nine = build_first_nine_stage_snapshots(
-        stage_counts,
-        batch_id=projection.native_input.input_version,
-        as_of=projection.local.observed_at,
-        population_count=quality.population_count,
-        candidate_feature_count=quality.candidate_feature_count,
-        data_pending_count=quality.data_pending_count,
-        refresh_pending_count=quality.refresh_pending_count,
-        degraded_reasons=quality.degraded_reasons,
-        issuer_eligibility=issuer_eligibility,
-        static_stages=static_stages,
-        quality_ready_count=quality.candidate_scored_count,
-    )
     return InputQualityStatus(
         strategy=projection.local.strategy,
         status=quality.status,
         publishable=quality.publishable,
         summary=_supply_summary(projection, decision=active_decision),
         pipeline=pipeline,
-        stage_snapshots=build_complete_stage_snapshots(first_nine, pipeline),
+        stage_snapshots=build_complete_stage_snapshots(input_stages, pipeline),
         population_count=quality.population_count,
         candidate_count=quality.candidate_count,
         candidate_feature_count=quality.candidate_feature_count,
@@ -140,167 +121,6 @@ def build_supply_status(
     )
 
 
-def build_first_nine_stage_snapshots(
-    stage_counts: ScoredCandidateStageCounts,
-    *,
-    batch_id: str,
-    as_of: datetime,
-    population_count: int,
-    candidate_feature_count: int,
-    data_pending_count: int = 0,
-    refresh_pending_count: int = 0,
-    degraded_reasons: tuple[str, ...] = (),
-    issuer_eligibility: IssuerEligibilityBatch | None = None,
-    quality_ready_count: int | None = None,
-    static_stages: tuple[PipelineStageSnapshot, ...] = (),
-) -> tuple[PipelineStageSnapshot, ...]:
-    """Project the active first-nine-stage counters without mixing readiness and rejection."""
-
-    registry_eligible_count = issuer_eligibility.eligible_count if issuer_eligibility is not None else population_count
-    issuer_count = min(registry_eligible_count, stage_counts.issuer_eligible_population)
-    dynamic_gap = max(0, issuer_count - stage_counts.input_ready_population)
-    dynamic_refresh_pending = min(dynamic_gap, refresh_pending_count)
-    dynamic_data_pending = min(dynamic_gap - dynamic_refresh_pending, data_pending_count)
-    dynamic_pending = dynamic_refresh_pending + dynamic_data_pending
-    dynamic_failed = max(0, dynamic_gap - dynamic_pending)
-    dynamic_rejected = max(0, stage_counts.input_ready_population - stage_counts.dynamic_filter_eligible)
-    candidate_output = stage_counts.candidate_limit_selected
-    quality_output = min(
-        candidate_output,
-        candidate_feature_count,
-        candidate_output if quality_ready_count is None else quality_ready_count,
-    )
-    quality_pending = max(0, candidate_output - quality_output)
-    source_degraded = bool(degraded_reasons)
-    source_health = SourceHealth(
-        SourceHealthState.DEGRADED if source_degraded else SourceHealthState.READY,
-        source_count=1,
-        healthy_source_count=1,
-        latest_success_at=as_of,
-        age_seconds=0.0,
-    )
-    legacy_rows = (
-        (
-            PipelineStage.DYNAMIC_MARKET,
-            issuer_count,
-            stage_counts.input_ready_population,
-            0,
-            dynamic_pending,
-            dynamic_failed,
-            _stage_reasons(
-                ("data_pending", dynamic_data_pending),
-                ("refresh_pending", dynamic_refresh_pending),
-                ("source_failed", dynamic_failed),
-            ),
-        ),
-        (
-            PipelineStage.DYNAMIC_STANDARDIZE,
-            stage_counts.input_ready_population,
-            stage_counts.input_ready_population,
-            0,
-            0,
-            0,
-            (),
-        ),
-        (
-            PipelineStage.DYNAMIC_FILTER,
-            stage_counts.input_ready_population,
-            stage_counts.dynamic_filter_eligible,
-            dynamic_rejected,
-            0,
-            0,
-            _stage_reasons(("dynamic_rejected", dynamic_rejected)),
-        ),
-        (
-            PipelineStage.CANDIDATE_POOL,
-            stage_counts.dynamic_filter_eligible,
-            candidate_output,
-            0,
-            0,
-            0,
-            _stage_reasons(
-                ("board_limit", max(0, stage_counts.dynamic_filter_eligible - candidate_output)),
-            ),
-        ),
-        (
-            PipelineStage.QUALITY_CHECK,
-            candidate_output,
-            quality_output,
-            0,
-            quality_pending,
-            0,
-            _stage_reasons(("quality_pending", quality_pending)),
-        ),
-    )
-    facts = stage_counts.stage_facts
-    if facts:
-        facts = dict(facts)
-        if quality_ready_count is not None and "quality_check" in facts:
-            quality_input = facts["quality_check"].input_count
-            quality_output = min(quality_input, quality_ready_count)
-            facts["quality_check"] = StagePopulationFacts(
-                quality_input,
-                quality_output,
-                pending_count=quality_input - quality_output,
-                reasons={"quality_pending": quality_input - quality_output} if quality_input > quality_output else {},
-            )
-        rows = tuple(
-            (
-                stage,
-                facts[stage.value].input_count,
-                facts[stage.value].output_count,
-                facts[stage.value].rejected_count,
-                facts[stage.value].pending_count,
-                facts[stage.value].failed_count,
-                _stage_reasons(*tuple(sorted(facts[stage.value].reasons.items()))),
-            )
-            for stage in PIPELINE_STAGES[4:9]
-            if stage.value in facts
-        )
-        if len(rows) != 5:
-            raise ValueError("candidate facts must cover dynamic collection through quality check")
-    else:
-        rows = legacy_rows
-    if tuple(item.stage for item in static_stages) != PIPELINE_STAGES[:4]:
-        raise ValueError("static observations must cover the ordered first four stages")
-    if any(
-        left.output_batch_id != right.input_batch_id or left.output_count != right.input_count
-        for left, right in zip(static_stages, static_stages[1:], strict=False)
-    ):
-        raise ValueError("static observations must preserve their immutable handoffs")
-    snapshots = list(static_stages)
-    input_batch_id = snapshots[-1].output_batch_id
-    for stage, input_count, output_count, rejected_count, pending_count, failed_count, reasons in rows:
-        if stage is PipelineStage.DYNAMIC_MARKET:
-            actual_input = static_stages[-1].output_count
-            if actual_input < input_count:
-                raise ValueError("dynamic candidate facts exceed the static batch population")
-            gap = actual_input - input_count
-            input_count = actual_input
-            pending_count += gap
-            if gap:
-                reasons = (*reasons, *_stage_reasons(("dynamic_inputs_pending", gap)))
-        output_batch_id = f"{batch_id}:{stage.value}"
-        snapshots.append(
-            _stage_snapshot(
-                stage,
-                input_batch_id=input_batch_id,
-                output_batch_id=output_batch_id,
-                as_of=as_of,
-                input_count=input_count,
-                output_count=output_count,
-                rejected_count=rejected_count,
-                pending_count=pending_count,
-                failed_count=failed_count,
-                reasons=reasons,
-                source_health=source_health,
-                source_degraded=source_degraded and stage is PipelineStage.DATA_SOURCE,
-            )
-        )
-        input_batch_id = output_batch_id
-    return tuple(snapshots)
-
-
 def build_complete_stage_snapshots(
     first_nine: tuple[PipelineStageSnapshot, ...],
     pipeline: RecommendationPipelineStatus,
@@ -309,6 +129,11 @@ def build_complete_stage_snapshots(
 
     if tuple(item.stage for item in first_nine) != PIPELINE_STAGES[:9]:
         raise ValueError("complete pipeline snapshots require the ordered first nine stages")
+    if any(
+        left.output_batch_id != right.input_batch_id or left.output_count != right.input_count
+        for left, right in zip(first_nine, first_nine[1:])
+    ):
+        raise ValueError("input stage observations must preserve their immutable handoffs")
     previous = first_nine[-1]
     batch_root = first_nine[0].input_batch_id
     stage_groups = (
@@ -404,67 +229,12 @@ def _runtime_stage_reasons(
     return _stage_reasons(*tuple(sorted(counts.items())))
 
 
-def _stage_snapshot(
-    stage: PipelineStage,
-    *,
-    input_batch_id: str,
-    output_batch_id: str,
-    as_of: datetime,
-    input_count: int,
-    output_count: int,
-    rejected_count: int,
-    pending_count: int,
-    failed_count: int,
-    reasons: tuple[StageReasonAggregate, ...],
-    source_health: SourceHealth,
-    source_degraded: bool,
-) -> PipelineStageSnapshot:
-    state = _stage_state(input_count, output_count, pending_count, failed_count, source_degraded)
-    return PipelineStageSnapshot(
-        stage=stage,
-        stage_order=PIPELINE_STAGES.index(stage) + 1,
-        input_batch_id=input_batch_id,
-        output_batch_id=output_batch_id,
-        as_of=as_of,
-        state=state,
-        input_count=input_count,
-        output_count=output_count,
-        rejected_count=rejected_count,
-        pending_count=pending_count,
-        failed_count=failed_count,
-        reasons=reasons,
-        source_health=source_health,
-        latency_ms=0,
-        degraded=state is StageState.DEGRADED,
-    )
-
-
 def _stage_reasons(*values: tuple[str, int]) -> tuple[StageReasonAggregate, ...]:
     return tuple(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
         for code, count in values
         if count > 0
     )
-
-
-def _stage_state(
-    input_count: int,
-    output_count: int,
-    pending_count: int,
-    failed_count: int,
-    degraded: bool,
-) -> StageState:
-    # Preserve the distinction between an empty result and a stage that never
-    # received an input batch.
-    if input_count == 0 and output_count == 0 and not pending_count and not failed_count:
-        return StageState.NOT_READY
-    if failed_count and not output_count:
-        return StageState.FAILED
-    if not output_count and pending_count:
-        return StageState.NOT_READY
-    if degraded or pending_count or failed_count:
-        return StageState.DEGRADED
-    return StageState.READY
 
 
 def build_pending_pipeline(
@@ -577,7 +347,7 @@ def update_supply_status_decision(
         candidate_quote_eligible=refresh.output_count,
         candidate_score_threshold=candidate_score_threshold,
         decision=decision,
-        static_stages=current.stage_snapshots[:4],
+        input_stages=current.stage_snapshots[:9],
     )
 
 
@@ -1047,7 +817,6 @@ def _required_count(value: int | None) -> int:
 
 __all__ = [
     "build_complete_stage_snapshots",
-    "build_first_nine_stage_snapshots",
     "build_pending_pipeline",
     "build_supply_status",
     "update_supply_status_decision",

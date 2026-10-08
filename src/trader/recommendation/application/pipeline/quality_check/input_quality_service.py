@@ -20,6 +20,14 @@ from trader.recommendation.application.pipeline.stage_output import (
     stage_output,
 )
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
+from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import dynamic_source_health
+from trader.recommendation.domain.selection.scored_selection import SelectedCandidateInput
+from trader.recommendation.domain.candidate.filters import (
+    FilterSeverity,
+    HardFilterPolicy,
+    apply_filters,
+    level_two_filter_rules,
+)
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.evidence.quality import QualityAssessment, QualityState
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
@@ -364,10 +372,60 @@ def assess_quality_stage(
     )
 
 
+def assess_candidate_input_stage(
+    source: PipelineStageOutput[SelectedCandidateInput],
+    *,
+    as_of: datetime,
+    minimum_history_sessions: int,
+    latency_ms: int,
+    hard_filter: HardFilterPolicy | None = None,
+) -> PipelineStageOutput[FeatureSnapshot]:
+    """Assess the actual directed input for the selected reserve, including missing quotes."""
+    require_previous_stage(source, PipelineStage.QUALITY_CHECK)
+    validation_rules = tuple(
+        rule
+        for rule in level_two_filter_rules(max_age_seconds=30.0, policy=hard_filter)
+        if rule.severity is FilterSeverity.DEFERRED
+    )
+    accepted: list[FeatureSnapshot] = []
+    pending: Counter[str] = Counter()
+    for selected in source.records:
+        feature = selected.features
+        invalid = apply_filters(feature, validation_rules, now=as_of).deferred if feature is not None else ()
+        if feature is None:
+            pending["candidate_quotes_pending"] += 1
+        elif invalid:
+            reasons = tuple(reason.code for reason in invalid)
+            pending[next((reason for reason in reasons if reason in {"stale_quote", "future_quote"}), reasons[0])] += 1
+        elif not _security_master_complete(feature):
+            pending["security_master_pending"] += 1
+        elif not _history_complete(feature, minimum_history_sessions=minimum_history_sessions):
+            pending["strategy_history_insufficient"] += 1
+        else:
+            accepted.append(feature)
+    aggregates = tuple(
+        StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
+        for code, count in sorted(pending.items())
+    )
+    health = dynamic_source_health(tuple(item.features for item in source.records if item.features is not None), as_of)
+    return stage_output(
+        PipelineStage.QUALITY_CHECK,
+        accepted,
+        input_batch_id=source.snapshot.output_batch_id,
+        as_of=as_of,
+        input_count=len(source.records),
+        pending_count=sum(pending.values()),
+        reasons=aggregates,
+        source_health=health,
+        latency_ms=latency_ms,
+    )
+
+
 __all__ = [
     "ScoredInputQuality",
     "ScoredInputQualityStatus",
     "assess_quality_stage",
+    "assess_candidate_input_stage",
     "assess_scored_input_quality",
     "has_transient_candidate_gap",
 ]

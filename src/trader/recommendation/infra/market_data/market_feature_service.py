@@ -10,6 +10,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 
+from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import (
+    build_dynamic_market_snapshot,
+)
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
 from trader.recommendation.application.pipeline.static_filter.permanent_filter_service import (
     filter_permanent_eligibility,
@@ -120,6 +123,7 @@ class MarketFeatureService:
     ) -> FullMarketFeatureBatch:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("market observation time must be timezone aware")
+        observed_at = observed_at.astimezone(SHANGHAI)
         reference_epoch = self.reference_version()
         with self._eligibility_lock:
             cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
@@ -129,11 +133,15 @@ class MarketFeatureService:
             quotes = original_quotes
             if not quotes:
                 raise ValueError("cached market features require their original static input")
-            eligibility_batch, eligible_codes, static_stages = self._static_pipeline(
+            started = self._monotonic()
+            eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline(
                 quotes, reference_epoch, observed_at
             )
             features = tuple(feature for feature in cached_features if feature.quote.code in eligible_codes)
-            return FullMarketFeatureBatch(features, eligibility_batch, static_stages)
+            dynamic = build_dynamic_market_snapshot(
+                filtered, features, as_of=observed_at, latency_ms=self._elapsed_ms(started)
+            )
+            return FullMarketFeatureBatch(features, eligibility_batch, static_stages, dynamic)
         acquisition_started = self._monotonic()
         quotes = tuple(
             self.runner.run_data_task_until(
@@ -145,11 +153,13 @@ class MarketFeatureService:
                 deadline=deadline,
             )
         )
-        eligibility_batch, eligible_codes, static_stages = self._static_pipeline(
-            quotes, reference_epoch, observed_at, acquisition_started=acquisition_started
+        collection_ms = self._elapsed_ms(acquisition_started)
+        eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline(
+            quotes, reference_epoch, observed_at
         )
         raw_quotes = quotes
         quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
+        assembly_started = self._monotonic()
         history_codes = _history_population_codes(quotes)
         action_restrictions: dict[str, set[str]] = {}
         histories = self.history.load(
@@ -169,18 +179,24 @@ class MarketFeatureService:
         with self._eligibility_lock:
             published = self.quotes.publish_market_features(features, reference_epoch=reference_epoch)
             self._latest_market_quotes = raw_quotes
-        return FullMarketFeatureBatch(tuple(published), eligibility_batch, static_stages)
+        dynamic = build_dynamic_market_snapshot(
+            filtered,
+            tuple(published),
+            as_of=observed_at,
+            latency_ms=collection_ms + self._elapsed_ms(assembly_started),
+        )
+        return FullMarketFeatureBatch(tuple(published), eligibility_batch, static_stages, dynamic)
 
     def _static_pipeline(
         self,
         quotes: tuple[MarketQuote, ...],
         reference_epoch: str,
         observed_at: datetime,
-        *,
-        acquisition_started: float | None = None,
-    ) -> tuple[IssuerEligibilityBatch, frozenset[str], tuple[PipelineStageSnapshot, ...]]:
+    ) -> tuple[
+        IssuerEligibilityBatch, frozenset[str], tuple[PipelineStageSnapshot, ...], PipelineStageOutput[StaticIssuer]
+    ]:
         observed_at = observed_at.astimezone(SHANGHAI)
-        started = self._monotonic() if acquisition_started is None else acquisition_started
+        started = self._monotonic()
         read = self._static_market.read(quotes, reference_epoch)
         baseline = read.baseline
         root = f"static:{baseline.identity}:{observed_at.isoformat()}"
@@ -252,6 +268,7 @@ class MarketFeatureService:
             batch,
             frozenset(item.code for item in filtered.records),
             (source.snapshot, collected.snapshot, normalized.snapshot, filtered.snapshot),
+            filtered,
         )
 
     def _elapsed_ms(self, started: float) -> int:

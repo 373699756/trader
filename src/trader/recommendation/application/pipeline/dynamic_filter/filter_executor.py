@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime
 
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import (
@@ -13,6 +13,9 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feat
     assemble_scored_features,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
+    normalize_candidate_discovery_population,
+)
 from trader.recommendation.application.ports.market_data import DataPlaneReadPort
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
@@ -20,10 +23,12 @@ from trader.recommendation.domain.publication.models import ScoredSelectionResul
 from trader.recommendation.domain.selection.ranking import minimum_selection_score
 from trader.recommendation.domain.selection.scored_selection import (
     BoardCrossSectionFallback,
+    FilteredCandidateInputs,
     ScoredCandidatePlan,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
     plan_scored_candidates,
+    filter_candidate_inputs,
     select_scored,
 )
 
@@ -166,21 +171,13 @@ def plan_scored_feature_candidates(
     return plan_scored_candidates(_selection_request(features, policy, options, identity))
 
 
-def normalize_candidate_discovery_population(
+def filter_feature_candidates(
     features: Sequence[FeatureSnapshot],
-    evaluated_at: datetime,
-) -> tuple[FeatureSnapshot, ...]:
-    """Normalize one discovery population once before strategy-specific planning."""
-
-    normalized: list[FeatureSnapshot] = []
-    for feature in features:
-        source_time = min(evaluated_at, feature.quote.received_time)
-        normalized.append(
-            feature
-            if feature.quote.source_time == source_time
-            else replace(feature, quote=replace(feature.quote, source_time=source_time))
-        )
-    return tuple(normalized)
+    policy: RecommendationPolicy,
+    options: ScoredSelectionOptions,
+    identity: ScoredSelectionIdentity,
+) -> FilteredCandidateInputs:
+    return filter_candidate_inputs(_selection_request(features, policy, options, identity))
 
 
 def _selection_request(
@@ -252,7 +249,6 @@ __all__ = [
     "ScoredSelectionOptions",
     "ScoredSelectionUseCase",
     "assemble_scored_features",
-    "normalize_candidate_discovery_population",
     "plan_scored_feature_candidates",
     "select_scored_features",
     "select_scored_snapshot",

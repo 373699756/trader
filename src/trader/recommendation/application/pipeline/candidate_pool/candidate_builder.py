@@ -10,10 +10,12 @@ from types import MappingProxyType
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
-    normalize_candidate_discovery_population,
     plan_scored_feature_candidates,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
+    normalize_candidate_discovery_population,
+)
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_evaluation_gap
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,

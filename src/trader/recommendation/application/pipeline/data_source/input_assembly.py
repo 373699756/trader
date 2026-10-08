@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Mapping
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING
 
@@ -16,7 +16,7 @@ from trader.recommendation.application.ports.loaded_profile import ModelScoringC
 from trader.recommendation.application.runtime.cadence import task_execution_budget_seconds
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.publication.decision_identity import DecisionQuote, ScoredDecision
+from trader.recommendation.domain.publication.decision_identity import DecisionQuote
 from trader.recommendation.domain.publication.models import Strategy
 
 if TYPE_CHECKING:

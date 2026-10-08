@@ -83,6 +83,11 @@ def test_real_static_stages_leave_missing_identity_pending_before_history() -> N
     assert [(reason.code, reason.count) for reason in normalized.reasons] == [("static_identity_pending", 1)]
     assert all(stage.latency_ms > 0 for stage in first.static_stages)
     assert tuple(feature.quote.code for feature in first.features) == ("600001",)
+    assert first.dynamic_stage.records == first.features
+    assert first.dynamic_stage.snapshot.input_batch_id == first.static_stages[-1].output_batch_id
+    assert first.dynamic_stage.snapshot.input_count == first.static_stages[-1].output_count
+    assert first.dynamic_stage.snapshot.latency_ms > 0
+    assert first.dynamic_stage.snapshot.source_health.latest_success_at == NOW
     assert history.calls == ["600001"]
     assert all(
         left.output_count == right.input_count and left.output_batch_id == right.input_batch_id
@@ -95,6 +100,9 @@ def test_real_static_stages_leave_missing_identity_pending_before_history() -> N
     assert cached.static_stages[2].pending_count == 1
     assert cached.static_stages[0].source_health.age_seconds == 1
     assert first.static_stages[0].source_health.age_seconds == 0
+    assert cached.dynamic_stage.snapshot.source_health.age_seconds == 1
+    assert cached.dynamic_stage.snapshot.source_health.latest_success_at == NOW
+    assert cached.dynamic_stage.snapshot.output_batch_id != first.dynamic_stage.snapshot.output_batch_id
     gateway._quotes = tuple(
         replace(quote, price=quote.price + 1, received_time=NOW + timedelta(seconds=10)) for quote in gateway._quotes
     )
@@ -102,6 +110,7 @@ def test_real_static_stages_leave_missing_identity_pending_before_history() -> N
     assert refreshed.static_stages[1].reasons[0].code == "static_baseline_reused"
     assert refreshed.static_stages[0].source_health.age_seconds == 10
     assert refreshed.features[0].quote.price == first.features[0].quote.price + 1
+    assert refreshed.dynamic_stage.snapshot.source_health.latest_success_at == NOW + timedelta(seconds=10)
     assert first.features[0].quote.price == _quote().price
     assert gateway.calls == 2
     gateway.fail = True
