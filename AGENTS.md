@@ -91,5 +91,39 @@
 - 所有手工文件修改使用 `apply_patch`。禁止 `git reset --hard`、`git checkout --` 和擅自删除用户修改。
 - 提交前检查 `git status`、完整 diff、`git diff --check` 和暂存区；不得提交 `.runtime/`、`.venv/`、`dist/`、`build/`、缓存、截图或临时数据。
 - 每个独立批次只创建一个新提交并立即推送；禁止 amend、squash 或改写已推送历史。推送失败时保留本地提交并停止，成功核对上游后才能继续。
-- Git 提交日志的标题说明和正文必须使用中文；保留 Conventional Commit 的英文类型前缀及可选作用域，代码标识、命令和专有名词可保留原文。例如：`docs: 明确提交日志使用中文`。
+- Git 提交日志必须按第 8 节格式编写；标题说明和正文使用中文，类型、作用域、代码标识、命令和专有名词可保留原文。
 - 回退必须切换完整旧 release 及匹配数据副本；新数据不得写回旧运行库，不得现场破坏性改库。
+
+## 8. Git 提交日志与回溯
+
+本规范适用于后续新提交，不改写历史。提交日志保存该提交的简短事实摘要与检索入口；详细证据和活动进度仍只维护在 `docs/03_工程实施.md`。
+
+- 标题固定为 `<type>(<scope>): <中文具体变化>`，作用域必填。用“修复什么行为”或“新增什么能力”描述结果，禁止只写“优化”“更新”“继续修复”或阶段号。
+- 类型按实际改动选用 `feat`、`fix`、`refactor`、`perf`、`docs`、`test`、`build`、`ci`、`chore` 或 `revert`。作用域按主要责任边界固定选用 `download`、`training`、`recommendation`、`http_api`、`web`、`infra`、`bootstrap`、`packaging`、`tooling` 或 `docs`；跨边界提交选主要 owner，其余影响写入正文，不另造同义作用域。
+- 标题之后空一行，正文固定使用“原因”“改动”“验证”“未完成项”四个中文标签，每项一至两句。原因说明触发场景及已确认原因，未知原因明确写待定位；改动说明前后行为和必要的影响边界；验证写实际命令/检查与结果，区分测试、fixture和真实实测；未运行写明，未完成项没有则写“无”。
+- 正文后空一行，必填 `Stage: <台账阶段号>`，关联工程台账对应记录。复发问题另填 `Regression-Key: <既有稳定标识>`，同类问题沿用原标识；关联历史修复时可加 `Related-Commit: <提交哈希>`。不得虚构问题编号、回归标识或验证结果。
+- 公开合同发生不兼容变化时，标题使用 `<type>(<scope>)!:`，并追加 `BREAKING CHANGE: <中文说明及迁移要求>`；普通内部迁移不要误标。
+- 提交前对照暂存 diff 检查标题、正文和台账一致。多行日志通过消息文件和 `git commit --file` 提交，消息文件用 `apply_patch` 写入仓库外临时路径，保留真实换行且不纳入提交。
+
+示例（验证内容必须替换为本批实际结果）：
+
+```text
+docs(docs): 统一提交日志格式与回溯入口
+
+原因：仅有中文标题无法快速查到修改原因、验证结果及对应台账。
+改动：固定责任作用域、四项正文摘要和阶段关联，补充回归及不兼容变更标识。
+验证：完整暂存 diff Review 与 git diff --check 通过；仅文档修改，未运行测试。
+未完成项：无。
+
+Stage: 71
+```
+
+常用回溯命令：
+
+```bash
+git log --oneline --grep='fix(web):' --fixed-strings
+git log --format=fuller --grep='Stage: 71' --fixed-strings
+git log --format=fuller --grep='Regression-Key: <稳定标识>' --fixed-strings
+git log --oneline -- AGENTS.md
+git show <提交哈希>
+```
