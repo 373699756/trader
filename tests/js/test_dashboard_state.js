@@ -495,7 +495,11 @@ state.renderSummary(
             rejected_count: index === 3 ? 4969 : index === 6 ? 124 : 0,
             pending_count: 0,
             failed_count: 0,
-            reasons: [],
+            reasons: [{ code: [
+              "static_reference_unavailable", "static_baseline_loaded", "static_identity_pending", "historical_st",
+              "refresh_pending", "invalid_quote_structure", "insufficient_liquidity", "board_limit",
+              "quality_pending", "not_scored", "deepseek_applied", "local_only", "below_score_threshold", "industry_limit",
+            ][index], count: 360 }],
             latency_ms: 0,
           })),
         },
@@ -512,8 +516,24 @@ assert(canonicalObservationElements.observationStageList.innerHTML.includes("二
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("动态采集与清洗"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_write"'));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("输入 1 / 输出 0 / 业务拒绝 0 / 待补充 0 / 失败 1"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("耗时 125ms · 来源 unavailable · 来源年龄 20.0s"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("按操作计数，独立于股票人口"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("耗时 125毫秒 · 来源 不可用 · 距最近成功 20.0秒"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("按操作次数统计，不是股票数量"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("说明与原因：仅使用本地评分（360只）"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("文件或数据库读写失败（1次）"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("版本核对（排查结果是否一致）"));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes("输入身份"));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes("local_only"));
+assert(!canonicalObservationElements.observationStageList.innerHTML.includes("static_baseline_loaded"));
+for (const label of [
+  "官方证券总体尚未取得", "已加载证券基础资料", "证券基础资料待补充", "历史记录存在特别处理风险",
+  "行情待刷新", "行情结构待校验", "成交活跃度不足", "超过板块候选名额",
+  "评分输入待补充", "尚未完成评分", "DeepSeek 复核已应用", "仅使用本地评分", "最终分低于观察线", "超过行业集中度上限",
+]) assert(canonicalObservationElements.observationStageList.innerHTML.includes(label), label);
+assert.strictEqual(sandbox.window.TraderRender.pipelineFacetLabel("action_unavailable"), "不可入选");
+assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("api_key_missing"), "不可用：未配置 API 密钥");
+assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("intraday_reversal_atr"), "日内回撤超过近期正常波动幅度");
+assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("new_unmapped_code"), "原因说明暂未提供");
+assert.strictEqual(sandbox.window.TraderRender.pipelineReasonLabel("<script>alert(1)</script>"), "原因说明暂未提供");
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("decision:tomorrow:immutable"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="checkpoint_consume"'));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes('data-publication-operation="formal_restore"'));

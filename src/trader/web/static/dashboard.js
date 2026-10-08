@@ -157,6 +157,7 @@
   }
 
   function toggleObservationStage(event) {
+    if (event.target.closest(".publication-version-detail")) return;
     const stage = event.target.closest("[data-stage-toggle]");
     if (!stage || !els.observationStageList.contains(stage)) return;
     if (event.type === "keydown") event.preventDefault();

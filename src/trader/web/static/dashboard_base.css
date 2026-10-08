@@ -533,7 +533,17 @@ tr:focus-visible {
   display: grid;
   grid-template-columns: minmax(128px, 0.78fr) minmax(230px, 1.45fr);
   gap: 14px;
-  align-items: center;
+  align-items: start;
+}
+
+.publication-version-detail {
+  color: var(--muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.publication-version-detail > summary {
+  cursor: pointer;
 }
 
 .score-range-summary {

@@ -136,6 +136,84 @@
     local_only: "仅本地评分",
   };
 
+  const PIPELINE_REASON_LABELS = {
+    local_only: "仅使用本地评分", hybrid: "本地评分与 DeepSeek 复核已融合",
+    intraday_reversal_atr: "日内回撤超过近期正常波动幅度",
+    static_baseline_loaded: "已加载证券基础资料", static_baseline_reused: "沿用已加载的证券基础资料",
+    static_identity_pending: "证券基础资料待补充",
+    static_reference_unavailable: "官方证券总体尚未取得", static_reference_degraded: "官方证券总体刷新失败或已过期",
+    data_pending: "数据待补充", refresh_pending: "行情待刷新", quality_pending: "评分输入待补充",
+    quality_invalid: "评分输入无效", history_projection_loading: "正在加载本地历史数据",
+    historical_st: "历史记录存在特别处理风险", historical_audited_loss: "历史审计记录存在亏损",
+    historical_delisting_warning: "历史记录存在退市预警", confirmed_financial_fraud: "已确认财务造假",
+    confirmed_major_illegal: "已确认重大违法", confirmed_fund_occupation: "已确认资金占用",
+    confirmed_illegal_guarantee: "已确认违规担保", confirmed_forced_delisting: "已确认强制退市风险",
+    manual_permanent_blacklist: "人工列入长期排除名单", permanent_excluded: "不符合长期资格要求",
+    st_or_delisting: "特别处理或退市风险", blacklisted: "命中排除名单",
+    permanent_structured_negative_risk: "已确认长期负面风险", dynamic_structured_negative_risk: "已确认当前负面风险",
+    unsupported_code: "不属于支持的沪深股票范围", suspended: "停牌",
+    insufficient_liquidity: "成交活跃度不足", one_price_limit: "一字涨跌停",
+    new_listing_session: "新股上市交易日不足", relisted_first_session: "重新上市首个交易日",
+    delisting_period_first_session: "退市整理期首个交易日", major_regulatory_risk: "重大监管风险",
+    main_board_too_hot: "主板涨幅超过限制", chinext_board_too_hot: "创业板涨幅超过限制",
+    star_board_too_hot: "科创板涨幅超过限制", board_classification_conflict: "板块分类存在冲突",
+    board_identity_degraded: "板块分类资料不完整", missing_listing_date: "上市日期缺失",
+    missing_listing_age_sessions: "上市交易日数缺失", invalid_pct_change_value: "涨跌幅数据无效",
+    board_limit: "超过板块候选名额", board_candidate_limit: "超过板块候选名额",
+    candidate_score_below_minimum: "候选分未达到入池门槛", candidate_core_missing: "候选核心数据缺失",
+    strategy_history_insufficient: "策略所需历史交易日不足", production_model_features_missing: "模型输入字段缺失",
+    candidate_quotes_pending: "候选行情待补充", security_master_coverage_incomplete: "证券基础资料覆盖不完整",
+    below_score_threshold: "最终分低于观察线", filter_observe_only: "数据或风险限制，仅供观察",
+    observation_phase: "当前时段仅供观察", downside_guard: "下行保护触发，仅供观察",
+    not_scored: "尚未完成评分", deepseek_applied: "DeepSeek 复核已应用",
+    deepseek_abstain: "DeepSeek 未给出可用结论，保留本地评分", deepseek_failed: "DeepSeek 复核失败，保留本地评分",
+    deepseek_rejected: "DeepSeek 复核未通过校验", deepseek_late: "DeepSeek 复核迟到，未参与评分",
+    deepseek_review_unavailable: "DeepSeek 复核暂不可用", deepseek_manifest_mismatch: "复核证据与当前输入不一致",
+    deepseek_manifest_validation_failed: "复核证据校验失败", deepseek_review_time_invalid: "复核时间无效",
+    completed: "操作已完成", accepted: "已接纳当前结果", enqueued: "已加入待处理队列",
+    observer_capacity_rejected: "研究观察队列已满", formal_found: "已找到当日正式记录",
+    formal_missing: "尚无当日正式记录", checkpoint_found: "已找到恢复检查点",
+    checkpoint_missing: "尚无恢复检查点", checkpoint_ineligible: "检查点不符合恢复条件",
+    already_frozen: "已有冻结结果，沿用原记录", already_sealed: "已经封存，沿用原结果",
+    sealed: "结果已封存", frozen: "冻结结果已发布", scheduled_freeze_pending: "等待规定冻结时点",
+    index_restore_conflict: "恢复结果与当前版本冲突", index_commit_conflict: "冻结结果与当前版本冲突",
+    cas_mismatch: "结果版本已变化，本次未接纳", stale_trade_date: "交易日期已过期",
+    stale_sequence: "结果已被更新版本替代", sequence_conflict: "同一批次结果版本冲突",
+    hybrid_parent_mismatch: "融合结果对应的本地评分版本不一致", quote_anchor_missing: "原始报价缺失",
+    parent_mismatch: "当前结果与原评分版本不一致", trade_date_mismatch: "交易日期不一致",
+    stale_overlay: "报价更新已过期", quote_scope_mismatch: "报价股票范围不一致",
+    overlay_cas_mismatch: "报价所对应的评分版本已变化", overlay_conflict: "报价更新版本冲突",
+    quote_identity_mismatch: "报价版本不一致",
+    io_oserror: "文件或数据库读写失败", io_timeouterror: "读写操作超时",
+    io_runtimeerror: "发布或恢复操作失败", io_valueerror: "操作数据校验失败",
+  };
+
+  const PIPELINE_FACET_LABELS = {
+    filter_pass: "通过过滤", filter_observe: "仅供观察", filter_reject: "被过滤",
+    board_main: "主板候选", board_chinext: "创业板候选", board_star: "科创板候选",
+    candidate_features: "候选行情与特征", security_master: "证券基础资料", history: "历史行情",
+    review_completed: "已完成复核", local_only: "仅本地评分", hybrid: "融合评分",
+    executable_threshold_met: "达到执行线", observation_threshold_met: "达到观察线",
+    action_executable: "可执行", action_observe: "仅观察", action_unavailable: "不可入选",
+    selected_executable: "正式入选", selected_observe: "观察入选",
+  };
+
+  function pipelineReasonLabel(value) {
+    const reason = String(value || "").trim();
+    const label = PIPELINE_REASON_LABELS[reason] || ACTION_REASON_LABELS[reason]
+      || DEGRADED_REASON_LABELS[reason] || RISK_LABELS[reason] || DOWNSIDE_REASON_LABELS[reason]
+      || REVIEW_ERROR_LABELS[reason];
+    if (label) return label;
+    if (reason.startsWith("downside_guard:")) return "下行保护触发，仅供观察";
+    if (reason.startsWith("io_")) return "读写或发布操作失败";
+    if (/[\u3400-\u9fff]/u.test(reason)) return reason;
+    return "原因说明暂未提供";
+  }
+
+  function pipelineFacetLabel(value) {
+    return PIPELINE_FACET_LABELS[value] || "其他处理结果";
+  }
+
   function escapeHtml(value) {
     return String(value == null ? "" : value)
       .replaceAll("&", "&amp;")
@@ -602,6 +680,8 @@
     observationTableDefinition,
     observationTableRows,
     pct,
+    pipelineReasonLabel,
+    pipelineFacetLabel,
     reasonLabel,
     reasonLabels,
     row,

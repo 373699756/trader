@@ -279,7 +279,7 @@
     ["risk_review", "风险复核（含 DeepSeek）", false],
     ["score_merge", "固定 68/32 融合", false],
     ["downside_action", "下行保护与动作门", false],
-    ["final_selection", "TopK、集中度、冻结与发布", false],
+    ["final_selection", "择优入选、分散限制、冻结与发布", false],
   ]);
 
   function publicationIo(statusPayload, payload) {
@@ -298,15 +298,16 @@
   });
 
   function publicationIoMarkup(receipts) {
-    if (!receipts.length) return '<small>冻结与发布 I/O：暂无本进程操作回执</small>';
-    return '<small>冻结与发布 I/O（按操作计数，独立于股票人口；队列交接不代表消费完成）</small>'
+    if (!receipts.length) return '<small>冻结与发布操作：本次运行尚无操作记录</small>';
+    return '<small>冻结与发布操作（按操作次数统计，不是股票数量；加入队列后仍需等待处理）</small>'
       + receipts.map((item) => {
-        const reason = Array.isArray(item.reasons) ? item.reasons.map((r) => `${r.code} ${r.count}`).join(" · ") : "";
+        const reason = Array.isArray(item.reasons) ? item.reasons.map((r) => `${window.TraderRender.pipelineReasonLabel(r.code)}（${displayCount(r.count)}次）`).join(" · ") : "";
         const health = item.source_health || {};
-        const duration = Number.isFinite(item.latency_ms) ? `${item.latency_ms}ms` : "进行中";
-        const identity = item.decision_version || "尚未取得决策身份";
-        const text = `${PUBLICATION_OPERATIONS[item.operation] || item.operation} · ${stageStateLabel(item.state)} · 输入 ${item.input_count} / 输出 ${item.output_count} / 业务拒绝 ${item.rejected_count} / 待补充 ${item.pending_count} / 失败 ${item.failed_count} · 耗时 ${duration} · 来源 ${health.state || "—"} · 来源年龄 ${Number.isFinite(health.age_seconds) ? `${health.age_seconds.toFixed(1)}s` : "—"} · ${reason}`;
-        return `<small data-publication-operation="${escapeHtml(item.operation)}" data-state="${escapeHtml(item.state)}">${escapeHtml(text)}</small><small>输入身份：${escapeHtml(identity)}；输出身份：${escapeHtml(item.output_version || "—")}</small>`;
+        const duration = Number.isFinite(item.latency_ms) ? `${item.latency_ms}毫秒` : "进行中";
+        const identity = item.decision_version || "尚未取得评分结果版本";
+        const sourceState = ({ ready: "正常", degraded: "已降级", unavailable: "不可用", unknown: "未知" })[health.state] || "未知";
+        const text = `${PUBLICATION_OPERATIONS[item.operation] || "其他发布操作"} · ${stageStateLabel(item.state)} · 输入 ${item.input_count} / 输出 ${item.output_count} / 业务拒绝 ${item.rejected_count} / 待补充 ${item.pending_count} / 失败 ${item.failed_count} · 耗时 ${duration} · 来源 ${sourceState} · 距最近成功 ${Number.isFinite(health.age_seconds) ? `${health.age_seconds.toFixed(1)}秒` : "未知"}${reason ? ` · ${reason}` : ""}`;
+        return `<small data-publication-operation="${escapeHtml(item.operation)}" data-state="${escapeHtml(item.state)}">${escapeHtml(text)}</small><details class="publication-version-detail"><summary>版本核对（排查结果是否一致）</summary><small>操作所用评分版本：${escapeHtml(identity)}<br>操作产出版本：${escapeHtml(item.output_version || "尚无产出版本")}</small></details>`;
       }).join("");
   }
 
@@ -332,9 +333,10 @@
       const reasons = Array.isArray(stage && stage.reasons)
         ? stage.reasons
         : Array.isArray(stage && stage.reason_counts) ? stage.reason_counts : [];
-      const reasonText = reasons.slice(0, 3).map((reason) => `${reason.reason || reason.code} ${reason.count}`).join(" · ");
+      const reasonUnit = ["data_source", "static_market"].includes(stageKey) ? "项" : "只";
+      const reasonText = reasons.map((reason) => `${window.TraderRender.pipelineReasonLabel(reason.reason || reason.code)}（${displayCount(reason.count)}${reasonUnit}）`).join(" · ");
       const facets = Array.isArray(stage && stage.facets) ? stage.facets : [];
-      const facetText = facets.slice(0, 3).map((facet) => `${facet.key} ${displayCount(facet.count)}`).join(" · ");
+      const facetText = facets.map((facet) => `${window.TraderRender.pipelineFacetLabel(facet.key)} ${displayCount(facet.count)}只`).join(" · ");
       const duration = Number.isFinite(stage && stage.latency_ms)
         ? stage.latency_ms
         : Number.isFinite(stage && stage.duration_ms) ? stage.duration_ms : 0;
@@ -343,7 +345,7 @@
         ? `淘汰 ${displayCount(rejected)}`
         : `待就绪 ${displayCount(pending + failed)}`;
       const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
-      const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>主要原因：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKey === "final_selection" ? publicationIoMarkup(publicationReceipts) : ""}`;
+      const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKey === "final_selection" ? publicationIoMarkup(publicationReceipts) : ""}`;
       return `<article class="observation-stage" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}" data-stage-toggle="true" tabindex="0" role="button" aria-expanded="false"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span><div class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");
   }
