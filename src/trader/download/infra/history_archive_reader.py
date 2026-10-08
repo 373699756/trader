@@ -362,7 +362,12 @@ class SQLiteHistoryArchiveReader:
     def _shadow_repository(self, reference: HistorySnapshotPartition) -> SQLiteHistoryMonthPartitionRepository:
         """Open a read-only shadow reader without repeating sealed-file hashing."""
         year, month = _reference_month(reference)
-        return SQLiteHistoryMonthPartitionRepository(self._root / reference.relative_path, year, month)
+        return SQLiteHistoryMonthPartitionRepository(
+            self._root / reference.relative_path,
+            year,
+            month,
+            immutable_read=True,
+        )
 
 
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:

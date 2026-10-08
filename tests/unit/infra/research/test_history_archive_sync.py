@@ -4,6 +4,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -27,6 +28,7 @@ from trader.download.domain.history_sync import (
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_archive_sync import run_history_sync
+from trader.download.infra import history_archive_sync as history_sync_module
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 
@@ -130,6 +132,35 @@ def test_history_sync_configuration_owns_bounded_supplier_resources(tmp_path: Pa
         HistorySyncConfiguration(tmp_path, cancellation_grace_seconds=10.01)
     with pytest.raises(ValueError, match="configuration"):
         HistorySyncConfiguration(tmp_path, supplier_timeout_seconds=4.0, progress_heartbeat_seconds=5.0)
+
+
+def test_incremental_sync_skips_security_delisted_before_current_cutoff(tmp_path: Path) -> None:
+    security = BaoStockSecurity(
+        "600001",
+        "600001",
+        "main",
+        date(2000, 1, 1),
+        date(2026, 9, 5),
+        "test",
+    )
+    calendar = BaoStockCalendar((date(2026, 9, 1), date(2026, 9, 5), date(2026, 9, 9)))
+    context = HistorySupplierContext(
+        calendar,
+        (security,),
+        BaoStockSourceVersions("test", "3.12", ()),
+    )
+    supplier = FakeSupplier(tuple(calendar.open_dates))
+    download_context = history_sync_module._CodeDownloadContext(
+        _configuration(tmp_path),
+        context,
+        SimpleNamespace(data_cutoff=date(2026, 9, 8)),
+        frozenset({security.code}),
+    )
+
+    result = history_sync_module._download_for_security(supplier, download_context, security)
+
+    assert result.batch.cells == ()
+    assert supplier.calls == []
 
 
 @pytest.mark.parametrize(

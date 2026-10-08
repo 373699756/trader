@@ -43,7 +43,8 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
     assert report["status"] == "degraded"
     assert report["production_eligible"] is False
     assert report["raw_qfq_integrity"]["qfq_missing_rows"] == 0
-    assert report["request_baseline"]["theoretical_skippable_queries"] == 10
+    assert report["request_baseline"]["recent_refresh_raw_qfq_queries"] == 2
+    assert report["request_baseline"]["theoretical_skippable_queries"] == 1
 
 
 def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch) -> None:

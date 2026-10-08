@@ -338,6 +338,12 @@ def _download_for_security(
     expected = context.supplier_context.calendar.expected_dates(security)
     if not expected:
         return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
+    if (
+        context.active is not None
+        and security.delisted_on is not None
+        and security.delisted_on <= context.supplier_context.calendar.open_dates[-1]
+    ):
+        return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
     if context.active is None or security.code not in context.previous_codes:
         requested = expected
     else:

@@ -83,9 +83,10 @@ def build_shadow_report(root: Path) -> dict[str, object]:
         all(day in item.raw_dates and day in item.qfq_dates for day in recent_sessions)
         for item in facts.values()
     )
+    # One BaoStock query returns the complete requested date range. The five-day
+    # refresh window therefore changes row volume, not the number of calls.
     baseline_calls = len(universe) * 2
-    recent_baseline_calls = baseline_calls * len(recent_sessions)
-    candidate_skips = recent_reusable * 2 * len(recent_sessions)
+    candidate_skips = recent_reusable
     return {
         "schema_version": "baostock-qfq-shadow",
         "status": "degraded",
@@ -122,11 +123,11 @@ def build_shadow_report(root: Path) -> dict[str, object]:
             "raw_qfq_queries_per_security": 2,
             "active_universe_raw_qfq_queries": baseline_calls,
             "recent_refresh_sessions": len(recent_sessions),
-            "recent_refresh_raw_qfq_queries": recent_baseline_calls,
+            "recent_refresh_raw_qfq_queries": baseline_calls,
             "recent_fully_paired_securities": recent_reusable,
             "theoretical_skippable_queries": candidate_skips,
-            "theoretical_skip_rate": round(candidate_skips / recent_baseline_calls, 6)
-            if recent_baseline_calls
+            "theoretical_skip_rate": round(candidate_skips / baseline_calls, 6)
+            if baseline_calls
             else 0.0,
             "interpretation": "candidate_reuse_only_requires_external_action_change_evidence",
         },
