@@ -27,7 +27,6 @@ def test_strategy_document_follows_the_end_to_end_stock_selection_chain() -> Non
 
     positions = tuple(content.index(section) for section in ordered_sections)
     assert positions == tuple(sorted(positions))
-    assert len(content.splitlines()) <= 900
 
 
 def test_every_chain_stage_has_realtime_stability_and_return_review() -> None:

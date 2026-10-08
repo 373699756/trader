@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
@@ -331,25 +333,53 @@ def test_not_ready_current_exposes_observation_draft_without_formal_items() -> N
     assert view.etag == draft.content_hash
 
 
-def test_current_never_exposes_observation_draft_after_freeze_boundary() -> None:
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize(
+    ("hour", "minute", "second", "visible"),
+    (
+        (9, 25, 0, True),
+        (14, 40, 0, True),
+        (14, 50, 0, True),
+        (14, 59, 59, True),
+        (15, 0, 0, False),
+        (15, 0, 1, False),
+        (15, 5, 0, False),
+    ),
+)
+def test_observation_draft_visibility_follows_close_boundary(
+    strategy: Strategy, hour: int, minute: int, second: int, visible: bool
+) -> None:
+    now = NOW.replace(hour=hour, minute=minute, second=second)
     drafts = UnifiedDecisionDraftIndex()
+    item = _item("600001", RecommendationAction.OBSERVE, rank=1, final_score=74.0)
+    assert item.quote is not None
     draft = replace(
         _decision(),
-        items=(_item("600001", RecommendationAction.OBSERVE, rank=1, final_score=74.0),),
+        strategy=strategy,
+        observed_at=now,
+        items=(replace(item, quote=replace(item.quote, source_time=now)),),
     )
     assert drafts.publish(draft).accepted
 
-    class _FrozenClock:
+    class _BoundaryClock:
         def now(self) -> datetime:
-            return NOW.replace(hour=14, minute=50)
+            return now
 
-    view = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _FrozenClock()).current(
-        Strategy.TOMORROW
-    )
+    view = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _BoundaryClock()).current(strategy)
 
     assert view.status == "not_ready"
-    assert view.draft is None
-    assert view.etag is None
+    assert view.items == ()
+    assert view.decision_version is None
+    assert view.frozen is False
+    if visible:
+        assert view.draft is not None
+        assert view.draft.decision_version == draft.version
+        assert [item.code for item in view.draft.items] == ["600001"]
+        assert view.etag == draft.content_hash
+    else:
+        assert view.draft is None
+        assert view.top_scores == ()
+        assert view.etag is None
 
 
 def test_draft_index_rejects_older_and_conflicting_decisions() -> None:

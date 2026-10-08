@@ -6,14 +6,18 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from tests.unit.domain.test_decision_identity import decision
 from trader.infra.settings import load_strategy_settings
+from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
     DecisionRuntimeIdentity,
     ScoredFreezeCoordinator,
 )
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
+from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 
@@ -52,26 +56,167 @@ def _publish(index: UnifiedDecisionIndex, value: ScoredDecision) -> None:
     assert index.publish(value, expected_version=None).accepted
 
 
-def test_checkpoint_recovers_same_decision_identity_after_restart(tmp_path: Path) -> None:
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_checkpoint_recovers_same_decision_identity_after_restart(tmp_path: Path, strategy: Strategy) -> None:
     repository = SQLiteDecisionRecordRepository(tmp_path)
     repository.initialize()
     before = UnifiedDecisionIndex()
-    current = replace(decision(), observed_at=_at(14, 59, 35))
+    current = replace(decision(strategy), observed_at=_at(14, 59, 35))
     _publish(before, current)
     clock = _Clock(_at(14, 59, 40))
 
-    assert _coordinator(before, repository, clock).capture_checkpoint().status == "checkpoint_saved"
+    assert _coordinator(before, repository, clock, strategy).capture_checkpoint().status == "checkpoint_saved"
 
+    repository = SQLiteDecisionRecordRepository(tmp_path)
     restored = UnifiedDecisionIndex()
     clock.value = _at(15, 0)
-    result = _coordinator(restored, repository, clock, strategy=Strategy.TOMORROW).freeze_scheduled()
+    result = _coordinator(restored, repository, clock, strategy).freeze_scheduled()
 
     assert result.status == "frozen"
     assert result.record is not None
     assert result.record.commit_kind == "checkpoint_recovery"
-    restored_current = restored.snapshot(Strategy.TOMORROW).current
+    restored_current = restored.snapshot(strategy).current
     assert isinstance(restored_current, ScoredDecision)
     assert result.record.decision.content_hash == restored_current.content_hash
+    _assert_formal_current_and_history(restored, repository, clock, result.record)
+
+
+def _assert_formal_current_and_history(
+    index: UnifiedDecisionIndex,
+    repository: SQLiteDecisionRecordRepository,
+    clock: _Clock,
+    record: CommittedDecisionRecord,
+) -> None:
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), repository, clock)
+    for at in (_at(15, 0), _at(15, 0, 1), _at(15, 5)):
+        if at < clock.value:
+            continue
+        clock.value = at
+        current = queries.current(record.strategy)
+        history = queries.history(record.strategy, record.trade_date)
+        for view in (current, history):
+            assert view.status == "ready"
+            assert view.frozen is True
+            assert view.frozen_at == record.committed_at
+            assert view.freeze_kind == record.commit_kind
+            assert view.decision_version == record.decision.version
+            assert view.content_hash == record.decision.content_hash
+            assert view.input_versions == record.decision.input_versions
+            assert view.draft is None
+        assert current.items == history.items
+        assert current.top_scores == history.top_scores
+        assert repository.load(record.strategy, record.trade_date) == record
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("cold_read", (False, True), ids=("hot", "cold"))
+def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Strategy, cold_read: bool) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    index = UnifiedDecisionIndex()
+    drafts = UnifiedDecisionDraftIndex()
+    clock = _Clock(_at(9, 25))
+    coordinator = _coordinator(index, repository, clock, strategy)
+    queries = UnifiedDecisionQueries(index, drafts, repository, clock)
+    previous_version: str | None = None
+    for sequence, at in enumerate((_at(9, 25), _at(14, 40), _at(14, 50), _at(14, 59, 59)), start=1):
+        clock.value = at
+        base = decision(strategy, sequence=sequence)
+        item = base.items[0]
+        assert item.quote is not None
+        current = replace(base, observed_at=at, items=(replace(item, quote=replace(item.quote, source_time=at)),))
+        assert index.publish(current, expected_version=previous_version).accepted
+        previous_version = current.version
+        assert drafts.publish(current).accepted
+        assert coordinator.freeze_scheduled().status == "before_freeze"
+        assert repository.load(strategy, current.trade_date) is None
+        view = queries.current(strategy)
+        assert view.status == "ready"
+        assert view.frozen is False
+        assert view.decision_version == current.version
+
+    clock.value = _at(15, 0)
+    missing_formal = queries.current(strategy)
+    assert missing_formal.status == "not_ready"
+    assert missing_formal.items == ()
+    assert missing_formal.draft is None
+    assert missing_formal.etag is None
+
+    result = coordinator.freeze_scheduled()
+    assert result.status == "frozen"
+    assert result.record is not None
+    assert result.record.commit_kind == "scheduled"
+    assert result.record.committed_at == _at(15, 0)
+    assert result.record.decision.content_hash == current.content_hash
+    if cold_read:
+        repository = SQLiteDecisionRecordRepository(tmp_path)
+        index = UnifiedDecisionIndex()
+        coordinator = _coordinator(index, repository, clock, strategy)
+        assert UnifiedDecisionQueries(index, drafts, repository, clock).current(strategy).status == "not_ready"
+        restored = coordinator.restore(current.trade_date)
+        assert restored.status == "already_frozen"
+        assert restored.record == result.record
+    _assert_formal_current_and_history(index, repository, clock, result.record)
+
+    late = replace(current, sequence=99, observed_at=_at(15, 5), degraded_reasons=("late_result",))
+    assert not index.publish(late, expected_version=current.version).accepted
+    assert coordinator.freeze_scheduled().record == result.record
+    assert (
+        coordinator.freeze_close_fallback(
+            late, recovery_path="close_rebuild", official_close_version="official-close:20260811"
+        ).record
+        == result.record
+    )
+    assert repository.load(strategy, current.trade_date) == result.record
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("cold_start", (False, True), ids=("hot-current", "cold-rebuild"))
+@pytest.mark.parametrize("recovery_minute", (0, 5), ids=("at-close", "after-close"))
+def test_close_fallback_admission_and_recovered_formal_reads(
+    tmp_path: Path, strategy: Strategy, cold_start: bool, recovery_minute: int
+) -> None:
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository.initialize()
+    index = UnifiedDecisionIndex()
+    current = replace(decision(strategy), observed_at=_at(14, 59, 59))
+    if not cold_start:
+        _publish(index, current)
+    clock = _Clock(_at(14, 59, 59))
+    coordinator = _coordinator(index, repository, clock, strategy)
+    recovery_path = "close_rebuild" if cold_start else "current"
+    before = coordinator.freeze_close_fallback(
+        current, recovery_path=recovery_path, official_close_version="official-close:20260811"
+    )
+    assert before.status == "before_close_recovery"
+    assert repository.load(strategy, current.trade_date) is None
+
+    clock.value = _at(15, recovery_minute)
+    invalid = coordinator.freeze_close_fallback(
+        current, recovery_path=recovery_path, official_close_version="candidate-initial"
+    )
+    assert invalid.status == "invalid_official_close"
+    assert repository.load(strategy, current.trade_date) is None
+    result = coordinator.freeze_close_fallback(
+        current, recovery_path=recovery_path, official_close_version="official-close:20260811"
+    )
+    assert result.status == "frozen"
+    assert result.record is not None
+    assert result.record.commit_kind == "close_fallback"
+    assert dict(result.record.decision.input_versions)["official_close"] == "official-close:20260811"
+    _assert_formal_current_and_history(index, repository, clock, result.record)
+
+    repository = SQLiteDecisionRecordRepository(tmp_path)
+    restored = UnifiedDecisionIndex()
+    coordinator = _coordinator(restored, repository, clock, strategy)
+    duplicate = coordinator.freeze_close_fallback(
+        replace(current, sequence=99, observed_at=clock.value, degraded_reasons=("late_result",)),
+        recovery_path="close_rebuild",
+        official_close_version="official-close:20260811-later",
+    )
+    assert duplicate.status == "already_frozen"
+    assert duplicate.record == result.record
+    _assert_formal_current_and_history(restored, repository, clock, result.record)
 
 
 def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_path: Path) -> None:
