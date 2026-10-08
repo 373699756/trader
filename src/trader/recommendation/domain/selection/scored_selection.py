@@ -371,14 +371,15 @@ def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
     observations = tuple(item for item in scored if item.disposition is ScoredDisposition.OBSERVE_ONLY)
     selected = tuple(evaluations[code] for code in selected_codes)
     return ScoredSelectionResult(
-        ordered_evaluations,
-        scored,
-        observations,
-        selected,
-        plan.population_versions,
-        plan.hard_filter_reason_counts,
-        plan.population_rejected_count,
-        plan.population_filter_reason_counts,
+        evaluations=ordered_evaluations,
+        scored_candidates=scored,
+        observations=observations,
+        selected=selected,
+        population_versions=plan.population_versions,
+        hard_filter_reason_counts=plan.hard_filter_reason_counts,
+        population_rejected_count=plan.population_rejected_count,
+        population_filter_reason_counts=plan.population_filter_reason_counts,
+        stage_counts=plan.stage_counts,
     )
 
 
@@ -571,7 +572,7 @@ def _build_stage_facts(
     reserve_codes = {code for codes in reserves.values() for code in codes}
     board_limited = max(0, candidate_score_eligible - candidate_limit_selected)
     candidate_excluded = max(0, dynamic_output - candidate_score_eligible)
-    candidate_rejection_reasons = Counter()
+    candidate_rejection_reasons: Counter[str] = Counter()
     for item in candidates.values():
         if item.code not in dynamic_output_codes:
             continue

@@ -70,22 +70,10 @@ def build_supply_status(
     if candidate_stage_counts is not None:
         stage_counts = candidate_stage_counts
     else:
-        # Business-eligible stocks are also input-ready, so the estimate never falls below
-        # dynamic eligibility even when pending counts also cover candidate features.
-        business_eligible = max(0, quality.population_count - quality.population_rejected_count)
-        ready_estimate = max(
-            0,
-            quality.population_count - quality.data_pending_count - quality.refresh_pending_count,
-        )
-        stage_counts = ScoredCandidateStageCounts(
-            issuer_eligible_population=quality.population_count,
-            input_ready_population=max(business_eligible, ready_estimate),
-            dynamic_filter_eligible=business_eligible,
-            strategy_history_eligible=quality.history_covered_count,
-            model_input_eligible=quality.history_covered_count,
-            candidate_score_eligible=quality.candidate_scored_count,
-            candidate_limit_selected=quality.candidate_scored_count,
-        )
+        selection_stage_counts = projection.selection.stage_counts
+        if selection_stage_counts is None:
+            raise ValueError("scored input status requires immutable candidate stage facts")
+        stage_counts = selection_stage_counts
     reported_quote_eligible = (
         quality.candidate_feature_count if candidate_quote_eligible is None else candidate_quote_eligible
     )
@@ -585,23 +573,10 @@ def update_supply_status_decision(
     *,
     candidate_score_threshold: float,
 ) -> InputQualityStatus:
-    pipeline = current.pipeline
-    readiness = pipeline.stage("input_readiness")
-    dynamic = pipeline.stage("dynamic_filter")
-    history = pipeline.stage("strategy_history")
-    model = pipeline.stage("model_input")
-    candidate = pipeline.stage("candidate_score")
-    board_limit = pipeline.stage("board_limit")
-    refresh = pipeline.stage("candidate_refresh")
-    stage_counts = ScoredCandidateStageCounts(
-        issuer_eligible_population=_required_count(readiness.input_count),
-        input_ready_population=_required_count(readiness.output_count),
-        dynamic_filter_eligible=_required_count(dynamic.output_count),
-        strategy_history_eligible=_required_count(history.output_count),
-        model_input_eligible=_required_count(model.output_count),
-        candidate_score_eligible=_required_count(candidate.output_count),
-        candidate_limit_selected=_required_count(board_limit.output_count),
-    )
+    stage_counts = projection.selection.stage_counts
+    if stage_counts is None:
+        raise ValueError("decision update requires immutable candidate stage facts")
+    refresh = current.pipeline.stage("candidate_refresh")
     return build_supply_status(
         projection,
         stage_counts,

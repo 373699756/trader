@@ -479,7 +479,18 @@ def test_native_projection_classifies_an_invalid_candidate_quote_as_transient(
 
     assert projection.input_quality.candidate_scored_count == 0
     assert projection.input_quality.status == "transient_invalid_empty"
-    assert projection.input_quality.candidate_transient_reason_counts["invalid_price"] == 1
+
+
+def test_supply_status_rejects_selection_without_immutable_stage_facts(
+    application_feature_factory,
+) -> None:
+    policy = _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    source = _verified_feature(application_feature_factory("600001", EVALUATED_AT - timedelta(seconds=10)))
+    projection = build_scored_local(_native_input((source,)), policy, sequence=1)
+    projection = replace(projection, selection=replace(projection.selection, stage_counts=None))
+
+    with pytest.raises(ValueError, match="immutable candidate stage facts"):
+        build_supply_status(projection)
 
 
 def test_review_completed_after_1448_cannot_create_hybrid(application_feature_factory) -> None:

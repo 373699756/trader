@@ -16,6 +16,7 @@ from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 
 if TYPE_CHECKING:
     from trader.recommendation.domain.risk.downside import DownsideAssessment
+    from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
 
 _STRUCTURED_REASON = re.compile(r"^[a-z0-9_]{1,64}$")
 
@@ -149,6 +150,7 @@ class ScoredSelectionResult:
     hard_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
     population_rejected_count: int = 0
     population_filter_reason_counts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    stage_counts: ScoredCandidateStageCounts | None = None
 
     def __post_init__(self) -> None:
         if self.population_rejected_count < 0:
