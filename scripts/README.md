@@ -26,3 +26,24 @@ Repeated download, training, scoring, or status workflows belong to
 Every retained or newly added tool must have a bounded input/output contract,
 an explicit network/write declaration, and an entry in this table before it is
 used by a gate or documented command.
+
+History archive performance is available through the unified read-only diagnostic:
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile history-archive --output -
+```
+
+It reads monthly SQLite headers, samples page classes, benchmarks latest-row
+queries, and writes a bounded revision fixture only to a disposable temporary
+database. It does not compact or switch the active archive. Maintenance rules
+are in [the architecture contract](../docs/项目重构详细.md), section 3.5.1.1;
+training performance is explained in [the training guide](../docs/04_策略回溯.md),
+section 12.4. The repack tool remains a separate explicit maintenance operation;
+its default paths do not authorize active-data changes. During refactoring,
+rehearse only on explicit repository-external copies as required by section 10.5
+of the architecture contract.
+
+Test commands and fast/full boundaries are defined by Makefile and documented
+in the architecture contract, section 10.2.1. Default `make test` runs the fast
+set; release acceptance also requires `make test-full`. Work status and pending
+optimizations are recorded only in `docs/03_工程实施.md`.
