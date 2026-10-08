@@ -41,6 +41,7 @@ from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteC
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.history_recovery import HistoryRecoveryStatus
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _history_population_codes,
     _history_preload_codes,
@@ -222,6 +223,7 @@ class _FixtureHistory:
             maintenance_stage=None,
             maintenance_completed_units=0,
             maintenance_total_units=0,
+            recovery=HistoryRecoveryStatus(0, 0, 0, 0, None, None),
         )
 
     def read_outcome_bars(self, codes, _observed_at):

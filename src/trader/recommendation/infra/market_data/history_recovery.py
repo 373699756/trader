@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError, as_completed
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime
+from functools import partial
 from typing import Callable, Protocol
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
@@ -30,6 +32,12 @@ class HistoryRecoveryStatus:
     timeout_count: int
     last_source: str | None
     last_error: str | None
+    requested_count: int = 0
+    cache_hit_count: int = 0
+    dispatched_count: int = 0
+    deferred_count: int = 0
+    inflight_count: int = 0
+    latency_ms: int = 0
 
 
 class HistoryRecovery:
@@ -53,14 +61,9 @@ class HistoryRecovery:
         max_batch_size: int = 120,
         ttl_seconds: float = 900.0,
         wall_clock: Callable[[], datetime] = datetime.now,
+        monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if (
-            workers < 1
-            or minimum_rows < 1
-            or batch_timeout_seconds <= 0.0
-            or max_batch_size < 1
-            or ttl_seconds <= 0.0
-        ):
+        if workers < 1 or minimum_rows < 1 or batch_timeout_seconds <= 0.0 or max_batch_size < 1 or ttl_seconds <= 0.0:
             raise ValueError("history recovery limits must be positive")
         self._primary = primary
         self._fallback = fallback
@@ -71,9 +74,13 @@ class HistoryRecovery:
         self._max_batch_size = max_batch_size
         self._ttl_seconds = ttl_seconds
         self._wall_clock = wall_clock
+        self._monotonic_clock = monotonic_clock
         self._lock = threading.Lock()
         self._status = HistoryRecoveryStatus(0, 0, 0, 0, None, None)
-        self._recent: dict[str, tuple[tuple[DailyBar, ...], datetime]] = {}
+        self._recent: dict[str, tuple[tuple[DailyBar, ...], float]] = {}
+        self._attempt_order: dict[str, int] = {}
+        self._attempt_sequence = 0
+        self._inflight: set[str] = set()
 
     def recover(
         self,
@@ -83,86 +90,139 @@ class HistoryRecovery:
         deadline: datetime | None,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         requested = tuple(dict.fromkeys(code for code in codes if code.strip()))
-        if not requested:
-            return {}
-        now = self._wall_clock()
+        started = self._monotonic_clock()
+        budget = self._batch_timeout_seconds
+        if deadline is not None:
+            budget = min(budget, max(0.0, (deadline - self._wall_clock()).total_seconds()))
+        monotonic_deadline = started + budget
         with self._lock:
-            self._recent = {
-                code: item for code, item in self._recent.items() if item[1] > now
-            }
+            self._recent = {code: item for code, item in self._recent.items() if item[1] > started}
             results = {code: self._recent[code][0] for code in requested if code in self._recent}
-        missing = tuple(code for code in requested if code not in results)
-        selected = missing[: self._max_batch_size]
+            missing = tuple(code for code in requested if code not in results)
+            # Only dispatched work advances the cursor. Failed codes move to
+            # the tail too, while unstarted waves retain their priority.
+            selected = tuple(
+                sorted(
+                    (code for code in missing if code not in self._inflight),
+                    key=lambda code: (self._attempt_order.get(code, 0), code),
+                )[: self._max_batch_size]
+            )
+            self._inflight.update(selected)
+        cache_hits = len(results)
         failures = 0
         timeouts = 0
         successful_recoveries = 0
         last_source: str | None = None
         last_error: str | None = None
-        effective_deadline = deadline or (self._wall_clock() + timedelta(seconds=self._batch_timeout_seconds))
-        with borrow_executor(
-            self._worker_pool,
-            BorrowExecutorOptions(
-                worker_count=min(self._workers, len(requested)),
-                queue_capacity=len(requested),
-                thread_name_prefix="history-recovery",
-                nested_inline=True,
-                wait_on_exit=False,
-            ),
-        ) as pool:
-            for offset in range(0, len(selected), self._workers):
-                wave = selected[offset : offset + self._workers]
-                futures: dict[Future[tuple[str, tuple[DailyBar, ...], str]], str] = {
-                    (future := submit_or_run_inline(pool, self._recover_one, code, days)): code for code in wave
-                }
-                try:
-                    for future in as_completed(futures, timeout=self._remaining_seconds(effective_deadline)):
-                        code = futures[future]
+        dispatched: dict[Future[tuple[str, tuple[DailyBar, ...], str]], str] = {}
+        try:
+            if selected and self._remaining_seconds(monotonic_deadline) > 0.0:
+                with borrow_executor(
+                    self._worker_pool,
+                    BorrowExecutorOptions(
+                        worker_count=min(self._workers, len(selected)),
+                        queue_capacity=len(selected),
+                        thread_name_prefix="history-recovery",
+                        nested_inline=True,
+                        wait_on_exit=False,
+                    ),
+                ) as pool:
+                    for offset in range(0, len(selected), self._workers):
+                        if self._remaining_seconds(monotonic_deadline) <= 0.0:
+                            last_error = "history_recovery_deadline_exceeded"
+                            break
+                        wave = selected[offset : offset + self._workers]
+                        futures: dict[Future[tuple[str, tuple[DailyBar, ...], str]], str] = {}
+                        for code in wave:
+                            if self._remaining_seconds(monotonic_deadline) <= 0.0:
+                                break
+                            with self._lock:
+                                self._attempt_sequence += 1
+                                self._attempt_order[code] = self._attempt_sequence
+                            future = submit_or_run_inline(pool, self._recover_one, code, days, monotonic_deadline)
+                            futures[future] = code
+                            dispatched[future] = code
+                        completed: set[Future[tuple[str, tuple[DailyBar, ...], str]]] = set()
                         try:
-                            recovered_code, bars, source = future.result()
-                        except Exception as exc:  # vendor adapters classify the failure at this boundary
-                            failures += 1
-                            last_error = type(exc).__name__
-                            continue
-                        if recovered_code == code and bars:
-                            results[code] = bars
-                            successful_recoveries += 1
-                            last_source = source
-                        else:
-                            failures += 1
-                            last_error = "history_no_usable_qfq_rows"
-                except FutureTimeoutError:
-                    pending = tuple(future for future in futures if not future.done())
-                    timeouts += len(pending)
-                    failures += len(pending)
-                    for future in pending:
-                        future.cancel()
-                    last_error = "history_recovery_deadline_exceeded"
-                    break
-
-        with self._lock:
-            expires_at = self._wall_clock() + timedelta(seconds=self._ttl_seconds)
-            self._recent.update({code: (bars, expires_at) for code, bars in results.items() if code in selected})
-            self._status = HistoryRecoveryStatus(
-                planned_count=len(selected),
-                success_count=successful_recoveries,
-                failure_count=failures,
-                timeout_count=timeouts,
-                last_source=last_source,
-                last_error=last_error,
-            )
+                            for future in as_completed(futures, timeout=self._remaining_seconds(monotonic_deadline)):
+                                completed.add(future)
+                                code = futures[future]
+                                try:
+                                    if self._remaining_seconds(monotonic_deadline) <= 0.0:
+                                        raise TimeoutError("history recovery deadline exceeded")
+                                    recovered_code, bars, source = future.result()
+                                except TimeoutError:
+                                    failures += 1
+                                    timeouts += 1
+                                    last_error = "history_recovery_deadline_exceeded"
+                                    continue
+                                except Exception as exc:  # vendor boundary
+                                    failures += 1
+                                    last_error = type(exc).__name__
+                                    continue
+                                if recovered_code == code and bars:
+                                    results[code] = bars
+                                    successful_recoveries += 1
+                                    last_source = source
+                                else:
+                                    failures += 1
+                                    last_error = "history_no_usable_qfq_rows"
+                        except FutureTimeoutError:
+                            pending = tuple(future for future in futures if future not in completed)
+                            timeouts += len(pending)
+                            failures += len(pending)
+                            for future in pending:
+                                future.cancel()
+                            last_error = "history_recovery_deadline_exceeded"
+                            break
+            elif missing and budget <= 0.0:
+                last_error = "history_recovery_deadline_exceeded"
+        finally:
+            with self._lock:
+                expires_at = self._monotonic_clock() + self._ttl_seconds
+                self._recent.update({code: (bars, expires_at) for code, bars in results.items() if code in selected})
+                pending_futures = tuple((future, code) for future, code in dispatched.items() if not future.done())
+                pending_codes = {code for _, code in pending_futures}
+                self._inflight.difference_update(code for code in selected if code not in pending_codes)
+                self._status = HistoryRecoveryStatus(
+                    planned_count=len(selected),
+                    success_count=successful_recoveries,
+                    failure_count=failures,
+                    timeout_count=timeouts,
+                    last_source=last_source,
+                    last_error=last_error,
+                    requested_count=len(requested),
+                    cache_hit_count=cache_hits,
+                    dispatched_count=len(dispatched),
+                    deferred_count=len(missing) - len(dispatched),
+                    inflight_count=len(self._inflight),
+                    latency_ms=max(0, int((self._monotonic_clock() - started) * 1000)),
+                )
+            # Late completions only release reservations. They cannot publish
+            # stale bars into this or a subsequent feature batch.
+            for future, code in pending_futures:
+                future.add_done_callback(partial(self._release_inflight, code=code))
         return results
 
     def status(self) -> HistoryRecoveryStatus:
         with self._lock:
-            return self._status
+            return replace(self._status, inflight_count=len(self._inflight))
 
-    def _recover_one(self, code: str, days: int) -> tuple[str, tuple[DailyBar, ...], str]:
+    def _release_inflight(self, _future: Future[tuple[str, tuple[DailyBar, ...], str]], *, code: str) -> None:
+        with self._lock:
+            self._inflight.discard(code)
+
+    def _recover_one(self, code: str, days: int, deadline: float) -> tuple[str, tuple[DailyBar, ...], str]:
+        if self._remaining_seconds(deadline) <= 0.0:
+            raise TimeoutError("history recovery deadline exceeded")
         try:
             primary = self._valid_qfq(self._primary.fetch_history(code, days=days))
         except Exception:
             primary = ()
         if len(primary) >= self._minimum_rows:
             return code, primary[-days:], "primary"
+        if self._remaining_seconds(deadline) <= 0.0:
+            raise TimeoutError("history recovery deadline exceeded")
         try:
             fallback = self._valid_qfq(self._fallback.fetch_history(code, days=days))
         except Exception:
@@ -179,10 +239,8 @@ class HistoryRecovery:
             return ()
         return ordered
 
-    def _remaining_seconds(self, deadline: datetime | None) -> float:
-        if deadline is None:
-            return self._batch_timeout_seconds
-        return max(0.0, min(self._batch_timeout_seconds, (deadline - self._wall_clock()).total_seconds()))
+    def _remaining_seconds(self, deadline: float) -> float:
+        return max(0.0, deadline - self._monotonic_clock())
 
 
 __all__ = ["HistoryRecovery", "HistoryRecoveryStatus", "HistorySource"]

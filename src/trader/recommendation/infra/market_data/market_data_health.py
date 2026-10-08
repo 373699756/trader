@@ -12,7 +12,6 @@ from trader.infra.market_data.providers.tushare import TushareHealthStatus
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
-from trader.recommendation.infra.market_data.history_recovery import HistoryRecoveryStatus
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary, _reference_epoch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
@@ -52,7 +51,7 @@ class MarketDataHealth:
         measured_at = self._wall_clock()
         quote_status = self._quotes.status()
         history = self._history.status()
-        recovery = getattr(history, "recovery", HistoryRecoveryStatus(0, 0, 0, 0, None, None))
+        recovery = history.recovery
         eligibility = self._eligibility.status()
         research = self._research.status()
         intraday = self._intraday.status()
@@ -198,6 +197,12 @@ class MarketDataHealth:
                     "history_recovery_timeout_count": recovery.timeout_count,
                     "history_recovery_last_source": recovery.last_source,
                     "history_recovery_last_error": recovery.last_error,
+                    "history_recovery_requested_count": recovery.requested_count,
+                    "history_recovery_cache_hit_count": recovery.cache_hit_count,
+                    "history_recovery_dispatched_count": recovery.dispatched_count,
+                    "history_recovery_deferred_count": recovery.deferred_count,
+                    "history_recovery_inflight_count": recovery.inflight_count,
+                    "history_recovery_latency_ms": recovery.latency_ms,
                     "issuer_eligibility": {
                         "schema_version": eligibility.schema_version,
                         "fact_count": eligibility.fact_count,

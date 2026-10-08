@@ -7,6 +7,7 @@ delivery records are indexed in [docs/changelog/README.md](docs/changelog/README
 
 ### Latest delivery batch
 
+- [Rotate missing recommendation history fairly](docs/changelog/2026-10-08-history-recovery-fair-rotation.md)
 - [Synchronize the refactor blueprint tree with the delivered code](docs/changelog/2026-10-08-blueprint-tree-sync.md)
 - [Disable the scoring observation trigger for Long](docs/changelog/2026-09-23-long-observation-trigger.md)
 - [Compact the unstarted dashboard funnel](docs/changelog/2026-09-23-compact-unstarted-dashboard-funnel.md)
