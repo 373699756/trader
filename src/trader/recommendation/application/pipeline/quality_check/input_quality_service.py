@@ -4,31 +4,32 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Collection, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from types import MappingProxyType
 from typing import Literal
 
+from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import dynamic_source_health
 from trader.recommendation.application.pipeline.quality_check.missing_value_policy import (
     MissingValuePolicy,
     assess_missing_values,
 )
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,
+    measured_output,
     require_previous_stage,
     stage_output,
 )
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
-from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import dynamic_source_health
-from trader.recommendation.domain.selection.scored_selection import SelectedCandidateInput
 from trader.recommendation.domain.candidate.filters import (
     FilterSeverity,
     HardFilterPolicy,
     apply_filters,
+    board_for_snapshot,
     level_two_filter_rules,
 )
-from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate, StageState
 from trader.recommendation.domain.evidence.quality import QualityAssessment, QualityState
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import (
@@ -39,6 +40,7 @@ from trader.recommendation.domain.publication.models import (
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
+    SelectedCandidateInput,
 )
 
 ScoredInputQualityStatus = Literal[
@@ -47,6 +49,52 @@ ScoredInputQualityStatus = Literal[
     "transient_invalid_empty",
     "not_ready",
 ]
+
+
+@dataclass(frozen=True)
+class QualityScoringBatch:
+    """Quality records plus immutable population, identity and deferred-input audit context."""
+
+    output: PipelineStageOutput[FeatureSnapshot]
+    native_input: ScoredNativeInput
+
+    def __post_init__(self) -> None:
+        require_previous_stage(self.output, PipelineStage.LOCAL_SCORE)
+        if any(item not in self.native_input.candidate_features for item in self.output.records):
+            raise ValueError("quality scoring records must belong to the native candidate batch")
+
+
+def prepare_native_quality_batch(
+    native_input: ScoredNativeInput,
+    hard_filter: HardFilterPolicy,
+    minimum_history_sessions: int,
+    monotonic: Callable[[], float],
+) -> QualityScoringBatch:
+    """Assess an explicit native/replay candidate batch through the production quality owner."""
+    started = monotonic()
+    by_code = {item.quote.code: item for item in native_input.candidate_features}
+    candidates = stage_output(
+        PipelineStage.CANDIDATE_POOL,
+        tuple(SelectedCandidateInput(code, by_code.get(code)) for code in native_input.requested_codes),
+        input_batch_id=native_input.input_version,
+        as_of=native_input.evaluated_at,
+        input_count=len(native_input.requested_codes),
+        source_health=dynamic_source_health(native_input.candidate_features, native_input.evaluated_at),
+        latency_ms=0,
+    )
+    quality = measured_output(
+        assess_candidate_input_stage(
+            candidates,
+            as_of=native_input.evaluated_at,
+            minimum_history_sessions=minimum_history_sessions,
+            latency_ms=0,
+            hard_filter=hard_filter,
+        ),
+        started,
+        monotonic,
+    )
+    return QualityScoringBatch(quality, native_input)
+
 
 _TRANSIENT_FILTER_REASONS = frozenset(
     {
@@ -324,7 +372,7 @@ def _security_master_complete(feature: FeatureSnapshot | None) -> bool:
     if feature is None:
         return False
     quote = feature.quote
-    return quote.board is not Board.UNSUPPORTED and not _SECURITY_IDENTITY_RESTRICTIONS.intersection(
+    return board_for_snapshot(feature) is not Board.UNSUPPORTED and not _SECURITY_IDENTITY_RESTRICTIONS.intersection(
         quote.execution_restrictions
     )
 
@@ -389,6 +437,7 @@ def assess_candidate_input_stage(
     )
     accepted: list[FeatureSnapshot] = []
     pending: Counter[str] = Counter()
+    diagnostic: Counter[str] = Counter()
     for selected in source.records:
         feature = selected.features
         invalid = apply_filters(feature, validation_rules, now=as_of).deferred if feature is not None else ()
@@ -397,18 +446,20 @@ def assess_candidate_input_stage(
         elif invalid:
             reasons = tuple(reason.code for reason in invalid)
             pending[next((reason for reason in reasons if reason in {"stale_quote", "future_quote"}), reasons[0])] += 1
-        elif not _security_master_complete(feature):
-            pending["security_master_pending"] += 1
         elif not _history_complete(feature, minimum_history_sessions=minimum_history_sessions):
             pending["strategy_history_insufficient"] += 1
         else:
             accepted.append(feature)
+            if not _security_master_complete(feature):
+                # Preserve evidence scores for explanation. The publication gate
+                # still requires complete security identity for the whole batch.
+                diagnostic["security_master_coverage_incomplete"] += 1
     aggregates = tuple(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
-        for code, count in sorted(pending.items())
+        for code, count in sorted((pending + diagnostic).items())
     )
     health = dynamic_source_health(tuple(item.features for item in source.records if item.features is not None), as_of)
-    return stage_output(
+    output = stage_output(
         PipelineStage.QUALITY_CHECK,
         accepted,
         input_batch_id=source.snapshot.output_batch_id,
@@ -419,6 +470,9 @@ def assess_candidate_input_stage(
         source_health=health,
         latency_ms=latency_ms,
     )
+    if diagnostic:
+        return replace(output, snapshot=replace(output.snapshot, state=StageState.DEGRADED, degraded=True))
+    return output
 
 
 __all__ = [

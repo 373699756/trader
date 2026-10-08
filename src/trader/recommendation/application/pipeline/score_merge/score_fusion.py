@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+import time
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredLocalProjection,
+    ScoredReviewProjection,
     build_scored_hybrid,
     validate_review_manifests,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.evidence.review import DeepSeekReview
-from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 
 
 class ScoreFusionPort(Protocol):
@@ -27,7 +28,8 @@ class ScoreFusionPort(Protocol):
         reviews: Mapping[str, DeepSeekReview],
         *,
         review_deadline: datetime,
-    ) -> ScoredDecision | None: ...
+        review_latency_ms: int = 0,
+    ) -> ScoredReviewProjection | None: ...
 
     def manifests_match(
         self,
@@ -41,6 +43,8 @@ class ScoreFusionPort(Protocol):
 class ScoreFusionService(ScoreFusionPort):
     """Execute the fixed 68/32 fusion through the domain-backed projection."""
 
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
+
     def fuse(
         self,
         projection: ScoredLocalProjection,
@@ -48,12 +52,15 @@ class ScoreFusionService(ScoreFusionPort):
         reviews: Mapping[str, DeepSeekReview],
         *,
         review_deadline: datetime,
-    ) -> ScoredDecision | None:
+        review_latency_ms: int = 0,
+    ) -> ScoredReviewProjection | None:
         return build_scored_hybrid(
             projection,
             policy,
             reviews,
             review_deadline=review_deadline,
+            monotonic=self.monotonic,
+            review_latency_ms=review_latency_ms,
         )
 
     def manifests_match(

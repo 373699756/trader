@@ -114,6 +114,21 @@ class ScoredDecisionEntry:
 
 
 @dataclass(frozen=True)
+class ReviewedScoredEvaluation:
+    evaluation: ScoredStockEvaluation
+    review: DeepSeekReview | None
+
+
+@dataclass(frozen=True)
+class FusedScoredEvaluation:
+    evaluation: ScoredStockEvaluation
+    score: ScoreBreakdown
+    deepseek_risk_facts: tuple[RiskFact, ...]
+    review: DeepSeekReview | None
+    veto: bool
+
+
+@dataclass(frozen=True)
 class _NormalizedDecisionPayload:
     entries: tuple[ScoredDecisionEntry, ...]
     codes: frozenset[str]
@@ -415,9 +430,17 @@ def select_scored_review_candidates(
     )
 
 
-def build_scored_decision_epoch(request: ScoredDecisionRequest) -> DecisionEpoch:
-    entries = tuple(_fuse_evaluation(item, request) for item in request.selection.scored_candidates)
-    entries = _select_action_pools(entries, request.policy)
+def build_scored_decision_epoch(
+    request: ScoredDecisionRequest,
+    *,
+    entries: tuple[ScoredDecisionEntry, ...] | None = None,
+) -> DecisionEpoch:
+    if entries is None:
+        reviewed = review_scored_evaluations(
+            request.selection.scored_candidates, tuple(request.reviews.values()), request.observed_at
+        )
+        fused = fuse_scored_evaluations(reviewed, request.policy, request.observed_at)
+        entries = select_scored_action_pools(apply_scored_actions(fused, request.policy), request.policy)
     reason_counts = _filter_reason_counts(request.selection)
     return DecisionEpoch(
         trade_date=request.trade_date,
@@ -448,35 +471,69 @@ def build_scored_decision_epoch(request: ScoredDecisionRequest) -> DecisionEpoch
     )
 
 
+def review_scored_evaluations(
+    evaluations: tuple[ScoredStockEvaluation, ...],
+    reviews: tuple[DeepSeekReview, ...],
+    observed_at: datetime,
+) -> tuple[ReviewedScoredEvaluation, ...]:
+    result: list[ReviewedScoredEvaluation] = []
+    for evaluation in evaluations:
+        review = next((item for item in reviews if item.code == evaluation.code), None)
+        if review is not None and review.completed_at > observed_at:
+            review = replace(review, outcome=ReviewOutcome.LATE, error="review_completed_after_decision")
+        result.append(ReviewedScoredEvaluation(evaluation, review))
+    return tuple(result)
+
+
+def fuse_scored_evaluations(
+    reviewed: tuple[ReviewedScoredEvaluation, ...],
+    policy: ScoredDecisionPolicy,
+    observed_at: datetime,
+) -> tuple[FusedScoredEvaluation, ...]:
+    return tuple(_fuse_evaluation(item, policy, observed_at) for item in reviewed)
+
+
 def _fuse_evaluation(
-    evaluation: ScoredStockEvaluation,
-    request: ScoredDecisionRequest,
-) -> ScoredDecisionEntry:
+    reviewed: ReviewedScoredEvaluation,
+    policy: ScoredDecisionPolicy,
+    observed_at: datetime,
+) -> FusedScoredEvaluation:
+    evaluation = reviewed.evaluation
     local_base = evaluation.local_base_score or 0.0
     local_components = evaluation.local_components
-    review = request.reviews.get(evaluation.code)
+    review = reviewed.review
     effective_review = review if review is not None and review.outcome is ReviewOutcome.APPLIED else None
-    if review is not None and review.completed_at > request.observed_at:
-        review = replace(review, outcome=ReviewOutcome.LATE, error="review_completed_after_decision")
-        effective_review = None
     fusion_mode = FusionMode.HYBRID if effective_review is not None else FusionMode.LOCAL_DEGRADED
     fused = fuse_score(
         FusionRequest(
             local=LocalScoreResult(components=local_components, base_score=local_base),
             local_risk_facts=evaluation.local_risk_facts,
             review=effective_review,
-            dimension_weights=request.policy.dimension_weights,
-            risk_rules=request.policy.risk_rules,
+            dimension_weights=policy.dimension_weights,
+            risk_rules=policy.risk_rules,
             fusion_mode=fusion_mode,
-            policy=request.policy.fusion,
+            policy=policy.fusion,
             evidence=evaluation.features.evidence,
-            evaluated_at=request.observed_at,
+            evaluated_at=observed_at,
         )
     )
     if evaluation.local_score is not None and fused.score.local_score != round_score(evaluation.local_score):
         raise ValueError("scored local score changed before fusion")
     veto = fused.veto or any(fact.veto for fact in evaluation.local_risk_facts)
-    action, action_reason = _action_for(evaluation, fused.score, veto, request.policy)
+    return FusedScoredEvaluation(evaluation, fused.score, fused.deepseek_risk_facts, review, veto)
+
+
+def apply_scored_actions(
+    fused: tuple[FusedScoredEvaluation, ...],
+    policy: ScoredDecisionPolicy,
+) -> tuple[ScoredDecisionEntry, ...]:
+    return tuple(_action_entry(item, policy) for item in fused)
+
+
+def _action_entry(fused: FusedScoredEvaluation, policy: ScoredDecisionPolicy) -> ScoredDecisionEntry:
+    evaluation = fused.evaluation
+    review = fused.review
+    action, action_reason = _action_for(evaluation, fused.score, fused.veto, policy)
     return ScoredDecisionEntry(
         features=evaluation.features,
         disposition=evaluation.disposition,
@@ -492,7 +549,7 @@ def _fuse_evaluation(
         deepseek_risk_facts=fused.deepseek_risk_facts,
         review=review,
         review_outcome=review.outcome if review is not None else None,
-        veto=veto,
+        veto=fused.veto,
         selection_rank=0,
         local_selection_skip_reason=evaluation.selection_skip_reason,
         decision_skip_reason="" if action is not RecommendationAction.UNAVAILABLE else action_reason,
@@ -541,7 +598,7 @@ def _unavailable_reason(
     return None
 
 
-def _select_action_pools(
+def select_scored_action_pools(
     entries: tuple[ScoredDecisionEntry, ...],
     policy: ScoredDecisionPolicy,
 ) -> tuple[ScoredDecisionEntry, ...]:

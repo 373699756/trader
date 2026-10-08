@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 
 from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import ScoredFreezeCoordinator
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import normalize_scored_review_times
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionPort, ScoreFusionService
 from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
 from trader.recommendation.application.ports.runtime import (
@@ -18,6 +21,7 @@ from trader.recommendation.application.ports.runtime import (
     ReviewUnavailableError,
     SharedDeepSeekRuntimeContract,
 )
+from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -29,11 +33,16 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
         policy: RecommendationPolicy,
         data: MarketDataAdapter,
         fusion: ScoreFusionPort | None = None,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        now: Callable[[], datetime],
     ) -> None:
         self._reviewer = reviewer
         self._policy = policy
         self._data = data
-        self._fusion = fusion if fusion is not None else ScoreFusionService()
+        self._fusion = fusion if fusion is not None else ScoreFusionService(monotonic=monotonic)
+        self._monotonic = monotonic
+        self._now = now
 
     @property
     def runtime_contract(self) -> SharedDeepSeekRuntimeContract:
@@ -47,6 +56,8 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
         if not candidates:
             return None
         deadline = request.review_deadline
+        started = self._monotonic()
+        failure_reason = "deepseek_review_unavailable"
         try:
             reviews = self._reviewer.review(
                 request.strategy,
@@ -55,17 +66,54 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
                 deadline=deadline,
                 contexts={candidate.code: candidate.context for candidate in candidates},
             )
+            failure_reason = "deepseek_manifest_validation_failed"
+            expected = {
+                candidate.code: self._reviewer.evidence_manifest_hash(candidate.features) for candidate in candidates
+            }
+            manifests_match = self._fusion.manifests_match(projection, reviews, expected)
+            invalid_reason = (
+                "deepseek_manifest_mismatch"
+                if not manifests_match
+                else "deepseek_review_time_invalid"
+                if normalize_scored_review_times(reviews, deadline) is None
+                else None
+            )
         except (DeepSeekReviewUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            failed_at = self._now()
+            failed = {
+                candidate.code: DeepSeekReview(
+                    candidate.code, ReviewOutcome.REJECTED, {}, (), failed_at, error=failure_reason
+                )
+                for candidate in candidates
+            }
+            observed = self._fusion.fuse(
+                projection,
+                self._policy,
+                failed,
+                review_deadline=deadline,
+                review_latency_ms=max(0, int((self._monotonic() - started) * 1000)),
+            )
+            if observed is not None:
+                self._data.register_review(projection, observed)
             raise ReviewUnavailableError(type(exc).__name__) from exc
-        expected = {
-            candidate.code: self._reviewer.evidence_manifest_hash(candidate.features) for candidate in candidates
-        }
-        if not self._fusion.manifests_match(projection, reviews, expected):
-            return None
-        hybrid = self._fusion.fuse(projection, self._policy, reviews, review_deadline=deadline)
+        if invalid_reason is not None:
+            failed_at = self._now()
+            reviews = {
+                candidate.code: DeepSeekReview(
+                    candidate.code, ReviewOutcome.REJECTED, {}, (), failed_at, error=invalid_reason
+                )
+                for candidate in candidates
+            }
+        hybrid = self._fusion.fuse(
+            projection,
+            self._policy,
+            reviews,
+            review_deadline=deadline,
+            review_latency_ms=max(0, int((self._monotonic() - started) * 1000)),
+        )
         if hybrid is not None:
-            hybrid = self._data.register_hybrid(projection, hybrid)
-        return hybrid
+            return self._data.register_review(projection, hybrid)
+        return None
 
 
 class FreezeAdapter(FreezePort):

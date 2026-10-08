@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+import time
+from collections import Counter
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.downside_action.downside_protection import (
@@ -18,17 +20,26 @@ from trader.recommendation.application.pipeline.final_selection.grouped_ranking 
     RankingSelectionPort,
     RankingSelectionService,
 )
+from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import (
+    ScoredStageChain,
+    ScoredStageContext,
+    complete_scored_stages,
+    reason_aggregates,
+)
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.policy_projection import preselection_replay_feature
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
+    QualityScoringBatch,
     ScoredInputQuality,
     ScoredInputQualityOptions,
     assess_scored_input_quality,
+    prepare_native_quality_batch,
 )
 from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import (
     normalize_scored_review_times,
     scored_decision_policy,
 )
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, measured_output, stage_output
 from trader.recommendation.application.ports.loaded_profile import (
     ModelDiagnostics,
     ModelScoreBatch,
@@ -38,6 +49,7 @@ from trader.recommendation.application.ports.loaded_profile import (
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.domain.candidate.composition import WEIGHTED_EVIDENCE_SCORE_SCALE
 from trader.recommendation.domain.candidate.filters import hard_filter
+from trader.recommendation.domain.evidence.pipeline import PipelineStage
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import (
@@ -49,7 +61,12 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
     SelectionDiagnostics,
 )
-from trader.recommendation.domain.publication.models import RecommendationAction, ScoredSelectionResult, Strategy
+from trader.recommendation.domain.publication.models import (
+    RecommendationAction,
+    ScoredSelectionResult,
+    ScoredStockEvaluation,
+    Strategy,
+)
 from trader.recommendation.domain.risk.downside import DownsideAssessment
 from trader.recommendation.domain.risk.scored_fusion import (
     DecisionEpoch,
@@ -71,9 +88,16 @@ class ScoredLocalProjection:
     review_candidates: tuple[ScoredReviewCandidate, ...]
     local_epoch: DecisionEpoch
     local: ScoredDecision
+    stages: ScoredStageChain
     score_model_version: str | None = None
     model_diagnostics: tuple[tuple[str, ModelDiagnostics], ...] = ()
     downside_assessments: tuple[tuple[str, DownsideAssessment], ...] = ()
+
+
+@dataclass(frozen=True)
+class ScoredReviewProjection:
+    decision: ScoredDecision | None
+    stages: ScoredStageChain
 
 
 @dataclass(frozen=True)
@@ -95,6 +119,8 @@ class ScoredProjectionInputs:
     preselection_transient_invalid: bool = False
     risk_control: RiskControlPort | None = None
     ranking_selection: RankingSelectionPort | None = None
+    quality_batch: QualityScoringBatch | None = None
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
 
 def build_scored_local(
@@ -107,6 +133,24 @@ def build_scored_local(
     if sequence < 1:
         raise ValueError("scored decision sequence must be positive")
     runtime = runtime if runtime is not None else ScoredProjectionInputs()
+    if runtime.quality_batch is None:
+        minimum_history = (
+            runtime.model_scoring.history_required_sessions(native_input.strategy)
+            if runtime.model_scoring is not None
+            and native_input.phase != "close_fallback"
+            and runtime.model_scoring.uses_model(native_input.strategy)
+            else 20
+        )
+        quality_batch = prepare_native_quality_batch(
+            native_input, policy.hard_filter, minimum_history, runtime.monotonic
+        )
+    else:
+        quality_batch = runtime.quality_batch
+        if quality_batch.native_input != native_input:
+            raise ValueError("scoring context does not match its quality batch")
+    native_input = quality_batch.native_input
+    scoring_input = replace(native_input, candidate_features=quality_batch.output.records)
+    started = runtime.monotonic()
     strategy = native_input.strategy
     decision_policy = scored_decision_policy(policy, strategy, phase=native_input.phase)
     risk_control = runtime.risk_control if runtime.risk_control is not None else RiskControlService()
@@ -121,7 +165,7 @@ def build_scored_local(
     model_batch = (
         model_scoring.score(
             strategy,
-            _model_eligible_candidates(native_input, policy),
+            _model_eligible_candidates(scoring_input, policy),
             context=runtime.scoring_context,
         )
         if model_scoring is not None and uses_model
@@ -133,7 +177,7 @@ def build_scored_local(
     profile_history_qualified_codes = (
         frozenset(
             feature.quote.code
-            for feature in native_input.candidate_features
+            for feature in quality_batch.output.records
             if model_scoring is not None and model_scoring.is_input_eligible(strategy, feature)
         )
         if model_scoring is not None and uses_model
@@ -148,7 +192,9 @@ def build_scored_local(
             population_evaluated_at=_market_population_watermark(native_input.market_features),
             population_max_age_seconds=native_input.preselect_max_age_seconds,
             phase=native_input.phase,
-            candidate_features=native_input.candidate_features,
+            # The quality batch also retains directed inputs for rejected/pending
+            # audit records; they cannot become a scoring output (checked below).
+            candidate_features=quality_batch.native_input.candidate_features,
             normalize_discovery_source_time=True,
             strategy=strategy,
             minimum_history_sessions=minimum_history_sessions,
@@ -173,31 +219,41 @@ def build_scored_local(
         ),
     )
     candidates = select_scored_review_candidates(selection, decision_policy)
-    input_hash = native_input.input_version.removeprefix("native-input:")
-    epoch = build_scored_decision_epoch(
-        ScoredDecisionRequest(
-            selection=selection,
-            reviews={},
-            observed_at=native_input.evaluated_at,
-            trade_date=native_input.trade_date,
-            sequence=sequence,
-            config_version=native_input.config_version,
-            strategy_version=policy.strategy_version,
-            fusion_version=policy.fusion_version,
-            market_epoch_version=f"native-market:{input_hash}",
-            candidate_epoch_version=(f"native-candidate:{input_hash}" if native_input.candidate_features else None),
-            research_epoch_version=None,
-            projection_stage="local",
-            parent_decision_version=None,
-            review_candidate_codes=tuple(item.code for item in candidates),
-            degraded_reasons=quality.degraded_reasons,
-            policy=decision_policy,
-        )
+    scored_stage = _local_score_stage(
+        quality_batch.output, selection, runtime.monotonic, started, f"{native_input.input_version}:{sequence}"
     )
+    input_hash = native_input.input_version.removeprefix("native-input:")
+    decision_request = ScoredDecisionRequest(
+        selection=selection,
+        reviews={},
+        observed_at=native_input.evaluated_at,
+        trade_date=native_input.trade_date,
+        sequence=sequence,
+        config_version=native_input.config_version,
+        strategy_version=policy.strategy_version,
+        fusion_version=policy.fusion_version,
+        market_epoch_version=f"native-market:{input_hash}",
+        candidate_epoch_version=(f"native-candidate:{input_hash}" if native_input.candidate_features else None),
+        research_epoch_version=None,
+        projection_stage="local",
+        parent_decision_version=None,
+        review_candidate_codes=tuple(item.code for item in candidates),
+        degraded_reasons=quality.degraded_reasons,
+        policy=decision_policy,
+    )
+    stages = complete_scored_stages(
+        scored_stage,
+        ScoredStageContext(
+            decision_policy, native_input.evaluated_at, decision_request.review_candidate_codes, (), f"local:{sequence}"
+        ),
+        runtime.monotonic,
+    )
+    epoch = build_scored_decision_epoch(decision_request, entries=stages.entries)
     model_version = model_batch.model_version if model_batch is not None else None
     downside_assessments = tuple((item.code, risk_control.assess(item.features, strategy)) for item in epoch.entries)
     return ScoredLocalProjection(
         native_input=native_input,
+        stages=stages,
         selection=selection,
         input_quality=quality,
         review_candidates=candidates,
@@ -216,6 +272,43 @@ def build_scored_local(
         score_model_version=model_version,
         model_diagnostics=tuple(sorted(model_batch.diagnostics.items())) if model_batch is not None else (),
         downside_assessments=downside_assessments,
+    )
+
+
+def _local_score_stage(
+    source: PipelineStageOutput[FeatureSnapshot],
+    selection: ScoredSelectionResult,
+    monotonic: Callable[[], float],
+    started: float,
+    scoring_identity: str,
+) -> PipelineStageOutput[ScoredStockEvaluation]:
+    scored = selection.scored_candidates
+    accepted = frozenset(item.code for item in scored)
+    quality_codes = frozenset(feature.quote.code for feature in source.records)
+    reasons = Counter(
+        item.selection_skip_reason or item.candidate_audit_pruning_reason or "not_scored"
+        for item in selection.evaluations
+        if item.code in quality_codes and item.code not in accepted
+    )
+    if not accepted <= quality_codes:
+        raise ValueError("local scoring output exceeds its quality input")
+    return measured_output(
+        stage_output(
+            PipelineStage.LOCAL_SCORE,
+            scored,
+            input_batch_id=source.snapshot.output_batch_id,
+            output_batch_id=f"{source.snapshot.output_batch_id}:local_score:{scoring_identity}",
+            as_of=source.snapshot.as_of,
+            input_count=len(source.records),
+            reasons=reason_aggregates(reasons),
+            pending_count=sum(
+                count for reason, count in reasons.items() if reason == "production_model_features_missing"
+            ),
+            source_health=source.snapshot.source_health,
+            latency_ms=0,
+        ),
+        started,
+        monotonic,
     )
 
 
@@ -265,7 +358,9 @@ def build_scored_hybrid(
     reviews: Mapping[str, DeepSeekReview],
     *,
     review_deadline: datetime,
-) -> ScoredDecision | None:
+    monotonic: Callable[[], float] = time.monotonic,
+    review_latency_ms: int = 0,
+) -> ScoredReviewProjection | None:
     strategy = projection.local.strategy
     if projection.native_input.strategy is not strategy:
         return None
@@ -281,40 +376,54 @@ def build_scored_hybrid(
         for code, review in normalized.items()
         if review.outcome in {ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN} and review.completed_at < review_deadline
     }
-    if not usable:
-        return None
     observed_at = max(
-        projection.native_input.evaluated_at,
-        *(review.completed_at for review in usable.values()),
-    )
-    epoch = build_scored_decision_epoch(
-        ScoredDecisionRequest(
-            selection=projection.selection,
-            reviews=normalized,
-            observed_at=observed_at,
-            trade_date=projection.native_input.trade_date,
-            sequence=projection.local.sequence + 1,
-            config_version=projection.native_input.config_version,
-            strategy_version=policy.strategy_version,
-            fusion_version=policy.fusion_version,
-            market_epoch_version=projection.local_epoch.market_epoch_version,
-            candidate_epoch_version=projection.local_epoch.candidate_epoch_version,
-            research_epoch_version=None,
-            projection_stage="hybrid",
-            parent_decision_version=projection.local_epoch.version,
-            review_candidate_codes=tuple(item.code for item in projection.review_candidates),
-            degraded_reasons=tuple(
-                sorted(
-                    {
-                        *projection.input_quality.degraded_reasons,
-                        *(() if set(usable) == candidates else ("deepseek_incomplete",)),
-                    }
-                )
-            ),
-            policy=decision_policy,
+        (
+            projection.native_input.evaluated_at,
+            *(review.completed_at for review in normalized.values()),
         )
     )
-    return _scored_decision(
+    stages = complete_scored_stages(
+        projection.stages.local_score,
+        ScoredStageContext(
+            decision_policy,
+            observed_at,
+            tuple(item.code for item in projection.review_candidates),
+            tuple(normalized.values()),
+            f"review:{projection.local.sequence + 1}",
+        ),
+        monotonic,
+        review_latency_ms=review_latency_ms,
+        review_attempted=True,
+    )
+    if not usable:
+        return ScoredReviewProjection(None, stages)
+    decision_request = ScoredDecisionRequest(
+        selection=projection.selection,
+        reviews=normalized,
+        observed_at=observed_at,
+        trade_date=projection.native_input.trade_date,
+        sequence=projection.local.sequence + 1,
+        config_version=projection.native_input.config_version,
+        strategy_version=policy.strategy_version,
+        fusion_version=policy.fusion_version,
+        market_epoch_version=projection.local_epoch.market_epoch_version,
+        candidate_epoch_version=projection.local_epoch.candidate_epoch_version,
+        research_epoch_version=None,
+        projection_stage="hybrid",
+        parent_decision_version=projection.local_epoch.version,
+        review_candidate_codes=tuple(item.code for item in projection.review_candidates),
+        degraded_reasons=tuple(
+            sorted(
+                {
+                    *projection.input_quality.degraded_reasons,
+                    *(() if set(usable) == candidates else ("deepseek_incomplete",)),
+                }
+            )
+        ),
+        policy=decision_policy,
+    )
+    epoch = build_scored_decision_epoch(decision_request, entries=stages.entries)
+    decision = _scored_decision(
         epoch,
         _DecisionProjectionContext(
             input_version=projection.native_input.input_version,
@@ -326,6 +435,7 @@ def build_scored_hybrid(
             model_diagnostics=dict(projection.model_diagnostics),
         ),
     )
+    return ScoredReviewProjection(decision, stages)
 
 
 def _scored_decision(

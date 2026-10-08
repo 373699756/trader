@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Protocol
 
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlPort
@@ -13,6 +15,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
 )
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import QualityScoringBatch
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext, ModelScoringPort
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
@@ -25,6 +28,8 @@ class LocalScoringContext:
     model_context: ModelScoringContext | None = None
     candidate_stage_counts: ScoredCandidateStageCounts | None = None
     preselection_transient_invalid: bool = False
+    quality_batch: QualityScoringBatch | None = None
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
 
 class LocalScoringPort(Protocol):
@@ -68,6 +73,8 @@ class LocalScoringService(LocalScoringPort):
                 preselection_transient_invalid=context.preselection_transient_invalid,
                 ranking_selection=self.ranking_selection,
                 risk_control=self.risk_control,
+                quality_batch=context.quality_batch,
+                monotonic=context.monotonic,
             ),
         )
 

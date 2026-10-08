@@ -8,7 +8,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
+from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import ScoredStageChain
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
+from trader.recommendation.application.pipeline.stage_output import stage_output
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
@@ -16,15 +18,12 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineMetricName,
     PipelineMetricRange,
     PipelineReasonCount,
-    PipelineStage,
     PipelineStageKey,
     PipelineStageSnapshot,
     PipelineStageState,
     PipelineStageStatus,
     RecommendationPipelineStatus,
-    Severity,
-    StageReasonAggregate,
-    StageState,
+    validate_stage_batch_continuity,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
@@ -53,6 +52,7 @@ def build_supply_status(
     candidate_score_threshold: float | None = None,
     decision: ScoredDecision | None = None,
     input_stages: tuple[PipelineStageSnapshot, ...] = (),
+    scored_stages: ScoredStageChain | None = None,
 ) -> InputQualityStatus:
     quality = projection.input_quality
     requested = set(projection.native_input.requested_codes)
@@ -96,7 +96,7 @@ def build_supply_status(
         publishable=quality.publishable,
         summary=_supply_summary(projection, decision=active_decision),
         pipeline=pipeline,
-        stage_snapshots=build_complete_stage_snapshots(input_stages, pipeline),
+        stage_snapshots=join_stage_snapshots(input_stages, (scored_stages or projection.stages).snapshots),
         population_count=quality.population_count,
         candidate_count=quality.candidate_count,
         candidate_feature_count=quality.candidate_feature_count,
@@ -121,120 +121,42 @@ def build_supply_status(
     )
 
 
-def build_complete_stage_snapshots(
+def join_stage_snapshots(
     first_nine: tuple[PipelineStageSnapshot, ...],
-    pipeline: RecommendationPipelineStatus,
+    scored: tuple[PipelineStageSnapshot, ...],
 ) -> tuple[PipelineStageSnapshot, ...]:
-    """Join the input chain to the five scored runtime stages without inventing counts."""
+    snapshots = (*first_nine, *scored)
+    validate_stage_batch_continuity(snapshots)
+    return snapshots
 
+
+def build_pending_stage_snapshots(
+    first_nine: tuple[PipelineStageSnapshot, ...],
+) -> tuple[PipelineStageSnapshot, ...]:
+    """Explicit unexecuted placeholders; never inferred from scoring submetrics."""
     if tuple(item.stage for item in first_nine) != PIPELINE_STAGES[:9]:
         raise ValueError("complete pipeline snapshots require the ordered first nine stages")
     if any(
         left.output_batch_id != right.input_batch_id or left.output_count != right.input_count
-        for left, right in zip(first_nine, first_nine[1:])
+        for left, right in zip(first_nine, first_nine[1:], strict=False)
     ):
         raise ValueError("input stage observations must preserve their immutable handoffs")
     previous = first_nine[-1]
-    batch_root = first_nine[0].input_batch_id
-    stage_groups = (
-        (
-            PipelineStage.LOCAL_SCORE,
-            (pipeline.stage("evidence_score"), pipeline.stage("model_cost_gate"), pipeline.stage("local_score")),
-        ),
-        (
-            PipelineStage.RISK_REVIEW,
-            (pipeline.stage("deepseek_review"),),
-        ),
-        (
-            PipelineStage.SCORE_MERGE,
-            (pipeline.stage("fusion"),),
-        ),
-        (
-            PipelineStage.DOWNSIDE_ACTION,
-            (pipeline.stage("action_gate"),),
-        ),
-        (
-            PipelineStage.FINAL_SELECTION,
-            (pipeline.stage("concentration"),),
-        ),
-    )
     snapshots = list(first_nine)
-    for stage, statuses in stage_groups:
-        output_count = _runtime_output_count(stage, statuses, previous.output_count)
-        pending_count = previous.output_count if output_count == 0 and _runtime_stage_pending(statuses) else 0
-        state = _runtime_stage_state(statuses, previous.output_count, output_count)
-        output_batch_id = f"{batch_root}:{stage.value}"
-        snapshot = PipelineStageSnapshot(
-            stage=stage,
-            stage_order=PIPELINE_STAGES.index(stage) + 1,
+    for stage in PIPELINE_STAGES[9:]:
+        snapshot = stage_output(
+            stage,
+            (),
             input_batch_id=previous.output_batch_id,
-            output_batch_id=output_batch_id,
             as_of=previous.as_of,
-            state=state,
             input_count=previous.output_count,
-            output_count=output_count,
-            rejected_count=0,
-            pending_count=pending_count,
-            failed_count=0,
-            reasons=_runtime_stage_reasons(statuses),
+            pending_count=previous.output_count,
             source_health=previous.source_health,
-            latency_ms=round(sum(item.duration_ms or 0.0 for item in statuses)),
-            degraded=state is StageState.DEGRADED,
-        )
+            latency_ms=0,
+        ).snapshot
         snapshots.append(snapshot)
         previous = snapshot
     return tuple(snapshots)
-
-
-def _runtime_output_count(
-    stage: PipelineStage,
-    statuses: tuple[PipelineStageStatus, ...],
-    previous_output_count: int,
-) -> int:
-    if stage is PipelineStage.RISK_REVIEW:
-        return previous_output_count
-    output = statuses[-1].output_count
-    if output is None:
-        return 0
-    return min(previous_output_count, output)
-
-
-def _runtime_stage_pending(statuses: tuple[PipelineStageStatus, ...]) -> bool:
-    return any(item.state in {"pending", "running"} for item in statuses)
-
-
-def _runtime_stage_state(
-    statuses: tuple[PipelineStageStatus, ...],
-    input_count: int,
-    output_count: int,
-) -> StageState:
-    # A zero-input downstream stage was not executed; do not present it as a
-    # successful empty result. A legitimate empty selection still has a
-    # positive input count and remains ready.
-    if input_count == 0 and output_count == 0 and not _runtime_stage_pending(statuses):
-        return StageState.NOT_READY
-    if not output_count and _runtime_stage_pending(statuses):
-        return StageState.NOT_READY
-    if any(item.state == "degraded" for item in statuses) or _runtime_stage_pending(statuses):
-        return StageState.DEGRADED
-    return StageState.READY
-
-
-def _runtime_stage_reasons(
-    statuses: tuple[PipelineStageStatus, ...],
-) -> tuple[StageReasonAggregate, ...]:
-    counts: Counter[str] = Counter()
-    for status in statuses:
-        counts.update({item.reason: item.count for item in status.reason_counts})
-    return _stage_reasons(*tuple(sorted(counts.items())))
-
-
-def _stage_reasons(*values: tuple[str, int]) -> tuple[StageReasonAggregate, ...]:
-    return tuple(
-        StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
-        for code, count in values
-        if count > 0
-    )
 
 
 def build_pending_pipeline(
@@ -336,6 +258,7 @@ def update_supply_status_decision(
     decision: ScoredDecision,
     *,
     candidate_score_threshold: float,
+    scored_stages: ScoredStageChain,
 ) -> InputQualityStatus:
     stage_counts = projection.selection.stage_counts
     if stage_counts is None:
@@ -348,6 +271,7 @@ def update_supply_status_decision(
         candidate_score_threshold=candidate_score_threshold,
         decision=decision,
         input_stages=current.stage_snapshots[:9],
+        scored_stages=scored_stages,
     )
 
 
@@ -816,7 +740,7 @@ def _required_count(value: int | None) -> int:
 
 
 __all__ = [
-    "build_complete_stage_snapshots",
+    "build_pending_stage_snapshots",
     "build_pending_pipeline",
     "build_supply_status",
     "update_supply_status_decision",

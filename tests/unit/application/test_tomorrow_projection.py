@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.application.pipeline_helpers import observed_input_stages
+from tests.unit.application.pipeline_helpers import observed_input_stages, observed_quality_input
 from tests.unit.application.review_helpers import review
 from tests.unit.application.scoring_helpers import profile_for
 from trader.bootstrap import _recommendation_policy
@@ -20,6 +20,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import QualityScoringBatch
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     build_supply_status,
     update_supply_status_decision,
@@ -150,6 +151,8 @@ def test_native_local_and_valid_facts_publish_one_parented_hybrid(
     )
 
     assert hybrid is not None
+    assert hybrid.decision is not None
+    hybrid = hybrid.decision
     assert hybrid.parent_version == projection.local.version
     reviewed = next(item for item in hybrid.items if item.code == code)
     assert reviewed.review_outcome == "applied"
@@ -174,11 +177,16 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
         for index in range(1, 4)
     )
 
+    native = _native_input(features)
+    input_stages, quality_stage = observed_quality_input(features, policy, EVALUATED_AT)
     projection = build_scored_local(
-        _native_input(features),
+        native,
         policy,
         sequence=1,
-        runtime=ScoredProjectionInputs(model_scoring=_router(_NonPositiveProductionPredictor())),
+        runtime=ScoredProjectionInputs(
+            model_scoring=_router(_NonPositiveProductionPredictor()),
+            quality_batch=QualityScoringBatch(quality_stage, native),
+        ),
     )
 
     diagnostics = projection.local.selection_diagnostics
@@ -195,14 +203,13 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     assert {
         item.model_diagnostics.signal_score for item in projection.local.items if item.model_diagnostics is not None
     } == {0.0, 50.0, 100.0}
-    input_stages = observed_input_stages(features, policy, EVALUATED_AT)
     complete_status = build_supply_status(projection, input_stages=input_stages)
     assert complete_status.primary_blocker == "no_positive_net_utility"
     assert all(complete_status.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert tuple(stage.stage for stage in complete_status.stage_snapshots) == tuple(PipelineStage)
     validate_stage_batch_continuity(complete_status.stage_snapshots)
     updated = update_supply_status_decision(
-        complete_status, projection, projection.local, candidate_score_threshold=90.0
+        complete_status, projection, projection.local, candidate_score_threshold=90.0, scored_stages=projection.stages
     )
     assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert complete_status.stage_snapshots[-1].stage is PipelineStage.FINAL_SELECTION
@@ -257,19 +264,20 @@ def test_supply_status_identifies_the_model_input_stage_as_the_first_blocker(
         candidate_score_eligible=0,
         candidate_limit_selected=0,
     )
+    native = _native_input((feature,))
+    input_stages, quality_stage = observed_quality_input((feature,), policy, EVALUATED_AT)
     projection = build_scored_local(
-        _native_input((feature,)),
+        native,
         policy,
         sequence=1,
         runtime=ScoredProjectionInputs(
             model_scoring=_router(_IndustryProductionPredictor()),
             candidate_stage_counts=stage_counts,
+            quality_batch=QualityScoringBatch(quality_stage, native),
         ),
     )
 
-    status = build_supply_status(
-        projection, stage_counts, input_stages=observed_input_stages((feature,), policy, EVALUATED_AT)
-    )
+    status = build_supply_status(projection, stage_counts, input_stages=input_stages)
 
     assert status.pipeline.stage("strategy_history").output_count == 1
     assert status.pipeline.stage("model_input").output_count == 0
@@ -390,6 +398,8 @@ def test_d25_native_local_and_valid_facts_publish_one_parented_hybrid(
     )
 
     assert hybrid is not None
+    assert hybrid.decision is not None
+    hybrid = hybrid.decision
     assert hybrid.parent_version == projection.local.version
     index = UnifiedDecisionIndex()
     local_result = index.publish(projection.local, expected_version=None)
@@ -509,9 +519,7 @@ def test_native_projection_classifies_an_invalid_candidate_quote_as_transient(
     assert projection.input_quality.candidate_rejected_count == 0
     assert projection.input_quality.data_pending_count == 1
     assert projection.input_quality.candidate_transient_reason_counts[reason] == 1
-    stage = build_supply_status(
-        projection, input_stages=observed_input_stages((invalid,), policy, EVALUATED_AT)
-    ).stage_snapshots[6]
+    stage = observed_input_stages((invalid,), policy, EVALUATED_AT)[6]
     assert stage.rejected_count == 0
     assert stage.pending_count == 1
     assert stage.input_count == stage.output_count + stage.rejected_count + stage.pending_count + stage.failed_count
@@ -539,9 +547,7 @@ def test_business_rejection_takes_precedence_over_the_same_stocks_missing_input(
     assert quality.refresh_pending_count == 0
     assert quality.publishable is not separate_invalid
     assert quality.status == ("transient_invalid_empty" if separate_invalid else "business_empty")
-    stage = build_supply_status(
-        projection, input_stages=observed_input_stages(features, policy, EVALUATED_AT)
-    ).stage_snapshots[6]
+    stage = observed_input_stages(features, policy, EVALUATED_AT)[6]
     assert stage.rejected_count == 1
     assert stage.pending_count == int(separate_invalid)
     assert stage.input_count == stage.output_count + stage.rejected_count + stage.pending_count + stage.failed_count
@@ -585,15 +591,15 @@ def test_review_completed_after_1448_cannot_create_hybrid(application_feature_fa
     deadline = EVALUATED_AT.replace(hour=14, minute=48)
     late = replace(review(code, 100.0), completed_at=deadline + timedelta(microseconds=1))
 
-    assert (
-        build_scored_hybrid(
-            projection,
-            policy,
-            {code: late},
-            review_deadline=deadline,
-        )
-        is None
+    result = build_scored_hybrid(
+        projection,
+        policy,
+        {code: late},
+        review_deadline=deadline,
     )
+    assert result is not None
+    assert result.decision is None
+    assert any(reason.code == "deepseek_late" for reason in result.stages.risk_review.snapshot.reasons)
 
 
 def test_review_completed_at_1448_cannot_create_hybrid(application_feature_factory) -> None:
@@ -607,15 +613,14 @@ def test_review_completed_at_1448_cannot_create_hybrid(application_feature_facto
     deadline = EVALUATED_AT.replace(hour=14, minute=48)
     boundary_result = replace(review(code, 100.0), completed_at=deadline)
 
-    assert (
-        build_scored_hybrid(
-            projection,
-            policy,
-            {code: boundary_result},
-            review_deadline=deadline,
-        )
-        is None
+    result = build_scored_hybrid(
+        projection,
+        policy,
+        {code: boundary_result},
+        review_deadline=deadline,
     )
+    assert result is not None
+    assert result.decision is None
 
 
 def _native_input(

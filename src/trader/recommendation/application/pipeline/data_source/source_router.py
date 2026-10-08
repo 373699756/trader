@@ -14,18 +14,15 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     SCORED_STRATEGIES,
     CandidatePlanSet,
 )
-from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
-    CandidateFilteringPort,
-    CandidateFilteringService,
-)
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
     CandidatePipelineResult,
     assemble_candidate_inputs,
     select_candidate_output,
 )
-from trader.recommendation.domain.selection.scored_selection import SelectedCandidateInput
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, measured_output
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import assess_candidate_input_stage
+from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
+    CandidateFilteringPort,
+    CandidateFilteringService,
+)
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     candidate_batch_is_complete as _candidate_batch_is_complete,
 )
@@ -80,7 +77,10 @@ from trader.recommendation.application.pipeline.data_source.source_quality impor
 from trader.recommendation.application.pipeline.data_source.source_quality import (
     uses_fallback as _uses_fallback,
 )
-from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
+from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+    ScoredLocalProjection,
+    ScoredReviewProjection,
+)
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.local_score.base_scoring import (
     LocalScoringContext,
@@ -88,13 +88,18 @@ from trader.recommendation.application.pipeline.local_score.base_scoring import 
     LocalScoringService,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_candidate_gap
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
+    QualityScoringBatch,
+    assess_candidate_input_stage,
+    has_transient_candidate_gap,
+)
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
-    build_complete_stage_snapshots,
     build_pending_pipeline,
+    build_pending_stage_snapshots,
     build_supply_status,
     update_supply_status_decision,
 )
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, measured_output
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import FullMarketFeatureBatch, MarketDataUnavailableError
@@ -122,7 +127,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     identity_codes,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
 
 
 @dataclass(frozen=True)
@@ -582,7 +587,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     security_identity_missing_count=0,
                 ),
                 pipeline=pipeline,
-                stage_snapshots=build_complete_stage_snapshots(first_nine, pipeline),
+                stage_snapshots=build_pending_stage_snapshots(first_nine),
                 population_count=context.population_count,
                 candidate_count=requested_count,
                 candidate_feature_count=candidate_feature_count,
@@ -916,6 +921,8 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                     model_context=_model_scoring_context(request, batch, self._now()),
                     candidate_stage_counts=batch.candidate_stage_counts,
                     preselection_transient_invalid=batch.preselection_transient_invalid,
+                    quality_batch=QualityScoringBatch(quality_stage, native_input),
+                    monotonic=self._monotonic,
                 ),
             )
         except (RuntimeError, TypeError, ValueError) as exc:
@@ -952,22 +959,30 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         with self._lock:
             return self._projections.get(version)
 
-    def register_hybrid(
+    def register_review(
         self,
         projection: ScoredLocalProjection,
-        decision: ScoredDecision,
-    ) -> ScoredDecision:
+        review: ScoredReviewProjection,
+    ) -> ScoredDecision | None:
+        decision = review.decision or projection.local
         with self._lock:
             current_quality = self._input_quality.get(decision.strategy)
-            if current_quality is not None and current_quality.summary.trade_date == decision.trade_date:
+            if (
+                current_quality is not None
+                and current_quality.summary.trade_date == decision.trade_date
+                and current_quality.stage_snapshots[9] == projection.stages.local_score.snapshot
+            ):
                 current_quality = update_supply_status_decision(
                     current_quality,
                     projection,
                     decision,
                     candidate_score_threshold=self._policy.selection.candidate_min_score,
+                    scored_stages=review.stages,
                 )
                 decision = replace(decision, pipeline=current_quality.pipeline)
                 self._input_quality[decision.strategy] = current_quality
+            if review.decision is None:
+                return None
             self._projections[decision.version] = projection
             self._decisions[decision.version] = decision
             self._trim_research_sources()

@@ -225,8 +225,9 @@ def test_local_scoring_injects_risk_control(application_feature_factory) -> None
     )
 
     assert fused is not None
+    assert fused.decision is not None
     assert risk.calls == len(scored.local.items)
-    assert all(item.setup_type == "fixture" for item in fused.items)
+    assert all(item.setup_type == "fixture" for item in fused.decision.items)
 
 
 def test_local_scoring_injects_ranking_selection(application_feature_factory) -> None:
@@ -266,7 +267,8 @@ def test_score_fusion_service_preserves_manifest_gate_and_parentage(application_
     fused = service.fuse(projection, policy, {code: candidate_review}, review_deadline=deadline)
 
     assert fused is not None
-    assert fused.parent_version == projection.local.version
+    assert fused.decision is not None
+    assert fused.decision.parent_version == projection.local.version
 
 
 def test_recommendation_application_does_not_import_infrastructure_or_training() -> None:

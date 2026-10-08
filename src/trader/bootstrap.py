@@ -400,7 +400,7 @@ def build_system(
             monotonic=time.monotonic,
         ),
     )
-    deepseek = DeepSeekAdapter(reviewer, policy, native_data, ScoreFusionService())
+    deepseek = DeepSeekAdapter(reviewer, policy, native_data, ScoreFusionService(), now=ShanghaiClock(now).now)
 
     def publish_overlay_event(overlay: DecisionOverlay) -> object:
         current = publication.tomorrow_index.snapshot(overlay.strategy).current

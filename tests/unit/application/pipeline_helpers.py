@@ -1,30 +1,30 @@
 """Explicit observed static-stage fixtures for application boundary contracts."""
 
-from datetime import datetime
 from collections.abc import Sequence
+from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
-from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import (
-    build_dynamic_market_snapshot,
-)
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanningContext
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
     assemble_candidate_inputs,
     execute_candidate_pipeline,
 )
+from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import (
+    build_dynamic_market_snapshot,
+)
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import assess_candidate_input_stage
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
 from trader.recommendation.application.ports.market_data import FullMarketFeatureBatch
-from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
-from trader.recommendation.domain.market.models import FeatureSnapshot
-from trader.recommendation.domain.market.static import StaticIssuer
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
     PipelineStageSnapshot,
     SourceHealth,
     SourceHealthState,
 )
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
+from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.static import StaticIssuer
+from trader.recommendation.domain.publication.models import Strategy
 
 
 def observed_static_stages(population: int, as_of: datetime) -> tuple[PipelineStageSnapshot, ...]:
@@ -82,6 +82,15 @@ def observed_input_stages(
     as_of: datetime,
     strategy: Strategy = Strategy.TOMORROW,
 ) -> tuple[PipelineStageSnapshot, ...]:
+    return observed_quality_input(features, policy, as_of, strategy)[0]
+
+
+def observed_quality_input(
+    features: Sequence[FeatureSnapshot],
+    policy: RecommendationPolicy,
+    as_of: datetime,
+    strategy: Strategy = Strategy.TOMORROW,
+) -> tuple[tuple[PipelineStageSnapshot, ...], PipelineStageOutput[FeatureSnapshot]]:
     batch = observed_market_batch(features, as_of)
     ticks = iter(index / 100 for index in range(100))
     pipeline = execute_candidate_pipeline(
@@ -91,10 +100,11 @@ def observed_input_stages(
     )
     candidates = assemble_candidate_inputs(pipeline.candidates[strategy], tuple(features), as_of=as_of)
     quality = assess_candidate_input_stage(candidates, as_of=as_of, minimum_history_sessions=20, latency_ms=17)
-    return (
+    snapshots = (
         *batch.static_stages,
         batch.dynamic_stage.snapshot,
         *pipeline.stages(strategy)[:2],
         candidates.snapshot,
         quality.snapshot,
     )
+    return snapshots, quality
