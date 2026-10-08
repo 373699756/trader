@@ -97,6 +97,27 @@ WHERE records.trade_date BETWEEN ? AND ?
   )
 ORDER BY records.code, records.trade_date
 """
+_LATEST_SHADOW_SQL = """
+WITH latest AS (
+    SELECT trade_date, code, revision_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY trade_date, code
+               ORDER BY sync_sequence DESC
+           ) AS revision_rank
+    FROM daily_observations
+    WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ?
+)
+SELECT records.trade_date, records.code,
+       json_extract(records.payload_json, '$.cell.unadjusted') IS NOT NULL,
+       json_extract(records.payload_json, '$.cell.qfq') IS NOT NULL
+FROM latest
+JOIN daily_records AS records
+  ON records.trade_date = latest.trade_date
+ AND records.code = latest.code
+ AND records.revision_id = latest.revision_id
+WHERE latest.revision_rank = 1
+ORDER BY records.code, records.trade_date
+"""
 _LATEST_CODE_SQL = _LATEST_WINDOW.format(
     observation_filter="      AND code = ?",
     record_filter="",
@@ -327,6 +348,31 @@ class SQLiteHistoryMonthPartitionRepository:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month code-ordered query failed") from exc
+
+    def iter_shadow_facts(
+        self,
+        start: date,
+        end: date,
+        *,
+        snapshot_sequence: int,
+    ) -> Iterator[tuple[str, date, bool, bool]]:
+        """Stream adjustment-presence facts without decoding revision payloads."""
+        if start > end or snapshot_sequence < 1:
+            raise ValueError("history month query range is invalid")
+        try:
+            with closing(self._read_connection()) as connection:
+                self._require_metadata(connection)
+                cursor = connection.execute(
+                    _LATEST_SHADOW_SQL,
+                    (snapshot_sequence, start.isoformat(), end.isoformat()),
+                )
+                while rows := cursor.fetchmany(2048):
+                    for trade_date, code, raw_present, qfq_present in rows:
+                        yield str(code), date.fromisoformat(str(trade_date)), bool(raw_present), bool(qfq_present)
+        except HistoryMonthPartitionError:
+            raise
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryMonthPartitionError("history month shadow query failed") from exc
 
     def seal(self) -> HistorySnapshotPartition:
         try:

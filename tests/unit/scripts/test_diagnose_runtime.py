@@ -107,6 +107,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("tushare", "tushare_daily"),
         ("history-daily-capability", "history_daily_capability"),
         ("baostock-concurrency", "baostock_concurrency"),
+        ("baostock-qfq-shadow", "baostock_qfq_shadow"),
         ("history-sqlite", "history_sqlite_performance"),
         ("research", "research_readiness"),
         ("browser", "browser_refresh"),
@@ -135,6 +136,14 @@ def test_baostock_concurrency_profile_discovers_universe_for_default_codes() -> 
 
     assert "--discover" in commands[0].argv
     assert "--codes" not in commands[0].argv
+
+
+def test_baostock_qfq_shadow_profile_is_read_only_and_uses_active_history_root() -> None:
+    commands = build_commands(_options(profile="baostock-qfq-shadow"), python_executable="/python")
+
+    assert tuple(command.name for command in commands) == ("baostock_qfq_shadow",)
+    assert commands[0].argv[:3] == ("/python", "-m", "scripts.runtime_diagnostics.baostock_qfq_shadow")
+    assert commands[0].argv[-2:] == ("--history-root", "data/history/baostock")
 
 
 def test_research_profile_runs_only_research_readiness_probe() -> None:

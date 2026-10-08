@@ -202,7 +202,7 @@ def _synchronize(  # noqa: PLR0913
 ) -> HistoryMaintenanceStatus:
     sequence = 1 if active is None else active.sequence + 1
     sync_identity = _sync_identity(calendar, universe, active)
-    checkpoints = tuple(item for item in control.load_state().checkpoints if item.sync_identity == sync_identity)
+    checkpoints = _matching_checkpoints(control.load_state().checkpoints, sync_identity, context, active)
     completed = max((item.completed_units for item in checkpoints), default=0)
     ordinal = max((item.ordinal for item in checkpoints), default=0) + 1
     total = len(context.universe)
@@ -670,6 +670,36 @@ def _sync_identity(
         (calendar.content_hash, universe.content_hash, active.content_hash if active else None)
     )
     return f"sync-{calendar.open_dates[-1]:%Y%m%d}-{digest[:20]}"
+
+
+def _matching_checkpoints(
+    checkpoints: tuple[HistorySyncCheckpoint, ...],
+    sync_identity: str,
+    context: HistorySupplierContext,
+    active: HistoryActiveSnapshot | None,
+) -> tuple[HistorySyncCheckpoint, ...]:
+    """Reuse an interrupted batch when only a supplier contract hash changed.
+
+    The pending partitions are keyed by the calendar window, not by the supplier
+    version.  A new SDK/industry contract must not discard already validated
+    batches, but a different cutoff or universe size must never reuse them.
+    """
+    exact = tuple(item for item in checkpoints if item.sync_identity == sync_identity)
+    if exact:
+        return exact
+    cutoff = context.calendar.open_dates[-1].strftime("%Y%m%d")
+    prefix = f"sync-{cutoff}-"
+    candidates = tuple(
+        item
+        for item in checkpoints
+        if item.sync_identity.startswith(prefix)
+        and item.total_units == len(context.universe)
+        and item.completed_units > 0
+        and (active is None or item.completed_units <= item.total_units)
+    )
+    if not candidates:
+        return ()
+    return (max(candidates, key=lambda item: (item.completed_units, item.ordinal)),)
 
 
 def _safe_active(control: SQLiteHistoryControlRepository) -> HistoryActiveSnapshot | None:

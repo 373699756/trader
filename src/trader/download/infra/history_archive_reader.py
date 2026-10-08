@@ -206,6 +206,25 @@ class SQLiteHistoryArchiveReader:
         )
         yield from heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
 
+    def iter_shadow_facts(
+        self,
+        start: date,
+        end: date,
+        snapshot: HistoryActiveSnapshot,
+    ) -> Iterator[tuple[str, date, bool, bool]]:
+        """Stream raw/qfq presence facts without materializing history revisions."""
+        if start > end or end > snapshot.data_cutoff:
+            raise ValueError("history shadow range is invalid")
+        streams = tuple(
+            self._shadow_repository(self._reference(snapshot, year, month)).iter_shadow_facts(
+                start,
+                end,
+                snapshot_sequence=snapshot.sequence,
+            )
+            for year, month in route_history_months(start, end)
+        )
+        yield from heapq.merge(*streams, key=lambda row: (row[0], row[1]))
+
     def revised_dates(
         self,
         start: date,
@@ -339,6 +358,11 @@ class SQLiteHistoryArchiveReader:
         repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
         self._verified[reference] = repository
         return repository
+
+    def _shadow_repository(self, reference: HistorySnapshotPartition) -> SQLiteHistoryMonthPartitionRepository:
+        """Open a read-only shadow reader without repeating sealed-file hashing."""
+        year, month = _reference_month(reference)
+        return SQLiteHistoryMonthPartitionRepository(self._root / reference.relative_path, year, month)
 
 
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:

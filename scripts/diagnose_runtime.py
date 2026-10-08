@@ -27,6 +27,7 @@ Profile = Literal[
     "tushare",
     "history-daily-capability",
     "baostock-concurrency",
+    "baostock-qfq-shadow",
     "history-sqlite",
     "research",
     "browser",
@@ -48,6 +49,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tushare": ("tushare_daily",),
     "history-daily-capability": ("history_daily_capability",),
     "baostock-concurrency": ("baostock_concurrency",),
+    "baostock-qfq-shadow": ("baostock_qfq_shadow",),
     "history-sqlite": ("history_sqlite_performance",),
     "research": ("research_readiness",),
     "browser": ("browser_refresh",),
@@ -381,6 +383,17 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "baostock_qfq_shadow": DiagnosticCommand(
+            "baostock_qfq_shadow",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.baostock_qfq_shadow",
+                "--history-root",
+                str(options.history_root),
+            ),
+            max(common_timeout, 600.0),
+        ),
         "research_readiness": DiagnosticCommand(
             "research_readiness",
             (
@@ -628,6 +641,21 @@ def _history_sqlite_performance_details(
     payload["summary"] = _mapping(source.get("summary"))
 
 
+def _baostock_qfq_shadow_details(
+    _result: DiagnosticResult,
+    source: Mapping[str, object],
+    payload: dict[str, object],
+) -> None:
+    payload["production_eligible"] = source.get("production_eligible") is True
+    payload["summary"] = {
+        "active_snapshot": _mapping(source.get("active_snapshot")),
+        "target_window": _mapping(source.get("target_window")),
+        "raw_qfq_integrity": _mapping(source.get("raw_qfq_integrity")),
+        "request_baseline": _mapping(source.get("request_baseline")),
+        "production_eligibility_reason": source.get("production_eligibility_reason"),
+    }
+
+
 def _research_details(result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
     if result.payload is not None and not _valid_research_status(source):
         payload["findings"] = [
@@ -709,6 +737,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tushare_daily": _tushare_details,
     "history_daily_capability": _history_daily_capability_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
+    "baostock_qfq_shadow": _baostock_qfq_shadow_details,
     "research_readiness": _research_details,
     "browser_refresh": _browser_details,
     "production_performance": _performance_details,
