@@ -14,8 +14,11 @@ from typing import TYPE_CHECKING
 from flask import Flask
 
 from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.application.fetch_history_tail import FetchHistoryTailUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
+from trader.download.infra.baostock_gap_supplier import fetch_baostock_gaps
+from trader.download.infra.baostock_history_tail import BaoStockHistoryTailSupplier
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
@@ -104,6 +107,10 @@ from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
+from trader.recommendation.infra.market_data.history_tail_recovery import (
+    CandidateHistoryTailRecovery,
+    HistoryTailDependencies,
+)
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.recommendation.infra.market_data.market_feature_service import (
@@ -737,10 +744,10 @@ def _build_market_data(
         schema_version="market_snapshot",
         wall_clock=now,
     )
+    history_root = settings.project_root / "data" / "history" / "baostock"
+    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(history_root))
     history_cache = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(
-            SQLitePublishedHistoryArchive(settings.project_root / "data" / "history" / "baostock")
-        ),
+        published_history,
         lookback_sessions=history_lookback_sessions,
         recovery=HistoryRecovery(
             tencent,
@@ -749,6 +756,21 @@ def _build_market_data(
             workers=settings.pipeline.market_workers,
             batch_timeout_seconds=max(1.0, settings.market_data.eastmoney_timeout_seconds * 1.5),
             wall_clock=now,
+        ),
+        tail_recovery=CandidateHistoryTailRecovery(
+            HistoryTailDependencies(
+                published_history,
+                FetchHistoryTailUseCase(
+                    BaoStockHistoryTailSupplier(
+                        history_root,
+                        fetch_baostock_gaps,
+                        cancel_requested=lambda: not data_pool.is_running(),
+                    )
+                ),
+                open_dates=calendar.open_dates,
+                wall_clock=now,
+                cancel_requested=lambda: not data_pool.is_running(),
+            )
         ),
     )
     references = ReferenceLoader(

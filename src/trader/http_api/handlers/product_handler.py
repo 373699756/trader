@@ -9,8 +9,8 @@ from functools import partial
 
 from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
-from trader.http_api.response.decision_projection import serialize_decision_view, serialize_error
 from trader.http_api.decision_sse import decision_event_response
+from trader.http_api.response.decision_projection import serialize_decision_view, serialize_error
 from trader.http_api.route_services import UnifiedWebServices
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedSubscriberLimitError
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DecisionView
@@ -265,9 +265,17 @@ def _market_data(runtime: Mapping[str, object]) -> dict[str, object]:
         "history_recovery_deferred_count",
         "history_recovery_inflight_count",
         "history_recovery_latency_ms",
+        "history_tail_requested_count",
+        "history_tail_dispatched_count",
+        "history_tail_cache_hit_count",
+        "history_tail_deferred_count",
+        "history_tail_inflight_count",
+        "history_tail_expected_date",
+        "history_tail_last_error",
         "measured_at",
     )
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
+    result.update(_history_tail_quality(raw.get("history_tail_quality_counts")))
     result.update(_issuer_eligibility(raw.get("issuer_eligibility")))
     for field in ("market_quote_age", "candidate_quote_age"):
         value = raw.get(field)
@@ -557,6 +565,26 @@ def _latency_waterfall(value: object) -> dict[str, object]:
             if isinstance(stage, Mapping)
         }
     return result
+
+
+def _history_tail_quality(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        "history_tail_quality_counts": {
+            key: value[key]
+            for key in (
+                "full_history_ready",
+                "tail_pending",
+                "raw_only",
+                "qfq_only",
+                "adjustment_conflict",
+                "history_stale",
+                "history_unavailable",
+            )
+            if key in value and isinstance(value[key], int) and not isinstance(value[key], bool) and value[key] >= 0
+        }
+    }
 
 
 def _json_scalar(value: object) -> bool:

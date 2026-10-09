@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-
 
 NOW = datetime(2026, 9, 23, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -82,6 +82,45 @@ def test_recovery_rejects_raw_bars_and_does_not_fabricate_history() -> None:
 
     assert result == {}
     assert recovery.status().failure_count == 1
+
+
+def test_recovery_cache_cannot_supply_a_different_profile_or_observation_date() -> None:
+    primary = _Source({"600001": _bars(251)})
+    wall_clock = [NOW]
+    recovery = HistoryRecovery(primary, _Source({}), worker_pool=None, workers=1, wall_clock=lambda: wall_clock[0])
+    assert len(recovery.recover(("600001",), days=61, deadline=None)["600001"]) == 61
+    assert len(recovery.recover(("600001",), days=251, deadline=None)["600001"]) == 251
+    assert primary.calls == ["600001", "600001"]
+    wall_clock[0] += timedelta(days=1)
+    recovery.recover(("600001",), days=251, deadline=None)
+    assert len(primary.calls) == 3
+
+
+def test_recovery_cache_day_changes_at_shanghai_midnight_with_a_utc_clock() -> None:
+    primary = _Source({"600001": _bars(61)})
+    wall_clock = [datetime(2026, 9, 22, 15, 30, tzinfo=timezone.utc)]
+    recovery = HistoryRecovery(primary, _Source({}), worker_pool=None, workers=1, wall_clock=lambda: wall_clock[0])
+    recovery.recover(("600001",), days=61, deadline=None)
+    wall_clock[0] += timedelta(hours=2)
+    recovery.recover(("600001",), days=61, deadline=None)
+    assert primary.calls == ["600001", "600001"]
+
+
+@pytest.mark.parametrize("invalid", ("duplicate", "future", "ohlc", "nan"))
+def test_recovery_rejects_invalid_qfq_supplier_rows(invalid: str) -> None:
+    bars = _bars(61)
+    if invalid == "duplicate":
+        bars = (*bars, bars[-1])
+    elif invalid == "future":
+        bars = (*bars[:-1], replace(bars[-1], trade_date=(NOW + timedelta(days=1)).date().isoformat()))
+    elif invalid == "ohlc":
+        bars = (*bars[:-1], replace(bars[-1], low=11.0))
+    else:
+        bars = (*bars[:-1], replace(bars[-1], close=float("nan")))
+    recovery = HistoryRecovery(
+        _Source({"600001": bars}), _Source({}), worker_pool=None, workers=1, wall_clock=lambda: NOW
+    )
+    assert recovery.recover(("600001",), days=62, deadline=None) == {}
 
 
 def test_published_history_uses_recovery_when_archive_has_no_snapshot() -> None:

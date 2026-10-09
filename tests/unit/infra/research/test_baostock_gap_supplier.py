@@ -77,4 +77,4 @@ def test_gap_fetch_rejects_unbounded_worker_options(retries: int, timeout: float
     request = supplier.BaoStockGapRequest("600001", "daily_qfq", (date(2026, 9, 2),))
 
     with pytest.raises(ValueError, match="options"):
-        supplier.fetch_baostock_gaps((request,), retries=retries, call_timeout_seconds=timeout)
+        supplier.fetch_baostock_gaps((request,), options=supplier.BaoStockGapWorkerOptions(retries, timeout))

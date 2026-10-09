@@ -58,8 +58,8 @@ def decode_history_revision(payload_json: str) -> HistoryRevision:
                 ],
                 _text(cell_payload["status"], "cell status"),
             ),
-            _decode_optional_side(cell_payload["unadjusted"], "unadjusted"),
-            _decode_optional_side(cell_payload["qfq"], "qfq"),
+            decode_history_side(cell_payload["unadjusted"], "unadjusted"),
+            decode_history_side(cell_payload["qfq"], "qfq"),
         )
         return HistoryRevision(
             _integer(payload["first_seen_sequence"], "first seen sequence"),
@@ -93,7 +93,7 @@ def _encode_side(value: BaoStockDailySide | None) -> dict[str, object] | None:
     }
 
 
-def _decode_optional_side(value: object, label: str) -> BaoStockDailySide | None:
+def decode_history_side(value: object, label: str) -> BaoStockDailySide | None:
     if value is None:
         return None
     payload = _object(value, label)
@@ -176,4 +176,4 @@ def _optional_number(value: object, label: str) -> float | None:
     return float(value)
 
 
-__all__ = ["decode_history_revision", "encode_history_revision"]
+__all__ = ["decode_history_revision", "decode_history_side", "encode_history_revision"]

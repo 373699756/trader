@@ -64,15 +64,16 @@ from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
+from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy
 from trader.recommendation.infra.market_data import gateway as gateway_module
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, SecurityMasterHealthStatus
 from trader.recommendation.infra.market_data.history_recovery import HistoryRecoveryStatus
+from trader.recommendation.infra.market_data.history_tail_recovery import HistoryTailStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _history_population_codes,
@@ -225,6 +226,7 @@ class _FixtureHistory:
             maintenance_completed_units=0,
             maintenance_total_units=0,
             recovery=HistoryRecoveryStatus(0, 0, 0, 0, None, None),
+            tail=HistoryTailStatus(),
         )
 
     def read_outcome_bars(self, codes, _observed_at):
@@ -255,7 +257,9 @@ def _service(
         schema_version=kwargs.pop("schema_version", "market_snapshot"),
         wall_clock=wall_clock,
     )
-    history = _FixtureHistory(history_client, monotonic)
+    history = kwargs.pop("published_history", None)
+    if history is None:
+        history = _FixtureHistory(history_client, monotonic)
     kwargs.pop("history_worker_pool", None)
     kwargs.pop("history_workers", 6)
     kwargs.pop("history_ttl_seconds", 21_600)

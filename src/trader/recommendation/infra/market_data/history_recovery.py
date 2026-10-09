@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
-from collections.abc import Mapping, Sequence
-from concurrent.futures import Future, TimeoutError as FutureTimeoutError, as_completed
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, as_completed
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from functools import partial
-from typing import Callable, Protocol
+from typing import Protocol
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
+from trader.recommendation.application.runtime.schedule import SHANGHAI, shanghai_now
 from trader.recommendation.application.runtime.workers import (
     BorrowExecutorOptions,
     BoundedExecutor,
@@ -22,6 +25,13 @@ from trader.recommendation.application.runtime.workers import (
 
 class HistorySource(Protocol):
     def fetch_history(self, code: str, *, days: int = 90) -> Sequence[DailyBar]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _RecoveryIdentity:
+    code: str
+    days: int
+    observed_on: date
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +70,7 @@ class HistoryRecovery:
         batch_timeout_seconds: float = 12.0,
         max_batch_size: int = 120,
         ttl_seconds: float = 900.0,
-        wall_clock: Callable[[], datetime] = datetime.now,
+        wall_clock: Callable[[], datetime] = lambda: datetime.now(SHANGHAI),
         monotonic_clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if workers < 1 or minimum_rows < 1 or batch_timeout_seconds <= 0.0 or max_batch_size < 1 or ttl_seconds <= 0.0:
@@ -77,7 +87,7 @@ class HistoryRecovery:
         self._monotonic_clock = monotonic_clock
         self._lock = threading.Lock()
         self._status = HistoryRecoveryStatus(0, 0, 0, 0, None, None)
-        self._recent: dict[str, tuple[tuple[DailyBar, ...], float]] = {}
+        self._recent: dict[_RecoveryIdentity, tuple[tuple[DailyBar, ...], float]] = {}
         self._attempt_order: dict[str, int] = {}
         self._attempt_sequence = 0
         self._inflight: set[str] = set()
@@ -91,13 +101,17 @@ class HistoryRecovery:
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         requested = tuple(dict.fromkeys(code for code in codes if code.strip()))
         started = self._monotonic_clock()
+        observed_on = shanghai_now(self._wall_clock()).date()
+        identities = {code: _RecoveryIdentity(code, days, observed_on) for code in requested}
         budget = self._batch_timeout_seconds
         if deadline is not None:
             budget = min(budget, max(0.0, (deadline - self._wall_clock()).total_seconds()))
         monotonic_deadline = started + budget
         with self._lock:
             self._recent = {code: item for code, item in self._recent.items() if item[1] > started}
-            results = {code: self._recent[code][0] for code in requested if code in self._recent}
+            results = {
+                code: self._recent[identities[code]][0] for code in requested if identities[code] in self._recent
+            }
             missing = tuple(code for code in requested if code not in results)
             # Only dispatched work advances the cursor. Failed codes move to
             # the tail too, while unstarted waves retain their priority.
@@ -180,7 +194,9 @@ class HistoryRecovery:
         finally:
             with self._lock:
                 expires_at = self._monotonic_clock() + self._ttl_seconds
-                self._recent.update({code: (bars, expires_at) for code, bars in results.items() if code in selected})
+                self._recent.update(
+                    {identities[code]: (bars, expires_at) for code, bars in results.items() if code in selected}
+                )
                 pending_futures = tuple((future, code) for future, code in dispatched.items() if not future.done())
                 pending_codes = {code for _, code in pending_futures}
                 self._inflight.difference_update(code for code in selected if code not in pending_codes)
@@ -232,11 +248,21 @@ class HistoryRecovery:
             raise ValueError("history recovery returned too few qfq rows")
         return code, selected[-days:], "fallback"
 
-    @staticmethod
-    def _valid_qfq(bars: Sequence[DailyBar]) -> tuple[DailyBar, ...]:
+    def _valid_qfq(self, bars: Sequence[DailyBar]) -> tuple[DailyBar, ...]:
         ordered = tuple(sorted(bars, key=lambda item: item.trade_date))
         if any(item.adjustment is not PriceAdjustment.QFQ for item in ordered):
             return ()
+        dates = tuple(date.fromisoformat(item.trade_date) for item in ordered)
+        if len(set(dates)) != len(dates) or any(day > shanghai_now(self._wall_clock()).date() for day in dates):
+            return ()
+        for item in ordered:
+            prices = (item.open_price, item.close, item.low, item.high)
+            if (
+                any(not math.isfinite(value) or value <= 0 for value in prices)
+                or not item.low <= min(item.open_price, item.close) <= max(item.open_price, item.close) <= item.high
+                or any(not math.isfinite(value) or value < 0 for value in (item.volume, item.amount))
+            ):
+                return ()
         return ordered
 
     def _remaining_seconds(self, deadline: float) -> float:

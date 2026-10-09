@@ -9,17 +9,17 @@ from datetime import datetime
 from typing import cast
 
 from trader.infra.market_data.providers.tushare import TushareHealthStatus
+from trader.infra.market_data.router import RouteOutcome
+from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
+from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
+from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary, _reference_epoch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
-from trader.infra.market_data.router import RouteOutcome
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
-from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
-from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
-from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 
 
 @dataclass(frozen=True)
@@ -203,6 +203,18 @@ class MarketDataHealth:
                     "history_recovery_deferred_count": recovery.deferred_count,
                     "history_recovery_inflight_count": recovery.inflight_count,
                     "history_recovery_latency_ms": recovery.latency_ms,
+                    "history_tail_requested_count": history.tail.requested_count,
+                    "history_tail_dispatched_count": history.tail.dispatched_count,
+                    "history_tail_cache_hit_count": history.tail.cache_hit_count,
+                    "history_tail_deferred_count": history.tail.deferred_count,
+                    "history_tail_inflight_count": history.tail.inflight_count,
+                    "history_tail_expected_date": history.tail.expected_date.isoformat()
+                    if history.tail.expected_date
+                    else None,
+                    "history_tail_quality_counts": {
+                        quality.value: count for quality, count in history.tail.quality_counts
+                    },
+                    "history_tail_last_error": history.tail.last_error,
                     "issuer_eligibility": {
                         "schema_version": eligibility.schema_version,
                         "fact_count": eligibility.fact_count,

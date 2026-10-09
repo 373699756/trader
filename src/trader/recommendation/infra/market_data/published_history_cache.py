@@ -6,24 +6,27 @@ import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import cast
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.domain.history_revision import HistoryRevision
-from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.domain.published_history import PublishedHistoryManifest
 from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,
-    PriceAdjustment,
     build_history_context,
     require_qfq_history,
 )
-from trader.infra.market_data.history.outcome_history import pair_outcome_history
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.domain.market.history_tail import HistoryQuality
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,
 )
+from trader.recommendation.infra.market_data.history_tail_recovery import (
+    CandidateHistoryTailRecovery,
+    HistoryTailStatus,
+)
+from trader.recommendation.infra.market_data.published_history_bars import outcome_bars, qfq_bars
 from trader.training.domain.evaluation.models import OutcomeBar
 
 _RAW_RETENTION_SESSIONS = 20
@@ -48,6 +51,7 @@ class PublishedHistoryStatus:
     maintenance_completed_units: int
     maintenance_total_units: int
     recovery: HistoryRecoveryStatus = HistoryRecoveryStatus(0, 0, 0, 0, None, None)
+    tail: HistoryTailStatus = HistoryTailStatus()
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,10 +69,12 @@ class PublishedHistoryCache:
         *,
         lookback_sessions: int,
         recovery: HistoryRecovery | None = None,
+        tail_recovery: CandidateHistoryTailRecovery | None = None,
     ) -> None:
         self._history = history
         self._lookback_sessions = max(61, lookback_sessions)
         self._recovery = recovery
+        self._tail_recovery = tail_recovery
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._manifest: PublishedHistoryManifest | None = None
@@ -141,11 +147,11 @@ class PublishedHistoryCache:
         self,
         codes: Sequence[str],
         *,
-        force: bool = False,
         deadline: datetime | None = None,
         action_restrictions: dict[str, set[str]] | None = None,
+        observed_at: datetime | None = None,
+        recover_tail: bool = True,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
-        del force
         # Deadline-bound market work consumes the background projection. A
         # full archive verification/rebuild cannot fit its real-time budget.
         if deadline is None:
@@ -153,7 +159,7 @@ class PublishedHistoryCache:
         with self._lock:
             if self._manifest is None and (self._refresh_lock.locked() or self._maintenance_state == "loading"):
                 raise MarketDataUnavailableError("history_projection_loading")
-        result = self.cached(codes)
+        result = self.cached(codes, observed_at=observed_at)
         if self._recovery is not None:
             missing = tuple(code for code in dict.fromkeys(codes) if code not in result)
             if missing:
@@ -164,11 +170,42 @@ class PublishedHistoryCache:
                         deadline=deadline,
                     )
                 )
+        if self._tail_recovery is not None and observed_at is not None and recover_tail:
+            result = self._load_tail(result, observed_at, deadline)
         if action_restrictions is not None:
             for code in dict.fromkeys(codes):
                 if code not in result:
                     action_restrictions.setdefault(code, set()).add("history_data_pending")
         return result
+
+    def _load_tail(
+        self,
+        result: dict[str, tuple[DailyBar, ...]],
+        observed_at: datetime,
+        deadline: datetime | None,
+    ) -> dict[str, tuple[DailyBar, ...]]:
+        assert self._tail_recovery is not None
+        with self._lock:
+            manifest = self._manifest
+        if manifest is None:
+            # Standalone whole-window recovery has no weekly base to stitch.
+            # Its existing independent-source qualification remains intact.
+            return result
+        stale = tuple(code for code, bars in result.items() if not self._fresh(bars, observed_at))
+        if stale:
+            recovered = self._tail_recovery.recover(
+                stale,
+                manifest,
+                sessions=self._lookback_sessions,
+                observed_at=observed_at,
+                deadline=deadline,
+            )
+            with self._lock:
+                if self._manifest == manifest:
+                    result.update(recovered)
+                else:
+                    result = self.cached(tuple(result), observed_at=observed_at)
+        return {code: bars for code, bars in result.items() if self._fresh(bars, observed_at)}
 
     def cached(
         self,
@@ -176,16 +213,37 @@ class PublishedHistoryCache:
         *,
         fresh_only: bool = False,
         action_restrictions: dict[str, set[str]] | None = None,
+        observed_at: datetime | None = None,
     ) -> dict[str, tuple[DailyBar, ...]]:
-        del fresh_only
         requested = tuple(dict.fromkeys(codes))
         with self._lock:
             result = {code: entry.bars for code in requested if (entry := self._entries.get(code)) is not None}
+            manifest = self._manifest
+        if self._tail_recovery is not None and observed_at is not None:
+            if manifest is not None:
+                result.update(self._tail_recovery.cached(requested, manifest, self._lookback_sessions, observed_at))
+            if fresh_only:
+                result = {code: bars for code, bars in result.items() if self._fresh(bars, observed_at)}
         if action_restrictions is not None:
             for code in requested:
                 if code not in result:
                     action_restrictions.setdefault(code, set()).add("history_data_pending")
         return result
+
+    def _fresh(self, bars: tuple[DailyBar, ...], observed_at: datetime) -> bool:
+        if self._tail_recovery is None:
+            return True
+        try:
+            observed_at = observed_at.astimezone(SHANGHAI)
+            if bars and bars[-1].trade_date == observed_at.date().isoformat() and observed_at.hour < 15:
+                return False
+            return (
+                bool(bars)
+                and self._tail_recovery.plan(date.fromisoformat(bars[-1].trade_date), observed_at).quality
+                is HistoryQuality.FULL_HISTORY_READY
+            )
+        except (OSError, RuntimeError, ValueError):
+            return False
 
     def summaries(
         self,
@@ -198,7 +256,7 @@ class PublishedHistoryCache:
             entries = dict(self._entries)
         return {
             code: entries[code].context
-            if code in entries
+            if code in entries and entries[code].bars == bars
             else build_history_context(bars, lookback_sessions=self._lookback_sessions)
             for code, bars in histories.items()
             if bars
@@ -239,6 +297,7 @@ class PublishedHistoryCache:
                     if self._recovery is not None
                     else HistoryRecoveryStatus(0, 0, 0, 0, None, None)
                 ),
+                tail=self._tail_recovery.status() if self._tail_recovery is not None else HistoryTailStatus(),
             )
 
     def entries(self) -> Mapping[str, PublishedHistoryEntry]:
@@ -264,12 +323,12 @@ class PublishedHistoryCache:
         except (RuntimeError, ValueError) as exc:
             self._record_error(type(exc).__name__)
             return {}
-        return {window.code: paired for window in windows if (paired := _outcome_bars(window.revisions))}
+        return {window.code: paired for window in windows if (paired := outcome_bars(window.revisions))}
 
     def _build_entries(self, manifest: PublishedHistoryManifest) -> dict[str, PublishedHistoryEntry]:
         entries: dict[str, PublishedHistoryEntry] = {}
         for window in self._history.iter_windows(manifest, sessions=self._lookback_sessions):
-            bars = _qfq_bars(window)
+            bars = qfq_bars(window)
             if not bars:
                 continue
             entries[window.code] = PublishedHistoryEntry(
@@ -282,41 +341,6 @@ class PublishedHistoryCache:
         with self._lock:
             self._error_count += 1
             self._maintenance_reason = reason
-
-
-def _qfq_bars(window: PublishedHistoryWindow) -> tuple[DailyBar, ...]:
-    bars = tuple(bar for revision in window.revisions if (bar := _daily_bar(revision, PriceAdjustment.QFQ)) is not None)
-    return tuple(sorted(bars, key=lambda item: item.trade_date))
-
-
-def _outcome_bars(revisions: tuple[HistoryRevision, ...]) -> tuple[OutcomeBar, ...]:
-    qfq = tuple(bar for revision in revisions if (bar := _daily_bar(revision, PriceAdjustment.QFQ)) is not None)
-    raw = tuple(bar for revision in revisions if (bar := _daily_bar(revision, PriceAdjustment.RAW)) is not None)
-    return pair_outcome_history(qfq, raw)
-
-
-def _daily_bar(revision: HistoryRevision, adjustment: PriceAdjustment) -> DailyBar | None:
-    side = revision.cell.qfq if adjustment is PriceAdjustment.QFQ else revision.cell.unadjusted
-    raw = revision.cell.unadjusted
-    if side is None or raw is None:
-        return None
-    values = (side.open_price, side.close_price, side.high_price, side.low_price, side.volume, side.amount)
-    if any(value is None for value in values):
-        return None
-    open_price, close_price, high_price, low_price, volume, amount = cast(tuple[float, ...], values)
-    return DailyBar(
-        trade_date=side.trade_date.isoformat(),
-        open_price=open_price,
-        close=close_price,
-        high=high_price,
-        low=low_price,
-        volume=volume,
-        amount=amount,
-        pct_change=float(raw.pct_change or 0.0),
-        turnover_rate=raw.turnover,
-        adjustment=adjustment,
-        source="baostock",
-    )
 
 
 __all__ = ["PublishedHistoryCache", "PublishedHistoryEntry", "PublishedHistoryStatus"]

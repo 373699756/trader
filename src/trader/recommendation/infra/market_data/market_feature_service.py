@@ -167,6 +167,8 @@ class MarketFeatureService:
             history_codes,
             deadline=deadline,
             action_restrictions=action_restrictions,
+            observed_at=observed_at,
+            recover_tail=False,
         )
         self.runner.ensure_before_deadline(deadline)
         features = self.quotes.build_market_features(
@@ -327,7 +329,7 @@ class MarketFeatureService:
         if {quote.code for quote in quotes} != set(normalized):
             self.fetch_market_features(observed_at)
             quotes = self.quotes.candidate_snapshot(normalized)
-        histories = self.history.load(normalized, action_restrictions=action_restrictions)
+        histories = self.history.load(normalized, observed_at=observed_at, action_restrictions=action_restrictions)
         intraday = (
             self.intraday.load(
                 _board_fair_codes(normalized, quotes),
@@ -376,7 +378,12 @@ class MarketFeatureService:
         action_restrictions: dict[str, set[str]] = {}
         return self.quotes.build_candidate_features(
             resolved,
-            self.history.cached(normalized, action_restrictions=action_restrictions),
+            self.history.load(
+                normalized,
+                observed_at=observed_at,
+                deadline=deadline,
+                action_restrictions=action_restrictions,
+            ),
             observed_at,
             research_observations=self.research.cached(
                 normalized,
@@ -414,7 +421,12 @@ class MarketFeatureService:
         action_restrictions: dict[str, set[str]] = {}
         return self.quotes.build_candidate_features(
             resolved,
-            self.history.cached(normalized, action_restrictions=action_restrictions),
+            self.history.cached(
+                normalized,
+                observed_at=observed_at,
+                fresh_only=True,
+                action_restrictions=action_restrictions,
+            ),
             observed_at,
             research_observations=self.research.cached(
                 normalized,
@@ -466,6 +478,7 @@ class MarketFeatureService:
         action_restrictions: dict[str, set[str]] = {}
         histories = self.history.cached(
             tuple(quote.code for quote in quotes),
+            observed_at=observed_at,
             action_restrictions=action_restrictions,
         )
         features = self.quotes.build_market_features(
@@ -571,7 +584,12 @@ class MarketFeatureService:
         if not normalized:
             return ()
         action_restrictions: dict[str, set[str]] = {}
-        histories = self.history.cached(normalized, action_restrictions=action_restrictions)
+        histories = self.history.cached(
+            normalized,
+            observed_at=observed_at,
+            fresh_only=True,
+            action_restrictions=action_restrictions,
+        )
         research = self.research.cached(
             normalized,
             include_structured=include_structured_research,

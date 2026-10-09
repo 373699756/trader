@@ -39,6 +39,7 @@ _HISTORY_PATHS = frozenset(
         "unit/domain/research/test_history_revision.py",
         "unit/entrypoints/test_history_sync_progress.py",
         "unit/infra/research/test_baostock_gap_supplier.py",
+        "unit/infra/test_baostock_history_tail.py",
         "unit/infra/research/test_baostock_gateway.py",
         "unit/infra/research/test_baostock_sync_supplier.py",
         "unit/infra/research/test_history_archive_reader.py",

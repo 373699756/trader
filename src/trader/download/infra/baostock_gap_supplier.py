@@ -42,6 +42,21 @@ class BaoStockGapSupplierError(RuntimeError):
     """The bounded supplier worker could not prove all requested gap results."""
 
 
+@dataclass(frozen=True, slots=True)
+class BaoStockGapWorkerOptions:
+    retries: int = 2
+    call_timeout_seconds: float = 60.0
+    shutdown_timeout_seconds: float = 10.0
+
+    def __post_init__(self) -> None:
+        if (
+            self.retries not in range(3)
+            or self.call_timeout_seconds <= 0
+            or not 0 < self.shutdown_timeout_seconds <= 10
+        ):
+            raise ValueError("BaoStock gap worker options are invalid")
+
+
 @dataclass(frozen=True)
 class _SupplierCallActivity:
     state: Literal["started", "completed"]
@@ -147,6 +162,7 @@ class _MonitorOptions:
     timeout_seconds: float
     cancel_requested: CancelRequested
     progress: GapProgress
+    shutdown_timeout_seconds: float
 
 
 class _WorkerMonitor:
@@ -163,6 +179,7 @@ class _WorkerMonitor:
         self._timeout_seconds = options.timeout_seconds
         self._cancel_requested = options.cancel_requested
         self._progress = options.progress
+        self._shutdown_timeout_seconds = options.shutdown_timeout_seconds
         self._deadline = time.monotonic() + options.timeout_seconds
         self._records: list[BaoStockGapRecord] = []
         self._unavailable: list[BaoStockGapUnavailable] = []
@@ -182,7 +199,7 @@ class _WorkerMonitor:
             raise BaoStockGapSupplierError("supplier worker connection failed") from exc
         finally:
             self._parent.close()
-            _terminate(self._process)
+            _terminate(self._process, self._shutdown_timeout_seconds)
 
     def _next_message(self) -> object:
         while True:
@@ -235,27 +252,29 @@ class _WorkerMonitor:
 def fetch_baostock_gaps(
     requests: tuple[BaoStockGapRequest, ...],
     *,
-    retries: int = 2,
-    call_timeout_seconds: float = 60.0,
+    options: BaoStockGapWorkerOptions | None = None,
     cancel_requested: CancelRequested = lambda: False,
     progress: GapProgress = lambda _completed, _total, _current: None,
 ) -> BaoStockGapResult:
     """Fetch all requests in one rate-limited SDK process with bounded calls."""
 
     ordered = tuple(sorted(requests))
+    options = options or BaoStockGapWorkerOptions()
     if not ordered:
         return BaoStockGapResult((), ())
-    if len(set(ordered)) != len(ordered) or retries not in range(3) or call_timeout_seconds <= 0:
+    if len(set(ordered)) != len(ordered):
         raise ValueError("BaoStock gap worker options are invalid")
     context = get_context("spawn")
     parent, child = context.Pipe(duplex=False)
-    process = context.Process(target=_worker_main, args=(child, ordered, retries), daemon=True)
+    process = context.Process(target=_worker_main, args=(child, ordered, options.retries), daemon=True)
     process.start()
     child.close()
     return _WorkerMonitor(
         parent,
         process,
-        _MonitorOptions(ordered, call_timeout_seconds, cancel_requested, progress),
+        _MonitorOptions(
+            ordered, options.call_timeout_seconds, cancel_requested, progress, options.shutdown_timeout_seconds
+        ),
     ).run()
 
 
@@ -331,7 +350,7 @@ def _fetch_request(
         for row in rows:
             day = date.fromisoformat(row.get("date", ""))
             if day not in expected:
-                continue
+                raise ValueError("BaoStock gap response is outside the requested window")
             if day in observed or row.get("code") != query_code or row.get("tradestatus") not in {"0", "1"}:
                 raise ValueError("BaoStock gap response identity is invalid")
             observed.add(day)
@@ -435,10 +454,10 @@ def _failure_code(exc: BaseException) -> str:
     return value if value and len(value) <= 64 and value.replace("_", "").isalnum() else "supplier_failed"
 
 
-def _terminate(process: BaseProcess) -> None:
+def _terminate(process: BaseProcess, grace_seconds: float = 10.0) -> None:
     if process.is_alive():
         process.terminate()
-    process.join(timeout=10.0)
+    process.join(timeout=grace_seconds)
     if process.is_alive() and hasattr(process, "kill"):
         process.kill()
         process.join(timeout=1.0)
@@ -448,6 +467,7 @@ __all__ = [
     "BaoStockGapFamily",
     "BaoStockGapRecord",
     "BaoStockGapRequest",
+    "BaoStockGapWorkerOptions",
     "BaoStockGapResult",
     "BaoStockGapSupplierError",
     "BaoStockGapUnavailable",
