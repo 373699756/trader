@@ -168,7 +168,8 @@ def test_incremental_sync_skips_security_delisted_before_current_cutoff(tmp_path
     ("observed_at", "expected_as_of"),
     (
         (datetime(2026, 9, 10, 0, 10, tzinfo=ZoneInfo("Asia/Shanghai")), date(2026, 9, 9)),
-        (datetime(2026, 9, 10, 15, 10, tzinfo=ZoneInfo("Asia/Shanghai")), date(2026, 9, 9)),
+        (datetime(2026, 9, 10, 15, 9, tzinfo=ZoneInfo("Asia/Shanghai")), date(2026, 9, 9)),
+        (datetime(2026, 9, 10, 15, 10, tzinfo=ZoneInfo("Asia/Shanghai")), date(2026, 9, 10)),
         (datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai")), date(2026, 9, 10)),
     ),
 )

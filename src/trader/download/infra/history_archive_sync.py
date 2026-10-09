@@ -64,7 +64,7 @@ from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-_BAOSTOCK_DAILY_READY = time(20, 30)
+_BAOSTOCK_DAILY_READY = time(15, 10)
 _ERROR_CODE = re.compile(r"[a-z0-9_]{1,64}")
 
 
@@ -616,7 +616,7 @@ def _control_identities(
     context: HistorySupplierContext,
 ) -> tuple[HistorySourceIdentity, HistoryCalendarIdentity, HistoryUniverseIdentity]:
     cutoff = context.calendar.open_dates[-1]
-    observed = datetime.combine(cutoff, time(20, 30), _SHANGHAI)
+    observed = datetime.combine(cutoff, _BAOSTOCK_DAILY_READY, _SHANGHAI)
     supplier_contract = f"python_sdk_{canonical_artifact_hash((context.source_versions, context.industry_intervals))}"
     source = HistorySourceIdentity("baostock", "baostock_daily", supplier_contract[:128], observed)
     calendar = HistoryCalendarIdentity(context.calendar.open_dates, source.content_hash)
