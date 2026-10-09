@@ -100,14 +100,14 @@ class RiskCostUncertaintyResearchBuilder:
                 prerequisite.model_artifact_hash,
                 ("risk_cost_population_unavailable",),
             )
-        samples = self._evidence.load_samples(prerequisite)
-        if samples is None:
-            return insufficient_risk_cost_uncertainty_report(
-                prerequisite.parent_report_hash,
-                prerequisite.model_artifact_hash,
-                ("risk_cost_evidence_unavailable",),
-            )
         try:
+            samples = self._evidence.load_samples(prerequisite)
+            if samples is None:
+                return insufficient_risk_cost_uncertainty_report(
+                    prerequisite.parent_report_hash,
+                    prerequisite.model_artifact_hash,
+                    ("risk_cost_evidence_unavailable",),
+                )
             validate_risk_cost_samples(dataset, identity, samples)
             return evaluate_risk_cost_uncertainty(
                 prerequisite.parent_report_hash,

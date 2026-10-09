@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -12,6 +13,7 @@ from trader.recommendation.domain.risk.decision import (
 )
 from trader.recommendation.domain.scoring.alpha import AlphaScore
 from trader.recommendation.domain.selection.execution_cost import ExecutionCost, ExecutionCostScenario
+from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeEventFact
 from trader.training.domain.evaluation.risk_cost_population import RiskCostResearchIdentity
 from trader.training.domain.evaluation.risk_cost_uncertainty import (
     DeepSeekResearchReview,
@@ -83,7 +85,15 @@ def _sample(
         actual_net_excess_return=actual_net,
         actual_severe_loss=severe,
         dataset_row_hash="1" * 64,
+        structured_facts=tuple(
+            _fact(fact_id, trade_date) for fact_id in sorted(set(risk.structured_fact_ids + review.structured_fact_ids))
+        ),
     )
+
+
+def _fact(fact_id: str, trade_date: date) -> PointInTimeEventFact:
+    anchor = datetime.combine(trade_date, datetime.min.time(), ZoneInfo("Asia/Shanghai")).replace(hour=15)
+    return PointInTimeEventFact(fact_id, anchor, anchor, anchor, "a" * 64)
 
 
 def test_signal_risk_cost_and_research_utility_keep_units_and_ownership_separate() -> None:
@@ -300,6 +310,7 @@ def test_fixed_fusion_uses_decimal_half_up_without_a_second_local_risk_deduction
         row,
         alpha=replace(row.alpha, signal_score=100),
         deepseek=replace(review, score=81.875, structured_risk_penalty=4, structured_fact_ids=("verified_fact",)),
+        structured_facts=(_fact("local_tail_risk", row.trade_date), _fact("verified_fact", row.trade_date)),
     )
     golden_report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (golden,))
     assert next(item for item in golden_report.decisions if item.arm == "fixed_68_32").score == 83.40
@@ -402,3 +413,26 @@ def test_numerical_kernel_requires_model_and_partition_dates_and_hashes_parent_r
     assert changed.ablation == report.ablation
     with pytest.raises(ValueError, match="bound research identity"):
         replace(report, research_identity=None)
+
+
+def test_fact_references_require_exact_unique_typed_coverage_and_change_evidence_identity() -> None:
+    sample = _sample(
+        "600001",
+        signal_score=90,
+        actual_net=0.02,
+        severe=False,
+        review=DeepSeekResearchReview("failed", None, 0, False, (), "ignored"),
+    )
+    fact = sample.structured_facts[0]
+    for facts in ((), (fact, fact), (fact, _fact("unreferenced_fact", sample.trade_date))):
+        with pytest.raises(ValueError, match="exactly the unique"):
+            replace(sample, structured_facts=facts)
+    original = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (sample,))
+    changed = evaluate_risk_cost_uncertainty(
+        "c" * 64,
+        "d" * 64,
+        (replace(sample, structured_facts=(replace(fact, content_hash="b" * 64),)),),
+    )
+    assert changed.evidence_hash != original.evidence_hash
+    assert changed.content_hash != original.content_hash
+    assert changed.ablation == original.ablation

@@ -23,6 +23,7 @@ from trader.training.domain.evaluation.constrained_oracle import (
     constrained_oracle,
 )
 from trader.training.domain.evaluation.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
+from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeEventFact
 from trader.training.domain.evaluation.risk_cost_population import RiskCostResearchIdentity
 
 DeepSeekResearchOutcome = Literal["applied", "failed", "late", "budget_exhausted", "abstained"]
@@ -89,6 +90,7 @@ class RiskCostUncertaintySample:
     actual_net_excess_return: float
     actual_severe_loss: bool
     dataset_row_hash: str
+    structured_facts: tuple[PointInTimeEventFact, ...]
 
     def __post_init__(self) -> None:
         if self.board not in SUPPORTED_RESEARCH_BOARDS or not self.industry.strip():
@@ -102,11 +104,22 @@ class RiskCostUncertaintySample:
         expected_net = self.actual_alpha_return - self.cost.estimated_round_trip_return
         if not math.isclose(self.actual_net_excess_return, expected_net, rel_tol=0.0, abs_tol=1e-12):
             raise ValueError("risk-cost sample must deduct round-trip cost exactly once")
+        facts = _validated_sample_facts(self)
+        object.__setattr__(self, "structured_facts", facts)
         object.__setattr__(self, "industry", self.industry.strip())
 
     @property
     def code(self) -> str:
         return self.alpha.code
+
+
+def _validated_sample_facts(sample: RiskCostUncertaintySample) -> tuple[PointInTimeEventFact, ...]:
+    facts = tuple(sorted(sample.structured_facts, key=lambda item: item.fact_id))
+    ids = tuple(item.fact_id for item in facts)
+    referenced = set(sample.risk.structured_fact_ids) | set(sample.deepseek.structured_fact_ids)
+    if len(ids) != len(set(ids)) or set(ids) != referenced:
+        raise ValueError("risk-cost structured facts must cover exactly the unique risk/review references")
+    return facts
 
 
 @dataclass(frozen=True)
@@ -865,6 +878,16 @@ def _sample_evidence_hash(samples: tuple[RiskCostUncertaintySample, ...]) -> str
         {
             "trade_date": sample.trade_date.isoformat(),
             "dataset_row_hash": sample.dataset_row_hash,
+            "structured_facts": tuple(
+                {
+                    "fact_id": fact.fact_id,
+                    "content_hash": fact.content_hash,
+                    "published_at": fact.published_at.isoformat(),
+                    "effective_at": fact.effective_at.isoformat(),
+                    "anchor_at": fact.anchor_at.isoformat(),
+                }
+                for fact in sample.structured_facts
+            ),
             "board": sample.board,
             "industry": sample.industry,
             "alpha": {

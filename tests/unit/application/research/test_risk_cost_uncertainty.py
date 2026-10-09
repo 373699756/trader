@@ -16,7 +16,11 @@ from trader.training.application.risk_cost_uncertainty import (
 )
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.historical import ResearchBoard
-from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDatasetReport, PointInTimeDatasetRow
+from trader.training.domain.evaluation.point_in_time_dataset import (
+    PointInTimeDatasetReport,
+    PointInTimeDatasetRow,
+    PointInTimeEventFact,
+)
 from trader.training.domain.evaluation.risk_cost_population import (
     RiskCostResearchPartition,
     bind_risk_cost_population,
@@ -63,6 +67,7 @@ def _sample(row: PointInTimeDatasetRow) -> RiskCostUncertaintySample:
         gross_excess - 0.002,
         outcome.severe_drawdown,
         row.content_hash,
+        (),
     )
 
 
@@ -74,6 +79,36 @@ def _samples(
     return tuple(
         _sample(row) for day in dataset.days if day.trade_date in dates for row in day.rows if row.candidate_eligible
     )
+
+
+def _with_parent_facts(dataset: PointInTimeDatasetReport) -> PointInTimeDatasetReport:
+    assert dataset.manifest is not None
+    days = tuple(
+        replace(
+            day,
+            rows=tuple(
+                replace(
+                    row,
+                    event_facts=(
+                        PointInTimeEventFact(
+                            "verified_fact",
+                            row.anchor_at - timedelta(days=1),
+                            row.anchor_at + timedelta(days=3),
+                            row.anchor_at,
+                            canonical_artifact_hash((row.trade_date, row.code, "verified_fact")),
+                        ),
+                    ),
+                )
+                for row in day.rows
+            ),
+        )
+        for day in dataset.days
+    )
+    partitions = tuple(
+        replace(partition, day_hashes=tuple(day.content_hash for day in days if day.trade_date in partition.dates))
+        for partition in dataset.manifest.partitions
+    )
+    return replace(dataset, days=days, manifest=replace(dataset.manifest, partitions=partitions))
 
 
 class _Evidence:
@@ -287,8 +322,9 @@ def _two_calibration_days() -> PointInTimeDatasetReport:
 
 
 def test_entire_missing_day_fails_closed_and_complete_dates_remain_in_denominator() -> None:
-    dataset = _two_calibration_days()
+    dataset = _with_parent_facts(_two_calibration_days())
     samples = _samples(dataset)
+    parent_facts = {(row.trade_date, row.code): row.event_facts for day in dataset.days for row in day.rows}
     first_date = samples[0].trade_date
     incomplete = _Evidence(tuple(item for item in samples if item.trade_date == first_date))
     report = RiskCostUncertaintyResearchBuilder(incomplete).build(_prerequisite(dataset), dataset)
@@ -297,7 +333,11 @@ def test_entire_missing_day_fails_closed_and_complete_dates_remain_in_denominato
 
     source = _Evidence(
         tuple(
-            replace(item, risk=replace(item.risk, veto=True, structured_fact_ids=("verified_fact",)))
+            replace(
+                item,
+                risk=replace(item.risk, veto=True, structured_fact_ids=("verified_fact",)),
+                structured_facts=parent_facts[(item.trade_date, item.code)],
+            )
             if item.trade_date == first_date
             else item
             for item in samples
@@ -428,3 +468,107 @@ def test_incomplete_or_conflicting_parent_outcomes_fail_before_source_reads(muta
     _assert_closed(report)
     assert source.calls == 0
     assert report.failure_reasons == ("risk_cost_population_unavailable",)
+
+
+@pytest.mark.parametrize("owner", ("local", "deepseek", "both"))
+def test_bound_visible_fact_allows_risk_effects_without_double_deduction(owner: str) -> None:
+    dataset = _with_parent_facts(_dataset())
+    samples = _samples(dataset)
+    first = samples[0]
+    row = next(row for day in dataset.days for row in day.rows if row.content_hash == first.dataset_row_hash)
+    fact = row.event_facts[0]
+    # An announced future unlock is visible now; effective_at is not the publication deadline.
+    assert fact.published_at < row.anchor_at < fact.effective_at
+    first = replace(
+        first,
+        risk=replace(first.risk, penalty_points=10, structured_fact_ids=(fact.fact_id,))
+        if owner in {"local", "both"}
+        else first.risk,
+        deepseek=DeepSeekResearchReview("applied", 95, 3, True, (fact.fact_id,), "ignored")
+        if owner in {"deepseek", "both"}
+        else first.deepseek,
+        structured_facts=(fact,),
+    )
+    source = _Evidence((first, *samples[1:]))
+    report = RiskCostUncertaintyResearchBuilder(source).build(_prerequisite(dataset), dataset)
+    assert report.status == "evaluated"
+    assert source.calls == 1
+    decisions = {item.arm: item for item in report.decisions if item.code == first.code}
+    assert decisions["local_only"].score == (80 if owner in {"local", "both"} else 90)
+    if owner in {"deepseek", "both"}:
+        assert decisions["structured_facts_veto"].selected_rank is None
+        assert decisions["fixed_68_32"].selected_rank is None
+    assert report.production_authority is report.terminal_holdout_opened is False
+
+
+@pytest.mark.parametrize("owner", ("local", "deepseek"))
+@pytest.mark.parametrize(
+    "mutation", ("missing_parent", "hash", "publication", "effective", "other_row", "other_date", "ambiguous")
+)
+def test_forged_fact_binding_discards_all_ablation_results(mutation: str, owner: str) -> None:
+    dataset = _with_parent_facts(_dataset())
+    assert dataset.manifest is not None
+    day = dataset.days[2]
+    row = day.rows[5]
+    fact = row.event_facts[0]
+    if mutation in {"missing_parent", "ambiguous"}:
+        facts = () if mutation == "missing_parent" else (fact, replace(fact, content_hash="a" * 64))
+        row = replace(row, event_facts=facts)
+        day = replace(day, rows=(*day.rows[:5], row, *day.rows[6:]))
+        dataset = replace(
+            dataset,
+            days=(*dataset.days[:2], day, *dataset.days[3:]),
+            manifest=replace(
+                dataset.manifest,
+                partitions=tuple(
+                    replace(item, day_hashes=(day.content_hash,)) if item.name == "calibration" else item
+                    for item in dataset.manifest.partitions
+                ),
+            ),
+        )
+    elif mutation == "hash":
+        fact = replace(fact, content_hash="a" * 64)
+    elif mutation == "publication":
+        fact = replace(fact, published_at=fact.published_at - timedelta(hours=1))
+    elif mutation == "effective":
+        fact = replace(fact, effective_at=fact.effective_at + timedelta(days=1))
+    elif mutation == "other_row":
+        fact = day.rows[6].event_facts[0]
+    else:
+        fact = dataset.days[3].rows[5].event_facts[0]
+    samples = _samples(dataset)
+    first = next(item for item in samples if item.dataset_row_hash == row.content_hash)
+    forged = replace(
+        first,
+        risk=replace(first.risk, veto=True, structured_fact_ids=(fact.fact_id,)) if owner == "local" else first.risk,
+        deepseek=DeepSeekResearchReview("applied", 95, 3, True, (fact.fact_id,), "ignored")
+        if owner == "deepseek"
+        else first.deepseek,
+        structured_facts=(fact,),
+    )
+    source = _Evidence(tuple(forged if item.code == first.code else item for item in samples))
+    report = RiskCostUncertaintyResearchBuilder(source).build(_prerequisite(dataset), dataset)
+    _assert_closed(report)
+    assert source.calls == 1
+    assert report.failure_reasons == ("risk_cost_evidence_invalid",)
+
+
+def test_unpublished_future_fact_cannot_be_used_as_risk_evidence() -> None:
+    row = _with_parent_facts(_dataset()).days[2].rows[5]
+    with pytest.raises(ValueError, match="not visible"):
+        replace(row.event_facts[0], published_at=row.anchor_at + timedelta(seconds=1))
+
+
+def test_invalid_fact_decoding_at_evidence_port_also_returns_closed_report() -> None:
+    dataset = _dataset()
+    sample = _samples(dataset)[0]
+
+    class _InvalidFacts:
+        def load_samples(
+            self, prerequisite: RiskCostUncertaintyPrerequisite
+        ) -> tuple[RiskCostUncertaintySample, ...] | None:
+            return (replace(sample, risk=replace(sample.risk, veto=True, structured_fact_ids=("missing_fact",))),)
+
+    report = RiskCostUncertaintyResearchBuilder(_InvalidFacts()).build(_prerequisite(dataset), dataset)
+    _assert_closed(report)
+    assert report.failure_reasons == ("risk_cost_evidence_invalid",)

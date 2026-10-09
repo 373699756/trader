@@ -111,12 +111,20 @@ def _validate_parent_row(
         or sample.alpha.profile_id != identity.profile_id
     ):
         raise ValueError("risk-cost sample input identity does not match parent")
+    _validate_structured_facts(row, sample)
     gross_excess, severe = _parent_outcome(row)
     if (
         not math.isclose(sample.actual_alpha_return, gross_excess, rel_tol=0.0, abs_tol=1e-12)
         or sample.actual_severe_loss is not severe
     ):
         raise ValueError("risk-cost sample outcome does not match parent")
+
+
+def _validate_structured_facts(row: PointInTimeDatasetRow, sample: RiskCostUncertaintySample) -> None:
+    for fact in sample.structured_facts:
+        matches = tuple(item for item in row.event_facts if item.fact_id == fact.fact_id)
+        if len(matches) != 1 or matches[0] != fact:
+            raise ValueError("risk-cost structured fact must match one unambiguous parent event")
 
 
 def _parent_outcome(row: PointInTimeDatasetRow) -> tuple[float, bool]:
