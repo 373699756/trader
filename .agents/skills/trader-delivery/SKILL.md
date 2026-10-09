@@ -1,6 +1,6 @@
 ---
 name: trader-delivery
-description: Plan, implement, diagnose, review, and verify Trader A-share dashboard changes across market data, scoring, DeepSeek, scheduling, freezing, persistence, API/SSE, Web, research evidence, performance, and release boundaries. Use for repository mutations and engineering reviews; skip purely explanatory questions that require no repository analysis or change.
+description: Deliver and review Trader A-share dashboard changes with risk-based routing across data, training, recommendation, API/Web, runtime, and release boundaries. Use for repository mutations and engineering reviews; skip questions that require no repository inspection or change.
 ---
 
 # Trader Delivery
@@ -11,13 +11,13 @@ Deliver one repository change without reopening a known failure or regressing an
 
 1. Follow the repository `AGENTS.md`; this skill adds routing and evidence requirements but does not duplicate or override it.
 2. Record the current branch, its upstream relationship, staged and unstaged files, and the exact task file scope before editing. Preserve unrelated user changes.
-3. For defects, repeated regressions, or user-visible behavior changes, search `CHANGELOG.md` and `docs/changelog/` for the symptom, error code, affected strategy, likely boundary, and `Regression-Key`. Skip this for low-risk process or documentation-only changes. Open only matching records; use the legacy archive only when current records point there. Treat old root causes as leads, not current facts.
-4. Read the applicable authoritative contract before planning: `docs/项目重构详细.md` is the sole authority for product, architecture, timeline, runtime, API, Web, operations, and acceptance; `docs/01_评分逻辑.md` is the sole authority for candidates, scoring, risk, DeepSeek, fusion, action, ranking, and profit-validation gates. Use `docs/02_工程设计.md` only as the current engineering description that must be synchronized when the blueprint switches behavior. Use `docs/03_工程实施.md` for current task order/status and `docs/04_策略回溯.md` when historical data, training, or model-to-production flow is involved; none overrides the two authoritative contracts.
-5. Read [the change-impact matrix](references/change-impact-matrix.md), select every affected row, and put its downstream consumers and required evidence into the plan. A plan that names only the edited module is incomplete.
+3. Read the applicable authoritative contract before planning: `docs/项目重构详细.md` is the sole authority for product, architecture, timeline, runtime, API, Web, operations, and acceptance; `docs/01_评分逻辑.md` is the sole authority for candidates, scoring, risk, DeepSeek, fusion, action, ranking, and profit-validation gates. Use `docs/02_工程设计.md` only as the current engineering description that must be synchronized when the blueprint switches behavior. Use `docs/03_工程实施.md` for current task order, status, change evidence, verification, and unfinished work; use `docs/04_策略回溯.md` when historical data, training, or model-to-production flow is involved. None overrides the two authoritative contracts.
+4. Read [the change-impact matrix](references/change-impact-matrix.md), select every affected row, and include its downstream consumers and proportionate evidence. A cross-boundary plan that names only the edited module is incomplete.
 
 ## Plan and implement
 
-- State the user-visible symptom, confirmed evidence, root cause status (`confirmed` or `pending verification`), target architecture, in-scope files, excluded boundaries, and completion conditions.
+- For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, use the lightweight route in [the delivery evidence guide](references/delivery-evidence.md): record concise scope and verification in the engineering ledger and implement directly. Do not manufacture an architecture comparison, multi-step plan, regression test, or `Regression-Key`.
+- For defects, repeated regressions, public-contract changes, or cross-boundary work, state the user-visible symptom, confirmed evidence, root cause status (`confirmed` or `pending verification`), target architecture, in-scope files, excluded boundaries, and completion conditions. Use a stable `Regression-Key` only for a repeated defect family.
 - Compare a local patch with a systemic repair when ownership, representation, resource orchestration, or timing crosses modules. Choose from evidence, not diff size.
 - Complete the implementation slice first, then add or change only the contracts and tests required by the actual risk. When regression proof is required, cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
 - For scheduling, freezing, current/history, or Web visibility changes, use the hot/cold five-period matrix in the authoritative design. A single timestamp or fixture is insufficient.
@@ -31,7 +31,7 @@ Read [the runtime diagnostics guide](references/runtime-diagnostics.md) whenever
 
 For empty recommendations, a stuck collecting state, unexpected funnel counts, or disagreement between Web and runtime status, read [the recommendation-funnel incident playbook](references/recommendation-funnel-incidents.md) before assigning a root cause. Complete all six checkpoints even when the first probe appears decisive. A sandbox `connection_failed`, a generic runtime error category, HTTP 200, or a fixture browser pass is not enough to close a funnel incident.
 
-Read [the delivery evidence guide](references/delivery-evidence.md) before marking implementation or Review complete. It defines the minimum root-cause, regression, live-process, diff, and handoff evidence.
+Read [the delivery evidence guide](references/delivery-evidence.md) before marking implementation or Review complete. It defines lightweight and higher-risk evidence routes plus the minimum root-cause, regression, live-process, diff, and handoff evidence.
 
 Do not claim live verification from mocks, HTTP 200 alone, an old process, or source code inspection. If real service, supplier, token, browser, or time-window evidence is unavailable, record the precise unverified gate and keep the claim bounded.
 

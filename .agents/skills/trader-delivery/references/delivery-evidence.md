@@ -1,20 +1,22 @@
 # Delivery evidence
 
-## Plan fields
+## Evidence depth
 
-Every change plan must make these facts reviewable:
+For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, keep the batch lightweight. Record the baseline and preserved user changes, requested outcome, exact scope, direct review/check, ledger update, commit, push, and upstream confirmation. Implement directly; a multi-step plan, architecture comparison, regression test, and live evidence are unnecessary.
+
+For a defect, repeated regression, public-contract change, runtime behavior change, or cross-boundary change, make these facts reviewable:
 
 - review baseline, current branch and upstream relationship, staged/unstaged files, and preserved user changes;
 - user-visible symptom or requested outcome;
-- recurrence search terms and a stable `Regression-Key` for a repeated defect family;
+- a stable `Regression-Key` when the defect family has recurred;
 - confirmed evidence and unverified hypotheses;
 - first broken boundary, owning component, and downstream consumers selected from the impact matrix;
-- target architecture, rejected alternative, and why the selected design is better;
+- target architecture; compare alternatives when ownership, representation, resource orchestration, or timing crosses modules;
 - in-scope, permitted collateral, and explicitly excluded behavior;
 - applicable contract/regression proof, implementation step, targeted gates, escalation conditions, and live evidence;
 - Review baseline, commit scope, push, and confirmation that the local commit reached the upstream branch.
 
-Only one plan item may be in progress. A step is complete only when its observable exit condition is satisfied.
+When a plan is warranted, only one plan item may be in progress. A step is complete only when its observable exit condition is satisfied.
 
 ## Regression proof
 
@@ -31,7 +33,7 @@ For scoring-chain changes, record the first changed semantic owner and the resul
 
 ## Live evidence
 
-Use `scripts/diagnose_runtime.py` according to the runtime guide. Record the profile, bounded configuration, service/release identity, overall status, check statuses, relevant finding codes, and unverified external gate. Do not paste prices, tokens, stock-level payloads, personal paths, or full vendor errors into Changelog.
+Use `scripts/diagnose_runtime.py` according to the runtime guide. Record the profile, bounded configuration, service/release identity, overall status, check statuses, relevant finding codes, and unverified external gate. Do not put prices, tokens, stock-level payloads, personal paths, or full vendor errors in the engineering ledger or handoff.
 
 For a recommendation-funnel incident, also record the six checkpoint results from
 [the funnel incident playbook](recommendation-funnel-incidents.md): host-network reachability, the first failed refresh
@@ -44,6 +46,5 @@ stage counts; do not summarize every zero as “no data”.
 - Compare the complete diff with the previously pushed baseline and with the original file allowlist.
 - Inspect new files, removed paths, duplicate owners, hidden fallbacks, TODOs, generated output, and source-file size.
 - Run `git diff --check`; confirm the staged set contains only this batch.
-- When `AGENTS.md` requires a Changelog entry, connect the symptom, `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
-- For defects, repeated regressions, or user-visible behavior changes, search matching current records under `docs/changelog/`; consult `docs/changelog/archive/` only when the current index or a matching record points to legacy evidence.
+- Record actual changes, verification, and unfinished work only in `docs/03_工程实施.md`. For a repeated defect, connect its stable `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
 - Do not mark the batch complete before its single commit is pushed and confirmed present on the upstream branch.
