@@ -242,7 +242,7 @@ class StrategySettings:
     feature_component_weights: FeatureComponentWeightPolicy
     risk_rules: tuple[RiskRuleSettings, ...]
     factor_contract: Mapping[str, object]
-    factor_registry: Mapping[str, FactorDefinition]
+    factor_index: Mapping[str, FactorDefinition]
 
 
 @dataclass(frozen=True)

@@ -9,11 +9,12 @@ from datetime import date, datetime, timedelta
 from trader.recommendation.application.ports.runtime import CycleRequest, ResearchIntent, ResearchRuntimeStatus
 from trader.recommendation.application.runtime.cadence import CadencePolicy, PipelineTask, cadence_band
 from trader.recommendation.application.runtime.schedule import MarketPhase
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.research_coordination import ResearchCoordinator
 from trader.training.application.research_ports import OfflineResearchReaderPort
+from trader.infra.workers import BoundedExecutor
 
 
 class ResearchRuntime:
@@ -22,6 +23,7 @@ class ResearchRuntime:
     def __init__(
         self,
         research: OfflineResearchReaderPort,
+        executor: BoundedExecutor,
         *,
         cadence: CadencePolicy,
         now: Callable[[], datetime],
@@ -29,7 +31,7 @@ class ResearchRuntime:
     ) -> None:
         self._cadence = cadence
         self._on_result = on_result
-        self._coordinator = ResearchCoordinator(research, now=now, on_result=self._handle_result)
+        self._coordinator = ResearchCoordinator(research, executor, now=now, on_result=self._handle_result)
         self._lock = threading.RLock()
         self._trade_date: date | None = None
         self._intents: dict[Strategy, ResearchIntent] = {}

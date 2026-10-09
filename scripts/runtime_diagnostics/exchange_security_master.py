@@ -7,15 +7,22 @@ import argparse
 import sys
 from collections import Counter
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import requests
 
 from .reporting import emit_report
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient  # noqa: E402
+from trader.infra.market_data.providers.exchange_security_master import (  # noqa: E402
+    ExchangeSecurityMasterClient,
+    fetch_sse_listings,
+    fetch_szse_listings,
+)
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -62,6 +69,8 @@ def main() -> int:
         parser.error("timeout and minimum rows must be positive")
     observed_at = datetime.now(_SHANGHAI)
     client = ExchangeSecurityMasterClient(
+        sse_fetcher=partial(fetch_sse_listings, get=requests.get),
+        szse_fetcher=partial(fetch_szse_listings, get=requests.get),
         timeout_seconds=args.timeout_seconds,
         minimum_rows=args.minimum_rows,
         wall_clock=lambda: datetime.now(_SHANGHAI),

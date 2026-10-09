@@ -80,11 +80,11 @@ class _Archive:
         self.failures[code] = error_code
 
 
-def test_history_download_is_bounded_resumable_and_does_not_persist_exception_text() -> None:
+def test_history_download_is_bounded_resumable_and_does_not_persist_exception_text(training_worker_pool) -> None:
     history = _History()
     archive = _Archive(complete=frozenset({"600001"}))
     progress: list[tuple[int, int, str]] = []
-    service = HistoricalDownloadService(_Universe(), history, archive, workers=2)
+    service = HistoricalDownloadService(_Universe(), history, archive, training_worker_pool, workers=2)
 
     result = service.execute(
         HISTORICAL_SCREENING_SPEC, progress=lambda done, total, code: progress.append((done, total, code))
@@ -104,7 +104,7 @@ def test_history_download_is_bounded_resumable_and_does_not_persist_exception_te
     assert progress == [(1, 1, "300001")]
 
 
-def test_history_download_rejects_non_qfq_or_dates_after_the_fixed_cutoff() -> None:
+def test_history_download_rejects_non_qfq_or_dates_after_the_fixed_cutoff(training_worker_pool) -> None:
     class InvalidHistory:
         @staticmethod
         def fetch_history(_code: str, *, days: int):
@@ -126,7 +126,7 @@ def test_history_download_rejects_non_qfq_or_dates_after_the_fixed_cutoff() -> N
             )
 
     archive = _Archive()
-    service = HistoricalDownloadService(_Universe(), InvalidHistory(), archive, workers=1)
+    service = HistoricalDownloadService(_Universe(), InvalidHistory(), archive, training_worker_pool, workers=1)
 
     result = service.execute(HISTORICAL_SCREENING_SPEC)
 
@@ -134,7 +134,7 @@ def test_history_download_rejects_non_qfq_or_dates_after_the_fixed_cutoff() -> N
     assert set(archive.failures.values()) == {"invalid_history"}
 
 
-def test_history_download_does_not_mark_short_history_as_complete() -> None:
+def test_history_download_does_not_mark_short_history_as_complete(training_worker_pool) -> None:
     archive = _Archive()
 
     class ShortHistory:
@@ -143,7 +143,7 @@ def test_history_download_does_not_mark_short_history_as_complete() -> None:
             del days
             return (_bar(code),)
 
-    result = HistoricalDownloadService(_Universe(), ShortHistory(), archive, workers=1).execute(
+    result = HistoricalDownloadService(_Universe(), ShortHistory(), archive, training_worker_pool, workers=1).execute(
         HISTORICAL_SCREENING_SPEC
     )
 
@@ -153,7 +153,7 @@ def test_history_download_does_not_mark_short_history_as_complete() -> None:
     assert set(archive.failures.values()) == {"invalid_history"}
 
 
-def test_history_download_reuses_the_frozen_universe_on_resume() -> None:
+def test_history_download_reuses_the_frozen_universe_on_resume(training_worker_pool) -> None:
     archive = _Archive()
     archive.universe = (HistoricalSecurity("600001", "main", "冻结名称", False, False),)
 
@@ -162,7 +162,7 @@ def test_history_download_reuses_the_frozen_universe_on_resume() -> None:
         def fetch():
             raise AssertionError("frozen universe must not be fetched again")
 
-    service = HistoricalDownloadService(ChangingUniverse(), _History(), archive, workers=1)
+    service = HistoricalDownloadService(ChangingUniverse(), _History(), archive, training_worker_pool, workers=1)
 
     result = service.execute(HISTORICAL_SCREENING_SPEC)
 

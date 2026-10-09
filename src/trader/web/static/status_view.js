@@ -4,6 +4,7 @@
   const STRATEGIES = new Set(["tomorrow", "d25", "long"]);
   const {
     healthView,
+    issueBelongsToStage,
     issueSummaryTitle,
     presentIssue,
     runtimeErrorRows,
@@ -241,29 +242,6 @@
   function runtimeIssues(statusPayload, strategy) {
     const payload = statusPayload && typeof statusPayload === "object" ? statusPayload : {};
     return healthView(payload, [], strategy).issues;
-  }
-
-  const STAGE_ALIASES = Object.freeze({
-    input_readiness: ["input_readiness", "refresh"],
-    dynamic_filter: ["dynamic_filter", "decision"],
-    candidate_refresh: ["candidate_refresh", "refresh"],
-    board_cross_section: ["board_cross_section", "decision"],
-    board_limit: ["board_limit", "decision"],
-    strategy_history: ["strategy_history", "decision"],
-    model_input: ["model_input", "decision"],
-    input_coverage: ["input_coverage", "snapshot"],
-    candidate_score: ["candidate_score", "decision"],
-    evidence_score: ["evidence_score", "decision"],
-    local_score: ["local_score", "review"],
-    deepseek_review: ["deepseek_review", "review"],
-    fusion: ["fusion", "decision"],
-    model_cost_gate: ["model_cost_gate", "decision"],
-    action_gate: ["action_gate", "decision"],
-    concentration: ["concentration", "freeze", "publish", "settlement"],
-  });
-
-  function issueBelongsToStage(issue, key) {
-    return (STAGE_ALIASES[key] || [key]).includes(issue && issue.stage);
   }
 
   function stageErrorMarkup(issues) {
@@ -779,92 +757,6 @@
     return `${seconds}秒`;
   }
 
-  function createErrorDrawer(els, beforeOpen, onVisibilityChange) {
-    let issues = [];
-    let returnFocus = null;
-    const notify = () => {
-      if (typeof onVisibilityChange === "function") onVisibilityChange();
-    };
-    const close = (restoreFocus) => {
-      const wasOpen = els.observationDrawer.classList.contains("is-open");
-      els.observationDrawer.classList.remove("is-open");
-      els.observationDrawer.setAttribute("aria-hidden", "true");
-      els.errorDetailsButton.setAttribute("aria-expanded", "false");
-      notify();
-      if (wasOpen && restoreFocus && returnFocus && typeof returnFocus.focus === "function") returnFocus.focus();
-      returnFocus = null;
-    };
-    const open = () => {
-      if (els.errorDetailsButton.disabled) return;
-      if (typeof beforeOpen === "function") beforeOpen();
-      returnFocus = document.activeElement;
-      if (els.observationErrorContent) els.observationErrorContent.innerHTML = runtimeErrorRows(unassignedIssues(issues));
-      els.observationDrawer.classList.add("is-open");
-      els.observationDrawer.setAttribute("aria-hidden", "false");
-      els.errorDetailsButton.setAttribute("aria-expanded", "true");
-      notify();
-      els.observationDrawerClose.focus();
-    };
-    els.errorDetailsButton.addEventListener("click", open);
-    els.observationDrawerClose.addEventListener("click", () => close(true));
-    els.observationErrorContent.addEventListener("click", copyRuntimeCode);
-    return {
-      close,
-      isOpen: () => els.observationDrawer.classList.contains("is-open"),
-      setIssues: (nextIssues) => {
-        issues = Array.isArray(nextIssues) ? nextIssues : [];
-        if (els.observationErrorCount) els.observationErrorCount.textContent = String(unassignedIssues(issues).filter((issue) => issue.recoveryStatus !== "recovered").length);
-        if (!els.observationDrawer.classList.contains("is-open")) return;
-        els.observationErrorContent.innerHTML = runtimeErrorRows(unassignedIssues(issues));
-      },
-    };
-  }
-
-  function unassignedIssues(issues) {
-    const keys = Object.keys(STAGE_ALIASES);
-    return (Array.isArray(issues) ? issues : []).filter((issue) => !keys.some((key) => issueBelongsToStage(issue, key)));
-  }
-
-  async function copyRuntimeCode(event) {
-    const button = event.target.closest("button[data-copy-code]");
-    if (!button) return;
-    const code = button.dataset.copyCode || "";
-    try {
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-        await navigator.clipboard.writeText(code);
-      } else {
-        copyTextFallback(code);
-      }
-      button.textContent = "已复制";
-    } catch (_error) {
-      selectRuntimeCode(button.previousElementSibling);
-      button.textContent = "已选中，请复制";
-    }
-  }
-
-  function copyTextFallback(value) {
-    const input = document.createElement("textarea");
-    input.value = value;
-    input.setAttribute("readonly", "");
-    input.style.position = "fixed";
-    input.style.opacity = "0";
-    document.body.append(input);
-    input.select();
-    const copied = document.execCommand("copy");
-    input.remove();
-    if (!copied) throw new Error("copy_unavailable");
-  }
-
-  function selectRuntimeCode(codeElement) {
-    if (!codeElement || typeof document.createRange !== "function" || typeof window.getSelection !== "function") return;
-    const range = document.createRange();
-    range.selectNodeContents(codeElement);
-    const selectionRange = window.getSelection();
-    if (!selectionRange) return;
-    selectionRange.removeAllRanges();
-    selectionRange.addRange(range);
-  }
-
   function observationSummary(payload, observationState, count) {
     if (payload && payload.strategy === "long") return String(count);
     if (observationState === "open" || observationState === "empty") return String(count);
@@ -1099,7 +991,7 @@
     const market = statusPayload && statusPayload.market_data;
     if (payload && payload.status === "not_ready" && payload.historical !== true
         && payload.strategy !== "long" && market
-        && market.history_archive_state === "unavailable"
+        && market.published_history_state === "unavailable"
         && market.history_maintenance_state === "loading"
         && market.history_maintenance_stage === "reading_active_snapshot") {
       return { primary_blocker: "history_projection_loading" };
@@ -1186,7 +1078,6 @@
 
   window.TraderStatusView = Object.freeze({
     createDashboardStateRenderer,
-    createErrorDrawer,
     formatDurationHms,
     decisionPipelineDetails,
     healthView,

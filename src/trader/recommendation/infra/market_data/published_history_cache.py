@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 
@@ -70,8 +70,12 @@ class PublishedHistoryCache:
         lookback_sessions: int,
         recovery: HistoryRecovery | None = None,
         tail_recovery: CandidateHistoryTailRecovery | None = None,
+        outcome_history: ReadPublishedHistoryUseCase | None = None,
+        open_dates: Callable[[], tuple[date, ...]] | None = None,
     ) -> None:
         self._history = history
+        self._outcome_history = outcome_history or history
+        self._open_dates = open_dates
         self._lookback_sessions = max(61, lookback_sessions)
         self._recovery = recovery
         self._tail_recovery = tail_recovery
@@ -167,13 +171,15 @@ class PublishedHistoryCache:
         recover_tail: bool = True,
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         # Deadline-bound market work consumes the background projection. A
-        # full archive verification/rebuild cannot fit its real-time budget.
+        # Full published-history verification/rebuild cannot fit its real-time budget.
         if deadline is None:
             self.refresh(wait=False)
         with self._lock:
             if self._manifest is None and (self._refresh_lock.locked() or self._maintenance_state == "loading"):
                 raise MarketDataUnavailableError("history_projection_loading")
         result = self.cached(codes, observed_at=observed_at)
+        if self._open_dates is not None and observed_at is not None:
+            result = self._fresh_entries(result, observed_at)
         if self._recovery is not None:
             missing = tuple(code for code in dict.fromkeys(codes) if code not in result)
             if missing:
@@ -238,11 +244,33 @@ class PublishedHistoryCache:
                 result.update(self._tail_recovery.cached(requested, manifest, self._lookback_sessions, observed_at))
             if fresh_only:
                 result = {code: bars for code, bars in result.items() if self._fresh(bars, observed_at)}
+        elif fresh_only and self._open_dates is not None and observed_at is not None:
+            result = self._fresh_entries(result, observed_at)
         if action_restrictions is not None:
             for code in requested:
                 if code not in result:
                     action_restrictions.setdefault(code, set()).add("history_data_pending")
         return result
+
+    def _fresh_entries(
+        self, entries: dict[str, tuple[DailyBar, ...]], observed_at: datetime
+    ) -> dict[str, tuple[DailyBar, ...]]:
+        assert self._open_dates is not None
+        try:
+            observed_at = observed_at.astimezone(SHANGHAI)
+            dates = self._open_dates()
+            completed = tuple(day for day in dates if day < observed_at.date())
+            if not completed or not dates or dates[-1] < observed_at.date():
+                return {}
+        except (OSError, RuntimeError, ValueError):
+            return {}
+        previous, today = completed[-1].isoformat(), observed_at.date().isoformat()
+        return {
+            code: bars
+            for code, bars in entries.items()
+            if bars
+            and (previous <= bars[-1].trade_date < today or (bars[-1].trade_date == today and observed_at.hour >= 15))
+        }
 
     def _fresh(self, bars: tuple[DailyBar, ...], observed_at: datetime) -> bool:
         if self._tail_recovery is None:
@@ -324,12 +352,11 @@ class PublishedHistoryCache:
         observed_at: datetime,
     ) -> Mapping[str, tuple[OutcomeBar, ...]]:
         del observed_at
-        with self._lock:
-            manifest = self._manifest
-        if manifest is None:
-            return {}
         try:
-            windows = self._history.read_windows(
+            manifest = self._outcome_history.manifest()
+            if manifest is None:
+                return {}
+            windows = self._outcome_history.read_windows(
                 manifest,
                 tuple(dict.fromkeys(codes)),
                 sessions=self._lookback_sessions,

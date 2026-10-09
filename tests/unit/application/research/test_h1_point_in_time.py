@@ -64,9 +64,9 @@ class _Archive:
         raise NotImplementedError
 
 
-def test_h1_download_is_bounded_resumable_and_strategy_scoped():
+def test_h1_download_is_bounded_resumable_and_strategy_scoped(training_worker_pool):
     archive = _Archive(frozenset({"600001"}))
-    result = H1PointInTimeDownloadService(_Universe(), _History(), archive, workers=2).execute(
+    result = H1PointInTimeDownloadService(_Universe(), _History(), archive, training_worker_pool, workers=2).execute(
         H1PointInTimeSpec("tomorrow")
     )
     assert result.strategy == "tomorrow"

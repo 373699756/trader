@@ -103,7 +103,7 @@ class StandardizedFeatureBuilder(Protocol):
 
 # Feature columns produced by FeatureBuilder._raw_features().
 # All are optional float; missing is left as None and later resolved per
-# the factor registry in config/strategy.json.
+# the factor index in config/strategy.json.
 FEATURE_SCHEMA_ID = "market_feature_batch"
 
 RAW_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (

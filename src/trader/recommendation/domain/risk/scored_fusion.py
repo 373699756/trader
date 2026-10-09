@@ -13,6 +13,7 @@ from datetime import date, datetime
 from enum import Enum
 from types import MappingProxyType
 from typing import Literal, TypeAlias
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import (
@@ -852,7 +853,7 @@ def _sorted_unique_codes(values: tuple[str, ...], name: str) -> tuple[str, ...]:
 def _require_shanghai_time(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must be timezone-aware")
-    if getattr(value.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
+    if not (isinstance(value.tzinfo, ZoneInfo) and value.tzinfo.key == _SHANGHAI_TIMEZONE):
         raise ValueError(f"{name} must use Asia/Shanghai")
 
 

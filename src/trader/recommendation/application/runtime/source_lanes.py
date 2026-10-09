@@ -12,8 +12,8 @@ from types import MappingProxyType
 from typing import ParamSpec, TypeVar, cast
 
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.workers import BoundedExecutor
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -49,13 +49,13 @@ class SourceLaneStatus:
 
 
 @dataclass(frozen=True)
-class SourceLaneRegistryStatus:
+class SourceLaneSnapshot:
     lanes: Mapping[str, SourceLaneStatus]
 
     def __post_init__(self) -> None:
         normalized = dict(self.lanes)
         if any(source != status.source for source, status in normalized.items()):
-            raise ValueError("source lane registry keys must match lane status sources")
+            raise ValueError("source lane index keys must match lane status sources")
         object.__setattr__(self, "lanes", MappingProxyType(normalized))
 
 
@@ -344,8 +344,8 @@ class LatestRequestLane:
             self._condition.notify_all()
 
 
-class SourceLaneRegistry:
-    """Fixed source registry with isolated history and reference activity lanes."""
+class SourceLaneScheduler:
+    """Schedule fixed sources with isolated history and reference activity lanes."""
 
     def __init__(self, executor: BoundedExecutor, *, latency: LatencyWaterfall | None = None) -> None:
         self._lanes = {source: LatestRequestLane(source, executor, latency=latency) for source in _SOURCE_NAMES}
@@ -400,8 +400,8 @@ class SourceLaneRegistry:
             )
         return tuple(steps)
 
-    def status(self) -> SourceLaneRegistryStatus:
-        return SourceLaneRegistryStatus({source: lane.status() for source, lane in self._lanes.items()})
+    def status(self) -> SourceLaneSnapshot:
+        return SourceLaneSnapshot({source: lane.status() for source, lane in self._lanes.items()})
 
     def _lane(self, source: str) -> LatestRequestLane:
         try:
@@ -412,8 +412,8 @@ class SourceLaneRegistry:
 
 __all__ = [
     "LatestRequestLane",
-    "SourceLaneRegistry",
-    "SourceLaneRegistryStatus",
+    "SourceLaneScheduler",
+    "SourceLaneSnapshot",
     "SourceLaneStatus",
     "SourceRequestSupersededError",
 ]

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
+from trader.infra.workers import WorkerExecutor, submit_or_reject
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
 
@@ -127,6 +128,7 @@ class HistoricalDownloadService:
         universe: HistoricalUniverseProvider,
         history: HistoricalPriceProvider,
         archive: HistoricalScreeningArchivePort,
+        executor: WorkerExecutor,
         *,
         workers: int,
     ) -> None:
@@ -135,6 +137,7 @@ class HistoricalDownloadService:
         self._universe = universe
         self._history = history
         self._archive = archive
+        self._executor = executor
         self._workers = workers
 
     def execute(
@@ -175,33 +178,29 @@ class HistoricalDownloadService:
         progress: ProgressCallback | None,
     ) -> tuple[int, int]:
         downloaded = failed = processed = 0
-        pool = ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="score-history")
         pending_iter = iter(pending)
         futures: dict[Future[tuple[HistoricalPriceBar, ...]], str] = {}
-        try:
-            for item in pending_iter:
-                futures[pool.submit(self._fetch, item.code, spec.download_sessions)] = item.code
-                if len(futures) == self._workers:
+        for item in pending_iter:
+            futures[submit_or_reject(self._executor, self._fetch, item.code, spec.download_sessions)] = item.code
+            if len(futures) == self._workers:
+                break
+        while futures:
+            finished, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
+            for future in finished:
+                code = futures.pop(future)
+                processed += 1
+                if self._record_download(spec, code, future):
+                    downloaded += 1
+                else:
+                    failed += 1
+                if progress is not None:
+                    progress(processed, len(pending), code)
+            while len(futures) < self._workers:
+                try:
+                    item = next(pending_iter)
+                except StopIteration:
                     break
-            while futures:
-                finished, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
-                for future in finished:
-                    code = futures.pop(future)
-                    processed += 1
-                    if self._record_download(spec, code, future):
-                        downloaded += 1
-                    else:
-                        failed += 1
-                    if progress is not None:
-                        progress(processed, len(pending), code)
-                while len(futures) < self._workers:
-                    try:
-                        item = next(pending_iter)
-                    except StopIteration:
-                        break
-                    futures[pool.submit(self._fetch, item.code, spec.download_sessions)] = item.code
-        finally:
-            pool.shutdown(wait=True, cancel_futures=True)
+                futures[submit_or_reject(self._executor, self._fetch, item.code, spec.download_sessions)] = item.code
         return downloaded, failed
 
     def _record_download(

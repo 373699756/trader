@@ -1,4 +1,4 @@
-"""Categorized SQLite snapshot registry for issuer-level permanent exclusions."""
+"""Categorized SQLite snapshot index for issuer-level permanent exclusions."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityFact,
     IssuerEligibilityReason,
     IssuerEligibilityReasonCount,
-    IssuerEligibilityRegistryStatus,
+    IssuerEligibilitySnapshot,
     issuer_eligibility_fact_hash,
     manual_blacklist_fact,
     resolve_issuer_eligibility,
@@ -44,7 +44,7 @@ class IssuerEligibilityConflictError(RuntimeError):
     """The same immutable evidence identity was observed with different content."""
 
 
-class SQLiteIssuerEligibilityRegistry:
+class SQLiteIssuerEligibilityIndex:
     """Single owner for the categorized active eligibility snapshot."""
 
     def __init__(self, root: Path, *, read_only: bool = False) -> None:
@@ -66,7 +66,7 @@ class SQLiteIssuerEligibilityRegistry:
 
     @classmethod
     def migrate_legacy_database(cls, database_path: Path, root: Path) -> int:
-        """Import the retired single-file registry once, without retaining a read path."""
+        """Import the retired single-file index once, without retaining a read path."""
         if (root / _ACTIVE_MANIFEST).exists() or not database_path.exists():
             return 0
         try:
@@ -100,7 +100,7 @@ class SQLiteIssuerEligibilityRegistry:
         if not incoming:
             return 0
         if self._read_only:
-            raise RuntimeError("read-only issuer eligibility registry cannot record facts")
+            raise RuntimeError("read-only issuer eligibility index cannot record facts")
         with self._lock:
             self._ensure_loaded()
             self._validate_incoming(incoming)
@@ -191,12 +191,12 @@ class SQLiteIssuerEligibilityRegistry:
             self._ensure_loaded()
             return tuple(sorted(self._facts.values()))
 
-    def status(self) -> IssuerEligibilityRegistryStatus:
+    def status(self) -> IssuerEligibilitySnapshot:
         facts = self.facts()
         reason_counts = Counter(fact.reason for fact in facts)
         manifest = _manifest_hash(facts)
         with self._lock:
-            return IssuerEligibilityRegistryStatus(
+            return IssuerEligibilitySnapshot(
                 schema_version=_SCHEMA_VERSION,
                 fact_count=len(facts),
                 excluded_count=len({fact.code for fact in facts}),
@@ -382,7 +382,8 @@ class SQLiteIssuerEligibilityRegistry:
             """
         )
         connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_issuer_eligibility_effective ON issuer_eligibility_facts(code, effective_at)"
+            "CREATE INDEX IF NOT EXISTS idx_issuer_eligibility_effective "
+            "ON issuer_eligibility_facts(code, effective_at)"
         )
 
 
@@ -433,5 +434,5 @@ def _optional_datetime(value: object) -> datetime | None:
 
 __all__ = [
     "IssuerEligibilityConflictError",
-    "SQLiteIssuerEligibilityRegistry",
+    "SQLiteIssuerEligibilityIndex",
 ]

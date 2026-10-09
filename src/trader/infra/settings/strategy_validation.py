@@ -23,7 +23,7 @@ def _validate_strategy_settings(settings: StrategySettings) -> None:
     _validate_filter_fusion_selection(settings)
     _validate_signal_policies(settings)
     _validate_strategy_weights(settings)
-    _validate_risk_registry(settings)
+    _validate_risk_rules(settings)
 
 
 def _validate_filter_fusion_selection(settings: StrategySettings) -> None:
@@ -184,22 +184,22 @@ def _validate_dimension_weights(settings: StrategySettings, required_strategies:
             raise ConfigurationError(f"dimension_weights.{strategy} must define the five review dimensions")
 
 
-def _validate_risk_registry(settings: StrategySettings) -> None:
-    _validate_risk_registry_contract(settings)
+def _validate_risk_rules(settings: StrategySettings) -> None:
+    _validate_risk_rules_contract(settings)
     _validate_short_risk_contract(settings)
 
 
-def _validate_risk_registry_contract(settings: StrategySettings) -> None:
+def _validate_risk_rules_contract(settings: StrategySettings) -> None:
     risk_codes = [rule.risk_code for rule in settings.risk_rules]
     if len(risk_codes) != len(set(risk_codes)):
         raise ConfigurationError("risk rule codes must be unique")
     if any(rule.severity not in {"low", "medium", "high"} for rule in settings.risk_rules):
         raise ConfigurationError("risk rule severity must be low, medium or high")
-    registered = set(settings.factor_registry)
+    registered = set(settings.factor_index)
     if registered != PRODUCTION_FACTOR_IDS:
         missing = sorted(PRODUCTION_FACTOR_IDS - registered)
         extra = sorted(registered - PRODUCTION_FACTOR_IDS)
-        raise ConfigurationError(f"factor_registry mismatch: missing={missing}, extra={extra}")
+        raise ConfigurationError(f"factor_index mismatch: missing={missing}, extra={extra}")
     _validate_tomorrow_tail_factor_contract(settings)
     _validate_long_research_factor_contract(settings)
     _validate_feature_schema_contract(settings)
@@ -225,7 +225,7 @@ def _validate_risk_registry_contract(settings: StrategySettings) -> None:
         raise ConfigurationError("risk_rules must define the complete local risk table")
     _validate_deepseek_risk_mapping_targets(required_risk_codes)
     for rule in settings.risk_rules:
-        definition = settings.factor_registry.get(rule.trigger_factor)
+        definition = settings.factor_index.get(rule.trigger_factor)
         if definition is None:
             raise ConfigurationError(f"risk rule {rule.risk_code} trigger factor is not registered")
         if not set(rule.strategies).issubset(definition.strategies):
@@ -262,7 +262,7 @@ def _validate_short_risk_contract(settings: StrategySettings) -> None:
             "current short risk rules must use fixed strategies, additive groups and 5/4/3/3/4/3/3"
         )
     _validate_short_risk_rules(short_rules)
-    _validate_short_risk_factors(settings.factor_registry)
+    _validate_short_risk_factors(settings.factor_index)
     group_modes: dict[str, str] = {}
     for rule in settings.risk_rules:
         existing = group_modes.setdefault(rule.group, rule.combination_mode)

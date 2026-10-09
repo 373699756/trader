@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from functools import partial
+
+import requests
+
 from tests.component.market_data_test_support import (
     FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
@@ -15,7 +19,7 @@ from tests.component.market_data_test_support import (
     MutableMonotonic,
     Path,
     ReferenceLoadRequest,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SourceObservation,
     StaticGateway,
     StaticHistoryClient,
@@ -31,6 +35,7 @@ from tests.component.market_data_test_support import (
     timedelta,
     tushare_records_module,
 )
+from trader.infra.market_data.providers.tushare_records import build_tushare_sdk
 
 
 def test_tushare_reference_version_uses_response_time_before_hash_order() -> None:
@@ -226,7 +231,7 @@ def test_tushare_circuit_opens_after_three_failures_and_recovers_with_one_probe(
 
 def test_tushare_per_code_batch_stops_before_next_sdk_call_during_lane_shutdown() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
 
     class BlockingValuationPro:
         def __init__(self) -> None:
@@ -464,8 +469,16 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
             }
 
     class DirectSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.closed = True
+            return None
+
         def __init__(self) -> None:
             self.trust_env = True
+            self.closed = False
             self.calls: list[tuple[str, dict[str, object]]] = []
 
         def post(self, url, **kwargs):
@@ -476,7 +489,13 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
     module = type("FakeTushareModule", (), {"pro_api": staticmethod(lambda _token, timeout: object())})()
     monkeypatch.setattr(tushare_records_module.requests, "Session", lambda: session)
     monkeypatch.setattr(tushare_records_module.importlib, "import_module", lambda _name: module)
-    client = TushareClient(token="secret-token", points=120, timeout_seconds=8, wall_clock=lambda: NOW)
+    client = TushareClient(
+        token="secret-token",
+        points=120,
+        timeout_seconds=8,
+        wall_clock=lambda: NOW,
+        sdk_factory=partial(build_tushare_sdk, session_factory=requests.Session),
+    )
 
     observations = client.fetch_daily_history(
         ("600001",),
@@ -487,6 +506,7 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
 
     assert [item.subject_key for item in observations] == ["600001"]
     assert session.trust_env is False
+    assert session.closed is True
     assert session.calls[0][0] == "https://api.tushare.pro"
     assert session.calls[0][1]["json"]["api_name"] == "daily"
     assert session.calls[0][1]["timeout"] == 8
@@ -503,6 +523,12 @@ def test_tushare_daily_transport_preserves_only_numeric_provider_error_code(monk
             return {"code": "-2002", "msg": "sensitive vendor response must not escape"}
 
     class DirectSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
         trust_env = False
 
         @staticmethod
@@ -512,7 +538,13 @@ def test_tushare_daily_transport_preserves_only_numeric_provider_error_code(monk
     module = type("FakeTushareModule", (), {"pro_api": staticmethod(lambda _token, timeout: object())})()
     monkeypatch.setattr(tushare_records_module.requests, "Session", lambda: DirectSession())
     monkeypatch.setattr(tushare_records_module.importlib, "import_module", lambda _name: module)
-    client = TushareClient(token="secret-token", points=120, timeout_seconds=8, wall_clock=lambda: NOW)
+    client = TushareClient(
+        token="secret-token",
+        points=120,
+        timeout_seconds=8,
+        wall_clock=lambda: NOW,
+        sdk_factory=partial(build_tushare_sdk, session_factory=requests.Session),
+    )
 
     observations = client.fetch_daily_history(("600001",), date(2026, 7, 1), date(2026, 7, 16), NOW)
 

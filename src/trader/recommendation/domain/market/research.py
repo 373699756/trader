@@ -261,7 +261,7 @@ class ResearchObservation:
     unlock_ratio_pct: float | None = None
     corporate_risk_facts: tuple[CorporateRiskFact, ...] = ()
     corporate_risk_history_complete: bool = False
-    corporate_risk_registry_version: str = ""
+    corporate_risk_evidence_version: str = ""
     evidence: tuple[Evidence, ...] = ()
     source_errors: tuple[str, ...] = ()
 

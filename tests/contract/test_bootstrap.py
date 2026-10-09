@@ -143,8 +143,8 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert not (tmp_path / "runtime").exists()
     assert not (tmp_path / "data" / "freeze").exists()
     assert system.scheduler is not None
-    assert system.repository is not None
-    assert system.repository._root == tmp_path / "data" / "freeze" / "decisions"  # noqa: SLF001
+    assert system.records is not None
+    assert system.records._root == tmp_path / "data" / "freeze" / "decisions"  # noqa: SLF001
     assert system.research_trace is not None
     assert system.quote_pool.status().workers == 4
     assert system.quote_pool.is_running() is False
@@ -189,7 +189,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
 def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_path) -> None:
     system = build_system(_config(tmp_path))
 
-    system.repository.initialize()
+    system.records.initialize()
 
     freeze_root = tmp_path / "data" / "freeze" / "decisions"
     assert (freeze_root / "decisions.sqlite3").is_file()
@@ -209,7 +209,8 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
     assert system.history_observer._history is native_data._market.history  # noqa: SLF001
     configuration = HistorySyncConfiguration.for_repository(system.settings.project_root)
-    assert native_data._market.history._history.publication._root == configuration.archive_root  # noqa: SLF001
+    assert native_data._market.history._history.publication.root == system.settings.project_root / "data/qfq/v2"  # noqa: SLF001
+    assert native_data._market.history._outcome_history.publication._root == configuration.archive_root  # noqa: SLF001
 
 
 @pytest.mark.parametrize("hour,minute", ((8, 0), (10, 0), (12, 0), (14, 59), (15, 10), (20, 30)))
@@ -237,7 +238,7 @@ def test_startup_history_observer_never_downloads_and_keeps_web_readable(
         client = system.app.test_client()
         assert client.get("/").status_code == 200
         payload = client.get("/api/status").get_json()
-        assert payload["market_data"]["history_archive_snapshot_hash"] is None
+        assert payload["market_data"]["published_history_snapshot_hash"] is None
         assert not (tmp_path / "data/history/baostock").exists()
     finally:
         assert observer.stop(wait=True).completed is True

@@ -9,7 +9,7 @@ from typing import Protocol
 from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
-    IssuerEligibilityRegistryStatus,
+    IssuerEligibilitySnapshot,
 )
 
 
@@ -22,7 +22,7 @@ class IssuerEligibilityPort(Protocol):
 
     def facts(self) -> tuple[IssuerEligibilityFact, ...]: ...
 
-    def status(self) -> IssuerEligibilityRegistryStatus: ...
+    def status(self) -> IssuerEligibilitySnapshot: ...
 
     def refresh_due(self, observed_at: datetime) -> bool: ...
 

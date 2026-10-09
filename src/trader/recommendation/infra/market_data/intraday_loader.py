@@ -22,11 +22,10 @@ from trader.recommendation.infra.market_data.market_cache_identity import (
 from trader.recommendation.infra.market_data.provider_ports import IntradaySource
 from trader.recommendation.infra.market_data.market_feature_cache_entries import _IntradayEntry
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
+from trader.infra.workers import (
     WorkerExecutor,
-    borrow_executor,
-    submit_or_run_inline,
+    injected_executor,
+    submit_or_reject,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
@@ -213,35 +212,26 @@ class IntradayLoader:
         source_lanes = self._runner.source_lanes
         batch_deadline = self._monotonic() + self._batch_timeout_seconds
         nested_inline = source_lanes is not None and source_lanes.owns_current_thread("eastmoney_intraday")
-        with borrow_executor(
-            self._runner.worker_pool,
-            BorrowExecutorOptions(
-                worker_count=min(self._workers, len(missing)),
-                thread_name_prefix="candidate-intraday",
-                queue_capacity=len(missing),
-                wait_on_exit=False,
-                nested_inline=nested_inline,
-            ),
-        ) as pool:
-            futures, timed_out, deferred = self._submit_intraday(
-                pool,
-                state,
-                missing,
-                batch_deadline,
-                nested_inline,
-            )
-            completed, pending = wait(futures, timeout=max(0.0, batch_deadline - self._monotonic()))
-            for future in completed:
-                self._consume_intraday_future(state, futures[future], future)
-            for future in pending:
-                if future.cancel():
-                    deferred.append(futures[future])
-                else:
-                    timed_out.append(futures[future])
-            self._consume_intraday_timeouts(state, tuple(timed_out))
-            if deferred:
-                with self._lock:
-                    self._last_error = "intraday_batch_deferred"
+        pool = injected_executor(self._runner.worker_pool, inline=nested_inline)
+        futures, timed_out, deferred = self._submit_intraday(
+            pool,
+            state,
+            missing,
+            batch_deadline,
+            nested_inline,
+        )
+        completed, pending = wait(futures, timeout=max(0.0, batch_deadline - self._monotonic()))
+        for future in completed:
+            self._consume_intraday_future(state, futures[future], future)
+        for future in pending:
+            if future.cancel():
+                deferred.append(futures[future])
+            else:
+                timed_out.append(futures[future])
+        self._consume_intraday_timeouts(state, tuple(timed_out))
+        if deferred:
+            with self._lock:
+                self._last_error = "intraday_batch_deferred"
 
     def _submit_intraday(
         self,
@@ -259,7 +249,7 @@ class IntradayLoader:
             if self._monotonic() >= batch_deadline:
                 deferred.extend(missing[index:])
                 break
-            future = submit_or_run_inline(
+            future = submit_or_reject(
                 pool,
                 self._client.fetch_intraday_minutes,
                 code,

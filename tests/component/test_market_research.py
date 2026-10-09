@@ -27,7 +27,7 @@ from tests.component.market_data_test_support import (
     Path,
     ResearchObservation,
     RiskEvidenceRecord,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SQLiteDataPlane,
     StaticGateway,
     StaticHistoryClient,
@@ -52,7 +52,7 @@ from tests.component.market_data_test_support import (
     timezone,
 )
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 
 
 def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
@@ -120,7 +120,7 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
             requested = set(codes)
             return tuple(quote for quote in self._quotes if quote.code in requested)
 
-    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "blacklist")
+    registry = SQLiteIssuerEligibilityIndex(tmp_path / "blacklist")
     registry.record(
         (
             IssuerEligibilityFact(
@@ -222,7 +222,7 @@ def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_
             announcements_available=True,
         ),
     )
-    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "blacklist")
+    registry = SQLiteIssuerEligibilityIndex(tmp_path / "blacklist")
     gateway = RecordingGateway((_quote("600001"),))
     history = CountingHistoryClient(_history_bars())
     service = _service(
@@ -248,7 +248,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
         cadence_seconds=runtime.pipeline.cadence_seconds,
     )
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     research = BlockingResearchClient((Evidence("news-late", "news", "迟到新闻", "fixture", NOW - timedelta(hours=1)),))
     service = _service(
         StaticGateway((_quote(),)),
@@ -926,13 +926,14 @@ def test_stock_risk_refresh_reports_only_real_research_version_changes() -> None
     assert unchanged.changed_codes == ()
 
 
-def test_stock_risk_batch_deadline_keeps_completed_codes_and_defers_late_codes() -> None:
+def test_stock_risk_batch_deadline_keeps_completed_codes_and_defers_late_codes(market_worker_pool) -> None:
     research = PartiallyBlockingStructuredResearchClient()
     observed_at = datetime.now(timezone.utc)
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        worker_pool=market_worker_pool,
         research_client=research,
         research_workers=2,
         wall_clock=lambda: datetime.now(timezone.utc),
@@ -957,13 +958,14 @@ def test_stock_risk_batch_deadline_keeps_completed_codes_and_defers_late_codes()
     assert ("600002", True) not in service.research.entries()
 
 
-def test_stock_risk_batch_deadline_discards_only_late_result() -> None:
+def test_stock_risk_batch_deadline_discards_only_late_result(market_worker_pool) -> None:
     research = BlockingStructuredResearchClient()
     observed_at = datetime.now(timezone.utc)
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        worker_pool=market_worker_pool,
         research_client=research,
         research_workers=1,
         wall_clock=lambda: datetime.now(timezone.utc),

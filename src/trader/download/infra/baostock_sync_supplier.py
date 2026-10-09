@@ -42,6 +42,7 @@ from trader.download.infra.baostock_session import (
 class _LoadContext:
     as_of: date
     sessions: int
+    include_industry: bool = True
 
 
 @dataclass(frozen=True)
@@ -175,6 +176,7 @@ class BaoStockHistorySupplier:
         *,
         progress: HistorySyncProgressPort | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        cancel_requested: Callable[[], bool] = lambda: False,
     ) -> None:
         settings = configuration or HistorySyncConfiguration()
         self._timeout_seconds = settings.supplier_timeout_seconds
@@ -184,6 +186,7 @@ class BaoStockHistorySupplier:
         self._heartbeat_interval_seconds = settings.progress_heartbeat_seconds
         self._progress = progress
         self._monotonic = monotonic
+        self._cancel_requested = cancel_requested
         self._process: BaseProcess | None = None
         self._connection: Connection | None = None
 
@@ -204,6 +207,12 @@ class BaoStockHistorySupplier:
         if response.download is None:
             raise RuntimeError(response.failure_reason or "supplier_query_failed")
         return response.download
+
+    def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
+        response = self._request(_LoadContext(as_of, sessions, include_industry=False))
+        if response.context is None:
+            raise RuntimeError(response.failure_reason or "supplier_context_failed")
+        return response.context
 
     def close(self) -> None:
         process = self._process
@@ -226,6 +235,8 @@ class BaoStockHistorySupplier:
         max_attempts = self._retries + 1
         initial_stage, initial_item = _command_progress(command)
         for attempt_number in range(1, max_attempts + 1):
+            if self._cancel_requested():
+                raise RuntimeError("supplier_cancelled")
             attempt = _Attempt(attempt_number, max_attempts)
             result = self._request_once(
                 command,
@@ -285,6 +296,8 @@ class BaoStockHistorySupplier:
         attempt: _Attempt,
     ) -> tuple[object | None, _RequestState]:
         now = self._monotonic()
+        if self._cancel_requested():
+            raise RuntimeError("supplier_cancelled")
         remaining = state.deadline - now
         if remaining <= 0:
             raise RuntimeError(f"{state.stage}_timeout")
@@ -341,6 +354,9 @@ class BaoStockHistorySupplier:
         next_heartbeat = started_at + self._heartbeat_interval_seconds
         self._publish("supplier_login", "started", attempt, None, 0.0)
         while not parent.poll(min(0.1, max(0.0, min(deadline, next_heartbeat) - self._monotonic()))):
+            if self._cancel_requested():
+                self.close()
+                raise RuntimeError("supplier_cancelled")
             now = self._monotonic()
             if now >= deadline:
                 self.close()
@@ -418,7 +434,9 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                     calendar = gateway.fetch_calendar(requested)
                     spec = BaoStockDailySpec(sessions=command.sessions, source_cutoff=calendar.open_dates[-1])
                     universe = gateway.fetch_universe(spec)
-                    industries = gateway.fetch_industry_intervals(spec, calendar, universe)
+                    industries = (
+                        gateway.fetch_industry_intervals(spec, calendar, universe) if command.include_industry else ()
+                    )
                     connection.send(
                         _Response(HistorySupplierContext(calendar, universe, gateway.source_versions(), industries))
                     )

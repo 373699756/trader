@@ -25,7 +25,7 @@ from tests.component.market_data_test_support import (
     Path,
     PriceAdjustment,
     SinaClient,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SQLiteDataPlane,
     StaticHistoryClient,
     StaticMarketClient,
@@ -82,7 +82,7 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
     }
     history_payload = {"data": {"klines": ["2026-07-15,10,11,12,9,100,100000000,3,1"]}}
     session = FakeSession([quote_payload, history_payload])
-    client = EastmoneyClient(timeout_seconds=2, session_factory=lambda: session)
+    client = EastmoneyClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     quotes = client.fetch_market(NOW)
     history = client.fetch_history("600001", days=90, now=NOW)
@@ -104,7 +104,7 @@ def test_eastmoney_normalizes_quote_and_history() -> None:
 
 def test_eastmoney_history_fallback_attempts_each_host_once() -> None:
     session = FakeSession([requests.Timeout("slow host")] * 3)
-    client = EastmoneyClient(timeout_seconds=2, session_factory=lambda: session)
+    client = EastmoneyClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     with pytest.raises(RuntimeError, match="eastmoney request failed"):
         client.fetch_history("600001", days=90, now=NOW)
@@ -131,7 +131,7 @@ def test_eastmoney_outcome_history_requests_explicit_qfq_and_raw_pairs() -> None
         }
     }
     session = FakeSession([qfq_payload, raw_payload])
-    client = EastmoneyClient(timeout_seconds=2, session_factory=lambda: session)
+    client = EastmoneyClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     bars = client.fetch_outcome_history("600001", days=20, now=NOW)
 
@@ -160,7 +160,7 @@ def test_tencent_normalizes_targeted_quote() -> None:
     fields[49] = "2.0"
     body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
     session = FakeSession([body])
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     quotes = client.fetch_quotes(["600001"], NOW, timeout_seconds=0.75)
 
@@ -248,6 +248,7 @@ def test_tencent_targeted_quotes_keep_successful_shards_when_one_shard_fails() -
             return FakeResponse("".join(records).encode("gb18030"))
 
     quotes = TencentClient(
+        worker_pool=None,
         timeout_seconds=2,
         session_factory=PartialSession,
     ).fetch_quotes(requested_codes, NOW)
@@ -277,6 +278,7 @@ def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
     body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"qfqday": rows}}})
     session = FakeSession([body])
     client = TencentClient(
+        worker_pool=None,
         timeout_seconds=8,
         session_factory=lambda: session,
         wall_clock=lambda: datetime(2026, 7, 15, 16, 30, tzinfo=timezone.utc),
@@ -307,7 +309,7 @@ def test_tencent_outcome_history_requests_raw_and_qfq_from_one_source() -> None:
     qfq_body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"qfqday": qfq_rows}}})
     raw_body = "kline_day2026=" + json.dumps({"data": {"sh600001": {"day": raw_rows}}})
     session = FakeSession([qfq_body, raw_body])
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     bars = client.fetch_outcome_history("600001", days=20)
 
@@ -327,7 +329,7 @@ def test_tencent_outcome_history_keeps_only_complete_same_date_pairs() -> None:
     qfq_body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"qfqday": qfq_rows}}})
     raw_body = "kline_day2026=" + json.dumps({"data": {"sh600001": {"day": raw_rows}}})
     session = FakeSession([qfq_body, raw_body])
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     bars = client.fetch_outcome_history("600001", days=20)
 
@@ -337,14 +339,14 @@ def test_tencent_outcome_history_keeps_only_complete_same_date_pairs() -> None:
 def test_tencent_history_rejects_unadjusted_day_payload_when_qfq_is_missing() -> None:
     rows = [["2026-07-15", "10", "11", "12", "9", "1000", {}, "0.3", "6000"]]
     body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"day": rows}}})
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: FakeSession([body]))
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: FakeSession([body]))
 
     assert client.fetch_history("600001", days=20) == ()
 
 
 def test_tencent_history_supports_a_separate_direct_probe_host() -> None:
     session = FakeSession(['kline_dayqfq2026={"data": {"sh600001": {"qfqday": []}}}'])
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: session)
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     assert client.fetch_history("600001", days=20, history_host="direct") == ()
     assert session.calls[0][0][0].startswith("https://web.ifzq.gtimg.cn/")
@@ -371,7 +373,7 @@ def test_tencent_history_accepts_day_payload_proven_equivalent_to_requested_qfq(
         for index in range(21)
     ]
     body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"day": rows}}})
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: FakeSession([body]))
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: FakeSession([body]))
 
     bars = client.fetch_history("600001", days=20)
 
@@ -407,7 +409,7 @@ def test_tencent_history_rejects_day_payload_without_zero_adjustment_proof(
         ]
     ]
     body = "kline_dayqfq2026=" + json.dumps({"data": {"sh600001": {"day": rows}}})
-    client = TencentClient(timeout_seconds=2, session_factory=lambda: FakeSession([body]))
+    client = TencentClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: FakeSession([body]))
 
     assert client.fetch_history("600001", days=20) == ()
 
@@ -468,7 +470,7 @@ def test_sina_market_request_bypasses_environment_proxy() -> None:
             ],
         ]
     )
-    client = SinaClient(timeout_seconds=2, session_factory=lambda: session)
+    client = SinaClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     quotes = client.fetch_market(NOW)
 
@@ -514,13 +516,19 @@ def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
         state["factory_calls"] += 1
         return ConcurrentSinaSession(state)
 
+    pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="sina-pages-test")
     client = SinaClient(
+        worker_pool=pool,
         timeout_seconds=2,
         workers=3,
         session_factory=session_factory,
     )
 
-    quotes = client.fetch_market(NOW)
+    pool.start()
+    try:
+        quotes = client.fetch_market(NOW)
+    finally:
+        pool.stop()
 
     assert len(quotes) == 201
     assert state["maximum"] >= 2
@@ -555,6 +563,7 @@ def test_eastmoney_full_market_reuses_one_session_and_stops_before_expired_deadl
         return session
 
     client = EastmoneyClient(
+        worker_pool=None,
         timeout_seconds=2,
         session_factory=session_factory,
         wall_clock=lambda: NOW,
@@ -566,6 +575,80 @@ def test_eastmoney_full_market_reuses_one_session_and_stops_before_expired_deadl
     with pytest.raises(RuntimeError, match="deadline"):
         client.fetch_market(NOW, deadline=NOW)
     assert factory_calls == 1
+
+
+def test_market_clients_reject_stopped_injected_pool_before_creating_http_session() -> None:
+    pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="stopped-vendor-test")
+    session_calls = []
+
+    def session_factory():
+        session_calls.append(True)
+        raise AssertionError("stopped clients must not create a session")
+
+    clients = (
+        EastmoneyClient(timeout_seconds=2, session_factory=session_factory, worker_pool=pool),
+        SinaClient(timeout_seconds=2, session_factory=session_factory, worker_pool=pool),
+        TencentClient(timeout_seconds=2, session_factory=session_factory, worker_pool=pool),
+    )
+    for client in clients:
+        with pytest.raises(RuntimeError, match="executor stopped"):
+            if isinstance(client, TencentClient):
+                client.fetch_quotes(("600001",), NOW)
+            else:
+                client.fetch_market(NOW)
+    assert session_calls == []
+
+
+@pytest.mark.parametrize("vendor", ("eastmoney", "sina"))
+def test_page_submission_failure_drains_workers_before_closing_session(vendor, monkeypatch) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+
+    class RejectingPool(BoundedExecutor):
+        submissions = 0
+
+        def submit(self, function, /, *args, **kwargs):
+            self.submissions += 1
+            if self.submissions == 2:
+                release.set()
+                raise RuntimeError("controlled_submission_failure")
+            return super().submit(function, *args, **kwargs)
+
+    class Session:
+        closed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            assert finished.is_set()
+            self.closed = True
+
+    session = Session()
+    pool = RejectingPool(worker_count=2, queue_capacity=2, thread_name_prefix="page-drain-test")
+    client_type = EastmoneyClient if vendor == "eastmoney" else SinaClient
+    client = client_type(timeout_seconds=2, workers=2, worker_pool=pool, session_factory=lambda: session)
+
+    def fetch_page(page, **_kwargs):
+        if vendor == "eastmoney" and page == 1:
+            return {"data": {"total": 1500, "diff": [{"f12": "600001"}]}}
+        assert release.wait(2)
+        assert not session.closed
+        finished.set()
+        return {}
+
+    monkeypatch.setattr(client, "_fetch_page", fetch_page)
+    if vendor == "sina":
+        monkeypatch.setattr(client, "_get_text", lambda *_args, **_kwargs: "201")
+    pool.start()
+    try:
+        with pytest.raises(RuntimeError, match="controlled_submission_failure"):
+            client.fetch_market(NOW)
+        assert session.closed
+        assert pool.status().inflight == 0
+    finally:
+        release.set()
+        pool.stop()
 
 
 def test_eastmoney_pages_remain_parallel_when_called_from_source_worker() -> None:
@@ -610,19 +693,22 @@ def test_eastmoney_pages_remain_parallel_when_called_from_source_worker() -> Non
 
     session = ConcurrentEastmoneySession()
     pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="source-data")
+    page_pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="eastmoney-pages-test")
     client = EastmoneyClient(
         timeout_seconds=2,
         workers=2,
-        worker_pool=pool,
+        worker_pool=page_pool,
         session_factory=lambda: session,
     )
     pool.start()
+    page_pool.start()
     try:
         future = pool.submit(client.fetch_market, NOW)
         assert future is not None
         quotes = future.result(timeout=1.0)
     finally:
         pool.stop(wait=True, cancel_futures=True)
+        page_pool.stop(wait=True, cancel_futures=True)
 
     assert len(quotes) == 1001
     assert session.maximum == 2
@@ -643,7 +729,7 @@ def test_market_sources_retry_transient_disconnect_and_page_504() -> None:
             eastmoney_payload,
         ]
     )
-    eastmoney = EastmoneyClient(timeout_seconds=2, session_factory=lambda: eastmoney_session)
+    eastmoney = EastmoneyClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: eastmoney_session)
 
     assert eastmoney.fetch_market(NOW)[0].code == "600001"
     assert len(eastmoney_session.calls) == 4
@@ -655,7 +741,7 @@ def test_market_sources_retry_transient_disconnect_and_page_504() -> None:
             [{"symbol": "sh600001", "name": "测试股份", "trade": "12.00"}],
         ]
     )
-    sina = SinaClient(timeout_seconds=2, session_factory=lambda: sina_session)
+    sina = SinaClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: sina_session)
 
     assert sina.fetch_market(NOW)[0].code == "600001"
     assert len(sina_session.calls) == 3
@@ -726,7 +812,7 @@ def test_gateway_primary_success_does_not_start_sina_hedge() -> None:
     sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     pool.start()
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     gateway = MarketDataGateway(
         eastmoney,
         sina,
@@ -759,7 +845,7 @@ def test_gateway_starts_sina_after_hedge_delay_and_returns_without_waiting_for_s
     sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     pool.start()
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     gateway = MarketDataGateway(
         eastmoney,
         sina,
@@ -821,7 +907,7 @@ def test_late_eastmoney_hedge_preserves_security_identity_without_overwriting_si
     sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     pool.start()
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     gateway = MarketDataGateway(
         eastmoney,
         sina,

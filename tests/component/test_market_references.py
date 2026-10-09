@@ -26,7 +26,7 @@ from tests.component.market_data_test_support import (
     SecurityMasterRecord,
     SequenceMarketClient,
     SourceCursorRecord,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SourceObservation,
     SQLiteDataPlane,
     StaticGateway,
@@ -499,7 +499,7 @@ def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare
         wall_clock=lambda: NOW,
     )
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
 
     class ReferencePro(FakeTusharePro):
         def trade_cal(self, **kwargs):
@@ -631,7 +631,7 @@ def test_reference_refresh_does_not_query_tushare_history() -> None:
         wall_clock=lambda: AFTERNOON,
     )
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
 
     class SlowDataPro(FakeTusharePro):
         def trade_cal(self, **kwargs):

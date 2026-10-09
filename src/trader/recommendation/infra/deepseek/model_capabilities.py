@@ -1,4 +1,4 @@
-"""Known DeepSeek model capabilities registry.
+"""Known DeepSeek model capabilities index.
 
 This module is the single source of truth for model capability declarations.
 Adding a new model requires:

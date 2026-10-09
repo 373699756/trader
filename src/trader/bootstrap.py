@@ -6,32 +6,40 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+import requests
 from flask import Flask
 
-from trader.download.application.fetch_history_tail import FetchHistoryTailUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.infra.baostock_gap_supplier import fetch_baostock_gaps
-from trader.download.infra.baostock_history_tail import BaoStockHistoryTailSupplier
+from trader.download.application.update_qfq import UpdateQfqWindows
+from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.download.infra.qfq_checkpoint import QfqCheckpoint
+from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
+from trader.download.infra.qfq_progress import QfqSupplierProgress
+from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.clock.utc import utc_now as _utc_now
-from trader.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.infra.market_data.providers.akshare_http_contracts import AkshareGetFunction
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
-from trader.infra.market_data.providers.eastmoney import EastmoneyClient
-from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
-from trader.infra.market_data.providers.sina import SinaClient
-from trader.infra.market_data.providers.tencent import TencentClient
+from trader.infra.market_data.providers.exchange_security_master import (
+    ExchangeSecurityMasterClient,
+    fetch_sse_listings,
+    fetch_szse_listings,
+)
 from trader.infra.market_data.providers.tushare import TushareClient
-from trader.infra.market_data.references.calendar import ChinaTradingCalendar
-from trader.infra.runtime_resources import RuntimeWorkerResources
+from trader.infra.market_data.providers.tushare_records import build_tushare_sdk
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
@@ -45,6 +53,8 @@ from trader.infra.settings.recommendation_policy import (
     _long_item_definitions,
     _recommendation_policy,
 )
+from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.data_source.source_router import (
@@ -84,14 +94,12 @@ from trader.recommendation.application.runtime.resource_orchestration import (
     stop_application_resources,
 )
 from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
-from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
+from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisor,
     RuntimeSupervisorConfig,
     scheduler_interval_seconds,
 )
-from trader.recommendation.application.runtime.workers import BoundedExecutor
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -102,11 +110,6 @@ from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolic
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
-from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
-from trader.recommendation.infra.market_data.history_tail_recovery import (
-    CandidateHistoryTailRecovery,
-    HistoryTailDependencies,
-)
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.recommendation.infra.market_data.market_feature_service import (
@@ -114,15 +117,20 @@ from trader.recommendation.infra.market_data.market_feature_service import (
     MarketFeatureService,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.recommendation.infra.market_data.providers.sina import SinaClient
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
@@ -136,6 +144,36 @@ from trader.web import create_app
 
 if TYPE_CHECKING:
     from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
+
+
+def execute_qfq_download(
+    project_root: Path,
+    *,
+    cancel_requested: Callable[[], bool] = lambda: False,
+    report: Callable[[str], None] = print,
+    now: Callable[[], datetime] = _utc_now,
+    seed_only: bool = False,
+) -> QfqUpdateResult:
+    """Compose the zero-argument CLI/background use case without building the server."""
+    root = project_root / "data" / "qfq"
+    v2 = SQLiteQfqWindowCache(root, "v2")
+    v3 = SQLiteQfqWindowCache(root, "v3")
+    configuration = HistorySyncConfiguration.for_repository(project_root)
+    # Short cancellation grace keeps the worker within the shared shutdown budget.
+    with BaoStockHistorySupplier(
+        replace(configuration, cancellation_grace_seconds=1.0),
+        cancel_requested=cancel_requested,
+        progress=QfqSupplierProgress(report),
+    ) as supplier:
+        updater = UpdateQfqWindows(v2, v3, supplier, QfqCheckpoint(root / ".checkpoint.json"), cancel_requested, report)
+        return QfqUpdateRunner(
+            ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history/baostock")),
+            updater,
+            v2,
+            v3,
+            project_root / "data/history/baostock/.maintenance.lock",
+            ShanghaiClock(now).now,
+        ).execute(seed_only=seed_only)
 
 
 def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
@@ -207,20 +245,21 @@ class ApplicationSystem:
     app: Flask
     supervisor: RuntimeSupervisor
     scheduler: SchedulerRuntime
-    repository: SQLiteDecisionRecordRepository
+    records: SQLiteDecisionRecords
     market_cache: BoundedLruCache[object]
     research_pool: BoundedExecutor
-    source_lanes: SourceLaneRegistry
+    source_lanes: SourceLaneScheduler
     data_pool: BoundedExecutor
     quote_pool: BoundedExecutor
     long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
     tomorrow_index: UnifiedDecisionIndex
-    tomorrow_records: SQLiteDecisionRecordRepository
+    tomorrow_records: SQLiteDecisionRecords
     research_trace: SQLiteResearchTraceArchive
     outcome_evidence: SQLiteOutcomeEvidenceRepository
     history_observer: PublishedHistoryObserver
+    qfq_maintenance: QfqDailyMaintenance
 
     def _application_resources(self) -> ApplicationResources:
         return ApplicationResources(
@@ -229,7 +268,7 @@ class ApplicationSystem:
             self.data_pool,
             self.quote_pool,
             self.research_pool,
-            (self.long_runtime, self.history_observer),
+            (self.long_runtime, self.history_observer, self.qfq_maintenance),
             self.market_cache,
         )
 
@@ -248,6 +287,21 @@ class ApplicationSystem:
 
 
 @dataclass(frozen=True)
+class RuntimeWorkerResources:
+    """Resources assembled here; source lanes belong to recommendation."""
+
+    control_pool: BoundedExecutor
+    data_pool: BoundedExecutor
+    quote_pool: BoundedExecutor
+    research_pool: BoundedExecutor
+    company_research_pool: BoundedExecutor
+    persistence_pool: BoundedExecutor
+    source_lanes: SourceLaneScheduler
+    json_writer: RuntimeJsonWriter
+    market_cache: BoundedLruCache[object]
+
+
+@dataclass(frozen=True)
 class _BuildContext:
     settings: RuntimeSettings
     strategy: StrategySettings
@@ -261,7 +315,7 @@ class _BuildContext:
 
 @dataclass(frozen=True)
 class _PersistenceContext:
-    repository: SQLiteDecisionRecordRepository
+    records: SQLiteDecisionRecords
     data_plane: SQLiteDataPlane
     budget: DeepSeekBudgetLedger
     outcomes: SQLiteOutcomeEvidenceRepository
@@ -269,7 +323,7 @@ class _PersistenceContext:
 
 @dataclass(frozen=True)
 class _PublicationContext:
-    tomorrow_repository: SQLiteDecisionRecordRepository
+    tomorrow_records: SQLiteDecisionRecords
     tomorrow_index: UnifiedDecisionIndex
     decision_drafts: UnifiedDecisionDraftIndex
     research_trace: SQLiteResearchTraceArchive
@@ -283,7 +337,7 @@ class _PublicationContext:
 
 @dataclass(frozen=True)
 class _PublicationDependencies:
-    repository: SQLiteDecisionRecordRepository
+    records: SQLiteDecisionRecords
     market_data: MarketFeatureService
     additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
 
@@ -366,7 +420,7 @@ def build_system(
         context,
         calendar,
         _PublicationDependencies(
-            persistence.repository,
+            persistence.records,
             market_data,
         ),
         publication_io=publication_io,
@@ -400,6 +454,7 @@ def build_system(
 
     scheduler = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=context.workers.control_pool,
             clock=ShanghaiClock(context.now),
             calendar=calendar,
             cadence=cadence_planner,
@@ -423,6 +478,7 @@ def build_system(
             ),
             research_factory=lambda on_result: ResearchRuntime(
                 market_data,
+                context.workers.company_research_pool,
                 cadence=context.cadence_policy,
                 now=context.now,
                 on_result=on_result,
@@ -437,12 +493,19 @@ def build_system(
     )
 
     history_observer = PublishedHistoryObserver(market_data.history)
+    qfq_maintenance = QfqDailyMaintenance(
+        lambda cancel: execute_qfq_download(settings.project_root, cancel_requested=cancel, now=now),
+        now=ShanghaiClock(now).now,
+        needs_initialization=lambda: any(
+            not (settings.project_root / "data/qfq" / profile / "index.json").is_file() for profile in ("v2", "v3")
+        ),
+    )
     supervisor = RuntimeSupervisor(
         scheduler,
         RuntimeSupervisorConfig(
             now=now,
             initializers=(
-                publication.tomorrow_repository.initialize,
+                publication.tomorrow_records.initialize,
                 lambda: _initialize_research_trace(publication.research_trace),
                 lambda: _initialize_outcome_evidence(persistence.outcomes),
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane, now()),
@@ -479,7 +542,7 @@ def build_system(
         app=app,
         supervisor=supervisor,
         scheduler=scheduler,
-        repository=persistence.repository,
+        records=persistence.records,
         market_cache=workers.market_cache,
         research_pool=workers.research_pool,
         source_lanes=workers.source_lanes,
@@ -489,22 +552,29 @@ def build_system(
         decision_queries=publication.decision_queries,
         decision_events=publication.decision_events,
         tomorrow_index=publication.tomorrow_index,
-        tomorrow_records=publication.tomorrow_repository,
+        tomorrow_records=publication.tomorrow_records,
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
         history_observer=history_observer,
+        qfq_maintenance=qfq_maintenance,
     )
 
 
 def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> RuntimeWorkerResources:
     urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
+    control_pool = BoundedExecutor(
+        worker_count=2,
+        urgent_worker_count=1,
+        queue_capacity=4,
+        thread_name_prefix="trader-control",
+    )
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers + urgent_worker_count,
         urgent_worker_count=urgent_worker_count,
         queue_capacity=5,
         thread_name_prefix="source-data",
     )
-    source_lanes = SourceLaneRegistry(data_pool, latency=latency)
+    source_lanes = SourceLaneScheduler(data_pool, latency=latency)
     quote_pool = BoundedExecutor(
         worker_count=4,
         queue_capacity=4,
@@ -514,6 +584,11 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         worker_count=settings.pipeline.market_workers,
         queue_capacity=settings.market_data.candidate_pool_size,
         thread_name_prefix="research-data",
+    )
+    company_research_pool = BoundedExecutor(
+        worker_count=1,
+        queue_capacity=4,
+        thread_name_prefix="company-research",
     )
     persistence_pool = BoundedExecutor(
         worker_count=1,
@@ -527,9 +602,11 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         wall_clock=_utc_now,
     )
     return RuntimeWorkerResources(
+        control_pool=control_pool,
         data_pool=data_pool,
         quote_pool=quote_pool,
         research_pool=research_pool,
+        company_research_pool=company_research_pool,
         persistence_pool=persistence_pool,
         source_lanes=source_lanes,
         json_writer=json_writer,
@@ -553,25 +630,30 @@ def _build_market_data(
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
     eastmoney = EastmoneyClient(
+        session_factory=requests.Session,
         timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
         workers=settings.pipeline.market_workers,
-        worker_pool=data_pool,
+        worker_pool=workers.quote_pool,
         cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
         wall_clock=now,
     )
     intraday_client = EastmoneyClient(
+        session_factory=requests.Session,
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
         workers=settings.pipeline.market_workers,
-        worker_pool=data_pool,
+        worker_pool=workers.quote_pool,
         cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
         wall_clock=now,
     )
     sina = SinaClient(
+        worker_pool=workers.quote_pool,
+        session_factory=requests.Session,
         timeout_seconds=settings.market_data.sina_timeout_seconds,
         cancel_requested=lambda: source_lanes.is_stopped("sina"),
         wall_clock=now,
     )
     tencent = TencentClient(
+        session_factory=requests.Session,
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
         cancel_requested=lambda: source_lanes.is_stopped("tencent"),
         wall_clock=now,
@@ -595,6 +677,10 @@ def _build_market_data(
                 cancel_event=cancel_event,
             ),
         },
+        recovery_probes={
+            "eastmoney": eastmoney.probe_market,
+            "sina": sina.probe_market,
+        },
         worker_pool=data_pool,
         source_lanes=source_lanes,
         cache=market_cache,
@@ -615,6 +701,7 @@ def _build_market_data(
         model_momentum_horizons=model_momentum_horizons,
     )
     research_client = AkshareResearchClient(
+        get=cast(AkshareGetFunction, requests.get),
         timeout_seconds=settings.market_data.research_timeout_seconds,
         long_research_policy=strategy.long_research,
         evidence_cache_dir=evidence_cache_dir,
@@ -622,6 +709,7 @@ def _build_market_data(
         cancel_requested=lambda: not workers.research_pool.is_running(),
     )
     tushare_client = TushareClient(
+        sdk_factory=partial(build_tushare_sdk, session_factory=requests.Session),
         token=settings.market_data.tushare.token if settings.market_data.tushare.enabled else "",
         points=settings.market_data.tushare.points,
         timeout_seconds=settings.market_data.tushare.timeout_seconds,
@@ -651,37 +739,20 @@ def _build_market_data(
     history_root = settings.project_root / "data" / "history" / "baostock"
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(history_root))
     history_cache = PublishedHistoryCache(
-        published_history,
+        ReadPublishedHistoryUseCase(
+            SQLiteQfqWindowCache(settings.project_root / "data/qfq", "v2" if history_lookback_sessions > 61 else "v3")
+        ),
         lookback_sessions=history_lookback_sessions,
-        recovery=HistoryRecovery(
-            tencent,
-            eastmoney,
-            worker_pool=data_pool,
-            workers=settings.pipeline.market_workers,
-            batch_timeout_seconds=max(1.0, settings.market_data.eastmoney_timeout_seconds * 1.5),
-            wall_clock=now,
-        ),
-        tail_recovery=CandidateHistoryTailRecovery(
-            HistoryTailDependencies(
-                published_history,
-                FetchHistoryTailUseCase(
-                    BaoStockHistoryTailSupplier(
-                        history_root,
-                        fetch_baostock_gaps,
-                        cancel_requested=lambda: not data_pool.is_running(),
-                    )
-                ),
-                open_dates=calendar.open_dates,
-                wall_clock=now,
-                cancel_requested=lambda: not data_pool.is_running(),
-            )
-        ),
+        outcome_history=published_history,
+        open_dates=calendar.open_dates,
     )
     references = ReferenceLoader(
         gateway,
         runner,
         tushare_client,
         security_master_client=ExchangeSecurityMasterClient(
+            sse_fetcher=partial(fetch_sse_listings, get=requests.get),
+            szse_fetcher=partial(fetch_szse_listings, get=requests.get),
             timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
             wall_clock=now,
         ),
@@ -695,11 +766,11 @@ def _build_market_data(
     )
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
     blacklist_root = settings.project_root / "data" / "blacklist"
-    SQLiteIssuerEligibilityRegistry.migrate_legacy_database(
+    SQLiteIssuerEligibilityIndex.migrate_legacy_database(
         settings.runtime_dir / "issuer-eligibility.sqlite3",
         blacklist_root,
     )
-    eligibility = SQLiteIssuerEligibilityRegistry(blacklist_root)
+    eligibility = SQLiteIssuerEligibilityIndex(blacklist_root)
     try:
         eligibility.record_manual_blacklist(
             strategy.hard_filters.blacklist_codes,
@@ -767,9 +838,9 @@ def _build_market_data(
 def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     settings = context.settings
     runtime_database_lock = threading.Lock()
-    repository = SQLiteDecisionRecordRepository(settings.freeze_dir)
+    records = SQLiteDecisionRecords(settings.freeze_dir)
     data_plane = SQLiteDataPlane(settings.runtime_dir)
-    outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, repository)
+    outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, records)
     budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "deepseek-budget.sqlite3",
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -788,7 +859,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
         ),
         write_lock=runtime_database_lock,
     )
-    return _PersistenceContext(repository, data_plane, budget, outcomes)
+    return _PersistenceContext(records, data_plane, budget, outcomes)
 
 
 def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
@@ -821,7 +892,7 @@ def _build_publication(
     publication_io: PublicationIoTracker,
 ) -> _PublicationContext:
     settings = context.settings
-    repository = dependencies.repository
+    records = dependencies.records
     market_data = dependencies.market_data
     tomorrow_decisions = UnifiedDecisionIndex()
     decision_drafts = UnifiedDecisionDraftIndex()
@@ -831,7 +902,7 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, repository, clock)
+    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock)
     research_trace = SQLiteResearchTraceArchive(
         settings.runtime_dir,
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
@@ -844,7 +915,7 @@ def _build_publication(
     )
     tomorrow_freezer = ScoredFreezeCoordinator(
         tomorrow_decisions,
-        repository,
+        records,
         clock,
         runtime_identity=DecisionRuntimeIdentity(
             context.effective_config_version,
@@ -856,7 +927,7 @@ def _build_publication(
     )
     d25_freezer = ScoredFreezeCoordinator(
         tomorrow_decisions,
-        repository,
+        records,
         clock,
         runtime_identity=DecisionRuntimeIdentity(
             context.effective_config_version,
@@ -879,7 +950,7 @@ def _build_publication(
         groups=_long_group_definitions(context.watchlist),
     )
     return _PublicationContext(
-        repository,
+        records,
         tomorrow_decisions,
         decision_drafts,
         research_trace,

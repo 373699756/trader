@@ -28,7 +28,7 @@ def read_json_object(path: Path) -> dict[str, object]:
 def infer_project_root(config_dir: Path) -> Path:
     # The canonical runtime configuration lives directly under ``config``;
     # project-relative paths (for example ``.runtime/trader``) must therefore
-    # resolve from the repository root rather than from the configuration
+    # Resolve from the project root rather than from the configuration
     # directory itself.
     if config_dir.name == "config":
         return config_dir.parent.resolve()

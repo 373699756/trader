@@ -1,4 +1,4 @@
-"""Executable factor registry parsing and contract validation."""
+"""Executable factor index parsing and contract validation."""
 
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def _validate_feature_schema_contract(settings: StrategySettings) -> None:
 
 def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
     _validate_tail_factor_definition(
-        settings.factor_registry["tail_return_30m_pct"],
+        settings.factor_index["tail_return_30m_pct"],
         raw_inputs=("unadjusted_completed_minute_close",),
         formula="(latest_close/close_30_continuous_trading_minutes_ago-1)*100",
         unit="percentage_points",
@@ -75,7 +75,7 @@ def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
         output_range=(-100.0, 1000.0),
     )
     _validate_tail_factor_definition(
-        settings.factor_registry["tail_return_30m"],
+        settings.factor_index["tail_return_30m"],
         raw_inputs=("tail_return_30m_pct",),
         formula="clamp(50+tail_return_30m_pct*25)",
         unit="score_0_100",
@@ -85,7 +85,7 @@ def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
         output_range=(0.0, 100.0),
     )
     _validate_tail_factor_definition(
-        settings.factor_registry["tail_volume_ratio_raw"],
+        settings.factor_index["tail_volume_ratio_raw"],
         raw_inputs=("unadjusted_completed_minute_volume",),
         formula="mean(last_30_continuous_trading_minute_volume)/mean(valid_same_day_pre_tail_volume)",
         unit="ratio",
@@ -95,7 +95,7 @@ def _validate_tomorrow_tail_factor_contract(settings: StrategySettings) -> None:
         output_range=(0.0, 1_000_000.0),
     )
     _validate_tail_factor_definition(
-        settings.factor_registry["tail_volume_ratio"],
+        settings.factor_index["tail_volume_ratio"],
         raw_inputs=("tail_volume_ratio_raw",),
         formula="clamp(50+(tail_volume_ratio_raw-1)*50)",
         unit="score_0_100",
@@ -253,7 +253,7 @@ def _validate_long_research_factor_contract(settings: StrategySettings) -> None:
         },
     }
     for factor_id, factor_expected in expected.items():
-        _validate_factor_definition(settings.factor_registry[factor_id], factor_expected)
+        _validate_factor_definition(settings.factor_index[factor_id], factor_expected)
 
 
 def _validate_factor_definition(
@@ -267,7 +267,7 @@ def _validate_factor_definition(
             expected_value = "".join(str(expected_value).split())
         if actual != expected_value:
             raise ConfigurationError(
-                f"factor_registry.{definition.factor_id}.{attribute} contradicts the executable formula"
+                f"factor_index.{definition.factor_id}.{attribute} contradicts the executable formula"
             )
 
 
@@ -316,13 +316,13 @@ def _validate_tail_factor_definition(
             expected_value = "".join(str(expected_value).split())
         if actual != expected_value:
             raise ConfigurationError(
-                f"factor_registry.{definition.factor_id}.{attribute} contradicts the executable tomorrow tail formula"
+                f"factor_index.{definition.factor_id}.{attribute} contradicts the executable tomorrow tail formula"
             )
 
 
 def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
     if not isinstance(raw, dict):
-        raise ConfigurationError(f"factor_registry.{factor_id} must be an object")
+        raise ConfigurationError(f"factor_index.{factor_id} must be an object")
     _require_exact_keys(
         raw,
         {
@@ -341,10 +341,10 @@ def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
             "missing_policy",
             "output_range",
         },
-        f"factor_registry.{factor_id}",
+        f"factor_index.{factor_id}",
     )
     if _text(raw, "factor_id") != factor_id:
-        raise ConfigurationError(f"factor_registry.{factor_id}.factor_id must match its key")
+        raise ConfigurationError(f"factor_index.{factor_id}.factor_id must match its key")
     strategies = raw.get("strategies")
     raw_inputs = raw.get("raw_inputs")
     output_range = raw.get("output_range")
@@ -354,13 +354,13 @@ def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
         or not strategies
         or any(value not in {"tomorrow", "d25", "long"} for value in strategies)
     ):
-        raise ConfigurationError(f"factor_registry.{factor_id}.strategies is invalid")
+        raise ConfigurationError(f"factor_index.{factor_id}.strategies is invalid")
     if (
         not isinstance(raw_inputs, list)
         or not raw_inputs
         or any(not isinstance(value, str) or not value for value in raw_inputs)
     ):
-        raise ConfigurationError(f"factor_registry.{factor_id}.raw_inputs is invalid")
+        raise ConfigurationError(f"factor_index.{factor_id}.raw_inputs is invalid")
     if (
         not isinstance(output_range, list)
         or len(output_range) != 2
@@ -368,11 +368,11 @@ def _parse_factor_definition(factor_id: str, raw: object) -> FactorDefinition:
         or any(not math.isfinite(float(value)) for value in output_range)
         or float(output_range[0]) > float(output_range[1])
     ):
-        raise ConfigurationError(f"factor_registry.{factor_id}.output_range is invalid")
+        raise ConfigurationError(f"factor_index.{factor_id}.output_range is invalid")
     lower = _number(winsor, "lower_quantile", minimum=0.0, maximum=1.0)
     upper = _number(winsor, "upper_quantile", minimum=0.0, maximum=1.0)
     if lower > upper:
-        raise ConfigurationError(f"factor_registry.{factor_id}.winsorization is invalid")
+        raise ConfigurationError(f"factor_index.{factor_id}.winsorization is invalid")
     return FactorDefinition(
         factor_id=factor_id,
         strategies=tuple(strategies),

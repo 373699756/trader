@@ -200,7 +200,7 @@ def test_market_health_exposes_real_recovery_counts_without_stock_payloads() -> 
     assert health["history_recovery_success_count"] == 1
     assert health["history_recovery_deferred_count"] == 1
     assert health["history_recovery_inflight_count"] == 0
-    assert health["history_archive_state"] == "unavailable"
+    assert health["published_history_state"] == "unavailable"
     assert "history_recovery_codes" not in health
 
 
@@ -215,22 +215,22 @@ def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:
         )
 
 
-def test_strategy_factor_registry_is_complete_and_required() -> None:
+def test_strategy_factor_index_is_complete_and_required() -> None:
     path = Path(__file__).parents[2] / "config" / "strategy.json"
     settings = load_strategy_settings(path)
 
-    assert settings.factor_registry["atr20_pct"].factor_id == "atr20_pct"
+    assert settings.factor_index["atr20_pct"].factor_id == "atr20_pct"
     assert settings.strategy_version.startswith("strategy_sha256_")
 
 
 def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
     source = Path(__file__).parents[2] / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    del raw["factor_registry"]["atr20_pct"]
+    del raw["factor_index"]["atr20_pct"]
     target = tmp_path / "strategy.json"
     target.write_text(json.dumps(raw), encoding="utf-8")
 
-    with pytest.raises(ConfigurationError, match="factor_registry mismatch"):
+    with pytest.raises(ConfigurationError, match="factor_index mismatch"):
         load_strategy_settings(target)
 
 

@@ -115,6 +115,8 @@ def test_active_dependency_direction() -> None:
     for boundary, prefixes in forbidden.items():
         for path in (SOURCE_ROOT / boundary).rglob("*.py"):
             for imported in _imports(path):
+                if imported in {"trader.infra.shutdown", "trader.infra.workers"}:
+                    continue
                 if imported.startswith(prefixes):
                     violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []
@@ -126,8 +128,10 @@ def test_shared_technical_primitives_have_one_infra_owner() -> None:
         "RuntimeSettings": SOURCE_ROOT / "infra/settings/models.py",
         "atomic_write_json": SOURCE_ROOT / "infra/atomic_files/json.py",
         "BoundedLruCache": SOURCE_ROOT / "infra/cache.py",
+        "BoundedExecutor": SOURCE_ROOT / "infra/workers.py",
         "ProcessLock": SOURCE_ROOT / "infra/process_lock.py",
-        "RuntimeWorkerResources": SOURCE_ROOT / "infra/runtime_resources.py",
+        "RuntimeWorkerResources": SOURCE_ROOT / "bootstrap.py",
+        "ShutdownDeadline": SOURCE_ROOT / "infra/shutdown.py",
     }
     assert all(path.is_file() for path in owners.values())
 
@@ -141,16 +145,47 @@ def test_shared_technical_primitives_have_one_infra_owner() -> None:
     assert definitions == {name: [path.relative_to(SOURCE_ROOT)] for name, path in owners.items()}
 
 
+def test_execution_resources_are_created_only_by_the_composition_root() -> None:
+    allowed = {
+        Path("bootstrap.py"): {"BoundedExecutor"},
+        Path("infra/workers.py"): {"ThreadPoolExecutor"},
+    }
+    violations: list[str] = []
+    for path in SOURCE_ROOT.rglob("*.py"):
+        relative = path.relative_to(SOURCE_ROOT)
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            name = node.func.id if isinstance(node.func, ast.Name) else ""
+            if name in {"BoundedExecutor", "ThreadPoolExecutor", "ProcessPoolExecutor"} and name not in allowed.get(
+                relative, set()
+            ):
+                violations.append(f"{relative}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_shared_market_data_primitives_do_not_import_recommendation() -> None:
+    violations = [
+        f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
+        for path in (SOURCE_ROOT / "infra/market_data").rglob("*.py")
+        for imported in _imports(path)
+        if imported.startswith("trader.recommendation")
+    ]
+    assert violations == []
+
+
 def test_application_does_not_own_infrastructure_implementations() -> None:
     application = SOURCE_ROOT / "application"
     forbidden_names = {
         "BoundedLruCache",
+        "BoundedExecutor",
         "ProcessLock",
         "RuntimeWorkerResources",
         "RuntimeJsonWriter",
         "atomic_read_json",
         "atomic_write_json",
         "ShanghaiClock",
+        "ShutdownDeadline",
     }
     violations: list[str] = []
     for path in application.rglob("*.py"):
@@ -417,8 +452,8 @@ def test_runtime_responsibilities_remain_split_by_resource_boundary() -> None:
     assert "class FreezeAdapter" not in input_runtime
     assert "class DeepSeekAdapter" in decision_adapters
     assert "class FreezeAdapter" in decision_adapters
-    assert "class RuntimeIssueRegistry" not in runtime
-    assert "class RuntimeIssueRegistry" in issues
+    assert "class RuntimeIssueIndex" not in runtime
+    assert "class RuntimeIssueIndex" in issues
 
 
 def test_market_component_suite_remains_partitioned_by_behavior() -> None:

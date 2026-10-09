@@ -20,7 +20,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 from trader.bootstrap import build_system
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.settings import RuntimeSettings
-from trader.recommendation.application.runtime.shutdown import (
+from trader.infra.shutdown import (
     ShutdownDeadline,
     ShutdownReport,
     ShutdownSignalController,

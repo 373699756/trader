@@ -25,7 +25,7 @@ from trader.recommendation.infra.normalization.merge import (
     observation_from_quote,
     overlay_canonical_snapshot,
 )
-from trader.infra.market_data.quote_normalization import MarketQuoteInput, build_market_quote
+from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
@@ -402,7 +402,7 @@ def _operations(
         **api_operations,
     }
     provenance = {
-        "market_normalization": "trader.infra.market_data.quote_normalization.build_market_quote",
+        "market_normalization": "trader.recommendation.infra.normalization.quote.build_market_quote",
         "market_merge": "trader.recommendation.infra.normalization.merge.merge_market_observations",
         "canonical_snapshot": "trader.recommendation.infra.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
         "targeted_overlay_commit": "trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot + trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedDecisionIndex.publish_overlay",

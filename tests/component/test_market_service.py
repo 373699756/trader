@@ -27,7 +27,7 @@ from tests.component.market_data_test_support import (
     MutableMonotonic,
     Path,
     ResearchObservation,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SQLiteDataPlane,
     StaticGateway,
     StaticGatewayWithSeparateQuotes,
@@ -261,7 +261,7 @@ def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
 def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> None:
     monotonic = MutableMonotonic()
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
 
     class ToggleResearchClient:
         calls = 0
@@ -632,7 +632,7 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(
 
     sina = HedgeClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     gateway = MarketDataGateway(
         eastmoney,
         sina,

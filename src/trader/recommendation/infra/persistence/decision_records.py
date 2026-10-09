@@ -78,7 +78,7 @@ def _atomic_create_immutable(
         raise
 
 
-class SQLiteDecisionRecordRepository:
+class SQLiteDecisionRecords:
     """Stores one immutable formal decision per strategy and trade date."""
 
     def __init__(
@@ -342,7 +342,8 @@ class SQLiteDecisionRecordRepository:
                     ).rowcount
                     if changed == 0:
                         row = connection.execute(
-                            "SELECT version, consumed_at FROM decision_checkpoints WHERE strategy = ? AND trade_date = ?",
+                            "SELECT version, consumed_at FROM decision_checkpoints "
+                            "WHERE strategy = ? AND trade_date = ?",
                             (checkpoint.decision.strategy.value, checkpoint.decision.trade_date.isoformat()),
                         ).fetchone()
                         if row is None or row["version"] != checkpoint.version or not row["consumed_at"]:
@@ -681,4 +682,4 @@ CREATE TABLE IF NOT EXISTS decision_checkpoints (
 """
 
 
-__all__ = ["SQLiteDecisionRecordRepository"]
+__all__ = ["SQLiteDecisionRecords"]

@@ -40,6 +40,14 @@ data/blacklist/
 !/data/train/v3/d25/training-input.json
 # Transitional runtime source; remove after the profile-aware loader cutover.
 *.sqlite3
+# Portable short-window shards are versioned; resume state and journals stay local.
+!/data/qfq/v2/range-*.sqlite3
+!/data/qfq/v3/range-*.sqlite3
+/data/qfq/.*
+/data/qfq/**/*.tmp
+/data/qfq/**/*-journal
+/data/qfq/**/*-wal
+/data/qfq/**/*-shm
 .agents/*
 !.agents/skills/
 .agents/skills/*

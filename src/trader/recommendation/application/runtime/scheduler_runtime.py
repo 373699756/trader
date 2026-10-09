@@ -10,24 +10,23 @@ from datetime import time as wall_time
 from typing import Literal, cast
 
 from trader.recommendation.application.pipeline.freeze_publish.current_publisher import publish_current_snapshot
-from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
-    PublicationIoTarget,
-    PublicationIoTracker,
-    observe_publication_io,
-)
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionCommitted,
     DecisionObservation,
 )
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (
     DecisionObserverRuntime,
-    DecisionObserverStatus,
 )
 from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
+from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
+    PublicationIoTarget,
+    PublicationIoTracker,
+    observe_publication_io,
+)
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
 from trader.recommendation.application.ports.publisher import OverlayPublisher
-from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, ResearchAuditIdentity
+from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPort,
@@ -40,16 +39,13 @@ from trader.recommendation.application.ports.runtime import (
     PipelineTaskRequest,
     RefreshOutcome,
     ResearchRuntimeFactoryPort,
-    ResearchRuntimeStatus,
     ReviewUnavailableError,
     SettlementPort,
     SettlementUnavailableError,
-    SharedDeepSeekRuntimeContract,
     TradingCalendarUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import (
     CadencePlanner,
-    CadencePlannerStatus,
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointResult,
@@ -57,12 +53,10 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.latest_wins import (
     LatestWinsOffer,
-    LatestWinsStatus,
     LatestWinsTelemetry,
     LatestWinsWorker,
 )
-from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueRegistry
-from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
+from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueIndex
 from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
     MarketPhase,
@@ -82,10 +76,11 @@ from trader.recommendation.application.runtime.schedule_requests import (
     research_input_version,
     validate_cycle_identity,
 )
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
+from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.evidence.pipeline import StageState
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     LongProjection,
@@ -125,6 +120,7 @@ _CALENDAR_RETRY_DELAYS_SECONDS = (30.0, 60.0, 120.0, 300.0)
 
 @dataclass(frozen=True)
 class RuntimeDependencies:
+    control_pool: BoundedExecutor
     clock: Clock
     calendar: TradingCalendarPort
     cadence: CadencePlanner
@@ -182,12 +178,7 @@ class SchedulerRuntime:
         self._control_pending: set[str] = set()
         self._control_completed: OrderedDict[str, None] = OrderedDict()
         self._close_input: RefreshOutcome | None = None
-        self._control = BoundedExecutor(
-            worker_count=2,
-            urgent_worker_count=1,
-            queue_capacity=4,
-            thread_name_prefix="trader-control",
-        )
+        self._control = dependencies.control_pool
         self._lanes = {
             strategy: LatestWinsWorker(
                 f"trader-{strategy.value}",
@@ -240,7 +231,7 @@ class SchedulerRuntime:
         self._freeze_failure_count = 0
         self._settlement_completed_count = 0
         self._settlement_failure_count = 0
-        self._issues = RuntimeIssueRegistry()
+        self._issues = RuntimeIssueIndex()
         self._midday_long_handoff_date: date | None = None
         self._calendar_state: Literal["unknown", "ready", "unavailable"] = "unknown"
         self._calendar_trade_date: date | None = None

@@ -9,7 +9,7 @@ import pytest
 from tests.component.test_candidate_history_tail import NOW, _Archive
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline
+from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 

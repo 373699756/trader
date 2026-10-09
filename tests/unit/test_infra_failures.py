@@ -47,3 +47,15 @@ def test_adapter_failure_detail_is_bounded_and_does_not_preserve_secrets() -> No
     assert failure.code is AdapterFailureCode.SOURCE_FAILED
     assert "secret-token" not in failure.detail
     assert len(failure.detail) <= 240
+
+
+def test_adapter_failure_keeps_worker_rejection_distinct() -> None:
+    failure = classify_adapter_failure(
+        RuntimeError("resource_rejected: injected worker queue is full or stopped"),
+        provider="worker",
+        operation="submit",
+    )
+
+    assert failure.code is AdapterFailureCode.RESOURCE_REJECTED
+    assert failure.retryable is True
+    assert failure.detail == "resource_rejected"

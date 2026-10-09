@@ -137,6 +137,14 @@ MIGRATED_DATA_PLANE_PATHS = (
     "recommendation/application/ports/data_plane_records.py",
     "recommendation/infra/persistence/data_plane.py",
     "recommendation/infra/persistence/data_plane_initialization.py",
+    "recommendation/application/runtime/runtime_issues.py",
+    "recommendation/application/runtime/source_lanes.py",
+    "recommendation/application/ports/decision_records.py",
+    "recommendation/application/pipeline/freeze_publish/freeze_coordinator.py",
+    "recommendation/infra/persistence/decision_records.py",
+    "recommendation/infra/persistence/issuer_eligibility.py",
+    "recommendation/domain/market/eligibility.py",
+    "recommendation/application/ports/eligibility.py",
 )
 
 

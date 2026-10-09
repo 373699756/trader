@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import as_completed
+from concurrent.futures import Future, wait
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
@@ -18,13 +18,13 @@ import requests
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
-from trader.infra.market_data.quote_normalization import (
+from trader.recommendation.infra.normalization.quote import (
     MarketQuoteInput,
     build_market_quote,
     normalize_quotes,
     to_float,
 )
-from trader.recommendation.application.runtime.workers import BorrowExecutorOptions, BoundedExecutor, borrow_executor
+from trader.infra.workers import BoundedExecutor, injected_executor, submit_or_reject
 from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.recommendation.domain.market.models import Board, MarketQuote
 from trader.recommendation.domain.market.tail import MinuteBar
@@ -56,13 +56,13 @@ class _EastmoneyRequest:
 
 class _EastmoneyRequiredOptions(TypedDict):
     timeout_seconds: float
+    worker_pool: BoundedExecutor | None
+    session_factory: SessionFactory
 
 
 class _EastmoneyOptionalOptions(TypedDict, total=False):
     workers: int
     page_size: int
-    worker_pool: BoundedExecutor | None
-    session_factory: SessionFactory
     cancel_requested: Callable[[], bool]
     wall_clock: Callable[[], datetime]
 
@@ -79,8 +79,8 @@ class EastmoneyClient:
         self._timeout_seconds = options["timeout_seconds"]
         self._workers = max(1, options.get("workers", 6))
         self._page_size = max(100, options.get("page_size", 500))
-        self._worker_pool = options.get("worker_pool")
-        self._session_factory = options.get("session_factory", requests.Session)
+        self._worker_pool = options["worker_pool"]
+        self._session_factory = options["session_factory"]
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
 
@@ -103,29 +103,23 @@ class EastmoneyClient:
             pages: dict[int, list[Mapping[str, object]]] = {1: first_rows}
             if page_count > 1:
                 remaining: list[tuple[int, Mapping[str, object]]] = []
-                worker_pool = self._worker_pool
-                page_pool = None if worker_pool is not None and worker_pool.owns_current_thread() else worker_pool
-                with borrow_executor(
-                    page_pool,
-                    BorrowExecutorOptions(
-                        worker_count=min(self._workers, page_count - 1),
-                        thread_name_prefix="eastmoney",
-                        queue_capacity=page_count - 1,
-                    ),
-                ) as pool:
-                    futures = {}
-                    for page in range(2, page_count + 1):
-                        future = pool.submit(
-                            self._fetch_page,
-                            page,
-                            session=session,
-                            deadline=deadline,
-                            cancel_event=cancel_event,
-                        )
-                        if future is None:
-                            raise RuntimeError("data worker queue rejected Eastmoney page task")
-                        futures[future] = page
-                    remaining.extend((futures[future], future.result()) for future in as_completed(futures))
+                pool = injected_executor(self._worker_pool)
+                for offset in range(2, page_count + 1, self._workers):
+                    futures: dict[Future[Mapping[str, object]], int] = {}
+                    try:
+                        for page in range(offset, min(page_count + 1, offset + self._workers)):
+                            future = submit_or_reject(
+                                pool,
+                                self._fetch_page,
+                                page,
+                                session=session,
+                                deadline=deadline,
+                                cancel_event=cancel_event,
+                            )
+                            futures[future] = page
+                    finally:
+                        wait(futures)
+                    remaining.extend((page, future.result()) for future, page in futures.items())
                 for page, payload in remaining:
                     rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
                     if not rows:
@@ -346,6 +340,8 @@ class EastmoneyClient:
         deadline: datetime | None = None,
         cancel_event: threading.Event | None = None,
     ) -> None:
+        if self._worker_pool is not None and not self._worker_pool.is_running():
+            raise RuntimeError("eastmoney worker executor stopped")
         if self._cancel_requested():
             raise RuntimeError("eastmoney source lane stopped")
         if cancel_event is not None and cancel_event.is_set():

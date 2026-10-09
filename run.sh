@@ -22,6 +22,7 @@ usage() {
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh download                零参数历史维护" \
+    "  ./run.sh qfq_download            串行更新短窗口日线，支持断点续传" \
     "  ./run.sh train-v2                按 V2 251 日特征训练独立双头" \
     "  ./run.sh train-v3                按 V3 61 日特征训练独立双头" \
     "" \
@@ -53,7 +54,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download|train-v2|train-v3)
+    help|-h|--help|check|download|qfq_download|train-v2|train-v3)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -81,7 +82,7 @@ if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE
   exit 2
 fi
 
-if [[ "$MODE" == "download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -94,7 +95,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download|train-v2|train-v3)
+  check|download|qfq_download|train-v2|train-v3)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -157,6 +158,9 @@ if [[ "$COMMAND_KIND" == "server" ]]; then
 fi
 if [[ "$MODE" == "download" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" download
+fi
+if [[ "$MODE" == "qfq_download" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" qfq_download
 fi
 if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" ]]; then
   if [[ "$(uname -s)" == "Linux" ]]; then

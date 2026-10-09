@@ -864,7 +864,7 @@
       ]
     }
   ],
-  "factor_registry": {
+  "factor_index": {
     "atr20_pct": {
       "factor_id": "atr20_pct",
       "strategies": [
@@ -1559,7 +1559,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry"
+        "official_corporate_risk_rules"
       ],
       "formula": "1 from controlling shareholder, actual controller or >=5% holder reduction plan through official completion/termination plus 90 days; unresolved remains 1",
       "unit": "risk_indicator",
@@ -1588,7 +1588,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry"
+        "official_corporate_risk_rules"
       ],
       "formula": "1 permanently after official decision confirms financial fraud, false records or material omissions",
       "unit": "risk_indicator",
@@ -1617,7 +1617,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry"
+        "official_corporate_risk_rules"
       ],
       "formula": "1 during formal regulator, exchange or judicial investigation and for three calendar years after official close/withdrawal",
       "unit": "risk_indicator",
@@ -1646,7 +1646,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry"
+        "official_corporate_risk_rules"
       ],
       "formula": "1 permanently after official decision confirms major illegality",
       "unit": "risk_indicator",
@@ -1675,7 +1675,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry"
+        "official_corporate_risk_rules"
       ],
       "formula": "1 permanently after official decision confirms funds occupation",
       "unit": "risk_indicator",
@@ -1704,7 +1704,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry"
+        "official_corporate_risk_rules"
       ],
       "formula": "1 permanently after official decision confirms illegal guarantee",
       "unit": "risk_indicator",
@@ -1733,7 +1733,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry"
+        "official_corporate_risk_rules"
       ],
       "formula": "1 during forced-delisting proceedings and for three calendar years after official withdrawal/termination",
       "unit": "risk_indicator",
@@ -1762,7 +1762,7 @@
         "long"
       ],
       "raw_inputs": [
-        "official_corporate_risk_registry_status"
+        "official_corporate_risk_rules_status"
       ],
       "formula": "1 when official severe-risk history coverage is unavailable or incomplete else 0",
       "unit": "risk_indicator",

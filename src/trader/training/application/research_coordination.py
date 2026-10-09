@@ -8,8 +8,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
-from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.application.research_ports import OfflineResearchReaderPort
 
@@ -18,7 +18,6 @@ from trader.training.application.research_ports import OfflineResearchReaderPort
 class ResearchCoordinatorOptions:
     batch_size: int = 4
     batch_budget_seconds: float = 40.0
-    queue_capacity: int = 1
     success_cooldown_seconds: float = 60.0
     retry_delays_seconds: tuple[float, ...] = (60.0, 120.0, 240.0, 480.0, 900.0)
     state_capacity: int = 2048
@@ -59,6 +58,7 @@ class ResearchCoordinator:
     def __init__(
         self,
         research: OfflineResearchReaderPort,
+        executor: BoundedExecutor,
         *,
         now: Callable[[], datetime],
         on_result: Callable[[ResearchRefreshResult], None],
@@ -75,11 +75,7 @@ class ResearchCoordinator:
         self._retry_delays_seconds = retry_delays or (60.0,)
         self._state_capacity = max(self._batch_size, settings.state_capacity)
         self._monotonic = settings.monotonic
-        self._executor = BoundedExecutor(
-            worker_count=1,
-            queue_capacity=max(1, settings.queue_capacity),
-            thread_name_prefix="company-research",
-        )
+        self._executor = executor
         self._condition = threading.Condition()
         self._pending: list[str] = []
         self._running_codes: tuple[str, ...] = ()

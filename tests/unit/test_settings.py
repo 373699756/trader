@@ -911,17 +911,17 @@ def test_tomorrow_tail_signal_rejects_manual_factor_version(tmp_path) -> None:
     with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
         load_strategy_settings(changed_path)
     raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 50
-    raw["factor_registry"]["tail_volume_ratio"]["version"] = "3"
+    raw["factor_index"]["tail_volume_ratio"]["version"] = "3"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="contains unknown keys: version"):
         load_strategy_settings(changed_path)
 
 
-def test_tomorrow_tail_factor_registry_cannot_contradict_executable_formula(tmp_path) -> None:
+def test_tomorrow_tail_factor_index_cannot_contradict_executable_formula(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["factor_registry"]["tail_return_30m"]["formula"] = "clamp(50+tail_return_30m_pct*10)"
+    raw["factor_index"]["tail_return_30m"]["formula"] = "clamp(50+tail_return_30m_pct*10)"
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -977,10 +977,10 @@ def test_long_research_severity_keyword_levels_cannot_overlap(tmp_path) -> None:
         load_strategy_settings(changed_path)
 
 
-def test_long_factor_registry_cannot_hide_a_provider_placeholder(tmp_path) -> None:
+def test_long_factor_index_cannot_hide_a_provider_placeholder(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["factor_registry"]["value_score"]["formula"] = "provider supplied 0-100"
+    raw["factor_index"]["value_score"]["formula"] = "provider supplied 0-100"
     changed_path = tmp_path / "strategy.json"
     changed_path.write_text(json.dumps(raw), encoding="utf-8")
 

@@ -13,6 +13,7 @@ const formattersPath = path.join(path.dirname(dashboardPath), "dashboard_formatt
 const patchesPath = path.join(path.dirname(dashboardPath), "dashboard_patches.js");
 const patchesSource = fs.readFileSync(patchesPath, "utf8");
 const statusHealthPath = path.join(path.dirname(dashboardPath), "status_health.js");
+const errorDrawerPath = path.join(path.dirname(dashboardPath), "error_drawer.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
 assert(statusViewSource.includes('[["static_filter"], "一级稳定过滤", true]'));
@@ -52,6 +53,7 @@ vm.runInNewContext(fs.readFileSync(longGroupsPath, "utf8"), sandbox, { filename:
 vm.runInNewContext(fs.readFileSync(formattersPath, "utf8"), sandbox, { filename: formattersPath });
 vm.runInNewContext(patchesSource, sandbox, { filename: patchesPath });
 vm.runInNewContext(fs.readFileSync(statusHealthPath, "utf8"), sandbox, { filename: statusHealthPath });
+vm.runInNewContext(fs.readFileSync(errorDrawerPath, "utf8"), sandbox, { filename: errorDrawerPath });
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
@@ -106,7 +108,7 @@ const state = {
 };
 
 const historyLoadingStatus = { market_data: {
-  history_archive_state: "unavailable",
+  published_history_state: "unavailable",
   history_maintenance_state: "loading",
   history_maintenance_stage: "reading_active_snapshot",
 } };
@@ -130,7 +132,7 @@ for (const payload of [
 }
 assert.notStrictEqual(
   sandbox.window.TraderStatusView.recommendationReadinessStatus(historyLoadingPayload, {
-    market_data: { ...historyLoadingStatus.market_data, history_archive_state: "active" },
+    market_data: { ...historyLoadingStatus.market_data, published_history_state: "active" },
   })?.primary_blocker,
   "history_projection_loading",
 );

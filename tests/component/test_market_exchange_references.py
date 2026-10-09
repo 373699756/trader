@@ -18,7 +18,7 @@ from tests.component.market_data_test_support import (
     BoundedExecutor,
     FeatureBuilder,
     MarketDataGateway,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SourceObservation,
     SQLiteDataPlane,
     StaticHistoryClient,
@@ -165,7 +165,7 @@ def test_official_security_master_refresh_is_independent_from_quote_deadline() -
     started = threading.Event()
     release = threading.Event()
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
 
     def fetch_sse(_timeout: float) -> tuple[ExchangeSecurityMasterListing, ...]:
         started.set()

@@ -147,7 +147,7 @@ def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_pa
     observation = cached["600003"]
     assert observation.announcements_available is True
     assert observation.corporate_risk_history_complete is True
-    assert observation.corporate_risk_registry_version.startswith("cninfo-risk-registry:")
+    assert observation.corporate_risk_evidence_version.startswith("cninfo-risk-evidence:")
     assert {fact.evidence_id for fact in observation.corporate_risk_facts} == {f"{CNINFO_ANNOUNCEMENT_PREFIX}case-1"}
     assert loader.status().announcements_covered_count == 1
 

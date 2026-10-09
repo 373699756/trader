@@ -457,24 +457,24 @@ _PERMANENT_STRUCTURED_RISK_FIELDS = frozenset(
 def level_one_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
         raise ValueError("max_age_seconds must be finite and non-negative")
-    registry = _DefaultFilterRules(max_age_seconds, policy or HardFilterPolicy())
+    rules = _DefaultFilterRules(max_age_seconds, policy or HardFilterPolicy())
     return (
         FilterRule(
             "st_or_delisting",
             FilterSeverity.REQUIRED,
-            registry.st_or_delisting,
+            rules.st_or_delisting,
             FilterTier.ISSUER_PERMANENT,
         ),
         FilterRule(
             "blacklisted",
             FilterSeverity.REQUIRED,
-            registry.blacklisted,
+            rules.blacklisted,
             FilterTier.ISSUER_PERMANENT,
         ),
         FilterRule(
             "permanent_structured_negative_risk",
             FilterSeverity.REQUIRED,
-            registry.permanent_structured_negative_risk,
+            rules.permanent_structured_negative_risk,
             FilterTier.ISSUER_PERMANENT,
         ),
     )
@@ -485,7 +485,7 @@ def level_two_filter_rules(
     max_age_seconds: float,
     policy: HardFilterPolicy | None = None,
 ) -> tuple[FilterRule, ...]:
-    """Build default filter rule registry for all strategies.
+    """Build the default filter rule set for all strategies.
 
     Required rules are preserved from ``hard_filter`` behavior. Optional rules
     are used to record soft warnings without rejecting candidates.
@@ -493,41 +493,41 @@ def level_two_filter_rules(
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
         raise ValueError("max_age_seconds must be finite and non-negative")
     policy = policy or HardFilterPolicy()
-    registry = _DefaultFilterRules(max_age_seconds, policy)
+    rules = _DefaultFilterRules(max_age_seconds, policy)
 
     return (
-        FilterRule("unsupported_code", FilterSeverity.REQUIRED, registry.unsupported_code),
-        FilterRule("suspended", FilterSeverity.REQUIRED, registry.suspended),
-        FilterRule("invalid_price", FilterSeverity.DEFERRED, registry.invalid_price),
-        FilterRule("invalid_amount", FilterSeverity.DEFERRED, registry.invalid_amount),
-        FilterRule("invalid_quote_time", FilterSeverity.DEFERRED, registry.invalid_quote_time),
-        FilterRule("invalid_cross_source_deviation", FilterSeverity.DEFERRED, registry.cross_source_deviation),
-        FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, registry.cross_source_deviation_optional),
-        FilterRule("new_listing_session", FilterSeverity.REQUIRED, registry.new_listing_session),
-        FilterRule("relisted_first_session", FilterSeverity.REQUIRED, registry.relisted_first_session),
-        FilterRule("delisting_period_first_session", FilterSeverity.REQUIRED, registry.delisting_period_first_session),
-        FilterRule("board_classification_conflict", FilterSeverity.OPTIONAL, registry.board_classification_conflict),
-        FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, registry.board_identity_degraded),
-        FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, registry.missing_listing_date),
-        FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, registry.missing_listing_age_sessions),
-        FilterRule("liquidity_readiness", FilterSeverity.DEFERRED, registry.liquidity_readiness),
-        FilterRule("insufficient_liquidity", FilterSeverity.REQUIRED, registry.insufficient_liquidity),
-        FilterRule("one_price_limit", FilterSeverity.REQUIRED, registry.one_price_limit),
-        FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, registry.major_regulatory_risk),
+        FilterRule("unsupported_code", FilterSeverity.REQUIRED, rules.unsupported_code),
+        FilterRule("suspended", FilterSeverity.REQUIRED, rules.suspended),
+        FilterRule("invalid_price", FilterSeverity.DEFERRED, rules.invalid_price),
+        FilterRule("invalid_amount", FilterSeverity.DEFERRED, rules.invalid_amount),
+        FilterRule("invalid_quote_time", FilterSeverity.DEFERRED, rules.invalid_quote_time),
+        FilterRule("invalid_cross_source_deviation", FilterSeverity.DEFERRED, rules.cross_source_deviation),
+        FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, rules.cross_source_deviation_optional),
+        FilterRule("new_listing_session", FilterSeverity.REQUIRED, rules.new_listing_session),
+        FilterRule("relisted_first_session", FilterSeverity.REQUIRED, rules.relisted_first_session),
+        FilterRule("delisting_period_first_session", FilterSeverity.REQUIRED, rules.delisting_period_first_session),
+        FilterRule("board_classification_conflict", FilterSeverity.OPTIONAL, rules.board_classification_conflict),
+        FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, rules.board_identity_degraded),
+        FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, rules.missing_listing_date),
+        FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, rules.missing_listing_age_sessions),
+        FilterRule("liquidity_readiness", FilterSeverity.DEFERRED, rules.liquidity_readiness),
+        FilterRule("insufficient_liquidity", FilterSeverity.REQUIRED, rules.insufficient_liquidity),
+        FilterRule("one_price_limit", FilterSeverity.REQUIRED, rules.one_price_limit),
+        FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, rules.major_regulatory_risk),
         FilterRule(
             "dynamic_structured_negative_risk",
             FilterSeverity.REQUIRED,
-            registry.dynamic_structured_negative_risk,
+            rules.dynamic_structured_negative_risk,
         ),
-        FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, registry.structured_risk_unavailable),
+        FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, rules.structured_risk_unavailable),
         FilterRule(
             "corporate_risk_history_unavailable",
             FilterSeverity.OPTIONAL,
-            registry.corporate_risk_history_unavailable,
+            rules.corporate_risk_history_unavailable,
         ),
-        FilterRule("invalid_quote_structure", FilterSeverity.DEFERRED, registry.invalid_quote_structure),
-        FilterRule("invalid_pct_change_value", FilterSeverity.DEFERRED, registry.invalid_pct_change_value),
-        FilterRule("price_heat_limit", FilterSeverity.REQUIRED, registry.price_heat_limit),
+        FilterRule("invalid_quote_structure", FilterSeverity.DEFERRED, rules.invalid_quote_structure),
+        FilterRule("invalid_pct_change_value", FilterSeverity.DEFERRED, rules.invalid_pct_change_value),
+        FilterRule("price_heat_limit", FilterSeverity.REQUIRED, rules.price_heat_limit),
     )
 
 

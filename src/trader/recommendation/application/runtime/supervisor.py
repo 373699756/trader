@@ -16,7 +16,7 @@ from trader.recommendation.application.runtime.schedule import (
     phase_at,
     seconds_until_next_schedule_boundary,
 )
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 
 _LOGGER = logging.getLogger(__name__)
 

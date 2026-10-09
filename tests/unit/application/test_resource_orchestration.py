@@ -7,7 +7,7 @@ from trader.recommendation.application.runtime.resource_orchestration import (
     start_application_resources,
     stop_application_resources,
 )
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 
 
 @dataclass

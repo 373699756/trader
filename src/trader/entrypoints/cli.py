@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, add_research_evidence_parsers
 
 if TYPE_CHECKING:
@@ -56,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "download",
         help="Run the zero-argument historical-data maintenance workflow.",
+    )
+    subparsers.add_parser(
+        "qfq_download", help="Update serial BaoStock V2/V3 bounded daily windows; resume automatically."
     )
     subparsers.add_parser(
         "scheduled-history-maintenance",
@@ -180,6 +183,30 @@ def _run_history_maintenance_command(
     profile: str | None,
     parser: argparse.ArgumentParser,
 ) -> int | None:
+    if command == "qfq_download":
+        if profile is not None:
+            parser.error("qfq_download does not accept --profile")
+        from trader.bootstrap import execute_qfq_download
+
+        runtime = load_runtime_settings(_absolute_config_path(raw_config_path))
+        result = execute_qfq_download(
+            runtime.project_root, report=lambda message: print(message, file=sys.stderr, flush=True)
+        )
+        print(
+            json.dumps(
+                {
+                    "target_date": result.target_date.isoformat() if result.target_date else None,
+                    "completed_codes": result.completed_codes,
+                    "pending_codes": result.pending_codes,
+                    "changed_files": result.changed_files,
+                    "changed_rows": result.changed_rows,
+                    "skipped_codes": result.skipped_codes,
+                    "failure_reason": result.failure_reason,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0 if not result.pending_codes and result.failure_reason is None else 1
     if command == "download":
         if profile is not None:
             parser.error("download does not accept --profile")
@@ -249,9 +276,9 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise SystemExit("--as-of must include a timezone offset")
     observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
-    registry = SQLiteIssuerEligibilityRegistry(runtime.project_root / "data" / "blacklist", read_only=True)
-    facts = tuple(fact for fact in registry.facts() if fact.effective_at <= observed_at)
-    status = registry.status()
+    eligibility_index = SQLiteIssuerEligibilityIndex(runtime.project_root / "data" / "blacklist", read_only=True)
+    facts = tuple(fact for fact in eligibility_index.facts() if fact.effective_at <= observed_at)
+    status = eligibility_index.status()
     print(
         json.dumps(
             {

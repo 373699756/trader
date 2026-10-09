@@ -13,8 +13,8 @@ if TYPE_CHECKING:
 from trader.infra.cache_contracts import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
-from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
-from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
+from trader.infra.workers import BoundedExecutor, WorkerResourceRejectedError
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -22,7 +22,7 @@ _T = TypeVar("_T")
 
 class MarketTaskRunnerOptions(TypedDict):
     worker_pool: BoundedExecutor | None
-    source_lanes: SourceLaneRegistry | None
+    source_lanes: SourceLaneScheduler | None
     cache: BoundedCache[object] | None
     source_contracts: Mapping[str, str]
     config_version: str
@@ -52,12 +52,12 @@ class MarketTaskRunner:
         **kwargs: _P.kwargs,
     ) -> _T:
         pool = self.worker_pool
-        if pool is None or not pool.is_running() or pool.owns_current_thread():
+        if pool is None or (pool.is_running() and pool.owns_current_thread()):
             return function(*args, **kwargs)
         submit = pool.submit_urgent if urgent else pool.submit
         future = submit(function, *args, **kwargs)
         if future is None:
-            raise RuntimeError("data worker queue rejected source task")
+            raise WorkerResourceRejectedError("resource_rejected: data worker queue rejected source task")
         return future.result()
 
     def run_source_task(
@@ -117,14 +117,16 @@ class MarketTaskRunner:
             self.ensure_before_deadline(deadline)
             return result
         pool = self.worker_pool
-        if pool is None or not pool.is_running() or pool.owns_current_thread():
+        if pool is None or (pool.is_running() and pool.owns_current_thread()):
             result = function(*args, **kwargs)
             self.ensure_before_deadline(deadline)
             return result
         submit = pool.submit_urgent if urgent else pool.submit
         future = submit(function, *args, **kwargs)
         if future is None:
-            raise RuntimeError("data worker queue rejected deadline-bound source task")
+            raise WorkerResourceRejectedError(
+                "resource_rejected: data worker queue rejected deadline-bound source task"
+            )
         remaining = max(0.0, (deadline - self.wall_clock()).total_seconds())
         try:
             result = future.result(timeout=remaining)

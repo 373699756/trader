@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
@@ -109,7 +110,7 @@ _RECOMMENDATION_INFRA_PATHS = frozenset(
         "unit/infra/test_cninfo_incremental.py",
         "unit/infra/test_data_plane.py",
         "unit/infra/test_decision_records.py",
-        "unit/infra/test_issuer_eligibility_registry.py",
+        "unit/infra/test_issuer_eligibility_index.py",
     }
 )
 _RECOMMENDATION_SCRIPT_PATHS = frozenset(
@@ -241,6 +242,26 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             if relative.as_posix() in paths:
                 item.add_marker(marker)
                 item.add_marker("slow")
+
+
+@pytest.fixture
+def market_worker_pool():
+    pool = BoundedExecutor(worker_count=2, queue_capacity=4, thread_name_prefix="test-market-worker")
+    pool.start()
+    try:
+        yield pool
+    finally:
+        pool.stop(cancel_futures=True)
+
+
+@pytest.fixture
+def training_worker_pool():
+    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="test-training-worker")
+    pool.start()
+    try:
+        yield pool
+    finally:
+        pool.stop(cancel_futures=True)
 
 
 @pytest.fixture

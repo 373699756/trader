@@ -370,9 +370,9 @@ def _parse_status(payload: Mapping[str, object]) -> StatusSnapshot:
             last_error_code=_text(model_industry_source.get("last_error_code")),
         ),
         history_archive=HistoryArchiveSnapshot(
-            state=_text(market.get("history_archive_state")),
-            snapshot_hash=_text(market.get("history_archive_snapshot_hash")),
-            data_cutoff=_text(market.get("history_archive_data_cutoff")),
+            state=_text(market.get("published_history_state")),
+            snapshot_hash=_text(market.get("published_history_snapshot_hash")),
+            data_cutoff=_text(market.get("published_history_data_cutoff")),
             universe_rows=_nonnegative_int(market.get("history_universe_rows")),
             covered_rows=_nonnegative_int(market.get("history_covered_rows")),
             coverage_ratio=_nonnegative_number(market.get("history_coverage_ratio")),

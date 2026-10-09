@@ -7,13 +7,13 @@ from zoneinfo import ZoneInfo
 
 from trader.entrypoints import cli
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 
 
 def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path, monkeypatch, capsys) -> None:
     observed_at = datetime(2026, 9, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-    registry = SQLiteIssuerEligibilityRegistry(tmp_path / "data" / "blacklist")
-    registry.record(
+    eligibility_index = SQLiteIssuerEligibilityIndex(tmp_path / "data" / "blacklist")
+    eligibility_index.record(
         (
             IssuerEligibilityFact(
                 "600001",
@@ -44,7 +44,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
     payload = json.loads(capsys.readouterr().out)
     assert exit_code == 0
     assert payload["schema_version"] == "issuer_eligibility_list"
-    assert payload["manifest_hash"] == registry.status().manifest_hash
+    assert payload["manifest_hash"] == eligibility_index.status().manifest_hash
     assert payload["items"] == [
         {
             "code": "600001",

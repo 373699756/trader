@@ -1,4 +1,4 @@
-"""Bounded issue registry for the unified scheduler."""
+"""Bounded issue index for the unified scheduler."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class RuntimeIssueSnapshot:
     recent_errors: tuple[RuntimeIssue, ...]
 
 
-class RuntimeIssueRegistry:
+class RuntimeIssueIndex:
     """Own issue identity, bounded history, recovery, and observable ordering."""
 
     def __init__(self) -> None:
@@ -113,4 +113,4 @@ class RuntimeIssueRegistry:
         return ""
 
 
-__all__ = ["RuntimeIssue", "RuntimeIssueRegistry", "RuntimeIssueSnapshot"]
+__all__ = ["RuntimeIssue", "RuntimeIssueIndex", "RuntimeIssueSnapshot"]

@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from trader.infra.workers import BoundedExecutor
+
 from tests.integration.test_scheduler_runtime import (
     DataRefresh,
     Decisions,
@@ -33,11 +35,11 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask, SchedulePointKey, SchedulePointStatus
 from trader.recommendation.application.runtime.schedule import SHANGHAI, SchedulePoint
-from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
 from trader.recommendation.application.runtime.schedule_requests import pipeline_lane
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline
+from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
+from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 
 
 @pytest.mark.parametrize("failure", ("prepare", "local", "commit", "commit_after", "settlement"))
@@ -63,7 +65,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
                     raise DecisionUnavailableError("controlled_local_failure")
             return super().build_local(request)
 
-    class Repository(SQLiteDecisionRecordRepository):
+    class RecoverableDecisionRecords(SQLiteDecisionRecords):
         def commit(self, record):
             if record.strategy is Strategy.TOMORROW:
                 attempts.append(record)
@@ -80,12 +82,12 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             if failure == "settlement" and len(self.calls) == 1:
                 raise SettlementUnavailableError("controlled_settlement_failure")
 
-    repository = Repository(tmp_path)
-    repository.initialize()
+    records = RecoverableDecisionRecords(tmp_path)
+    records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(
             index,
-            repository,
+            records,
             clock,
             runtime_identity=DecisionRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
             strategy=strategy,
@@ -95,6 +97,12 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
     data, reviews, settlement = Data(), SharedReviews(), Outcomes()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(at),
@@ -112,7 +120,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
         config_version="runtime-current",
     )
     key = SchedulePointKey(at.date().isoformat(), SchedulePoint.CLOSE_QUOTES, "-")
-    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), repository, clock)
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), records, clock)
     runtime.start()
     try:
         runtime.submit_due(at)
@@ -193,6 +201,12 @@ def test_close_retry_does_not_duplicate_inflight_work(blocking_stage: str) -> No
     settlement = Outcomes()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(at),
@@ -239,12 +253,12 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
     at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     clock, data, index = FixedClock(at), DataRefresh(), UnifiedDecisionIndex()
     cadence, settlement = _cadence(at), Settlement()
-    repository = SQLiteDecisionRecordRepository(tmp_path)
-    repository.initialize()
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(
             index,
-            repository,
+            records,
             clock,
             runtime_identity=DecisionRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
             strategy=strategy,
@@ -253,6 +267,12 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
     )
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=cadence,

@@ -38,7 +38,7 @@ class ResearchLoaderStatus:
     out_of_order_count: int
     corporate_risk_covered_count: int
     corporate_risk_fact_count: int
-    corporate_risk_registry_versions: tuple[str, ...]
+    corporate_risk_evidence_versions: tuple[str, ...]
     verified_count: int
     partial_count: int
     unavailable_count: int

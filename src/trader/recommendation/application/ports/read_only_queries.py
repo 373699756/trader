@@ -115,22 +115,29 @@ class InputQualityStatus:
         ):
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError("input quality ratios must be in [0, 1]")
-        for name in (
-            "population_filter_reason_counts",
-            "candidate_filter_reason_counts",
-            "candidate_transient_reason_counts",
-            "candidate_optional_reason_counts",
-            "supply_reason_counts",
-        ):
-            pairs = tuple(sorted(getattr(self, name)))
-            if any(not key or value < 0 for key, value in pairs):
-                raise ValueError("input quality reason counts must be non-negative")
-            if len({key for key, _value in pairs}) != len(pairs):
-                raise ValueError("input quality reason keys must be unique")
-            object.__setattr__(self, name, pairs)
+        object.__setattr__(
+            self, "population_filter_reason_counts", _reason_counts(self.population_filter_reason_counts)
+        )
+        object.__setattr__(self, "candidate_filter_reason_counts", _reason_counts(self.candidate_filter_reason_counts))
+        object.__setattr__(
+            self, "candidate_transient_reason_counts", _reason_counts(self.candidate_transient_reason_counts)
+        )
+        object.__setattr__(
+            self, "candidate_optional_reason_counts", _reason_counts(self.candidate_optional_reason_counts)
+        )
+        object.__setattr__(self, "supply_reason_counts", _reason_counts(self.supply_reason_counts))
         object.__setattr__(self, "degraded_reasons", tuple(sorted(set(self.degraded_reasons))))
         if not self.primary_blocker:
             raise ValueError("primary blocker must not be empty")
+
+
+def _reason_counts(values: tuple[tuple[str, int], ...]) -> tuple[tuple[str, int], ...]:
+    pairs = tuple(sorted(values))
+    if any(not key or value < 0 for key, value in pairs):
+        raise ValueError("input quality reason counts must be non-negative")
+    if len({key for key, _value in pairs}) != len(pairs):
+        raise ValueError("input quality reason keys must be unique")
+    return pairs
 
 
 __all__ = [

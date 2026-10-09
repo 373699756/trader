@@ -370,6 +370,7 @@ def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
         circuit_breaker_failures=1,
         circuit_breaker_seconds=60,
         monotonic=monotonic,
+        recovery_probes={"eastmoney": source.probe_market},
     )
 
     with pytest.raises(MarketDataUnavailableError):

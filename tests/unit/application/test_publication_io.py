@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.application.test_tomorrow_freezing import _Clock, _at, _assert_formal_current_and_history
+from tests.unit.application.test_tomorrow_freezing import _assert_formal_current_and_history, _at, _Clock
 from tests.unit.domain.test_decision_identity import decision
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
     DecisionRuntimeIdentity,
@@ -22,9 +22,9 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.decision_records import DecisionCheckpoint, DecisionRecordUnavailableError
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
-from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.publication.decision_identity import formal_scored_decision
-from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.status_projection import publication_io_payload
 
 
@@ -37,10 +37,10 @@ class _Monotonic:
         return self.value
 
 
-def _freezer(index, repository, clock, tracker, strategy):
+def _freezer(index, records, clock, tracker, strategy):
     return ScoredFreezeCoordinator(
         index,
-        repository,
+        records,
         clock,
         runtime_identity=DecisionRuntimeIdentity("config-current", "strategy-current", "fusion-current"),
         strategy=strategy,
@@ -59,13 +59,13 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
     clock = _Clock(_at(hour, minute))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
     index = UnifiedDecisionIndex()
-    repository = SQLiteDecisionRecordRepository(tmp_path)
-    repository.initialize()
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
     current = replace(decision(strategy), observed_at=_at(14, 59, 35))
     original_hash = current.content_hash
     if not cold:
         assert index.publish(current, expected_version=None).accepted
-    freezer = _freezer(index, repository, clock, tracker, strategy)
+    freezer = _freezer(index, records, clock, tracker, strategy)
     result = freezer.freeze_scheduled()
     if hour < 15:
         assert result.status == "before_freeze"
@@ -88,10 +88,10 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
         assert receipt.input_count == receipt.output_count == 1
         assert receipt.failed_count == receipt.pending_count == receipt.rejected_count == 0
         assert receipt.latency_ms == 125
-    _assert_formal_current_and_history(index, repository, clock, result.record)
+    _assert_formal_current_and_history(index, records, clock, result.record)
     cold_index = UnifiedDecisionIndex()
     cold_tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    restored = _freezer(cold_index, SQLiteDecisionRecordRepository(tmp_path), clock, cold_tracker, strategy)
+    restored = _freezer(cold_index, SQLiteDecisionRecords(tmp_path), clock, cold_tracker, strategy)
     assert restored.restore(clock.value.date()).record == result.record
     restored_receipt = _receipt(cold_tracker, "formal_restore")
     assert restored_receipt.output_version == result.record.decision.version
@@ -102,7 +102,7 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
         ).record
         == result.record
     )
-    assert repository.load(strategy, clock.value.date()) == result.record
+    assert records.load(strategy, clock.value.date()) == result.record
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
@@ -112,9 +112,9 @@ def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_pa
     index = UnifiedDecisionIndex()
     current = replace(decision(strategy), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    repository = SQLiteDecisionRecordRepository(tmp_path)
-    repository.initialize()
-    commit = repository.commit
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
+    commit = records.commit
     attempted = []
 
     def fail_once(record):
@@ -123,8 +123,8 @@ def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_pa
             raise DecisionRecordUnavailableError("controlled_write_failure")
         commit(record)
 
-    monkeypatch.setattr(repository, "commit", fail_once)
-    freezer = _freezer(index, repository, clock, tracker, strategy)
+    monkeypatch.setattr(records, "commit", fail_once)
+    freezer = _freezer(index, records, clock, tracker, strategy)
     assert freezer.freeze_scheduled().status == "persistence_failed"
     failure = _receipt(tracker, "formal_write")
     assert failure.failed_count == 1 and failure.rejected_count == failure.output_count == 0
@@ -138,7 +138,7 @@ def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_pa
     payload = publication_io_payload(_receipt(tracker, "formal_write"))
     assert payload["count_unit"] == "operation" and payload["output_count"] == 1
     assert "rejection_rate" not in payload and "items" not in payload
-    _assert_formal_current_and_history(index, repository, clock, result.record)
+    _assert_formal_current_and_history(index, records, clock, result.record)
 
 
 def test_cleanup_failure_is_visible_without_revoking_formal_record(tmp_path, monkeypatch) -> None:
@@ -147,22 +147,22 @@ def test_cleanup_failure_is_visible_without_revoking_formal_record(tmp_path, mon
     index = UnifiedDecisionIndex()
     current = replace(decision(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    repository = SQLiteDecisionRecordRepository(tmp_path)
-    repository.initialize()
-    freezer = _freezer(index, repository, clock, tracker, Strategy.TOMORROW)
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
+    freezer = _freezer(index, records, clock, tracker, Strategy.TOMORROW)
     assert freezer.capture_checkpoint().status == "checkpoint_saved"
 
     def fail_cleanup(*_args, **_kwargs):
         raise OSError("controlled_cleanup_failure")
 
-    monkeypatch.setattr(repository, "consume_checkpoint", fail_cleanup)
+    monkeypatch.setattr(records, "consume_checkpoint", fail_cleanup)
     clock.value = _at(15, 0)
     result = freezer.freeze_scheduled()
     assert result.status == "frozen" and result.record is not None
     assert _receipt(tracker, "checkpoint_consume").failed_count == 1
     assert _receipt(tracker, "formal_publish").output_count == 1
     assert freezer.freeze_scheduled().record == result.record
-    _assert_formal_current_and_history(index, repository, clock, result.record)
+    _assert_formal_current_and_history(index, records, clock, result.record)
 
 
 def test_late_completion_and_older_cycle_cannot_replace_new_io_and_age_is_preserved() -> None:
@@ -200,11 +200,11 @@ def test_observation_clock_failure_cannot_block_freeze(tmp_path) -> None:
     index = UnifiedDecisionIndex()
     current = replace(decision(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    repository = SQLiteDecisionRecordRepository(tmp_path)
-    repository.initialize()
-    result = _freezer(index, repository, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
+    result = _freezer(index, records, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
     assert result.status == "frozen" and result.record is not None
-    assert repository.load(Strategy.TOMORROW, clock.value.date()) == result.record
+    assert records.load(Strategy.TOMORROW, clock.value.date()) == result.record
     assert tracker.snapshots() == ()
 
 
@@ -214,19 +214,19 @@ def test_cold_lookup_after_success_reports_latest_failure(tmp_path, monkeypatch)
     index = UnifiedDecisionIndex()
     current = replace(decision(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    repository = SQLiteDecisionRecordRepository(tmp_path)
-    repository.initialize()
-    result = _freezer(index, repository, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
+    result = _freezer(index, records, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
     assert result.status == "frozen"
-    cold = _freezer(UnifiedDecisionIndex(), repository, clock, tracker, Strategy.TOMORROW)
+    cold = _freezer(UnifiedDecisionIndex(), records, clock, tracker, Strategy.TOMORROW)
     assert cold.restore(clock.value.date()).status == "already_frozen"
     previous = _receipt(tracker, "formal_lookup")
 
     def fail_lookup(*_args):
         raise DecisionRecordUnavailableError("controlled_lookup_failure")
 
-    monkeypatch.setattr(repository, "load", fail_lookup)
-    cold_again = _freezer(UnifiedDecisionIndex(), repository, clock, tracker, Strategy.TOMORROW)
+    monkeypatch.setattr(records, "load", fail_lookup)
+    cold_again = _freezer(UnifiedDecisionIndex(), records, clock, tracker, Strategy.TOMORROW)
     assert cold_again.restore(clock.value.date()).status == "persistence_failed"
     latest = _receipt(tracker, "formal_lookup")
     assert latest.attempt_id > previous.attempt_id
@@ -237,11 +237,11 @@ def test_cold_lookup_after_success_reports_latest_failure(tmp_path, monkeypatch)
 def test_ineligible_checkpoint_remains_pending_without_business_rejection(tmp_path) -> None:
     clock = _Clock(_at(15, 0))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    repository = SQLiteDecisionRecordRepository(tmp_path)
-    repository.initialize()
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
     checkpoint = DecisionCheckpoint(formal_scored_decision(decision()), _at(15, 0))
-    repository.save_checkpoint(checkpoint)
-    freezer = _freezer(UnifiedDecisionIndex(), repository, clock, tracker, Strategy.TOMORROW)
+    records.save_checkpoint(checkpoint)
+    freezer = _freezer(UnifiedDecisionIndex(), records, clock, tracker, Strategy.TOMORROW)
     assert freezer.freeze_scheduled().status == "no_eligible_decision"
     receipt = _receipt(tracker, "checkpoint_lookup")
     assert receipt.pending_count == 1 and receipt.output_count == receipt.rejected_count == receipt.failed_count == 0

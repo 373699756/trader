@@ -26,7 +26,7 @@ class HistoryTailPlan:
 
 def plan_history_tail(open_dates: tuple[date, ...], latest: date, observed_on: date) -> HistoryTailPlan:
     # A live quote is not a completed daily bar. Same-day publication, when
-    # already present in the archive, is accepted separately by its caller.
+    # already present in published history, is accepted separately by its caller.
     completed = tuple(day for day in open_dates if day < observed_on)
     if not completed or open_dates != tuple(sorted(set(open_dates))) or open_dates[-1] < observed_on:
         raise ValueError("history_calendar_unverifiable")

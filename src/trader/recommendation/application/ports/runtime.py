@@ -13,7 +13,7 @@ from trader.recommendation.application.ports.clock import TradingCalendarPort
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import MarketPhase
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
@@ -250,7 +250,11 @@ class SettlementPort(Protocol):
 
 
 def _require_shanghai(value: datetime, label: str) -> None:
-    if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != _SHANGHAI.key:
+    if (
+        value.tzinfo is None
+        or value.utcoffset() is None
+        or not (isinstance(value.tzinfo, ZoneInfo) and value.tzinfo.key == _SHANGHAI.key)
+    ):
         raise ValueError(f"{label} must use Asia/Shanghai")
 
 

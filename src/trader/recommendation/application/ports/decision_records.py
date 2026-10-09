@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
@@ -39,7 +40,7 @@ class DecisionCheckpoint:
     def __post_init__(self) -> None:
         if self.boundary_at.tzinfo is None or self.boundary_at.utcoffset() is None:
             raise ValueError("decision checkpoint boundary must be timezone-aware")
-        if getattr(self.boundary_at.tzinfo, "key", None) != "Asia/Shanghai":
+        if not (isinstance(self.boundary_at.tzinfo, ZoneInfo) and self.boundary_at.tzinfo.key == "Asia/Shanghai"):
             raise ValueError("decision checkpoint boundary must use Asia/Shanghai")
         if self.decision.trade_date != self.boundary_at.date() or self.decision.observed_at > self.boundary_at:
             raise ValueError("decision checkpoint coordinates are invalid")
@@ -51,7 +52,7 @@ class DecisionCheckpoint:
         )
 
 
-class DecisionRecordRepositoryPort(Protocol):
+class DecisionRecordPort(Protocol):
     def initialize(self) -> None: ...
 
     def commit(self, record: CommittedDecisionRecord) -> None: ...
@@ -73,7 +74,7 @@ __all__ = [
     "DecisionRecordConflictError",
     "DecisionRecordError",
     "DecisionRecordRecoverySummary",
-    "DecisionRecordRepositoryPort",
+    "DecisionRecordPort",
     "DecisionRecordUnavailableError",
     "DecisionCheckpoint",
 ]

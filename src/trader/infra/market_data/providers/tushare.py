@@ -21,7 +21,6 @@ from trader.infra.market_data.providers.tushare_records import (
     _calendar_observation,
     _calendar_ranges,
     _data_version,
-    _default_sdk_factory,
     _error_code,
     _failed_observation,
     _generic_observation,
@@ -69,13 +68,13 @@ class _PerCodeRecords:
 class _TushareRequiredOptions(TypedDict):
     token: str
     timeout_seconds: float
+    sdk_factory: _SdkFactory
 
 
 class _TushareOptionalOptions(TypedDict, total=False):
     points: int
     circuit_breaker_failures: int
     circuit_breaker_seconds: float
-    sdk_factory: _SdkFactory | None
     cancel_requested: Callable[[], bool]
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
@@ -100,7 +99,7 @@ class TushareClient:
         self._timeout_seconds = timeout_seconds
         self._failure_limit = max(1, options.get("circuit_breaker_failures", 3))
         self._breaker_seconds = max(0.1, options.get("circuit_breaker_seconds", 60.0))
-        self._sdk_factory = options.get("sdk_factory") or _default_sdk_factory
+        self._sdk_factory = options["sdk_factory"]
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._monotonic = options.get("monotonic", time.monotonic)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))

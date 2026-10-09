@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.evidence.pipeline import (
     Severity,
@@ -74,7 +75,7 @@ class PublicationIoTracker:
     """One latest attempt per operation/strategy; late completions cannot replace it.
 
     Counts are operations (one decision/record per call), never selected stocks.
-    A cold lookup may have no decision identity until the repository returns it.
+    A cold lookup may have no decision identity until the decision record adapter returns it.
     """
 
     def __init__(self, *, now: Callable[[], datetime], monotonic: Callable[[], float]) -> None:
@@ -231,5 +232,5 @@ def observe_publication_io(
 
 
 def _require_time(at: datetime) -> None:
-    if getattr(at.tzinfo, "key", None) != "Asia/Shanghai":
+    if not (isinstance(at.tzinfo, ZoneInfo) and at.tzinfo.key == "Asia/Shanghai"):
         raise ValueError("publication observation clock must use Asia/Shanghai")

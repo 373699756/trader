@@ -6,7 +6,7 @@ import math
 import re
 import threading
 from collections.abc import Callable, Mapping
-from concurrent.futures import as_completed
+from concurrent.futures import Future, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
@@ -16,16 +16,16 @@ import requests
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.market_data.quote_normalization import (
+from trader.recommendation.infra.normalization.quote import (
     MarketQuoteInput,
     build_market_quote,
     normalize_quotes,
     to_float,
 )
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
-    borrow_executor,
-    submit_or_run_inline,
+from trader.infra.workers import (
+    BoundedExecutor,
+    injected_executor,
+    submit_or_reject,
 )
 from trader.recommendation.domain.market.models import MarketQuote
 
@@ -46,12 +46,13 @@ class _SinaRequest:
 
 class _SinaRequiredOptions(TypedDict):
     timeout_seconds: float
+    session_factory: SessionFactory
+    worker_pool: BoundedExecutor | None
 
 
 class _SinaOptionalOptions(TypedDict, total=False):
     workers: int
     page_size: int
-    session_factory: SessionFactory
     cancel_requested: Callable[[], bool]
     wall_clock: Callable[[], datetime]
 
@@ -68,7 +69,8 @@ class SinaClient:
         self._timeout_seconds = options["timeout_seconds"]
         self._workers = max(1, options.get("workers", 5))
         self._page_size = max(20, min(100, options.get("page_size", 80)))
-        self._session_factory = options.get("session_factory", requests.Session)
+        self._session_factory = options["session_factory"]
+        self._worker_pool = options["worker_pool"]
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
 
@@ -94,27 +96,23 @@ class SinaClient:
             total = int(total_match.group(0))
             page_count = max(1, math.ceil(total / self._page_size))
             pages: dict[int, list[Mapping[str, object]]] = {}
-            with borrow_executor(
-                None,
-                BorrowExecutorOptions(
-                    worker_count=min(self._workers, page_count),
-                    queue_capacity=page_count,
-                    thread_name_prefix="sina-market",
-                ),
-            ) as pool:
-                futures = {
-                    submit_or_run_inline(
-                        pool,
-                        self._fetch_page,
-                        page,
-                        session=session,
-                        deadline=deadline,
-                        cancel_event=cancel_event,
-                    ): page
-                    for page in range(1, page_count + 1)
-                }
-                for future in as_completed(futures):
-                    page = futures[future]
+            pool = injected_executor(self._worker_pool)
+            for offset in range(1, page_count + 1, self._workers):
+                futures: dict[Future[object], int] = {}
+                try:
+                    for page in range(offset, min(page_count + 1, offset + self._workers)):
+                        future = submit_or_reject(
+                            pool,
+                            self._fetch_page,
+                            page,
+                            session=session,
+                            deadline=deadline,
+                            cancel_event=cancel_event,
+                        )
+                        futures[future] = page
+                finally:
+                    wait(futures)
+                for future, page in futures.items():
                     payload = future.result()
                     if not isinstance(payload, list):
                         raise RuntimeError(f"sina page {page} was not a list")
@@ -249,6 +247,8 @@ class SinaClient:
         deadline: datetime | None = None,
         cancel_event: threading.Event | None = None,
     ) -> None:
+        if self._worker_pool is not None and not self._worker_pool.is_running():
+            raise RuntimeError("sina worker executor stopped")
         if self._cancel_requested():
             raise RuntimeError("sina source lane stopped")
         if cancel_event is not None and cancel_event.is_set():

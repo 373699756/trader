@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
@@ -43,13 +43,19 @@ class _TushareApiError(RuntimeError):
 
 
 class _TushareSdkClientAdapter:
-    def __init__(self, module: ModuleType, pro: object, token: str, timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        module: ModuleType,
+        pro: object,
+        token: str,
+        timeout_seconds: float,
+        session_factory: Callable[[], requests.Session],
+    ) -> None:
         self._module = module
         self._pro = pro
         self._token = token
         self._timeout_seconds = timeout_seconds
-        self._session = requests.Session()
-        self._session.trust_env = False
+        self._session_factory = session_factory
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._pro, name)
@@ -60,7 +66,12 @@ class _TushareSdkClientAdapter:
     def daily(self, **arguments: object) -> object:
         params = dict(arguments)
         fields = str(params.pop("fields", ""))
-        response = self._session.post(
+        with self._session_factory() as session:
+            session.trust_env = False
+            return self._daily_response(session, params, fields)
+
+    def _daily_response(self, session: requests.Session, params: Mapping[str, object], fields: str) -> object:
+        response = session.post(
             "https://api.tushare.pro",
             json=cast(
                 Any,
@@ -95,10 +106,17 @@ class _TushareSdkClientAdapter:
         return [dict(zip(names, row, strict=False)) for row in items if isinstance(row, list)]
 
 
-def _default_sdk_factory(token: str, timeout_seconds: float) -> object:
+def build_tushare_sdk(
+    token: str,
+    timeout_seconds: float,
+    *,
+    session_factory: Callable[[], requests.Session],
+) -> object:
     module = importlib.import_module("tushare")
     pro_api = module.pro_api
-    return _TushareSdkClientAdapter(module, pro_api(token, timeout=timeout_seconds), token, timeout_seconds)
+    return _TushareSdkClientAdapter(
+        module, pro_api(token, timeout=timeout_seconds), token, timeout_seconds, session_factory
+    )
 
 
 def _invoke(client: object, method: str, **arguments: object) -> object:
@@ -360,7 +378,7 @@ __all__ = [
     "_calendar_observation",
     "_calendar_ranges",
     "_data_version",
-    "_default_sdk_factory",
+    "build_tushare_sdk",
     "_error_code",
     "_failed_observation",
     "_generic_observation",

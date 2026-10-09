@@ -16,20 +16,22 @@ from polars.exceptions import PolarsError
 from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import BoundedCache, canonical_json_bytes
-from trader.recommendation.infra.normalization.columnar import (
-    ColumnarQuoteBatch,
-    NormalizedMarketChangeSet,
-    market_changes,
-    targeted_market_changes,
-)
-from trader.recommendation.infra.normalization.merge import (
-    merge_market_observations,
-    observation_from_quote,
-    overlay_canonical_snapshot,
-    snapshot_payload_hash,
-)
-from trader.recommendation.infra.normalization.merge_quote import rejection_reason, source_name
+from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.references.security_references import security_reference_observations
+from trader.recommendation.application.ports.market_data import (
+    MarketDataDeadlineExceededError,
+    MarketDataFailedError,
+    MarketDataNoDataError,
+    MarketDataUnavailableError,
+)
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler, SourceRequestSupersededError
+from trader.infra.workers import BoundedExecutor
+from trader.recommendation.domain.market.models import (
+    CanonicalMarketSnapshot,
+    MarketQuote,
+)
 from trader.recommendation.infra.market_data.gateway_health import (
     MarketGatewayHealthStatus,
     MarketSourceHealthStatus,
@@ -49,33 +51,31 @@ from trader.recommendation.infra.market_data.gateway_runtime import (
     _SingleFlight,
     _source_degraded_reasons,
 )
-from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.router import RouteOutcome
+from trader.recommendation.infra.market_data.provider_ports import (
+    CandidateQuoteSource,
+    FullMarketFetcher,
+    FullMarketSource,
+)
 from trader.recommendation.infra.market_data.source_coordinator import (
     MarketSourceCoordinator,
     MarketSourceDependencies,
     SourceLaneIdentityRequest,
     SourceObservationRequest,
 )
-from trader.recommendation.infra.market_data.provider_ports import (
-    CandidateQuoteSource,
-    FullMarketFetcher,
-    FullMarketSource,
+from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
+from trader.recommendation.infra.normalization.columnar import (
+    ColumnarQuoteBatch,
+    NormalizedMarketChangeSet,
+    market_changes,
+    targeted_market_changes,
 )
-from trader.recommendation.application.ports.market_data import (
-    MarketDataDeadlineExceededError,
-    MarketDataFailedError,
-    MarketDataNoDataError,
-    MarketDataUnavailableError,
+from trader.recommendation.infra.normalization.merge import (
+    merge_market_observations,
+    observation_from_quote,
+    overlay_canonical_snapshot,
+    snapshot_payload_hash,
 )
-from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.schedule import shanghai_now
-from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry, SourceRequestSupersededError
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.recommendation.domain.market.models import (
-    CanonicalMarketSnapshot,
-    MarketQuote,
-)
+from trader.recommendation.infra.normalization.merge_quote import rejection_reason, source_name
 
 _TARGET_QUOTE_MAX_COMMIT_RESERVE_SECONDS = 0.2
 _TARGET_QUOTE_MIN_TRANSPORT_TIMEOUT_SECONDS = 0.05
@@ -89,7 +89,7 @@ class _GatewayRequiredOptions(TypedDict):
 
 class _GatewayOptionalOptions(TypedDict, total=False):
     worker_pool: BoundedExecutor | None
-    source_lanes: SourceLaneRegistry | None
+    source_lanes: SourceLaneScheduler | None
     cache: BoundedCache[object] | None
     source_contracts: Mapping[str, str] | None
     config_version: str
@@ -100,6 +100,7 @@ class _GatewayOptionalOptions(TypedDict, total=False):
     full_market_hedge_delay_seconds: float
     listing_open_dates: Callable[[], Sequence[date]]
     full_market_fetchers: Mapping[str, FullMarketFetcher]
+    recovery_probes: Mapping[str, Callable[[], None]]
 
 
 class _GatewayOptions(_GatewayRequiredOptions, _GatewayOptionalOptions):
@@ -162,10 +163,7 @@ class MarketDataGateway:
             "tencent": _CircuitState(),
             "tencent_long": _CircuitState(),
         }
-        self._recovery_probes = {
-            "eastmoney": getattr(eastmoney, "probe_market", None),
-            "sina": getattr(sina, "probe_market", None),
-        }
+        self._recovery_probes = dict(options.get("recovery_probes", {}))
         self._latest_by_code: dict[str, MarketQuote] = {}
         self._latest_observations: dict[str, dict[str, SourceObservation]] = {}
         self._reference_observations: dict[str, SourceObservation] = {}
@@ -900,7 +898,7 @@ class MarketDataGateway:
 
     def _probe_recovering_source(self, source: str) -> None:
         probe = self._recovery_probes.get(source)
-        if not callable(probe):
+        if probe is None:
             return
         now = self._monotonic()
         with self._state_lock:
@@ -996,9 +994,7 @@ def _with_snapshot_degradation(
     if any("last_valid_snapshot" in reason or "late" in reason for reason in merged_reasons):
         categories.add("stale")
     if any(
-        marker in reason
-        for reason in merged_reasons
-        for marker in ("failed", "unavailable", "circuit_open", "no_data")
+        marker in reason for reason in merged_reasons for marker in ("failed", "unavailable", "circuit_open", "no_data")
     ):
         categories.add("failed")
     if merged_reasons and not categories:

@@ -13,17 +13,16 @@ import requests
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.history.outcome_history import pair_outcome_history
-from trader.infra.market_data.quote_normalization import (
+from trader.recommendation.infra.normalization.quote import (
     MarketQuoteInput,
     build_market_quote,
     normalize_quotes,
     to_float,
 )
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
+from trader.infra.workers import (
     BoundedExecutor,
-    borrow_executor,
-    submit_or_run_inline,
+    injected_executor,
+    submit_or_reject,
 )
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.training.domain.evaluation.models import OutcomeBar
@@ -44,10 +43,10 @@ class TencentClient:
         self,
         *,
         timeout_seconds: float,
-        session_factory: SessionFactory = requests.Session,
+        session_factory: SessionFactory,
+        worker_pool: BoundedExecutor | None,
         cancel_requested: Callable[[], bool] = lambda: False,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-        worker_pool: BoundedExecutor | None = None,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._session_factory = session_factory
@@ -72,31 +71,24 @@ class TencentClient:
         )
         quotes: list[MarketQuote] = []
         failures: list[BaseException] = []
-        with borrow_executor(
-            self._worker_pool,
-            BorrowExecutorOptions(
-                worker_count=min(_QUOTE_MAX_CONCURRENCY, len(shards)),
-                queue_capacity=min(_QUOTE_MAX_CONCURRENCY, len(shards)),
-                thread_name_prefix="tencent-quotes",
-            ),
-        ) as pool:
-            for offset in range(0, len(shards), _QUOTE_MAX_CONCURRENCY):
-                wave = shards[offset : offset + _QUOTE_MAX_CONCURRENCY]
-                futures = {
-                    submit_or_run_inline(
-                        pool,
-                        self._fetch_quote_shard,
-                        shard,
-                        received_at,
-                        timeout_seconds,
-                    ): shard
-                    for shard in wave
-                }
-                for future in as_completed(futures):
-                    try:
-                        quotes.extend(future.result())
-                    except (OSError, RuntimeError, requests.RequestException) as exc:
-                        failures.append(exc)
+        pool = injected_executor(self._worker_pool)
+        for offset in range(0, len(shards), _QUOTE_MAX_CONCURRENCY):
+            wave = shards[offset : offset + _QUOTE_MAX_CONCURRENCY]
+            futures = {
+                submit_or_reject(
+                    pool,
+                    self._fetch_quote_shard,
+                    shard,
+                    received_at,
+                    timeout_seconds,
+                ): shard
+                for shard in wave
+            }
+            for future in as_completed(futures):
+                try:
+                    quotes.extend(future.result())
+                except (OSError, RuntimeError, requests.RequestException) as exc:
+                    failures.append(exc)
         self._ensure_running()
         if not quotes:
             if failures:
@@ -219,6 +211,8 @@ class TencentClient:
         return data.get(symbol) if isinstance(data, Mapping) else None
 
     def _ensure_running(self) -> None:
+        if self._worker_pool is not None and not self._worker_pool.is_running():
+            raise RuntimeError("tencent worker executor stopped")
         if self._cancel_requested():
             raise RuntimeError("tencent source lane stopped")
 

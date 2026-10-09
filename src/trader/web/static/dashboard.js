@@ -101,7 +101,7 @@
     ]) els[id] = document.getElementById(id);
     Object.assign(els, { resultLayout: document.getElementById("recommendation-layout"), longSidebar: document.getElementById("long-sidebar"), longTitle: document.getElementById("long-panel-title"), longMeta: document.getElementById("long-panel-meta") });
     stateRenderer = statusView.createDashboardStateRenderer(els, state, selection, window.TraderRender);
-    errorDrawer = statusView.createErrorDrawer(els, closeDrawer, syncDrawerBackdrop);
+    errorDrawer = window.TraderErrorDrawer.createErrorDrawer(els, closeDrawer, syncDrawerBackdrop);
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });

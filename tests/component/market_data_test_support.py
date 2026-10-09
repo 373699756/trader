@@ -27,15 +27,17 @@ from trader.infra.market_data.history.history import (
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers import tushare_records as tushare_records_module
-from trader.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
-from trader.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
-from trader.infra.market_data.providers.sina import SinaClient
-from trader.infra.market_data.providers.tencent import TencentClient
+from trader.recommendation.infra.market_data.providers.sina import SinaClient
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient
-from trader.infra.market_data.references.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
-from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
+from trader.recommendation.infra.market_data.trading_calendar import (
+    ChinaTradingCalendar,
+    TradingCalendarUnavailableError,
+)
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 from trader.recommendation.application.ports.data_plane_records import (
@@ -54,11 +56,11 @@ from trader.recommendation.application.ports.market_data import (
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.source_lanes import (
     LatestRequestLane,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SourceRequestSupersededError,
 )
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.recommendation.domain.market.eligibility import IssuerEligibilityRegistryStatus
+from trader.infra.workers import BoundedExecutor
+from trader.recommendation.domain.market.eligibility import IssuerEligibilitySnapshot
 from trader.recommendation.domain.market.models import (
     Board,
     Evidence,
@@ -94,6 +96,7 @@ from trader.recommendation.infra.market_data.tushare_reference_loader import (
     ReferenceLoadRequest,
     _ReferenceLoadOptions,
 )
+from trader.recommendation.infra.market_data.vendor_routing import VendorRoute, VendorSeverity, route
 from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
@@ -129,8 +132,8 @@ class _AllowAllEligibility:
     def filter_codes(self, codes, _observed_at):
         return tuple(codes)
 
-    def status(self) -> IssuerEligibilityRegistryStatus:
-        return IssuerEligibilityRegistryStatus(
+    def status(self) -> IssuerEligibilitySnapshot:
+        return IssuerEligibilitySnapshot(
             "issuer_eligibility_registry",
             0,
             0,
@@ -694,7 +697,7 @@ class PartiallyBlockingStructuredResearchClient:
         return ResearchObservation(
             announcements_available=True,
             corporate_risk_history_complete=True,
-            corporate_risk_registry_version=f"registry:{code}",
+            corporate_risk_evidence_version=f"evidence:{code}",
             pledge_ratio_pct=0.0,
             unlock_ratio_pct=0.0,
         )

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.infra.market_data.router import RouteOutcome
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
@@ -20,6 +19,7 @@ from trader.recommendation.infra.market_data.market_cache_identity import _quote
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
+from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
 
 
 @dataclass(frozen=True)
@@ -163,9 +163,9 @@ class MarketDataHealth:
                         "pledge": research.pledge_covered_count,
                         "unlock": research.unlock_covered_count,
                     },
-                    "corporate_risk_registry_covered_count": research.corporate_risk_covered_count,
-                    "corporate_risk_registry_fact_count": research.corporate_risk_fact_count,
-                    "corporate_risk_registry_versions": research.corporate_risk_registry_versions,
+                    "corporate_risk_evidence_covered_count": research.corporate_risk_covered_count,
+                    "corporate_risk_evidence_fact_count": research.corporate_risk_fact_count,
+                    "corporate_risk_evidence_versions": research.corporate_risk_evidence_versions,
                     "intraday_tail_cache_entries": intraday.entries,
                     "intraday_tail_success_count": intraday.success_count,
                     "intraday_tail_error_count": intraday.error_count,
@@ -181,9 +181,9 @@ class MarketDataHealth:
                     "history_coverage_ratio": history_covered / history_rows if history_rows else 0.0,
                     "history_error_count": history.error_count,
                     "history_data_versions": history.data_versions,
-                    "history_archive_state": history.state,
-                    "history_archive_snapshot_hash": history.snapshot_hash,
-                    "history_archive_data_cutoff": (
+                    "published_history_state": history.state,
+                    "published_history_snapshot_hash": history.snapshot_hash,
+                    "published_history_data_cutoff": (
                         history.data_cutoff.isoformat() if history.data_cutoff is not None else None
                     ),
                     "history_maintenance_state": history.maintenance_state,

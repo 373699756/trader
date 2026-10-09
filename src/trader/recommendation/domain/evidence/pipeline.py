@@ -9,6 +9,7 @@ from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 
 class PipelineStage(str, Enum):
@@ -149,7 +150,7 @@ def validate_stage_batch_continuity(stages: tuple[PipelineStageSnapshot, ...]) -
     """Reject a stage list whose immutable handoff identities do not line up."""
     if tuple(item.stage for item in stages) != PIPELINE_STAGES:
         raise ValueError("pipeline stage snapshots must contain all stages in order")
-    for previous, current in zip(stages, stages[1:]):
+    for previous, current in zip(stages, stages[1:], strict=False):
         if previous.output_batch_id != current.input_batch_id:
             raise ValueError("pipeline stage batch identities are not continuous")
         if previous.output_count != current.input_count:
@@ -157,7 +158,11 @@ def validate_stage_batch_continuity(stages: tuple[PipelineStageSnapshot, ...]) -
 
 
 def _require_shanghai(value: datetime, label: str) -> None:
-    if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != "Asia/Shanghai":
+    if (
+        value.tzinfo is None
+        or value.utcoffset() is None
+        or not (isinstance(value.tzinfo, ZoneInfo) and value.tzinfo.key == "Asia/Shanghai")
+    ):
         raise ValueError(f"{label} must use Asia/Shanghai")
 
 

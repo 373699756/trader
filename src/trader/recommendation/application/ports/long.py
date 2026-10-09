@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,11 @@ class LongRefreshPort(Protocol):
 
 
 def _require_shanghai(value: datetime, label: str) -> None:
-    if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != "Asia/Shanghai":
+    if (
+        value.tzinfo is None
+        or value.utcoffset() is None
+        or not (isinstance(value.tzinfo, ZoneInfo) and value.tzinfo.key == "Asia/Shanghai")
+    ):
         raise ValueError(f"{label} must use Asia/Shanghai")
 
 

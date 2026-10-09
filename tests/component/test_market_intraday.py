@@ -21,7 +21,7 @@ from tests.component.market_data_test_support import (
     Path,
     PriceAdjustment,
     SequenceIntradayClient,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     StaticGateway,
     StaticHistoryClient,
     StaticIntradayClient,
@@ -48,7 +48,7 @@ def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
         }
     }
     session = FakeSession([payload])
-    client = EastmoneyClient(timeout_seconds=2, session_factory=lambda: session)
+    client = EastmoneyClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     bars = client.fetch_intraday_minutes("600001", now=AFTERNOON)
 
@@ -67,7 +67,7 @@ def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
 
 def test_intraday_tail_has_a_lane_independent_from_full_market_refresh() -> None:
     pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="test-source-tail")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     full_started = threading.Event()
     release_full = threading.Event()
 
@@ -351,12 +351,13 @@ def test_intraday_health_requires_complete_tail_signals_for_coverage() -> None:
     assert service.health()["intraday_tail_last_error"] == "intraday_series_incomplete"
 
 
-def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> None:
+def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request(market_worker_pool) -> None:
     intraday = BlockingIntradayClient()
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        worker_pool=market_worker_pool,
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.1,
@@ -377,12 +378,13 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request() -> 
     assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
 
 
-def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() -> None:
+def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh(market_worker_pool) -> None:
     intraday = BlockingIntradayClient()
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        worker_pool=market_worker_pool,
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.1,
@@ -408,7 +410,7 @@ def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() ->
 
 def test_source_lane_intraday_batch_timeout_returns_without_waiting_for_blocked_io() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     intraday = BlockingIntradayClient()
     service = _service(
         StaticGateway((_quote(),)),
@@ -449,7 +451,7 @@ def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return(
         wall_clock=lambda: measured_at,
     )
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
@@ -503,7 +505,7 @@ def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return(
 
 def test_source_lane_cancels_queued_intraday_io_after_batch_timeout() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     intraday = StaticIntradayClient(())
     service = _service(
         StaticGateway((_quote(),)),

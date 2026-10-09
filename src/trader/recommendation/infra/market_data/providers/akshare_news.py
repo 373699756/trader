@@ -1,4 +1,4 @@
-"""Bounded Eastmoney news request and normalization."""
+"""Bounded recommendation news request and normalization."""
 
 from __future__ import annotations
 

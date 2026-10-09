@@ -60,7 +60,7 @@ from trader.recommendation.application.runtime.scheduler_runtime import (  # noq
     RuntimeDependencies,
     SchedulerRuntime,
 )
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
 from trader.recommendation.application.runtime.supervisor import (  # noqa: E402
     RuntimeSupervisor,
     RuntimeSupervisorConfig,

@@ -51,11 +51,10 @@ from trader.recommendation.infra.market_data.research_load_status import (
     ResearchLoadReport,
 )
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.recommendation.application.runtime.workers import (
-    BorrowExecutorOptions,
+from trader.infra.workers import (
     WorkerExecutor,
-    borrow_executor,
-    submit_or_run_inline,
+    injected_executor,
+    submit_or_reject,
 )
 from trader.recommendation.domain.market.research import ResearchObservation
 
@@ -452,40 +451,34 @@ class ResearchLoader:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         request = state.request
         source_lanes = self._runner.source_lanes
-        with borrow_executor(
+        pool = injected_executor(
             self._runner.worker_pool,
-            BorrowExecutorOptions(
-                worker_count=min(self._workers, len(missing)),
-                thread_name_prefix="candidate-research",
-                queue_capacity=len(missing),
-                wait_on_exit=request.deadline is None,
-                nested_inline=source_lanes is not None and source_lanes.owns_current_thread("akshare"),
-            ),
-        ) as pool:
-            futures, started_at = self._submit_research(pool, state, missing)
-            timeout = (
-                None
-                if request.deadline is None
-                else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
-            )
-            completed, pending = wait(futures, timeout=timeout)
-            completed_code_set = {futures[future] for future in completed}
-            completed_codes = tuple(code for code in missing if code in completed_code_set)
-            completed_by_code = {futures[future]: future for future in completed}
-            changed_codes: list[str] = []
-            for code in completed_codes:
-                future = completed_by_code[code]
-                if self._consume_research_future(state, futures[future], future, started_at[future]):
-                    changed_codes.append(code)
-            deferred = tuple(code for code in missing if code not in completed_by_code)
-            if deferred:
-                for future in pending:
-                    future.cancel()
-                with self._lock:
-                    self._error_count += len(deferred)
-                    self._timeout_count += len(deferred)
-                    self._last_error = "research_batch_deadline"
-            return tuple(changed_codes), deferred
+            inline=source_lanes is not None and source_lanes.owns_current_thread("akshare"),
+        )
+        futures, started_at = self._submit_research(pool, state, missing)
+        timeout = (
+            None
+            if request.deadline is None
+            else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
+        )
+        completed, pending = wait(futures, timeout=timeout)
+        completed_code_set = {futures[future] for future in completed}
+        completed_codes = tuple(code for code in missing if code in completed_code_set)
+        completed_by_code = {futures[future]: future for future in completed}
+        changed_codes: list[str] = []
+        for code in completed_codes:
+            future = completed_by_code[code]
+            if self._consume_research_future(state, futures[future], future, started_at[future]):
+                changed_codes.append(code)
+        deferred = tuple(code for code in missing if code not in completed_by_code)
+        if deferred:
+            for future in pending:
+                future.cancel()
+            with self._lock:
+                self._error_count += len(deferred)
+                self._timeout_count += len(deferred)
+                self._last_error = "research_batch_deadline"
+        return tuple(changed_codes), deferred
 
     def _submit_research(
         self,
@@ -501,7 +494,7 @@ class ResearchLoader:
         for code in missing:
             self._runner.ensure_before_deadline(state.request.deadline)
             started = self._monotonic()
-            future = submit_or_run_inline(
+            future = submit_or_reject(
                 pool,
                 self._fetch_research_observation,
                 code,

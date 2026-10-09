@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 

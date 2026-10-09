@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 from trader.recommendation.domain.publication.models import RecommendationAction
@@ -18,7 +18,15 @@ class DecisionCoverage:
     observation_count: int
 
     def __post_init__(self) -> None:
-        if any(getattr(self, item.name) < 0 for item in fields(self)):
+        counts = (
+            self.candidate_count,
+            self.evaluated_count,
+            self.rejected_count,
+            self.selected_count,
+            self.executable_count,
+            self.observation_count,
+        )
+        if any(value < 0 for value in counts):
             raise ValueError("decision coverage counts cannot be negative")
         if self.evaluated_count > self.candidate_count or self.rejected_count > self.candidate_count:
             raise ValueError("decision coverage cannot exceed candidate count")

@@ -37,11 +37,10 @@ class MarketChangeSet:
         if self.schema_version != MARKET_CHANGE_SET_VERSION:
             raise DataPlaneContractError("market change set schema version is invalid")
         _require_text(self.merge_epoch, "merge_epoch")
-        for field_name in ("inserted_codes", "updated_codes", "removed_codes", "dirty_codes"):
-            values = tuple(getattr(self, field_name))
-            if len(values) != len(set(values)) or values != tuple(sorted(values)):
-                raise DataPlaneContractError(f"{field_name} must be sorted and unique")
-            object.__setattr__(self, field_name, values)
+        object.__setattr__(self, "inserted_codes", _code_sequence(self.inserted_codes, "inserted_codes"))
+        object.__setattr__(self, "updated_codes", _code_sequence(self.updated_codes, "updated_codes"))
+        object.__setattr__(self, "removed_codes", _code_sequence(self.removed_codes, "removed_codes"))
+        object.__setattr__(self, "dirty_codes", _code_sequence(self.dirty_codes, "dirty_codes"))
         if self.overlay_only and any((self.inserted_codes, self.updated_codes, self.removed_codes)):
             raise DataPlaneContractError("overlay-only changes cannot alter feature rows")
 
@@ -75,24 +74,31 @@ class FeatureSnapshotEnvelope:
     def __post_init__(self) -> None:
         if self.schema_version != FEATURE_ENVELOPE_VERSION:
             raise DataPlaneContractError("feature envelope schema version is invalid")
-        for name in (
-            "snapshot_version",
-            "feature_snapshot_version",
-            "trade_date",
-            "phase",
-            "merge_epoch",
-            "data_version",
-            "config_version",
-            "feature_schema",
-            "content_hash",
+        for name, value in (
+            ("snapshot_version", self.snapshot_version),
+            ("feature_snapshot_version", self.feature_snapshot_version),
+            ("trade_date", self.trade_date),
+            ("phase", self.phase),
+            ("merge_epoch", self.merge_epoch),
+            ("data_version", self.data_version),
+            ("config_version", self.config_version),
+            ("feature_schema", self.feature_schema),
+            ("content_hash", self.content_hash),
         ):
-            _require_text(getattr(self, name), name)
+            _require_text(value, name)
         if self.merge_epoch != self.market_change_set.merge_epoch:
             raise DataPlaneContractError("feature envelope and changes must share merge_epoch")
         _require_text(self.reference_epoch, "reference_epoch")
         codes = tuple(feature.quote.code for feature in self.feature_snapshots)
         if codes != tuple(sorted(codes)) or len(codes) != len(set(codes)):
             raise DataPlaneContractError("feature snapshots must be sorted and unique")
+
+
+def _code_sequence(codes: tuple[str, ...], name: str) -> tuple[str, ...]:
+    values = tuple(codes)
+    if len(values) != len(set(values)) or values != tuple(sorted(values)):
+        raise DataPlaneContractError(f"{name} must be sorted and unique")
+    return values
 
 
 def _require_text(value: str, name: str) -> None:

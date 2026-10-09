@@ -1,4 +1,4 @@
-"""Vendor routing table with required/optional fallback semantics.
+"""Recommendation vendor routing table with required/optional fallback semantics.
 
 Inspired by TradingAgents ``dataflows/interface.py`` VENDOR_METHODS pattern:
 method name maps to an ordered list of (vendor_name, fetch_fn) tuples with a
@@ -29,7 +29,7 @@ class VendorRoute:
     severity: VendorSeverity
 
 
-@dataclass
+@dataclass(frozen=True)
 class VendorResult:
     name: str
     status: str
@@ -40,7 +40,7 @@ class VendorResult:
     duration_ms: float | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class RouteOutcome:
     result: object | None
     vendor: str

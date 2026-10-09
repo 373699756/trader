@@ -17,7 +17,6 @@ from zoneinfo import ZoneInfo
 from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth
-from trader.recommendation.application.runtime.schedule import shanghai_now
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _EXPECTED_CLASSIFICATION = "证监会行业分类"
@@ -36,7 +35,7 @@ class BaoStockIndustryFetch(Protocol):
 
 
 class BaoStockIndustryClient:
-    """Fetch one whole-market current snapshot without touching history archives."""
+    """Fetch one whole-market current snapshot without touching published history."""
 
     def __init__(
         self,
@@ -56,7 +55,7 @@ class BaoStockIndustryClient:
         self._status = ModelIndustrySourceHealth(timeout_seconds=self._timeout_seconds)
 
     def fetch(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
-        local = shanghai_now(observed_at)
+        local = _shanghai(observed_at)
         started_at = self._monotonic()
         with self._lock:
             self._status = replace(self._status, planned_count=self._status.planned_count + 1)
@@ -140,7 +139,7 @@ def _industry_observations(
 ) -> tuple[SourceObservation, ...]:
     batch_material = tuple((row.source_code, row.industry, row.update_date) for row in rows)
     batch_hash = hashlib.sha256(canonical_json_bytes(batch_material)).hexdigest()
-    data_version = f"baostock-industry:{shanghai_now(observed_at).date().isoformat()}:{batch_hash[:16]}"
+    data_version = f"baostock-industry:{_shanghai(observed_at).date().isoformat()}:{batch_hash[:16]}"
     observations: list[SourceObservation] = []
     for row in rows:
         fields = {
@@ -168,6 +167,12 @@ def _industry_observations(
             )
         )
     return tuple(observations)
+
+
+def _shanghai(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("BaoStock industry observation time must be timezone-aware")
+    return value.astimezone(_SHANGHAI)
 
 
 def _normalize_source_code(value: str) -> str | None:

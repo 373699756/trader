@@ -26,7 +26,7 @@ from trader.recommendation.application.ports.market_data import MarketDataUnavai
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
 from trader.recommendation.domain.market.eligibility import manual_blacklist_fact
 from trader.recommendation.infra.market_data.official_static_reference import parse_official_static_reference
-from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
+from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.status_projection import _stage_snapshot_payload
 
 
@@ -181,7 +181,7 @@ def test_successful_same_content_refresh_updates_age_without_changing_content_id
 
 
 def test_unique_registry_filters_the_complete_population_before_quote_and_history_subset(tmp_path):
-    registry = SQLiteIssuerEligibilityRegistry(tmp_path)
+    registry = SQLiteIssuerEligibilityIndex(tmp_path)
     registry.record((manual_blacklist_fact("300001", effective_at=NOW, config_hash="fixture"),))
     _, _, _, history, service = _fixture(eligibility=registry)
     service.references.schedule_security_master_refresh(NOW)

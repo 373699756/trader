@@ -17,7 +17,7 @@ from trader.recommendation.infra.normalization.merge import (
     snapshot_payload_hash,
 )
 from trader.recommendation.infra.normalization.merge_quote import merge_code
-from trader.infra.market_data.quote_normalization import MarketQuoteInput, build_market_quote
+from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 
@@ -545,12 +545,8 @@ def test_merge_rejects_security_identity_and_expired_observations() -> None:
         received_at=NOW - timedelta(seconds=301),
     )
 
-    identity_snapshot = merge_market_observations(
-        (identity_conflict,), observed_at=NOW, max_age_seconds=300.0
-    )
-    expired_snapshot = merge_market_observations(
-        (expired,), observed_at=NOW, max_age_seconds=300.0
-    )
+    identity_snapshot = merge_market_observations((identity_conflict,), observed_at=NOW, max_age_seconds=300.0)
+    expired_snapshot = merge_market_observations((expired,), observed_at=NOW, max_age_seconds=300.0)
 
     assert "security_identity_conflict:600001" in identity_snapshot.degraded_reasons
     assert "freshness_expired:600001:eastmoney" in expired_snapshot.degraded_reasons

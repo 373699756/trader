@@ -148,11 +148,11 @@ def test_official_exchange_request_retries_one_transient_disconnect(
             raise requests.ConnectionError("transient disconnect")
         return Response()
 
-    monkeypatch.setattr(exchange_module.requests, "get", get)
     monkeypatch.setattr(exchange_module.time, "sleep", delays.append)
 
     response = exchange_module._official_get(
         "https://example.invalid",
+        get=get,
         params={"kind": "security-master"},
         timeout=1.0,
     )

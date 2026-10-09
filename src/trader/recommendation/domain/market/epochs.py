@@ -12,6 +12,7 @@ from datetime import date, datetime
 from enum import Enum
 from types import MappingProxyType
 from typing import Literal, Protocol, TypeAlias
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.models import LiveQuote, MarketQuote
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
@@ -549,7 +550,7 @@ def _validate_evidence_times(
 def _require_shanghai_time(value: datetime, name: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError(f"{name} must be timezone-aware")
-    if getattr(value.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
+    if not (isinstance(value.tzinfo, ZoneInfo) and value.tzinfo.key == _SHANGHAI_TIMEZONE):
         raise ValueError(f"{name} must use Asia/Shanghai")
 
 

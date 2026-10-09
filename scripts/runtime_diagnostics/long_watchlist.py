@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.infra.atomic_files.json import RuntimeJsonWriter  # noqa: E402
-from trader.infra.market_data.providers.akshare import AkshareResearchClient  # noqa: E402
+from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient  # noqa: E402
 from trader.infra.settings.loading import load_long_watchlist, load_strategy_settings  # noqa: E402
 from trader.recommendation.domain.market.research import FinancialReport, LongResearchPolicy  # noqa: E402
 

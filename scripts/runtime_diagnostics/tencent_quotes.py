@@ -10,12 +10,14 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import requests
+
 from .reporting import emit_report, summarize_latency_ms
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.infra.market_data.providers.tencent import TencentClient  # noqa: E402
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -47,7 +49,7 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def _collect(codes: tuple[str, ...], args: argparse.Namespace) -> dict[str, object]:
-    client = TencentClient(timeout_seconds=args.timeout_seconds)
+    client = TencentClient(worker_pool=None, session_factory=requests.Session, timeout_seconds=args.timeout_seconds)
     samples: list[dict[str, object]] = []
     latencies: list[float] = []
     versions: dict[str, list[str]] = {code: [] for code in codes}

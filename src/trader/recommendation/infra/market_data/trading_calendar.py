@@ -1,4 +1,4 @@
-"""Cached A-share trading calendar with fail-closed behavior."""
+"""Recommendation A-share trading calendar with fail-closed behavior."""
 
 from __future__ import annotations
 

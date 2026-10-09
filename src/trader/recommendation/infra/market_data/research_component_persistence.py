@@ -55,6 +55,9 @@ _STATUS_PRIORITY: Mapping[ResearchComponentStatus, int] = {
 class _ResearchComponentPersistenceState(Protocol):
     _lock: Lock
     _component_statuses: dict[str, dict[str, ResearchComponentStatus]]
+    _entries: dict[tuple[str, bool], _ResearchEntry]
+    _monotonic: Callable[[], float]
+    _ttl_seconds: float
 
 
 class _ResearchDataPlane(Protocol):
@@ -249,11 +252,9 @@ def _recover_cninfo_observations(
     if not announcements_by_code:
         return
     history_complete_by_code = _cninfo_history_complete_by_code(data_plane)
-    if not hasattr(state, "_entries") or not hasattr(state, "_monotonic") or not hasattr(state, "_ttl_seconds"):
-        return
-    entries = state._entries  # type: ignore[attr-defined]
-    monotonic = state._monotonic  # type: ignore[attr-defined]
-    ttl_seconds = state._ttl_seconds  # type: ignore[attr-defined]
+    entries = state._entries
+    monotonic = state._monotonic
+    ttl_seconds = state._ttl_seconds
     restored: dict[tuple[str, bool], _ResearchEntry] = {}
     for code, announcements in announcements_by_code.items():
         ordered = tuple(sorted(announcements, key=lambda item: (item.published_at, item.announcement_id)))
@@ -263,7 +264,7 @@ def _recover_cninfo_observations(
             announcements_available=True,
             corporate_risk_facts=facts,
             corporate_risk_history_complete=history_complete_by_code.get(code, False),
-            corporate_risk_registry_version=_cninfo_registry_version(code, ordered),
+            corporate_risk_evidence_version=_cninfo_evidence_version(code, ordered),
         )
         key = (code, True)
         previous = entries.get(key)
@@ -277,14 +278,9 @@ def _recover_cninfo_observations(
 
 
 def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane) -> dict[str, bool]:
-    loader = getattr(data_plane, "load_source_cursor_recent_records", None)
-    if loader is None:
-        return {}
     try:
-        records = loader()
+        records = data_plane.load_source_cursor_recent_records()
     except DataPlaneUnavailableError:
-        return {}
-    except Exception:
         return {}
     result: dict[str, bool] = {}
     for record in records:
@@ -296,10 +292,10 @@ def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane) -> dict[str
     return result
 
 
-def _cninfo_registry_version(code: str, announcements: tuple[ResearchAnnouncement, ...]) -> str:
+def _cninfo_evidence_version(code: str, announcements: tuple[ResearchAnnouncement, ...]) -> str:
     material = "|".join(f"{item.announcement_id}:{item.published_at.isoformat()}" for item in announcements)
     digest = hashlib.sha256(f"{code}|{material}".encode()).hexdigest()[:16]
-    return f"cninfo-risk-registry:{digest}"
+    return f"cninfo-risk-evidence:{digest}"
 
 
 def loader_status(state: _ResearchLoaderStatusState) -> ResearchLoaderStatus:
@@ -326,12 +322,12 @@ def loader_status(state: _ResearchLoaderStatusState) -> ResearchLoaderStatus:
                 observation.corporate_risk_history_complete for observation in observations
             ),
             corporate_risk_fact_count=sum(len(observation.corporate_risk_facts) for observation in observations),
-            corporate_risk_registry_versions=tuple(
+            corporate_risk_evidence_versions=tuple(
                 sorted(
                     {
-                        observation.corporate_risk_registry_version
+                        observation.corporate_risk_evidence_version
                         for observation in observations
-                        if observation.corporate_risk_registry_version
+                        if observation.corporate_risk_evidence_version
                     }
                 )
             ),

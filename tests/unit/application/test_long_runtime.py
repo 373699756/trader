@@ -8,7 +8,7 @@ from trader.recommendation.application.long_runtime import LongRuntime, LongRunt
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline
+from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.domain.publication.decision_identity import LongProjection
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.recommendation.domain.publication.models import Strategy
@@ -145,6 +145,24 @@ def test_long_quote_failure_retains_current_and_does_not_replace_codes(applicati
         assert runtime.status().degraded_reasons == ("long_quote_unavailable", "long_quotes_partial")
     finally:
         runtime.stop(wait=True, deadline=ShutdownDeadline.start(2.0))
+
+
+def test_empty_long_watchlist_keeps_current_unready_without_fetching() -> None:
+    quotes = _Quotes([])
+    index = UnifiedDecisionIndex()
+    runtime = LongRuntime(
+        LongRuntimeDependencies(quotes=quotes, index=index, now=lambda: NOW),
+        config_version="config-fixture",
+        watchlist_version="empty-watchlist",
+        items=(),
+        groups=(),
+    )
+    assert runtime.codes == ()
+    assert runtime.status().degraded_reasons == ("long_watchlist_empty",)
+    assert runtime.offer_refresh(LongRefreshRequest(observed_at=NOW, phase="morning_main")) is False
+    assert quotes.calls == []
+    assert index.snapshot(Strategy.LONG).current is None
+    assert runtime.status().published_count == 0
 
 
 def test_long_rejects_duplicate_or_unassigned_group_membership() -> None:

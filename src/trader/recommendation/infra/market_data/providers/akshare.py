@@ -8,7 +8,7 @@ import math
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
@@ -21,7 +21,7 @@ from trader.infra.market_data.providers.akshare_http_contracts import (
     AkshareGetFunction,
     AkshareHttpResponse,
 )
-from trader.infra.market_data.providers.akshare_news import fetch_news as _fetch_news
+from trader.recommendation.infra.market_data.providers.akshare_news import fetch_news as _fetch_news
 from trader.infra.market_data.providers.akshare_parsing import (
     _announcement_rows,
     _clean_text,
@@ -140,13 +140,20 @@ _ANNOUNCEMENT_PAGE_SIZE = 100
 _ANNOUNCEMENT_MAX_PAGES = 50
 
 
-class _AkshareOptions(TypedDict, total=False):
+class _AkshareRequiredOptions(TypedDict):
+    get: AkshareGetFunction
+
+
+class _AkshareOptionalOptions(TypedDict, total=False):
     timeout_seconds: float
-    get: AkshareGetFunction | None
     long_research_policy: LongResearchPolicy | None
     evidence_cache_dir: Path | None
     json_writer: RuntimeJsonWriter | None
     cancel_requested: Callable[[], bool]
+
+
+class _AkshareOptions(_AkshareRequiredOptions, _AkshareOptionalOptions):
+    pass
 
 
 class AkshareResearchClient:
@@ -155,9 +162,8 @@ class AkshareResearchClient:
         **options: Unpack[_AkshareOptions],
     ) -> None:
         timeout_seconds = options.get("timeout_seconds", 8.0)
-        get = options.get("get")
         self._timeout_seconds = max(0.1, timeout_seconds)
-        self._get = get if get is not None else cast(AkshareGetFunction, requests.get)
+        self._get = options["get"]
         self._long_research_policy = options.get("long_research_policy")
         self._evidence_cache_dir = options.get("evidence_cache_dir")
         self._json_writer = options.get("json_writer")
@@ -182,7 +188,7 @@ class AkshareResearchClient:
         announcement_evidence: tuple[Evidence, ...] = ()
         corporate_risk_facts: tuple[CorporateRiskFact, ...] = ()
         corporate_risk_history_complete = False
-        corporate_risk_registry_version = ""
+        corporate_risk_evidence_version = ""
         announcements_available = False
         pledge_ratio: float | None = None
         pledge_evidence: tuple[Evidence, ...] = ()
@@ -202,7 +208,7 @@ class AkshareResearchClient:
                 announcement_evidence,
                 corporate_risk_facts,
                 corporate_risk_history_complete,
-                corporate_risk_registry_version,
+                corporate_risk_evidence_version,
             ) = self._fetch_announcements(code, point_in_time, policy)
         except _SOURCE_EXCEPTIONS as exc:
             source_errors.append(_source_error("announcements", exc))
@@ -239,7 +245,7 @@ class AkshareResearchClient:
             unlock_ratio_pct=unlock_ratio,
             corporate_risk_facts=corporate_risk_facts,
             corporate_risk_history_complete=corporate_risk_history_complete,
-            corporate_risk_registry_version=corporate_risk_registry_version,
+            corporate_risk_evidence_version=corporate_risk_evidence_version,
             evidence=evidence,
             source_errors=tuple(source_errors),
         )

@@ -45,7 +45,7 @@ def test_production_composition_installs_long_without_legacy_snapshot_publicatio
         "RecommendationSnapshot",
         "DeepSeek",
         "FreezeCoordinator",
-        "DecisionRecordRepositoryPort",
+        "DecisionRecordPort",
         "settle_outcomes",
     ):
         assert forbidden not in runtime_source

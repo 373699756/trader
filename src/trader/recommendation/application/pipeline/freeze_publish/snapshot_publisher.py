@@ -7,6 +7,7 @@ import threading
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionCommitted,
@@ -173,7 +174,7 @@ class UnifiedDecisionIndex:
             if (
                 boundary_at.tzinfo is None
                 or boundary_at.utcoffset() is None
-                or getattr(boundary_at.tzinfo, "key", None) != "Asia/Shanghai"
+                or not (isinstance(boundary_at.tzinfo, ZoneInfo) and boundary_at.tzinfo.key == "Asia/Shanghai")
             ):
                 raise ValueError("freeze close boundary must use Asia/Shanghai")
             if boundary_at.date() != trade_date:

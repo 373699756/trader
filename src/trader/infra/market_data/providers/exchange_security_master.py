@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from datetime import time as datetime_time
 from io import BytesIO
-from typing import TypedDict, cast
+from typing import Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
 
 import requests
@@ -42,15 +42,26 @@ class ExchangeSecurityMasterListing:
 ListingFetcher = Callable[[float], Sequence[ExchangeSecurityMasterListing]]
 
 
+class OfficialGetFunction(Protocol):
+    def __call__(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, str],
+        headers: Mapping[str, str] | None,
+        timeout: float,
+    ) -> requests.Response: ...
+
+
 class _RequiredClientOptions(TypedDict):
     timeout_seconds: float
     wall_clock: Callable[[], datetime]
+    sse_fetcher: ListingFetcher
+    szse_fetcher: ListingFetcher
 
 
 class _OptionalClientOptions(TypedDict, total=False):
     minimum_rows: int
-    sse_fetcher: ListingFetcher
-    szse_fetcher: ListingFetcher
     monotonic: Callable[[], float]
 
 
@@ -77,8 +88,8 @@ class ExchangeSecurityMasterClient:
             raise ValueError("exchange security master minimum rows must be positive")
         self._timeout_seconds = float(timeout_seconds)
         self._minimum_rows = minimum_rows
-        self._sse_fetcher = options.get("sse_fetcher", _fetch_sse_listings)
-        self._szse_fetcher = options.get("szse_fetcher", _fetch_szse_listings)
+        self._sse_fetcher = options["sse_fetcher"]
+        self._szse_fetcher = options["szse_fetcher"]
         self._monotonic = options.get("monotonic", time.monotonic)
         self._wall_clock = options["wall_clock"]
         self._lock = threading.Lock()
@@ -241,7 +252,9 @@ def _to_observation(
     )
 
 
-def _fetch_sse_listings(timeout_seconds: float) -> tuple[ExchangeSecurityMasterListing, ...]:
+def fetch_sse_listings(
+    timeout_seconds: float, *, get: OfficialGetFunction
+) -> tuple[ExchangeSecurityMasterListing, ...]:
     headers = {
         "Host": "query.sse.com.cn",
         "Pragma": "no-cache",
@@ -255,6 +268,7 @@ def _fetch_sse_listings(timeout_seconds: float) -> tuple[ExchangeSecurityMasterL
     for stock_type, board in (("1", "main"), ("8", "star")):
         response = _official_get(
             _SSE_URL,
+            get=get,
             params={
                 "STOCK_TYPE": stock_type,
                 "REG_PROVINCE": "",
@@ -294,9 +308,12 @@ def _fetch_sse_listings(timeout_seconds: float) -> tuple[ExchangeSecurityMasterL
     return tuple(listings)
 
 
-def _fetch_szse_listings(timeout_seconds: float) -> tuple[ExchangeSecurityMasterListing, ...]:
+def fetch_szse_listings(
+    timeout_seconds: float, *, get: OfficialGetFunction
+) -> tuple[ExchangeSecurityMasterListing, ...]:
     response = _official_get(
         _SZSE_URL,
+        get=get,
         params={
             "SHOWTYPE": "xlsx",
             "CATALOGID": "1110",
@@ -357,6 +374,7 @@ def _fetch_szse_listings(timeout_seconds: float) -> tuple[ExchangeSecurityMaster
 def _official_get(
     url: str,
     *,
+    get: OfficialGetFunction,
     params: Mapping[str, str],
     timeout: float,
     headers: Mapping[str, str] | None = None,
@@ -365,7 +383,7 @@ def _official_get(
     retry_delays = (1.0, 3.0, 5.0)
     for attempt in range(4):
         try:
-            response = requests.get(url, params=params, headers=headers, timeout=timeout)
+            response = get(url, params=params, headers=headers, timeout=timeout)
             response.raise_for_status()
             return response
         except (requests.ConnectionError, requests.Timeout) as exc:

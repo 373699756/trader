@@ -18,7 +18,17 @@ from trader.infra.cache_contracts import (
     build_cache_identity,
     canonical_json_bytes,
 )
-from trader.recommendation.infra.normalization.merge import observation_from_quote
+from trader.infra.market_data.observations import SourceObservation
+from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
+from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
+from trader.recommendation.application.runtime.source_lanes import (
+    SourceLaneScheduler,
+    SourceRequestSupersededError,
+)
+from trader.infra.workers import BoundedExecutor
+from trader.recommendation.domain.market.models import (
+    MarketQuote,
+)
 from trader.recommendation.infra.market_data.gateway_runtime import (
     _before_deadline,
     _cache_error_code,
@@ -30,17 +40,7 @@ from trader.recommendation.infra.market_data.provider_ports import (
     FullMarketFetcher,
     FullMarketSource,
 )
-from trader.infra.market_data.observations import SourceObservation
-from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
-from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
-from trader.recommendation.application.runtime.source_lanes import (
-    SourceLaneRegistry,
-    SourceRequestSupersededError,
-)
-from trader.recommendation.application.runtime.workers import BoundedExecutor
-from trader.recommendation.domain.market.models import (
-    MarketQuote,
-)
+from trader.recommendation.infra.normalization.merge import observation_from_quote
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class MarketSourceDependencies:
     sina: FullMarketSource
     minimum_market_rows: int
     worker_pool: BoundedExecutor | None
-    source_lanes: SourceLaneRegistry | None
+    source_lanes: SourceLaneScheduler | None
     cache: BoundedCache[object] | None
     source_contracts: Mapping[str, str]
     config_version: str

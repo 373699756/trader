@@ -1,4 +1,4 @@
-"""Shared normalizers for raw market-data payloads."""
+"""Recommendation normalizers for raw market-data payloads."""
 
 from __future__ import annotations
 

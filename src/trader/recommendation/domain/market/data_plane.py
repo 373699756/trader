@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from types import MappingProxyType
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.epochs import CandidateQuoteEpoch, DailyFeaturePack, MarketEpoch, ResearchEpoch
 
@@ -32,7 +33,7 @@ class DataPlaneFailure:
             raise ValueError("data-plane failure reason must be a structured code")
         if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
             raise ValueError("data-plane failure time must be timezone-aware")
-        if getattr(self.observed_at.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
+        if not (isinstance(self.observed_at.tzinfo, ZoneInfo) and self.observed_at.tzinfo.key == _SHANGHAI_TIMEZONE):
             raise ValueError("data-plane failure time must use Asia/Shanghai")
 
 

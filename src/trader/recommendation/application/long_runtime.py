@@ -15,7 +15,7 @@ from trader.recommendation.application.ports.market_data import MarketDataUnavai
 from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus, LatestWinsWorker
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
@@ -80,7 +80,7 @@ class LongRuntime:
         self._live_count = 0
         self._retained_count = 0
         self._missing_count = len(self._items)
-        self._degraded_reasons: tuple[str, ...] = ()
+        self._degraded_reasons: tuple[str, ...] = () if self._codes else ("long_watchlist_empty",)
         self._last_error_code = ""
         self._worker = LatestWinsWorker(
             "trader-long",
@@ -96,6 +96,8 @@ class LongRuntime:
         return self._worker.start()
 
     def offer_refresh(self, request: LongRefreshRequest) -> bool:
+        if not self._codes:
+            return False
         return self._worker.offer(request).value in {"accepted", "replaced", "coalesced"}
 
     def wait_idle(self, timeout_seconds: float) -> bool:
@@ -250,8 +252,8 @@ class LongRuntime:
 def _validate_items(items: tuple[LongWatchItemDefinition, ...]) -> tuple[LongWatchItemDefinition, ...]:
     normalized = tuple(items)
     codes = tuple(item.code for item in normalized)
-    if not normalized or len(codes) != len(set(codes)):
-        raise ValueError("long runtime requires a non-empty unique fixed watchlist")
+    if len(codes) != len(set(codes)):
+        raise ValueError("long runtime requires a unique fixed watchlist")
     return normalized
 
 

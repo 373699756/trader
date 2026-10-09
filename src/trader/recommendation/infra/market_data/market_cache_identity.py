@@ -289,8 +289,8 @@ def _merge_research_observation(
             if "announcements" in failed_sources and not current.corporate_risk_history_complete
             else current.corporate_risk_history_complete
         ),
-        corporate_risk_registry_version=(
-            current.corporate_risk_registry_version or previous.corporate_risk_registry_version
+        corporate_risk_evidence_version=(
+            current.corporate_risk_evidence_version or previous.corporate_risk_evidence_version
         ),
         evidence=evidence,
         source_errors=tuple(dict.fromkeys((*previous.source_errors, *current.source_errors))),
@@ -318,7 +318,7 @@ def _serialize_research_observation(observation: ResearchObservation) -> dict[st
             _serialize_corporate_risk_fact(item) for item in observation.corporate_risk_facts
         ),
         "corporate_risk_history_complete": observation.corporate_risk_history_complete,
-        "corporate_risk_registry_version": observation.corporate_risk_registry_version,
+        "corporate_risk_evidence_version": observation.corporate_risk_evidence_version,
         "evidence": tuple(_serialize_evidence(item) for item in observation.evidence),
         "source_errors": list(observation.source_errors),
     }
@@ -355,7 +355,7 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
         if isinstance(corporate_risk_raw, list)
         else (),
         corporate_risk_history_complete=bool(raw.get("corporate_risk_history_complete", False)),
-        corporate_risk_registry_version=str(raw.get("corporate_risk_registry_version") or ""),
+        corporate_risk_evidence_version=str(raw.get("corporate_risk_evidence_version") or ""),
         evidence=tuple(_deserialize_evidence(item) for item in evidence_raw if isinstance(item, dict))
         if isinstance(evidence_raw, list)
         else (),

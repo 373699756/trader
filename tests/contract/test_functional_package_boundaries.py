@@ -176,11 +176,20 @@ def test_layer_import_graph_has_no_cycles_or_reverse_edges() -> None:
 def test_market_provider_and_normalization_packages_are_partitioned() -> None:
     market_root = SOURCE_ROOT / "infra" / "market_data"
     provider_root = market_root / "providers"
+    recommendation_provider_root = SOURCE_ROOT / "recommendation" / "infra" / "market_data" / "providers"
     normalization_root = SOURCE_ROOT / "recommendation" / "infra" / "normalization"
     assert provider_root.is_dir()
+    assert recommendation_provider_root.is_dir()
     assert normalization_root.is_dir()
-    assert (market_root / "quote_normalization.py").is_file()
-    assert not (market_root / "normalization").exists()
+    assert (normalization_root / "quote.py").is_file()
+    assert {"akshare.py", "akshare_news.py", "eastmoney.py", "sina.py", "tencent.py"} <= {
+        path.name for path in recommendation_provider_root.glob("*.py")
+    }
+    assert not any(
+        (provider_root / name).exists()
+        for name in ("akshare.py", "akshare_news.py", "eastmoney.py", "sina.py", "tencent.py")
+    )
+    assert not any((market_root / "normalization").rglob("*.py"))
     assert not any(
         (market_root / name).exists()
         for name in (
@@ -214,7 +223,8 @@ def test_market_provider_and_normalization_packages_are_partitioned() -> None:
 
 def test_business_and_delivery_boundaries_do_not_import_provider_implementations() -> None:
     roots = (
-        SOURCE_ROOT / "recommendation",
+        SOURCE_ROOT / "recommendation" / "application",
+        SOURCE_ROOT / "recommendation" / "domain",
         SOURCE_ROOT / "download",
         SOURCE_ROOT / "training",
         SOURCE_ROOT / "http_api",
@@ -362,13 +372,11 @@ def test_application_runtime_and_market_data_are_partitioned() -> None:
         "latency.py",
         "supervisor.py",
         "schedule.py",
-        "shutdown.py",
         "source_lanes.py",
         "resource_orchestration.py",
         "latest_wins.py",
         "scheduler_runtime.py",
         "runtime_issues.py",
-        "workers.py",
     }
     assert {path.name for path in runtime_root.glob("*.py")} >= runtime_files
     assert (SOURCE_ROOT / "recommendation/application/pipeline/data_source/source_router.py").is_file()
@@ -439,6 +447,6 @@ def test_application_research_and_outcome_services_are_partitioned() -> None:
         for package_root in (research_root, outcomes_root)
         for path in package_root.rglob("*.py")
         for imported in _imports(path)
-        if imported.startswith(forbidden_imports)
+        if imported.startswith(forbidden_imports) and imported not in {"trader.infra.shutdown", "trader.infra.workers"}
     ]
     assert violations == []

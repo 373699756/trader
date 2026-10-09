@@ -19,13 +19,12 @@ from tests.component.market_data_test_support import (
     MarketQuote,
     MutableMonotonic,
     Path,
-    SourceLaneRegistry,
+    SourceLaneScheduler,
     SourceRequestSupersededError,
     StaticGateway,
     StaticHistoryClient,
     StaticMarketClient,
     StaticTencentClient,
-    _history_bars,
     _quote,
     _service,
     datetime,
@@ -206,7 +205,7 @@ def test_source_lane_replaces_cancelled_pending_identity_with_newest_request() -
 
 def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
 
     class ReferenceGateway(StaticGateway):
         @staticmethod
@@ -256,7 +255,7 @@ def test_scheduled_tushare_reference_refresh_does_not_block_fast_source_lane() -
 def test_source_lane_records_bounded_queue_wait_telemetry() -> None:
     pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="source-latency")
     latency = LatencyWaterfall()
-    lanes = SourceLaneRegistry(pool, latency=latency)
+    lanes = SourceLaneScheduler(pool, latency=latency)
     pool.start()
 
     try:
@@ -272,7 +271,7 @@ def test_source_lane_records_bounded_queue_wait_telemetry() -> None:
 
 def test_history_activity_does_not_block_realtime_eastmoney_lane() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     history_started = threading.Event()
     release_history = threading.Event()
 
@@ -301,7 +300,7 @@ def test_topk_quote_lane_uses_reserved_urgent_worker_while_candidate_quotes_are_
         queue_capacity=2,
         thread_name_prefix="test-source-priority",
     )
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     candidate_started = threading.Event()
     release_candidate = threading.Event()
 
@@ -333,7 +332,7 @@ def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
         queue_capacity=8,
         thread_name_prefix="shared-priority-data",
     )
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     entered = threading.Event()
     release = threading.Event()
 
@@ -380,7 +379,7 @@ def test_topk_quote_refresh_uses_reserved_urgent_worker() -> None:
 
 def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     eastmoney = BlockingMarketClient((replace(_quote(), source="eastmoney"),))
     gateway = MarketDataGateway(
         eastmoney,
@@ -419,7 +418,7 @@ def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> 
 
 def test_candidate_source_lane_deadline_returns_baseline_and_discards_late_quote() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
     tencent = BlockingTencentClient((replace(_quote(), source="tencent", price=12.5),))
     gateway = MarketDataGateway(
         StaticMarketClient((replace(_quote(), source="eastmoney"),)),
@@ -465,7 +464,7 @@ def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due(
         wall_clock=lambda: NOW,
     )
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneRegistry(pool)
+    lanes = SourceLaneScheduler(pool)
 
     class BlockingRefreshClient:
         def __init__(self, source: str) -> None:

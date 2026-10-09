@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import ParamSpec, Protocol, TypeVar, cast
 
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -27,13 +26,8 @@ class WorkerExecutor(Protocol):
     ) -> Future[_T] | None: ...
 
 
-@dataclass(frozen=True)
-class BorrowExecutorOptions:
-    worker_count: int
-    thread_name_prefix: str
-    queue_capacity: int | None = None
-    wait_on_exit: bool = True
-    nested_inline: bool = False
+class WorkerResourceRejectedError(RuntimeError):
+    """An injected execution resource cannot accept new work."""
 
 
 @dataclass(frozen=True)
@@ -302,36 +296,16 @@ def _warm_worker(ready: threading.Barrier) -> int:
     return threading.get_ident()
 
 
-@contextmanager
-def borrow_executor(
-    shared: BoundedExecutor | None,
-    options: BorrowExecutorOptions,
-) -> Iterator[WorkerExecutor]:
-    if shared is not None and shared.is_running():
-        # When every worker enters a nested path together, queued work cannot
-        # start. Keep normal nested fan-out when at least one worker is spare.
-        if shared.owns_current_thread() and (options.nested_inline or not shared.has_spare_worker()):
-            yield _InlineExecutor()
-        else:
-            yield shared
-        return
-
-    local = BoundedExecutor(
-        worker_count=max(1, options.worker_count),
-        queue_capacity=max(
-            1,
-            options.queue_capacity if options.queue_capacity is not None else options.worker_count,
-        ),
-        thread_name_prefix=options.thread_name_prefix,
-    )
-    local.start()
-    try:
-        yield local
-    finally:
-        local.stop(wait=options.wait_on_exit, cancel_futures=not options.wait_on_exit)
+def injected_executor(shared: BoundedExecutor | None, *, inline: bool = False) -> WorkerExecutor:
+    """Use the caller's pool, or explicit serial execution, without creating resources."""
+    if shared is None:
+        return _InlineExecutor()
+    if shared.is_running() and (inline or shared.owns_current_thread()):
+        return _InlineExecutor()
+    return shared
 
 
-def submit_or_run_inline(
+def submit_or_reject(
     executor: WorkerExecutor,
     function: Callable[_P, _T],
     /,
@@ -342,10 +316,7 @@ def submit_or_run_inline(
     if future is not None:
         return future
     completed: Future[_T] = Future()
-    try:
-        completed.set_result(function(*args, **kwargs))
-    except BaseException as exc:
-        completed.set_exception(exc)
+    completed.set_exception(WorkerResourceRejectedError("resource_rejected: injected worker queue is full or stopped"))
     return completed
 
 
@@ -368,8 +339,8 @@ class _InlineExecutor:
 __all__ = [
     "BoundedExecutor",
     "BoundedExecutorStatus",
-    "BorrowExecutorOptions",
     "WorkerExecutor",
-    "borrow_executor",
-    "submit_or_run_inline",
+    "WorkerResourceRejectedError",
+    "injected_executor",
+    "submit_or_reject",
 ]

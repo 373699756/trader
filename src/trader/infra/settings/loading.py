@@ -84,7 +84,7 @@ _STRATEGY_KEYS = {
     "long_research",
     "dimension_weights",
     "risk_rules",
-    "factor_registry",
+    "factor_index",
     "factor_contract",
 }
 
@@ -160,10 +160,10 @@ def load_strategy_settings(
     tomorrow_tail_signal = _parse_tail_signal_policy(_mapping(raw, "tomorrow_tail_signal"))
     market_regime = _parse_market_regime_policy(_mapping(raw, "market_regime"))
     long_research = _parse_long_research_policy(_mapping(raw, "long_research"))
-    factor_registry_raw = _mapping(raw, "factor_registry")
-    factor_registry = {
+    factor_index_raw = _mapping(raw, "factor_index")
+    factor_index = {
         str(factor_id): _parse_factor_definition(str(factor_id), definition)
-        for factor_id, definition in factor_registry_raw.items()
+        for factor_id, definition in factor_index_raw.items()
     }
     settings = StrategySettings(
         strategy_version=_strategy_contract_identity(raw),
@@ -215,7 +215,7 @@ def load_strategy_settings(
         feature_component_weights=feature_component_weights,
         risk_rules=risk_rules,
         factor_contract=dict(_mapping(raw, "factor_contract")),
-        factor_registry=factor_registry,
+        factor_index=factor_index,
     )
     _validate_strategy_settings(settings)
     return settings

@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Generic, TypeVar
 
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 
 _T = TypeVar("_T")
 

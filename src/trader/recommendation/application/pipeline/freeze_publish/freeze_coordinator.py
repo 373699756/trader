@@ -17,8 +17,9 @@ from trader.recommendation.application.ports.decision_index import DecisionIndex
 from trader.recommendation.application.ports.decision_records import (
     DecisionCheckpoint,
     DecisionRecordError,
-    DecisionRecordRepositoryPort,
+    DecisionRecordPort,
 )
+from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.decision_identity import (
     CommitKind,
     CommittedDecisionRecord,
@@ -26,7 +27,6 @@ from trader.recommendation.domain.publication.decision_identity import (
     formal_scored_decision,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.evidence.pipeline import StageState
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 CloseRecoveryPath = Literal["current", "close_rebuild"]
@@ -63,7 +63,7 @@ class ScoredFreezeCoordinator:
     def __init__(
         self,
         index: DecisionIndexPort,
-        repository: DecisionRecordRepositoryPort,
+        records: DecisionRecordPort,
         clock: Clock,
         *,
         runtime_identity: DecisionRuntimeIdentity,
@@ -71,7 +71,7 @@ class ScoredFreezeCoordinator:
         publication_io: PublicationIoTracker | None = None,
     ) -> None:
         self._index = index
-        self._repository = repository
+        self._records = records
         self._clock = clock
         self._runtime_identity = runtime_identity
         self._strategy = strategy
@@ -94,7 +94,7 @@ class ScoredFreezeCoordinator:
             with observe_publication_io(
                 self._publication_io, "checkpoint_write", PublicationIoTarget.decision(current)
             ) as observation:
-                self._repository.save_checkpoint(checkpoint)
+                self._records.save_checkpoint(checkpoint)
                 observation.output_version = checkpoint.version
         except (DecisionRecordError, OSError):
             return FreezeOperationResult("persistence_failed", version=checkpoint.version)
@@ -136,7 +136,7 @@ class ScoredFreezeCoordinator:
                 with observe_publication_io(
                     self._publication_io, "checkpoint_consume", PublicationIoTarget.decision(seal.decision)
                 ) as observation:
-                    self._repository.consume_checkpoint(checkpoint, consumed_at=now)
+                    self._records.consume_checkpoint(checkpoint, consumed_at=now)
                     observation.output_version = checkpoint.version
             except (DecisionRecordError, OSError):
                 pass
@@ -214,7 +214,7 @@ class ScoredFreezeCoordinator:
     def _existing(self, trade_date: date) -> FreezeOperationResult | None:
         try:
             with observe_publication_io(self._publication_io, "formal_lookup", self._target(trade_date)) as observation:
-                record = self._repository.load(self._strategy, trade_date)
+                record = self._records.load(self._strategy, trade_date)
                 observation.reason = "formal_found" if record is not None else "formal_missing"
                 observation.state = StageState.READY if record is not None else StageState.NOT_READY
                 if record is not None:
@@ -244,7 +244,7 @@ class ScoredFreezeCoordinator:
             with observe_publication_io(
                 self._publication_io, "checkpoint_lookup", self._target(trade_date)
             ) as observation:
-                checkpoint = self._repository.load_checkpoint(self._strategy, trade_date)
+                checkpoint = self._records.load_checkpoint(self._strategy, trade_date)
                 observation.reason = "checkpoint_found" if checkpoint is not None else "checkpoint_missing"
                 observation.state = StageState.READY if checkpoint is not None else StageState.NOT_READY
                 if checkpoint is not None:
@@ -270,7 +270,7 @@ class ScoredFreezeCoordinator:
             with observe_publication_io(
                 self._publication_io, "formal_write", PublicationIoTarget.decision(record.decision)
             ) as observation:
-                self._repository.commit(record)
+                self._records.commit(record)
                 observation.output_version = record.version
         except (DecisionRecordError, OSError):
             return FreezeOperationResult("persistence_failed", version=record.version)
@@ -296,7 +296,11 @@ class ScoredFreezeCoordinator:
 
 def _now(clock: Clock) -> datetime:
     value = clock.now()
-    if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != SHANGHAI.key:
+    if (
+        value.tzinfo is None
+        or value.utcoffset() is None
+        or not (isinstance(value.tzinfo, ZoneInfo) and value.tzinfo.key == SHANGHAI.key)
+    ):
         raise ValueError("clock must return Asia/Shanghai time")
     return value
 

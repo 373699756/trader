@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+import requests
+
 from .reporting import emit_report, summarize_latency_ms
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -20,8 +22,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.infra.market_data.history.history import DailyBar  # noqa: E402
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient  # noqa: E402
-from trader.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
-from trader.infra.market_data.providers.tencent import TencentClient  # noqa: E402
+from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient  # noqa: E402
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CODES = ("600519", "000001", "300750", "688981", "601318")
@@ -89,12 +91,16 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
 
 def _client(options: HistorySamplingOptions) -> TencentClient | EastmoneyClient | FallbackHistoryClient:
     if options.source == "tencent":
-        return TencentClient(timeout_seconds=options.timeout_seconds)
+        return TencentClient(
+            worker_pool=None, session_factory=requests.Session, timeout_seconds=options.timeout_seconds
+        )
     if options.source == "eastmoney":
-        return EastmoneyClient(timeout_seconds=options.timeout_seconds)
+        return EastmoneyClient(
+            worker_pool=None, session_factory=requests.Session, timeout_seconds=options.timeout_seconds
+        )
     return FallbackHistoryClient(
-        TencentClient(timeout_seconds=options.timeout_seconds),
-        EastmoneyClient(timeout_seconds=options.timeout_seconds),
+        TencentClient(worker_pool=None, session_factory=requests.Session, timeout_seconds=options.timeout_seconds),
+        EastmoneyClient(worker_pool=None, session_factory=requests.Session, timeout_seconds=options.timeout_seconds),
     )
 
 

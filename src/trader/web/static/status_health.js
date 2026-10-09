@@ -233,10 +233,40 @@
       .replaceAll("'", "&#039;");
   }
 
+  const STAGE_ALIASES = Object.freeze({
+    input_readiness: ["input_readiness", "refresh"],
+    dynamic_filter: ["dynamic_filter", "decision"],
+    candidate_refresh: ["candidate_refresh", "refresh"],
+    board_cross_section: ["board_cross_section", "decision"],
+    board_limit: ["board_limit", "decision"],
+    strategy_history: ["strategy_history", "decision"],
+    model_input: ["model_input", "decision"],
+    input_coverage: ["input_coverage", "snapshot"],
+    candidate_score: ["candidate_score", "decision"],
+    evidence_score: ["evidence_score", "decision"],
+    local_score: ["local_score", "review"],
+    deepseek_review: ["deepseek_review", "review"],
+    fusion: ["fusion", "decision"],
+    model_cost_gate: ["model_cost_gate", "decision"],
+    action_gate: ["action_gate", "decision"],
+    concentration: ["concentration", "freeze", "publish", "settlement"],
+  });
+
+  function issueBelongsToStage(issue, key) {
+    return (STAGE_ALIASES[key] || [key]).includes(issue && issue.stage);
+  }
+
+  function unassignedIssues(issues) {
+    const keys = Object.keys(STAGE_ALIASES);
+    return (Array.isArray(issues) ? issues : []).filter((issue) => !keys.some((key) => issueBelongsToStage(issue, key)));
+  }
+
   window.TraderStatusHealth = Object.freeze({
     healthView,
+    issueBelongsToStage,
     issueSummaryTitle,
     presentIssue,
     runtimeErrorRows,
+    unassignedIssues,
   });
 })();

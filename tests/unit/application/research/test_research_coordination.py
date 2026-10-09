@@ -4,6 +4,7 @@ import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.application.research_coordination import ResearchCoordinator, ResearchCoordinatorOptions
 
@@ -48,12 +49,12 @@ def test_research_coordinator_runs_after_close_in_bounded_priority_batches() -> 
     results: list[ResearchRefreshResult] = []
     coordinator = ResearchCoordinator(
         research,
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         now=lambda: NOW,
         on_result=results.append,
         options=ResearchCoordinatorOptions(
             batch_size=4,
             batch_budget_seconds=40,
-            queue_capacity=1,
         ),
     )
     assert coordinator.start() is True
@@ -98,12 +99,12 @@ def test_research_coordinator_prioritizes_new_codes_without_cancelling_running_b
 
     coordinator = ResearchCoordinator(
         BlockingResearch(),
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         now=lambda: NOW,
         on_result=lambda _result: None,
         options=ResearchCoordinatorOptions(
             batch_size=2,
             batch_budget_seconds=40,
-            queue_capacity=1,
         ),
     )
     coordinator.start()
@@ -126,6 +127,7 @@ def test_research_coordinator_cools_successful_codes_between_explicit_offers() -
     research = RecordingResearch()
     coordinator = ResearchCoordinator(
         research,
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         now=lambda: NOW,
         on_result=lambda _result: None,
         options=ResearchCoordinatorOptions(
@@ -174,6 +176,7 @@ def test_research_coordinator_full_failure_short_circuits_pending_batches() -> N
 
     coordinator = ResearchCoordinator(
         FailedResearch(),
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         now=lambda: NOW,
         on_result=lambda _result: None,
         options=ResearchCoordinatorOptions(
@@ -229,6 +232,7 @@ def test_research_coordinator_retries_partial_codes_without_blocking_covered_cod
 
     coordinator = ResearchCoordinator(
         PartialResearch(),
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         now=lambda: NOW,
         on_result=lambda _result: None,
         options=ResearchCoordinatorOptions(

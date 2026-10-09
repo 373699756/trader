@@ -22,7 +22,7 @@ from trader.infra.cache_contracts import (
     canonical_json_bytes,
     freeze_cache_value,
 )
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 
 _T = TypeVar("_T")
 
@@ -216,7 +216,7 @@ class BoundedLruCache(Generic[_T]):
         policy = self._policy.datasets[identity.dataset]
         scope = (identity.dataset, identity.source)
         if self._inflight_scope_entries.get(scope, 0) >= policy.capacity:
-            raise RuntimeError("cache in-flight registry is full")
+            raise RuntimeError("cache in-flight index is full")
         future: Future[_T] = Future()
         self._inflight[identity] = future
         self._inflight_scope_entries[scope] = self._inflight_scope_entries.get(scope, 0) + 1

@@ -322,7 +322,7 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
                     ),
                 ),
                 corporate_risk_history_complete=True,
-                corporate_risk_registry_version="risk-1",
+                corporate_risk_evidence_version="risk-1",
                 evidence=(evidence,),
             )
         },

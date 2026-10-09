@@ -786,7 +786,11 @@ def _require_identity(value: str, label: str) -> None:
 
 
 def _require_shanghai(value: datetime, label: str) -> None:
-    if value.tzinfo is None or value.utcoffset() is None or getattr(value.tzinfo, "key", None) != _SHANGHAI.key:
+    if (
+        value.tzinfo is None
+        or value.utcoffset() is None
+        or not (isinstance(value.tzinfo, ZoneInfo) and value.tzinfo.key == _SHANGHAI.key)
+    ):
         raise ValueError(f"{label} must use Asia/Shanghai")
 
 

@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from trader.infra.cache_contracts import CacheStatus
-from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
-from trader.infra.market_data.router import RouteOutcome
 from trader.recommendation.application.runtime.latency import LatencyWaterfallStatus
-from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistryStatus
+from trader.recommendation.application.runtime.source_lanes import SourceLaneSnapshot
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
+from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
+from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ class MarketGatewayHealthStatus:
     snapshot: CanonicalMarketSnapshot | None
     changes: NormalizedMarketChangeSet
     route: RouteOutcome | None
-    source_lanes: SourceLaneRegistryStatus | None
+    source_lanes: SourceLaneSnapshot | None
     security_master: SecurityMasterHealthStatus
     sources: Mapping[str, MarketSourceHealthStatus]
     cache: CacheStatus | None

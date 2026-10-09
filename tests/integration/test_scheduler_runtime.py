@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from trader.infra.workers import BoundedExecutor
+
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
@@ -36,7 +38,7 @@ from trader.recommendation.application.runtime.cadence import (
 )
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
@@ -314,7 +316,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
     from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
     from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
     from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
-    from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
+    from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
     from trader.web import create_app
 
     clock = FixedClock(NOW)
@@ -338,6 +340,12 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
 
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -368,7 +376,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
         operation = "decision_event" if failure == "event" else "observer_enqueue"
     payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["health"]["issue_count"] > 0
-    repository = SQLiteDecisionRecordRepository(tmp_path)
+    repository = SQLiteDecisionRecords(tmp_path)
     repository.initialize()
     queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), repository, clock)
     stream = UnifiedDecisionEventStream()
@@ -392,6 +400,12 @@ def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -
     tracker = PublicationIoTracker(now=lambda: NOW, monotonic=lambda: 1.0)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -453,6 +467,12 @@ def test_slow_hybrid_review_does_not_block_a_newer_local_score() -> None:
     index = UnifiedDecisionIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -532,6 +552,12 @@ def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_dec
     overlay_events: list[DecisionOverlay] = []
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(observed_at),
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
@@ -600,6 +626,12 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
     data = DataRefresh()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(frozen_at),
             calendar=TradingCalendar(),
             cadence=_cadence(frozen_at),
@@ -662,6 +694,12 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
 
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
@@ -733,6 +771,12 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
 
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -853,6 +897,12 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
     calendar = RecoveringCalendar()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=calendar,
             cadence=_cadence(observed_at),
@@ -945,6 +995,12 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
     decisions = TrackingDecisions()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(observed_at),
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
@@ -992,6 +1048,12 @@ def test_unchanged_candidate_refresh_does_not_trigger_another_score() -> None:
     decisions = Decisions()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(observed_at),
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
@@ -1043,6 +1105,12 @@ def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None
     freezes = CurrentRequiredFreezes()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(checkpoint_at.replace(hour=9, minute=15)),
@@ -1115,6 +1183,12 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
     freezes = Freezes(index)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(morning),
@@ -1192,6 +1266,12 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour
     clock = FixedClock(after_close)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
@@ -1275,6 +1355,12 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
     clock = FixedClock(after_close)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
@@ -1338,6 +1424,12 @@ def test_midday_cold_start_recovers_missing_outputs_once_without_review() -> Non
     index = UnifiedDecisionIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
@@ -1396,6 +1488,12 @@ def test_midday_empty_observation_draft_is_a_completed_recovery_not_a_retry_loop
     decisions = DraftOnlyDecisions()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
@@ -1442,6 +1540,12 @@ def test_midday_recovery_retries_when_refresh_failed_before_any_output() -> None
     index = UnifiedDecisionIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
@@ -1487,6 +1591,12 @@ def test_midday_recovery_does_not_queue_duplicate_while_lane_is_active() -> None
 
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(midday),
             calendar=TradingCalendar(),
             cadence=_cadence(midday),
@@ -1526,6 +1636,12 @@ def test_after_close_prefers_existing_same_day_current_without_rebuilding() -> N
     freezes = Freezes(index)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(after_close),
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
@@ -1578,6 +1694,12 @@ def test_after_close_formal_records_only_refresh_selected_overlays_without_full_
     existing = {strategy: index.snapshot(strategy).formal for strategy in (Strategy.TOMORROW, Strategy.D25)}
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(after_close),
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
@@ -1623,6 +1745,12 @@ def test_tomorrow_lane_progresses_while_d25_lane_is_blocked() -> None:
     index = UnifiedDecisionIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -1669,6 +1797,12 @@ def test_newer_same_strategy_cycle_does_not_starve_first_current_publication() -
     published = []
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -1733,6 +1867,12 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
     published = []
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
@@ -1813,6 +1953,12 @@ def test_direct_decision_stream_delivery_survives_a_full_audit_observer_queue() 
     index = UnifiedDecisionIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -1887,6 +2033,12 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
     clock = FixedClock(NOW)
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=clock,
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -1986,6 +2138,12 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
 def test_successful_hybrid_publish_recovers_decision_path_issues() -> None:
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -2018,6 +2176,12 @@ def test_successful_hybrid_publish_recovers_decision_path_issues() -> None:
 def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() -> None:
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -2052,6 +2216,12 @@ def test_runtime_error_history_is_bounded_and_repeated_failures_are_coalesced() 
 def test_successful_publish_does_not_recover_an_unrelated_freeze_failure() -> None:
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
@@ -2096,6 +2266,12 @@ def test_afternoon_schedule_keeps_tomorrow_d25_and_long_active() -> None:
     data = DataRefresh()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(afternoon),
             calendar=TradingCalendar(),
             cadence=_cadence(afternoon),
@@ -2142,6 +2318,12 @@ def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -
     ).accepted
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(after_freeze),
             calendar=TradingCalendar(),
             cadence=_cadence(after_freeze),
@@ -2185,6 +2367,12 @@ def test_review_deadline_prevents_a_late_model_upgrade() -> None:
     index = UnifiedDecisionIndex()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
             clock=FixedClock(NOW),
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),

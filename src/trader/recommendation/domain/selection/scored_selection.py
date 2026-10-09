@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from itertools import pairwise
 from types import MappingProxyType
+from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.candidate.filters import (
     FilterTier,
@@ -257,7 +258,9 @@ def _validated_selection_features(
     features = tuple(request.features)
     if request.evaluated_at.tzinfo is None or request.evaluated_at.utcoffset() is None:
         raise ValueError("evaluation time must be timezone-aware")
-    if getattr(request.evaluated_at.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
+    if not (
+        isinstance(request.evaluated_at.tzinfo, ZoneInfo) and request.evaluated_at.tzinfo.key == _SHANGHAI_TIMEZONE
+    ):
         raise ValueError("evaluation time must use Asia/Shanghai")
     if not all((request.trade_date, request.phase, request.data_version, request.merge_epoch)):
         raise ValueError("scored selection identity must not be empty")
@@ -302,7 +305,7 @@ def _validated_population_window(
     max_age_seconds = population_max_age_seconds if population_max_age_seconds is not None else default_max_age_seconds
     if evaluated_at.tzinfo is None or evaluated_at.utcoffset() is None:
         raise ValueError("population evaluation time must be timezone-aware")
-    if getattr(evaluated_at.tzinfo, "key", None) != _SHANGHAI_TIMEZONE:
+    if not (isinstance(evaluated_at.tzinfo, ZoneInfo) and evaluated_at.tzinfo.key == _SHANGHAI_TIMEZONE):
         raise ValueError("population evaluation time must use Asia/Shanghai")
     if evaluated_at > candidate_evaluated_at:
         raise ValueError("population evaluation time cannot exceed candidate evaluation time")

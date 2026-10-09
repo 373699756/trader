@@ -91,7 +91,7 @@ class IssuerEligibilityReasonCount:
 
 
 @dataclass(frozen=True)
-class IssuerEligibilityRegistryStatus:
+class IssuerEligibilitySnapshot:
     schema_version: str
     fact_count: int
     excluded_count: int
@@ -317,7 +317,7 @@ __all__ = [
     "IssuerEligibilityFact",
     "IssuerEligibilityReason",
     "IssuerEligibilityReasonCount",
-    "IssuerEligibilityRegistryStatus",
+    "IssuerEligibilitySnapshot",
     "IssuerEligibilityState",
     "eligibility_facts_from_quote",
     "eligibility_facts_from_research",

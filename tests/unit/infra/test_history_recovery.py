@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
-from trader.recommendation.application.runtime.workers import BoundedExecutor
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
@@ -276,7 +276,9 @@ def test_timed_out_inflight_code_is_not_duplicated_or_published_late() -> None:
         pool.stop(wait=True)
     assert primary.calls.count("600001") == 1
     assert recovery.status().inflight_count == 0
-    # The late result did not become a cache hit.
+    # A stopped pool cannot restart implicitly or turn late results into hits.
     recovery.recover(("600001",), days=61, deadline=None)
-    assert primary.calls.count("600001") == 2
+    assert primary.calls.count("600001") == 1
     assert recovery.status().cache_hit_count == 0
+    assert recovery.status().last_error == "resource_rejected"
+    assert pool.status().rejected_count == 1

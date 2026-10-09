@@ -11,7 +11,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from trader.recommendation.application.ports.decision_records import DecisionRecordRepositoryPort
+
+from trader.recommendation.application.ports.decision_records import DecisionRecordPort
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.models import (
     BenchmarkReturn,
@@ -39,7 +40,7 @@ class SQLiteOutcomeEvidenceRepository:
     def __init__(
         self,
         runtime_root: Path,
-        decisions: DecisionRecordRepositoryPort,
+        decisions: DecisionRecordPort,
     ) -> None:
         self._database = runtime_root / "research" / "outcomes.sqlite3"
         self._decisions = decisions
@@ -123,7 +124,8 @@ class SQLiteOutcomeEvidenceRepository:
             _raise_on_conflict(existing, payload, "benchmark return")
             if existing is None:
                 connection.execute(
-                    "INSERT INTO benchmark_returns(trade_date, return_pct, observed_at, payload_hash, payload) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO benchmark_returns(trade_date, return_pct, observed_at, payload_hash, payload) "
+                    "VALUES (?, ?, ?, ?, ?)",
                     (benchmark.trade_date, benchmark.return_pct, observed_at.isoformat(), _sha256(payload), payload),
                 )
 
@@ -154,7 +156,8 @@ class SQLiteOutcomeEvidenceRepository:
                 payload = _outcome_bytes(outcome)
                 key = (outcome.snapshot_id, outcome.strategy.value, outcome.stock_code, outcome.horizon)
                 existing = connection.execute(
-                    "SELECT payload_hash, payload FROM recommendation_outcomes WHERE snapshot_id = ? AND strategy = ? AND stock_code = ? AND horizon = ?",
+                    "SELECT payload_hash, payload FROM recommendation_outcomes "
+                    "WHERE snapshot_id = ? AND strategy = ? AND stock_code = ? AND horizon = ?",
                     key,
                 ).fetchone()
                 _raise_on_conflict(existing, payload, "recommendation outcome")
