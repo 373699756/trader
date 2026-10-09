@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from trader.download.domain.history_automation import (
     HistoryDesktopNotification,
@@ -93,8 +96,10 @@ def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_d
     _seed_due_control(archive)
     configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
     notifier = _Notifier()
+    sync_calls: list[datetime] = []
 
     def synchronize(_progress):
+        sync_calls.append(NOW)
         return _completed(archive)
 
     first = run_scheduled_history_maintenance(configuration, synchronize, notifier, NOW)
@@ -102,9 +107,11 @@ def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_d
     next_day = run_scheduled_history_maintenance(configuration, synchronize, notifier, NOW.replace(day=11))
 
     assert first.notification_state == "sent"
-    assert repeated.notification_state == "sent"
+    assert repeated.notification_state == "not_attempted"
     assert next_day.notification_state == "sent"
-    assert len(notifier.notifications) == 3
+    assert len(notifier.notifications) == 2
+    assert first.maintenance_state == "not_due"
+    assert sync_calls == []
     assert sum("训练已到期" in item.body for item in notifier.notifications) == 2
     persisted = SQLiteHistoryControlRepository(archive / "control.sqlite3").load_state()
     assert tuple(item.reminder_date for item in persisted.reminder_claims) == (
@@ -113,15 +120,18 @@ def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_d
     )
 
 
-def test_notification_failure_is_recorded_without_failing_a_successful_download(tmp_path: Path) -> None:
+@pytest.mark.parametrize("days,state", ((0, "not_due"), (7, "completed")))
+def test_notification_failure_does_not_fail_a_download_or_cadence_noop(tmp_path: Path, days, state) -> None:
     archive = tmp_path / "history"
     _seed_due_control(archive)
     configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
     notifier = _Notifier(HistoryNotificationResult("notification_degraded", "notification_service_unavailable"))
 
-    status = run_scheduled_history_maintenance(configuration, lambda _progress: _completed(archive), notifier, NOW)
+    status = run_scheduled_history_maintenance(
+        configuration, lambda _progress: _completed(archive), notifier, NOW + timedelta(days=days)
+    )
 
-    assert status.maintenance_state == "completed"
+    assert status.maintenance_state == state
     assert status.notification_state == "notification_degraded"
     assert status.successful is True
     reminder = SQLiteHistoryControlRepository(archive / "control.sqlite3").load_state().reminders[0]
@@ -161,6 +171,7 @@ def test_scheduled_overlap_returns_already_running_without_notification(tmp_path
 
 def test_manual_download_overlap_is_not_misreported_as_a_completed_notification(tmp_path: Path) -> None:
     archive = tmp_path / "history"
+    _seed_due_control(archive)
     configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
     notifier = _Notifier()
     overlapping = HistoryMaintenanceStatus(
@@ -178,11 +189,59 @@ def test_manual_download_overlap_is_not_misreported_as_a_completed_notification(
         False,
     )
 
-    status = run_scheduled_history_maintenance(configuration, lambda _progress: overlapping, notifier, NOW)
+    status = run_scheduled_history_maintenance(
+        configuration, lambda _progress: overlapping, notifier, NOW + timedelta(days=7)
+    )
 
     assert status.maintenance_state == "already_running"
     assert status.notification_state == "not_attempted"
     assert notifier.notifications == []
+
+
+def test_weekly_due_failure_retries_and_successful_publication_stops_further_downloads(tmp_path: Path) -> None:
+    archive = tmp_path / "history"
+    _seed_due_control(archive)
+    configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
+    calls: list[datetime] = []
+    due_at = NOW + timedelta(days=7)
+    notifier = _Notifier()
+
+    def synchronize(_progress):
+        calls.append(due_at)
+        if len(calls) == 1:
+            return replace(_completed(archive), state="failed", reason="supplier_timeout")
+        repository = SQLiteHistoryControlRepository(archive / "control.sqlite3")
+        active = repository.load_state().active_snapshot
+        assert active is not None
+        repository.publish_snapshot(replace(active, sequence=2, data_cutoff=due_at.date()))
+        return _completed(archive)
+
+    first = run_scheduled_history_maintenance(configuration, synchronize, notifier, due_at)
+    retry = run_scheduled_history_maintenance(configuration, synchronize, notifier, due_at)
+    repeated = run_scheduled_history_maintenance(configuration, synchronize, notifier, due_at)
+
+    assert first.maintenance_state == "failed"
+    assert retry.maintenance_state == "completed"
+    assert repeated.maintenance_state == "not_due"
+    assert len(calls) == 2
+    assert repeated.due_status.data_cutoff == due_at.date()
+
+
+def test_automation_without_a_snapshot_requires_manual_initialization(tmp_path: Path) -> None:
+    archive = tmp_path / "history"
+    configuration = HistorySyncConfiguration(archive_root=archive)
+    notifier = _Notifier()
+
+    def unexpected_sync(_progress):
+        raise AssertionError("scheduled task must not initialize a full market archive")
+
+    status = run_scheduled_history_maintenance(configuration, unexpected_sync, notifier, NOW)
+
+    assert status.maintenance_state == "blocked"
+    assert status.maintenance_reason == "history_snapshot_unavailable"
+    assert not status.successful
+    assert notifier.notifications == []
+    assert not (archive / "control.sqlite3").exists()
 
 
 def test_task_log_rotates_and_omits_stock_detail(tmp_path: Path) -> None:

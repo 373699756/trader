@@ -62,16 +62,18 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`。路径、滚动 2000 日和资源
 参数不对用户开放；`--runtime-dir`、`--sessions`、`--mode`、`--profile` 等参数都会在环境创建前拒绝。零参数
 重构控制库、稳定年月月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
-回读或返回 `already_current`，失败与取消不改变上一 active snapshot；它不会被启动、`check`、Web 或
-训练入口不会隐式调用历史下载。
+回读或返回`already_current`，失败与取消不改变上一active snapshot；启动、`check`、Web和训练入口
+均不会隐式调用历史下载。启动只读恢复已有快照，每30秒接纳新发布，缺历史明确待就绪。
 交互式下载进度固定在 stderr 显示紧凑单行：累计和调用耗时使用 `HH:MM:SS`，股票和月分片使用
 `n/m (百分比)`，供应商重试使用“尝试 n/m”；日历、行业等子阶段只显示真实当前项，不再把内部 `0/1`
 占位冒充整体进度。失败摘要保留最后一个具体供应商阶段、当前日期或股票和稳定错误码；最终 stdout JSON 保持不变，
 供脚本消费。
 
-历史自动化固定为“每日自动同步、到期只提醒”。当前版本不再提供公开的安装/卸载入口；已有系统任务仍可调用内部
+历史自动化固定为“每日检查、归档周更、训练到期只提醒”。当前版本不再提供公开的安装/卸载入口；已有系统任务仍可调用内部
 `trader.entrypoints.cli scheduled-history-maintenance` 零参数命令，不会因升级自动删除。每天按上海时间 15:10 和
-20:30 调用同一维护命令，任务日志写入 `.runtime/trader/logs/history-automation.log` 并按大小轮转。同一训练 due
+20:30唤醒同一维护命令，只有归档截止日落后至少7个自然日且上海时间不早于15:10才执行下载；未到期返回`not_due`，
+无归档返回`blocked`并等待手工`./run.sh download`初始化。手工下载不受周更门槛限制，失败后下次到期唤醒可续传。
+任务日志写入`.runtime/trader/logs/history-automation.log`并按大小轮转。同一训练due
 身份在每个上海日期最多通知一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会
 自动训练、切换档位或重启服务。只读 `history-automation-status` 仍可查看持久化 due、提醒和活动快照状态。
 

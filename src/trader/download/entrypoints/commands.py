@@ -9,7 +9,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.download.application.download_history import DownloadHistoryUseCase
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.entrypoints.history_maintenance_projection import project_history_maintenance_status
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
@@ -70,20 +71,24 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
     observed_at = _shanghai_now()
     configuration = history_sync_configuration(repository_root)
     task_log = RotatingHistoryAutomationLog(runtime.runtime_dir / "logs/history-automation.log")
-    try:
+
+    def synchronize(progress: HistorySyncProgressPort | None) -> HistoryMaintenanceStatus:
         with BaoStockHistorySupplier(configuration, progress=task_log) as supplier:
-            run_status = run_scheduled_history_maintenance(
+            return DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
                 configuration,
-                lambda progress: DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
-                    configuration,
-                    supplier,
-                    clock=lambda: observed_at,
-                    progress=progress,
-                ),
-                PlatformHistoryDesktopNotifier(),
-                observed_at,
-                progress=task_log,
+                supplier,
+                clock=lambda: observed_at,
+                progress=progress,
             )
+
+    try:
+        run_status = run_scheduled_history_maintenance(
+            configuration,
+            synchronize,
+            PlatformHistoryDesktopNotifier(),
+            observed_at,
+            progress=task_log,
+        )
         try:
             task_log.publish_run(run_status)
         except OSError:

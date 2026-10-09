@@ -104,11 +104,14 @@ class PublishedHistoryCache:
             return False
         if manifest is None:
             with self._lock:
-                if self._manifest is None:
-                    self._maintenance_reason = "history_snapshot_unavailable"
+                self._maintenance_reason = "history_snapshot_unavailable"
             return False
         with self._lock:
-            if self._manifest is not None and self._manifest.snapshot_hash == manifest.snapshot_hash:
+            if (
+                self._manifest is not None
+                and self._manifest.snapshot_hash == manifest.snapshot_hash
+                and self._maintenance_reason is None
+            ):
                 return False
         try:
             entries = self._build_entries(manifest)
@@ -142,6 +145,17 @@ class PublishedHistoryCache:
             self._maintenance_stage = stage
             self._maintenance_completed_units = completed_units
             self._maintenance_total_units = total_units
+
+    def record_projection_observation(self) -> None:
+        """Publish current read health atomically, preserving concurrent errors."""
+
+        with self._lock:
+            state = "ready" if self._manifest is not None else "unavailable"
+            if self._maintenance_reason is not None and (
+                self._manifest is not None or self._maintenance_reason != "history_snapshot_unavailable"
+            ):
+                state = "failed"
+            self.record_maintenance(state, self._maintenance_reason, stage="reading_active_snapshot")
 
     def load(
         self,

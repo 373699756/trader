@@ -12,9 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.training.infra.profile.v3.test_profile import _publish
-from trader.bootstrap import _initialize_research_trace, _StartupHistoryMaintenance, build_system
-from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.bootstrap import _initialize_research_trace, build_system
 from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
@@ -209,92 +207,41 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     native_data = system.scheduler._dependencies.data
     assert isinstance(native_data, MarketDataAdapter)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
-    assert system.history_maintenance._configuration == HistorySyncConfiguration.for_repository(  # noqa: SLF001
-        system.settings.project_root
-    )
+    assert system.history_observer._history is native_data._market.history  # noqa: SLF001
+    configuration = HistorySyncConfiguration.for_repository(system.settings.project_root)
+    assert native_data._market.history._history.publication._root == configuration.archive_root  # noqa: SLF001
 
 
-@pytest.mark.parametrize("observe_later_snapshot", (False, True))
-def test_startup_history_maintenance_runs_the_download_use_case_once(
+@pytest.mark.parametrize("hour,minute", ((8, 0), (10, 0), (12, 0), (14, 59), (15, 10), (20, 30)))
+def test_startup_history_observer_never_downloads_and_keeps_web_readable(
     tmp_path,
     monkeypatch,
-    observe_later_snapshot,
+    hour,
+    minute,
 ) -> None:
-    events: list[object] = []
-    refreshed_later = threading.Event()
+    def unexpected_download(*_args, **_kwargs):
+        pytest.fail("server startup must not construct a supplier or download")
 
-    class History:
-        def refresh(self) -> bool:
-            events.append("refresh")
-            if events.count("refresh") == 3:
-                refreshed_later.set()
-            return True
-
-        def record_maintenance(self, state, reason=None, **details) -> None:
-            events.append((state, reason, details))
-
-    class Supplier:
-        def __init__(self, configuration, *, progress) -> None:
-            events.append(("supplier", configuration, progress))
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args) -> None:
-            return None
-
-        def close(self) -> None:
-            return None
-
-    calls: list[tuple[object, ...]] = []
-
-    def execute(_self, configuration, supplier, *, progress, cancel_requested):
-        calls.append((configuration, supplier, progress, cancel_requested))
-        return HistoryMaintenanceStatus(
-            "already_current",
-            None,
-            configuration.archive_root,
-            "baostock",
-            None,
-            "a" * 64,
-            date(2026, 9, 22),
-            date(2026, 9, 21),
-            0,
-            False,
-            "cadence_not_due",
-            False,
-        )
-
-    monkeypatch.setattr("trader.bootstrap.BaoStockHistorySupplier", Supplier)
-    monkeypatch.setattr("trader.bootstrap.DownloadHistoryUseCase.execute", execute)
-    configuration = HistorySyncConfiguration(
-        tmp_path / "data/history/baostock",
-        sessions=61,
-        minimum_free_bytes=0,
+    monkeypatch.setattr(
+        "trader.download.infra.baostock_sync_supplier.BaoStockHistorySupplier.__init__", unexpected_download
     )
-    maintenance = _StartupHistoryMaintenance(configuration, History())
-    if observe_later_snapshot:
-        original_wait = maintenance._cancel.wait
-        first_wait = True
-
-        def wait_for_refresh_or_cancel(timeout):
-            nonlocal first_wait
-            assert timeout == 30.0
-            if first_wait:
-                first_wait = False
-                return False
-            return original_wait(timeout)
-
-        monkeypatch.setattr(maintenance._cancel, "wait", wait_for_refresh_or_cancel)
-
-    assert maintenance.start() is True
-    if observe_later_snapshot:
-        assert refreshed_later.wait(2)
-    assert maintenance.stop(wait=True).completed is True
-    assert maintenance.start() is False
-    assert len(calls) == 1
-    assert calls[0][0] == configuration
-    assert events.count("refresh") == (3 if observe_later_snapshot else 2)
+    monkeypatch.setattr(
+        "trader.download.application.download_history.DownloadHistoryUseCase.execute", unexpected_download
+    )
+    now = datetime(2026, 10, 9, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai"))
+    monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
+    system = build_system(_config(tmp_path))
+    observer = system.history_observer
+    assert observer.start() is True
+    try:
+        client = system.app.test_client()
+        assert client.get("/").status_code == 200
+        payload = client.get("/api/status").get_json()
+        assert payload["market_data"]["history_archive_snapshot_hash"] is None
+        assert not (tmp_path / "data/history/baostock").exists()
+    finally:
+        assert observer.stop(wait=True).completed is True
+    assert observer.start() is False
 
 
 def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:

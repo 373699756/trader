@@ -13,14 +13,10 @@ from typing import TYPE_CHECKING
 
 from flask import Flask
 
-from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.fetch_history_tail import FetchHistoryTailUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.download.infra.baostock_gap_supplier import fetch_baostock_gaps
 from trader.download.infra.baostock_history_tail import BaoStockHistoryTailSupplier
-from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
@@ -88,7 +84,7 @@ from trader.recommendation.application.runtime.resource_orchestration import (
     stop_application_resources,
 )
 from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
+from trader.recommendation.application.runtime.shutdown import ShutdownDeadline, ShutdownReport
 from trader.recommendation.application.runtime.source_lanes import SourceLaneRegistry
 from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisor,
@@ -119,6 +115,7 @@ from trader.recommendation.infra.market_data.market_feature_service import (
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.normalization.features import FeatureBuilder
@@ -223,7 +220,7 @@ class ApplicationSystem:
     tomorrow_records: SQLiteDecisionRecordRepository
     research_trace: SQLiteResearchTraceArchive
     outcome_evidence: SQLiteOutcomeEvidenceRepository
-    history_maintenance: _StartupHistoryMaintenance
+    history_observer: PublishedHistoryObserver
 
     def _application_resources(self) -> ApplicationResources:
         return ApplicationResources(
@@ -232,7 +229,7 @@ class ApplicationSystem:
             self.data_pool,
             self.quote_pool,
             self.research_pool,
-            (self.long_runtime, self.history_maintenance),
+            (self.long_runtime, self.history_observer),
             self.market_cache,
         )
 
@@ -248,96 +245,6 @@ class ApplicationSystem:
             self._application_resources(),
             deadline=shared_deadline,
         )
-
-
-class _StartupHistoryProgress:
-    def __init__(self, history: PublishedHistoryCache) -> None:
-        self._history = history
-
-    def publish(self, progress: HistorySyncProgress) -> None:
-        self._history.record_maintenance(
-            "running",
-            stage=progress.stage,
-            completed_units=progress.completed_units,
-            total_units=progress.total_units,
-        )
-
-
-class _StartupHistoryMaintenance:
-    """Synchronize once, then observe published history away from market deadlines."""
-
-    def __init__(self, configuration: HistorySyncConfiguration, history: PublishedHistoryCache) -> None:
-        self._configuration = configuration
-        self._history = history
-        self._cancel = threading.Event()
-        self._lock = threading.Lock()
-        self._thread: threading.Thread | None = None
-        self._supplier: BaoStockHistorySupplier | None = None
-        self._started = False
-
-    def start(self) -> bool:
-        with self._lock:
-            if self._started:
-                return False
-            self._started = True
-            self._cancel.clear()
-            self._thread = threading.Thread(
-                target=self._run,
-                name="history-ensure-current",
-                daemon=False,
-            )
-            self._thread.start()
-            return True
-
-    def stop(
-        self,
-        *,
-        wait: bool,
-        deadline: ShutdownDeadline | None = None,
-    ) -> ShutdownStep:
-        self._cancel.set()
-        with self._lock:
-            supplier = self._supplier
-            thread = self._thread
-        if supplier is not None:
-            supplier.close()
-        if wait and thread is not None:
-            thread.join(None if deadline is None else deadline.remaining_seconds())
-        alive = thread is not None and thread.is_alive()
-        return ShutdownStep(
-            "history_ensure_current",
-            not alive,
-            bool(alive and deadline is not None and deadline.expired),
-            detail="history maintenance remains active" if alive else "",
-        )
-
-    def _run(self) -> None:
-        progress = _StartupHistoryProgress(self._history)
-        self._history.record_maintenance("loading", stage="reading_active_snapshot")
-        try:
-            self._history.refresh()
-            with BaoStockHistorySupplier(self._configuration, progress=progress) as supplier:
-                with self._lock:
-                    self._supplier = supplier
-                status = DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
-                    self._configuration,
-                    supplier,
-                    progress=progress,
-                    cancel_requested=self._cancel.is_set,
-                )
-            if status.state in {"completed", "already_current"}:
-                self._history.refresh()
-            self._history.record_maintenance(status.state, status.reason)
-        except Exception as exc:
-            self._history.record_maintenance("failed", type(exc).__name__)
-        finally:
-            with self._lock:
-                self._supplier = None
-        while not self._cancel.wait(30.0):
-            try:
-                self._history.refresh()
-            except Exception as exc:
-                self._history.record_maintenance("failed", type(exc).__name__)
 
 
 @dataclass(frozen=True)
@@ -529,10 +436,7 @@ def build_system(
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
     )
 
-    history_maintenance = _StartupHistoryMaintenance(
-        HistorySyncConfiguration.for_repository(settings.project_root),
-        market_data.history,
-    )
+    history_observer = PublishedHistoryObserver(market_data.history)
     supervisor = RuntimeSupervisor(
         scheduler,
         RuntimeSupervisorConfig(
@@ -588,7 +492,7 @@ def build_system(
         tomorrow_records=publication.tomorrow_repository,
         research_trace=publication.research_trace,
         outcome_evidence=persistence.outcomes,
-        history_maintenance=history_maintenance,
+        history_observer=history_observer,
     )
 
 

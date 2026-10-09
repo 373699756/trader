@@ -20,6 +20,7 @@ from trader.download.domain.history_automation import (
     HistoryDesktopNotifier,
     HistoryNotificationResult,
     HistoryNotificationState,
+    weekly_history_maintenance_decision,
 )
 from trader.download.domain.history_control import HistoryReminderClaim, HistoryReminderState
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
@@ -189,21 +190,31 @@ def run_scheduled_history_maintenance(
     archive_root = configuration.archive_root
     try:
         with HistoryMaintenanceLock(archive_root / ".automation.lock"):
-            maintenance = synchronize(progress)
             due_status = read_history_automation_status(archive_root, observed_at)
-            notification_state, notification_error = _notify_once(
-                archive_root,
-                maintenance,
-                due_status,
-                notifier,
-                observed_at,
-            )
+            decision = weekly_history_maintenance_decision(due_status.data_cutoff, observed_at)
+            maintenance = synchronize(progress) if decision.state == "due" else None
+            if maintenance is not None:
+                due_status = read_history_automation_status(archive_root, observed_at)
+            notification_state: HistoryNotificationState
+            notification_error: str | None
+            if decision.state == "blocked":
+                notification_state, notification_error = "not_attempted", None
+            else:
+                notification_state, notification_error = _notify_once(
+                    archive_root,
+                    maintenance,
+                    due_status,
+                    notifier,
+                    observed_at,
+                )
             due_status = read_history_automation_status(archive_root, observed_at)
             result = HistoryAutomationRunStatus(
                 observed_at,
                 archive_root,
-                maintenance.state,
-                maintenance.reason,
+                maintenance.state
+                if maintenance is not None
+                else ("blocked" if decision.state == "blocked" else "not_due"),
+                maintenance.reason if maintenance is not None else decision.reason,
                 due_status,
                 notification_state,
                 notification_error,
@@ -226,12 +237,12 @@ def run_scheduled_history_maintenance(
 
 def _notify_once(
     archive_root: Path,
-    maintenance: HistoryMaintenanceStatus,
+    maintenance: HistoryMaintenanceStatus | None,
     due_status: HistoryAutomationStatus,
     notifier: HistoryDesktopNotifier,
     observed_at: datetime,
 ) -> tuple[HistoryNotificationState, str | None]:
-    if maintenance.state == "already_running":
+    if maintenance is not None and maintenance.state == "already_running":
         return "not_attempted", None
     repository = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
     due_identity = due_status.due_identity
@@ -242,8 +253,7 @@ def _notify_once(
         except HistoryControlError:
             return "notification_degraded", "reminder_claim_failed"
         if not claimed:
-            result = notifier.notify(_completion_notification(maintenance))
-            return result.state, result.error_code
+            return _notify_completion(maintenance, notifier)
         notification = _due_notification(maintenance, due_status)
         result = notifier.notify(notification)
         reminder = HistoryReminderState(
@@ -258,17 +268,27 @@ def _notify_once(
         except HistoryControlError:
             return "notification_degraded", "reminder_result_persist_failed"
         return result.state, result.error_code
+    return _notify_completion(maintenance, notifier)
+
+
+def _notify_completion(
+    maintenance: HistoryMaintenanceStatus | None,
+    notifier: HistoryDesktopNotifier,
+) -> tuple[HistoryNotificationState, str | None]:
+    if maintenance is None:
+        return "not_attempted", None
     result = notifier.notify(_completion_notification(maintenance))
     return result.state, result.error_code
 
 
 def _due_notification(
-    maintenance: HistoryMaintenanceStatus,
+    maintenance: HistoryMaintenanceStatus | None,
     due_status: HistoryAutomationStatus,
 ) -> HistoryDesktopNotification:
     body = (
-        f"历史同步：{maintenance.state}；V3 训练已到期：{due_status.training_due_reason}；"
-        f"成熟标签日：{due_status.matured_label_days_since_training}。请手工运行 train-v3。"
+        f"历史同步：{maintenance.state if maintenance is not None else '本次未同步'}；"
+        f"训练已到期：{due_status.training_due_reason}；"
+        f"成熟标签日：{due_status.matured_label_days_since_training}。请按目标档位手工训练。"
     )
     return HistoryDesktopNotification("Trader 历史同步与训练提醒", body)
 

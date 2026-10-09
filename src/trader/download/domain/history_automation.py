@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
@@ -26,6 +26,31 @@ HistoryNotificationState = Literal[
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _ERROR_CODE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+
+@dataclass(frozen=True)
+class HistoryWeeklyMaintenanceDecision:
+    state: Literal["due", "not_due", "blocked"]
+    reason: str | None
+
+
+def weekly_history_maintenance_decision(
+    data_cutoff: date | None, observed_at: datetime
+) -> HistoryWeeklyMaintenanceDecision:
+    """Archive cadence, independent of feature eligibility and training due."""
+
+    if observed_at.tzinfo != _SHANGHAI:
+        raise ValueError("history maintenance observation must use Asia/Shanghai")
+    if data_cutoff is None:
+        return HistoryWeeklyMaintenanceDecision("blocked", "history_snapshot_unavailable")
+    age_days = (observed_at.date() - data_cutoff).days
+    if age_days < 0:
+        return HistoryWeeklyMaintenanceDecision("blocked", "history_snapshot_future")
+    if age_days < 7:
+        return HistoryWeeklyMaintenanceDecision("not_due", "weekly_cadence_not_due")
+    if observed_at.time() < time(15, 10):
+        return HistoryWeeklyMaintenanceDecision("not_due", "maintenance_window_not_open")
+    return HistoryWeeklyMaintenanceDecision("due", None)
 
 
 @dataclass(frozen=True)
@@ -88,7 +113,7 @@ class HistoryDesktopNotifier(Protocol):
 class HistoryAutomationRunStatus:
     observed_at: datetime
     archive_root: Path
-    maintenance_state: HistoryMaintenanceState
+    maintenance_state: HistoryMaintenanceState | Literal["not_due"]
     maintenance_reason: str | None
     due_status: HistoryAutomationStatus
     notification_state: HistoryNotificationState
@@ -105,7 +130,7 @@ class HistoryAutomationRunStatus:
 
     @property
     def successful(self) -> bool:
-        return self.maintenance_state in {"completed", "already_current", "already_running"}
+        return self.maintenance_state in {"completed", "already_current", "already_running", "not_due"}
 
 
 def derive_history_automation_status(
@@ -208,4 +233,6 @@ __all__ = [
     "HistoryNotificationState",
     "HistoryReminderPhase",
     "derive_history_automation_status",
+    "HistoryWeeklyMaintenanceDecision",
+    "weekly_history_maintenance_decision",
 ]
