@@ -176,3 +176,180 @@ def test_opportunity_cost_uses_a_separate_constrained_oracle_for_each_day() -> N
 def test_non_applied_deepseek_outcomes_cannot_carry_score_penalty_or_veto(outcome: str) -> None:
     with pytest.raises(ValueError, match="non-applied"):
         DeepSeekResearchReview(outcome, 100.0, 10.0, True, ("fact",), "ignored")
+
+
+def test_deepseek_opportunity_cost_uses_exact_crossing_constraint_oracle() -> None:
+    review = DeepSeekResearchReview("failed", None, 0.0, False, (), "ignored")
+    rows = tuple(
+        replace(
+            _sample(code, signal_score=100.0 - index, actual_net=net, severe=False, review=review),
+            board=board,
+            industry=industry,
+        )
+        for index, (code, board, industry, net) in enumerate(
+            (
+                ("600001", "main", "X", 0.10),
+                ("600002", "main", "X", 0.09),
+                ("600003", "main", "Y", 0.08),
+                ("600004", "main", "Z", 0.07),
+                ("300001", "chinext", "X", 0.06),
+                ("300002", "chinext", "X", 0.05),
+            )
+        )
+    )
+
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, rows)
+
+    assert all(item.selected_count == 3 for item in report.ablation)
+    assert all(item.opportunity_cost == pytest.approx(0.04) for item in report.ablation)
+    for arm in report.ablation:
+        day = arm.cost_sensitivity[0].days[0]
+        assert day.slot_net_excess_return == pytest.approx(0.27 / 6)
+        assert day.oracle_slot_net_excess_return == pytest.approx(0.31 / 6)
+        assert day.slot_opportunity_cost == pytest.approx(0.04 / 6)
+
+
+def test_cost_sensitivity_counts_empty_days_and_unused_slots_without_dropping_stress_losses() -> None:
+    review = DeepSeekResearchReview("failed", None, 0.0, False, (), "ignored")
+    first = _sample("600001", signal_score=90, actual_net=0.001, severe=False, review=review)
+    second = replace(first, trade_date=date(2026, 9, 1), risk=replace(first.risk, veto=True))
+
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (first, second))
+
+    for arm in report.ablation:
+        assert arm.mean_selected_net_excess_return == pytest.approx(0.001)
+        assert tuple(item.cost_bps for item in arm.cost_sensitivity) == (20, 50, 100)
+        assert all(item.empty_day_count == 1 for item in arm.cost_sensitivity)
+        for scenario, net in zip(arm.cost_sensitivity, (0.001, -0.002, -0.007), strict=True):
+            assert scenario.mean_daily_slot_net_excess_return == pytest.approx(net / 6 / 2)
+            assert tuple(day.selected_count for day in scenario.days) == (1, 0)
+            assert scenario.days[1].slot_net_excess_return == 0.0
+            assert scenario.days[1].slot_opportunity_cost == 0.0
+        assert arm.cost_sensitivity[2].days[0].oracle_slot_net_excess_return == 0.0
+        assert arm.cost_sensitivity[2].mean_daily_slot_opportunity_cost == pytest.approx(0.007 / 6 / 2)
+
+
+def test_cost_scenarios_do_not_rerank_or_restore_a_structured_veto() -> None:
+    veto = DeepSeekResearchReview("applied", 99, 0, True, ("verified_fact",), "ignored")
+    first = _sample("600001", signal_score=90, actual_net=0.02, severe=False, review=veto)
+
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (first,))
+    local, facts, fixed = report.ablation
+
+    assert local.selected_count == 1
+    assert facts.selected_count == fixed.selected_count == 0
+    for local_cost, facts_cost, fixed_cost in zip(
+        local.cost_sensitivity, facts.cost_sensitivity, fixed.cost_sensitivity, strict=True
+    ):
+        assert facts_cost.empty_day_count == fixed_cost.empty_day_count == 1
+        assert facts_cost.mean_daily_slot_net_excess_return == fixed_cost.mean_daily_slot_net_excess_return == 0.0
+        assert facts_cost.days[0].oracle_slot_net_excess_return == local_cost.days[0].oracle_slot_net_excess_return
+        assert fixed_cost.days[0].oracle_slot_net_excess_return == local_cost.days[0].oracle_slot_net_excess_return
+
+
+@pytest.mark.parametrize("bad_cost", (None, 0.006))
+def test_missing_or_mislabeled_cost_scenario_fails_closed(bad_cost: float | None) -> None:
+    review = DeepSeekResearchReview("failed", None, 0.0, False, (), "ignored")
+    row = _sample("600001", signal_score=90, actual_net=0.02, severe=False, review=review)
+    scenarios = tuple(item for item in row.cost.scenarios if item.scenario_id != "cost_50bp")
+    if bad_cost is not None:
+        scenarios = (*scenarios, ExecutionCostScenario("cost_50bp", bad_cost))
+    row = replace(row, cost=replace(row.cost, scenarios=scenarios))
+
+    with pytest.raises(ValueError, match="canonical 20/50/100bp"):
+        evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (row,))
+
+
+def test_fixed_fusion_uses_decimal_half_up_without_a_second_local_risk_deduction() -> None:
+    review = DeepSeekResearchReview("applied", 77.03125, 0, False, (), "ignored")
+    row = _sample("600001", signal_score=57.79, actual_net=0.02, severe=False, review=review)
+
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (row,))
+
+    assert build_selection_utility(row.alpha, row.risk, row.cost).local_score == 47.79
+    decision = next(item for item in report.decisions if item.arm == "fixed_68_32")
+    # 47.79 * 0.68 + 77.03125 * 0.32 = 57.1472; use an exact half-cent next.
+    tied = replace(row, deepseek=replace(review, score=77.024375))
+    tied_report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (tied,))
+    assert decision.score == 57.15
+    assert next(item for item in tied_report.decisions if item.arm == "fixed_68_32").score == 57.15
+
+    golden = replace(
+        row,
+        alpha=replace(row.alpha, signal_score=100),
+        deepseek=replace(review, score=81.875, structured_risk_penalty=4, structured_fact_ids=("verified_fact",)),
+    )
+    golden_report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (golden,))
+    assert next(item for item in golden_report.decisions if item.arm == "fixed_68_32").score == 83.40
+
+
+def test_cost_report_uses_fixed_slots_with_unequal_daily_selected_counts() -> None:
+    review = DeepSeekResearchReview("failed", None, 0.0, False, (), "ignored")
+    first = _sample("600001", signal_score=90, actual_net=0.03, severe=False, review=review)
+    next_day = tuple(
+        _sample(
+            f"{600010 + index:06d}",
+            signal_score=90 - index,
+            actual_net=0.01,
+            severe=False,
+            review=review,
+            trade_date=date(2026, 9, 1),
+        )
+        for index in range(3)
+    )
+
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (first, *next_day))
+
+    for arm in report.ablation:
+        cost = arm.cost_sensitivity[0]
+        assert tuple(item.selected_count for item in cost.days) == (1, 3)
+        assert cost.mean_daily_slot_net_excess_return == pytest.approx(0.03 / 6)
+        assert arm.mean_selected_net_excess_return == pytest.approx(0.015)
+        assert cost.empty_day_count == 0
+
+
+@pytest.mark.parametrize("outcome", ("failed", "late", "budget_exhausted", "abstained"))
+def test_every_fallback_keeps_local_cost_results_and_score(outcome: str) -> None:
+    review = DeepSeekResearchReview(outcome, None, 0.0, False, (), "ignored")
+    row = _sample("600001", signal_score=90, actual_net=0.02, severe=False, review=review)
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (row,))
+
+    assert len({item.score for item in report.decisions}) == 1
+    assert all(item.cost_sensitivity == report.ablation[0].cost_sensitivity for item in report.ablation)
+    assert report.ablation[0].local_fallback_count == 0
+    assert report.ablation[1].local_fallback_count == report.ablation[2].local_fallback_count == 1
+
+
+def test_cost_report_rejects_partial_dates_false_aggregate_and_changed_oracle() -> None:
+    review = DeepSeekResearchReview("failed", None, 0.0, False, (), "ignored")
+    first = _sample("600001", signal_score=90, actual_net=0.02, severe=False, review=review)
+    second = replace(first, trade_date=date(2026, 9, 1))
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (first, second))
+    arm = report.ablation[0]
+    scenario = arm.cost_sensitivity[0]
+    with pytest.raises(ValueError, match="aggregates"):
+        replace(scenario, mean_daily_slot_net_excess_return=99)
+    with pytest.raises(ValueError, match="20/50/100bp"):
+        replace(arm, cost_sensitivity=arm.cost_sensitivity[:2])
+    with pytest.raises(ValueError, match="below realized"):
+        replace(scenario.days[0], oracle_slot_net_excess_return=0.0)
+    changed_day = replace(
+        scenario.days[0],
+        oracle_slot_net_excess_return=0.1,
+        slot_opportunity_cost=0.1 - scenario.days[0].slot_net_excess_return,
+    )
+    changed = replace(
+        scenario,
+        days=(changed_day, scenario.days[1]),
+        mean_daily_slot_opportunity_cost=(changed_day.slot_opportunity_cost + scenario.days[1].slot_opportunity_cost)
+        / 2,
+    )
+    with pytest.raises(ValueError, match="share one oracle"):
+        replace(
+            report, ablation=(replace(arm, cost_sensitivity=(changed, *arm.cost_sensitivity[1:])), *report.ablation[1:])
+        )
+    shifted = replace(scenario, days=(scenario.days[0], replace(scenario.days[1], trade_date=date(2026, 9, 2))))
+    with pytest.raises(ValueError, match="every evaluated date"):
+        replace(
+            report, ablation=(replace(arm, cost_sensitivity=(shifted, *arm.cost_sensitivity[1:])), *report.ablation[1:])
+        )

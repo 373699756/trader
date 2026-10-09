@@ -6,16 +6,22 @@ import hashlib
 import json
 import math
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from statistics import fmean
 from typing import Literal
 
-from trader.recommendation.domain.market.factors import clamp, round_score
+from trader.recommendation.domain.market.factors import round_score
 from trader.recommendation.domain.risk.decision import RiskDecision
 from trader.recommendation.domain.scoring.alpha import AlphaScore
 from trader.recommendation.domain.selection.execution_cost import ExecutionCost
+from trader.training.domain.evaluation.constrained_oracle import (
+    ConstrainedOracleCandidate,
+    ConstrainedOraclePolicy,
+    constrained_oracle,
+)
 from trader.training.domain.evaluation.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
 
 DeepSeekResearchOutcome = Literal["applied", "failed", "late", "budget_exhausted", "abstained"]
@@ -32,9 +38,11 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _FACT_ID = re.compile(r"^[a-z0-9_]{1,96}$")
 _REASON_ID = re.compile(r"^[a-z0-9_]{1,96}$")
 _ARMS: tuple[DeepSeekAblationArm, ...] = ("local_only", "structured_facts_veto", "fixed_68_32")
-_TOP_K = 6
-_MAX_PER_INDUSTRY = 2
-_MAX_PER_BOARD = 3
+_SELECTION_POLICY = ConstrainedOraclePolicy(top_k=6, max_per_board=3, max_per_industry=2)
+_TOP_K = _SELECTION_POLICY.top_k
+_MAX_PER_INDUSTRY = _SELECTION_POLICY.max_per_industry
+_MAX_PER_BOARD = _SELECTION_POLICY.max_per_board
+_COST_BPS = (20, 50, 100)
 
 
 @dataclass(frozen=True)
@@ -136,7 +144,7 @@ def build_selection_utility(alpha: AlphaScore, risk: RiskDecision, cost: Executi
     net = alpha.predicted_excess_return - cost.estimated_round_trip_return
     return SelectionUtility(
         alpha.code,
-        round_score(clamp(alpha.signal_score - risk.penalty_points)),
+        round_score(Decimal(str(alpha.signal_score)) - Decimal(str(risk.penalty_points))),
         net,
         risk.uncertainty.severe_loss_probability,
         uncertainty,
@@ -241,6 +249,48 @@ class DeepSeekAblationDecision:
 
 
 @dataclass(frozen=True)
+class DeepSeekDailyCostMetrics:
+    trade_date: date
+    selected_count: int
+    slot_net_excess_return: float
+    oracle_slot_net_excess_return: float
+    slot_opportunity_cost: float
+
+    def __post_init__(self) -> None:
+        values = (self.slot_net_excess_return, self.oracle_slot_net_excess_return, self.slot_opportunity_cost)
+        if not 0 <= self.selected_count <= _TOP_K or any(not math.isfinite(value) for value in values):
+            raise ValueError("DeepSeek daily cost metrics are invalid")
+        if self.oracle_slot_net_excess_return < 0.0 or self.slot_opportunity_cost < 0.0:
+            raise ValueError("DeepSeek daily oracle and opportunity cost must be non-negative")
+        if self.selected_count == 0 and self.slot_net_excess_return != 0.0:
+            raise ValueError("DeepSeek empty selection must return cash")
+        expected = _opportunity_gap(self.oracle_slot_net_excess_return, self.slot_net_excess_return)
+        if not math.isclose(self.slot_opportunity_cost, expected, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError("DeepSeek daily opportunity cost is inconsistent")
+
+
+@dataclass(frozen=True)
+class DeepSeekCostSensitivityMetrics:
+    cost_bps: int
+    days: tuple[DeepSeekDailyCostMetrics, ...]
+    mean_daily_slot_net_excess_return: float
+    mean_daily_slot_opportunity_cost: float
+    empty_day_count: int
+
+    def __post_init__(self) -> None:
+        days = tuple(sorted(self.days, key=lambda item: item.trade_date))
+        if self.cost_bps not in _COST_BPS or not days or len({item.trade_date for item in days}) != len(days):
+            raise ValueError("DeepSeek cost sensitivity identity is invalid")
+        if (
+            self.mean_daily_slot_net_excess_return != fmean(item.slot_net_excess_return for item in days)
+            or self.mean_daily_slot_opportunity_cost != fmean(item.slot_opportunity_cost for item in days)
+            or self.empty_day_count != sum(item.selected_count == 0 for item in days)
+        ):
+            raise ValueError("DeepSeek cost sensitivity aggregates do not match days")
+        object.__setattr__(self, "days", days)
+
+
+@dataclass(frozen=True)
 class DeepSeekAblationMetrics:
     arm: DeepSeekAblationArm
     evaluated_count: int
@@ -250,6 +300,7 @@ class DeepSeekAblationMetrics:
     mean_selected_net_excess_return: float | None
     selected_severe_loss_rate: float | None
     opportunity_cost: float
+    cost_sensitivity: tuple[DeepSeekCostSensitivityMetrics, ...]
 
     def __post_init__(self) -> None:
         if self.arm not in _ARMS or self.evaluated_count < 1:
@@ -268,6 +319,8 @@ class DeepSeekAblationMetrics:
             raise ValueError("DeepSeek ablation severe-loss rate is invalid")
         if not math.isfinite(self.opportunity_cost) or self.opportunity_cost < 0.0:
             raise ValueError("DeepSeek ablation opportunity cost is invalid")
+        _validate_ablation_cost_metrics(self)
+        object.__setattr__(self, "cost_sensitivity", tuple(self.cost_sensitivity))
 
 
 @dataclass(frozen=True)
@@ -302,6 +355,17 @@ class RiskCostUncertaintyReport:
         object.__setattr__(self, "content_hash", _content_hash(self))
 
 
+def _validate_ablation_cost_metrics(metrics: DeepSeekAblationMetrics) -> None:
+    if tuple(item.cost_bps for item in metrics.cost_sensitivity) != _COST_BPS:
+        raise ValueError("DeepSeek ablation requires 20/50/100bp sensitivity")
+    if any(sum(day.selected_count for day in item.days) != metrics.selected_count for item in metrics.cost_sensitivity):
+        raise ValueError("DeepSeek cost sensitivity selection count is inconsistent")
+    if (metrics.mean_selected_net_excess_return is None) != (metrics.selected_count == 0) or (
+        (metrics.selected_severe_loss_rate is None) != (metrics.selected_count == 0)
+    ):
+        raise ValueError("DeepSeek ablation outcome metrics require selected samples")
+
+
 def _validate_report_identity(report: RiskCostUncertaintyReport) -> None:
     if report.status not in {"evaluated", "historical_data_insufficient", "historical_rejected"}:
         raise ValueError("risk-cost report status is invalid")
@@ -333,6 +397,7 @@ def _validate_evaluated_report(
     if len(decision_keys) != len(set(decision_keys)):
         raise ValueError("evaluated risk-cost report decisions must be unique")
     _validate_ablation_decisions(report)
+    _validate_cost_selections(report)
 
 
 def _validate_ablation_decisions(report: RiskCostUncertaintyReport) -> None:
@@ -352,6 +417,27 @@ def _validate_ablation_decisions(report: RiskCostUncertaintyReport) -> None:
         _validate_selected_ranks(decisions)
     if any(population != populations[0] for population in populations[1:]):
         raise ValueError("DeepSeek ablation arms must share one population")
+
+
+def _validate_cost_selections(report: RiskCostUncertaintyReport) -> None:
+    dates = tuple(sorted({item.trade_date for item in report.decisions}))
+    selected_counts = Counter(
+        (item.trade_date, item.arm) for item in report.decisions if item.selected_rank is not None
+    )
+    for metrics in report.ablation:
+        for scenario in metrics.cost_sensitivity:
+            if tuple(item.trade_date for item in scenario.days) != dates:
+                raise ValueError("DeepSeek cost sensitivity must cover every evaluated date")
+            for day in scenario.days:
+                if day.selected_count != selected_counts[(day.trade_date, metrics.arm)]:
+                    raise ValueError("DeepSeek cost sensitivity must preserve daily selection")
+    for index in range(len(_COST_BPS)):
+        oracles = tuple(
+            tuple(item.oracle_slot_net_excess_return for item in metrics.cost_sensitivity[index].days)
+            for metrics in report.ablation
+        )
+        if any(values != oracles[0] for values in oracles[1:]):
+            raise ValueError("DeepSeek cost sensitivity arms must share one oracle")
 
 
 def _validate_selected_ranks(decisions: tuple[DeepSeekAblationDecision, ...]) -> None:
@@ -385,6 +471,7 @@ def evaluate_risk_cost_uncertainty(
     keys = tuple((item.trade_date, item.code) for item in ordered)
     if not ordered or len(keys) != len(set(keys)):
         raise ValueError("risk-cost samples must be non-empty and unique")
+    _validate_cost_scenarios(ordered)
     decisions = _decisions(ordered)
     return RiskCostUncertaintyReport(
         "evaluated",
@@ -455,7 +542,9 @@ def _arm_result(
     local_weight = 0.68
     deepseek_weight = 0.32
     score = round_score(
-        clamp(utility.local_score * local_weight + review.score * deepseek_weight - review.structured_risk_penalty)
+        Decimal(str(utility.local_score)) * Decimal(str(local_weight))
+        + Decimal(str(review.score)) * Decimal(str(deepseek_weight))
+        - Decimal(str(review.structured_risk_penalty))
     )
     return score, veto, True
 
@@ -597,7 +686,8 @@ def _ablation(
     decisions: tuple[DeepSeekAblationDecision, ...],
 ) -> tuple[DeepSeekAblationMetrics, ...]:
     sample_by_key = {(item.trade_date, item.code): item for item in samples}
-    oracle_total = _oracle_total(samples)
+    populations = _daily_cost_populations(samples)
+    oracle_total = math.fsum(item.estimated_oracle_net_return_sum for item in populations)
     result: list[DeepSeekAblationMetrics] = []
     for arm in _ARMS:
         arm_decisions = tuple(item for item in decisions if item.arm == arm)
@@ -616,39 +706,93 @@ def _ablation(
                 else 0,
                 fmean(realized) if realized else None,
                 fmean(float(item.actual_severe_loss) for item in selected) if selected else None,
-                max(0.0, oracle_total - sum(realized)),
+                _opportunity_gap(oracle_total, math.fsum(realized)),
+                _cost_sensitivity(populations, arm_decisions),
             )
         )
     return tuple(result)
 
 
-def _oracle_total(samples: tuple[RiskCostUncertaintySample, ...]) -> float:
+@dataclass(frozen=True)
+class _DailyCostPopulation:
+    trade_date: date
+    samples: tuple[RiskCostUncertaintySample, ...]
+    estimated_oracle_net_return_sum: float
+    scenario_oracle_net_return_sums: tuple[float, ...]
+
+
+def _daily_cost_populations(samples: tuple[RiskCostUncertaintySample, ...]) -> tuple[_DailyCostPopulation, ...]:
     by_day: dict[date, list[RiskCostUncertaintySample]] = defaultdict(list)
     for sample in samples:
         by_day[sample.trade_date].append(sample)
-    total = 0.0
-    for rows in by_day.values():
-        ranked = sorted(
-            (sample for sample in rows if build_selection_utility(sample.alpha, sample.risk, sample.cost).eligible),
-            key=lambda item: (-item.actual_net_excess_return, item.code),
+    return tuple(
+        _DailyCostPopulation(
+            trade_date,
+            tuple(rows),
+            _daily_oracle(tuple(rows), None),
+            tuple(_daily_oracle(tuple(rows), cost_bps) for cost_bps in _COST_BPS),
         )
-        boards: dict[str, int] = {}
-        industries: dict[str, int] = {}
-        selected = 0
-        for sample in ranked:
-            if sample.actual_net_excess_return <= 0.0:
-                break
-            if boards.get(sample.board, 0) >= _MAX_PER_BOARD:
-                continue
-            if industries.get(sample.industry, 0) >= _MAX_PER_INDUSTRY:
-                continue
-            total += sample.actual_net_excess_return
-            selected += 1
-            boards[sample.board] = boards.get(sample.board, 0) + 1
-            industries[sample.industry] = industries.get(sample.industry, 0) + 1
-            if selected == _TOP_K:
-                break
-    return total
+        for trade_date, rows in sorted(by_day.items())
+    )
+
+
+def _daily_oracle(samples: tuple[RiskCostUncertaintySample, ...], cost_bps: int | None) -> float:
+    candidates = tuple(
+        ConstrainedOracleCandidate(
+            sample.code,
+            sample.board,
+            sample.industry,
+            sample.actual_net_excess_return if cost_bps is None else sample.actual_alpha_return - cost_bps / 10_000,
+        )
+        for sample in samples
+        if build_selection_utility(sample.alpha, sample.risk, sample.cost).eligible
+    )
+    return constrained_oracle(candidates, _SELECTION_POLICY).net_return_sum
+
+
+def _validate_cost_scenarios(samples: tuple[RiskCostUncertaintySample, ...]) -> None:
+    for sample in samples:
+        scenarios = {item.scenario_id: item.round_trip_return for item in sample.cost.scenarios}
+        if any(scenarios.get(f"cost_{cost_bps}bp") != cost_bps / 10_000 for cost_bps in _COST_BPS):
+            raise ValueError("risk-cost samples require canonical 20/50/100bp scenarios")
+
+
+def _opportunity_gap(oracle: float, realized: float) -> float:
+    gap = oracle - realized
+    if gap < -1e-12:
+        raise ValueError("constrained oracle is below realized selection")
+    return max(0.0, gap)
+
+
+def _cost_sensitivity(
+    populations: tuple[_DailyCostPopulation, ...], decisions: tuple[DeepSeekAblationDecision, ...]
+) -> tuple[DeepSeekCostSensitivityMetrics, ...]:
+    selected_keys = {(item.trade_date, item.code) for item in decisions if item.selected_rank is not None}
+    results = []
+    for scenario_index, cost_bps in enumerate(_COST_BPS):
+        days = []
+        for population in populations:
+            selected = tuple(
+                sample for sample in population.samples if (population.trade_date, sample.code) in selected_keys
+            )
+            realized = math.fsum(sample.actual_alpha_return - cost_bps / 10_000 for sample in selected) / _TOP_K
+            oracle = population.scenario_oracle_net_return_sums[scenario_index] / _TOP_K
+            days.append(
+                DeepSeekDailyCostMetrics(
+                    population.trade_date, len(selected), realized, oracle, _opportunity_gap(oracle, realized)
+                )
+            )
+        daily_metrics = tuple(days)
+        results.append(
+            DeepSeekCostSensitivityMetrics(
+                cost_bps,
+                daily_metrics,
+                fmean(item.slot_net_excess_return for item in daily_metrics),
+                fmean(item.slot_opportunity_cost for item in daily_metrics),
+                sum(item.selected_count == 0 for item in daily_metrics),
+            )
+        )
+    return tuple(results)
 
 
 def _content_hash(report: RiskCostUncertaintyReport) -> str:
@@ -659,6 +803,14 @@ def _content_hash(report: RiskCostUncertaintyReport) -> str:
         "model_artifact_hash": report.model_artifact_hash,
         "evidence_hash": report.evidence_hash,
         "sample_count": report.sample_count,
+        "selection_policy": {
+            "top_k": _TOP_K,
+            "max_per_board": _MAX_PER_BOARD,
+            "max_per_industry": _MAX_PER_INDUSTRY,
+            "portfolio_basis": "fixed_six_slots_cash_unused",
+            "oracle_method": "industry_board_dynamic_programming",
+            "cost_bps": _COST_BPS,
+        },
         "calibration": None if report.calibration is None else _calibration_payload(report.calibration),
         "ablation": tuple(_ablation_payload(item) for item in report.ablation),
         "decisions": tuple(_decision_payload(item) for item in report.decisions),
@@ -769,7 +921,11 @@ def _uncertainty_bucket_payload(
     }
 
 
-def _ablation_payload(metrics: DeepSeekAblationMetrics) -> dict[str, str | int | float | None]:
+def _ablation_payload(
+    metrics: DeepSeekAblationMetrics,
+) -> dict[
+    str, str | int | float | None | tuple[dict[str, int | float | tuple[dict[str, str | int | float], ...]], ...]
+]:
     return {
         "arm": metrics.arm,
         "evaluated_count": metrics.evaluated_count,
@@ -779,6 +935,28 @@ def _ablation_payload(metrics: DeepSeekAblationMetrics) -> dict[str, str | int |
         "mean_selected_net_excess_return": metrics.mean_selected_net_excess_return,
         "selected_severe_loss_rate": metrics.selected_severe_loss_rate,
         "opportunity_cost": metrics.opportunity_cost,
+        "cost_sensitivity": tuple(_cost_sensitivity_payload(item) for item in metrics.cost_sensitivity),
+    }
+
+
+def _cost_sensitivity_payload(
+    metrics: DeepSeekCostSensitivityMetrics,
+) -> dict[str, int | float | tuple[dict[str, str | int | float], ...]]:
+    return {
+        "cost_bps": metrics.cost_bps,
+        "mean_daily_slot_net_excess_return": metrics.mean_daily_slot_net_excess_return,
+        "mean_daily_slot_opportunity_cost": metrics.mean_daily_slot_opportunity_cost,
+        "empty_day_count": metrics.empty_day_count,
+        "days": tuple(
+            {
+                "trade_date": item.trade_date.isoformat(),
+                "selected_count": item.selected_count,
+                "slot_net_excess_return": item.slot_net_excess_return,
+                "oracle_slot_net_excess_return": item.oracle_slot_net_excess_return,
+                "slot_opportunity_cost": item.slot_opportunity_cost,
+            }
+            for item in metrics.days
+        ),
     }
 
 
@@ -797,6 +975,8 @@ def _decision_payload(decision: DeepSeekAblationDecision) -> dict[str, str | int
 __all__ = [
     "DeepSeekAblationDecision",
     "DeepSeekAblationMetrics",
+    "DeepSeekCostSensitivityMetrics",
+    "DeepSeekDailyCostMetrics",
     "DeepSeekResearchReview",
     "RiskCostUncertaintyReport",
     "RiskCostUncertaintySample",
