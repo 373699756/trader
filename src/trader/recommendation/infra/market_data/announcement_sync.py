@@ -1,4 +1,4 @@
-"""CNInfo announcement incremental sync helpers for the risk registry."""
+"""Recommendation-owned CNInfo announcement persistence and incremental sync."""
 
 from __future__ import annotations
 

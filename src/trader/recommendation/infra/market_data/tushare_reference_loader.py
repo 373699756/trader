@@ -14,41 +14,11 @@ from typing import Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
-from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryHealthStatus
-from trader.infra.market_data.providers.exchange_security_master import (
-    ExchangeSecurityMasterHealthStatus,
-)
-from trader.recommendation.infra.market_data.gateway import MarketDataGateway
-from trader.recommendation.infra.market_data.market_cache_identity import (
-    _normalize_codes,
-    _reference_epoch,
-    _source_batch_identity,
-)
-from trader.recommendation.infra.market_data.official_static_reference import (
-    StaticReferenceRead,
-    parse_official_static_reference,
-)
-from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.recommendation.infra.market_data.model_industry_reference_loader import (
-    ModelIndustryReferenceDependencies,
-    ModelIndustryReferenceLoader,
-)
-from trader.recommendation.infra.market_data.provider_ports import (
-    ModelIndustrySource,
-    ReferenceSource,
-    SecurityMasterSource,
-    TushareHealthStatus,
-)
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
-from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
-    calendar_observations_from_record as _calendar_observations_from_record,
-)
-from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
-    calendar_sessions_payload as _calendar_sessions_payload,
-)
-from trader.recommendation.infra.market_data.trading_calendar_state_codec import parse_date as _parse_date
-from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
-    trading_calendar_cursor_from_observations as _trading_calendar_cursor_from_observations,
+from trader.infra.market_data.source_health import (
+    ModelIndustrySourceHealth,
+    ReferenceSourceHealth,
+    SecurityMasterSourceHealth,
 )
 from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
 from trader.recommendation.application.ports.market_data_repository import (
@@ -62,6 +32,36 @@ from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.recommendation.domain.market.static import StaticMarketReference
+from trader.recommendation.infra.market_data.gateway import MarketDataGateway
+from trader.recommendation.infra.market_data.market_cache_identity import (
+    _normalize_codes,
+    _reference_epoch,
+    _source_batch_identity,
+)
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.model_industry_reference_loader import (
+    ModelIndustryReferenceDependencies,
+    ModelIndustryReferenceLoader,
+)
+from trader.recommendation.infra.market_data.official_static_reference import (
+    StaticReferenceRead,
+    parse_official_static_reference,
+)
+from trader.recommendation.infra.market_data.provider_ports import (
+    ModelIndustrySource,
+    ReferenceSource,
+    SecurityMasterSource,
+)
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
+    calendar_observations_from_record as _calendar_observations_from_record,
+)
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
+    calendar_sessions_payload as _calendar_sessions_payload,
+)
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import parse_date as _parse_date
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
+    trading_calendar_cursor_from_observations as _trading_calendar_cursor_from_observations,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _T = TypeVar("_T")
@@ -842,13 +842,13 @@ class ReferenceLoader:
                 self._security_master_refresh_ttl_seconds,
             )
 
-    def health(self) -> TushareHealthStatus | None:
+    def health(self) -> ReferenceSourceHealth | None:
         return self._client.health() if self._client is not None else None
 
-    def security_master_health(self) -> ExchangeSecurityMasterHealthStatus | None:
+    def security_master_health(self) -> SecurityMasterSourceHealth | None:
         return self._security_master_client.health() if self._security_master_client is not None else None
 
-    def model_industry_health(self) -> BaoStockIndustryHealthStatus | None:
+    def model_industry_health(self) -> ModelIndustrySourceHealth | None:
         return self._model_industries.health()
 
     def model_industry_reference_rows(self) -> int:

@@ -19,6 +19,7 @@ from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.source_health import SecurityMasterSourceHealth
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SSE_URL = "https://query.sse.com.cn/sseQuery/commonQuery.do"
@@ -36,24 +37,6 @@ class ExchangeSecurityMasterListing:
     listing_date: date
     board: str
     exchange: str
-
-
-@dataclass(frozen=True)
-class ExchangeSecurityMasterHealthStatus:
-    enabled: bool
-    planned_count: int
-    success_count: int
-    error_count: int
-    timeout_count: int
-    consecutive_failures: int
-    last_latency_ms: float | None
-    p50_latency_ms: float | None
-    p95_latency_ms: float | None
-    last_error: str | None
-    snapshot_rows: int
-    listing_date_rows: int
-    last_source_time: datetime | None
-    timeout_seconds: float
 
 
 ListingFetcher = Callable[[float], Sequence[ExchangeSecurityMasterListing]]
@@ -141,10 +124,10 @@ class ExchangeSecurityMasterClient:
         self._record_success(len(observations), received_at, started)
         return observations
 
-    def health(self) -> ExchangeSecurityMasterHealthStatus:
+    def health(self) -> SecurityMasterSourceHealth:
         with self._lock:
             latencies = tuple(self._latencies_ms)
-            return ExchangeSecurityMasterHealthStatus(
+            return SecurityMasterSourceHealth(
                 enabled=True,
                 planned_count=self._planned_count,
                 success_count=self._success_count,
@@ -450,6 +433,5 @@ def _percentile(values: Sequence[float], quantile: float) -> float | None:
 
 __all__ = [
     "ExchangeSecurityMasterClient",
-    "ExchangeSecurityMasterHealthStatus",
     "ExchangeSecurityMasterListing",
 ]

@@ -33,9 +33,10 @@ from trader.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
 from trader.infra.market_data.providers.sina import SinaClient
 from trader.infra.market_data.providers.tencent import TencentClient
-from trader.infra.market_data.providers.tushare import TushareClient, TushareHealthStatus
+from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.references.calendar import ChinaTradingCalendar, TradingCalendarUnavailableError
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
+from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
 from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
@@ -501,8 +502,8 @@ def _tushare_health(
     enabled: bool,
     history_mode: str,
     degraded_reason: str | None = None,
-) -> TushareHealthStatus:
-    return TushareHealthStatus(
+) -> ReferenceSourceHealth:
+    return ReferenceSourceHealth(
         enabled=enabled,
         access_points=0,
         history_mode=history_mode,

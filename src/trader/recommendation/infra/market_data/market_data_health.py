@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.infra.market_data.providers.tushare import TushareHealthStatus
 from trader.infra.market_data.router import RouteOutcome
+from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
@@ -454,7 +454,7 @@ def _market_source_payload(status: MarketSourceHealthStatus) -> dict[str, JsonIn
     }
 
 
-def _tushare_payload(status: TushareHealthStatus) -> dict[str, JsonInput]:
+def _tushare_payload(status: ReferenceSourceHealth) -> dict[str, JsonInput]:
     return {
         "enabled": status.enabled,
         "access_points": status.access_points,

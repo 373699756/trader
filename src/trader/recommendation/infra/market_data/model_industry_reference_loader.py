@@ -10,15 +10,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import cast
 
-from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryHealthStatus
+from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.source_health import ModelIndustrySourceHealth
+from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
+from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.market_cache_identity import _source_batch_identity
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.provider_ports import ModelIndustrySource
-from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.infra.market_data.trading_calendar_state_codec import parse_date
-from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
-from trader.recommendation.domain.market.models import ModelIndustryReference
 
 _LOGGER = logging.getLogger(__name__)
 _SOURCE_LANE = "baostock_reference"
@@ -159,7 +159,7 @@ class ModelIndustryReferenceLoader:
         with self._lock:
             return {"model_industry": self._data_version} if self._data_version else {}
 
-    def health(self) -> BaoStockIndustryHealthStatus | None:
+    def health(self) -> ModelIndustrySourceHealth | None:
         return self._client.health() if self._client is not None else None
 
     def reference_rows(self) -> int:

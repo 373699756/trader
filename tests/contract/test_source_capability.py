@@ -38,7 +38,8 @@ def test_source_capability_report_covers_required_sources() -> None:
 def test_unimplemented_sources_are_not_wired_into_market_runtime() -> None:
     for missing in ("exchange.py", "baostock.py", "mootdx.py"):
         assert not (MARKET_DIR / missing).exists()
-    assert (MARKET_DIR / "providers" / "cninfo.py").exists()
+    assert not (MARKET_DIR / "providers" / "cninfo.py").exists()
+    assert (ROOT / "src/trader/recommendation/infra/market_data/announcement_sync.py").is_file()
 
     for path in (BOOTSTRAP, GATEWAY, COORDINATOR):
         tree = ast.parse(path.read_text(encoding="utf-8"))

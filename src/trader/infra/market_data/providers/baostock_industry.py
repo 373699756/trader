@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.source_health import ModelIndustrySourceHealth
 from trader.recommendation.application.runtime.schedule import shanghai_now
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -28,20 +29,6 @@ class BaoStockIndustryRow:
     industry: str
     classification: str
     update_date: str
-
-
-@dataclass(frozen=True)
-class BaoStockIndustryHealthStatus:
-    planned_count: int = 0
-    success_count: int = 0
-    error_count: int = 0
-    timeout_count: int = 0
-    snapshot_rows: int = 0
-    invalid_rows: int = 0
-    last_latency_ms: float = 0.0
-    last_error: str | None = None
-    last_source_time: datetime | None = None
-    timeout_seconds: float = 0.0
 
 
 class BaoStockIndustryFetch(Protocol):
@@ -66,7 +53,7 @@ class BaoStockIndustryClient:
         self._minimum_rows = minimum_rows
         self._monotonic = monotonic
         self._lock = threading.Lock()
-        self._status = BaoStockIndustryHealthStatus(timeout_seconds=self._timeout_seconds)
+        self._status = ModelIndustrySourceHealth(timeout_seconds=self._timeout_seconds)
 
     def fetch(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
         local = shanghai_now(observed_at)
@@ -96,7 +83,7 @@ class BaoStockIndustryClient:
         elapsed_ms = max(0.0, (self._monotonic() - started_at) * 1000.0)
         with self._lock:
             current = self._status
-            self._status = BaoStockIndustryHealthStatus(
+            self._status = ModelIndustrySourceHealth(
                 planned_count=current.planned_count,
                 success_count=current.success_count + 1,
                 error_count=current.error_count,
@@ -110,7 +97,7 @@ class BaoStockIndustryClient:
             )
         return observations
 
-    def health(self) -> BaoStockIndustryHealthStatus:
+    def health(self) -> ModelIndustrySourceHealth:
         with self._lock:
             return self._status
 
@@ -252,6 +239,5 @@ def _baostock_worker(trade_date: str, sender: Connection) -> None:
 
 __all__ = [
     "BaoStockIndustryClient",
-    "BaoStockIndustryHealthStatus",
     "BaoStockIndustryRow",
 ]

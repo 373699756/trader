@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.infra.market_data.providers.cninfo import (
+from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_ANNOUNCEMENT_PREFIX,
     CNINFO_COMPONENT_PREFIX,
     CNINFO_CURSOR_PREFIX,

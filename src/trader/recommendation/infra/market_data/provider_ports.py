@@ -13,9 +13,11 @@ from datetime import date, datetime
 from typing import Protocol
 
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryHealthStatus
-from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterHealthStatus
-from trader.infra.market_data.providers.tushare import TushareHealthStatus
+from trader.infra.market_data.source_health import (
+    ModelIndustrySourceHealth,
+    ReferenceSourceHealth,
+    SecurityMasterSourceHealth,
+)
 from trader.recommendation.domain.market.models import Evidence, MarketQuote
 from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
@@ -54,11 +56,11 @@ class IndustryReferenceSource(Protocol):
 class SecurityMasterSource(Protocol):
     def fetch(self, observed_at: datetime) -> Sequence[SourceObservation]: ...
 
-    def health(self) -> ExchangeSecurityMasterHealthStatus: ...
+    def health(self) -> SecurityMasterSourceHealth: ...
 
 
 class ModelIndustrySource(IndustryReferenceSource, Protocol):
-    def health(self) -> BaoStockIndustryHealthStatus: ...
+    def health(self) -> ModelIndustrySourceHealth: ...
 
 
 class ReferenceSource(Protocol):
@@ -86,7 +88,7 @@ class ReferenceSource(Protocol):
         observed_at: datetime,
     ) -> Sequence[SourceObservation]: ...
 
-    def health(self) -> TushareHealthStatus: ...
+    def health(self) -> ReferenceSourceHealth: ...
 
 
 __all__ = [
@@ -99,5 +101,4 @@ __all__ = [
     "ReferenceSource",
     "ResearchSource",
     "SecurityMasterSource",
-    "TushareHealthStatus",
 ]

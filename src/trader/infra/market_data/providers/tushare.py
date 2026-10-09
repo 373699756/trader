@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import canonical_json_bytes
+from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers.tushare_records import (
     _calendar_observation,
     _calendar_ranges,
@@ -31,7 +32,7 @@ from trader.infra.market_data.providers.tushare_records import (
     _security_master_observation,
     _ts_code,
 )
-from trader.infra.market_data.observations import SourceObservation
+from trader.infra.market_data.source_health import ReferenceSourceHealth
 
 
 class _SdkFactory(Protocol):
@@ -63,31 +64,6 @@ class _PerCodeRecords:
     rows: tuple[Mapping[str, object], ...]
     failures: tuple[SourceObservation, ...]
     failure_codes: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class TushareHealthStatus:
-    enabled: bool
-    access_points: int
-    history_mode: str
-    minute_call_limit: int
-    daily_call_limit: int | None
-    process_api_attempts_last_minute: int
-    process_api_attempts_today: int
-    process_remaining_calls_today: int | None
-    local_rate_limit_count: int
-    planned_count: int
-    success_count: int
-    error_count: int
-    consecutive_failures: int
-    circuit_open: bool
-    timeout_count: int
-    last_latency_ms: float
-    p50_latency_ms: float | None
-    p95_latency_ms: float | None
-    degraded_reason: str | None
-    timeout_seconds: float
-    data_age_seconds: float | None
 
 
 class _TushareRequiredOptions(TypedDict):
@@ -307,7 +283,7 @@ class TushareClient:
     def history_mode(self) -> str:
         return "forward_adjusted" if self.supports("forward_adjusted_daily") else "unadjusted_daily"
 
-    def health(self) -> TushareHealthStatus:
+    def health(self) -> ReferenceSourceHealth:
         measured_at = self._wall_clock()
         with self._lock:
             self._refresh_quota_window_locked(measured_at)
@@ -316,7 +292,7 @@ class TushareClient:
                 if self._daily_call_limit is not None
                 else None
             )
-            return TushareHealthStatus(
+            return ReferenceSourceHealth(
                 enabled=bool(self._token),
                 access_points=self._points,
                 history_mode=self.history_mode(),

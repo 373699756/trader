@@ -13,7 +13,6 @@ from tests.component.market_data_test_support import (
     BoundedExecutor,
     BoundedLruCache,
     ChinaTradingCalendar,
-    CountingHistoryClient,
     DataPlaneRecoverySummary,
     DataPlaneRepository,
     DataPlaneUnavailableError,
@@ -36,10 +35,8 @@ from tests.component.market_data_test_support import (
     StaticTencentClient,
     TradingCalendarUnavailableError,
     TushareClient,
-    _history_bars,
     _quote,
     _service,
-    _tushare_health,
     date,
     datetime,
     json,
@@ -50,6 +47,49 @@ from tests.component.market_data_test_support import (
     time,
     timedelta,
 )
+from trader.infra.market_data.source_health import ModelIndustrySourceHealth
+
+
+def test_replacement_industry_source_health_is_projected_without_fetching_or_erasing_previous_success() -> None:
+    class ReplacementIndustrySource:
+        def fetch(self, observed_at: datetime) -> tuple[SourceObservation, ...]:
+            raise AssertionError("health projection must not fetch supplier data")
+
+        def health(self) -> ModelIndustrySourceHealth:
+            return ModelIndustrySourceHealth(
+                planned_count=2,
+                success_count=1,
+                error_count=1,
+                timeout_count=1,
+                snapshot_rows=7,
+                invalid_rows=2,
+                last_latency_ms=1200.0,
+                last_error="TimeoutError",
+                last_source_time=NOW - timedelta(seconds=30),
+                timeout_seconds=1.2,
+            )
+
+    service = _service(
+        StaticGateway(()),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        model_industry_client=ReplacementIndustrySource(),
+        wall_clock=lambda: NOW,
+    )
+
+    assert service.health()["sources"]["baostock_industry"] == {
+        "enabled": True,
+        "planned_count": 2,
+        "success_count": 1,
+        "error_count": 1,
+        "timeout_count": 1,
+        "snapshot_rows": 7,
+        "invalid_rows": 2,
+        "last_latency_ms": 1200.0,
+        "last_error_code": "TimeoutError",
+        "data_age_seconds": 30.0,
+        "timeout_seconds": 1.2,
+    }
 
 
 def test_reference_loader_recover_restores_security_master_and_calendar_cursor(tmp_path: Path) -> None:

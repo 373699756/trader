@@ -212,23 +212,25 @@ def test_market_provider_and_normalization_packages_are_partitioned() -> None:
     assert violations == []
 
 
-def test_recommendation_and_download_adapters_do_not_import_provider_clients() -> None:
+def test_business_and_delivery_boundaries_do_not_import_provider_implementations() -> None:
     roots = (
-        SOURCE_ROOT / "recommendation" / "infra" / "market_data",
-        SOURCE_ROOT / "download" / "infra",
+        SOURCE_ROOT / "recommendation",
+        SOURCE_ROOT / "download",
+        SOURCE_ROOT / "training",
+        SOURCE_ROOT / "http_api",
+        SOURCE_ROOT / "web",
     )
     violations: list[str] = []
     for root in roots:
         for path in root.rglob("*.py"):
+            imports = _imports(path)
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
             for node in ast.walk(tree):
-                if not isinstance(node, ast.ImportFrom) or not node.module:
-                    continue
-                if not node.module.startswith("trader.infra.market_data.providers"):
-                    continue
-                for alias in node.names:
-                    if alias.name.endswith("Client"):
-                        violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {node.module}.{alias.name}")
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    imports.update(f"{node.module}.{alias.name}" for alias in node.names)
+            for imported in sorted(imports):
+                if imported.startswith("trader.infra.market_data.providers"):
+                    violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
     assert violations == []
 
 
