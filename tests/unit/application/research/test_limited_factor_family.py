@@ -46,6 +46,7 @@ def test_builder_does_not_read_factor_source_when_point_in_time_data_is_insuffic
         None,
         (),
         (),
+        (),
         ("point_in_time_dataset_unavailable",),
     )
     source = _NeverCalledSource()
@@ -64,6 +65,7 @@ def test_builder_rejects_recall_report_from_another_dataset_without_source_reads
         "b" * 64,
         None,
         None,
+        (),
         (),
         (),
         ("point_in_time_dataset_unavailable",),

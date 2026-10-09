@@ -225,6 +225,53 @@ class CandidateRecallDayStageMetrics:
 
 
 @dataclass(frozen=True)
+class CandidateRecallOracleLoss:
+    top_k: int
+    oracle_count: int
+    lost_count: int
+    loss_rate: float | None
+
+    def __post_init__(self) -> None:
+        if self.top_k not in CANDIDATE_RECALL_TOP_K:
+            raise ValueError("candidate recall loss TopK is invalid")
+        _validate_recall(self.oracle_count, self.lost_count, self.loss_rate, "candidate recall oracle loss")
+
+
+@dataclass(frozen=True)
+class CandidateRecallRejectionMetrics:
+    boundary: CandidateRecallStage
+    rejected_count: int
+    positive_net_count: int
+    negative_net_count: int
+    zero_net_count: int
+    mean_net_excess_return_20bp_pct: float | None
+    exit_untradable_rate: float | None
+    severe_loss_rate: float | None
+    oracle_losses: tuple[CandidateRecallOracleLoss, ...]
+
+    def __post_init__(self) -> None:
+        counts = (self.positive_net_count, self.negative_net_count, self.zero_net_count)
+        if (
+            self.boundary not in CANDIDATE_RECALL_STAGES[1:]
+            or any(value < 0 for value in counts)
+            or self.rejected_count != sum(counts)
+        ):
+            raise ValueError("candidate recall rejection counts are invalid")
+        mean = self.mean_net_excess_return_20bp_pct
+        if (mean is None) != (self.rejected_count == 0) or (mean is not None and not math.isfinite(mean)):
+            raise ValueError("candidate recall rejection mean is invalid")
+        rates = (self.exit_untradable_rate, self.severe_loss_rate)
+        _validate_rates(rates, "candidate recall rejection")
+        if any((value is None) != (self.rejected_count == 0) for value in rates):
+            raise ValueError("candidate recall rejection rates require rejected rows")
+        if tuple(item.top_k for item in self.oracle_losses) != CANDIDATE_RECALL_TOP_K:
+            raise ValueError("candidate recall rejection requires fixed TopK losses")
+        if any(item.lost_count > self.rejected_count for item in self.oracle_losses):
+            raise ValueError("candidate recall oracle losses exceed rejected rows")
+        object.__setattr__(self, "oracle_losses", tuple(self.oracle_losses))
+
+
+@dataclass(frozen=True)
 class CandidateRecallDayAttribution:
     trade_date: date
     dataset_day_hash: str
@@ -232,6 +279,7 @@ class CandidateRecallDayAttribution:
     latency_evidence_hash: str
     rows: tuple[CandidateRecallLedgerRow, ...]
     stages: tuple[CandidateRecallDayStageMetrics, ...]
+    rejection_metrics: tuple[CandidateRecallRejectionMetrics, ...]
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -261,6 +309,11 @@ class CandidateRecallDayAttribution:
             raise ValueError("candidate recall day stage metrics do not match rows")
         object.__setattr__(self, "rows", rows)
         object.__setattr__(self, "stages", stages)
+        if _attribution_trace(self).content_hash != self.trace_hash:
+            raise ValueError("candidate recall attribution does not match trace hash")
+        if tuple(self.rejection_metrics) != _rejection_metrics((rows,)):
+            raise ValueError("candidate recall rejection metrics do not match rows")
+        object.__setattr__(self, "rejection_metrics", tuple(self.rejection_metrics))
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
@@ -308,6 +361,7 @@ class CandidateRecallReport:
     latency_evidence_hash: str | None
     days: tuple[CandidateRecallDayAttribution, ...]
     aggregate_stages: tuple[CandidateRecallAggregateStageMetrics, ...]
+    rejection_metrics: tuple[CandidateRecallRejectionMetrics, ...]
     failure_reasons: tuple[str, ...]
     terminal_holdout_opened: bool = False
     production_authority: bool = False
@@ -351,6 +405,10 @@ class CandidateRecallReport:
         object.__setattr__(self, "days", days)
         object.__setattr__(self, "aggregate_stages", stages)
         object.__setattr__(self, "failure_reasons", reasons)
+        expected_rejections = _rejection_metrics(tuple(day.rows for day in days)) if days else ()
+        if tuple(self.rejection_metrics) != expected_rejections:
+            raise ValueError("candidate recall rejection metrics do not match days")
+        object.__setattr__(self, "rejection_metrics", tuple(self.rejection_metrics))
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
@@ -379,6 +437,7 @@ def attribute_candidate_recall_day(
         trace.latency_evidence_hash,
         rows,
         stages,
+        _rejection_metrics((rows,)),
     )
 
 
@@ -396,6 +455,10 @@ def build_candidate_recall_report(
     latency_evidence_hashes = {item.latency_evidence_hash for item in ordered}
     if len(latency_evidence_hashes) != 1:
         raise CandidateRecallTraceMismatchError("candidate recall latency evidence identity is inconsistent")
+    for parent, attributed in zip(dataset.days, ordered, strict=True):
+        expected = attribute_candidate_recall_day(parent, _attribution_trace(attributed))
+        if attributed != expected:
+            raise CandidateRecallTraceMismatchError("candidate recall attributed rows do not match parent dataset")
     aggregates = tuple(_aggregate_stage(stage, ordered) for stage in CANDIDATE_RECALL_STAGES)
     return CandidateRecallReport(
         state="candidate_recall_attributed",
@@ -404,6 +467,7 @@ def build_candidate_recall_report(
         latency_evidence_hash=next(iter(latency_evidence_hashes)),
         days=ordered,
         aggregate_stages=aggregates,
+        rejection_metrics=_rejection_metrics(tuple(day.rows for day in ordered)),
         failure_reasons=(),
     )
 
@@ -419,7 +483,61 @@ def candidate_recall_insufficient_report(
         latency_evidence_hash=None,
         days=(),
         aggregate_stages=(),
+        rejection_metrics=(),
         failure_reasons=(reason,),
+    )
+
+
+def _attribution_trace(day: CandidateRecallDayAttribution) -> CandidateRecallDayTrace:
+    return CandidateRecallDayTrace(
+        day.trade_date,
+        day.dataset_day_hash,
+        day.latency_evidence_hash,
+        tuple(
+            CandidateRecallDownstreamTrace(
+                row.trade_date,
+                row.code,
+                row.dataset_row_hash,
+                row.first_rejection_boundary,
+                row.rejection_reasons,
+            )
+            for row in day.rows
+            if row.first_rejection_boundary in {"scoring", "risk", "action", "concentration", "selected"}
+        ),
+        tuple(CandidateRecallStageLatency(item.stage, item.cumulative_latency_ms) for item in day.stages),
+    )
+
+
+def _rejection_metrics(
+    populations: tuple[tuple[CandidateRecallLedgerRow, ...], ...],
+) -> tuple[CandidateRecallRejectionMetrics, ...]:
+    rows = tuple(row for population in populations for row in population)
+    return tuple(_rejection_metric(boundary, rows, populations) for boundary in CANDIDATE_RECALL_STAGES[1:])
+
+
+def _rejection_metric(
+    boundary: CandidateRecallStage,
+    rows: tuple[CandidateRecallLedgerRow, ...],
+    populations: tuple[tuple[CandidateRecallLedgerRow, ...], ...],
+) -> CandidateRecallRejectionMetrics:
+    rejected = tuple(row for row in rows if row.first_rejection_boundary == boundary)
+    losses = []
+    for top_k in CANDIDATE_RECALL_TOP_K:
+        oracle_count = sum(min(top_k, len(population)) for population in populations)
+        lost_count = sum(row.oracle_rank <= top_k for row in rejected)
+        losses.append(CandidateRecallOracleLoss(top_k, oracle_count, lost_count, _fraction(lost_count, oracle_count)))
+    return CandidateRecallRejectionMetrics(
+        boundary=boundary,
+        rejected_count=len(rejected),
+        positive_net_count=sum(row.net_excess_return_20bp > 0.0 for row in rejected),
+        negative_net_count=sum(row.net_excess_return_20bp < 0.0 for row in rejected),
+        zero_net_count=sum(row.net_excess_return_20bp == 0.0 for row in rejected),
+        mean_net_excess_return_20bp_pct=(
+            math.fsum(row.net_excess_return_20bp for row in rejected) / len(rejected) if rejected else None
+        ),
+        exit_untradable_rate=_rate(tuple(row.exit_untradable for row in rejected)),
+        severe_loss_rate=_rate(tuple(row.severe_loss for row in rejected)),
+        oracle_losses=tuple(losses),
     )
 
 
@@ -606,6 +724,8 @@ __all__ = [
     "CandidateRecallDownstreamBoundary",
     "CandidateRecallDownstreamTrace",
     "CandidateRecallLedgerRow",
+    "CandidateRecallOracleLoss",
+    "CandidateRecallRejectionMetrics",
     "CandidateRecallReport",
     "CandidateRecallStage",
     "CandidateRecallStageLatency",
