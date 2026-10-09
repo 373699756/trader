@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from enum import Enum
 
-from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
 
 
 class HistoryQuality(str, Enum):
@@ -44,8 +44,8 @@ def plan_history_tail(open_dates: tuple[date, ...], latest: date, observed_on: d
 
 
 def validate_tail_overlap(
-    original: tuple[BaoStockDailyCell, ...],
-    recovered: tuple[BaoStockDailyCell, ...],
+    original: tuple[PublishedHistoryCell, ...],
+    recovered: tuple[PublishedHistoryCell, ...],
 ) -> HistoryQuality:
     """Require exact same-source raw/qfq facts; never infer an adjustment factor."""
     if any(cell.qfq is None and cell.unadjusted is None for cell in recovered):
@@ -62,7 +62,7 @@ def validate_tail_overlap(
     return HistoryQuality.FULL_HISTORY_READY
 
 
-def _valid_side(side: BaoStockDailySide | None) -> bool:
+def _valid_side(side: PublishedHistorySide | None) -> bool:
     if side is None:
         return False
     prices = (side.open_price, side.close_price, side.high_price, side.low_price)

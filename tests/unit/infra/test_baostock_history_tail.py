@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from datetime import date, timedelta
 
 import pytest
@@ -13,7 +14,6 @@ from trader.download.infra.history_control_repository import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
 )
-from trader.download.infra.history_revision_codec import encode_history_revision
 
 
 def _request():
@@ -31,13 +31,16 @@ def test_same_source_adapter_reads_paired_facts_with_no_retries_and_bounded_dead
         assert not cancel_requested()
         records = []
         for request in requests:
-            for revision in _Archive.window(request.code, request.trade_dates).revisions:
+            for cell in _Archive.window(request.code, request.trade_dates).cells:
                 key = "unadjusted" if request.family == "daily_raw" else "qfq"
-                payload = json.loads(encode_history_revision(revision))["cell"][key]
+                side = cell.unadjusted if key == "unadjusted" else cell.qfq
+                assert side is not None
+                payload = asdict(side)
+                payload["trade_date"] = cell.trade_date.isoformat()
                 records.append(
                     BaoStockGapRecord(
                         request.code,
-                        revision.trade_date,
+                        cell.trade_date,
                         request.family,
                         json.dumps(payload, sort_keys=True, separators=(",", ":")),
                     )

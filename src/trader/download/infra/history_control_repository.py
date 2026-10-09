@@ -21,6 +21,7 @@ from trader.download.domain.history_control import (
     HistoryCalendarIdentity,
     HistoryControlState,
     HistoryDiskRequirement,
+    HistoryPublishedControlState,
     HistoryReminderClaim,
     HistoryReminderOutcome,
     HistoryReminderState,
@@ -331,6 +332,38 @@ class SQLiteHistoryControlRepository:
             raise HistoryControlError("history active snapshot pointer is inconsistent")
         return state
 
+    def load_published_state(self) -> HistoryPublishedControlState | None:
+        """Read and hash four publication records, never historical checkpoints."""
+        try:
+            with closing(self._read_connection()) as connection:
+                connection.execute("PRAGMA query_only=ON")
+                connection.execute("BEGIN")
+                identity = connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
+                if identity != (_SCHEMA_IDENTITY,):
+                    raise HistoryControlError("history control schema identity is invalid")
+                active = connection.execute(
+                    "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
+                ).fetchone()
+                if active is None:
+                    return None
+                snapshot = _read_publication_record(connection, "snapshot", str(active[1]))
+                if not isinstance(snapshot, HistoryActiveSnapshot) or (
+                    snapshot.content_hash != active[0] or snapshot.sequence != active[1]
+                ):
+                    raise HistoryControlError("history active snapshot pointer is inconsistent")
+                source = _read_publication_record(connection, "source", snapshot.source_identity_hash)
+                calendar = _read_publication_record(connection, "calendar", snapshot.calendar_hash)
+                universe = _read_publication_record(connection, "universe", snapshot.universe_hash)
+                if (
+                    not isinstance(source, HistorySourceIdentity)
+                    or not isinstance(calendar, HistoryCalendarIdentity)
+                    or not isinstance(universe, HistoryUniverseIdentity)
+                ):
+                    raise HistoryControlError("history publication parents are invalid")
+                return HistoryPublishedControlState(snapshot, source, calendar, universe)
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryControlError("history publication control read failed") from exc
+
     def load_automation_state(self) -> HistoryAutomationControlState:
         """Read only the bounded records needed by scheduled-run observability."""
 
@@ -434,6 +467,18 @@ class SQLiteHistoryControlRepository:
 
     def _read_connection(self) -> sqlite3.Connection:
         return sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+
+
+def _read_publication_record(connection: sqlite3.Connection, kind: ControlKind, key: str) -> ControlRecord:
+    row = connection.execute(
+        "SELECT content_hash, payload_json FROM immutable_records WHERE kind=? AND record_key=?", (kind, key)
+    ).fetchone()
+    if row is None:
+        raise HistoryControlError("history publication record is missing")
+    value = _decode_record(kind, row[1])
+    if value.content_hash != row[0]:
+        raise HistoryControlError("history publication record hash is invalid")
+    return value
 
 
 def _populate_rebuilt_control(

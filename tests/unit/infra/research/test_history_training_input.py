@@ -12,6 +12,7 @@ import pytest
 
 import trader.training.infra.history.history_training_due as due_module
 from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_sqlite_performance
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
@@ -27,19 +28,19 @@ from trader.download.domain.history_control import HistoryActiveSnapshot, Histor
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync
-from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
-from trader.recommendation.domain.publication.models import Strategy
+from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.history.history_training_due import (
     HistoryTrainingDueQuery,
     _revised_dates_since_bundle,
     evaluate_history_training_due,
 )
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
+from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -222,6 +223,39 @@ def test_history_consumers_do_not_wait_for_background_projection(
         assert refresh.result(timeout=2)
     assert history.status().snapshot_hash == new_manifest.snapshot_hash
     assert len(history.load(("600001",))["600001"]) == 20
+
+
+def test_shared_published_reader_reuses_partition_trust_for_projection_and_outcomes(tmp_path, monkeypatch):
+    root = tmp_path / "history" / "baostock"
+    dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
+    configuration = HistorySyncConfiguration(root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
+    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    verified = []
+    verify = SQLiteHistoryMonthPartitionRepository.verify.__func__
+
+    def observed(cls, path, reference, progress=None):
+        verified.append(reference)
+        return verify(cls, path, reference, progress)
+
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(observed))
+    archive = SQLitePublishedHistoryArchive(tmp_path / "history")
+    manifest = archive.manifest()
+    history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
+    assert history.refresh()
+    initial_count = len(verified)
+    assert initial_count > 0
+    assert len(archive.read_windows(manifest, ("600001",), sessions=61)[0].cells) == 61
+    assert history.read_outcome_bars(("600001",), NOW)
+    assert len(verified) == initial_count
+    partition = root / verified[0].relative_path
+    content = bytearray(partition.read_bytes())
+    content[-1] ^= 1
+    partition.write_bytes(content)
+    before = history.entries()
+    assert history.read_outcome_bars(("600001",), NOW) == {}
+    assert history.entries() == before
+    assert history.status().error_count == 1
+    assert len(verified) == initial_count + 1
 
 
 def test_deadline_bound_history_load_never_starts_an_archive_scan(

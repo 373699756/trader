@@ -22,9 +22,12 @@ from tests.component.market_data_test_support import (
 from trader.download.application.fetch_history_tail import FetchHistoryTailUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_tail import HistoryTailRequest, HistoryTailWindow
-from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
+from trader.download.domain.published_history import (
+    PublishedHistoryManifest,
+    PublishedHistoryWindow,
+    project_history_cell,
+)
 from trader.infra.market_data.history.history import build_history_context
 from trader.recommendation.domain.market.history_tail import HistoryQuality, plan_history_tail
 from trader.recommendation.infra.market_data.history_tail_recovery import (
@@ -87,9 +90,7 @@ class _Archive:
 
     @staticmethod
     def window(code: str, dates: tuple[date, ...]) -> PublishedHistoryWindow:
-        return PublishedHistoryWindow(
-            code, tuple(HistoryRevision(1, "main", _cell(code, day), False, "行业", "fixture") for day in dates)
-        )
+        return PublishedHistoryWindow(code, tuple(project_history_cell(_cell(code, day)) for day in dates))
 
 
 class _Supplier:
@@ -307,11 +308,57 @@ def test_incomplete_base_cannot_acquire_model_eligibility_from_a_valid_tail():
 
     def incomplete_base(manifest, codes, *, sessions):
         return tuple(
-            replace(window, revisions=window.revisions[4:])
-            for window in original_read(manifest, codes, sessions=sessions)
+            replace(window, cells=window.cells[4:]) for window in original_read(manifest, codes, sessions=sessions)
         )
 
     archive.read_windows = incomplete_base
     assert history.load(("600001",), observed_at=NOW) == {}
     assert len(supplier.calls) == 1
     assert dict(history.status().tail.quality_counts)[HistoryQuality.HISTORY_UNAVAILABLE] == 1
+
+
+@pytest.mark.parametrize("sessions", (61, 251))
+def test_tail_expiry_reuses_verified_base_but_snapshot_change_reads_new_base(sessions):
+    history, archive, supplier, _, clock = _cache(sessions=sessions)
+    first = history.load(("600001",), observed_at=NOW)
+    assert len(archive.reads) == 1
+    clock[0] = 901.0
+    assert history.load(("600001",), observed_at=NOW) == first
+    assert len(supplier.calls) == 2
+    assert len(archive.reads) == 1
+    archive.current = replace(archive.current, snapshot_hash="b" * 64)
+    assert history.refresh()
+    assert history.load(("600001",), observed_at=NOW) == first
+    assert len(archive.reads) == 2
+    assert len(supplier.calls) == 3
+
+
+def test_base_window_cache_is_bounded_and_profile_specific():
+    _, archive, _, tail, _ = _cache()
+    short = tail._base_window("600001", archive.current, 61)
+    long = tail._base_window("600001", archive.current, 251)
+    assert len(short.cells) == 61
+    assert len(long.cells) == 251
+    for offset in range(481):
+        tail._base_window(str(600001 + offset), archive.current, 61)
+    assert len(tail._base_windows) == 480
+    before = len(archive.reads)
+    tail._base_window("600001", archive.current, 61)
+    assert len(archive.reads) == before + 1
+
+
+def test_cached_base_cannot_admit_tail_across_an_active_snapshot_switch():
+    history, archive, supplier, _, clock = _cache()
+    history.load(("600001",), observed_at=NOW)
+    clock[0] = 901.0
+    fetch = supplier.fetch
+
+    def switched(request, *, deadline):
+        result = fetch(request, deadline=deadline)
+        archive.current = replace(archive.current, snapshot_hash="b" * 64)
+        return result
+
+    supplier.fetch = switched
+    assert history.load(("600001",), observed_at=NOW) == {}
+    assert len(archive.reads) == 1
+    assert history.cached(("600001",), observed_at=NOW, fresh_only=True) == {}

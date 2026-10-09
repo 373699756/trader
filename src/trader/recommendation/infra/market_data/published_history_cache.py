@@ -337,7 +337,7 @@ class PublishedHistoryCache:
         except (RuntimeError, ValueError) as exc:
             self._record_error(type(exc).__name__)
             return {}
-        return {window.code: paired for window in windows if (paired := outcome_bars(window.revisions))}
+        return {window.code: paired for window in windows if (paired := outcome_bars(window.cells))}
 
     def _build_entries(self, manifest: PublishedHistoryManifest) -> dict[str, PublishedHistoryEntry]:
         entries: dict[str, PublishedHistoryEntry] = {}

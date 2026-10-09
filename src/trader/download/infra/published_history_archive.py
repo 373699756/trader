@@ -7,12 +7,13 @@ from datetime import date
 from itertools import groupby
 from pathlib import Path
 
-from trader.download.domain.history_revision import MAX_HISTORY_TRAINING_WINDOW_SESSIONS, HistoryRevision
+from trader.download.domain.history_revision import MAX_HISTORY_TRAINING_WINDOW_SESSIONS
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.infra.history_archive_reader import HistoryArchiveReadError, SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_status import (
     ActiveHistoryArchive,
     HistoryArchiveError,
+    history_archive_root,
     load_active_history_archive,
 )
 
@@ -23,7 +24,8 @@ class PublishedHistoryReadError(RuntimeError):
 
 class SQLitePublishedHistoryArchive:
     def __init__(self, root: Path) -> None:
-        self._root = root
+        self._root = history_archive_root(root)
+        self._reader = SQLiteHistoryArchiveReader(self._root)
 
     def manifest(self) -> PublishedHistoryManifest | None:
         try:
@@ -50,12 +52,11 @@ class SQLitePublishedHistoryArchive:
         dates = _session_dates(manifest, sessions)
         allowed_codes = frozenset(manifest.universe_codes)
         try:
-            revisions = SQLiteHistoryArchiveReader(archive.root).iter_range_by_code(
-                dates[0], dates[-1], archive.snapshot
-            )
-            for code, group in groupby(revisions, key=lambda row: row.code):
+            cells = self._reader.iter_published_range_by_code(dates[0], dates[-1], archive.snapshot)
+            for code, group in groupby(cells, key=lambda row: row.code):
                 if code in allowed_codes:
                     yield PublishedHistoryWindow(code, tuple(group))
+            self._matching_archive(manifest)
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise PublishedHistoryReadError("history_snapshot_partition_invalid") from exc
 
@@ -68,13 +69,13 @@ class SQLitePublishedHistoryArchive:
     ) -> tuple[PublishedHistoryWindow, ...]:
         archive = self._matching_archive(manifest)
         dates = _session_dates(manifest, sessions)
-        reader = SQLiteHistoryArchiveReader(archive.root)
         windows: list[PublishedHistoryWindow] = []
         try:
             for code in tuple(dict.fromkeys(codes)):
-                rows = reader.read_code_window(code, dates, archive.snapshot)
+                rows = self._reader.read_published_code_window(code, dates, archive.snapshot)
                 if rows:
                     windows.append(PublishedHistoryWindow(code, rows))
+            self._matching_archive(manifest)
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise PublishedHistoryReadError("history_snapshot_partition_invalid") from exc
         return tuple(windows)

@@ -15,10 +15,12 @@ from typing import Literal, cast
 
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,
 )
+from trader.download.infra.published_history_codec import decode_published_history_cell
 
 _SCHEMA_IDENTITY = "history_month_partition"
 _CODE = re.compile(r"^[0-9]{6}$")
@@ -59,6 +61,9 @@ ON daily_records(trade_date, board, code, first_seen_sequence DESC, revision_id)
 CREATE INDEX IF NOT EXISTS history_month_observation_code_date_idx
 ON daily_observations(code, trade_date, sync_sequence DESC, revision_id);
 """
+_REVISION_COLUMNS = """records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
+       records.board, records.payload_json, records.content_hash"""
+_DAILY_COLUMNS = "records.trade_date, records.code, json_extract(records.payload_json, '$.cell')"
 _LATEST_WINDOW = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
@@ -70,8 +75,7 @@ WITH latest AS (
     WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ?
 {observation_filter}
 )
-SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
-       records.board, records.payload_json, records.content_hash
+SELECT {columns}
 FROM latest
 JOIN daily_records AS records
   ON records.trade_date = latest.trade_date
@@ -81,10 +85,9 @@ WHERE latest.revision_rank = 1
 {record_filter}
 ORDER BY records.trade_date, records.code
 """
-_LATEST_RANGE_SQL = _LATEST_WINDOW.format(observation_filter="", record_filter="")
-_LATEST_RANGE_BY_CODE_SQL = """
-SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
-       records.board, records.payload_json, records.content_hash
+_LATEST_RANGE_SQL = _LATEST_WINDOW.format(columns=_REVISION_COLUMNS, observation_filter="", record_filter="")
+_RANGE_BY_CODE = """
+SELECT {columns}
 FROM daily_records AS records INDEXED BY history_month_code_date_idx
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
@@ -97,6 +100,8 @@ WHERE records.trade_date BETWEEN ? AND ?
   )
 ORDER BY records.code, records.trade_date
 """
+_LATEST_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_REVISION_COLUMNS)
+_PUBLISHED_RANGE_BY_CODE_SQL = _RANGE_BY_CODE.format(columns=_DAILY_COLUMNS)
 _LATEST_SHADOW_SQL = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
@@ -119,16 +124,22 @@ WHERE latest.revision_rank = 1
 ORDER BY records.code, records.trade_date
 """
 _LATEST_CODE_SQL = _LATEST_WINDOW.format(
+    columns=_REVISION_COLUMNS,
     observation_filter="      AND code = ?",
     record_filter="",
 )
 _LATEST_BOARD_SQL = _LATEST_WINDOW.format(
+    columns=_REVISION_COLUMNS,
     observation_filter="",
     record_filter="  AND records.board = ?",
 )
 _LATEST_CODE_BOARD_SQL = _LATEST_WINDOW.format(
+    columns=_REVISION_COLUMNS,
     observation_filter="      AND code = ?",
     record_filter="  AND records.board = ?",
+)
+_PUBLISHED_CODE_SQL = _LATEST_WINDOW.format(
+    columns=_DAILY_COLUMNS, observation_filter="      AND code = ?", record_filter=""
 )
 _COUNT_CODE_BATCH_SIZE = 500
 
@@ -348,6 +359,33 @@ class SQLiteHistoryMonthPartitionRepository:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month code-ordered query failed") from exc
+
+    def iter_published_cells(
+        self,
+        start: date,
+        end: date,
+        *,
+        snapshot_sequence: int,
+        code: str | None = None,
+    ) -> Iterator[PublishedHistoryCell]:
+        """Project sealed daily facts without materializing full revision objects."""
+        if start > end or snapshot_sequence < 1 or (code is not None and _CODE.fullmatch(code) is None):
+            raise ValueError("published daily query range is invalid")
+        query = _PUBLISHED_RANGE_BY_CODE_SQL if code is None else _PUBLISHED_CODE_SQL
+        parameters = (
+            (start.isoformat(), end.isoformat(), snapshot_sequence)
+            if code is None
+            else (snapshot_sequence, start.isoformat(), end.isoformat(), code)
+        )
+        try:
+            with closing(self._read_connection()) as connection:
+                self._require_metadata(connection)
+                cursor = connection.execute(query, parameters)
+                while rows := cursor.fetchmany(512):
+                    for row in rows:
+                        yield decode_published_history_cell(row)
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryMonthPartitionError("published daily query failed") from exc
 
     def iter_shadow_facts(
         self,

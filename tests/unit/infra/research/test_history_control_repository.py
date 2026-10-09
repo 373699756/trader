@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -25,6 +26,7 @@ from trader.download.domain.history_control import (
 )
 from trader.download.infra.history_control_repository import (
     HistoryControlConflictError,
+    HistoryControlError,
     HistoryControlRegressionError,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
@@ -89,6 +91,50 @@ def test_control_repository_round_trips_typed_state_and_replays_same_content(tmp
     assert automation.reminder_claims == (values[5],)
     assert automation.reminders == (values[6],)
     assert repository.integrity().state == "healthy"
+
+
+def test_published_control_decodes_only_active_snapshot_and_three_parents(tmp_path, monkeypatch):
+    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository.initialize()
+    old = _values()
+    _save_all(repository, old)
+    current = _values(2, date(2026, 9, 11))
+    repository.save_source(current[0])
+    repository.save_calendar(current[1])
+    repository.save_universe(current[2])
+    repository.publish_snapshot(current[-1])
+    decode = control_repository_module._decode_record
+    kinds = []
+
+    def observed(kind, payload):
+        kinds.append(kind)
+        return decode(kind, payload)
+
+    monkeypatch.setattr(control_repository_module, "_decode_record", observed)
+    published = repository.load_published_state()
+    assert published.snapshot == current[-1]
+    assert published.source == current[0]
+    assert published.calendar == current[1]
+    assert published.universe == current[2]
+    assert kinds == ["snapshot", "source", "calendar", "universe"]
+
+
+@pytest.mark.parametrize("kind", ("snapshot", "source", "calendar", "universe"))
+def test_published_control_rejects_tampered_required_record(tmp_path, kind):
+    path = tmp_path / "control.sqlite3"
+    repository = SQLiteHistoryControlRepository(path)
+    repository.initialize()
+    _save_all(repository, _values())
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE immutable_records SET content_hash=? WHERE kind=?", ("f" * 64, kind))
+    with pytest.raises(HistoryControlError, match="hash|pointer"):
+        repository.load_published_state()
+
+
+def test_published_control_without_active_snapshot_is_unavailable(tmp_path):
+    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository.initialize()
+    assert repository.load_published_state() is None
 
 
 def test_control_repository_round_trips_training_contract_due(tmp_path: Path) -> None:

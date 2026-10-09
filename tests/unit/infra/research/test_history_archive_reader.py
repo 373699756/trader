@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from dataclasses import replace
 from datetime import date, timedelta
@@ -7,9 +8,11 @@ from pathlib import Path
 
 import pytest
 
+import trader.download.infra.history_month_partition as partition_module
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.published_history import project_history_cell
 from trader.download.infra.history_archive_reader import (
     HistoryArchiveReadError,
     HistoryPartitionRevisionComparison,
@@ -177,3 +180,91 @@ def test_revision_comparison_uses_one_current_physical_partition_for_both_sequen
     changed = SQLiteHistoryArchiveReader(root).revised_dates(first, second, comparison)
 
     assert changed == (first,)
+
+
+def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_path, monkeypatch):
+    root = tmp_path / "history"
+    dates = tuple(date(2026, 8, 1) + timedelta(days=offset) for offset in range(62))
+    original = _revision("600001", dates[0])
+    changed = replace(original, first_seen_sequence=2, is_st=True)
+    rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002")) + (changed,)
+    ordered = tuple(sorted(rows, key=lambda row: (row.trade_date, row.code, row.first_seen_sequence, row.revision_id)))
+    snapshot = replace(_build_snapshot(root, ordered), sequence=2)
+    reader = SQLiteHistoryArchiveReader(root)
+    expected = tuple(project_history_cell(row.cell) for row in reader.read_code_window("600001", dates, snapshot))
+
+    def unexpected_revision_decode(_row):
+        pytest.fail("published daily projection must not decode or hash complete revisions")
+
+    monkeypatch.setattr(partition_module, "_decode_row", unexpected_revision_decode)
+    assert reader.read_published_code_window("600001", dates, snapshot) == expected
+    streamed = tuple(reader.iter_published_range_by_code(dates[0], dates[-1], snapshot))
+    assert tuple(cell for cell in streamed if cell.code == "600001") == expected
+    assert len(streamed) == len(dates) * 2
+
+
+@pytest.mark.parametrize("change", ("same_size_corruption", "atomic_replace", "pending_wal"))
+def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monkeypatch):
+    root = tmp_path / "history"
+    day = date(2026, 9, 1)
+    snapshot = _build_snapshot(root, (_revision("600001", day),))
+    verified = []
+    verify = SQLiteHistoryMonthPartitionRepository.verify.__func__
+
+    def observed(cls, path, reference, progress=None):
+        verified.append(reference)
+        return verify(cls, path, reference, progress)
+
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(observed))
+    reader = SQLiteHistoryArchiveReader(root)
+    reader.read_published_code_window("600001", (day,), snapshot)
+    path = root / snapshot.partitions[0].relative_path
+    previous = path.stat()
+    if change == "same_size_corruption":
+        content = bytearray(path.read_bytes())
+        content[-1] ^= 1
+        path.write_bytes(content)
+        os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    elif change == "atomic_replace":
+        replacement = path.with_suffix(".replacement")
+        replacement.write_bytes(b"x" * previous.st_size)
+        os.utime(replacement, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+        replacement.replace(path)
+    else:
+        Path(f"{path}-wal").write_bytes(b"pending")
+    with pytest.raises(HistoryArchiveReadError):
+        reader.read_published_code_window("600001", (day,), snapshot)
+    if change == "pending_wal":
+        assert len(verified) == 1
+        Path(f"{path}-wal").unlink()
+        assert reader.read_published_code_window("600001", (day,), snapshot)
+        assert len(verified) == 2
+
+
+def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp_path, monkeypatch):
+    root = tmp_path / "history"
+    day = date(2026, 9, 1)
+    original = _revision("600001", day)
+    revised = replace(
+        original,
+        first_seen_sequence=2,
+        cell=replace(original.cell, qfq=replace(original.cell.qfq, close_price=original.cell.qfq.close_price + 0.1)),
+    )
+    snapshot = _build_snapshot(root, (original, revised))
+    calls = []
+    verify = SQLiteHistoryMonthPartitionRepository.verify.__func__
+
+    def observe(cls, path, reference, progress=None):
+        calls.append(reference)
+        return verify(cls, path, reference, progress)
+
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(observe))
+    reader = SQLiteHistoryArchiveReader(root)
+    assert reader.read_published_code_window("600001", (day,), snapshot) == (project_history_cell(original.cell),)
+    current = replace(snapshot, sequence=2)
+    assert reader.read_published_code_window("600001", (day,), current) == (project_history_cell(revised.cell),)
+    assert len(calls) == 1
+    invalid = replace(current, partitions=(replace(current.partitions[0], sha256="f" * 64),))
+    with pytest.raises(HistoryArchiveReadError):
+        reader.read_published_code_window("600001", (day,), invalid)
+    assert len(calls) == 2

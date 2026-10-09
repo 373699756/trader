@@ -34,7 +34,7 @@ class ActiveHistoryArchive:
 
 
 def inspect_history_archive(root: Path, *, verify_partitions: bool = False) -> HistoryArchiveStatus:
-    archive_root = _archive_root(root)
+    archive_root = history_archive_root(root)
     if not (archive_root / "control.sqlite3").is_file():
         return _unavailable()
     try:
@@ -51,25 +51,17 @@ def inspect_history_archive(root: Path, *, verify_partitions: bool = False) -> H
 
 
 def load_active_history_archive(root: Path) -> ActiveHistoryArchive:
-    archive_root = _archive_root(root)
+    archive_root = history_archive_root(root)
     control_path = archive_root / "control.sqlite3"
     if not control_path.is_file():
         raise HistoryArchiveError("history_snapshot_unavailable")
     try:
-        state = SQLiteHistoryControlRepository(control_path).load_state()
+        state = SQLiteHistoryControlRepository(control_path).load_published_state()
     except HistoryControlError as exc:
         raise HistoryArchiveError("history_control_invalid") from exc
-    active = state.active_snapshot
-    if active is None:
+    if state is None:
         raise HistoryArchiveError("history_snapshot_unavailable")
-    source = next((item for item in state.sources if item.content_hash == active.source_identity_hash), None)
-    calendar = next((item for item in state.calendars if item.content_hash == active.calendar_hash), None)
-    universe = next((item for item in state.universes if item.content_hash == active.universe_hash), None)
-    if source is None or calendar is None or universe is None:
-        raise HistoryArchiveError("history_snapshot_parent_invalid")
-    if calendar.open_dates[-1] != active.data_cutoff or active.label_cutoff not in calendar.open_dates:
-        raise HistoryArchiveError("history_snapshot_parent_invalid")
-    return ActiveHistoryArchive(archive_root, active, source, calendar, universe)
+    return ActiveHistoryArchive(archive_root, state.snapshot, state.source, state.calendar, state.universe)
 
 
 def verify_active_history_archive(archive: ActiveHistoryArchive) -> None:
@@ -80,7 +72,7 @@ def verify_active_history_archive(archive: ActiveHistoryArchive) -> None:
         raise HistoryArchiveError("history_snapshot_partition_invalid") from exc
 
 
-def _archive_root(root: Path) -> Path:
+def history_archive_root(root: Path) -> Path:
     return root if root.name == "baostock" else root / "baostock"
 
 
@@ -114,6 +106,7 @@ __all__ = [
     "ActiveHistoryArchive",
     "HistoryArchiveError",
     "inspect_history_archive",
+    "history_archive_root",
     "load_active_history_archive",
     "verify_active_history_archive",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -11,9 +12,12 @@ from datetime import date, datetime
 from trader.download.application.fetch_history_tail import FetchHistoryTailUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.history_tail import HistoryTailRequest
-from trader.download.domain.published_history import PublishedHistoryManifest
+from trader.download.domain.published_history import (
+    PublishedHistoryManifest,
+    PublishedHistoryWindow,
+    project_history_cell,
+)
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
-from trader.recommendation.application.ports.runtime import TradingCalendarUnavailableError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.history_tail import (
     HistoryQuality,
@@ -40,6 +44,13 @@ class HistoryTailStatus:
 class _RequestIdentity:
     snapshot_hash: str
     expected_date: date
+    sessions: int
+    code: str
+
+
+@dataclass(frozen=True, slots=True)
+class _BaseWindowIdentity:
+    snapshot_hash: str
     sessions: int
     code: str
 
@@ -91,6 +102,7 @@ class CandidateHistoryTailRecovery:
         self._lock = threading.RLock()
         self._batch_lock = threading.Lock()
         self._recent: dict[_RequestIdentity, _Result] = {}
+        self._base_windows: OrderedDict[_BaseWindowIdentity, PublishedHistoryWindow] = OrderedDict()
         self._attempt_order: dict[str, int] = {}
         self._sequence = 0
         self._status = HistoryTailStatus()
@@ -150,17 +162,13 @@ class CandidateHistoryTailRecovery:
             budget = min(budget, max(0.0, (deadline - self._wall_clock()).total_seconds()))
         limit = started + budget
         try:
-            if not self._cancel_requested() and self._monotonic() < limit:
-                dates = self._open_dates()
-                with self._lock:
-                    self._calendar_dates = dates
-            plan = self.plan(manifest.data_cutoff, observed_at)
-        except (OSError, TradingCalendarUnavailableError, ValueError):
+            plan = self._prepare_plan(manifest, observed_at, limit)
+        except (OSError, RuntimeError, ValueError):
             with self._lock:
                 self._status = HistoryTailStatus(
                     requested_count=len(requested),
                     deferred_count=len(requested),
-                    last_error="history_calendar_unverifiable",
+                    last_error="history_calendar_or_snapshot_unverifiable",
                 )
             return {}
         results = self.cached(requested, manifest, sessions, observed_at)
@@ -204,6 +212,23 @@ class CandidateHistoryTailRecovery:
             self._prune(manifest.snapshot_hash, self._monotonic())
         return results
 
+    def _prepare_plan(
+        self, manifest: PublishedHistoryManifest, observed_at: datetime, deadline: float
+    ) -> HistoryTailPlan:
+        if self._cancel_requested() or self._monotonic() >= deadline:
+            raise TimeoutError("history_tail_deadline")
+        dates = self._open_dates()
+        with self._lock:
+            self._calendar_dates = dates
+        plan = self.plan(manifest.data_cutoff, observed_at)
+        self._require_snapshot(manifest)
+        return plan
+
+    def _require_snapshot(self, manifest: PublishedHistoryManifest) -> None:
+        current = self._history.manifest()
+        if current is None or current.snapshot_hash != manifest.snapshot_hash:
+            raise RuntimeError("history_snapshot_changed")
+
     def _select(self, requested: tuple[str, ...], snapshot_hash: str, expected: date, sessions: int) -> _BatchSelection:
         with self._lock:
             qualities = tuple(
@@ -226,10 +251,10 @@ class CandidateHistoryTailRecovery:
         observed_at: datetime,
         deadline: float,
     ) -> _Result:
-        windows = self._history.read_windows(manifest, (code,), sessions=sessions)
-        if not windows or not windows[0].revisions:
+        window = self._base_window(code, manifest, sessions)
+        if window is None or not window.cells:
             return _Result((), HistoryQuality.HISTORY_UNAVAILABLE, self._monotonic() + 60.0)
-        original = tuple(row.cell for row in windows[0].revisions)
+        original = window.cells
         plan = self.plan(original[-1].trade_date, observed_at)
         if plan.quality is not HistoryQuality.TAIL_PENDING:
             return _Result((), plan.quality, self._monotonic() + 60.0)
@@ -238,14 +263,16 @@ class CandidateHistoryTailRecovery:
         if self._cancel_requested() or self._monotonic() >= deadline:
             raise TimeoutError("history_tail_deadline")
         tail = self._supplier.fetch(request, deadline=deadline)
+        self._require_snapshot(manifest)
+        recovered = tuple(project_history_cell(cell) for cell in tail.cells)
         quality = (
-            validate_tail_overlap(overlap, tail.cells)
+            validate_tail_overlap(overlap, recovered)
             if tail.source == "baostock"
             else HistoryQuality.ADJUSTMENT_CONFLICT
         )
         if quality is not HistoryQuality.FULL_HISTORY_READY:
             return _Result((), quality, self._monotonic() + 60.0)
-        merged = original + tuple(cell for cell in tail.cells if cell.trade_date > original[-1].trade_date)
+        merged = original + tuple(cell for cell in recovered if cell.trade_date > original[-1].trade_date)
         selected = merged[-sessions:]
         with self._lock:
             expected_dates = tuple(day for day in self._calendar_dates if day <= plan.expected_date)[-sessions:]
@@ -253,6 +280,27 @@ class CandidateHistoryTailRecovery:
         if len(bars) != sessions or tuple(cell.trade_date for cell in selected) != expected_dates:
             return _Result((), HistoryQuality.HISTORY_UNAVAILABLE, self._monotonic() + 60.0)
         return _Result(bars, HistoryQuality.FULL_HISTORY_READY, self._monotonic() + 900.0)
+
+    def _base_window(
+        self, code: str, manifest: PublishedHistoryManifest, sessions: int
+    ) -> PublishedHistoryWindow | None:
+        identity = _BaseWindowIdentity(manifest.snapshot_hash, sessions, code)
+        if self._base_windows and next(iter(self._base_windows)).snapshot_hash != manifest.snapshot_hash:
+            self._base_windows.clear()
+        existing = self._base_windows.get(identity)
+        if existing is not None:
+            self._base_windows.move_to_end(identity)
+            return existing
+        windows = self._history.read_windows(manifest, (code,), sessions=sessions)
+        if not windows:
+            return None
+        window = windows[0]
+        if window.code != code:
+            raise ValueError("history_base_window_code_mismatch")
+        self._base_windows[identity] = window
+        while len(self._base_windows) > 480:
+            self._base_windows.popitem(last=False)
+        return window
 
     def _prune(self, snapshot_hash: str, now: float) -> None:
         self._recent = {

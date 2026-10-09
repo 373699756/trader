@@ -401,6 +401,28 @@ class HistoryDiskRequirement:
         return sum(self.components)
 
 
+@dataclass(frozen=True, slots=True)
+class HistoryPublishedControlState:
+    """Only the active publication and its immutable parent identities."""
+
+    snapshot: HistoryActiveSnapshot
+    source: HistorySourceIdentity
+    calendar: HistoryCalendarIdentity
+    universe: HistoryUniverseIdentity
+
+    def __post_init__(self) -> None:
+        if (
+            self.snapshot.source_identity_hash != self.source.content_hash
+            or self.snapshot.calendar_hash != self.calendar.content_hash
+            or self.snapshot.universe_hash != self.universe.content_hash
+            or self.calendar.source_identity_hash != self.source.content_hash
+            or self.universe.source_identity_hash != self.source.content_hash
+            or self.calendar.open_dates[-1] != self.snapshot.data_cutoff
+            or self.snapshot.label_cutoff not in self.calendar.open_dates
+        ):
+            raise ValueError("published history parent identities are inconsistent")
+
+
 @dataclass(frozen=True)
 class HistoryControlState:
     sources: tuple[HistorySourceIdentity, ...]
@@ -502,6 +524,7 @@ __all__ = [
     "HistoryAutomationControlState",
     "HistoryCalendarIdentity",
     "HistoryControlState",
+    "HistoryPublishedControlState",
     "HistoryDiskRequirement",
     "HistoryReminderClaim",
     "HistoryReminderOutcome",

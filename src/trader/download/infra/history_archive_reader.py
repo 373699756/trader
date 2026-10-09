@@ -5,6 +5,7 @@ from __future__ import annotations
 import calendar
 import heapq
 import re
+import threading
 from collections import deque
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from trader.download.domain.history_revision import (
     HistoryTrainingPoint,
     HistoryTrainingWindow,
 )
+from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     HistoryPartitionVerificationPhase,
@@ -31,6 +33,30 @@ _CODE = re.compile(r"^[0-9]{6}$")
 
 class HistoryArchiveReadError(RuntimeError):
     """The active monthly history view is incomplete or inconsistent."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PartitionFileIdentity:
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+    changed_ns: int
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedPartition:
+    reference: HistorySnapshotPartition
+    identity: _PartitionFileIdentity
+    repository: SQLiteHistoryMonthPartitionRepository
+
+
+def _partition_file_identity(path: Path) -> _PartitionFileIdentity:
+    stat = path.stat()
+    wal = Path(f"{path}-wal")
+    if wal.exists() and wal.stat().st_size > 0:
+        raise HistoryArchiveReadError("history snapshot partition has pending WAL")
+    return _PartitionFileIdentity(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
 @dataclass(frozen=True)
@@ -65,7 +91,8 @@ def route_history_months(start: date, end: date) -> tuple[tuple[int, int], ...]:
 class SQLiteHistoryArchiveReader:
     def __init__(self, root: Path) -> None:
         self._root = root
-        self._verified: dict[HistorySnapshotPartition, SQLiteHistoryMonthPartitionRepository] = {}
+        self._verified: dict[str, _VerifiedPartition] = {}
+        self._verification_lock = threading.Lock()
 
     def verify_snapshot(
         self,
@@ -205,6 +232,51 @@ class SQLiteHistoryArchiveReader:
             for year, month in route_history_months(start, end)
         )
         yield from heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+
+    def read_published_code_window(
+        self,
+        code: str,
+        session_dates: tuple[date, ...],
+        snapshot: HistoryActiveSnapshot,
+    ) -> tuple[PublishedHistoryCell, ...]:
+        if _CODE.fullmatch(code) is None:
+            raise ValueError("published history code is invalid")
+        dates = session_dates
+        if (
+            not dates
+            or len(dates) > MAX_HISTORY_TRAINING_WINDOW_SESSIONS
+            or dates != tuple(sorted(set(dates)))
+            or dates[-1] > snapshot.data_cutoff
+        ):
+            raise ValueError("published history dates are invalid")
+        allowed = frozenset(dates)
+        rows: list[PublishedHistoryCell] = []
+        for year, month in route_history_months(dates[0], dates[-1]):
+            reference = self._reference(snapshot, year, month)
+            repository = self._verified_repository(reference)
+            rows.extend(
+                row
+                for row in repository.iter_published_cells(
+                    dates[0], dates[-1], snapshot_sequence=snapshot.sequence, code=code
+                )
+                if row.trade_date in allowed
+            )
+            self._verified_repository(reference)
+        return tuple(rows)
+
+    def iter_published_range_by_code(
+        self, start: date, end: date, snapshot: HistoryActiveSnapshot
+    ) -> Iterator[PublishedHistoryCell]:
+        if start > end or end > snapshot.data_cutoff:
+            raise ValueError("published history range is invalid")
+        references = tuple(self._reference(snapshot, year, month) for year, month in route_history_months(start, end))
+        streams = tuple(
+            self._verified_repository(reference).iter_published_cells(start, end, snapshot_sequence=snapshot.sequence)
+            for reference in references
+        )
+        yield from heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+        for reference in references:
+            self._verified_repository(reference)
 
     def iter_shadow_facts(
         self,
@@ -346,18 +418,26 @@ class SQLiteHistoryArchiveReader:
         reference: HistorySnapshotPartition,
         progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> SQLiteHistoryMonthPartitionRepository:
-        existing = self._verified.get(reference)
-        if existing is not None:
-            return existing
-        year, month = _reference_month(reference)
         path = self._root / reference.relative_path
-        try:
-            SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
-        except HistoryMonthPartitionError as exc:
-            raise HistoryArchiveReadError("history snapshot partition verification failed") from exc
-        repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
-        self._verified[reference] = repository
-        return repository
+        with self._verification_lock:
+            try:
+                identity = _partition_file_identity(path)
+                existing = self._verified.get(reference.relative_path)
+                if existing is not None and existing.reference == reference and existing.identity == identity:
+                    return existing.repository
+                self._verified.pop(reference.relative_path, None)
+                SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
+                if _partition_file_identity(path) != identity:
+                    raise HistoryArchiveReadError("history snapshot partition changed during verification")
+            except (HistoryArchiveReadError, HistoryMonthPartitionError, OSError) as exc:
+                self._verified.pop(reference.relative_path, None)
+                if isinstance(exc, HistoryArchiveReadError):
+                    raise
+                raise HistoryArchiveReadError("history snapshot partition verification failed") from exc
+            year, month = _reference_month(reference)
+            repository = SQLiteHistoryMonthPartitionRepository(path, year, month, immutable_read=True)
+            self._verified[reference.relative_path] = _VerifiedPartition(reference, identity, repository)
+            return repository
 
     def _shadow_repository(self, reference: HistorySnapshotPartition) -> SQLiteHistoryMonthPartitionRepository:
         """Open a read-only shadow reader without repeating sealed-file hashing."""

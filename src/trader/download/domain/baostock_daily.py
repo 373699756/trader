@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal
+from typing import Literal, Protocol
 
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 
@@ -34,6 +34,40 @@ BAOSTOCK_CALENDAR_SCHEMA = "baostock_exchange_calendar"
 BAOSTOCK_DAILY_FACT_SCHEMA = "baostock_daily_fact"
 BAOSTOCK_INDUSTRY_INTERVAL_SCHEMA = "baostock_industry_interval"
 BAOSTOCK_CODE_DOWNLOAD_SCHEMA = "baostock_code_download"
+
+
+class DailyTradingState(Protocol):
+    @property
+    def trading_status(self) -> BaoStockTradingStatus: ...
+
+
+def validate_daily_side_values(
+    adjustment: BaoStockAdjustment,
+    trading_status: BaoStockTradingStatus,
+    prices: tuple[float | None, ...],
+    flows: tuple[float | None, ...],
+    raw_values: tuple[float | None, float | None, float | None],
+) -> None:
+    """Shared numeric qualification for supplier and published daily facts."""
+    if adjustment not in ("unadjusted", "qfq") or trading_status not in ("trading", "suspended"):
+        raise ValueError("BaoStock daily side semantics are invalid")
+    supplied = tuple(value for value in (*prices, *flows) if value is not None)
+    if any(not math.isfinite(value) or value < 0 for value in supplied):
+        raise ValueError("BaoStock daily side contains an invalid number")
+    if trading_status == "trading" and (
+        any(value is None or value <= 0 for value in prices) or any(value is None or value < 0 for value in flows)
+    ):
+        raise ValueError("BaoStock active daily side requires complete OHLCV and amount")
+    if adjustment == "unadjusted":
+        if trading_status == "trading" and any(value is None or not math.isfinite(value) for value in raw_values):
+            raise ValueError("BaoStock unadjusted side requires preclose, pct_change, and turnover")
+        if any(value is not None and not math.isfinite(value) for value in raw_values):
+            raise ValueError("BaoStock unadjusted side contains an invalid number")
+        preclose, _, turnover = raw_values
+        if (preclose is not None and preclose < 0) or (turnover is not None and turnover < 0):
+            raise ValueError("BaoStock unadjusted side contains an invalid non-negative field")
+    elif any(value is not None for value in raw_values):
+        raise ValueError("BaoStock qfq side cannot carry unadjusted-only fields")
 
 
 @dataclass(frozen=True)
@@ -132,29 +166,13 @@ class BaoStockDailySide:
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily side identity is invalid")
-        if self.adjustment not in ("unadjusted", "qfq") or self.trading_status not in ("trading", "suspended"):
-            raise ValueError("BaoStock daily side semantics are invalid")
-        prices = (self.open_price, self.high_price, self.low_price, self.close_price)
-        flows = (self.volume, self.amount)
-        supplied = tuple(value for value in (*prices, *flows) if value is not None)
-        if any(not math.isfinite(value) or value < 0 for value in supplied):
-            raise ValueError("BaoStock daily side contains an invalid number")
-        if self.trading_status == "trading" and (
-            any(value is None or value <= 0 for value in prices) or any(value is None or value < 0 for value in flows)
-        ):
-            raise ValueError("BaoStock active daily side requires complete OHLCV and amount")
-        if self.adjustment == "unadjusted":
-            raw_values = (self.preclose, self.pct_change, self.turnover)
-            if self.trading_status == "trading" and any(
-                value is None or not math.isfinite(value) for value in raw_values
-            ):
-                raise ValueError("BaoStock unadjusted side requires preclose, pct_change, and turnover")
-            if any(value is not None and not math.isfinite(value) for value in raw_values):
-                raise ValueError("BaoStock unadjusted side contains an invalid number")
-            if (self.preclose is not None and self.preclose < 0) or (self.turnover is not None and self.turnover < 0):
-                raise ValueError("BaoStock unadjusted side contains an invalid non-negative field")
-        elif any(value is not None for value in (self.preclose, self.pct_change, self.turnover)):
-            raise ValueError("BaoStock qfq side cannot carry unadjusted-only fields")
+        validate_daily_side_values(
+            self.adjustment,
+            self.trading_status,
+            (self.open_price, self.high_price, self.low_price, self.close_price),
+            (self.volume, self.amount),
+            (self.preclose, self.pct_change, self.turnover),
+        )
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
 
@@ -175,7 +193,7 @@ class BaoStockDailyCell:
                 side.code != self.code or side.trade_date != self.trade_date or side.adjustment != adjustment
             ):
                 raise ValueError("BaoStock daily side does not match its logical cell")
-        expected = _cell_status(self.unadjusted, self.qfq)
+        expected = daily_cell_status(self.unadjusted, self.qfq)
         if self.status != expected:
             raise ValueError("BaoStock daily cell status does not match its sides")
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
@@ -333,7 +351,7 @@ def join_baostock_daily_sides(
         BaoStockDailyCell(
             request.code,
             day,
-            _cell_status(raw_by_date.get(day), qfq_by_date.get(day)),
+            daily_cell_status(raw_by_date.get(day), qfq_by_date.get(day)),
             raw_by_date.get(day),
             qfq_by_date.get(day),
         )
@@ -369,9 +387,9 @@ def _index_sides(
     return indexed, duplicates
 
 
-def _cell_status(
-    unadjusted: BaoStockDailySide | None,
-    qfq: BaoStockDailySide | None,
+def daily_cell_status(
+    unadjusted: DailyTradingState | None,
+    qfq: DailyTradingState | None,
 ) -> BaoStockCellStatus:
     if unadjusted is None and qfq is None:
         return "unknown_missing"
@@ -543,6 +561,9 @@ __all__ = [
     "BaoStockTrainingLabelContract",
     "BaoStockTrainingRow",
     "BaoStockTrainingSplit",
+    "DailyTradingState",
     "build_baostock_training_split",
+    "daily_cell_status",
     "join_baostock_daily_sides",
+    "validate_daily_side_values",
 ]
