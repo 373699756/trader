@@ -7,9 +7,8 @@ import time
 from collections.abc import Callable
 from typing import Literal, Protocol, cast
 
+from trader.download.domain.history_sync import BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
 from trader.download.infra.baostock_gateway import BaoStockRowResult, BaoStockSdkPort
-
-BAOSTOCK_QUERY_INTERVAL_SECONDS = 2.0
 
 
 class BaoStockSessionSdkPort(BaoStockSdkPort, Protocol):
@@ -25,7 +24,7 @@ class RateLimitedBaoStockSdk:
         self,
         sdk: BaoStockSessionSdkPort,
         *,
-        interval_seconds: float = BAOSTOCK_QUERY_INTERVAL_SECONDS,
+        interval_seconds: float = BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         activity: Callable[[Literal["started", "completed"]], None] | None = None,
@@ -134,7 +133,6 @@ def baostock_dependency_versions() -> tuple[tuple[str, str], ...]:
 
 
 __all__ = [
-    "BAOSTOCK_QUERY_INTERVAL_SECONDS",
     "BaoStockSessionSdkPort",
     "RateLimitedBaoStockSdk",
     "baostock_dependency_versions",

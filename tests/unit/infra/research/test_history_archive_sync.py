@@ -25,10 +25,10 @@ from trader.download.domain.history_sync import (
     HistorySyncConfiguration,
     HistorySyncProgress,
 )
+from trader.download.infra import history_archive_sync as history_sync_module
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_archive_sync import run_history_sync
-from trader.download.infra import history_archive_sync as history_sync_module
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 
@@ -124,8 +124,9 @@ class ProgressRecorder:
 
 def test_history_sync_configuration_owns_bounded_supplier_resources(tmp_path: Path) -> None:
     assert HistorySyncConfiguration().minimum_free_bytes == 1 * 1024**3
+    assert HistorySyncConfiguration().query_interval_seconds == 1.5
     with pytest.raises(ValueError, match="configuration"):
-        HistorySyncConfiguration(tmp_path, query_interval_seconds=1.99)
+        HistorySyncConfiguration(tmp_path, query_interval_seconds=1.49)
     with pytest.raises(ValueError, match="configuration"):
         HistorySyncConfiguration(tmp_path, supplier_retries=3)
     with pytest.raises(ValueError, match="configuration"):

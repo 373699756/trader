@@ -321,7 +321,7 @@ def test_gateway_rejects_industry_rows_that_were_not_effective_at_the_requested_
     assert intervals == ()
 
 
-def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
+def test_sdk_queries_are_started_at_most_once_every_one_point_five_seconds() -> None:
     sdk = _Sdk()
     now = [0.0]
     delays: list[float] = []
@@ -343,7 +343,7 @@ def test_sdk_queries_are_started_at_most_once_every_two_seconds() -> None:
         adjustflag="3",
     )
 
-    assert delays == [2.0, 2.0, 2.0]
+    assert delays == [1.5, 1.5, 1.5]
 
 
 def test_sdk_queries_report_each_supplier_call_start_and_completion() -> None:
@@ -364,7 +364,7 @@ def test_sdk_queries_report_each_supplier_call_start_and_completion() -> None:
     limited.query_stock_basic()
 
     assert activity == ["started", "completed", "started", "completed"]
-    assert now == [2.0]
+    assert now == [1.5]
 
 
 class _LoginSdk:

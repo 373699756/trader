@@ -35,6 +35,7 @@ HistorySyncProgressState = Literal["started", "waiting", "retrying", "completed"
 _PROGRESS_ITEM = re.compile(r"[0-9A-Za-z_.:-]{1,64}")
 _PROGRESS_STAGES = frozenset(get_args(HistorySyncProgressStage))
 _PROGRESS_STATES = frozenset(get_args(HistorySyncProgressState))
+BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS = 1.5
 
 
 @dataclass(frozen=True)
@@ -46,7 +47,7 @@ class HistorySyncConfiguration:
     minimum_free_bytes: int = 1 * 1024**3
     supplier_timeout_seconds: float = 45.0
     supplier_retries: int = 2
-    query_interval_seconds: float = 2.0
+    query_interval_seconds: float = BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
     cancellation_grace_seconds: float = 10.0
     progress_heartbeat_seconds: float = 5.0
     training_root: Path = Path("data/train")
@@ -67,7 +68,7 @@ class HistorySyncConfiguration:
             or self.minimum_free_bytes < 0
             or self.supplier_timeout_seconds <= 0
             or not 0 <= self.supplier_retries <= 2
-            or self.query_interval_seconds < 2.0
+            or self.query_interval_seconds < BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
             or not 0 < self.cancellation_grace_seconds <= 10.0
             or not 0 < self.progress_heartbeat_seconds <= self.supplier_timeout_seconds
         ):
