@@ -141,12 +141,12 @@ class SQLiteQfqWindowCache:
     def _choose_shard(
         self, code: str, rows: tuple[tuple[str, str], ...], membership: dict[str, str], *, exclude: str | None = None
     ) -> str:
-        prefix = f"range-{int(code) // 64:05d}"
+        prefix = f"{int(code) // 64:05d}"
         # SQLite pages/index overhead has ample reserve; hard page cap is the
         # final guard. Names and existing code routing never get rebalanced.
         reserve = sum(len(payload.encode("ascii")) + 160 for _, payload in rows) * 2 + 65536
         for part in range(10000):
-            name = f"{prefix}-{part:04d}.sqlite3"
+            name = f"{prefix}.sqlite3" if part == 0 else f"{prefix}-{part}.sqlite3"
             if name == exclude:
                 continue
             path = self.root / name
@@ -261,10 +261,18 @@ class SQLiteQfqWindowCache:
 def _valid_name(name: str) -> bool:
     parts = name.removesuffix(".sqlite3").split("-")
     return (
-        len(parts) == 3
-        and parts[0] == "range"
-        and len(parts[1]) == 5
-        and len(parts[2]) == 4
-        and all(part.isdigit() for part in parts[1:])
+        len(parts) in (1, 2)
+        and len(parts[0]) == 5
+        and parts[0].isascii()
+        and parts[0].isdigit()
+        and (
+            len(parts) == 1
+            or (
+                parts[1].isascii()
+                and parts[1].isdigit()
+                and 1 <= int(parts[1]) < 10000
+                and str(int(parts[1])) == parts[1]
+            )
+        )
         and name.endswith(".sqlite3")
     )
