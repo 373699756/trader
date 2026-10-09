@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sqlite3
 import threading
 from dataclasses import replace
@@ -12,16 +11,17 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.bootstrap import _StartupHistoryMaintenance, _initialize_research_trace, build_system
+from tests.unit.training.infra.profile.v3.test_profile import _publish
+from trader.bootstrap import _initialize_research_trace, _StartupHistoryMaintenance, build_system
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
+from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.recommendation.application.ports.read_only_queries import (
     InputQualityStatus,
     SupplySummary,
 )
-from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.recommendation.application.ports.runtime import ResearchRuntimeStatus
 from trader.recommendation.application.runtime.cadence import (
     CadencePlannerStatus,
@@ -48,6 +48,8 @@ from trader.recommendation.infra.persistence.data_plane import DataPlaneReposito
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.status_projection import input_quality_payload, runtime_status
 from trader.training.application.research_runtime import ResearchRuntime
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -107,7 +109,15 @@ def _config(tmp_path: Path) -> Path:
     runtime["runtime_dir"] = str(tmp_path / "runtime")
     runtime["strategy_config"] = str(strategy_path)
     runtime["long_watchlist"] = str(PROJECT_ROOT / "config/long_watchlist.json")
-    shutil.copytree(PROJECT_ROOT / "data" / "train", tmp_path / "data" / "train", dirs_exist_ok=True)
+    for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
+        for contract in profile.heads:
+            _publish(
+                tmp_path / "data" / "train",
+                contract,
+                f"staging-{profile.profile_id}-{contract.strategy.value}",
+                profile=profile,
+                profile_owned=True,
+            )
     path = config_dir / "runtime.json"
     path.write_text(json.dumps(runtime), encoding="utf-8")
     return path
@@ -157,6 +167,8 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert tomorrow["profile_id"] == "v2"
     assert tomorrow["model_id"] == "v2_industry_ridge_lightgbm"
     assert tomorrow["activation_basis"] == "manual_user_override"
+    assert tomorrow["runtime_anchor"] == "15:00"
+    assert scoring["heads"]["d25"]["runtime_anchor"] == "15:00"
     assert tomorrow["monitoring_mode"] == "automatic_t1_outcome_settlement"
     assert tomorrow["automatic_model_update"] is False
     assert tomorrow["computation"] == {
@@ -286,17 +298,11 @@ def test_startup_history_maintenance_runs_the_download_use_case_once(
 
 
 def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_config(tmp_path, monkeypatch) -> None:
-    from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
-
     monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
 
     config_path = _config_with_strategy_profile(tmp_path, "v2")
     strategy_path = Path(json.loads(config_path.read_text(encoding="utf-8"))["strategy_config"])
     original = strategy_path.read_bytes()
-    monkeypatch.setattr(
-        "trader.bootstrap.load_scoring_profile",
-        lambda profile, *, training_root: load_scoring_profile(profile, training_root=PROJECT_ROOT / "data" / "train"),
-    )
     system = build_system(config_path, scoring_profile="v2")
     status = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
 
@@ -312,7 +318,8 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
     from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 
     observed: list[Path] = []
-    v2_profile = load_scoring_profile("v2", training_root=PROJECT_ROOT / "data" / "train")
+    config_path = _config_with_strategy_profile(tmp_path, "v3")
+    v2_profile = load_scoring_profile("v2", training_root=tmp_path / "data" / "train")
 
     def load(profile: str, *, training_root: Path | None = None):
         observed.append(training_root or Path())
@@ -320,7 +327,7 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
 
     monkeypatch.setattr("trader.bootstrap.load_scoring_profile", load)
 
-    build_system(_config_with_strategy_profile(tmp_path, "v3"))
+    build_system(config_path)
 
     assert observed == [tmp_path / "data" / "train"]
 

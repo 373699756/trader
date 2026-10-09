@@ -61,7 +61,7 @@ did not change.
 - Risk, fusion, action, or ranking: test structured evidence, veto, budget/degradation behavior, both action pools,
   deterministic ties, TopK, board/industry concentration, and unchanged score values where only eligibility changes.
 - Identity, freeze, or persistence: test new-record identities, local-to-hybrid parentage, first-wins behavior, codec/hash
-  round trips, current and historical reads, plus explicit legacy-record semantics. Exercise the 14:50 boundary, late
+  round trips, current and historical reads, plus explicit legacy-record semantics. Exercise the 15:00 boundary, late
   results, hot/cold starts, and permitted close fallback from the authoritative freeze scenarios.
 - API/SSE/Web: test serializer whitelists, GET and full SSE replacement parity, reconnect/resync, new and legacy score
   labels, cost-gated empty results, and desktop browser behavior when visible output changes.

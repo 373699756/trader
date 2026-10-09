@@ -116,7 +116,7 @@ def test_shadow_model_evaluation_reject_cross_horizon_feature_drift() -> None:
 
 def _labeled_day(index: int, horizon: str) -> ShadowLabeledDay:
     trade_date = START + timedelta(days=index)
-    observed_at = datetime.combine(trade_date, time(14, 50), tzinfo=SHANGHAI)
+    observed_at = datetime.combine(trade_date, time(15, 0), tzinfo=SHANGHAI)
     rows = tuple(_feature_row(code, position, index, observed_at) for position, code in enumerate(CODES))
     batch = TomorrowPointInTimeFeatureBatch(
         trade_date=trade_date,

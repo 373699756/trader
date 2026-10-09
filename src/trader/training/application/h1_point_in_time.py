@@ -186,7 +186,7 @@ def _validate_records(records: Sequence[H1PointInTimeRecord], spec: H1PointInTim
 
 
 def _anchor_kind(record: H1PointInTimeRecord) -> str:
-    return "d25_1450" if record.strategy == "d25" else "tomorrow_1450"
+    return "d25_1500" if record.strategy == "d25" else "tomorrow_1500"
 
 
 def _error_code(exc: BaseException) -> str:

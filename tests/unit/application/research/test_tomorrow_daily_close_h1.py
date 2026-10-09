@@ -39,7 +39,7 @@ def _observations(days: int = 90) -> tuple[TomorrowDailyCloseH1Observation, ...]
                 "tomorrow",
                 f"60{code_index:04d}",
                 day,
-                datetime.combine(day, time(14, 50), SHANGHAI),
+                datetime.combine(day, time(15, 0), SHANGHAI),
                 bar,
                 close,
                 bar.volume,

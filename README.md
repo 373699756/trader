@@ -226,13 +226,12 @@ final_score = clamp(local_score * 0.68
 
 `local_score` 已扣本地风险。DeepSeek 风险扣分由本地规则根据已验证风险事实映射，不能采用模型自由生成的数值。
 
-- today 于 11:20 冻结。
-- tomorrow 和 d25 于 14:50 冻结。
+- tomorrow 和 d25 于 15:00 first-wins 冻结，运行与新研究评价锚点同为 15:00。
 - long 不冻结、不进入历史推荐。
 - DeepSeek 每日物理请求全局硬上限为 168。
 
 产品、架构、运行、API 与运维契约见
-[软件业务设计文档](docs/02_工程设计.md)，候选、过滤、评分、DeepSeek、融合与
+[项目重构详细](docs/项目重构详细.md)，候选、过滤、评分、DeepSeek、融合与
 TopK 契约见[荐股策略文档](docs/01_评分逻辑.md)，协作与强制 review 流程见
 [AGENTS.md](AGENTS.md)。历史数据下载、Tomorrow 训练和训练工件参与实时荐股的完整说明见
 [策略回溯文档](docs/04_策略回溯.md)。

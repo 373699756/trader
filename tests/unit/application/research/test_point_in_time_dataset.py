@@ -74,7 +74,7 @@ def _qualification(*, ready: bool = True):
         matched_trade_dates=600 if ready else 0,
         coverage_ratio=1.0 if ready else 0.0,
         timezone="Asia/Shanghai" if ready else "",
-        supports_1450=ready,
+        supports_1500=ready,
         volume_available=ready,
         amount_available=ready,
         raw_qfq_pair_available=ready,
@@ -172,7 +172,7 @@ class _Source:
     def load_day(self, trade_date: date) -> PointInTimeDaySource:
         self.loaded_dates.append(trade_date)
         shanghai = ZoneInfo("Asia/Shanghai")
-        anchor = datetime.combine(trade_date, datetime.min.time(), tzinfo=shanghai).replace(hour=14, minute=50)
+        anchor = datetime.combine(trade_date, datetime.min.time(), tzinfo=shanghai).replace(hour=15, minute=0)
         exit_date = trade_date + timedelta(days=1)
         rows = []
         for index, (code, exit_qfq) in enumerate((("600000", 25.2), ("600001", 22.8), ("600002", 24.5))):
@@ -374,7 +374,7 @@ def test_builder_does_not_publish_a_partial_manifest_for_incomplete_benchmark_ou
     assert report.failure_reasons == ("benchmark_population_outcome_incomplete",)
 
 
-def test_builder_rejects_missing_entry_day_minute_window(application_feature_factory) -> None:
+def test_close_anchor_outcomes_do_not_require_a_post_entry_intraday_window(application_feature_factory) -> None:
     class MissingWindowSource(_Source):
         def load_day(self, trade_date: date) -> PointInTimeDaySource:
             day = super().load_day(trade_date)
@@ -384,10 +384,14 @@ def test_builder_rejects_missing_entry_day_minute_window(application_feature_fac
         _request(_qualification())
     )
 
-    assert report.state == "historical_data_insufficient"
-    assert report.days == ()
-    assert report.manifest is None
-    assert report.failure_reasons == ("benchmark_population_outcome_incomplete",)
+    reference = PointInTimeDatasetBuilder(_Source(application_feature_factory)).build(_request(_qualification()))
+
+    assert report.state == "historical_point_in_time_parity"
+    assert report.manifest is not None
+    assert report.failure_reasons == ()
+    assert tuple(row.outcomes for day in report.days for row in day.rows) == tuple(
+        row.outcomes for day in reference.days for row in day.rows
+    )
 
 
 def test_artifact_archive_round_trips_idempotently_and_rejects_tampering(

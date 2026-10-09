@@ -80,7 +80,7 @@ def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_p
     assert payload["production_authority"] is False
     assert "600519" not in json.dumps(payload)
     assert payload["daily_archive"]["completed_codes"] == 0
-    assert payload["minute_sources"][0]["supports_1450"] is False
+    assert payload["minute_sources"][0]["supports_1500"] is False
 
 
 def test_script_rejects_repository_output_path_without_writing(capsys) -> None:

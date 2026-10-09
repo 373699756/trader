@@ -1,4 +1,4 @@
-"""D25 14:50 point-in-time terminal holdout adapter."""
+"""D25 15:00 point-in-time terminal holdout adapter."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class D25TerminalHoldoutService:
                 rows=self._rows,
                 parent_status=self._parent.candidate_status,
                 parent_failure_reasons=self._parent.failure_reasons,
-                anchor="14:50_unadjusted_point_in_time",
+                anchor="15:00_unadjusted_point_in_time",
                 bootstrap_block_days=10,
                 terminal_holdout_already_opened=self._parent.already_opened,
             )

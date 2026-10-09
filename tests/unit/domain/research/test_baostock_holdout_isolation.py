@@ -96,10 +96,10 @@ def test_reserve_must_be_exactly_the_latest_200_complete_dates() -> None:
     )
 
 
-def test_daily_close_source_cannot_claim_1450_point_in_time_parity() -> None:
+def test_daily_close_source_cannot_claim_1500_point_in_time_parity() -> None:
     value = _valid_input()
     result = audit_baostock_holdout_isolation(
-        replace(value, source_anchor="14:50_point_in_time", point_in_time_parity_claimed=True)
+        replace(value, source_anchor="15:00_point_in_time", point_in_time_parity_claimed=True)
     )
 
     assert result.blockers == (

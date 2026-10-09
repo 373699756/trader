@@ -53,7 +53,7 @@ def test_each_strategy_preregisters_its_fixed_anchor_label_horizons_and_metrics(
     tomorrow, d25 = preregister_historical_labels((_metadata("d25"), _metadata("tomorrow"))).strategies
 
     assert (tomorrow.strategy, d25.strategy) == ("tomorrow", "d25")
-    assert tomorrow.label.anchor == "14:50"
+    assert tomorrow.label.anchor == "15:00"
     assert tomorrow.label.horizons == (1,)
     assert d25.label.horizons == (2, 3, 4, 5)
     assert d25.label.aggregate == "arithmetic_mean"

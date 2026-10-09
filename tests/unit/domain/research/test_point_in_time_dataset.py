@@ -49,7 +49,7 @@ def test_point_in_time_date_split_rejects_overlap_and_short_holdout() -> None:
 
 def test_event_fact_rejects_information_not_visible_at_anchor() -> None:
     shanghai = ZoneInfo("Asia/Shanghai")
-    anchor = datetime(2024, 1, 1, 14, 50, tzinfo=shanghai)
+    anchor = datetime(2024, 1, 1, 15, 0, tzinfo=shanghai)
 
     with pytest.raises(ValueError, match="visible"):
         PointInTimeEventFact(

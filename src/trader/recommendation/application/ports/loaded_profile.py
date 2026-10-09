@@ -225,8 +225,8 @@ class ProfileEvidence:
     monitoring_mode: Literal["automatic_t1_outcome_settlement"] = "automatic_t1_outcome_settlement"
     automatic_model_update: bool = False
     loss_probability_status: Literal["not_modeled"] = "not_modeled"
-    training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
-    runtime_anchor: Literal["14:50"] = "14:50"
+    training_anchor: Literal["15:00_close", "15:00_close_proxy", "15:00_point_in_time"] = "15:00_close"
+    runtime_anchor: Literal["15:00"] = "15:00"
     point_in_time_parity: bool = False
 
 
@@ -273,8 +273,8 @@ class ScoringHeadRuntimeStatus:
     automatic_model_update: bool
     loss_probability_status: Literal["not_modeled"]
     computation: ModelComputationStatus = ModelComputationStatus()
-    training_anchor: Literal["15:00_close", "15:00_close_proxy", "14:50_point_in_time"] = "15:00_close"
-    runtime_anchor: Literal["11:20", "14:50"] = "14:50"
+    training_anchor: Literal["15:00_close", "15:00_close_proxy", "15:00_point_in_time"] = "15:00_close"
+    runtime_anchor: Literal["15:00"] = "15:00"
     point_in_time_parity: bool = False
 
 

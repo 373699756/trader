@@ -41,8 +41,8 @@ def test_strategy_adapters_bind_their_fixed_anchor_and_identity() -> None:
     tomorrow = TomorrowPointInTimeHoldoutService(_rows(TomorrowPointInTimeRow)).execute()
     d25 = D25TerminalHoldoutService(_rows(D25TerminalRow)).execute()
 
-    assert tomorrow.anchor == "14:50_unadjusted_point_in_time"
-    assert d25.anchor == "14:50_unadjusted_point_in_time"
+    assert tomorrow.anchor == "15:00_unadjusted_point_in_time"
+    assert d25.anchor == "15:00_unadjusted_point_in_time"
     assert {tomorrow.strategy, d25.strategy} == {"tomorrow", "d25"}
 
     conclusion = CrossStrategyConclusionService().execute(tomorrow, d25)

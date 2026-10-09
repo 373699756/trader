@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
+from trader.infra.serialization.research_trace_projection import observation_bytes
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionObservation,
     build_decision_committed,
@@ -22,7 +23,6 @@ from trader.training.application.research_audit import (
     ResearchPopulationAudit,
     point_in_time_population_hash,
 )
-from trader.infra.serialization.research_trace_projection import observation_bytes
 from trader.training.infra.research.research_trace_archive import (
     LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
     ResearchTraceCapacityError,
@@ -94,7 +94,7 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
 def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) -> None:
     before = replace(
         decision(sequence=1),
-        observed_at=datetime(2026, 8, 11, 14, 49, tzinfo=ZoneInfo("Asia/Shanghai")),
+        observed_at=datetime(2026, 8, 11, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     before_event = build_decision_committed(before)
     before_audit = _point_in_time_audit(before_event.decision_version, before_event.decision_hash, before.observed_at)
@@ -102,7 +102,7 @@ def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) ->
     late = replace(
         before,
         sequence=2,
-        observed_at=datetime(2026, 8, 11, 14, 51, tzinfo=ZoneInfo("Asia/Shanghai")),
+        observed_at=datetime(2026, 8, 11, 15, 0, 1, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
     late_event = build_decision_committed(late)
     late_observation = DecisionObservation(

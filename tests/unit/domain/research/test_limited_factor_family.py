@@ -75,7 +75,7 @@ def test_canonical_family_freezes_six_alpha_control_and_one_selected_intraday_ca
     assert len(spec.control_feature_ids) == 6
     assert spec.candidates[0].candidate_id == "existing_six_alpha"
     assert spec.selected_candidate_id == "tail_volume_share"
-    assert spec.anchor == "14:50_point_in_time"
+    assert spec.anchor == "15:00_point_in_time"
 
 
 def test_limited_factor_family_confirms_only_the_preregistered_candidate() -> None:

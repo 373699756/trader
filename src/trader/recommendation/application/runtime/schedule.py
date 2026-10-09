@@ -44,8 +44,8 @@ _PHASE_BOUNDARIES = (
     time(14, 20),
     time(14, 46),
     time(14, 48),
-    time(14, 49, 20),
-    time(14, 49, 50),
+    time(14, 59, 20),
+    time(14, 59, 50),
     FREEZE_TIME,
 )
 _TRADING_PHASE_RANGES = (
@@ -56,8 +56,8 @@ _TRADING_PHASE_RANGES = (
     (time(11, 20), time(13, 0), MarketPhase.MIDDAY),
     (time(13, 0), time(14, 20), MarketPhase.AFTERNOON),
     (time(14, 20), time(14, 48), MarketPhase.FINAL_REVIEW),
-    (time(14, 48), time(14, 49, 50), MarketPhase.DEEPSEEK_CUTOFF),
-    (time(14, 49, 50), FREEZE_TIME, MarketPhase.FINAL_QUOTE),
+    (time(14, 48), time(14, 59, 50), MarketPhase.DEEPSEEK_CUTOFF),
+    (time(14, 59, 50), FREEZE_TIME, MarketPhase.FINAL_QUOTE),
 )
 
 
@@ -155,8 +155,8 @@ def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint
     current = shanghai_now(value).time().replace(tzinfo=None)
     points = {
         time(14, 48): SchedulePoint.DEEPSEEK_CUTOFF,
-        time(14, 49, 20): SchedulePoint.AFTERNOON_CHECKPOINT,
-        time(14, 49, 50): SchedulePoint.FINAL_CANDIDATE_QUOTES,
+        time(14, 59, 20): SchedulePoint.AFTERNOON_CHECKPOINT,
+        time(14, 59, 50): SchedulePoint.FINAL_CANDIDATE_QUOTES,
         FREEZE_TIME: SchedulePoint.AFTERNOON_FREEZE,
     }
     return points.get(current.replace(microsecond=0))

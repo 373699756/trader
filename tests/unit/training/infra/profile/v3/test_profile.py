@@ -260,8 +260,8 @@ def test_shared_loader_builds_two_distinct_heads_for_v2_and_v3(tmp_path: Path) -
     for profile in profiles:
         assert tuple(profile.heads) == (Strategy.TOMORROW, Strategy.D25)
         assert len({head.predictor.model_hash for head in profile.heads.values()}) == 2
-        assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "14:50"
-        assert profile.heads[Strategy.D25].evidence.runtime_anchor == "14:50"
+        assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "15:00"
+        assert profile.heads[Strategy.D25].evidence.runtime_anchor == "15:00"
     assert (
         tuple(path.parent.parent.name for _, path in locate_head_bundles(tmp_path, V2_TRAINING_PROFILE)) == ("v2",) * 2
     )
@@ -338,6 +338,19 @@ def test_v3_codec_rejects_cross_head_and_nonportable_fields() -> None:
     model["content_hash"] = content_hash(model)
     with pytest.raises(ValueError, match="fields"):
         decode_head_bundle(model, Strategy.TOMORROW, V3_TRAINING_PROFILE)
+
+
+@pytest.mark.parametrize("profile", (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE))
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_model_codec_rejects_a_rehashed_retired_runtime_anchor(profile, strategy) -> None:
+    contract = profile.head_for_strategy(strategy)
+    model, _, _ = _documents(contract, profile)
+    model.pop("content_hash")
+    model["runtime_anchor"] = "14:50"
+    model["content_hash"] = content_hash(model)
+
+    with pytest.raises(ValueError, match="contract"):
+        decode_head_bundle(model, strategy, profile)
 
 
 def test_v3_loader_rejects_tampered_group_identity(tmp_path: Path) -> None:

@@ -1,7 +1,9 @@
+from dataclasses import fields, replace
 from datetime import date, datetime
 
 import pytest
 
+from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.h1_point_in_time import (
     H1CapabilityProbe,
     H1PointInTimeRecord,
@@ -10,7 +12,7 @@ from trader.training.domain.evaluation.h1_point_in_time import (
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
 
 
-def _record(strategy: str = "tomorrow", observed_at: str = "2026-08-31T14:50:00+08:00") -> H1PointInTimeRecord:
+def _record(strategy: str = "tomorrow", observed_at: str = "2026-08-31T15:00:00+08:00") -> H1PointInTimeRecord:
     bar = HistoricalPriceBar(date(2026, 8, 31), 10, 10.2, 10.3, 9.9, 100, 1000, 2, None, "qfq", "fixture")
     digest = "a" * 64
     return H1PointInTimeRecord(
@@ -32,21 +34,25 @@ def test_h1_spec_is_fixed_and_strategy_anchor_is_explicit() -> None:
     tomorrow = H1PointInTimeSpec("tomorrow")
     d25 = H1PointInTimeSpec("d25")
     assert tomorrow.research_identity == "score_h1_point_in_time"
-    assert tomorrow.anchor_kind == "tomorrow_1450"
-    assert tomorrow.anchor_time.isoformat() == "14:50:00"
-    assert d25.anchor_kind == "d25_1450"
-    assert d25.anchor_time.isoformat() == "14:50:00"
+    assert tomorrow.anchor_kind == "tomorrow_1500"
+    assert tomorrow.anchor_time.isoformat() == "15:00:00"
+    assert d25.anchor_kind == "d25_1500"
+    assert d25.anchor_time.isoformat() == "15:00:00"
     assert tomorrow.promotion_authority is False
     assert len(tomorrow.content_hash) == 64
 
 
 def test_h1_record_rejects_future_or_late_or_naive_observations() -> None:
     with pytest.raises(ValueError, match="exact"):
+        _record(observed_at="2026-08-31T14:50:00+08:00")
+    with pytest.raises(ValueError, match="exact"):
+        _record(observed_at="2026-08-31T15:00:01+08:00")
+    with pytest.raises(ValueError, match="exact"):
         _record(observed_at="2026-08-31T14:51:00+08:00")
     with pytest.raises(ValueError, match="exact"):
         _record(observed_at="2026-08-31T14:49:00+08:00")
     with pytest.raises(ValueError, match="timezone"):
-        _record(observed_at="2026-08-31T14:50:00")
+        _record(observed_at="2026-08-31T15:00:00")
 
 
 def test_capability_probe_requires_qfq_and_point_in_time_evidence() -> None:
@@ -55,3 +61,13 @@ def test_capability_probe_requires_qfq_and_point_in_time_evidence() -> None:
     assert len(probe.content_hash) == 64
     with pytest.raises(ValueError):
         H1CapabilityProbe("fixture", None, True, "raw", True, 500, 3, 1000, 1.5)
+
+
+def test_h1_spec_hash_separates_the_retired_anchor() -> None:
+    spec = H1PointInTimeSpec("tomorrow")
+    legacy_payload = {field.name: getattr(spec, field.name) for field in fields(spec) if field.init}
+    legacy_payload.pop("decision_anchor")
+
+    assert spec.content_hash != canonical_artifact_hash(legacy_payload)
+    with pytest.raises(ValueError, match="anchor"):
+        replace(spec, decision_anchor="14:50")

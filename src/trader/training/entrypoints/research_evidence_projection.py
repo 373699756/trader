@@ -48,7 +48,7 @@ def project_capability(
                 "source": item.source,
                 "earliest_available": item.earliest_available.isoformat() if item.earliest_available else None,
                 "returned_history_rows": item.page_size,
-                "supports_1450": item.supports_1450,
+                "supports_1500": item.supports_1500,
                 "effective_security_state": item.security_state_effective_at,
                 "estimated_requests": item.estimated_requests,
             }
@@ -122,7 +122,7 @@ def project_point_in_time_data_qualification(
                 "matched_trade_dates": item.matched_trade_dates,
                 "coverage_ratio": item.coverage_ratio,
                 "timezone": item.timezone,
-                "supports_1450": item.supports_1450,
+                "supports_1500": item.supports_1500,
                 "volume_available": item.volume_available,
                 "amount_available": item.amount_available,
                 "raw_qfq_pair_available": item.raw_qfq_pair_available,

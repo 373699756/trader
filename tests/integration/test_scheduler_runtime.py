@@ -7,16 +7,14 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.recommendation.application.pipeline.data_source.source_quality import failure_code
-from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
-from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-
-from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
+from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshUnavailableError,
@@ -48,6 +46,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.status_projection import runtime_status
 
 
@@ -575,7 +574,7 @@ def test_scheduler_refreshes_frozen_tomorrow_overlay_without_mutating_formal_dec
 
 
 def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_rescoring() -> None:
-    frozen_at = datetime(2026, 8, 11, 14, 55, tzinfo=SHANGHAI)
+    frozen_at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     index = UnifiedDecisionIndex()
     source = decision(Strategy.TOMORROW, sequence=1)
     anchor = source.items[0].quote
@@ -583,11 +582,21 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
     source = replace(
         source,
         trade_date=frozen_at.date(),
-        observed_at=frozen_at.replace(hour=11, minute=19),
-        items=(replace(source.items[0], quote=replace(anchor, source_time=frozen_at.replace(hour=11, minute=19))),),
+        observed_at=frozen_at.replace(hour=14, minute=59, second=59),
+        items=(
+            replace(
+                source.items[0], quote=replace(anchor, source_time=frozen_at.replace(hour=14, minute=59, second=59))
+            ),
+        ),
     )
-    record = CommittedDecisionRecord(source, frozen_at.replace(hour=11, minute=20), "scheduled")
+    record = CommittedDecisionRecord(source, frozen_at.replace(hour=15, minute=0), "scheduled")
     assert index.restore_formal(record)
+    d25_source = replace(
+        decision(Strategy.D25, sequence=1),
+        trade_date=frozen_at.date(),
+        observed_at=source.observed_at,
+    )
+    assert index.restore_formal(CommittedDecisionRecord(d25_source, record.committed_at, "scheduled"))
     data = DataRefresh()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
@@ -1012,7 +1021,7 @@ def test_unchanged_candidate_refresh_does_not_trigger_another_score() -> None:
 
 
 def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None:
-    checkpoint_at = datetime(2026, 8, 11, 14, 49, 20, tzinfo=SHANGHAI)
+    checkpoint_at = datetime(2026, 8, 11, 14, 59, 20, tzinfo=SHANGHAI)
     clock = FixedClock(checkpoint_at)
     index = UnifiedDecisionIndex()
     data = BlockingScoringInputs()

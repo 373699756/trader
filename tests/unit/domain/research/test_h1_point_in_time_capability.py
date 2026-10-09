@@ -21,7 +21,7 @@ def _probe(
     return H1CapabilityProbe(
         source=source,
         earliest_available=earliest,
-        supports_1450=afternoon,
+        supports_1500=afternoon,
         adjustment_semantics=adjustment,
         security_state_effective_at=effective_state,
         page_size=rows,
@@ -57,7 +57,7 @@ def test_capability_audit_fails_each_strategy_closed_when_free_sources_lack_hist
     assert tuple(item.strategy for item in report.strategies) == ("tomorrow", "d25")
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
     assert "qfq_history_below_1000_sessions" in report.strategies[0].failure_reasons
-    assert all("historical_1450_anchor_unavailable" in item.failure_reasons for item in report.strategies)
+    assert all("historical_1500_anchor_unavailable" in item.failure_reasons for item in report.strategies)
     assert all(not item.terminal_holdout_opened for item in report.strategies)
     assert report.production_authority is False
 

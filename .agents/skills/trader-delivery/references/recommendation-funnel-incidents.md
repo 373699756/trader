@@ -94,7 +94,7 @@ settlement recovered while `security_master_coverage_incomplete` remained a sepa
 
 Classify the observation using the authoritative hot/cold freeze scenarios before labeling `not_ready` as a regression.
 
-- Tomorrow/D25 freeze at 14:50. When the same-day formal record is missing, 15:00+ recovery may freeze the current run
+- Tomorrow/D25 freeze at 15:00. When the same-day formal record is missing, 15:00+ recovery may freeze the current run
   or create the permitted local `close_fallback`; it must not call DeepSeek or overwrite an existing formal record.
 - Inspect the `close_quotes` refresh state separately from normal intraday publication. A failed close refresh can block
   permitted Tomorrow/D25 recovery without invalidating an existing formal record.

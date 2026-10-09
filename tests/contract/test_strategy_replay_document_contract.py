@@ -69,7 +69,7 @@ def test_strategy_replay_document_explains_training_and_live_scoring() -> None:
         "+ deepseek_score * 0.32",
         "- deepseek_risk_penalty",
         "Top6",
-        "14:50",
+        "15:00",
         "production_authority=false",
         "automatic_model_update=false",
     ):

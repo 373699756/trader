@@ -76,7 +76,7 @@ def test_future_research_coverage_does_not_mark_today_or_future_dates_missed() -
     coverage = assess_score_research_coverage(
         PREREGISTERED_RESEARCH_SPEC,
         recorded_dates=(),
-        as_of=_at("2026-08-21T14:49:59"),
+        as_of=_at("2026-08-21T14:59:59"),
     )
 
     assert coverage.historical.state == "collecting"
@@ -90,7 +90,7 @@ def test_future_research_coverage_marks_today_missed_at_the_fixed_cutoff() -> No
     coverage = assess_score_research_coverage(
         PREREGISTERED_RESEARCH_SPEC,
         recorded_dates=(date(2026, 8, 21),),
-        as_of=_at("2026-08-26T14:50:00"),
+        as_of=_at("2026-08-26T15:00:00"),
     )
 
     assert coverage.historical.missed_dates == (
@@ -107,7 +107,7 @@ def test_research_coverage_rejects_naive_clock() -> None:
         assess_score_research_coverage(
             PREREGISTERED_RESEARCH_SPEC,
             recorded_dates=(),
-            as_of=datetime(2026, 8, 21, 14, 50),
+            as_of=datetime(2026, 8, 21, 15, 0),
         )
 
 

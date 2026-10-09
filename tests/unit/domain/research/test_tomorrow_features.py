@@ -16,7 +16,7 @@ from trader.training.domain.evaluation.tomorrow_features import (
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TRADE_DATE = date(2026, 8, 28)
-AS_OF = datetime.combine(TRADE_DATE, time(14, 50), tzinfo=SHANGHAI)
+AS_OF = datetime.combine(TRADE_DATE, time(15, 0), tzinfo=SHANGHAI)
 
 
 def _stock(index: int, *, history_days: int = 70) -> TomorrowFeatureStockInput:
@@ -34,7 +34,7 @@ def _stock(index: int, *, history_days: int = 70) -> TomorrowFeatureStockInput:
             close=11.0 + index * 0.1 + position * 0.02,
             amount=1_000_000.0 + position * 100_000.0,
         )
-        for position, minute in enumerate((time(9, 30), time(11, 30), time(13, 0), time(14, 20), time(14, 50)))
+        for position, minute in enumerate((time(9, 30), time(11, 30), time(13, 0), time(14, 30), time(15, 0)))
     )
     facts = (
         PointInTimePublishedFact(

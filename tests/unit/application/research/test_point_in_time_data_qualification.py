@@ -56,7 +56,7 @@ def test_current_archive_and_free_source_evidence_project_explicit_three_gate_bl
     assert report.daily_archive.completed_codes == 0
     assert report.industry_sources[0].required_sample_codes == 300
     assert "industry_query_time_unavailable" in report.industry_sources[0].failure_reasons
-    assert report.minute_sources[0].supports_1450 is False
+    assert report.minute_sources[0].supports_1500 is False
     assert "minute_raw_qfq_pair_unavailable" in report.minute_sources[0].failure_reasons
 
 

@@ -15,7 +15,7 @@ V2_TOMORROW_HEAD_CONTRACT = TrainedHeadContract(
     tuple(range(10)),
     "target_t1",
     1,
-    "14:50",
+    "15:00",
     "pre_cost_excess_return_t1",
 )
 V2_D25_HEAD_CONTRACT = TrainedHeadContract(
@@ -25,7 +25,7 @@ V2_D25_HEAD_CONTRACT = TrainedHeadContract(
     tuple(range(1, 10)),
     "target_d25_aggregate",
     5,
-    "14:50",
+    "15:00",
     "pre_cost_mean_excess_return_t2_t5",
 )
 V2_HEAD_CONTRACTS = (V2_TOMORROW_HEAD_CONTRACT, V2_D25_HEAD_CONTRACT)

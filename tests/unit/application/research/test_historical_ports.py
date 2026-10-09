@@ -28,7 +28,7 @@ from trader.training.domain.evaluation.historical import (
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TRADE_DATE = date(2026, 8, 10)
-OBSERVED_AT = datetime(2026, 8, 10, 14, 50, tzinfo=SHANGHAI)
+OBSERVED_AT = datetime(2026, 8, 10, 15, 0, tzinfo=SHANGHAI)
 
 
 def _lineage(version: str, at: datetime = OBSERVED_AT) -> ResearchDataLineage:

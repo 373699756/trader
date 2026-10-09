@@ -7,9 +7,11 @@ import pytest
 from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
     MarketPhase,
+    SchedulePoint,
     decision_at,
     freeze_due_at,
     phase_at,
+    schedule_point_at,
     seconds_until_next_schedule_boundary,
     startup_freeze_strategies,
 )
@@ -28,9 +30,10 @@ from trader.recommendation.application.runtime.schedule import (
         ("13:00:00", MarketPhase.AFTERNOON),
         ("14:20:00", MarketPhase.FINAL_REVIEW),
         ("14:48:00", MarketPhase.DEEPSEEK_CUTOFF),
-        ("14:49:50", MarketPhase.FINAL_QUOTE),
+        ("14:49:50", MarketPhase.DEEPSEEK_CUTOFF),
+        ("14:59:50", MarketPhase.FINAL_QUOTE),
         ("14:59:59", MarketPhase.FINAL_QUOTE),
-        ("14:50:00", MarketPhase.FINAL_QUOTE),
+        ("14:50:00", MarketPhase.DEEPSEEK_CUTOFF),
         ("15:00:00", MarketPhase.AFTER_CLOSE),
     ],
 )
@@ -64,8 +67,23 @@ def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
     assert seconds_until_next_schedule_boundary(before_afternoon_cutoff, maximum_seconds=60) == 1
 
 
+@pytest.mark.parametrize(
+    ("clock", "point"),
+    (
+        ("14:49:20", None),
+        ("14:49:50", None),
+        ("14:59:20", SchedulePoint.AFTERNOON_CHECKPOINT),
+        ("14:59:50", SchedulePoint.FINAL_CANDIDATE_QUOTES),
+        ("15:00:00", SchedulePoint.AFTERNOON_FREEZE),
+    ),
+)
+def test_final_schedule_points_match_the_freeze_acceptance_window(clock, point) -> None:
+    at = datetime.fromisoformat(f"2026-07-16T{clock}").replace(tzinfo=SHANGHAI)
+    assert schedule_point_at(at, is_trading_day=True) is point
+
+
 def test_deepseek_cutoff_keeps_local_scoring_open_without_model_review() -> None:
-    cutoff = datetime(2026, 7, 16, 14, 49, 20, tzinfo=SHANGHAI)
+    cutoff = datetime(2026, 7, 16, 14, 59, 20, tzinfo=SHANGHAI)
 
     decision = decision_at(cutoff, is_trading_day=True)
 

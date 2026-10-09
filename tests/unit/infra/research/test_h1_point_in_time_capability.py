@@ -33,7 +33,7 @@ class _Session:
                 "data": {
                     "klines": [
                         "2026-09-01 11:20,masked",
-                        "2026-09-01 14:50,masked",
+                        "2026-09-01 15:00,masked",
                     ]
                 },
             }
@@ -56,7 +56,7 @@ def test_free_source_probe_detects_ignored_old_minute_date_without_exposing_pric
     assert by_source["tencent_qfq_daily"].page_size == 10
     minute = by_source["eastmoney_historical_minute"]
     assert minute.earliest_available is None
-    assert minute.supports_1450 is False
+    assert minute.supports_1500 is False
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
     assert "masked" not in repr(report)
 

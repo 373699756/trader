@@ -19,7 +19,7 @@ def test_authoritative_contract_uses_one_identity_for_current_freeze_and_trace()
         "local ScoredDecision",
         "DecisionCheckpoint",
         "CommittedDecisionRecord",
-        "14:49:20",
+        "14:59:20",
         "15:00 后",
     ):
         assert token in design

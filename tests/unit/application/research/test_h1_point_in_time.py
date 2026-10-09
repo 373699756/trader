@@ -14,7 +14,7 @@ def _records(code: str, strategy: str) -> tuple[H1PointInTimeRecord, ...]:
     for offset in range(3):
         day = start + timedelta(days=offset)
         bar = HistoricalPriceBar(day, 10, 10.2, 10.3, 9.9, 100, 1000, 2, None, "qfq", "fixture")
-        stamp = f"{day.isoformat()}T14:50:00+08:00"
+        stamp = f"{day.isoformat()}T15:00:00+08:00"
         rows.append(
             H1PointInTimeRecord(
                 strategy, code, day, datetime.fromisoformat(stamp), bar, 10.1, 50, 500, digest, digest, digest

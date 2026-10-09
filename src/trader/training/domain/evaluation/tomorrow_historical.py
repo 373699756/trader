@@ -75,7 +75,7 @@ _FIELD_ELIGIBILITY = (
         "historical_market_cap", "not_reconstructed", "excluded", "historical_effective_time_unavailable"
     ),
     HistoricalFieldEligibility(
-        "intraday_1450_tail", "not_reconstructed", "excluded", "intraday_observation_unavailable"
+        "intraday_1500_tail", "not_reconstructed", "excluded", "intraday_observation_unavailable"
     ),
     HistoricalFieldEligibility(
         "financial_disclosure_point_in_time",

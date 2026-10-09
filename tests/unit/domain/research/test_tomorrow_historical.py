@@ -49,7 +49,7 @@ def test_p2_spec_binds_h0_field_eligibility_single_candidate_and_all_gates() -> 
     assert statuses["amihud_20d"] == "eligible"
     assert statuses["historical_st_status"] == "not_reconstructed"
     assert statuses["historical_industry"] == "not_reconstructed"
-    assert statuses["intraday_1450_tail"] == "not_reconstructed"
+    assert statuses["intraday_1500_tail"] == "not_reconstructed"
     assert statuses["deepseek_facts_point_in_time"] == "not_reconstructed"
     assert "tomorrow_shadow_baseline" in spec.excluded_evidence_identities
 

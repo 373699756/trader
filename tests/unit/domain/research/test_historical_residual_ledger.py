@@ -17,7 +17,7 @@ _HASH_B = "b" * 64
 
 def _prediction(*, selected: bool = False) -> HistoricalPredictionRecord:
     return HistoricalPredictionRecord(
-        key=ResidualJoinKey("tomorrow", date(2024, 1, 2), "14:50", "600001", 1),
+        key=ResidualJoinKey("tomorrow", date(2024, 1, 2), "15:00", "600001", 1),
         parent_split_hash=_HASH_A,
         feature_hash=_HASH_A,
         model_hash=_HASH_B,
@@ -81,7 +81,7 @@ def test_pending_labels_remain_null_and_cannot_be_joined_or_faked_as_zero() -> N
         replace(pending, actual_net_excess_return=0.0)
     with pytest.raises(ValueError, match="severe-loss"):
         replace(_outcome(), mae_atr20=-1.5, severe_loss=False)
-    d25_key = ResidualJoinKey("d25", date(2024, 1, 2), "14:50", "600001", 2)
+    d25_key = ResidualJoinKey("d25", date(2024, 1, 2), "15:00", "600001", 2)
     d25 = replace(_outcome(), key=d25_key, mae_atr20=-2.0, severe_loss=False)
     assert d25.severe_loss is False
 

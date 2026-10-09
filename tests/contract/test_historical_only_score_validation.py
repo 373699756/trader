@@ -78,7 +78,7 @@ def test_online_outcomes_remain_monitoring_only_without_changing_scoring_or_free
     for invariant in (
         "local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty",
         "11:20",
-        "14:50",
+        "15:00",
         "automatic_model_update=false",
     ):
         assert invariant in strategy

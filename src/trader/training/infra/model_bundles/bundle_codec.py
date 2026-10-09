@@ -168,7 +168,7 @@ class TrainedHeadBundleArtifact:
     historical_status: Literal["historical_data_insufficient"]
     historical_failure_reasons: tuple[str, ...]
     training_anchor: Literal["15:00_close_proxy"]
-    runtime_anchor: Literal["14:50"]
+    runtime_anchor: Literal["15:00"]
     point_in_time_parity: Literal[False]
     training_rows: int
     validation_rows: int

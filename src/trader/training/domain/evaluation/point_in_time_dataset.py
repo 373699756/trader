@@ -250,8 +250,8 @@ def _validate_row_identity(row: PointInTimeDatasetRow) -> None:
         raise ValueError("point-in-time row identity is invalid")
     _require_shanghai(row.anchor_at, "point-in-time row")
     local = row.anchor_at.astimezone(_SHANGHAI)
-    if local.date() != row.trade_date or local.timetz().replace(tzinfo=None) != time(14, 50):
-        raise ValueError("point-in-time row requires the Tomorrow 14:50 anchor")
+    if local.date() != row.trade_date or local.timetz().replace(tzinfo=None) != time(15, 0):
+        raise ValueError("point-in-time row requires the Tomorrow 15:00 anchor")
     if not math.isfinite(row.anchor_raw_price) or row.anchor_raw_price <= 0.0:
         raise ValueError("point-in-time row raw anchor price is invalid")
     if any(item.anchor_at != row.anchor_at for item in row.event_facts):

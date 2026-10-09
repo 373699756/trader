@@ -56,7 +56,7 @@ def _split() -> PointInTimeDateSplit:
 
 
 def _outcomes(trade_date: date, index: int) -> tuple[PointInTimeCostOutcome, ...]:
-    anchor = datetime(trade_date.year, trade_date.month, trade_date.day, 14, 50, tzinfo=SHANGHAI)
+    anchor = datetime(trade_date.year, trade_date.month, trade_date.day, 15, 0, tzinfo=SHANGHAI)
     desired_net_20bp = 60.0 - index
     gross = desired_net_20bp + 0.2
     severe = index in {9, 10}
@@ -106,7 +106,7 @@ def _point_boundary(index: int) -> PointInTimeRejectionBoundary:
 
 
 def _day(trade_date: date) -> PointInTimeDayDataset:
-    anchor = datetime(trade_date.year, trade_date.month, trade_date.day, 14, 50, tzinfo=SHANGHAI)
+    anchor = datetime(trade_date.year, trade_date.month, trade_date.day, 15, 0, tzinfo=SHANGHAI)
     rows = []
     for index in range(60):
         code = f"{600000 + index:06d}"

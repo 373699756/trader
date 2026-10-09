@@ -12,7 +12,7 @@ from datetime import date, datetime, time
 from typing import Literal
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
-SCORE_RESEARCH_OBSERVATION_CUTOFF = time(14, 50)
+SCORE_RESEARCH_OBSERVATION_CUTOFF = time(15, 0)
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,7 @@ class ScoringResearchSpec:
     bootstrap_master_seed: int
     maximum_historical_days: int = 40
     historical_window_mode: Literal["retrospective", "future"] = "future"
+    observation_anchor: Literal["15:00"] = "15:00"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -121,6 +122,8 @@ def _assess_window(
 
 
 def _validate_spec_identity(spec: ScoringResearchSpec) -> None:
+    if spec.observation_anchor != "15:00":
+        raise ValueError("research observation anchor must be 15:00")
     if _IDENTITY.fullmatch(spec.research_identity) is None:
         raise ValueError("research identity must be a bounded lowercase identifier")
     if spec.historical_window_mode not in {"retrospective", "future"}:

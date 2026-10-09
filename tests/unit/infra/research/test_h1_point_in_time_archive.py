@@ -20,7 +20,7 @@ def _record(close: float = 10.2):
         "tomorrow",
         "600001",
         day,
-        datetime.fromisoformat("2026-08-31T14:50:00+08:00"),
+        datetime.fromisoformat("2026-08-31T15:00:00+08:00"),
         bar,
         10.1,
         50,
@@ -52,6 +52,18 @@ def test_h1_archive_audit_marks_insufficient_without_opening_holdout(tmp_path):
     audit = archive.audit(H1PointInTimeSpec("d25"))
     assert audit.manifest.state == "historical_data_insufficient"
     assert audit.terminal_holdout_opened is False
+
+
+def test_h1_archive_rejects_retired_spec_identity_without_migration(tmp_path):
+    archive = SQLiteH1PointInTimeArchive(tmp_path)
+    spec = H1PointInTimeSpec("tomorrow")
+    archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
+    database = tmp_path / "score-h1-point-in-time" / "score-h1-point-in-time.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE specs SET spec_hash = ? WHERE strategy = 'tomorrow'", ("f" * 64,))
+
+    with pytest.raises(H1PointInTimeArchiveConflictError, match="spec"):
+        archive.manifest(spec)
 
 
 def test_h1_archive_rejects_direct_identity_mismatch_and_universe_tampering(tmp_path):

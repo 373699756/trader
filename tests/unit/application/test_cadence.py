@@ -63,7 +63,7 @@ def test_missed_final_candidate_refresh_is_not_replayed_after_freeze_boundary() 
         started_at=datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI),
     )
 
-    before_freeze = planner.plan(datetime(2026, 7, 16, 14, 49, 51, tzinfo=SHANGHAI), is_trading_day=True)
+    before_freeze = planner.plan(datetime(2026, 7, 16, 14, 59, 51, tzinfo=SHANGHAI), is_trading_day=True)
     after_freeze = planner.plan(datetime(2026, 7, 16, 15, 0, 1, tzinfo=SHANGHAI), is_trading_day=True)
 
     assert PipelineTask.FINAL_CANDIDATE_QUOTES in {task.task for task in before_freeze.tasks}
@@ -235,7 +235,7 @@ def test_final_window_keeps_local_input_driven_scoring_until_the_freeze_boundary
 
 
 def test_afternoon_checkpoint_is_a_retryable_strategy_scoped_schedule_point() -> None:
-    checkpoint_at = datetime(2026, 7, 16, 14, 49, 20, tzinfo=SHANGHAI)
+    checkpoint_at = datetime(2026, 7, 16, 14, 59, 20, tzinfo=SHANGHAI)
     planner = CadencePlanner(_policy(), started_at=checkpoint_at.replace(hour=9, minute=15))
 
     first = planner.plan(checkpoint_at, is_trading_day=True)
@@ -293,7 +293,7 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
     assert counts == Counter(
         {
             PipelineTask.FULL_MARKET: 1998,
-            PipelineTask.CANDIDATE_QUOTES: 10340,
+            PipelineTask.CANDIDATE_QUOTES: 10940,
             PipelineTask.TOPK_QUOTES: 15301,
             PipelineTask.INTRADAY_TAIL: 1520,
             PipelineTask.LONG_QUOTES: 15301,

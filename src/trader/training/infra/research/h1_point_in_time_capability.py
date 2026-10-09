@@ -121,7 +121,7 @@ class FreeSourceH1CapabilityProbe:
         return H1CapabilityProbe(
             "eastmoney_historical_minute",
             cutoff if requested else None,
-            "14:50" in times,
+            "15:00" in times,
             "unsupported",
             False,
             len(requested),
@@ -245,7 +245,7 @@ def _encode_probe(item: H1CapabilityProbe) -> dict[str, object]:
     return {
         "source": item.source,
         "earliest_available": item.earliest_available.isoformat() if item.earliest_available else None,
-        "supports_1450": item.supports_1450,
+        "supports_1500": item.supports_1500,
         "adjustment_semantics": item.adjustment_semantics,
         "security_state_effective_at": item.security_state_effective_at,
         "page_size": item.page_size,
@@ -297,7 +297,7 @@ def _decode_probe(raw: object) -> H1CapabilityProbe:
     expected = {
         "source",
         "earliest_available",
-        "supports_1450",
+        "supports_1500",
         "adjustment_semantics",
         "security_state_effective_at",
         "page_size",
@@ -311,7 +311,7 @@ def _decode_probe(raw: object) -> H1CapabilityProbe:
     return H1CapabilityProbe(
         _string(raw["source"]),
         date.fromisoformat(_string(earliest)) if earliest is not None else None,
-        _bool(raw["supports_1450"]),
+        _bool(raw["supports_1500"]),
         _string(raw["adjustment_semantics"]),
         _bool(raw["security_state_effective_at"]),
         _int(raw["page_size"]),

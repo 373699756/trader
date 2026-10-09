@@ -30,7 +30,7 @@ H1_MIN_COVERAGE = 0.95
 H1_TERMINAL_HOLDOUT_DAYS = 200
 
 ResearchStrategy = Literal["tomorrow", "d25"]
-H1AnchorKind = Literal["tomorrow_1450", "d25_1450"]
+H1AnchorKind = Literal["tomorrow_1500", "d25_1500"]
 H1CoverageState = Literal["coverage_ready", "historical_data_insufficient"]
 
 
@@ -45,6 +45,7 @@ class H1PointInTimeSpec:
     minimum_coverage_ratio: float = H1_MIN_COVERAGE
     terminal_holdout_days: int = H1_TERMINAL_HOLDOUT_DAYS
     promotion_authority: bool = False
+    decision_anchor: Literal["15:00"] = "15:00"
     content_hash: str = dataclasses.field(init=False)
 
     def __post_init__(self) -> None:
@@ -62,15 +63,17 @@ class H1PointInTimeSpec:
             raise ValueError("H1 coverage threshold is invalid")
         if self.promotion_authority:
             raise ValueError("H1 research cannot have production authority")
+        if self.decision_anchor != "15:00":
+            raise ValueError("H1 decision anchor must be 15:00")
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def anchor_kind(self) -> H1AnchorKind:
-        return {"tomorrow": "tomorrow_1450", "d25": "d25_1450"}[self.strategy]  # type: ignore[return-value]
+        return {"tomorrow": "tomorrow_1500", "d25": "d25_1500"}[self.strategy]  # type: ignore[return-value]
 
     @property
     def anchor_time(self) -> time:
-        return time(14, 50)
+        return time(15, 0)
 
 
 @dataclass(frozen=True)
@@ -111,7 +114,7 @@ def _validate_h1_record_anchor(record: H1PointInTimeRecord) -> None:
     observed = record.observed_at.astimezone(SHANGHAI)
     if observed.date() != record.trade_date:
         raise ValueError("H1 observation date must match trade date")
-    if observed.timetz().replace(tzinfo=None) != time(14, 50):
+    if observed.timetz().replace(tzinfo=None) != time(15, 0):
         raise ValueError("H1 observation must match the exact strategy anchor")
     if not math.isfinite(record.anchor_price) or record.anchor_price <= 0:
         raise ValueError("H1 anchor price is invalid")
@@ -131,7 +134,7 @@ def _validate_h1_record_hashes(record: H1PointInTimeRecord) -> None:
 class H1CapabilityProbe:
     source: str
     earliest_available: date | None
-    supports_1450: bool
+    supports_1500: bool
     adjustment_semantics: str
     security_state_effective_at: bool
     page_size: int
@@ -151,7 +154,7 @@ class H1CapabilityProbe:
 
     @property
     def point_in_time_anchors_proven(self) -> bool:
-        return self.supports_1450 and self.security_state_effective_at
+        return self.supports_1500 and self.security_state_effective_at
 
 
 @dataclass(frozen=True)
@@ -218,8 +221,8 @@ def build_h1_capability_audit(
             for item in qfq
         ):
             reasons.append("qfq_history_below_1000_sessions")
-        if not any(item.supports_1450 for item in probes):
-            reasons.append("historical_1450_anchor_unavailable")
+        if not any(item.supports_1500 for item in probes):
+            reasons.append("historical_1500_anchor_unavailable")
         if not any(item.security_state_effective_at for item in probes):
             reasons.append("effective_security_state_unavailable")
         statuses.append(

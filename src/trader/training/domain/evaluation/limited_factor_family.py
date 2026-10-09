@@ -73,7 +73,7 @@ class LimitedFactorFamilySpec:
     bootstrap_repetitions: int = 10_000
     bootstrap_block_days: int = 5
     cost_bps: tuple[int, int, int] = _COST_BPS
-    anchor: Literal["14:50_point_in_time"] = "14:50_point_in_time"
+    anchor: Literal["15:00_point_in_time"] = "15:00_point_in_time"
     terminal_holdout_opened: bool = False
     production_authority: bool = False
     schema_version: str = "limited_factor_family_spec"
@@ -104,7 +104,7 @@ class LimitedFactorFamilySpec:
             or self.bootstrap_repetitions < 100
             or self.bootstrap_block_days != 5
             or self.cost_bps != _COST_BPS
-            or self.anchor != "14:50_point_in_time"
+            or self.anchor != "15:00_point_in_time"
             or self.terminal_holdout_opened
             or self.production_authority
             or self.schema_version != "limited_factor_family_spec"

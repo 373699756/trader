@@ -14,7 +14,7 @@ from trader.training.domain.evaluation.historical import (
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
-OBSERVED_AT = datetime(2026, 8, 10, 14, 50, tzinfo=SHANGHAI)
+OBSERVED_AT = datetime(2026, 8, 10, 15, 0, tzinfo=SHANGHAI)
 
 
 def _lineage() -> ResearchDataLineage:
@@ -53,7 +53,7 @@ def test_candidate_summary_rejects_invalid_weights_and_non_shanghai_times() -> N
     with pytest.raises(ValueError, match="sum to one"):
         replace(_candidate(), candidate_components=(ScoreComponent("partial", 0.5, 80.0),))
     with pytest.raises(ValueError, match="Asia/Shanghai"):
-        replace(_candidate(), feature_as_of=datetime(2026, 8, 10, 14, 50))
+        replace(_candidate(), feature_as_of=datetime(2026, 8, 10, 15, 0))
     with pytest.raises(ValueError, match="core missing gate"):
         replace(_candidate(), candidate_core_missing_ratio=0.31)
 

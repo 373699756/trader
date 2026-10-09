@@ -106,7 +106,7 @@ def _minute_qualification(probe: H1CapabilityProbe) -> HistoricalMinuteQualifica
     reasons = tuple(
         reason
         for reason, missing in (
-            ("historical_1450_anchor_unavailable", not probe.supports_1450),
+            ("historical_1500_anchor_unavailable", not probe.supports_1500),
             ("minute_amount_unavailable", True),
             ("minute_company_action_semantics_unproven", True),
             ("minute_coverage_below_95_percent", matched == 0),
@@ -125,7 +125,7 @@ def _minute_qualification(probe: H1CapabilityProbe) -> HistoricalMinuteQualifica
         matched,
         float(matched),
         "",
-        probe.supports_1450,
+        probe.supports_1500,
         False,
         False,
         False,

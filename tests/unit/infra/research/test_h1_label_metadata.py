@@ -14,7 +14,7 @@ def _record(code: str, day: date) -> H1PointInTimeRecord:
         "tomorrow",
         code,
         day,
-        datetime.combine(day, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai")).replace(hour=14, minute=50),
+        datetime.combine(day, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai")).replace(hour=15, minute=0),
         bar,
         10.1,
         50.0,

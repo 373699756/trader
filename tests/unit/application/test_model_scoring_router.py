@@ -41,7 +41,7 @@ class _ScoringCapability:
             monitoring_mode="automatic_t1_outcome_settlement",
             automatic_model_update=False,
             loss_probability_status="not_modeled",
-            runtime_anchor="14:50",
+            runtime_anchor="15:00",
         )
 
 

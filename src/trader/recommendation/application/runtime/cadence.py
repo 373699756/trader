@@ -628,8 +628,8 @@ def _schedule_point_strategies() -> tuple[tuple[SchedulePoint, tuple[str, ...]],
 def _point_boundary(local: datetime, point: SchedulePoint) -> datetime:
     raw = {
         SchedulePoint.DEEPSEEK_CUTOFF: time(14, 48),
-        SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 49, 20),
-        SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 49, 50),
+        SchedulePoint.AFTERNOON_CHECKPOINT: time(14, 59, 20),
+        SchedulePoint.FINAL_CANDIDATE_QUOTES: time(14, 59, 50),
         SchedulePoint.AFTERNOON_FREEZE: time(15, 0),
         SchedulePoint.CLOSE_QUOTES: time(15, 0),
     }[point]

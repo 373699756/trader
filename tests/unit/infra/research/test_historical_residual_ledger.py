@@ -22,7 +22,7 @@ _HASH_B = "b" * 64
 
 def _prediction() -> HistoricalPredictionRecord:
     return HistoricalPredictionRecord(
-        ResidualJoinKey("tomorrow", date(2024, 1, 2), "14:50", "600001", 1),
+        ResidualJoinKey("tomorrow", date(2024, 1, 2), "15:00", "600001", 1),
         _HASH_A,
         _HASH_A,
         _HASH_B,

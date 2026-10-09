@@ -133,8 +133,8 @@ class PointInTimeDaySource:
         _require_shanghai(self.anchor_at, "point-in-time source anchor")
         local = self.anchor_at.astimezone(_SHANGHAI)
         rows = tuple(sorted(self.rows, key=lambda item: item.feature.quote.code))
-        if local.date() != self.trade_date or local.timetz().replace(tzinfo=None) != time(14, 50):
-            raise ValueError("point-in-time source requires the Tomorrow 14:50 anchor")
+        if local.date() != self.trade_date or local.timetz().replace(tzinfo=None) != time(15, 0):
+            raise ValueError("point-in-time source requires the Tomorrow 15:00 anchor")
         if not rows or len({item.feature.quote.code for item in rows}) != len(rows):
             raise ValueError("point-in-time source day requires unique rows")
         for row in rows:
@@ -381,7 +381,7 @@ class PointInTimeDatasetBuilder:
                     stock_code=row.feature.quote.code,
                     anchor_raw_price=row.anchor_raw_price,
                     atr20_pct=row.atr20_pct,
-                    entry_at=datetime.combine(trade_date, time(14, 50), tzinfo=_SHANGHAI),
+                    entry_at=datetime.combine(trade_date, time(15, 0), tzinfo=_SHANGHAI),
                 ),
                 bars=row.outcome_bars,
                 horizon=1,

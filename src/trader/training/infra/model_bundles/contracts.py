@@ -20,7 +20,7 @@ class TrainedHeadContract:
     feature_positions: tuple[int, ...]
     target_column: TrainedTargetColumn
     maturity_sessions: int
-    runtime_anchor: Literal["14:50"]
+    runtime_anchor: Literal["15:00"]
     label_target: Literal[
         "pre_cost_excess_return",
         "pre_cost_excess_return_t1",

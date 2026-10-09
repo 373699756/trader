@@ -501,7 +501,7 @@ def _validate_h1_record_timing(
     if observed.tzinfo is None:
         raise H1PointInTimeArchiveConflictError("H1 timezone evidence missing")
     local_observed = observed.astimezone(ZoneInfo("Asia/Shanghai"))
-    expected_hour, expected_minute = (14, 50)
+    expected_hour, expected_minute = (15, 0)
     if trade_date > spec.source_cutoff.isoformat() or local_observed.timetz().replace(tzinfo=None) != time(
         expected_hour, expected_minute
     ):

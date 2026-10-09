@@ -5,13 +5,58 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
+from trader.infra.serialization.research_trace_projection import observation_bytes
+from trader.infra.serialization.research_trace_validation import (
+    boolean as _boolean,
+)
+from trader.infra.serialization.research_trace_validation import (
+    count_pairs as _count_pairs,
+)
+from trader.infra.serialization.research_trace_validation import (
+    integer as _integer,
+)
+from trader.infra.serialization.research_trace_validation import (
+    list_value as _list,
+)
+from trader.infra.serialization.research_trace_validation import (
+    number as _number,
+)
+from trader.infra.serialization.research_trace_validation import (
+    object_value as _object,
+)
+from trader.infra.serialization.research_trace_validation import (
+    optional_boolean as _optional_boolean,
+)
+from trader.infra.serialization.research_trace_validation import (
+    optional_number as _optional_number,
+)
+from trader.infra.serialization.research_trace_validation import (
+    optional_number_pairs as _optional_number_pairs,
+)
+from trader.infra.serialization.research_trace_validation import (
+    optional_text as _optional_text,
+)
+from trader.infra.serialization.research_trace_validation import (
+    required_score_pairs as _required_score_pairs,
+)
+from trader.infra.serialization.research_trace_validation import (
+    score_pairs as _score_pairs,
+)
+from trader.infra.serialization.research_trace_validation import (
+    strings as _strings,
+)
+from trader.infra.serialization.research_trace_validation import (
+    text as _text,
+)
+from trader.infra.serialization.research_trace_validation import (
+    text_pairs as _text_pairs,
+)
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,
@@ -31,6 +76,12 @@ from trader.training.application.research_audit import (
     ResearchRiskFactAudit,
     ShadowMode,
 )
+from trader.training.infra.research.trace_codec import (
+    DEFAULT_DECODED_PAYLOAD_BYTES,
+    decoded_payload_bytes,
+    persisted_payload_bytes,
+    sha256,
+)
 from trader.training.infra.research.trace_storage import (
     ArchiveSummary,
     connection,
@@ -38,30 +89,6 @@ from trader.training.infra.research.trace_storage import (
     partition_date,
     quarantine_row,
 )
-from trader.training.infra.research.trace_codec import (
-    DEFAULT_DECODED_PAYLOAD_BYTES,
-    decoded_payload_bytes,
-    persisted_payload_bytes,
-    sha256,
-)
-from trader.infra.serialization.research_trace_validation import (
-    boolean as _boolean,
-    count_pairs as _count_pairs,
-    integer as _integer,
-    list_value as _list,
-    number as _number,
-    object_value as _object,
-    optional_boolean as _optional_boolean,
-    optional_number as _optional_number,
-    optional_number_pairs as _optional_number_pairs,
-    optional_text as _optional_text,
-    required_score_pairs as _required_score_pairs,
-    score_pairs as _score_pairs,
-    strings as _strings,
-    text as _text,
-    text_pairs as _text_pairs,
-)
-from trader.infra.serialization.research_trace_projection import observation_bytes
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
 RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"
@@ -203,7 +230,7 @@ class SQLiteResearchTraceArchive:
                 persisted = _observation_from_bytes(
                     existing_payload,
                     str(existing["payload_hash"]),
-                        maximum_decoded_bytes=self._maximum_decoded_payload_bytes,
+                    maximum_decoded_bytes=self._maximum_decoded_payload_bytes,
                 )
                 if persisted.event == event and observation.research_audit is None:
                     self._duplicate += 1
@@ -338,7 +365,7 @@ class SQLiteResearchTraceArchive:
         trade_date: date,
         strategy: Strategy,
         *,
-        cutoff: time = time(hour=14, minute=50),
+        cutoff: time = time(hour=15, minute=0),
     ) -> DecisionObservation | None:
         """Return the latest complete local input that existed by the research cutoff."""
 
@@ -397,6 +424,7 @@ class SQLiteResearchTraceArchive:
             )
 
     _connection = staticmethod(connection)
+
     def _database_for(self, trade_date: date) -> Path:
         if self._use_legacy_layout:
             return self._legacy_database

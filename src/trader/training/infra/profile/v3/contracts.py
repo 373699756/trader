@@ -15,7 +15,7 @@ TOMORROW_HEAD_CONTRACT = TrainedHeadContract(
     (0, 1, 2, 3, 4, 5),
     "target_t1",
     1,
-    "14:50",
+    "15:00",
     "pre_cost_excess_return",
 )
 D25_HEAD_CONTRACT = TrainedHeadContract(
@@ -25,7 +25,7 @@ D25_HEAD_CONTRACT = TrainedHeadContract(
     (1, 2, 3, 4, 5),
     "target_d25_aggregate",
     5,
-    "14:50",
+    "15:00",
     "pre_cost_mean_excess_return_t2_t5",
 )
 HEAD_CONTRACTS = (TOMORROW_HEAD_CONTRACT, D25_HEAD_CONTRACT)

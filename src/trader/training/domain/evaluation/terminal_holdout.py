@@ -611,7 +611,7 @@ def _mean(values: tuple[float, ...]) -> float:
 
 
 def _anchor(strategy: TerminalStrategy) -> str:
-    return "14:50_unadjusted_point_in_time"
+    return "15:00_unadjusted_point_in_time"
 
 
 def _canonical_hash(value: object) -> str:

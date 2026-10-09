@@ -23,7 +23,7 @@ _EMBARGO_DAYS = 5
 
 HistoricalPreregistrationStatus = Literal["preregistered", "historical_data_insufficient"]
 HistoricalLabelAggregate = Literal["single_horizon", "arithmetic_mean"]
-HistoricalAnchor = Literal["14:50"]
+HistoricalAnchor = Literal["15:00"]
 
 
 @dataclass(frozen=True)
@@ -299,16 +299,16 @@ def _label_values(
     )
     if strategy == "tomorrow":
         return (
-            "14:50",
-            "tomorrow_1450_to_t1_close_market_excess_after_cost",
+            "15:00",
+            "tomorrow_1500_to_t1_close_market_excess_after_cost",
             (1,),
             "single_horizon",
             (*common, "t1_low_mae_atr20", "risk_fact_coverage"),
         )
     if strategy == "d25":
         return (
-            "14:50",
-            "d25_1450_to_t2_t5_mean_market_excess_after_cost",
+            "15:00",
+            "d25_1500_to_t2_t5_mean_market_excess_after_cost",
             (2, 3, 4, 5),
             "arithmetic_mean",
             (*common, "four_horizon_net_excess", "worst_interval_mae_atr20", "overlapping_holding_turnover"),

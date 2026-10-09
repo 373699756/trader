@@ -50,7 +50,7 @@ def test_three_independent_data_gates_fail_closed_without_opening_holdout() -> N
         False,
         "b" * 64,
         "historical_data_insufficient",
-        ("historical_1450_anchor_unavailable",),
+        ("historical_1500_anchor_unavailable",),
     )
 
     report = build_point_in_time_data_qualification(daily, (industry,), (minute,))
