@@ -18,7 +18,6 @@ from tests.component.market_data_test_support import (
     BoundedLruCache,
     CountingHistoryClient,
     CountingMarketClient,
-    DataPlaneRepository,
     Evidence,
     FailFirstTencentClient,
     FailingMarketClient,
@@ -29,6 +28,7 @@ from tests.component.market_data_test_support import (
     Path,
     ResearchObservation,
     SourceLaneRegistry,
+    SQLiteDataPlane,
     StaticGateway,
     StaticGatewayWithSeparateQuotes,
     StaticHistoryClient,
@@ -50,7 +50,7 @@ from tests.component.market_data_test_support import (
     timezone,
 )
 from trader.infra.market_data.observations import SourceObservation
-from trader.recommendation.application.ports.market_data_repository import (
+from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneConflictError,
     DataPlaneUnavailableError,
 )
@@ -644,7 +644,7 @@ def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(
         source_lanes=lanes,
         full_market_hedge_delay_seconds=0.01,
     )
-    data_plane = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     write_completed = threading.Event()
     save_records = data_plane.save_security_master_recent_records
 

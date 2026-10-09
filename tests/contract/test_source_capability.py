@@ -12,7 +12,7 @@ COORDINATOR = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_dat
 SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings" / "runtime_loader.py"
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
 MARKET_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data.py"
-DATA_PLANE_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data_repository.py"
+DATA_PLANE_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "data_plane_records.py"
 
 
 def test_source_capability_report_covers_required_sources() -> None:

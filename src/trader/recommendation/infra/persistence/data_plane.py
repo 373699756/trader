@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from trader.recommendation.application.ports.market_data_repository import (
+from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -86,7 +86,7 @@ class _PreparedWrite:
     payload_hash: str
 
 
-class DataPlaneRepository:
+class SQLiteDataPlane:
     """Persist and recover unified data-plane records."""
 
     def __init__(self, runtime_root: Path) -> None:
@@ -703,4 +703,4 @@ def _map_sqlite_error(exc: sqlite3.DatabaseError, *, operation: str) -> DataPlan
     return DataPlaneUnavailableError(f"data plane {operation} failed")
 
 
-__all__ = ["DataPlaneRepository"]
+__all__ = ["SQLiteDataPlane"]

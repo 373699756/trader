@@ -11,8 +11,8 @@ from tests.component.market_data_test_support import (
     NOW,
     TAIL_POLICY,
     CountingHistoryClient,
-    DataPlaneRepository,
     FeatureBuilder,
+    SQLiteDataPlane,
     StaticGateway,
     _history_bars,
     _quote,
@@ -22,8 +22,8 @@ from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
     ExchangeSecurityMasterListing,
 )
-from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
 from trader.recommendation.domain.market.eligibility import manual_blacklist_fact
 from trader.recommendation.infra.market_data.official_static_reference import parse_official_static_reference
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
@@ -90,7 +90,7 @@ def test_official_population_survives_missing_and_foreign_quotes_in_read_only_pr
 
 
 def test_no_official_reference_never_substitutes_quote_population(tmp_path):
-    _, _, _, history, service = _fixture(data_plane=DataPlaneRepository(tmp_path))
+    _, _, _, history, service = _fixture(data_plane=SQLiteDataPlane(tmp_path))
     batch = service.fetch_market_feature_batch(NOW)
     assert batch.features == () and history.calls == []
     assert all(s.state is StageState.NOT_READY for s in batch.static_stages)
@@ -256,10 +256,10 @@ def test_expired_reference_is_reused_with_degraded_health():
 
 
 def test_per_security_persistence_is_not_treated_as_complete_population_after_recovery(tmp_path):
-    repository = DataPlaneRepository(tmp_path)
-    _, _, _, _, first_service = _fixture(data_plane=repository)
+    data_plane = SQLiteDataPlane(tmp_path)
+    _, _, _, _, first_service = _fixture(data_plane=data_plane)
     first_service.references.schedule_security_master_refresh(NOW)
-    _, _, _, history, recovered = _fixture(data_plane=repository)
+    _, _, _, history, recovered = _fixture(data_plane=data_plane)
     recovered.references.recover()
     batch = recovered.fetch_market_feature_batch(NOW)
     assert recovered.references.static_reference().reference is None

@@ -1,11 +1,11 @@
-"""Type and schema metadata shared by the unified data-plane repository."""
+"""Type and schema metadata shared by the unified data-plane persistence."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Final, Literal, TypeAlias
 
-from trader.recommendation.application.ports.market_data_repository import (
+from trader.recommendation.application.ports.data_plane_records import (
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,

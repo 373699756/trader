@@ -1,4 +1,4 @@
-"""Typed ports and immutable records for the market-data repository."""
+"""Typed ports and immutable records for the recommendation data plane."""
 
 from __future__ import annotations
 
@@ -130,56 +130,16 @@ class TradingCalendarRecord:
         object.__setattr__(self, "payload", freeze_json_object(self.payload))
 
 
-class SecurityMasterRepositoryPort(Protocol):
-    def save_recent(self, record: SecurityMasterRecord) -> None: ...
-
-    def load_recent(self, code: str) -> SecurityMasterRecord | None: ...
-
-    def save_formal(self, freeze_id: str, record: SecurityMasterRecord) -> None: ...
-
-    def load_formal(self, freeze_id: str, code: str) -> SecurityMasterRecord | None: ...
-
-
-class RiskEvidenceRepositoryPort(Protocol):
-    def save_recent(self, record: RiskEvidenceRecord) -> None: ...
-
-    def load_recent(self, code: str, evidence_id: str) -> RiskEvidenceRecord | None: ...
-
-    def save_formal(self, freeze_id: str, record: RiskEvidenceRecord) -> None: ...
-
-    def load_formal(self, freeze_id: str, code: str, evidence_id: str) -> RiskEvidenceRecord | None: ...
-
-
-class SourceCursorRepositoryPort(Protocol):
-    def save_recent(self, record: SourceCursorRecord) -> None: ...
-
-    def load_recent(self, cursor_name: str) -> SourceCursorRecord | None: ...
-
-    def save_formal(self, freeze_id: str, record: SourceCursorRecord) -> None: ...
-
-    def load_formal(self, freeze_id: str, cursor_name: str) -> SourceCursorRecord | None: ...
-
-
-class TradingCalendarRepositoryPort(Protocol):
-    def save_recent(self, record: TradingCalendarRecord) -> None: ...
-
-    def load_recent(self, calendar_name: str) -> TradingCalendarRecord | None: ...
-
-    def save_formal(self, freeze_id: str, record: TradingCalendarRecord) -> None: ...
-
-    def load_formal(self, freeze_id: str, calendar_name: str) -> TradingCalendarRecord | None: ...
-
-
-class DataPlaneRepositoryError(RuntimeError):
+class DataPlanePersistenceError(RuntimeError):
     """Base failure for unified data-plane persistence."""
 
 
-class DataPlaneConflictError(DataPlaneRepositoryError):
+class DataPlaneConflictError(DataPlanePersistenceError):
     """A formal data-plane identity already exists with different content."""
 
 
-class DataPlaneUnavailableError(DataPlaneRepositoryError):
-    """A repository failure prevented trusted read/write/recovery."""
+class DataPlaneUnavailableError(DataPlanePersistenceError):
+    """A persistence failure prevented trusted read/write/recovery."""
 
 
 @dataclass(frozen=True)
@@ -280,7 +240,7 @@ class DataPlaneReaderPort(Protocol):
 
 
 class DataPlanePorts(DataPlaneWriterPort, DataPlaneReaderPort, Protocol):
-    """Read/write port pair for the unified data-plane repository."""
+    """Read/write port pair for unified data-plane records."""
 
 
 __all__ = [
@@ -291,11 +251,7 @@ __all__ = [
     "DataPlaneRecord",
     "DataPlanePorts",
     "DataPlaneConflictError",
-    "DataPlaneRepositoryError",
-    "SecurityMasterRepositoryPort",
-    "RiskEvidenceRepositoryPort",
-    "SourceCursorRepositoryPort",
-    "TradingCalendarRepositoryPort",
+    "DataPlanePersistenceError",
     "DataPlaneUnavailableError",
     "DataPlaneRecoverySummary",
     "DataPlaneReaderPort",

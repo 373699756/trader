@@ -42,7 +42,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     validate_stage_batch_continuity,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.status_projection import input_quality_payload, runtime_status
 from trader.training.application.research_runtime import ResearchRuntime
@@ -316,7 +316,7 @@ def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -
     database.write_bytes(b"not-a-sqlite-database")
     market_data = Mock()
 
-    _initialize_reference_data_plane(market_data, DataPlaneRepository(tmp_path))
+    _initialize_reference_data_plane(market_data, SQLiteDataPlane(tmp_path))
 
     market_data.references.recover.assert_not_called()
     market_data.research.recover_from_data_plane.assert_not_called()

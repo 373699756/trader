@@ -14,7 +14,6 @@ from tests.component.market_data_test_support import (
     BoundedLruCache,
     ChinaTradingCalendar,
     DataPlaneRecoverySummary,
-    DataPlaneRepository,
     DataPlaneUnavailableError,
     FakeTushareFrame,
     FakeTusharePro,
@@ -29,6 +28,7 @@ from tests.component.market_data_test_support import (
     SourceCursorRecord,
     SourceLaneRegistry,
     SourceObservation,
+    SQLiteDataPlane,
     StaticGateway,
     StaticHistoryClient,
     StaticMarketClient,
@@ -103,7 +103,7 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
 
     observed_at = datetime(2026, 7, 16, 9, 30, tzinfo=_SHANGHAI)
     source_time = observed_at.replace(minute=29)
-    data_plane = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     data_plane.save_security_master_recent(
         SecurityMasterRecord(
             code="600001",
@@ -203,7 +203,7 @@ def test_reference_loader_persists_full_market_free_security_master_once_per_pay
         def update_reference_observations(_observations):
             return None
 
-    data_plane = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     service = _service(
         ReferenceGateway((_quote(),)),
         StaticHistoryClient(),
@@ -232,7 +232,7 @@ def test_reference_loader_persists_full_market_free_security_master_once_per_pay
 
 def test_reference_loader_persists_cumulative_calendar_sessions(tmp_path: Path) -> None:
     observed_at = datetime(2026, 7, 16, 9, 30, tzinfo=_SHANGHAI)
-    data_plane = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     service = _service(
         StaticGateway(()),
         StaticHistoryClient(),

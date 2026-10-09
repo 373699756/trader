@@ -16,7 +16,6 @@ from tests.component.market_data_test_support import (
     BoundedExecutor,
     BoundedLruCache,
     CountingHistoryClient,
-    DataPlaneRepository,
     DataPlaneUnavailableError,
     Evidence,
     FailingResearchClient,
@@ -29,6 +28,7 @@ from tests.component.market_data_test_support import (
     ResearchObservation,
     RiskEvidenceRecord,
     SourceLaneRegistry,
+    SQLiteDataPlane,
     StaticGateway,
     StaticHistoryClient,
     StaticIntradayClient,
@@ -1009,7 +1009,7 @@ def test_research_loader_recover_from_data_plane_overrides_component_statuses(tm
         pledge_ratio_pct=0.5,
         unlock_ratio_pct=0.5,
     )
-    data_plane = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
 
     for component, status in zip(
         RESEARCH_COMPONENT_IDS,
@@ -1071,7 +1071,7 @@ def test_research_component_same_time_conflict_preserves_first_committed_status(
 
     observed_at = datetime(2026, 8, 13, 10, 16, 30, tzinfo=_SHANGHAI)
     state = ComponentState()
-    data_plane = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
 
     persist_research_component_statuses(
         state,

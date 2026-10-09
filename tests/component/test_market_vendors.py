@@ -12,7 +12,6 @@ from tests.component.market_data_test_support import (
     BoundedExecutor,
     CountingHistoryClient,
     CountingMarketClient,
-    DataPlaneRepository,
     EastmoneyClient,
     FailingMarketClient,
     FakeResponse,
@@ -27,7 +26,7 @@ from tests.component.market_data_test_support import (
     PriceAdjustment,
     SinaClient,
     SourceLaneRegistry,
-    StaticGateway,
+    SQLiteDataPlane,
     StaticHistoryClient,
     StaticMarketClient,
     StaticTencentClient,
@@ -857,7 +856,7 @@ def test_late_eastmoney_hedge_preserves_security_identity_without_overwriting_si
     assert references[0].source == "eastmoney_security_master"
     assert references[0].fields["listing_date"] == "1999-11-10"
     assert eastmoney.calls == 1
-    data_plane = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     service = _service(
         gateway,
         StaticHistoryClient(),

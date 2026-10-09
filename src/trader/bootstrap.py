@@ -119,7 +119,7 @@ from trader.recommendation.infra.market_data.published_history_observer import P
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecordRepository
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityRegistry
@@ -262,7 +262,7 @@ class _BuildContext:
 @dataclass(frozen=True)
 class _PersistenceContext:
     repository: SQLiteDecisionRecordRepository
-    data_plane: DataPlaneRepository
+    data_plane: SQLiteDataPlane
     budget: DeepSeekBudgetLedger
     outcomes: SQLiteOutcomeEvidenceRepository
 
@@ -539,7 +539,7 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
 
 def _build_market_data(
     context: _BuildContext,
-    data_plane: DataPlaneRepository,
+    data_plane: SQLiteDataPlane,
     calendar: ChinaTradingCalendar,
     *,
     history_lookback_sessions: int = 61,
@@ -768,7 +768,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     settings = context.settings
     runtime_database_lock = threading.Lock()
     repository = SQLiteDecisionRecordRepository(settings.freeze_dir)
-    data_plane = DataPlaneRepository(settings.runtime_dir)
+    data_plane = SQLiteDataPlane(settings.runtime_dir)
     outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, repository)
     budget = DeepSeekBudgetLedger(
         settings.runtime_dir / "deepseek-budget.sqlite3",

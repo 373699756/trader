@@ -10,8 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.recommendation.application.ports.json_values import JsonObject
-from trader.recommendation.application.ports.market_data_repository import (
+from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -20,36 +19,37 @@ from trader.recommendation.application.ports.market_data_repository import (
     SourceCursorRecord,
     TradingCalendarRecord,
 )
+from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.infra.persistence import data_plane_sqlite
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
-    repository.initialize()
+    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane.initialize()
 
-    repository.save_security_master_recent(_security_master_record("600001", payload={"field": "sm"}))
-    repository.save_risk_evidence_recent(_risk_evidence_record("600001", "r1"))
-    repository.save_source_cursor_recent(_source_cursor_record("cursor-1"))
-    repository.save_trading_calendar_recent(_trading_calendar_record())
-    repository.save_trading_calendar_formal("calendar-freeze-1", _trading_calendar_record())
+    data_plane.save_security_master_recent(_security_master_record("600001", payload={"field": "sm"}))
+    data_plane.save_risk_evidence_recent(_risk_evidence_record("600001", "r1"))
+    data_plane.save_source_cursor_recent(_source_cursor_record("cursor-1"))
+    data_plane.save_trading_calendar_recent(_trading_calendar_record())
+    data_plane.save_trading_calendar_formal("calendar-freeze-1", _trading_calendar_record())
 
-    assert repository.load_security_master_recent("600001") == _security_master_record(
+    assert data_plane.load_security_master_recent("600001") == _security_master_record(
         "600001", payload={"field": "sm"}
     )
-    assert repository.load_risk_evidence_recent("600001", "r1") == _risk_evidence_record("600001", "r1")
-    assert repository.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
-    assert repository.load_trading_calendar_recent("sse_szse") == _trading_calendar_record()
-    assert repository.load_trading_calendar_formal("calendar-freeze-1", "sse_szse") == _trading_calendar_record()
+    assert data_plane.load_risk_evidence_recent("600001", "r1") == _risk_evidence_record("600001", "r1")
+    assert data_plane.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
+    assert data_plane.load_trading_calendar_recent("sse_szse") == _trading_calendar_record()
+    assert data_plane.load_trading_calendar_formal("calendar-freeze-1", "sse_szse") == _trading_calendar_record()
 
 
 def test_security_master_batch_uses_one_write_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     original_connection_scope = data_plane_sqlite.connection_scope
     connection_count = 0
 
@@ -66,24 +66,24 @@ def test_security_master_batch_uses_one_write_transaction(
         for code in ("600001", "600002", "600003")
     )
 
-    repository.save_security_master_recent_records(records)
+    data_plane.save_security_master_recent_records(records)
 
     assert connection_count == 2
-    assert repository.load_security_master_recent_records() == records
+    assert data_plane.load_security_master_recent_records() == records
     assert connection_count == 4
 
 
 def test_security_master_batch_rolls_back_when_one_record_conflicts(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     existing = _security_master_record(
         "600002",
         observed_at=_timestamp(10, 0),
         payload={"board": "main", "exchange": "sse"},
     )
-    repository.save_security_master_recent(existing)
+    data_plane.save_security_master_recent(existing)
 
     with pytest.raises(DataPlaneConflictError, match="recent save conflicts"):
-        repository.save_security_master_recent_records(
+        data_plane.save_security_master_recent_records(
             (
                 _security_master_record(
                     "600001",
@@ -98,8 +98,8 @@ def test_security_master_batch_rolls_back_when_one_record_conflicts(tmp_path: Pa
             )
         )
 
-    assert repository.load_security_master_recent("600001") is None
-    assert repository.load_security_master_recent("600002") == existing
+    assert data_plane.load_security_master_recent("600001") is None
+    assert data_plane.load_security_master_recent("600002") == existing
 
 
 def test_initialize_maps_physically_corrupt_database_to_controlled_unavailability(tmp_path: Path) -> None:
@@ -108,19 +108,19 @@ def test_initialize_maps_physically_corrupt_database_to_controlled_unavailabilit
     database.write_bytes(b"not-a-sqlite-database")
 
     with pytest.raises(DataPlaneUnavailableError, match="data plane initialize failed"):
-        DataPlaneRepository(tmp_path).initialize()
+        SQLiteDataPlane(tmp_path).initialize()
 
 
 def test_recent_records_preserve_newer_content_and_reject_same_time_conflicts(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     current = _security_master_record(
         "600001",
         observed_at=_timestamp(10, 0),
         payload={"board": "main", "exchange": "sse"},
     )
-    repository.save_security_master_recent(current)
+    data_plane.save_security_master_recent(current)
 
-    repository.save_security_master_recent(
+    data_plane.save_security_master_recent(
         _security_master_record(
             "600001",
             observed_at=_timestamp(9, 59),
@@ -128,9 +128,9 @@ def test_recent_records_preserve_newer_content_and_reject_same_time_conflicts(tm
         )
     )
 
-    assert repository.load_security_master_recent("600001") == current
+    assert data_plane.load_security_master_recent("600001") == current
     with pytest.raises(DataPlaneConflictError, match="recent save conflicts"):
-        repository.save_security_master_recent(
+        data_plane.save_security_master_recent(
             _security_master_record(
                 "600001",
                 observed_at=_timestamp(10, 0),
@@ -138,7 +138,7 @@ def test_recent_records_preserve_newer_content_and_reject_same_time_conflicts(tm
             )
         )
     with pytest.raises(DataPlaneConflictError, match="recent save conflicts"):
-        repository.save_security_master_recent(
+        data_plane.save_security_master_recent(
             _security_master_record(
                 "600001",
                 observed_at=_timestamp(10, 0),
@@ -154,17 +154,17 @@ def test_persisted_data_plane_rejects_invalid_empty_facts() -> None:
 
 
 def test_formal_records_are_idempotent_for_same_payload_and_conflict_on_different_payload(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
-    repository.initialize()
+    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane.initialize()
     record = _security_master_record("600002", payload={"field": "formal"})
 
-    repository.save_security_master_formal("freeze-2026-07-30", record)
+    data_plane.save_security_master_formal("freeze-2026-07-30", record)
     with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
         connection.execute(
             "UPDATE security_master_formal SET status = 'staged' WHERE freeze_id = ? AND code = ?",
             ("freeze-2026-07-30", "600002"),
         )
-    repository.save_security_master_formal("freeze-2026-07-30", record)
+    data_plane.save_security_master_formal("freeze-2026-07-30", record)
     with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
         retried = connection.execute(
             "SELECT status FROM security_master_formal WHERE freeze_id = ? AND code = ?",
@@ -173,23 +173,23 @@ def test_formal_records_are_idempotent_for_same_payload_and_conflict_on_differen
 
     assert retried is not None
     assert str(retried["status"]) == "committed"
-    repository.save_security_master_formal("freeze-2026-07-30", record)
+    data_plane.save_security_master_formal("freeze-2026-07-30", record)
 
     with pytest.raises(DataPlaneConflictError, match="formal save conflicts"):
-        repository.save_security_master_formal(
+        data_plane.save_security_master_formal(
             "freeze-2026-07-30", _security_master_record("600002", payload={"field": "changed"})
         )
     with pytest.raises(DataPlaneConflictError, match="formal save conflicts"):
-        repository.save_security_master_formal(
+        data_plane.save_security_master_formal(
             "freeze-2026-07-30",
             _security_master_record("600002", data_version="formal", payload={"field": "formal"}),
         )
 
 
 def test_load_verification_failure_quarantines_committed_row_and_returns_none(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     record = _security_master_record("600003", payload={"field": "valid"})
-    repository.save_security_master_recent(record)
+    data_plane.save_security_master_recent(record)
     db = _database_path(tmp_path)
 
     with data_plane_sqlite.connection_scope(db) as connection:
@@ -198,7 +198,7 @@ def test_load_verification_failure_quarantines_committed_row_and_returns_none(tm
             ('{"invalid": true', "000000000000000000000000000000000000000000000000000000000000000000", "600003"),
         )
 
-    assert repository.load_security_master_recent("600003") is None
+    assert data_plane.load_security_master_recent("600003") is None
 
     with data_plane_sqlite.connection_scope(db) as connection:
         row = connection.execute(
@@ -217,14 +217,14 @@ def test_load_verification_failure_quarantines_committed_row_and_returns_none(tm
 
 
 def test_recovery_promotes_staged_rows_and_quarantines_corrupted_committed_rows(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
-    repository.initialize()
+    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane.initialize()
     _insert_staged_source_cursor_row(
         _database_path(tmp_path),
         cursor_name="cursor-staged",
         payload={"cursor": "ok"},
     )
-    repository.save_security_master_recent(_security_master_record("600004", payload={"field": "to-corrupt"}))
+    data_plane.save_security_master_recent(_security_master_record("600004", payload={"field": "to-corrupt"}))
 
     with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
         connection.execute(
@@ -232,17 +232,17 @@ def test_recovery_promotes_staged_rows_and_quarantines_corrupted_committed_rows(
             ('{"invalid": true', "600004"),
         )
 
-    summary = repository.recover()
+    summary = data_plane.recover()
 
     assert summary == DataPlaneRecoverySummary(
         recovered=1,
         quarantined=1,
         orphaned=1,
     )
-    assert repository.load_source_cursor_recent("cursor-staged") == _source_cursor_record(
+    assert data_plane.load_source_cursor_recent("cursor-staged") == _source_cursor_record(
         "cursor-staged", payload={"cursor": "ok"}
     )
-    assert repository.load_security_master_recent("600004") is None
+    assert data_plane.load_security_master_recent("600004") is None
 
 
 def _insert_staged_source_cursor_row(database: Path, *, cursor_name: str, payload: JsonObject) -> None:

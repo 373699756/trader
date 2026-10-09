@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from tests.component.market_data_test_support import (
-    _SHANGHAI,
     AFTERNOON,
     FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
@@ -14,7 +13,6 @@ from tests.component.market_data_test_support import (
     BoundedExecutor,
     BoundedLruCache,
     DailyBar,
-    DataPlaneRepository,
     EastmoneyClient,
     FailingIntradayClient,
     FakeSession,
@@ -27,11 +25,9 @@ from tests.component.market_data_test_support import (
     StaticGateway,
     StaticHistoryClient,
     StaticIntradayClient,
-    _history_bars,
     _quote,
     _service,
     _tail_minute_bars,
-    datetime,
     load_runtime_settings,
     pytest,
     replace,

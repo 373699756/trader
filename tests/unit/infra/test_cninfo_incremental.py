@@ -13,14 +13,14 @@ from trader.recommendation.infra.market_data.announcement_sync import (
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OBSERVED_AT = datetime(2026, 7, 30, 14, 50, tzinfo=SHANGHAI)
 
 
 def test_cninfo_sync_persists_unique_announcements_components_and_cursor(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     client = _StaticCninfoClient(
         (
             {
@@ -46,27 +46,27 @@ def test_cninfo_sync_persists_unique_announcements_components_and_cursor(tmp_pat
         )
     )
 
-    result = CninfoAnnouncementIncrementalSync(client, repository, page_size=100).sync_code("600001", OBSERVED_AT)
+    result = CninfoAnnouncementIncrementalSync(client, data_plane, page_size=100).sync_code("600001", OBSERVED_AT)
 
     assert result.pages_fetched == 1
     assert result.saved_announcements == 1
     assert result.duplicate_rows == 1
     assert result.invalid_rows == 1
     assert result.history_complete is True
-    saved = repository.load_risk_evidence_recent("600001", f"{CNINFO_ANNOUNCEMENT_PREFIX}risk-1")
+    saved = data_plane.load_risk_evidence_recent("600001", f"{CNINFO_ANNOUNCEMENT_PREFIX}risk-1")
     assert saved is not None
     assert saved.payload["exchange_cross_check_status"] == "pending"
-    component = repository.load_risk_evidence_recent("600001", f"{CNINFO_COMPONENT_PREFIX}penalty")
+    component = data_plane.load_risk_evidence_recent("600001", f"{CNINFO_COMPONENT_PREFIX}penalty")
     assert component is not None
     assert component.payload["status"] == "known_risk"
-    cursor = repository.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600001")
+    cursor = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600001")
     assert cursor is not None
     assert cursor.payload["duplicate_rows"] == 1
     assert cursor.payload["history_complete"] is True
 
 
 def test_cninfo_empty_increment_does_not_clear_existing_risk(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     first_syncer = CninfoAnnouncementIncrementalSync(
         _StaticCninfoClient(
             (
@@ -82,11 +82,11 @@ def test_cninfo_empty_increment_does_not_clear_existing_risk(tmp_path: Path) -> 
                 },
             )
         ),
-        repository,
+        data_plane,
     )
     second_syncer = CninfoAnnouncementIncrementalSync(
         _StaticCninfoClient(({"announcements": (), "hasMore": False},)),
-        repository,
+        data_plane,
     )
 
     first = first_syncer.sync_code("600002", OBSERVED_AT)
@@ -94,14 +94,14 @@ def test_cninfo_empty_increment_does_not_clear_existing_risk(tmp_path: Path) -> 
 
     assert first.saved_announcements == 1
     assert second.saved_announcements == 0
-    assert repository.load_risk_evidence_recent("600002", f"{CNINFO_ANNOUNCEMENT_PREFIX}risk-1") is not None
-    component = repository.load_risk_evidence_recent("600002", f"{CNINFO_COMPONENT_PREFIX}forced_delisting")
+    assert data_plane.load_risk_evidence_recent("600002", f"{CNINFO_ANNOUNCEMENT_PREFIX}risk-1") is not None
+    component = data_plane.load_risk_evidence_recent("600002", f"{CNINFO_COMPONENT_PREFIX}forced_delisting")
     assert component is not None
     assert component.payload["status"] == "known_risk"
 
 
 def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_path: Path) -> None:
-    repository = DataPlaneRepository(tmp_path)
+    data_plane = SQLiteDataPlane(tmp_path)
     CninfoAnnouncementIncrementalSync(
         _StaticCninfoClient(
             (
@@ -117,7 +117,7 @@ def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_pa
                 },
             )
         ),
-        repository,
+        data_plane,
     ).sync_code("600003", OBSERVED_AT)
     loader = ResearchLoader(
         None,
@@ -130,7 +130,7 @@ def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_pa
             schema_version="test",
             wall_clock=lambda: OBSERVED_AT,
         ),
-        data_plane=repository,
+        data_plane=data_plane,
         workers=1,
         ttl_seconds=600,
         circuit_breaker_failures=3,

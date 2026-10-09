@@ -38,18 +38,18 @@ from trader.infra.market_data.references.calendar import ChinaTradingCalendar, T
 from trader.infra.market_data.router import VendorRoute, VendorSeverity, route
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
-from trader.recommendation.application.ports.market_data import (
-    MarketDataDeadlineExceededError,
-    MarketDataFailedError,
-    MarketDataNoDataError,
-    MarketDataUnavailableError,
-)
-from trader.recommendation.application.ports.market_data_repository import (
+from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
+)
+from trader.recommendation.application.ports.market_data import (
+    MarketDataDeadlineExceededError,
+    MarketDataFailedError,
+    MarketDataNoDataError,
+    MarketDataUnavailableError,
 )
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.source_lanes import (
@@ -96,7 +96,7 @@ from trader.recommendation.infra.market_data.tushare_reference_loader import (
 )
 from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.data_plane import DataPlaneRepository
+from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -241,7 +241,7 @@ def _service(
     gateway: Any,
     history_client: Any,
     feature_builder: Any,
-    data_plane: DataPlaneRepository | None = None,
+    data_plane: SQLiteDataPlane | None = None,
     **kwargs: Any,
 ) -> MarketFeatureService:
     monotonic = kwargs.pop("monotonic", time.monotonic)

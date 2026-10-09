@@ -10,13 +10,13 @@ from datetime import datetime
 from typing import TypedDict, cast
 
 from trader.infra.serialization.canonical import canonical_json_text
-from trader.recommendation.application.ports.json_values import JsonObject
-from trader.recommendation.application.ports.market_data_repository import (
+from trader.recommendation.application.ports.data_plane_records import (
     RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
     TradingCalendarRecord,
 )
+from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.infra.persistence.data_plane_types import Record, _Profile
 
 

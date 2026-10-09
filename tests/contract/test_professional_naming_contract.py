@@ -44,6 +44,7 @@ FORBIDDEN_ACTIVE_PATHS = (
     "infra/runtime_support.py",
     "recommendation/infra/scoring/profiles/v3/bundle_store.py",
     "recommendation/infra/scoring/profiles/v3/sample_store.py",
+    "recommendation/application/ports/market_data_repository.py",
     "infra/settings/runtime.py",
 )
 
@@ -111,6 +112,12 @@ FORBIDDEN_PUBLIC_NAMES = {
     "HistoryMonthlyArchiveError",
     "HistoryMonthlyRevision",
     "HistoryTrainingMemoryEvidence",
+    "DataPlaneRepository",
+    "DataPlaneRepositoryError",
+    "SecurityMasterRepositoryPort",
+    "RiskEvidenceRepositoryPort",
+    "SourceCursorRepositoryPort",
+    "TradingCalendarRepositoryPort",
     "SQLiteHistoricalArchive",
     "SQLiteHistoryMonthlyArchive",
     "TomorrowInputCompatibility",
@@ -125,6 +132,12 @@ FORBIDDEN_PUBLIC_NAMES = {
 }
 
 FORBIDDEN_MODULE_CONSTANTS = {"HISTORICAL_RISK_VALIDATION_SPEC"}
+
+MIGRATED_DATA_PLANE_PATHS = (
+    "recommendation/application/ports/data_plane_records.py",
+    "recommendation/infra/persistence/data_plane.py",
+    "recommendation/infra/persistence/data_plane_initialization.py",
+)
 
 
 @cache
@@ -269,6 +282,29 @@ def test_project_owned_python_names_do_not_use_generic_storage_terms() -> None:
             for name in names:
                 words = name.split("_") if "_" in name else re.findall(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+", name)
                 if any(word.lower() in {"store", "stored"} for word in words):
+                    violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
+    assert violations == []
+
+
+def test_migrated_data_plane_names_describe_persistence_roles() -> None:
+    violations: list[str] = []
+    forbidden = {"store", "stored", "repository", "archive", "registry"}
+    for relative in MIGRATED_DATA_PLANE_PATHS:
+        path = SOURCE / relative
+        tree = _python_tree(path)
+        for node in ast.walk(tree):
+            names: tuple[str, ...] = ()
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                names = (node.name,)
+            elif isinstance(node, ast.arg):
+                names = (node.arg,)
+            elif isinstance(node, ast.Name):
+                names = (node.id,)
+            elif isinstance(node, ast.Attribute):
+                names = (node.attr,)
+            for name in names:
+                words = name.split("_") if "_" in name else re.findall(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+", name)
+                if any(word.lower() in forbidden for word in words):
                     violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
     assert violations == []
 
