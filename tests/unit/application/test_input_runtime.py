@@ -70,6 +70,9 @@ class _Market:
         features = tuple(self.fetch_market_features(observed_at, force=force, deadline=deadline))
         return observed_market_batch(features, observed_at)
 
+    def reference_version(self):
+        return "reference:fixture"
+
     def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
         del force, deadline
         self.candidate_quote_refresh_count += 1

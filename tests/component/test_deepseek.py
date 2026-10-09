@@ -13,6 +13,7 @@ import requests
 from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.failures import AdapterFailureCode
 from trader.infra.settings import DeepSeekSettings
+from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
@@ -24,7 +25,8 @@ from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import FusionMode, Strategy
+from trader.recommendation.domain.risk.fusion import FusionPolicy, FusionRequest, fuse_score
 from trader.recommendation.domain.risk.rules import Rating
 from trader.recommendation.infra.deepseek.budget import SCHEMA_VERSION as BUDGET_SCHEMA_VERSION
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
@@ -242,6 +244,50 @@ def test_challenger_merge_is_conservative(
     assert merged.dimensions["market_flow"].is_unknown is expected_unknown
     assert merged.dimensions["market_flow"].confidence == expected_confidence
     assert merged.challenger_status == "applied"
+
+
+@pytest.mark.parametrize("verdict", ("confirm", "contradict"))
+def test_challenger_cannot_raise_negative_evidence_or_fused_score(verdict: str) -> None:
+    candidate = _candidate_with_evidence()
+    primary = parse_reviews(json.dumps(_valid_payload(candidate.quote.code)), [candidate], NOW)[candidate.quote.code]
+    negative = replace(primary.dimensions["market_flow"], score=20.0, confidence=0.8)
+    primary = replace(primary, dimensions={**primary.dimensions, "market_flow": negative})
+    challenge = ChallengerReview(
+        code=candidate.quote.code,
+        dimensions={
+            "market_flow": ChallengerDimensionVerdict(
+                verdict=verdict,
+                raw_confidence=0.9,
+                evidence_ids=(candidate.evidence[0].evidence_id,),
+                reason_code="evidence_check",
+            )
+        },
+        completed_at=NOW,
+    )
+
+    merged = merge_challenger_review(primary, challenge, candidate)
+    weights = {name: 0.2 for name in primary.dimensions}
+    policy = FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0)
+
+    def fused_score(review):
+        return fuse_score(
+            FusionRequest(
+                local=LocalScoreResult({"fixture": 80.0}, 80.0),
+                local_risk_facts=(),
+                review=review,
+                dimension_weights=weights,
+                risk_rules={},
+                fusion_mode=FusionMode.HYBRID,
+                policy=policy,
+            )
+        ).score
+
+    before = fused_score(primary)
+    after = fused_score(merged)
+
+    assert merged.dimensions["market_flow"] == negative
+    assert after.deepseek_score == before.deepseek_score
+    assert after.final_score == before.final_score
 
 
 def test_http_retry_reserves_each_physical_attempt() -> None:

@@ -56,6 +56,19 @@ class _SettlementWindow:
     failure_reason: str = ""
 
 
+@dataclass(frozen=True)
+class _BarWindow:
+    reference: OutcomeBar
+    future: tuple[OutcomeBar, ...]
+
+
+@dataclass(frozen=True)
+class _PreparedOutcome:
+    anchor_qfq_price: float
+    entry_low: float
+    settlement: tuple[_SettlementPoint, ...]
+
+
 class CanonicalOutcomeEvaluator:
     """Pure owner of benchmark and immutable recommendation outcome calculations."""
 
@@ -74,67 +87,12 @@ class CanonicalOutcomeEvaluator:
         return BenchmarkReturn(trade_date, sum(item.return_pct for item in constituents) / len(constituents))
 
     def evaluate(self, request: OutcomeEvaluationRequest) -> RecommendationOutcome:
-        target = request.target
-        bars = request.bars
-        horizon = request.horizon
-        benchmark_returns = request.benchmark_returns
-        settled_at = request.settled_at
-        expected_trade_dates = request.expected_trade_dates
-        round_trip_cost_pct = request.round_trip_cost_pct
-        if horizon not in outcome_horizons(target.strategy):
+        if request.horizon not in outcome_horizons(request.target.strategy):
             raise ValueError("outcome horizon is incompatible with strategy")
-        ordered_bars = tuple(sorted(bars, key=lambda bar: bar.trade_date))
-        if len({bar.trade_date for bar in ordered_bars}) != len(ordered_bars):
-            return _insufficient(target, horizon, settled_at, "duplicate_trade_date")
-        reference = next((bar for bar in ordered_bars if bar.trade_date == target.recommend_date), None)
-        ordered = tuple(bar for bar in ordered_bars if bar.trade_date > target.recommend_date)
-        if reference is None or reference.trading_status is OutcomeTradingStatus.UNKNOWN:
-            return _insufficient(target, horizon, settled_at, "invalid_reference_bar")
-        anchor_qfq_price = _anchor_qfq_price(target.anchor_raw_price, reference)
-        if anchor_qfq_price is None or not math.isfinite(target.atr20_pct) or target.atr20_pct <= 0.0:
-            return _insufficient(target, horizon, settled_at, "invalid_price_window")
-        settlement = _settlement_window(reference, ordered, expected_trade_dates, horizon)
-        if settlement is None:
-            return _insufficient(target, horizon, settled_at, "horizon_not_due")
-        if settlement.failure_reason:
-            return _insufficient(target, horizon, settled_at, settlement.failure_reason)
-        window = settlement.points
-        entry_low = _entry_day_low(request, reference)
-        if entry_low is None:
-            return _insufficient(target, horizon, settled_at, "entry_day_price_window_missing")
-        minimum_low = min(anchor_qfq_price, entry_low, *(point.qfq_low for point in window))
-        end_close = window[-1].qfq_close
-        gross = (end_close / anchor_qfq_price - 1.0) * 100.0
-        mae = (minimum_low / anchor_qfq_price - 1.0) * 100.0
-        mae_atr = mae / target.atr20_pct
-        threshold = -1.5 if target.strategy is Strategy.TOMORROW else -2.5
-        benchmark = _compound_returns(benchmark_returns[:horizon]) if len(benchmark_returns) >= horizon else None
-        net_excess = None if benchmark is None else gross - benchmark - round_trip_cost_pct
-        return RecommendationOutcome(
-            snapshot_id=target.snapshot_id,
-            strategy=target.strategy,
-            recommend_date=target.recommend_date,
-            stock_code=target.stock_code,
-            horizon=horizon,
-            status="complete" if benchmark is not None else "benchmark_missing",
-            settled_at=settled_at,
-            anchor_raw_price=target.anchor_raw_price,
-            anchor_qfq_price=anchor_qfq_price,
-            atr20_pct=target.atr20_pct,
-            minimum_qfq_low=minimum_low,
-            end_qfq_close=end_close,
-            exit_status=window[-1].exit_status,
-            untradable_dates=tuple(
-                point.trade_date for point in window if point.exit_status is not OutcomeExitStatus.TRADABLE
-            ),
-            gross_return_pct=gross,
-            benchmark_return_pct=benchmark,
-            net_excess_return_pct=net_excess,
-            mae_pct=mae,
-            mae_atr=mae_atr,
-            severe_drawdown=mae_atr <= threshold,
-            quality_reason="" if benchmark is not None else "benchmark_missing",
-        )
+        prepared = _prepare_outcome(request)
+        if isinstance(prepared, str):
+            return _insufficient(request.target, request.horizon, request.settled_at, prepared)
+        return _complete_outcome(request, prepared)
 
     def d25_aggregate(self, outcomes: tuple[RecommendationOutcome, ...]) -> float | None:
         if len(outcomes) != len(outcome_horizons(Strategy.D25)):
@@ -155,6 +113,93 @@ class CanonicalOutcomeEvaluator:
         return sum(item.net_excess_return_pct for item in ordered if item.net_excess_return_pct is not None) / len(
             ordered
         )
+
+
+def _complete_outcome(request: OutcomeEvaluationRequest, prepared: _PreparedOutcome) -> RecommendationOutcome:
+    target = request.target
+    window = prepared.settlement
+    minimum_low = min(
+        prepared.anchor_qfq_price,
+        prepared.entry_low,
+        *(point.qfq_low for point in window),
+    )
+    end_close = window[-1].qfq_close
+    gross = (end_close / prepared.anchor_qfq_price - 1.0) * 100.0
+    mae = (minimum_low / prepared.anchor_qfq_price - 1.0) * 100.0
+    mae_atr = mae / target.atr20_pct
+    threshold = -1.5 if target.strategy is Strategy.TOMORROW else -2.5
+    benchmark = (
+        _compound_returns(request.benchmark_returns[: request.horizon])
+        if len(request.benchmark_returns) >= request.horizon
+        else None
+    )
+    net_excess = None if benchmark is None else gross - benchmark - request.round_trip_cost_pct
+    return RecommendationOutcome(
+        snapshot_id=target.snapshot_id,
+        strategy=target.strategy,
+        recommend_date=target.recommend_date,
+        stock_code=target.stock_code,
+        horizon=request.horizon,
+        status="complete" if benchmark is not None else "benchmark_missing",
+        settled_at=request.settled_at,
+        anchor_raw_price=target.anchor_raw_price,
+        anchor_qfq_price=prepared.anchor_qfq_price,
+        atr20_pct=target.atr20_pct,
+        minimum_qfq_low=minimum_low,
+        end_qfq_close=end_close,
+        exit_status=window[-1].exit_status,
+        untradable_dates=tuple(
+            point.trade_date for point in window if point.exit_status is not OutcomeExitStatus.TRADABLE
+        ),
+        gross_return_pct=gross,
+        benchmark_return_pct=benchmark,
+        net_excess_return_pct=net_excess,
+        mae_pct=mae,
+        mae_atr=mae_atr,
+        severe_drawdown=mae_atr <= threshold,
+        quality_reason="" if benchmark is not None else "benchmark_missing",
+    )
+
+
+def _prepare_outcome(request: OutcomeEvaluationRequest) -> _PreparedOutcome | str:
+    bar_window = _bar_window(request)
+    if isinstance(bar_window, str):
+        return bar_window
+    anchor_qfq_price = _anchor_qfq_price(request.target.anchor_raw_price, bar_window.reference)
+    if anchor_qfq_price is None or not math.isfinite(request.target.atr20_pct) or request.target.atr20_pct <= 0.0:
+        return "invalid_price_window"
+    settlement = _evaluated_settlement(request, bar_window)
+    if isinstance(settlement, str):
+        return settlement
+    entry_low = _entry_day_low(request, bar_window.reference)
+    if entry_low is None:
+        return "entry_day_price_window_missing"
+    return _PreparedOutcome(anchor_qfq_price, entry_low, settlement)
+
+
+def _bar_window(request: OutcomeEvaluationRequest) -> _BarWindow | str:
+    ordered = tuple(sorted(request.bars, key=lambda bar: bar.trade_date))
+    if len({bar.trade_date for bar in ordered}) != len(ordered):
+        return "duplicate_trade_date"
+    reference = next((bar for bar in ordered if bar.trade_date == request.target.recommend_date), None)
+    if reference is None or reference.trading_status is OutcomeTradingStatus.UNKNOWN:
+        return "invalid_reference_bar"
+    future = tuple(bar for bar in ordered if bar.trade_date > request.target.recommend_date)
+    return _BarWindow(reference, future)
+
+
+def _evaluated_settlement(request: OutcomeEvaluationRequest, bars: _BarWindow) -> tuple[_SettlementPoint, ...] | str:
+    settlement = _settlement_window(
+        bars.reference,
+        bars.future,
+        request.expected_trade_dates,
+        request.horizon,
+    )
+    if settlement is None:
+        return "horizon_not_due"
+    if settlement.failure_reason:
+        return settlement.failure_reason
+    return settlement.points
 
 
 def evaluate_outcome(request: OutcomeEvaluationRequest) -> RecommendationOutcome:
@@ -191,16 +236,26 @@ def _anchor_qfq_price(anchor_raw_price: float, reference: OutcomeBar) -> float |
 
 
 def _entry_day_low(request: OutcomeEvaluationRequest, reference: OutcomeBar) -> float | None:
-    target = request.target
     evidence = request.entry_day_window
     if evidence is not None:
-        if evidence.entry_at.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat() != target.recommend_date:
-            return None
-        if target.entry_at is None or evidence.entry_at != target.entry_at:
-            return None
-        if evidence.low_raw_price > target.anchor_raw_price:
-            return None
-        return _anchor_qfq_price(evidence.low_raw_price, reference)
+        return _verified_entry_day_low(request.target, evidence, reference)
+    return _closing_entry_day_low(request.target, reference)
+
+
+def _verified_entry_day_low(
+    target: OutcomeTarget,
+    evidence: EntryDayPriceWindow,
+    reference: OutcomeBar,
+) -> float | None:
+    evidence_date = evidence.entry_at.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+    if evidence_date != target.recommend_date or target.entry_at is None or evidence.entry_at != target.entry_at:
+        return None
+    if evidence.low_raw_price > target.anchor_raw_price:
+        return None
+    return _anchor_qfq_price(evidence.low_raw_price, reference)
+
+
+def _closing_entry_day_low(target: OutcomeTarget, reference: OutcomeBar) -> float | None:
     if target.entry_at is None:
         return None
     entry = target.entry_at.astimezone(ZoneInfo("Asia/Shanghai"))

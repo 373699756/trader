@@ -279,9 +279,7 @@ def _fresh_quotes(
 ) -> dict[str, MarketQuote]:
     candidates: dict[str, list[MarketQuote]] = {}
     for feature in features:
-        quote = getattr(feature, "quote", None)
-        if not isinstance(quote, MarketQuote):
-            continue
+        quote = feature.quote
         try:
             source_time = _shanghai(quote.source_time)
             received_time = _shanghai(quote.received_time)

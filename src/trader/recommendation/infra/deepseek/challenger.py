@@ -191,20 +191,32 @@ def merge_challenger_review(
         if current is None:
             continue
         if verdict.verdict == "confirm":
-            dimensions[name] = replace(current, confidence=min(current.confidence, verdict.raw_confidence))
+            dimensions[name] = _confirmed_dimension(current, verdict.raw_confidence)
         elif verdict.verdict == "contradict" and verdict.evidence_ids and set(verdict.evidence_ids) <= allowed:
-            dimensions[name] = replace(
-                current,
-                score=50.0,
-                confidence=0.0,
-                evidence_ids=(),
-                is_unknown=True,
-            )
+            dimensions[name] = _contradicted_dimension(current)
     return replace(
         primary,
         dimensions=dimensions,
         review_stage="primary+challenger",
         challenger_status="applied",
+    )
+
+
+def _confirmed_dimension(current: DimensionAssessment, challenger_confidence: float) -> DimensionAssessment:
+    if current.score <= 50.0:
+        return current
+    return replace(current, confidence=min(current.confidence, challenger_confidence))
+
+
+def _contradicted_dimension(current: DimensionAssessment) -> DimensionAssessment:
+    if current.score <= 50.0:
+        return current
+    return replace(
+        current,
+        score=50.0,
+        confidence=0.0,
+        evidence_ids=(),
+        is_unknown=True,
     )
 
 
