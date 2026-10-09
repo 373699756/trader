@@ -12,12 +12,33 @@ from trader.recommendation.domain.risk.decision import (
 )
 from trader.recommendation.domain.scoring.alpha import AlphaScore
 from trader.recommendation.domain.selection.execution_cost import ExecutionCost, ExecutionCostScenario
+from trader.training.domain.evaluation.risk_cost_population import RiskCostResearchIdentity
 from trader.training.domain.evaluation.risk_cost_uncertainty import (
     DeepSeekResearchReview,
+    RiskCostUncertaintyReport,
     RiskCostUncertaintySample,
     build_selection_utility,
-    evaluate_risk_cost_uncertainty,
 )
+from trader.training.domain.evaluation.risk_cost_uncertainty import (
+    evaluate_risk_cost_uncertainty as evaluate_bound_risk_cost,
+)
+
+
+def evaluate_risk_cost_uncertainty(
+    parent_hash: str, model_hash: str, samples: tuple[RiskCostUncertaintySample, ...]
+) -> RiskCostUncertaintyReport:
+    """Numerical fixtures declare synthetic identities; application tests prove parent binding."""
+    identity = RiskCostResearchIdentity(
+        "e" * 64,
+        "f" * 64,
+        "0" * 64,
+        "calibration",
+        tuple(sorted({item.trade_date for item in samples})),
+        "v3",
+        "industry_ridge_lightgbm",
+        model_hash,
+    )
+    return evaluate_bound_risk_cost(parent_hash, model_hash, samples, research_identity=identity)
 
 
 def _sample(
@@ -29,7 +50,7 @@ def _sample(
     review: DeepSeekResearchReview,
     trade_date: date = date(2026, 8, 31),
 ) -> RiskCostUncertaintySample:
-    alpha = AlphaScore(code, "v3", "industry_ridge_lightgbm", "a" * 64, "b" * 64, signal_score, 0.01)
+    alpha = AlphaScore(code, "v3", "industry_ridge_lightgbm", "d" * 64, "b" * 64, signal_score, 0.01)
     uncertainty = UncertaintyAssessment(
         severe_loss_probability=0.8 if severe else 0.2,
         prediction_interval=PredictionInterval(-0.04, 0.03),
@@ -61,6 +82,7 @@ def _sample(
         actual_alpha_return=actual_net + 0.002,
         actual_net_excess_return=actual_net,
         actual_severe_loss=severe,
+        dataset_row_hash="1" * 64,
     )
 
 
@@ -353,3 +375,30 @@ def test_cost_report_rejects_partial_dates_false_aggregate_and_changed_oracle() 
         replace(
             report, ablation=(replace(arm, cost_sensitivity=(shifted, *arm.cost_sensitivity[1:])), *report.ablation[1:])
         )
+
+
+def test_numerical_kernel_requires_model_and_partition_dates_and_hashes_parent_row() -> None:
+    review = DeepSeekResearchReview("failed", None, 0, False, (), "ignored")
+    sample = _sample("600001", signal_score=90, actual_net=0.02, severe=False, review=review)
+    report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (sample,))
+    assert report.research_identity is not None
+    with pytest.raises(ValueError, match="model identity"):
+        evaluate_bound_risk_cost(
+            "c" * 64,
+            "d" * 64,
+            (replace(sample, alpha=replace(sample.alpha, model_hash="e" * 64)),),
+            research_identity=report.research_identity,
+        )
+    with pytest.raises(ValueError, match="partition dates"):
+        evaluate_bound_risk_cost(
+            "c" * 64,
+            "d" * 64,
+            (sample,),
+            research_identity=replace(report.research_identity, dates=(date(2026, 9, 1),)),
+        )
+    changed = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (replace(sample, dataset_row_hash="2" * 64),))
+    assert changed.evidence_hash != report.evidence_hash
+    assert changed.content_hash != report.content_hash
+    assert changed.ablation == report.ablation
+    with pytest.raises(ValueError, match="bound research identity"):
+        replace(report, research_identity=None)

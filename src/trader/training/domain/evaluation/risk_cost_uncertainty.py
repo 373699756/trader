@@ -23,6 +23,7 @@ from trader.training.domain.evaluation.constrained_oracle import (
     constrained_oracle,
 )
 from trader.training.domain.evaluation.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
+from trader.training.domain.evaluation.risk_cost_population import RiskCostResearchIdentity
 
 DeepSeekResearchOutcome = Literal["applied", "failed", "late", "budget_exhausted", "abstained"]
 DeepSeekAblationArm = Literal["local_only", "structured_facts_veto", "fixed_68_32"]
@@ -87,10 +88,13 @@ class RiskCostUncertaintySample:
     actual_alpha_return: float
     actual_net_excess_return: float
     actual_severe_loss: bool
+    dataset_row_hash: str
 
     def __post_init__(self) -> None:
         if self.board not in SUPPORTED_RESEARCH_BOARDS or not self.industry.strip():
             raise ValueError("risk-cost sample exposure identity is invalid")
+        if _SHA256.fullmatch(self.dataset_row_hash) is None:
+            raise ValueError("risk-cost sample parent row hash is invalid")
         if len({self.alpha.code, self.risk.code, self.cost.code}) != 1:
             raise ValueError("risk-cost sample component codes must match")
         if not math.isfinite(self.actual_alpha_return) or not math.isfinite(self.actual_net_excess_return):
@@ -334,6 +338,7 @@ class RiskCostUncertaintyReport:
     ablation: tuple[DeepSeekAblationMetrics, ...]
     decisions: tuple[DeepSeekAblationDecision, ...]
     failure_reasons: tuple[str, ...]
+    research_identity: RiskCostResearchIdentity | None
     production_authority: bool = False
     terminal_holdout_opened: bool = False
     automatic_model_update: bool = False
@@ -385,6 +390,8 @@ def _validate_evaluated_report(
 ) -> None:
     if report.sample_count < 1 or report.calibration is None:
         raise ValueError("evaluated risk-cost report is incomplete")
+    if report.research_identity is None or report.research_identity.model_artifact_hash != report.model_artifact_hash:
+        raise ValueError("evaluated risk-cost report requires bound research identity")
     if report.calibration.sample_count != report.sample_count:
         raise ValueError("evaluated risk-cost calibration count is inconsistent")
     if tuple(item.arm for item in report.ablation) != _ARMS:
@@ -421,6 +428,8 @@ def _validate_ablation_decisions(report: RiskCostUncertaintyReport) -> None:
 
 def _validate_cost_selections(report: RiskCostUncertaintyReport) -> None:
     dates = tuple(sorted({item.trade_date for item in report.decisions}))
+    if report.research_identity is None or dates != report.research_identity.dates:
+        raise ValueError("risk-cost decisions do not match research partition dates")
     selected_counts = Counter(
         (item.trade_date, item.arm) for item in report.decisions if item.selected_rank is not None
     )
@@ -458,12 +467,16 @@ def _validate_blocked_report(
         raise ValueError("blocked risk-cost report must contain only bounded failure evidence")
     if report.evidence_hash is not None:
         raise ValueError("blocked risk-cost report cannot claim evaluated evidence")
+    if report.research_identity is not None:
+        raise ValueError("blocked risk-cost report cannot claim bound research identity")
 
 
 def evaluate_risk_cost_uncertainty(
     parent_report_hash: str,
     model_artifact_hash: str,
     samples: tuple[RiskCostUncertaintySample, ...],
+    *,
+    research_identity: RiskCostResearchIdentity,
 ) -> RiskCostUncertaintyReport:
     if _SHA256.fullmatch(parent_report_hash) is None or _SHA256.fullmatch(model_artifact_hash) is None:
         raise ValueError("risk-cost parent identities must be SHA-256")
@@ -471,6 +484,13 @@ def evaluate_risk_cost_uncertainty(
     keys = tuple((item.trade_date, item.code) for item in ordered)
     if not ordered or len(keys) != len(set(keys)):
         raise ValueError("risk-cost samples must be non-empty and unique")
+    if research_identity.model_artifact_hash != model_artifact_hash or any(
+        sample.alpha.model_hash != model_artifact_hash
+        or sample.alpha.model_id != research_identity.model_id
+        or sample.alpha.profile_id != research_identity.profile_id
+        for sample in ordered
+    ):
+        raise ValueError("risk-cost sample model identity is inconsistent")
     _validate_cost_scenarios(ordered)
     decisions = _decisions(ordered)
     return RiskCostUncertaintyReport(
@@ -483,6 +503,7 @@ def evaluate_risk_cost_uncertainty(
         _ablation(ordered, decisions),
         decisions,
         (),
+        research_identity,
     )
 
 
@@ -503,6 +524,7 @@ def insufficient_risk_cost_uncertainty_report(
         (),
         (),
         reasons,
+        None,
     )
 
 
@@ -801,6 +823,20 @@ def _content_hash(report: RiskCostUncertaintyReport) -> str:
         "status": report.status,
         "parent_report_hash": report.parent_report_hash,
         "model_artifact_hash": report.model_artifact_hash,
+        "research_identity": (
+            None
+            if report.research_identity is None
+            else {
+                "dataset_report_hash": report.research_identity.dataset_report_hash,
+                "dataset_manifest_hash": report.research_identity.dataset_manifest_hash,
+                "partition_hash": report.research_identity.partition_hash,
+                "partition": report.research_identity.partition,
+                "dates": tuple(item.isoformat() for item in report.research_identity.dates),
+                "profile_id": report.research_identity.profile_id,
+                "model_id": report.research_identity.model_id,
+                "model_artifact_hash": report.research_identity.model_artifact_hash,
+            }
+        ),
         "evidence_hash": report.evidence_hash,
         "sample_count": report.sample_count,
         "selection_policy": {
@@ -828,6 +864,7 @@ def _sample_evidence_hash(samples: tuple[RiskCostUncertaintySample, ...]) -> str
     payload = tuple(
         {
             "trade_date": sample.trade_date.isoformat(),
+            "dataset_row_hash": sample.dataset_row_hash,
             "board": sample.board,
             "industry": sample.industry,
             "alpha": {
