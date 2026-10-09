@@ -17,7 +17,7 @@ behavior; they do not grant permission to write active data.
 | `check_refactor_quality.py` | Repository quality gate | None | None; Ruff runs with `--no-cache` | stdout success; stderr violations/failure | Two sequential Ruff subprocesses, 60 s timeout each; finite repository scan, no hard RSS/total I/O limit |
 | `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models/reports/sample data under required `--train-root`; atomic result at `--output`, default `data/historyless/training-memory-result.json` | Result JSON to stdout and result file; progress to stderr | Two sequential training invocations; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; no total deadline |
 | `convert_baostock_history.py` | Legacy history conversion; download owns the target format | BaoStock SDK gap supplementation by default; `--offline` disables it | Source read-only; target control/month databases and conversion state, default `data/history/baostock`; partial/resume and replacement files under maintenance lock | Aggregate JSON to stdout; progress/errors to stderr; errors may include local evidence details | Single conversion process and one monitored SDK child; default batch 256 rows, 8 MiB SQLite cache per connection, 4 MiB hash chunks, 5 ms throttle and 2048 MiB extra free space; no hard RSS/whole-job deadline |
-| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `browser` uses an isolated local fixture; `performance` and `history-sqlite` are offline | Combined report only to stdout or explicit external `--output`; browser/performance/SQLite probes use disposable fixtures, never compact/switch active history | Sanitized aggregate JSON; child raw output is not forwarded | Sequential children, default 180 s timeout each; at most 50 input codes; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; child capture has no fixed byte/RSS cap |
+| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `browser` uses an isolated local fixture; `performance` and `history-sqlite` are offline | Combined report only to stdout or explicit external `--output`; browser/performance/SQLite probes use disposable fixtures, never compact/switch active history | Sanitized aggregate JSON; child raw output is not forwarded | Sequential children, default 180 s timeout each; at most 50 input codes (100 for BaoStock rate experiments); SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; child capture has no fixed byte/RSS cap |
 | `generate_long_watchlist_asset.py` | Packaged Long build asset | None | Without `--check`, writes only `src/trader/web/static/long_watchlist_data.js` from `config/long_watchlist.json`; `--check` is read-only | Stale-asset message to stdout; silent success | One JSON document and one asset; no hard byte/RSS/deadline cap; does not fetch quotes |
 | `migrate_runtime_data.py` | Isolated data-layout migration | None | Explicit external source/target/backup paths; `verify` is read-only; build/rollback use sibling lock, staging, previous and failed directories, and may remove previous staging/backup/failed copies | Aggregate manifest/status JSON to stdout | Sequential full tree copy/hash and SQLite integrity scan; hashing reads each file in full; no hard RSS/disk/deadline cap |
 | `repack_baostock_history_archive.py` | Explicit history SQLite maintenance; download owns coordination | None | Source/target state under maintenance lock; build/activate/rollback/finalize may replace paths and finalize releases old files; defaults are repository data paths | Aggregate status JSON to stdout; build progress to stderr | Sequential monthly compaction/verification; SQLite busy timeout 30 s; no hard RSS/disk/whole-job deadline |
@@ -41,6 +41,37 @@ violations. Changing a debt owner requires diff review and an explicit baseline
 update. This gate does not prove the accuracy of declarations or enforce the
 runtime limits of every tool; review and isolated execution evidence remain
 necessary.
+
+## BaoStock rate experiments
+
+Use the existing public diagnostic entrypoint for one-session measurements:
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile baostock-concurrency \
+  --baostock-serial-only --baostock-intervals 2 1.5 1 --baostock-sizes 10 \
+  --baostock-rounds 3 --history-days 400 --source-timeout-seconds 15 \
+  --command-timeout-seconds 450 --output /absolute/outside/repository/rate-screen.json
+```
+
+The serial experiment uses the production start-to-start limiter, one active SDK
+session and no retries. Sizes are bounded to 1–100, intervals to at most three
+unique values of at least one second, and repetitions to 1–3. The socket default
+timeout applies only inside the diagnostic process and is restored afterwards;
+the public child-command deadline is the hard whole-experiment limit. A failed
+experiment stops the remaining rate/size/round matrix. Empty responses, invalid dates,
+and duplicate or mismatched raw/qfq dates fail the experiment. This does not verify
+every expected trading date or price value. Auto-discovery selects active
+A-shares across main, growth and STAR boards; explicit `--codes` fix a comparison
+population when at least the largest requested size is supplied.
+
+Reports include interval, repetition, raw/qfq row counts, bounded error categories,
+elapsed time and successful stocks per minute. They contain no stock-level prices
+or external payloads, never access the history archive/checkpoints, and always
+retain `production_eligible=false`. Throughput measures supplier reads only;
+neither a small successful sample nor zero observed errors proves full-market
+stability, retry/resume behavior or safe qfq request skipping. Production parameters
+are not changed by this command. Compare promising intervals with
+`--baostock-sizes 50 100 --baostock-rounds 3` before selecting a deployment candidate.
 
 ## Research commands
 

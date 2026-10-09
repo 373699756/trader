@@ -106,6 +106,10 @@ class DiagnosticOptions:
     sqlite_page_sample_count: int
     sqlite_query_rounds: int
     sqlite_revision_write_sample_count: int
+    baostock_serial_only: bool = False
+    baostock_intervals: tuple[float, ...] = (2.0,)
+    baostock_sizes: tuple[int, ...] = (10, 50, 100)
+    baostock_rounds: int = 1
 
 
 @dataclass(frozen=True)
@@ -147,14 +151,19 @@ def _parser() -> argparse.ArgumentParser:
         "--codes",
         nargs="+",
         default=("600519", "300750", "688981"),
-        help="one to 50 representative six-digit A-share codes",
+        help="one to 50 A-share codes, or up to 100 for baostock-concurrency",
     )
     parser.add_argument("--web-samples", type=int, default=3, help="Web status/current sample rounds")
     parser.add_argument("--web-interval-seconds", type=float, default=2.0, help="delay between Web samples")
     parser.add_argument("--source-samples", type=int, default=1, help="history and Tencent source sample rounds")
     parser.add_argument("--source-interval-seconds", type=float, default=1.0, help="delay between Tencent samples")
     parser.add_argument("--history-workers", type=int, default=5, help="history requests per bounded worker wave")
-    parser.add_argument("--history-days", type=int, default=61, help="daily history rows requested per stock")
+    parser.add_argument(
+        "--history-days",
+        type=int,
+        default=61,
+        help="history rows per stock; calendar-day window for BaoStock experiments",
+    )
     parser.add_argument(
         "--history-source",
         choices=("composite", "tencent", "eastmoney"),
@@ -162,7 +171,12 @@ def _parser() -> argparse.ArgumentParser:
         help="history route sampled by history/sources/live/full profiles",
     )
     parser.add_argument("--web-timeout-seconds", type=float, default=3.0, help="timeout per Web API request")
-    parser.add_argument("--source-timeout-seconds", type=float, default=4.5, help="timeout per vendor HTTP attempt")
+    parser.add_argument(
+        "--source-timeout-seconds",
+        type=float,
+        default=4.5,
+        help="vendor HTTP timeout; SDK socket timeout for BaoStock experiments",
+    )
     parser.add_argument("--browser-duration-seconds", type=float, default=8.0, help="full-profile browser duration")
     parser.add_argument("--browser-minimum-updates", type=int, default=3, help="required browser DOM updates")
     parser.add_argument(
@@ -196,6 +210,12 @@ def _parser() -> argparse.ArgumentParser:
         help="rows copied into the disposable revision batch-write probe",
     )
     parser.add_argument("--output", default="-", help="combined JSON output path outside the repository, or -")
+    parser.add_argument("--baostock-serial-only", action="store_true", help="single-session rate experiment")
+    parser.add_argument("--baostock-intervals", nargs="+", type=float, default=(2.0,), help="candidate start intervals")
+    parser.add_argument(
+        "--baostock-sizes", nargs="+", type=int, default=(10, 50, 100), help="sample sizes within 1..100"
+    )
+    parser.add_argument("--baostock-rounds", type=int, default=1, help="serial experiment repetitions within 1..3")
     return parser
 
 
@@ -227,6 +247,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         raise ValueError("--sqlite-query-rounds must be within 1..9")
     if not 1 <= args.sqlite_revision_write_sample_count <= 5_000:
         raise ValueError("--sqlite-revision-write-sample-count must be within 1..5000")
+    _validate_baostock_options(args)
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
@@ -253,9 +274,28 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             sqlite_page_sample_count=args.sqlite_page_sample_count,
             sqlite_query_rounds=args.sqlite_query_rounds,
             sqlite_revision_write_sample_count=args.sqlite_revision_write_sample_count,
+            baostock_serial_only=args.baostock_serial_only,
+            baostock_intervals=tuple(args.baostock_intervals),
+            baostock_sizes=tuple(args.baostock_sizes),
+            baostock_rounds=args.baostock_rounds,
         ),
         output,
     )
+
+
+def _validate_baostock_options(args: argparse.Namespace) -> None:
+    import math
+
+    if not 1 <= args.baostock_rounds <= 3 or any(not 1 <= size <= 100 for size in args.baostock_sizes):
+        raise ValueError("BaoStock rounds/sizes must be within 1..3 and 1..100")
+    if len(args.baostock_intervals) > 3 or any(
+        not math.isfinite(value) or value < 1 for value in args.baostock_intervals
+    ):
+        raise ValueError("BaoStock accepts at most three finite intervals of at least 1 second")
+    if len(set(args.baostock_intervals)) != len(args.baostock_intervals) or len(args.baostock_sizes) > 3:
+        raise ValueError("BaoStock intervals must be unique and at most three sizes are allowed")
+    if not args.baostock_serial_only and (tuple(args.baostock_intervals) != (2.0,) or args.baostock_rounds != 1):
+        raise ValueError("BaoStock interval/round comparisons require --baostock-serial-only")
 
 
 def _external_path(value: Path | None, option: str) -> Path | None:
@@ -357,14 +397,27 @@ def build_commands(
                 python_executable,
                 "-m",
                 "scripts.runtime_diagnostics.baostock_concurrency",
-                "--discover" if len(options.codes) < 100 else "--codes",
-                *(() if len(options.codes) < 100 else options.codes),
+                "--discover" if len(options.codes) < max(options.baostock_sizes) else "--codes",
+                *(() if len(options.codes) < max(options.baostock_sizes) else options.codes),
                 "--sizes",
-                "10",
-                "50",
-                "100",
+                *(str(size) for size in options.baostock_sizes),
+                "--days",
+                str(options.history_days),
+                "--timeout-seconds",
+                str(options.source_timeout_seconds),
+                *(
+                    (
+                        "--serial-only",
+                        "--rounds",
+                        str(options.baostock_rounds),
+                        "--intervals",
+                        *(str(value) for value in options.baostock_intervals),
+                    )
+                    if options.baostock_serial_only
+                    else ()
+                ),
             ),
-            max(common_timeout, 1800.0),
+            common_timeout if options.baostock_serial_only else max(common_timeout, 1800.0),
         ),
         "history_sqlite_performance": DiagnosticCommand(
             "history_sqlite_performance",
@@ -633,6 +686,42 @@ def _history_daily_capability_details(
     }
 
 
+def _baostock_concurrency_details(
+    _result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]
+) -> None:
+    payload["production_eligible"] = False
+    payload["parallel_sessions"] = source.get("parallel_sessions")
+    payload["history_calendar_days"] = source.get("history_calendar_days")
+    payload["rate_semantics"] = source.get("rate_semantics")
+    payload["retry_policy"] = source.get("retry_policy")
+    payload["error"] = _safe_text(source.get("error"))
+    values = source.get("experiments")
+    fields = (
+        "mode",
+        "sample_size",
+        "success_count",
+        "failure_count",
+        "success_rate",
+        "network_receive_errors",
+        "timeouts",
+        "retries",
+        "raw_rows",
+        "qfq_rows",
+        "raw_qfq_inconsistencies",
+        "error_categories",
+        "elapsed_ms",
+        "average_code_ms",
+        "successful_codes_per_minute",
+        "interval_seconds",
+        "round",
+    )
+    payload["experiments"] = [
+        {name: item.get(name) for name in fields}
+        for item in (values[:27] if isinstance(values, list) else [])
+        if isinstance(item, dict)
+    ]
+
+
 def _history_sqlite_performance_details(
     _result: DiagnosticResult,
     source: Mapping[str, object],
@@ -736,6 +825,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,
     "history_daily_capability": _history_daily_capability_details,
+    "baostock_concurrency": _baostock_concurrency_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
     "baostock_qfq_shadow": _baostock_qfq_shadow_details,
     "research_readiness": _research_details,

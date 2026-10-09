@@ -10,16 +10,19 @@ from scripts.diagnose_runtime import (
     DiagnosticCommand,
     DiagnosticOptions,
     DiagnosticResult,
+    _parser,
+    _validate,
     build_commands,
     build_report,
     execute_command,
     run_diagnostics,
 )
+from scripts.runtime_diagnostics import baostock_concurrency
 from scripts.runtime_diagnostics.browser_refresh import _seed
+from trader.download.infra.baostock_session import RateLimitedBaoStockSdk
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.publication.models import Strategy
-from scripts.runtime_diagnostics import baostock_concurrency
 
 
 def _options(**overrides: object) -> DiagnosticOptions:
@@ -144,10 +147,7 @@ def test_serial_rate_experiment_never_starts_parallel_sessions(monkeypatch: pyte
 
     def fake_serial(command: baostock_concurrency.WorkerCommand) -> tuple[baostock_concurrency.CodeResult, ...]:
         calls.append(command.interval_seconds)
-        return tuple(
-            baostock_concurrency.CodeResult(True, 1, 1, True, 0, 0, 0, None, 1.0)
-            for _ in command.codes
-        )
+        return tuple(baostock_concurrency.CodeResult(True, 1, 1, True, 0, 0, 0, None, 1.0) for _ in command.codes)
 
     monkeypatch.setattr(baostock_concurrency, "_serial", fake_serial)
     report = baostock_concurrency.run_serial_intervals(
@@ -155,12 +155,197 @@ def test_serial_rate_experiment_never_starts_parallel_sessions(monkeypatch: pyte
         (1, 2),
         days=5,
         timeout_seconds=10.0,
-        intervals=(2.0, 1.5),
+        plan=baostock_concurrency.SerialRatePlan((2.0, 1.5)),
     )
 
     assert calls == [2.0, 2.0, 1.5, 1.5]
     assert report["parallel_sessions"] == 0
     assert report["production_eligible"] is False
+
+
+def test_public_serial_experiment_forwards_sizes_intervals_rounds_and_wall_timeout() -> None:
+    args = _parser().parse_args(
+        [
+            "--profile",
+            "baostock-concurrency",
+            "--baostock-serial-only",
+            "--baostock-intervals",
+            "2",
+            "1.5",
+            "1",
+            "--baostock-sizes",
+            "10",
+            "--baostock-rounds",
+            "3",
+            "--command-timeout-seconds",
+            "400",
+            "--history-days",
+            "365",
+        ]
+    )
+    options, _ = _validate(args)
+    command = build_commands(options)[0]
+    assert "--serial-only" in command.argv
+    assert command.argv[command.argv.index("--intervals") + 1 :] == ("2.0", "1.5", "1.0")
+    assert command.argv[command.argv.index("--rounds") + 1] == "3"
+    assert command.argv[command.argv.index("--sizes") + 1] == "10"
+    assert command.argv[command.argv.index("--days") + 1] == "365"
+    assert command.timeout_seconds == 400
+    for bad_args in (["--baostock-rounds", "4"], ["--baostock-sizes", "101"], ["--baostock-intervals", "nan"]):
+        with pytest.raises(ValueError):
+            _validate(_parser().parse_args(["--profile", "baostock-concurrency", "--baostock-serial-only", *bad_args]))
+
+
+def test_real_sdk_fields_list_is_decoded_and_duplicate_dates_are_rejected() -> None:
+    class _Rows:
+        error_code = "0"
+        fields = ["date", "code"]
+
+        def __init__(self, dates: tuple[str, ...]) -> None:
+            self.dates = iter(dates)
+            self.current = ""
+
+        def next(self) -> bool:
+            self.current = next(self.dates, "")
+            return bool(self.current)
+
+        def get_row_data(self) -> list[str]:
+            return [self.current, "sh.600519"]
+
+    class _Sdk:
+        def query_history_k_data_plus(self, *args, **kwargs):
+            return _Rows(("2026-10-08", "2026-10-08"))
+
+    assert baostock_concurrency._rows(_Rows(("2026-10-08",))) == [{"date": "2026-10-08", "code": "sh.600519"}]
+    result = baostock_concurrency._one(_Sdk(), "600519", days=30)
+    assert result.raw_rows == result.qfq_rows == 2
+    assert result.ok is False
+    assert result.error == "raw_qfq_inconsistent"
+
+
+def test_serial_probe_reuses_start_spacing_and_stops_after_first_failed_experiment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [0.0]
+    starts: list[float] = []
+
+    class _Sdk:
+        __version__ = "fixture"
+
+        def query_history_k_data_plus(self, *args, **kwargs):
+            starts.append(clock[0])
+            clock[0] += 0.75
+            return object()
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    monkeypatch.setattr(baostock_concurrency, "_open", _Sdk)
+    monkeypatch.setattr(baostock_concurrency, "_close", lambda sdk: None)
+    monkeypatch.setattr(baostock_concurrency, "_rows", lambda result: [{"date": "2026-10-08"}])
+    monkeypatch.setattr(
+        baostock_concurrency,
+        "RateLimitedBaoStockSdk",
+        lambda sdk, interval_seconds: RateLimitedBaoStockSdk(
+            sdk, interval_seconds=interval_seconds, monotonic=lambda: clock[0], sleep=sleep
+        ),
+    )
+    report = baostock_concurrency.run_serial_intervals(
+        ("600519", "000001"),
+        (2,),
+        days=30,
+        timeout_seconds=15,
+        plan=baostock_concurrency.SerialRatePlan((1.5,), 3),
+    )
+    assert report["status"] == "passed"
+    assert starts[:4] == [0, 1.5, 3, 4.5]
+    assert len(report["experiments"]) == 3
+    calls: list[float] = []
+
+    def failed(command):
+        calls.append(command.interval_seconds)
+        return (baostock_concurrency.CodeResult(False, 0, 0, False, 0, 1, 0, "supplier_timeout", 0),)
+
+    monkeypatch.setattr(baostock_concurrency, "_serial", failed)
+    report = baostock_concurrency.run_serial_intervals(
+        ("600519",),
+        (1,),
+        days=30,
+        timeout_seconds=15,
+        plan=baostock_concurrency.SerialRatePlan((2, 1.5, 1), 3),
+    )
+    assert report["status"] == "failed"
+    assert calls == [2]
+
+
+def test_public_experiment_report_keeps_metrics_and_drops_vendor_payloads() -> None:
+    report = build_report(
+        "baostock-concurrency",
+        (
+            DiagnosticResult(
+                "baostock_concurrency",
+                0,
+                10,
+                {
+                    "status": "passed",
+                    "parallel_sessions": 0,
+                    "rate_semantics": "query_start_to_start",
+                    "experiments": [
+                        {"sample_size": 10, "success_count": 10, "interval_seconds": 1.5, "raw_payload": "secret"}
+                    ],
+                },
+                None,
+            ),
+        ),
+    )
+    check = report["checks"][0]
+    assert check["experiments"][0]["interval_seconds"] == 1.5
+    assert check["experiments"][0]["success_count"] == 10
+    assert "raw_payload" not in check["experiments"][0]
+    assert check["production_eligible"] is False
+
+
+def test_serial_failure_stops_stock_requests_and_counts_login_timeout_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(baostock_concurrency, "_open", lambda: object())
+    monkeypatch.setattr(baostock_concurrency, "_close", lambda sdk: None)
+    monkeypatch.setattr(baostock_concurrency, "RateLimitedBaoStockSdk", lambda sdk, **kwargs: sdk)
+
+    def fail(sdk, code, *, days):
+        calls.append(code)
+        return baostock_concurrency.CodeResult(False, 0, 0, False, 1, 0, 0, "network_error", 1)
+
+    monkeypatch.setattr(baostock_concurrency, "_one", fail)
+    command = baostock_concurrency.WorkerCommand(("600519", "000001", "300750"), 400, 15, 2)
+    results = baostock_concurrency._serial(command)
+    assert calls == ["600519"]
+    assert [item.error for item in results] == ["network_error", "supplier_batch_stopped", "supplier_batch_stopped"]
+    assert sum(item.network_errors for item in results) == 1
+
+    def login_timeout():
+        raise TimeoutError("timeout")
+
+    monkeypatch.setattr(baostock_concurrency, "_open", login_timeout)
+    results = baostock_concurrency._serial(command)
+    assert len(results) == 3
+    assert sum(item.timeouts for item in results) == 1
+
+
+def test_missing_sample_results_cannot_pass_rate_experiment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(baostock_concurrency, "_serial", lambda command: ())
+    report = baostock_concurrency.run_serial_intervals(
+        ("600519",), (1,), days=400, timeout_seconds=15, plan=baostock_concurrency.SerialRatePlan((2, 1.5), 3)
+    )
+    assert report["status"] == "failed"
+    assert len(report["experiments"]) == 1
+    assert report["experiments"][0]["failure_count"] == 1
+    assert report["experiments"][0]["error_categories"] == ["sample_count_mismatch"]
+
+
+@pytest.mark.parametrize("invalid_date", ["", "2026-13-01", "2099-01-01"])
+def test_invalid_paired_dates_do_not_pass_rate_experiment(monkeypatch: pytest.MonkeyPatch, invalid_date: str) -> None:
+    monkeypatch.setattr(baostock_concurrency, "_query_one", lambda *args: [{"date": invalid_date}])
+    assert baostock_concurrency._one(object(), "600519", days=400).ok is False
 
 
 def test_baostock_qfq_shadow_profile_is_read_only_and_uses_active_history_root() -> None:
