@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import importlib.metadata
 import time
-from collections.abc import Callable
-from typing import Literal, Protocol, cast
+from collections.abc import Callable, Sequence
+from typing import Literal, Protocol, TypeVar, cast
 
-from trader.download.domain.history_sync import BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
+from trader.download.domain.history_sync import (
+    BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS,
+    BAOSTOCK_PREPARATION_INTERVAL_SECONDS,
+)
 from trader.download.infra.baostock_gateway import BaoStockRowResult, BaoStockSdkPort
 
 
@@ -15,6 +18,91 @@ class BaoStockSessionSdkPort(BaoStockSdkPort, Protocol):
     def login(self) -> BaoStockRowResult: ...
 
     def logout(self) -> BaoStockRowResult: ...
+
+
+_Result = TypeVar("_Result")
+_SDK_PAGE_ROWS = 2000
+
+
+class BaoStockQueryLimiter:
+    """Pace calls and SDK-owned pagination on the same session timeline."""
+
+    def __init__(
+        self,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        after_login: bool = False,
+    ) -> None:
+        self._monotonic = monotonic
+        self._sleep = sleep
+        self._last_started = monotonic() if after_login else None
+        self._last_interval = BAOSTOCK_PREPARATION_INTERVAL_SECONDS if after_login else 0.0
+
+    def protect_after_login(self) -> None:
+        self._last_started = self._monotonic()
+        self._last_interval = BAOSTOCK_PREPARATION_INTERVAL_SECONDS
+
+    def call(
+        self,
+        call: Callable[[], _Result],
+        interval: float,
+        activity: Callable[[Literal["started", "returned"]], None],
+    ) -> _Result:
+        now = self._monotonic()
+        if self._last_started is not None:
+            remaining = max(interval, self._last_interval) - (now - self._last_started)
+            if remaining > 0:
+                self._sleep(remaining)
+                now = self._monotonic()
+        self._last_started = now
+        self._last_interval = interval
+        activity("started")
+        try:
+            return call()
+        finally:
+            activity("returned")
+
+    def query(
+        self,
+        call: Callable[[], BaoStockRowResult],
+        interval: float,
+        activity: Callable[[Literal["started", "returned"]], None],
+    ) -> BaoStockRowResult:
+        return _PagedBaoStockRows(
+            self.call(call, interval, activity), lambda next_page: self.call(next_page, interval, activity)
+        )
+
+
+class _PagedBaoStockRows:
+    """Guard the SDK's implicit next-page request at its 2000-row boundary."""
+
+    def __init__(self, result: BaoStockRowResult, next_page: Callable[[Callable[[], bool]], bool]) -> None:
+        self._result = result
+        self._next_page = next_page
+        self._page_rows = 0
+
+    @property
+    def error_code(self) -> str:
+        return self._result.error_code
+
+    @property
+    def error_msg(self) -> str:
+        return self._result.error_msg
+
+    @property
+    def fields(self) -> Sequence[str]:
+        return self._result.fields
+
+    def next(self) -> bool:
+        if self._page_rows == _SDK_PAGE_ROWS:
+            self._page_rows = 0
+            return self._next_page(self._result.next)
+        return self._result.next()
+
+    def get_row_data(self) -> Sequence[str]:
+        self._page_rows += 1
+        return self._result.get_row_data()
 
 
 class RateLimitedBaoStockSdk:
@@ -34,10 +122,11 @@ class RateLimitedBaoStockSdk:
         self.__version__ = sdk.__version__
         self._sdk = sdk
         self._interval_seconds = interval_seconds
-        self._monotonic = monotonic
-        self._sleep = sleep
+        self._limiter = BaoStockQueryLimiter(monotonic=monotonic, sleep=sleep)
         self._activity = activity or (lambda _state: None)
-        self._last_query_started: float | None = None
+
+    def protect_after_login(self) -> None:
+        self._limiter.protect_after_login()
 
     def query_trade_dates(self, *, start_date: str, end_date: str) -> BaoStockRowResult:
         return self._query(lambda: self._sdk.query_trade_dates(start_date=start_date, end_date=end_date))
@@ -70,18 +159,9 @@ class RateLimitedBaoStockSdk:
         )
 
     def _query(self, call: Callable[[], BaoStockRowResult]) -> BaoStockRowResult:
-        now = self._monotonic()
-        if self._last_query_started is not None:
-            remaining = self._interval_seconds - (now - self._last_query_started)
-            if remaining > 0:
-                self._sleep(remaining)
-                now = self._monotonic()
-        self._last_query_started = now
-        self._activity("started")
-        try:
-            return call()
-        finally:
-            self._activity("completed")
+        return self._limiter.query(
+            call, self._interval_seconds, lambda state: self._activity("started" if state == "started" else "completed")
+        )
 
 
 def load_baostock_sdk() -> BaoStockSessionSdkPort:
@@ -133,6 +213,7 @@ def baostock_dependency_versions() -> tuple[tuple[str, str], ...]:
 
 
 __all__ = [
+    "BaoStockQueryLimiter",
     "BaoStockSessionSdkPort",
     "RateLimitedBaoStockSdk",
     "baostock_dependency_versions",

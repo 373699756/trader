@@ -20,6 +20,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
 )
 from trader.download.domain.history_sync import (
+    BAOSTOCK_PREPARATION_INTERVAL_SECONDS,
     HistorySupplierContext,
     HistorySyncConfiguration,
     HistorySyncProgress,
@@ -28,6 +29,7 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.infra.baostock_gateway import BaoStockRowGateway, BaoStockRowResult
 from trader.download.infra.baostock_session import (
+    BaoStockQueryLimiter,
     BaoStockSessionSdkPort,
     baostock_dependency_versions,
     load_baostock_sdk,
@@ -109,9 +111,7 @@ class _RateLimitedSdk:
         self._sdk = sdk
         self._activity = activity
         self._interval_seconds = interval_seconds
-        self._monotonic = monotonic
-        self._sleep = sleep
-        self._last_started: float | None = None
+        self._limiter = BaoStockQueryLimiter(monotonic=monotonic, sleep=sleep, after_login=True)
 
     def query_trade_dates(self, *, start_date: str, end_date: str) -> BaoStockRowResult:
         return self._call(
@@ -160,18 +160,10 @@ class _RateLimitedSdk:
         current_item: str | None,
         call: Callable[[], BaoStockRowResult],
     ) -> BaoStockRowResult:
-        now = self._monotonic()
-        if self._last_started is not None:
-            remaining = self._interval_seconds - (now - self._last_started)
-            if remaining > 0:
-                self._sleep(remaining)
-                now = self._monotonic()
-        self._last_started = now
-        self._activity(stage, "started", current_item)
-        try:
-            return call()
-        finally:
-            self._activity(stage, "returned", current_item)
+        interval = self._interval_seconds
+        if stage not in ("supplier_daily_raw", "supplier_daily_qfq"):
+            interval = max(interval, BAOSTOCK_PREPARATION_INTERVAL_SECONDS)
+        return self._limiter.query(call, interval, lambda state: self._activity(stage, state, current_item))
 
 
 class BaoStockHistorySupplier:

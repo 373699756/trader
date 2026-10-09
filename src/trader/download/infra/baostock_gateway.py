@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import platform
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Protocol
 
 from trader.download.domain.baostock_daily import (
@@ -77,9 +77,14 @@ def qfq_source_windows(
 
 
 class BaoStockRowResult(Protocol):
-    error_code: str
-    error_msg: str
-    fields: Sequence[str]
+    @property
+    def error_code(self) -> str: ...
+
+    @property
+    def error_msg(self) -> str: ...
+
+    @property
+    def fields(self) -> Sequence[str]: ...
 
     def next(self) -> bool: ...
 

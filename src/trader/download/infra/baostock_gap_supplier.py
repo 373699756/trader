@@ -287,6 +287,7 @@ def _worker_main(connection: Connection, requests: tuple[BaoStockGapRequest, ...
             sdk,
             activity=lambda state: connection.send(_SupplierCallActivity(state)),
         )
+        limited.protect_after_login()
         connection.send(_WorkerReady())
         for request in requests:
             response = _fetch_one(limited, request, retries)

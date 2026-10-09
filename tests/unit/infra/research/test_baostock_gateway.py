@@ -367,6 +367,23 @@ def test_sdk_queries_report_each_supplier_call_start_and_completion() -> None:
     assert now == [1.5]
 
 
+def test_gap_session_preserves_login_guard_then_uses_daily_interval() -> None:
+    now = [0.0]
+
+    def advance(seconds: float) -> None:
+        now[0] += seconds
+
+    limited = RateLimitedBaoStockSdk(_Sdk(), monotonic=lambda: now[0], sleep=advance)
+    limited.protect_after_login()
+    limited.query_history_k_data_plus("sh.600001", "date", "2026-08-29", "2026-08-30", frequency="d", adjustflag="3")
+    assert now == [2.0]
+    limited.query_history_k_data_plus("sh.600001", "date", "2026-08-29", "2026-08-30", frequency="d", adjustflag="2")
+    assert now == [3.5]
+    limited.protect_after_login()
+    limited.query_history_k_data_plus("sh.600001", "date", "2026-08-29", "2026-08-30", frequency="d", adjustflag="3")
+    assert now == [5.5]
+
+
 class _LoginSdk:
     def __init__(self, error_code: str = "0") -> None:
         self.error_code = error_code

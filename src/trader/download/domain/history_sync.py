@@ -36,6 +36,7 @@ _PROGRESS_ITEM = re.compile(r"[0-9A-Za-z_.:-]{1,64}")
 _PROGRESS_STAGES = frozenset(get_args(HistorySyncProgressStage))
 _PROGRESS_STATES = frozenset(get_args(HistorySyncProgressState))
 BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS = 1.5
+BAOSTOCK_PREPARATION_INTERVAL_SECONDS = 2.0
 
 
 @dataclass(frozen=True)

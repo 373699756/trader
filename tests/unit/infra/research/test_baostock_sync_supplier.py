@@ -119,6 +119,59 @@ def test_worker_activity_identifies_raw_and_qfq_supplier_calls() -> None:
     ]
 
 
+def test_preparation_pages_and_daily_calls_share_the_session_rate_timeline() -> None:
+    clock = _Clock()
+    starts: list[tuple[str, float]] = []
+    activity: list[tuple[str, str, str | None]] = []
+
+    class Pages:
+        error_code = "0"
+        error_msg = ""
+        fields = ("code",)
+
+        def __init__(self) -> None:
+            self.consumed = 0
+
+        def next(self) -> bool:
+            if self.consumed in (2000, 4000):
+                starts.append(("page", clock.value))
+            return self.consumed < 4001
+
+        def get_row_data(self):
+            self.consumed += 1
+            return ("sh.600001",)
+
+    class Sdk(_Sdk):
+        def query_stock_basic(self):
+            starts.append(("universe", clock.value))
+            return Pages()
+
+        def query_history_k_data_plus(self, *_args, **_kwargs):
+            starts.append(("daily", clock.value))
+            return Pages()
+
+    def sleep(seconds: float) -> None:
+        clock.value += seconds
+
+    sdk = _RateLimitedSdk(Sdk(), lambda *value: activity.append(value), 1.5, monotonic=clock, sleep=sleep)
+    result = sdk.query_stock_basic()
+    while result.next():
+        result.get_row_data()
+    assert starts == [("universe", 2), ("page", 4), ("page", 6)]
+    for flag in ("3", "2"):
+        daily = sdk.query_history_k_data_plus(
+            "sh.600001", "date", "2026-01-01", "2026-10-09", frequency="d", adjustflag=flag
+        )
+        if flag == "3":
+            while daily.next():
+                daily.get_row_data()
+    assert starts[-4:] == [("daily", 8), ("page", 9.5), ("page", 11), ("daily", 12.5)]
+    assert len([value for value in activity if value[:2] == ("supplier_universe", "started")]) == 3
+    restarted = _RateLimitedSdk(Sdk(), lambda *_: None, 1.5, monotonic=clock, sleep=sleep)
+    restarted.query_stock_basic()
+    assert starts[-1] == ("universe", 14.5)
+
+
 def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage() -> None:
     recorder = _ProgressRecorder()
     clock = _Clock()
