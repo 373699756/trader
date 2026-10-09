@@ -30,6 +30,7 @@ Profile = Literal[
     "baostock-qfq-shadow",
     "history-sqlite",
     "research",
+    "long-watchlist",
     "browser",
     "performance",
     "runtime",
@@ -52,6 +53,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "baostock-qfq-shadow": ("baostock_qfq_shadow",),
     "history-sqlite": ("history_sqlite_performance",),
     "research": ("research_readiness",),
+    "long-watchlist": ("long_watchlist_admission",),
     "browser": ("browser_refresh",),
     "performance": ("production_performance",),
     "runtime": ("web_health",),
@@ -110,6 +112,13 @@ class DiagnosticOptions:
     baostock_intervals: tuple[float, ...] = (2.0,)
     baostock_sizes: tuple[int, ...] = (10, 50, 100)
     baostock_rounds: int = 1
+    long_watchlist: Path = PROJECT_ROOT / "config/long_watchlist.json"
+    long_evidence_output: Path | None = None
+    long_evidence_cache: tuple[Path, ...] = (
+        PROJECT_ROOT / ".runtime/trader/evidence_cache",
+        PROJECT_ROOT / ".runtime/v2/evidence_cache",
+    )
+    eligibility_evidence: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -210,6 +219,18 @@ def _parser() -> argparse.ArgumentParser:
         help="rows copied into the disposable revision batch-write probe",
     )
     parser.add_argument("--output", default="-", help="combined JSON output path outside the repository, or -")
+    parser.add_argument("--long-watchlist", type=Path, default=PROJECT_ROOT / "config/long_watchlist.json")
+    parser.add_argument("--long-evidence-output", type=Path, help="stock evidence report outside the repository")
+    parser.add_argument(
+        "--long-evidence-cache", type=Path, action="append", help="supplier evidence cache root (repeatable, read-only)"
+    )
+    parser.add_argument(
+        "--eligibility-evidence",
+        type=Path,
+        action="append",
+        default=[],
+        help="read-only historical permanent-fact database (repeatable)",
+    )
     parser.add_argument("--baostock-serial-only", action="store_true", help="single-session rate experiment")
     parser.add_argument("--baostock-intervals", nargs="+", type=float, default=(2.0,), help="candidate start intervals")
     parser.add_argument(
@@ -248,6 +269,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     if not 1 <= args.sqlite_revision_write_sample_count <= 5_000:
         raise ValueError("--sqlite-revision-write-sample-count must be within 1..5000")
     _validate_baostock_options(args)
+    long_evidence_output = (
+        _external_path(args.long_evidence_output, "--long-evidence-output") if args.long_evidence_output else None
+    )
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
@@ -278,6 +302,16 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             baostock_intervals=tuple(args.baostock_intervals),
             baostock_sizes=tuple(args.baostock_sizes),
             baostock_rounds=args.baostock_rounds,
+            long_watchlist=args.long_watchlist,
+            long_evidence_output=long_evidence_output,
+            long_evidence_cache=tuple(
+                args.long_evidence_cache
+                or (
+                    PROJECT_ROOT / ".runtime/trader/evidence_cache",
+                    PROJECT_ROOT / ".runtime/v2/evidence_cache",
+                )
+            ),
+            eligibility_evidence=tuple(args.eligibility_evidence),
         ),
         output,
     )
@@ -314,6 +348,26 @@ def build_commands(
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
     commands: dict[str, DiagnosticCommand] = {
+        "long_watchlist_admission": DiagnosticCommand(
+            "long_watchlist_admission",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.long_watchlist",
+                "--watchlist",
+                str(options.long_watchlist),
+                "--timeout-seconds",
+                str(min(options.source_timeout_seconds, 15)),
+                *(argument for path in options.long_evidence_cache for argument in ("--evidence-cache", str(path))),
+                *(
+                    argument
+                    for path in options.eligibility_evidence
+                    for argument in ("--eligibility-evidence", str(path))
+                ),
+                *(("--evidence-output", str(options.long_evidence_output)) if options.long_evidence_output else ()),
+            ),
+            common_timeout,
+        ),
         "web_health": DiagnosticCommand(
             "web_health",
             (
@@ -818,7 +872,17 @@ def _performance_details(_result: DiagnosticResult, source: Mapping[str, object]
     }
 
 
+def _long_admission_details(
+    _result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]
+) -> None:
+    summary = _mapping(source.get("summary"))
+    payload["summary"] = {
+        key: summary.get(key) for key in ("requested", "retained", "excluded", "pending", "collected_at", "coverage")
+    }
+
+
 _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
+    "long_watchlist_admission": _long_admission_details,
     "web_health": _web_health_details,
     "history_sources": _history_details,
     "exchange_security_master": _security_master_details,

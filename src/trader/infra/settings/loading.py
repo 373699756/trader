@@ -273,6 +273,8 @@ def _parse_long_watch_groups(raw: Mapping[str, object], item_codes: set[str]) ->
         return ()
     if not isinstance(groups_raw, list):
         raise ConfigurationError("long watchlist groups must be a list")
+    if not item_codes and not groups_raw:
+        return ()
     seen_names: set[tuple[str, str]] = set()
     groups = tuple(
         _parse_long_watch_group(group, index, item_codes, seen_names) for index, group in enumerate(groups_raw)

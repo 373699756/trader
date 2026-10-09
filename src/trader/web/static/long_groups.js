@@ -32,9 +32,7 @@
   }
 
   function displayPayload(payload) {
-    if (!payload || payload.strategy !== "long" || !Array.isArray(staticData.items) || staticData.items.length === 0) {
-      return payload;
-    }
+    if (!payload || payload.strategy !== "long") return payload;
     const liveByCode = new Map((Array.isArray(payload.items) ? payload.items : []).map((item) => [item.code, item]));
     const items = staticData.items.map((item, index) => {
       const live = liveByCode.get(item.code) || {};
@@ -65,7 +63,7 @@
     });
     return {
       ...payload,
-      status: "ready",
+      status: items.length ? "ready" : "not_ready",
       snapshot_id: payload.snapshot_id || `long-watchlist:${staticData.watchlist_version || "static"}`,
       trade_date: payload.trade_date || payload.current_trade_date || "",
       phase: payload.phase || "current",
@@ -73,7 +71,7 @@
       strategy_version: payload.strategy_version || staticData.watchlist_version || "long_watchlist_static",
       fusion_mode: payload.fusion_mode || "local_degraded",
       stale: payload.stale !== false,
-      long_groups: Array.isArray(payload.long_groups) && payload.long_groups.length ? payload.long_groups : staticData.groups,
+      long_groups: staticData.groups,
       items,
     };
   }

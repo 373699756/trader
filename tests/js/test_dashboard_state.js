@@ -1515,6 +1515,17 @@ const liveLongPayload = state.longGroupDisplayPayload({
 assert.strictEqual(liveLongPayload.items[0].name, "实时名称");
 assert.strictEqual(liveLongPayload.items[0].industry, "配置行业");
 assert.strictEqual(liveLongPayload.items[0].market_cap, 5000000000);
+sandbox.window.TraderLongWatchlistData.items = [];
+sandbox.window.TraderLongWatchlistData.groups = [];
+const emptyLongPayload = state.longGroupDisplayPayload({
+  strategy: "long",
+  status: "ready",
+  items: [{ code: "600001", name: "旧运行快照" }],
+  long_groups: [{ name: "旧分组", category: "chokepoint", codes: ["600001"] }],
+});
+assert.deepStrictEqual(emptyLongPayload.items, []);
+assert.deepStrictEqual(emptyLongPayload.long_groups, []);
+assert.strictEqual(emptyLongPayload.status, "not_ready");
 
 const payload = {
   status: "ready",

@@ -114,6 +114,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("baostock-qfq-shadow", "baostock_qfq_shadow"),
         ("history-sqlite", "history_sqlite_performance"),
         ("research", "research_readiness"),
+        ("long-watchlist", "long_watchlist_admission"),
         ("browser", "browser_refresh"),
         ("performance", "production_performance"),
     ],
