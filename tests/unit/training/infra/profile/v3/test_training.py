@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -11,7 +10,6 @@ from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     build_baostock_training_split,
 )
-from trader.download.domain.history_control import HistoryTrainingDueState
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingWindow
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_control_repository import HistoryMaintenanceAlreadyRunningError
@@ -24,7 +22,6 @@ from trader.training.infra.engine import (
     _mature_label_cutoff,
     _training_contract_hash,
 )
-from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
@@ -45,8 +42,6 @@ from trader.training.infra.profile.v3.training_sample_repository import (
     V3TrainingSample,
 )
 from trader.training.infra.sample_builder import TrainingSampleBuildRequest
-
-SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def _cadence_archive(archive_root: Path) -> SimpleNamespace:
@@ -83,31 +78,6 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
     )
 
 
-def _due(archive: SimpleNamespace, contract, *, reason: str, trained_age: int = 0) -> SimpleNamespace:
-    dates = archive.snapshot.calendar.open_dates
-    cutoff = dates[-1 - contract.maturity_sessions]
-    baseline = None if reason == "initial_training_required" else dates[dates.index(cutoff) - trained_age]
-    state = HistoryTrainingDueState(
-        f"due-{contract.strategy.value}",
-        reason,
-        baseline,
-        cutoff,
-        trained_age,
-        reason == "input_revision_due",
-        datetime(2026, 9, 11, 9, 0, tzinfo=SHANGHAI),
-    )
-    bundle = None
-    if baseline is not None:
-        bundle = SimpleNamespace(
-            training_input_hash=archive.snapshot.active_snapshot_hash,
-            label_cutoff=baseline,
-            training_contract_hash="e" * 64,
-            model_hash="b" * 64,
-            report_hash="c" * 64,
-        )
-    return SimpleNamespace(state=state, bundle=bundle, invalidated_cache_dates=())
-
-
 def _patch_archive(monkeypatch: pytest.MonkeyPatch, archive: SimpleNamespace) -> None:
     monkeypatch.setattr(
         "trader.training.infra.engine.SQLiteHistoryTrainingInputArchive.open",
@@ -115,42 +85,40 @@ def _patch_archive(monkeypatch: pytest.MonkeyPatch, archive: SimpleNamespace) ->
     )
 
 
-def test_training_cadence_stops_before_sample_work_on_the_nineteenth_matured_day(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_manual_training_does_not_compare_revisions_or_cadence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.training.infra.engine.evaluate_history_training_due",
-        lambda *_args, **_kwargs: _due(archive, TOMORROW_HEAD_CONTRACT, reason="not_due", trained_age=19),
+        "trader.training.infra.history.history_training_due.evaluate_history_training_due",
+        lambda *_args, **_kwargs: pytest.fail("manual training must not evaluate cadence or revisions"),
     )
     monkeypatch.setattr(
         "trader.training.infra.engine.build_training_samples",
-        lambda *_args, **_kwargs: pytest.fail("samples must not be built before cadence is due"),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("scan reached")),
     )
 
     result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
 
-    assert result.status == "not_due"
-    assert result.matured_label_days_since_training == 19
-    assert result.training_due is False
+    assert result.status == "blocked"
+    assert result.failure_reasons == ("profile_training_failed",)
+    assert result.run_id is not None
 
 
-def test_current_training_result_preserves_active_bundle_hashes(
+def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.training.infra.engine.evaluate_history_training_due",
-        lambda *_args, **_kwargs: _due(archive, TOMORROW_HEAD_CONTRACT, reason="not_due"),
+        "trader.training.infra.engine.build_training_samples",
+        lambda *_args, **_kwargs: None,
     )
 
     result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
 
-    assert result.status == "already_current"
-    assert result.model_hash == "b" * 64
-    assert result.report_hash == "c" * 64
+    assert result.status == "blocked"
+    assert result.failure_reasons == ("profile_training_rows_empty",)
+    assert result.model_hash == result.report_hash == ""
 
 
 def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequentially(
@@ -167,14 +135,6 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
 
     archive.verify_partitions = verify
     _patch_archive(monkeypatch, archive)
-    monkeypatch.setattr(
-        "trader.training.infra.engine.evaluate_history_training_due",
-        lambda query: _due(
-            archive,
-            next(contract for contract in HEAD_CONTRACTS if contract.strategy is query.strategy),
-            reason="initial_training_required",
-        ),
-    )
     scan_calls = 0
 
     def build_samples(request: TrainingSampleBuildRequest) -> None:
@@ -224,7 +184,15 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
         (Strategy.D25, tmp_path / "train" / "v3" / "d25"),
     ]
     assert all(head.status == "engineering_ready" for head in result.heads)
-    assert all(head.training_due is False for head in result.heads)
+    assert all(head.label_cutoff is not None for head in result.heads)
+
+    repeated = run_v3_training(tmp_path / "history", tmp_path / "train")
+
+    assert repeated.status == "engineering_ready"
+    assert verify_calls == scan_calls == 2
+    assert fitted == [Strategy.TOMORROW, Strategy.D25] * 2
+    assert published[2:] == published[:2]
+    assert repeated.heads == result.heads
 
 
 def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_path: Path) -> None:
@@ -239,19 +207,9 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
     )
 
 
-def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
-
-    def due_for_head(query: HistoryTrainingDueQuery):
-        contract = next(item for item in HEAD_CONTRACTS if item.strategy is query.strategy)
-        if contract.strategy is Strategy.D25:
-            return _due(archive, contract, reason="initial_training_required")
-        return _due(archive, contract, reason="not_due", trained_age=1)
-
-    monkeypatch.setattr("trader.training.infra.engine.evaluate_history_training_due", due_for_head)
 
     def build_samples(request: TrainingSampleBuildRequest) -> None:
         request.repository.add_final(
@@ -282,24 +240,15 @@ def test_v3_training_only_fits_the_head_whose_own_cadence_is_due(
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
-    assert fitted == [Strategy.D25]
-    assert [head.status for head in result.heads] == ["not_due", "engineering_ready"]
+    assert fitted == [Strategy.TOMORROW, Strategy.D25]
+    assert [head.status for head in result.heads] == ["engineering_ready", "engineering_ready"]
 
 
-def test_training_keeps_each_due_baseline_when_the_shared_scan_fails(
+def test_training_reports_both_heads_when_the_shared_scan_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _cadence_archive(tmp_path / "history" / "baostock")
     _patch_archive(monkeypatch, archive)
-    monkeypatch.setattr(
-        "trader.training.infra.engine.evaluate_history_training_due",
-        lambda query: _due(
-            archive,
-            next(contract for contract in HEAD_CONTRACTS if contract.strategy is query.strategy),
-            reason="cadence_due",
-            trained_age=20,
-        ),
-    )
     monkeypatch.setattr(
         "trader.training.infra.engine.build_training_samples",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("forced failure")),
@@ -308,9 +257,12 @@ def test_training_keeps_each_due_baseline_when_the_shared_scan_fails(
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
     assert result.status == "blocked"
-    assert all(head.training_due_reason == "cadence_due" for head in result.heads)
-    assert all(head.matured_label_days_since_training == 20 for head in result.heads)
-    assert all(head.training_due for head in result.heads)
+    assert all(head.status == "blocked" for head in result.heads)
+    assert all(head.failure_reasons == ("profile_training_failed",) for head in result.heads)
+    assert [head.label_cutoff for head in result.heads] == [
+        archive.snapshot.calendar.open_dates[-2],
+        archive.snapshot.calendar.open_dates[-6],
+    ]
 
 
 def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_running(
@@ -364,7 +316,7 @@ def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path
     preserved.parent.mkdir(parents=True)
     preserved.touch()
 
-    _cleanup_abandoned_workspaces(tmp_path)
+    _cleanup_abandoned_workspaces(tmp_path, HEAD_CONTRACTS)
 
     assert not abandoned.exists()
     assert not staging.exists()
@@ -446,6 +398,7 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
 
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+    updates: list[TomorrowTrainingProgress] = []
 
     class Samples:
         @staticmethod
@@ -454,6 +407,8 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
 
         @staticmethod
         def industry_counts(_contract) -> tuple[V3TrainingIndustryCounts, ...]:
+            assert updates[-1].stage == "industry_statistics"
+            assert updates[-1].state == "started"
             return (
                 V3TrainingIndustryCounts("银行", 0, 0, 0, 0),
                 V3TrainingIndustryCounts("软件", 0, 0, 0, 0),
@@ -461,9 +416,8 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
 
         @staticmethod
         def split_count(_split_name, _contract) -> int:
-            return 0
+            raise AssertionError("industry counts must supply totals without another scan")
 
-    updates: list[TomorrowTrainingProgress] = []
     progress = SimpleNamespace(publish=updates.append)
 
     models, training_rows, validation_rows = fit_industry_models(
@@ -475,10 +429,12 @@ def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
 
     assert models == {}
     assert training_rows == validation_rows == 0
-    assert [(item.state, item.completed_units, item.total_units) for item in updates] == [
-        ("started", 0, 2),
-        ("running", 1, 2),
-        ("completed", 2, 2),
+    assert [(item.stage, item.state, item.completed_units, item.total_units) for item in updates] == [
+        ("industry_statistics", "started", 0, 1),
+        ("industry_statistics", "completed", 1, 1),
+        ("model_fit", "started", 0, 2),
+        ("model_fit", "running", 1, 2),
+        ("model_fit", "completed", 2, 2),
     ]
     assert all(item.strategy is Strategy.TOMORROW for item in updates)
 

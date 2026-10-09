@@ -9,20 +9,15 @@ import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import date, datetime
+from datetime import date
 from importlib.metadata import version
 from pathlib import Path
 from typing import Literal, Protocol, cast
-from zoneinfo import ZoneInfo
 
 from lightgbm.basic import LightGBMError
 
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit, build_baostock_training_split
-from trader.download.domain.history_control import (
-    HistoryActiveSnapshot,
-    HistoryTrainingDueReason,
-    HistoryTrainingDueState,
-)
+from trader.download.domain.history_control import HistoryActiveSnapshot
 from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
@@ -44,6 +39,11 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingWindow,
 )
 from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
+from trader.training.infra.history.history_training_input import (
+    HistoryTrainingInputError,
+    HistoryTrainingInputSnapshot,
+    SQLiteHistoryTrainingInputArchive,
+)
 from trader.training.infra.model_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
     make_bundle_staging_directory,
@@ -51,16 +51,6 @@ from trader.training.infra.model_bundles.bundle_repository import (
     recover_head_bundle_publication,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
-from trader.training.infra.history.history_training_due import (
-    HistoryTrainingDueEvaluation,
-    HistoryTrainingDueQuery,
-    evaluate_history_training_due,
-)
-from trader.training.infra.history.history_training_input import (
-    HistoryTrainingInputError,
-    HistoryTrainingInputSnapshot,
-    SQLiteHistoryTrainingInputArchive,
-)
 from trader.training.infra.model_fitting import MODEL_FITTING_PARAMETERS, fit_industry_models
 from trader.training.infra.sample_builder import (
     TrainingSampleBuildRequest,
@@ -74,8 +64,7 @@ from trader.training.infra.sample_repository import (
     TargetMetric,
 )
 
-_SHANGHAI = ZoneInfo("Asia/Shanghai")
-TrainingStatus = Literal["blocked", "rejected", "engineering_ready", "already_current", "not_due"]
+TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
 
 
 class _TrainingInputArchive(TrainingWindowArchive, Protocol):
@@ -111,10 +100,6 @@ class HeadTrainingResult:
     validation_rows: int
     failure_reasons: tuple[str, ...]
     label_cutoff: date | None = None
-    matured_label_days_since_training: int = 0
-    training_due: bool = False
-    training_due_reason: HistoryTrainingDueReason = "data_incomplete"
-    invalidated_cache_dates: tuple[date, ...] = ()
     sample_database_peak_bytes: int = 0
 
 
@@ -132,17 +117,12 @@ class TrainingRunResult:
             return "blocked"
         if "rejected" in statuses:
             return "rejected"
-        if "engineering_ready" in statuses:
-            return "engineering_ready"
-        if statuses and all(item == "already_current" for item in statuses):
-            return "already_current"
-        return "not_due"
+        return "engineering_ready" if statuses else "blocked"
 
 
 @dataclass(frozen=True)
 class _HeadPlan:
     contract: TrainedHeadContract
-    due: HistoryTrainingDueEvaluation
     label_cutoff: date
     training_contract_hash: str
 
@@ -168,7 +148,6 @@ class ProfileTrainingRequest:
     profile: TrainedProfileContract
     contracts: tuple[TrainedHeadContract, ...]
     progress: TomorrowTrainingProgressPort | None = None
-    observed_at: datetime | None = None
     expected_history_snapshot_hash: str | None = None
 
     def __post_init__(self) -> None:
@@ -222,11 +201,14 @@ def run_repack_profile_training(request: ProfileTrainingRequest) -> TrainingRunR
 
 def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
     _publish(request.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
+    _publish(request.progress, TomorrowTrainingProgress("input_read", "started", 0, 1))
     try:
         archive = SQLiteHistoryTrainingInputArchive.open(request.history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         heads = tuple(_unavailable_result(item, _reason(exc)) for item in request.contracts)
         return TrainingRunResult(None, "", 0, heads)
+    _publish(request.progress, TomorrowTrainingProgress("input_read", "completed", 1, 1))
+    _publish(request.progress, TomorrowTrainingProgress("training_preparation", "started", 0, 1))
     try:
         # Training owns a profile-specific lock and may read an immutable
         # snapshot while history maintenance publishes a newer one.  The
@@ -265,14 +247,14 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
     if split is None:
         heads = tuple(_blocked_from_snapshot(item, snapshot, preparation_failure) for item in request.contracts)
         return TrainingRunResult(None, snapshot.active_snapshot_hash, 0, heads)
-    now = request.observed_at.astimezone(_SHANGHAI) if request.observed_at is not None else datetime.now(_SHANGHAI)
-    plans, completed = _build_head_plans(archive, snapshot, replace(request, observed_at=now))
+    plans, completed = _build_head_plans(snapshot, request)
     if not plans:
         ordered = _ordered_results(request.contracts, completed)
         return TrainingRunResult(None, snapshot.active_snapshot_hash, 0, ordered)
     preflight_result = _preflight_failure_result(archive, snapshot, plans, request.contracts, completed)
     if preflight_result is not None:
         return preflight_result
+    _publish(request.progress, TomorrowTrainingProgress("training_preparation", "completed", 1, 1))
     run_id = hashlib.sha256(
         (
             f"{request.profile.profile_id}:{snapshot.active_snapshot_hash}:"
@@ -282,7 +264,7 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
     try:
         _verify_partitions_once(archive, request.progress)
         request.train_root.mkdir(parents=True, exist_ok=True)
-        _cleanup_abandoned_workspaces(request.train_root)
+        _cleanup_abandoned_workspaces(request.train_root, request.contracts)
         with tempfile.TemporaryDirectory(prefix=".training-sample-workspace.", dir=request.train_root) as workspace:
             feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
             with SQLiteTrainingSampleRepository(Path(workspace) / "samples.sqlite3", feature_count) as samples:
@@ -297,9 +279,11 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                     )
                 )
                 peak_bytes = samples.database_size_bytes
+                _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
                 if samples.count() == 0:
                     raise ValueError("profile_training_rows_empty")
                 metrics = samples.validation_target_metrics()
+                _publish(request.progress, TomorrowTrainingProgress("target_statistics", "completed", 1, 1))
                 for plan in plans:
                     completed.append(
                         _fit_and_publish_head(
@@ -323,10 +307,10 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
         for plan in plans:
             if not any(item.strategy is plan.contract.strategy for item in completed):
                 completed.append(
-                    _with_due(
-                        replace(_blocked_from_snapshot(plan.contract, snapshot, reason), run_id=run_id),
-                        plan.due.state,
-                        plan.due.invalidated_cache_dates,
+                    replace(
+                        _blocked_from_snapshot(plan.contract, snapshot, reason),
+                        run_id=run_id,
+                        label_cutoff=plan.label_cutoff,
                     )
                 )
     ordered = _ordered_results(request.contracts, completed)
@@ -364,58 +348,18 @@ def _prepare_locked_split(
 
 
 def _build_head_plans(
-    archive: _TrainingInputArchive,
     snapshot: HistoryTrainingInputSnapshot,
     request: ProfileTrainingRequest,
 ) -> tuple[list[_HeadPlan], list[HeadTrainingResult]]:
     plans: list[_HeadPlan] = []
     completed: list[HeadTrainingResult] = []
-    assert request.observed_at is not None
     for contract in request.contracts:
         label_cutoff = _mature_label_cutoff(snapshot, contract)
         contract_hash = _training_contract_hash(request.profile, contract)
-        due = evaluate_history_training_due(
-            HistoryTrainingDueQuery(
-                archive.archive_root,
-                request.train_root,
-                request.observed_at,
-                request.profile,
-                contract.strategy,
-                contract_hash,
-            )
-        )
-        if due is None or label_cutoff is None:
+        if label_cutoff is None:
             completed.append(_blocked_from_snapshot(contract, snapshot, "history_training_data_incomplete"))
-        elif due.state.reason == "data_incomplete":
-            completed.append(
-                _with_due(
-                    _blocked_from_snapshot(contract, snapshot, "history_training_data_incomplete"),
-                    due.state,
-                    due.invalidated_cache_dates,
-                )
-            )
-        elif not due.state.training_due:
-            current = (
-                due.bundle is not None
-                and due.bundle.training_input_hash == snapshot.active_snapshot_hash
-                and due.bundle.label_cutoff == label_cutoff
-            )
-            result = _base_result(contract, "already_current" if current else "not_due", snapshot)
-            if current and due.bundle is not None:
-                result = replace(
-                    result,
-                    model_hash=due.bundle.model_hash,
-                    report_hash=due.bundle.report_hash,
-                )
-            completed.append(
-                _with_due(
-                    result,
-                    due.state,
-                    due.invalidated_cache_dates,
-                )
-            )
         else:
-            plans.append(_HeadPlan(contract, due, label_cutoff, contract_hash))
+            plans.append(_HeadPlan(contract, label_cutoff, contract_hash))
     return plans, completed
 
 
@@ -434,10 +378,9 @@ def _preflight_failure_result(
     if not failures:
         return None
     completed.extend(
-        _with_due(
+        replace(
             _blocked_from_snapshot(plan.contract, snapshot, failures[0]),
-            plan.due.state,
-            plan.due.invalidated_cache_dates,
+            label_cutoff=plan.label_cutoff,
         )
         for plan in plans
     )
@@ -484,6 +427,10 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
         models, training_rows, validation_rows = fit_industry_models(
             request.samples, request.split, contract, progress=request.progress
         )
+        _publish(
+            request.progress,
+            TomorrowTrainingProgress("artifact_publish", "started", 0, 1, strategy=contract.strategy),
+        )
         split_hash = _head_split_hash(request.split, contract)
         training_input = _training_input_document(
             _TrainingInputDocumentContext(
@@ -514,25 +461,22 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
         report_hash = content_hash(report)
         report["content_hash"] = report_hash
         if not report["validation_passed"]:
-            return _with_due(
-                HeadTrainingResult(
-                    contract.strategy,
-                    "rejected",
-                    snapshot.input_scope,
-                    request.run_id,
-                    snapshot.active_snapshot_hash,
-                    len(snapshot.training_codes),
-                    snapshot.universe_count,
-                    report_hash,
-                    "",
-                    len(models),
-                    training_rows,
-                    validation_rows,
-                    tuple(cast(list[str], report["failure_reasons"])),
-                    sample_database_peak_bytes=request.peak_bytes,
-                ),
-                plan.due.state,
-                plan.due.invalidated_cache_dates,
+            return HeadTrainingResult(
+                contract.strategy,
+                "rejected",
+                snapshot.input_scope,
+                request.run_id,
+                snapshot.active_snapshot_hash,
+                len(snapshot.training_codes),
+                snapshot.universe_count,
+                report_hash,
+                "",
+                len(models),
+                training_rows,
+                validation_rows,
+                tuple(cast(list[str], report["failure_reasons"])),
+                label_cutoff=plan.label_cutoff,
+                sample_database_peak_bytes=request.peak_bytes,
             )
         model = _model_document(context, report_hash, models)
         model_hash = content_hash(model)
@@ -542,10 +486,6 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
         _write_json(staging / "training-input.json", training_input)
         _write_json(staging / "report.json", report)
         _write_json(staging / "model.json", model)
-        _publish(
-            request.progress,
-            TomorrowTrainingProgress("artifact_publish", "started", 0, 1, strategy=contract.strategy),
-        )
         publish_head_bundle(
             staging,
             output,
@@ -562,35 +502,29 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
             request.progress,
             TomorrowTrainingProgress("artifact_publish", "completed", 1, 1, strategy=contract.strategy),
         )
-        return _after_success(
-            HeadTrainingResult(
-                contract.strategy,
-                "engineering_ready",
-                snapshot.input_scope,
-                request.run_id,
-                snapshot.active_snapshot_hash,
-                len(snapshot.training_codes),
-                snapshot.universe_count,
-                report_hash,
-                model_hash,
-                len(models),
-                training_rows,
-                validation_rows,
-                (),
-                sample_database_peak_bytes=request.peak_bytes,
-            ),
-            plan.label_cutoff,
-            plan.due.invalidated_cache_dates,
+        return HeadTrainingResult(
+            contract.strategy,
+            "engineering_ready",
+            snapshot.input_scope,
+            request.run_id,
+            snapshot.active_snapshot_hash,
+            len(snapshot.training_codes),
+            snapshot.universe_count,
+            report_hash,
+            model_hash,
+            len(models),
+            training_rows,
+            validation_rows,
+            (),
+            label_cutoff=plan.label_cutoff,
+            sample_database_peak_bytes=request.peak_bytes,
         )
     except (LightGBMError, OSError, TypeError, ValueError, RuntimeError) as exc:
-        return _with_due(
-            replace(
-                _blocked_from_snapshot(contract, snapshot, _reason(exc)),
-                run_id=request.run_id,
-                sample_database_peak_bytes=request.peak_bytes,
-            ),
-            plan.due.state,
-            plan.due.invalidated_cache_dates,
+        return replace(
+            _blocked_from_snapshot(contract, snapshot, _reason(exc)),
+            run_id=request.run_id,
+            label_cutoff=plan.label_cutoff,
+            sample_database_peak_bytes=request.peak_bytes,
         )
     finally:
         if staging is not None:
@@ -860,41 +794,11 @@ def _ordered_results(
     return tuple(by_strategy[item.strategy] for item in contracts)
 
 
-def _with_due(
-    result: HeadTrainingResult,
-    state: HistoryTrainingDueState,
-    invalidated_dates: tuple[date, ...],
-) -> HeadTrainingResult:
-    return replace(
-        result,
-        label_cutoff=state.current_label_cutoff,
-        matured_label_days_since_training=state.matured_label_days_since_training,
-        training_due=state.training_due,
-        training_due_reason=state.reason,
-        invalidated_cache_dates=invalidated_dates,
-    )
-
-
-def _after_success(
-    result: HeadTrainingResult,
-    label_cutoff: date,
-    invalidated_dates: tuple[date, ...],
-) -> HeadTrainingResult:
-    return replace(
-        result,
-        label_cutoff=label_cutoff,
-        matured_label_days_since_training=0,
-        training_due=False,
-        training_due_reason="not_due",
-        invalidated_cache_dates=invalidated_dates,
-    )
-
-
-def _cleanup_abandoned_workspaces(train_root: Path) -> None:
+def _cleanup_abandoned_workspaces(train_root: Path, contracts: tuple[TrainedHeadContract, ...]) -> None:
     for candidate in train_root.glob(".training-sample-workspace.*"):
         if candidate.is_dir() and not candidate.is_symlink():
             shutil.rmtree(candidate)
-    for output in (train_root / strategy.value for strategy in Strategy):
+    for output in (train_root / contract.directory_name for contract in contracts):
         if output.is_dir():
             for candidate in output.glob(".bundle-staging.*"):
                 if candidate.is_dir() and not candidate.is_symlink():

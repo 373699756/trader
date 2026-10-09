@@ -1,6 +1,5 @@
 """V2-owned 251-session training command adapter."""
 
-from datetime import datetime
 from pathlib import Path
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
@@ -13,7 +12,6 @@ def run_v2_training(
     train_root: Path,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
-    observed_at: datetime | None = None,
 ) -> TrainingRunResult:
     return run_profile_training(
         ProfileTrainingRequest(
@@ -22,7 +20,6 @@ def run_v2_training(
             V2_TRAINING_PROFILE,
             V2_TRAINING_PROFILE.heads,
             progress,
-            observed_at,
         )
     )
 

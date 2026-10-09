@@ -1,10 +1,15 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from scripts import check_tomorrow_training_memory
 
 
-def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_path: Path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("repeat_matches", (True, False))
+def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
+    tmp_path: Path, monkeypatch, capsys, repeat_matches: bool
+) -> None:
     observed: list[tuple[Path, Path]] = []
 
     def train(
@@ -19,8 +24,8 @@ def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_p
         observed.append((history, output))
         head = SimpleNamespace(
             strategy=SimpleNamespace(value="tomorrow"),
-            status="engineering_ready" if len(observed) == 1 else "already_current",
-            model_hash="b" * 64,
+            status="engineering_ready",
+            model_hash=("b" if repeat_matches or len(observed) == 1 else "d") * 64,
             report_hash="c" * 64,
             failure_reasons=(),
         )
@@ -38,29 +43,26 @@ def test_training_memory_gate_requires_explicit_roots_and_reports_peak_rss(tmp_p
     output = tmp_path / "train"
     evidence = tmp_path / "historyless/training-memory-result.json"
 
-    assert (
-        check_tomorrow_training_memory.main(
-            [
-                "--history-root",
-                str(history),
-                "--train-root",
-                str(output),
-                "--expected-history-snapshot-hash",
-                "a" * 64,
-                "--max-rss-mib",
-                "1",
-                "--output",
-                str(evidence),
-            ]
-        )
-        == 0
-    )
+    assert check_tomorrow_training_memory.main(
+        [
+            "--history-root",
+            str(history),
+            "--train-root",
+            str(output),
+            "--expected-history-snapshot-hash",
+            "a" * 64,
+            "--max-rss-mib",
+            "1",
+            "--output",
+            str(evidence),
+        ]
+    ) == (0 if repeat_matches else 1)
     assert observed == [
         (history.resolve(), output.resolve()),
         (history.resolve(), output.resolve()),
     ]
     assert '"peak_rss_bytes":100' in capsys.readouterr().out
-    assert '"repeat_training_status":"already_current"' in evidence.read_text(encoding="utf-8")
+    assert '"repeat_training_status":"engineering_ready"' in evidence.read_text(encoding="utf-8")
     assert '"sample_database_peak_bytes":1234' in evidence.read_text(encoding="utf-8")
     assert '"stage_durations_ms":{}' in evidence.read_text(encoding="utf-8")
     assert '"content_hash":' in evidence.read_text(encoding="utf-8")

@@ -44,8 +44,8 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
-    subparsers.add_parser("train-v2", help="Train V2 heads with the 251-session V2 feature contract.")
-    subparsers.add_parser("train-v3", help="Run one shared scan and sequentially train due shared heads.")
+    subparsers.add_parser("train-v2", help="Rebuild both V2 heads with 251-session features and overwrite artifacts.")
+    subparsers.add_parser("train-v3", help="Rebuild both heads with one scan and overwrite fixed V3 artifacts.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",

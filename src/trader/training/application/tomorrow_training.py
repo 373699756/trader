@@ -11,9 +11,14 @@ from trader.recommendation.domain.publication.models import Strategy
 
 TomorrowTrainingStage = Literal[
     "resource_preflight",
+    "input_read",
+    "training_preparation",
     "partition_validation",
     "history_conversion",
     "cross_section_conversion",
+    "sample_index",
+    "target_statistics",
+    "industry_statistics",
     "model_fit",
     "artifact_publish",
 ]

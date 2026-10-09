@@ -168,7 +168,6 @@ class SQLiteTrainingSampleRepository:
                 values.get("validation", 0),
             )
             for industry, values in counts.items()
-            if values.get("training", 0) > 0
         )
 
     def industry_data(
@@ -229,17 +228,21 @@ class SQLiteTrainingSampleRepository:
         return int(row[0]) if row is not None else 0
 
     def validation_target_metrics(self) -> tuple[TargetMetric, ...]:
+        aggregates = ", ".join(
+            f"COUNT(samples.{target}), AVG(samples.{target}), AVG(samples.{target} * samples.{target})"
+            for target in _TARGET_COLUMNS
+        )
+        row = self._connection.execute(
+            f"SELECT {aggregates} FROM samples "  # noqa: S608
+            "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
+            "WHERE splits.split_name='validation'"
+        ).fetchone()
         metrics: list[TargetMetric] = []
-        for target in _TARGET_COLUMNS:
-            row = self._connection.execute(
-                f"SELECT COUNT(samples.{target}), AVG(samples.{target}), "  # noqa: S608
-                f"AVG(samples.{target} * samples.{target}) FROM samples "  # noqa: S608
-                "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
-                f"WHERE splits.split_name='validation' AND samples.{target} IS NOT NULL"  # noqa: S608
-            ).fetchone()
-            count = int(row[0]) if row is not None else 0
-            mean = float(row[1]) if row is not None and row[1] is not None else None
-            second = float(row[2]) if row is not None and row[2] is not None else None
+        for position, target in enumerate(_TARGET_COLUMNS):
+            offset = position * 3
+            count = int(row[offset]) if row is not None else 0
+            mean = float(row[offset + 1]) if row is not None and row[offset + 1] is not None else None
+            second = float(row[offset + 2]) if row is not None and row[offset + 2] is not None else None
             deviation = math.sqrt(max(0.0, second - mean * mean)) if mean is not None and second is not None else None
             metrics.append(TargetMetric(target, count, mean, deviation))
         return tuple(metrics)

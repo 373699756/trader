@@ -23,8 +23,8 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
 )
-from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
+from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 from trader.training.infra.sample_repository import (
     SQLiteTrainingSampleRepository,
     TrainingSample,
@@ -186,7 +186,9 @@ def build_training_samples(request: TrainingSampleBuildRequest) -> None:
             state.converted_samples,
         ),
     )
+    _publish(request.progress, TomorrowTrainingProgress("sample_index", "started", 0, 1))
     request.repository.prepare_for_model_fitting(request.window.split)
+    _publish(request.progress, TomorrowTrainingProgress("sample_index", "completed", 1, 1))
 
 
 def _eligible_future_close(training_window: HistoryTrainingWindow) -> float | None:

@@ -11,9 +11,14 @@ from trader.training.application.tomorrow_training import TomorrowTrainingStage
 _TRAINING_STAGES: frozenset[str] = frozenset(
     (
         "resource_preflight",
+        "input_read",
+        "training_preparation",
         "partition_validation",
         "history_conversion",
         "cross_section_conversion",
+        "sample_index",
+        "target_statistics",
+        "industry_statistics",
         "model_fit",
         "artifact_publish",
     )
@@ -45,7 +50,7 @@ class TomorrowTrainingMemoryEvidence:
     def __post_init__(self) -> None:
         if (
             self.training_status != "engineering_ready"
-            or self.repeat_training_status != "already_current"
+            or self.repeat_training_status != "engineering_ready"
             or any(not is_sha256_text(value) for value in (self.training_input_hash, self.model_hash, self.report_hash))
             or self.peak_rss_bytes < 1
             or self.max_rss_bytes < 1

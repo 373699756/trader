@@ -99,22 +99,14 @@ class SQLiteHistoryTrainingInputArchive:
         archive_root = root / "baostock" if (root / "baostock").is_dir() else root
         control = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
         try:
-            state = control.load_state()
+            state = control.load_published_state()
         except HistoryControlError as exc:
             raise HistoryTrainingInputError("history_manifest_unavailable") from exc
-        active = state.active_snapshot
-        if active is None:
+        if state is None:
             raise HistoryTrainingInputError("history_manifest_unavailable")
-        calendar_identity = next(
-            (item for item in state.calendars if item.content_hash == active.calendar_hash),
-            None,
-        )
-        universe_identity = next(
-            (item for item in state.universes if item.content_hash == active.universe_hash),
-            None,
-        )
-        if calendar_identity is None or universe_identity is None:
-            raise HistoryTrainingInputError("history_manifest_parent_unavailable")
+        active = state.snapshot
+        calendar_identity = state.calendar
+        universe_identity = state.universe
         calendar = BaoStockCalendar(calendar_identity.open_dates)
         universe = tuple(_security(item) for item in universe_identity.securities)
         descriptor = FrozenDailyInputDescriptor(

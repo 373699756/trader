@@ -94,18 +94,21 @@ class _Supplier:
         )
 
 
-def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_path: Path) -> None:
+def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_path: Path, monkeypatch) -> None:
     archive_root = tmp_path / "history" / "baostock"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
 
     assert result.state == "completed"
+    expected_hash = SQLiteHistoryControlRepository(archive_root / "control.sqlite3").load_state().active_snapshot_hash
+
+    def fail_full_history_read(_self):
+        raise AssertionError("training input must not load historical checkpoints")
+
+    monkeypatch.setattr(SQLiteHistoryControlRepository, "load_state", fail_full_history_read)
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
-    assert (
-        archive.snapshot.active_snapshot_hash
-        == SQLiteHistoryControlRepository(archive_root / "control.sqlite3").load_state().active_snapshot_hash
-    )
+    assert archive.snapshot.active_snapshot_hash == expected_hash
     assert archive.count_training_rows(frozenset(dates)) == len(dates)
     assert archive.snapshot.label_cutoff == dates[-2]
 

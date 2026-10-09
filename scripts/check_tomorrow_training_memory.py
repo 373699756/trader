@@ -64,7 +64,14 @@ def main(argv: list[str] | None = None) -> int:
     peak = _peak_rss_bytes()
     budget = args.max_rss_mib * 1024 * 1024
     tomorrow = next(head for head in result.heads if head.strategy.value == "tomorrow")
-    passed = result.status == "engineering_ready" and repeated.status == "already_current" and peak <= budget
+    identities = tuple((head.strategy, head.model_hash, head.report_hash) for head in result.heads)
+    repeated_identities = tuple((head.strategy, head.model_hash, head.report_hash) for head in repeated.heads)
+    passed = (
+        result.status == repeated.status == "engineering_ready"
+        and result.training_input_hash == repeated.training_input_hash
+        and identities == repeated_identities
+        and peak <= budget
+    )
     payload: dict[str, object] = {
         "schema_version": "tomorrow_training_memory_gate",
         "status": "passed" if passed else "failed",

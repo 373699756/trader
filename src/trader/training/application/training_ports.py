@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from pathlib import Path
 from typing import Protocol, TypeVar
 
@@ -21,7 +20,6 @@ class TrainingRunnerPort(Protocol[_ResultT]):
         train_root: Path,
         *,
         progress: TomorrowTrainingProgressPort | None = None,
-        observed_at: datetime | None = None,
     ) -> _ResultT: ...
 
 

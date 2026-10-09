@@ -636,11 +636,8 @@ def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
         heads = tuple(
             SimpleNamespace(
                 strategy=strategy,
-                status="already_current",
+                status="engineering_ready",
                 label_cutoff=date(2026, 9, 8),
-                matured_label_days_since_training=0,
-                training_due=False,
-                training_due_reason="not_due",
                 report_hash="a" * 64,
                 model_hash="b" * 64,
                 industry_count=42,
@@ -651,7 +648,7 @@ def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
             for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
         return SimpleNamespace(
-            status="already_current",
+            status="engineering_ready",
             run_id=None,
             training_input_hash="c" * 64,
             sample_database_peak_bytes=0,
@@ -667,6 +664,7 @@ def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
     assert payload["schema_version"] == "v3_training_result"
     assert tuple(payload["heads"]) == ("d25", "tomorrow")
     assert payload["heads"]["tomorrow"]["artifact_root"].endswith("data/train/v3/tomorrow")
+    assert "training_due" not in payload["heads"]["tomorrow"]
 
 
 def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
@@ -686,11 +684,8 @@ def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
         heads = tuple(
             SimpleNamespace(
                 strategy=strategy,
-                status="already_current",
+                status="engineering_ready",
                 label_cutoff=date(2026, 9, 8),
-                matured_label_days_since_training=0,
-                training_due=False,
-                training_due_reason="not_due",
                 report_hash="a" * 64,
                 model_hash="b" * 64,
                 industry_count=42,
@@ -701,7 +696,7 @@ def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
             for strategy in (Strategy.TOMORROW, Strategy.D25)
         )
         return SimpleNamespace(
-            status="already_current",
+            status="engineering_ready",
             run_id=None,
             training_input_hash="c" * 64,
             sample_database_peak_bytes=0,

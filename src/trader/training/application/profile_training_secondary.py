@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Generic, TypeVar
 
@@ -25,11 +24,8 @@ class TrainV3UseCase(Generic[_ResultT]):
         train_root: Path,
         *,
         progress: TomorrowTrainingProgressPort | None = None,
-        observed_at: datetime | None = None,
     ) -> _ResultT:
-        if observed_at is None:
-            return self.runner(history_root, train_root, progress=progress)
-        return self.runner(history_root, train_root, progress=progress, observed_at=observed_at)
+        return self.runner(history_root, train_root, progress=progress)
 
 
 def train_v3(
@@ -38,13 +34,11 @@ def train_v3(
     train_root: Path,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
-    observed_at: datetime | None = None,
 ) -> _ResultT:
     return TrainV3UseCase(runner).execute(
         history_root,
         train_root,
         progress=progress,
-        observed_at=observed_at,
     )
 
 

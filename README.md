@@ -42,7 +42,7 @@ TRADER_PORT=5050 ./run.sh
 DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh check
-./run.sh --profile v1
+./run.sh --profile v2
 ./run.sh --profile v3
 ./run.sh download
 ./run.sh train-v2
@@ -50,11 +50,12 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh help
 ```
 
-日常启动不需要参数，默认使用 V2 并加载 `data/train/{today-v3,tomorrow-v3,d25-v3}` 现有共享三头工件；
-追加 `--profile v1|v2|v3` 可显式覆盖当前进程，该覆盖不会写回配置。启动不执行训练，任一共享 bundle 损坏时 V2/V3 失败关闭。
+日常启动不需要参数，默认使用 V2 并加载 `data/train/v2/{tomorrow,d25}` 双头工件；
+追加 `--profile v2|v3` 可显式覆盖当前进程，该覆盖不会写回配置。启动不执行训练，所选档位任一bundle损坏时失败关闭。
 `check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download` 是唯一零参数历史维护
-入口；`train-v2` 使用 251 日窗口和 V2 长周期特征，通过一次历史扫描依次训练 V2 的 Today、Tomorrow、D25，
-`train-v3` 使用 61 日窗口独立训练 V3 三头。V2/V3 共享历史事实和
+入口；`train-v2`使用251日窗口和V2长期特征，`train-v3`使用61日窗口，各自一次扫描顺序训练Tomorrow/D25，不训练Today。
+两个命令每次直接重建并覆盖`data/train/{v2,v3}/{tomorrow,d25}`，不检查到期、不比较旧历史修订、不创建额外训练快照。
+stderr显示累计/阶段耗时，索引、统计和拟合等耗时阶段每30秒有反馈；失败保留该头上一完整工件组。V2/V3共享历史事实和
 训练引擎，但不共享特征合同、模型身份或输出目录。旧 H0 历史归档、回测和筛选入口已退役，
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它

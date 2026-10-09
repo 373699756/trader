@@ -89,6 +89,38 @@ def test_sample_repository_has_only_the_shared_tables_and_one_build_transaction(
         assert repository.count() == 1_000
 
 
+def test_validation_statistics_use_one_scan_and_include_validation_only_industries(tmp_path: Path) -> None:
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+    with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
+        repository.add_final(
+            (
+                _sample("600001", split.model_fit_dates[0]),
+                _sample("600002", split.confirmation_dates[0], targets=(0.02, None, None, None, None, None)),
+                _sample("600003", split.confirmation_dates[0], "软件", targets=(0.04, 0.03, None, None, None, 0.045)),
+            )
+        )
+        repository.prepare_for_model_fitting(split)
+        statements: list[str] = []
+        repository._connection.set_trace_callback(statements.append)
+        metrics = {item.target: item for item in repository.validation_target_metrics()}
+        repository._connection.set_trace_callback(None)
+
+        assert len(statements) == 1
+        assert metrics["target_t1"].count == 2
+        assert metrics["target_t1"].mean == pytest.approx(0.03)
+        assert metrics["target_t1"].standard_deviation == pytest.approx(0.01)
+        assert metrics["target_t2"].count == 1
+        assert metrics["target_t2"].standard_deviation == 0.0
+        assert metrics["target_t3"].count == 0
+        assert metrics["target_t3"].mean is None
+        assert metrics["target_t3"].standard_deviation is None
+        counts = repository.industry_counts(TOMORROW_HEAD_CONTRACT)
+        software = next(item for item in counts if item.industry == "软件")
+        assert (software.training, software.validation) == (0, 1)
+        assert sum(item.validation for item in counts) == repository.split_count("validation", TOMORROW_HEAD_CONTRACT)
+
+
 def test_sample_repository_rolls_back_the_whole_workspace_build_on_failure(tmp_path: Path) -> None:
     path = tmp_path / "samples.sqlite3"
     with pytest.raises(RuntimeError, match="forced"):

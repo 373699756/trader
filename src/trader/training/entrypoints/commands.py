@@ -306,9 +306,6 @@ def _run_profile_training_command(
                 "artifact_root": str(_train_data_root() / profile_id / head.strategy.value),
                 "status": head.status,
                 "label_cutoff": head.label_cutoff.isoformat() if head.label_cutoff is not None else None,
-                "matured_label_days_since_training": head.matured_label_days_since_training,
-                "training_due": head.training_due,
-                "training_due_reason": head.training_due_reason,
                 "report_hash": head.report_hash,
                 "model_hash": head.model_hash,
                 "industry_count": head.industry_count,
@@ -324,7 +321,7 @@ def _run_profile_training_command(
         "automatic_model_update": False,
     }
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
-    return 0 if result.status in {"engineering_ready", "already_current", "not_due"} else 1
+    return 0 if result.status == "engineering_ready" else 1
 
 
 def _process_peak_rss_bytes() -> int | None:

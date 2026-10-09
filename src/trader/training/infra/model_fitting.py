@@ -56,7 +56,11 @@ def fit_industry_models(
 ) -> tuple[dict[str, dict[str, object]], int, int]:
     samples.require_split(split)
     models: dict[str, dict[str, object]] = {}
+    if progress is not None:
+        progress.publish(TomorrowTrainingProgress("industry_statistics", "started", 0, 1, strategy=contract.strategy))
     workloads = samples.industry_counts(contract)
+    if progress is not None:
+        progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=contract.strategy))
     _publish(progress, contract, _FitProgress("started", 0, len(workloads)))
     parameters = MODEL_FITTING_PARAMETERS
     for position, counts in enumerate(workloads, start=1):
@@ -72,7 +76,7 @@ def fit_industry_models(
         _publish(progress, contract, _fit_progress(position, len(workloads), len(models)))
     if not workloads:
         _publish(progress, contract, _FitProgress("completed", 0, 0))
-    return models, samples.split_count("training", contract), samples.split_count("validation", contract)
+    return models, sum(item.training for item in workloads), sum(item.validation for item in workloads)
 
 
 def _publish(
@@ -108,11 +112,19 @@ def _fit_industry(
     means = train.features.mean(axis=0)
     deviations = train.features.std(axis=0)
     scales = np.where(deviations > 1e-12, deviations, 1.0)
-    normalized = (train.features - means) / scales
+    # These matrices are private to this industry; normalize in place to avoid
+    # retaining raw, centered and standardized copies under the memory limit.
+    normalized = train.features
+    normalized -= means
+    normalized /= scales
     coefficients = _ridge_coefficients(normalized, train.labels, parameters.ridge_penalty)
-    early_features = (data.early_stopping.features - means) / scales
+    early_features = data.early_stopping.features
+    early_features -= means
+    early_features /= scales
     booster = _fit_lightgbm(normalized, train.labels, early_features, data.early_stopping.labels, parameters)
-    calibration_features = (data.calibration.features - means) / scales
+    calibration_features = data.calibration.features
+    calibration_features -= means
+    calibration_features /= scales
     tree = booster.predict(calibration_features, num_iteration=booster.best_iteration)
     ridge = coefficients[0] + calibration_features @ coefficients[1:]
     predicted = 0.5 * ridge + 0.5 * tree

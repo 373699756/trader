@@ -9,6 +9,7 @@ from collections.abc import Callable
 from types import TracebackType
 from typing import Literal
 
+from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
@@ -18,22 +19,25 @@ from trader.training.application.tomorrow_training import (
 
 _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "resource_preflight": "资源预检",
+    "input_read": "读取训练输入",
+    "training_preparation": "训练准备",
     "partition_validation": "输入分片校验",
     "history_conversion": "历史行转换",
     "cross_section_conversion": "横截面转换",
+    "sample_index": "样本索引",
+    "target_statistics": "标签统计",
+    "industry_statistics": "行业统计",
     "model_fit": "行业模型",
     "artifact_publish": "工件发布",
 }
 _STATE_LABELS = {"started": "开始", "running": "运行中", "completed": "完成"}
 _PROGRESS_INTERVAL_SECONDS = 30.0
-_HEARTBEAT_INTERVAL_SECONDS = 60.0
-TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready", "already_current", "not_due"]
+_HEARTBEAT_INTERVAL_SECONDS = 30.0
+TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready"]
 _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
     "blocked": "阻塞",
     "rejected": "拒绝",
     "engineering_ready": "完成",
-    "already_current": "已是最新",
-    "not_due": "无需训练",
 }
 _PARTITION_PHASE_LABELS = {"hash": "SHA-256", "integrity": "完整性", "row_count": "行数"}
 
@@ -52,7 +56,8 @@ class StderrTomorrowTrainingProgress:
         self._command_label = command_label
         self._last_emitted_at: float | None = None
         self._latest: TomorrowTrainingProgress | None = None
-        self._stage_started_at: dict[TomorrowTrainingStage, float] = {}
+        self._stage_started_at: dict[tuple[TomorrowTrainingStage, Strategy | None], float] = {}
+        self._completed_stages: set[tuple[TomorrowTrainingStage, Strategy | None]] = set()
         self._stage_durations: dict[TomorrowTrainingStage, float] = {}
         self._lock = threading.Lock()
         self._stopped = threading.Event()
@@ -81,9 +86,14 @@ class StderrTomorrowTrainingProgress:
     def publish(self, progress: TomorrowTrainingProgress) -> None:
         now = self._monotonic()
         with self._lock:
-            self._stage_started_at.setdefault(progress.stage, now)
-            if progress.state == "completed":
-                self._stage_durations[progress.stage] = now - self._stage_started_at[progress.stage]
+            key = (progress.stage, progress.strategy)
+            if progress.state == "started" or key not in self._stage_started_at:
+                self._stage_started_at[key] = now
+                self._completed_stages.discard(key)
+            if progress.state == "completed" and key not in self._completed_stages:
+                duration = now - self._stage_started_at[key]
+                self._stage_durations[progress.stage] = self._stage_durations.get(progress.stage, 0.0) + duration
+                self._completed_stages.add(key)
             self._latest = progress
             boundary = progress.state in {"started", "completed"}
             due = self._last_emitted_at is None or now - self._last_emitted_at >= _PROGRESS_INTERVAL_SECONDS
@@ -98,6 +108,7 @@ class StderrTomorrowTrainingProgress:
     def publish_cancelled(self) -> None:
         now = self._monotonic()
         with self._lock:
+            self._latest = None
             print(
                 f"{_format_duration(now - self._started_at)} | {self._command_label} | 0/1 (0.00%) | 已取消",
                 file=sys.stderr,
@@ -107,7 +118,7 @@ class StderrTomorrowTrainingProgress:
 
     def publish_result(self, status: TomorrowTrainingCommandStatus, failure_reason: str | None) -> None:
         now = self._monotonic()
-        completed = 1 if status in {"engineering_ready", "already_current", "not_due"} else 0
+        completed = 1 if status == "engineering_ready" else 0
         parts = [
             _format_duration(now - self._started_at),
             self._command_label,
@@ -117,20 +128,23 @@ class StderrTomorrowTrainingProgress:
         if failure_reason is not None:
             parts.append(f"错误 {failure_reason}")
         with self._lock:
+            self._latest = None
             print(" | ".join(parts), file=sys.stderr, flush=True)
             self._last_emitted_at = now
 
     def _heartbeat_loop(self) -> None:
-        while not self._stopped.wait(_HEARTBEAT_INTERVAL_SECONDS):
-            now = self._monotonic()
-            with self._lock:
-                if (
-                    self._latest is not None
-                    and self._latest.state != "completed"
-                    and self._last_emitted_at is not None
-                    and now - self._last_emitted_at >= _HEARTBEAT_INTERVAL_SECONDS
-                ):
-                    self._emit(self._latest, now)
+        while not self._stopped.wait(1.0):
+            self._emit_heartbeat(self._monotonic())
+
+    def _emit_heartbeat(self, now: float) -> None:
+        with self._lock:
+            if (
+                self._latest is not None
+                and self._latest.state != "completed"
+                and self._last_emitted_at is not None
+                and now - self._last_emitted_at >= _HEARTBEAT_INTERVAL_SECONDS
+            ):
+                self._emit(self._latest, now)
 
     def _emit(self, progress: TomorrowTrainingProgress, now: float) -> None:
         percent = 100.0 if progress.total_units == 0 else progress.completed_units / progress.total_units * 100.0
@@ -143,6 +157,7 @@ class StderrTomorrowTrainingProgress:
             ),
             f"{progress.completed_units}/{progress.total_units} ({percent:.2f}%)",
             _STATE_LABELS[progress.state],
+            f"阶段耗时 {_format_duration(now - self._stage_started_at[(progress.stage, progress.strategy)])}",
         ]
         if progress.stage == "resource_preflight":
             parts.extend(

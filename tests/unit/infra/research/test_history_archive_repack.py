@@ -33,8 +33,8 @@ from trader.download.infra.history_control_repository import SQLiteHistoryContro
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
+from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training import run_repack_tomorrow_training, run_repack_v3_training
 from trader.training.infra.profile.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
@@ -47,7 +47,7 @@ def _write_training_memory_evidence(path: Path, training_input_hash: str) -> Non
         "schema_version": "tomorrow_training_memory_gate",
         "status": "passed",
         "training_status": "engineering_ready",
-        "repeat_training_status": "already_current",
+        "repeat_training_status": "engineering_ready",
         "training_input_hash": training_input_hash,
         "model_hash": "b" * 64,
         "report_hash": "c" * 64,
@@ -405,7 +405,7 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
         "read_tomorrow_training_memory_evidence",
         lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
-            "already_current",
+            "engineering_ready",
             built.target_snapshot_hash,
             "b" * 64,
             "c" * 64,
@@ -448,7 +448,7 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
         "read_tomorrow_training_memory_evidence",
         lambda _path: TomorrowTrainingMemoryEvidence(
             "engineering_ready",
-            "already_current",
+            "engineering_ready",
             built.target_snapshot_hash,
             "b" * 64,
             "c" * 64,

@@ -1,6 +1,5 @@
 """V3-owned 61-session training and archive-repack command adapters."""
 
-from datetime import datetime
 from pathlib import Path
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
@@ -19,7 +18,6 @@ def run_tomorrow_training(
     train_root: Path,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
-    observed_at: datetime | None = None,
 ) -> HeadTrainingResult:
     return run_profile_training(
         ProfileTrainingRequest(
@@ -28,7 +26,6 @@ def run_tomorrow_training(
             V3_TRAINING_PROFILE,
             (TOMORROW_HEAD_CONTRACT,),
             progress,
-            observed_at,
         )
     ).heads[0]
 
@@ -38,7 +35,6 @@ def run_v3_training(
     train_root: Path,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
-    observed_at: datetime | None = None,
 ) -> TrainingRunResult:
     return run_profile_training(
         ProfileTrainingRequest(
@@ -47,7 +43,6 @@ def run_v3_training(
             V3_TRAINING_PROFILE,
             V3_TRAINING_PROFILE.heads,
             progress,
-            observed_at,
         )
     )
 
