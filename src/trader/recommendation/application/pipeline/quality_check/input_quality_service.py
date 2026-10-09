@@ -150,19 +150,19 @@ class ScoredInputQuality:
     refresh_pending_count: int = 0
 
     def __post_init__(self) -> None:
-        for name in (
-            "population_count",
-            "candidate_count",
-            "candidate_feature_count",
-            "population_rejected_count",
-            "candidate_rejected_count",
-            "candidate_scored_count",
-            "security_master_covered_count",
-            "history_covered_count",
-            "data_pending_count",
-            "refresh_pending_count",
+        for value in (
+            self.population_count,
+            self.candidate_count,
+            self.candidate_feature_count,
+            self.population_rejected_count,
+            self.candidate_rejected_count,
+            self.candidate_scored_count,
+            self.security_master_covered_count,
+            self.history_covered_count,
+            self.data_pending_count,
+            self.refresh_pending_count,
         ):
-            if getattr(self, name) < 0:
+            if value < 0:
                 raise ValueError("scored input quality counts cannot be negative")
         _validate_history_requirement(self.history_required_sessions)
         if self.population_rejected_count > self.population_count:
@@ -178,24 +178,25 @@ class ScoredInputQuality:
             > self.candidate_count
         ):
             raise ValueError("scored candidate coverage counts cannot exceed candidates")
-        for name in (
-            "candidate_feature_coverage_ratio",
-            "security_master_coverage_ratio",
-            "history_coverage_ratio",
+        for ratio in (
+            self.candidate_feature_coverage_ratio,
+            self.security_master_coverage_ratio,
+            self.history_coverage_ratio,
         ):
-            value = getattr(self, name)
-            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            if not math.isfinite(ratio) or not 0.0 <= ratio <= 1.0:
                 raise ValueError("scored candidate coverage ratios must be in [0, 1]")
-        for name in (
-            "population_filter_reason_counts",
-            "candidate_filter_reason_counts",
-            "candidate_transient_reason_counts",
-            "candidate_optional_reason_counts",
-        ):
-            values = dict(getattr(self, name))
-            if any(not key or value < 0 for key, value in values.items()):
-                raise ValueError("scored input quality reason counts must be non-negative")
-            object.__setattr__(self, name, MappingProxyType(dict(sorted(values.items()))))
+        object.__setattr__(
+            self, "population_filter_reason_counts", _validated_reason_counts(self.population_filter_reason_counts)
+        )
+        object.__setattr__(
+            self, "candidate_filter_reason_counts", _validated_reason_counts(self.candidate_filter_reason_counts)
+        )
+        object.__setattr__(
+            self, "candidate_transient_reason_counts", _validated_reason_counts(self.candidate_transient_reason_counts)
+        )
+        object.__setattr__(
+            self, "candidate_optional_reason_counts", _validated_reason_counts(self.candidate_optional_reason_counts)
+        )
         object.__setattr__(self, "degraded_reasons", tuple(sorted(set(self.degraded_reasons))))
 
     @property
@@ -361,6 +362,13 @@ def has_transient_evaluation_gap(evaluation: ScoredStockEvaluation) -> bool:
 
 def _coverage_ratio(covered: int, total: int) -> float:
     return round(covered / total, 6) if total else 0.0
+
+
+def _validated_reason_counts(values: Mapping[str, int]) -> Mapping[str, int]:
+    counts = dict(values)
+    if any(not key or value < 0 for key, value in counts.items()):
+        raise ValueError("scored input quality reason counts must be non-negative")
+    return MappingProxyType(dict(sorted(counts.items())))
 
 
 def _validate_history_requirement(value: int) -> None:
