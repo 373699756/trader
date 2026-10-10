@@ -10,8 +10,9 @@ from tests.unit.infra.research.test_history_archive_sync import NOW, FakeSupplie
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _current_universe
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
-from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
+from trader.download.domain.security_eligibility import is_st_security_name
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
@@ -34,7 +35,10 @@ def test_name_history_keeps_delisted_st_names(names, expected):
     assert parse_name_history_st("600848", "上海临港", date(2026, 10, 9), html).status == expected
 
 
-@pytest.mark.parametrize("text", ("maintenance", "<td>证券简称更名历史：</td><td>--</td>"))
+@pytest.mark.parametrize(
+    "text",
+    ("maintenance", "<td>证券简称更名历史：</td><td>--</td>", "<td>证券简称更名历史：</td><td>－－</td>"),
+)
 def test_missing_name_history_never_means_clear(text):
     with pytest.raises(ValueError):
         parse_name_history_st("600848", "上海临港", date(2026, 10, 9), text)
@@ -45,6 +49,14 @@ def test_explicit_empty_name_history_uses_the_official_current_name(current_name
     html = '<td>证券简称更名历史：</td><td colspan="3"></td>'
 
     assert parse_name_history_st("300001", current_name, date(2026, 10, 10), html).status == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    (("ST豆神", True), ("*ST仕净", True), ("ＳＴ公司", True), ("S*ST公司", True), ("正常公司", False)),
+)
+def test_st_name_rule_normalizes_current_and_historical_evidence(name, expected):
+    assert is_st_security_name(name) is expected
 
 
 def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(tmp_path):
@@ -264,7 +276,9 @@ def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
         )
         result = source.fetch(_current_universe("600001", "600002", "600003", "600004"), date(2026, 10, 9))
         assert len(result) == 4 and all(item.status == "clear" for item in result)
-        assert reports == [(2, 4), (4, 4)]
+        assert reports[0] == (2, 4, None)
+        assert reports[1][:2] == (4, 4)
+        assert reports[1][2] == HistoryStEligibilitySummary(4, 0, 0)
         assert executor.status().rejected_count == 0
     finally:
         executor.stop(wait=True, cancel_futures=True)

@@ -18,6 +18,7 @@ from trader.infra.market_data.history.history import (
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.history_tail import HistoryQuality
+from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,
@@ -82,6 +83,7 @@ class PublishedHistoryCache:
         self._lock = threading.RLock()
         self._refresh_lock = threading.Lock()
         self._manifest: PublishedHistoryManifest | None = None
+        self._historical_st_eligibility = HistoricalStEligibilitySnapshot.unavailable()
         self._entries: dict[str, PublishedHistoryEntry] = {}
         self._universe_rows = 0
         self._covered_rows = 0
@@ -103,12 +105,25 @@ class PublishedHistoryCache:
     def _rebuild_projection(self) -> bool:
         try:
             manifest = self._history.manifest()
+            eligibility_manifest = self._outcome_history.manifest()
         except RuntimeError as exc:
             self._record_error(type(exc).__name__)
             return False
-        if manifest is None:
+        eligibility = (
+            HistoricalStEligibilitySnapshot.ready(
+                eligibility_manifest.snapshot_hash,
+                eligibility_manifest.universe_codes,
+            )
+            if eligibility_manifest is not None
+            else HistoricalStEligibilitySnapshot.unavailable()
+        )
+        if manifest is None or eligibility_manifest is None:
             with self._lock:
-                self._maintenance_reason = "history_snapshot_unavailable"
+                if self._historical_st_eligibility.status != "ready":
+                    self._historical_st_eligibility = eligibility
+                self._maintenance_reason = (
+                    "history_snapshot_unavailable" if manifest is None else "history_st_eligibility_unavailable"
+                )
             return False
         with self._lock:
             if (
@@ -116,23 +131,45 @@ class PublishedHistoryCache:
                 and self._manifest.snapshot_hash == manifest.snapshot_hash
                 and self._maintenance_reason is None
             ):
-                return False
+                changed = self._historical_st_eligibility != eligibility
+                self._historical_st_eligibility = eligibility
+                return changed
         try:
             entries = self._build_entries(manifest)
             confirmed = self._history.manifest()
+            confirmed_eligibility = self._outcome_history.manifest()
         except (RuntimeError, ValueError) as exc:
             self._record_error(type(exc).__name__)
             return False
-        if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
-            self._record_error("history_snapshot_changed")
+        if not self._identities_stable(manifest, eligibility_manifest, confirmed, confirmed_eligibility):
             return False
         with self._lock:
             self._manifest = manifest
+            self._historical_st_eligibility = eligibility
             self._entries = entries
             self._universe_rows = len(manifest.universe_codes)
             self._covered_rows = sum(len(entry.bars) >= _RAW_RETENTION_SESSIONS for entry in entries.values())
             self._maintenance_reason = None
         return True
+
+    def _identities_stable(
+        self,
+        manifest: PublishedHistoryManifest,
+        eligibility_manifest: PublishedHistoryManifest,
+        confirmed: PublishedHistoryManifest | None,
+        confirmed_eligibility: PublishedHistoryManifest | None,
+    ) -> bool:
+        if confirmed is None or confirmed.snapshot_hash != manifest.snapshot_hash:
+            self._record_error("history_snapshot_changed")
+            return False
+        if confirmed_eligibility is None or confirmed_eligibility.snapshot_hash != eligibility_manifest.snapshot_hash:
+            self._record_error("history_eligibility_snapshot_changed")
+            return False
+        return True
+
+    def historical_st_eligibility(self) -> HistoricalStEligibilitySnapshot:
+        with self._lock:
+            return self._historical_st_eligibility
 
     def record_maintenance(
         self,

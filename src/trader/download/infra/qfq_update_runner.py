@@ -30,10 +30,17 @@ class QfqUpdateRunner:
         rows = 0
         try:
             with HistoryMaintenanceLock(self.lock_path):
+                recovered = (*self.v2.recover_pending_transactions(), *self.v3.recover_pending_transactions())
+                if recovered:
+                    self.updater.report(f"qfq 本地恢复 | 已恢复事务 {len(recovered)} 个分片")
                 if not seed_only:
                     return self.updater.execute(self.now())
                 manifest = self.history.manifest()
                 if manifest is not None:
+                    for cache in (self.v2, self.v3):
+                        files, deleted_rows = cache.retain_codes(frozenset(manifest.universe_codes))
+                        changed.update(files)
+                        rows += deleted_rows
                     needed = frozenset(manifest.universe_codes) - (self.v2.codes() & self.v3.codes())
                     if needed:
                         self.updater.report(f"qfq history extraction: missing={len(needed)}")

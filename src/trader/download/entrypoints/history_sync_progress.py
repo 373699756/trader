@@ -69,6 +69,23 @@ _COUNT_STAGES = frozenset(
 _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
 
 
+def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.gap_summary is not None:
+        gap_summary = progress.gap_summary
+        return (
+            f"价格对待补 {gap_summary.price_pair_cells} 股日",
+            f"Tencent失败 {gap_summary.failed_codes} 股",
+        )
+    if progress.st_summary is not None:
+        st_summary = progress.st_summary
+        return (
+            f"合格 {st_summary.clear}",
+            f"曾ST排除 {st_summary.ever_st}",
+            f"未知排除 {st_summary.unknown}",
+        )
+    return ()
+
+
 class StderrHistorySyncProgress:
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._monotonic = monotonic
@@ -122,14 +139,7 @@ class StderrHistorySyncProgress:
             parts[2] = "检查中"
         if progress.stage in _COUNT_STAGES:
             parts.append(_format_count(progress.completed_units, progress.total_units))
-        if progress.gap_summary is not None:
-            summary = progress.gap_summary
-            parts.extend(
-                (
-                    f"价格对待补 {summary.price_pair_cells} 股日",
-                    f"Tencent失败 {summary.failed_codes} 股",
-                )
-            )
+        parts.extend(_summary_parts(progress))
         if progress.current_item is not None:
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")

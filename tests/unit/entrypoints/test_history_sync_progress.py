@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncProgress
+from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncProgress
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 
 
@@ -19,10 +19,19 @@ class _Clock:
 def test_st_checkpoints_report_progress_before_completion(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 1.0, 2.0))
     progress.publish(HistorySyncProgress("history_st_reference", "completed", 2, 4))
-    progress.publish(HistorySyncProgress("history_st_reference", "completed", 4, 4))
+    progress.publish(
+        HistorySyncProgress(
+            "history_st_reference",
+            "completed",
+            4,
+            4,
+            st_summary=HistoryStEligibilitySummary(3, 1, 0),
+        )
+    )
     output = capsys.readouterr().err.splitlines()
     assert "检查中" in output[0] and "2/4" in output[0]
     assert "完成" in output[1] and "4/4" in output[1]
+    assert "合格 3 | 曾ST排除 1 | 未知排除 0" in output[1]
 
 
 def _failed_status(reason: str) -> HistoryMaintenanceStatus:

@@ -5,7 +5,10 @@ from datetime import date
 
 import pytest
 
-from trader.download.infra.exchange_security_universe import load_current_a_share_universe
+from trader.download.infra.exchange_security_universe import (
+    load_current_a_share_universe,
+    select_history_eligible_universe,
+)
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterListing
 
 
@@ -59,3 +62,23 @@ def test_exchange_request_failure_does_not_return_partial_universe() -> None:
 
     with pytest.raises(TimeoutError):
         load_current_a_share_universe(lambda _timeout: _listings("SSE"), unavailable, 15.0)
+
+
+def test_history_eligibility_selects_the_exact_qfq_population() -> None:
+    universe = load_current_a_share_universe(
+        lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0
+    )
+    eligible_codes = tuple(item.code for item in universe if not item.code.endswith("9"))
+
+    selected = select_history_eligible_universe(universe, eligible_codes)
+
+    assert tuple(item.code for item in selected) == eligible_codes
+
+
+@pytest.mark.parametrize("eligible_codes", ((), ("999999",)))
+def test_qfq_fails_closed_without_a_matching_history_eligibility(eligible_codes) -> None:
+    universe = load_current_a_share_universe(
+        lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0
+    )
+    with pytest.raises(RuntimeError, match="history eligible universe"):
+        select_history_eligible_universe(universe, eligible_codes)

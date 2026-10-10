@@ -29,6 +29,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageReasonAggregate,
 )
 from trader.recommendation.domain.market.eligibility import (
+    HistoricalStEligibilitySnapshot,
     IssuerEligibilityBatch,
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
@@ -46,9 +47,16 @@ from trader.recommendation.domain.market.static import StaticIssuer, normalize_s
 class StaticMarketPipeline:
     """Coordinate source, collection, standardization and permanent eligibility."""
 
-    def __init__(self, eligibility: IssuerEligibilityPort, *, monotonic: Callable[[], float]) -> None:
+    def __init__(
+        self,
+        eligibility: IssuerEligibilityPort,
+        *,
+        monotonic: Callable[[], float],
+        historical_st_eligibility: Callable[[], HistoricalStEligibilitySnapshot] | None = None,
+    ) -> None:
         self.eligibility = eligibility
         self._monotonic = monotonic
+        self._historical_st_eligibility = historical_st_eligibility
         self._static_market = StaticMarketCache()
         self._versions = InputVersionClock()
 
@@ -128,12 +136,15 @@ class StaticMarketPipeline:
         exclusions = tuple(item for item in self.eligibility.exclusions(observed_at) if item.code in population)
         exclusions_by_code = {item.code: item for item in exclusions}
         reason_counts = Counter(item.reason for item in exclusions_by_code.values() if item.reason is not None)
-        eligible_codes = population.difference(exclusions_by_code)
+        historical_st = self._historical_st_eligibility() if self._historical_st_eligibility is not None else None
         decisions = tuple(
             exclusions_by_code[code]
             if code in exclusions_by_code
-            else IssuerEligibilityDecision(code, IssuerEligibilityState.ELIGIBLE_UNVERIFIED, observed_at)
+            else IssuerEligibilityDecision(code, self._historical_st_state(code, historical_st), observed_at)
             for code in sorted(population)
+        )
+        eligible_codes = frozenset(
+            decision.code for decision in decisions if decision.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
         )
         filtered = filter_permanent_eligibility(normalized, decisions, as_of=observed_at, latency_ms=0)
         filtered = self._measured_stage(filtered, started)
@@ -144,6 +155,7 @@ class StaticMarketPipeline:
                 IssuerEligibilityReasonCount(reason, reason_counts[reason])
                 for reason in sorted(reason_counts, key=lambda item: item.value)
             ),
+            pending_count=sum(decision.state is IssuerEligibilityState.QUALIFICATION_PENDING for decision in decisions),
         )
         return (
             batch,
@@ -151,6 +163,14 @@ class StaticMarketPipeline:
             (source.snapshot, collected.snapshot, normalized.snapshot, filtered.snapshot),
             filtered,
         )
+
+    @staticmethod
+    def _historical_st_state(code: str, snapshot: HistoricalStEligibilitySnapshot | None) -> IssuerEligibilityState:
+        if snapshot is None:
+            return IssuerEligibilityState.ELIGIBLE_UNVERIFIED
+        if snapshot.status == "ready" and snapshot.eligible(code):
+            return IssuerEligibilityState.ELIGIBLE_UNVERIFIED
+        return IssuerEligibilityState.QUALIFICATION_PENDING
 
     def _elapsed_ms(self, started: float) -> int:
         return max(0, int((self._monotonic() - started) * 1000))

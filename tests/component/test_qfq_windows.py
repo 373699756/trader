@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
+import sys
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -21,7 +23,11 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_sync import HistorySupplierContext
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
+from trader.download.domain.published_history import (
+    PublishedHistoryManifest,
+    PublishedHistoryWindow,
+    project_history_cell,
+)
 from trader.download.domain.qfq_window import QfqUpdateResult, completed_daily_cutoff
 from trader.download.infra.history_control_repository import HistoryMaintenanceLock
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
@@ -98,6 +104,25 @@ def test_changed_code_does_not_rewrite_other_range(tmp_path) -> None:
     assert _fingerprints(cache.root)["qfq_szse_chinext.sqlite3"] == before["qfq_szse_chinext.sqlite3"]
 
 
+def test_qfq_eligibility_prunes_existing_excluded_windows_from_both_profiles(tmp_path) -> None:
+    updater = _updater(tmp_path, Supplier(codes=("600001",)))
+    for cache in (updater.v2, updater.v3):
+        cache.replace_window(_window("600001"), "seed")
+        cache.replace_window(_window("300010"), "seed")
+
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert updater.v2.codes() == updater.v3.codes() == frozenset({"600001"})
+    assert set(result.changed_files) == {
+        "v2/qfq_sse_main.sqlite3",
+        "v2/qfq_szse_chinext.sqlite3",
+        "v3/qfq_sse_main.sqlite3",
+        "v3/qfq_szse_chinext.sqlite3",
+    }
+
+
 def test_board_routing_covers_all_profiles_without_sidecar(tmp_path) -> None:
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
     codes = ("600001", "605001", "000001", "003001", "300001", "301001", "302132", "688001", "689001")
@@ -159,6 +184,56 @@ def test_tampered_cells_fail_closed(tmp_path) -> None:
         connection.execute("DELETE FROM bars WHERE day=?", (DAYS[-1].isoformat(),))
     with pytest.raises(RuntimeError, match="identity mismatch"):
         cache.read_code("600001")
+
+
+def _leave_hot_journal(shard: Path) -> None:
+    script = """
+import os
+import sqlite3
+import sys
+
+connection = sqlite3.connect(sys.argv[1])
+connection.execute("PRAGMA journal_mode=DELETE")
+connection.execute("PRAGMA synchronous=FULL")
+connection.execute("PRAGMA cache_size=1")
+connection.execute("BEGIN EXCLUSIVE")
+connection.execute("UPDATE bars SET payload=payload || ' ' WHERE code='300001'")
+os._exit(0)
+"""
+    subprocess.run([sys.executable, "-c", script, str(shard)], check=True)
+
+
+def test_runner_recovers_hot_journal_before_read_only_window_checks(tmp_path) -> None:
+    supplier = Supplier(codes=("300001",))
+    updater = _updater(tmp_path, supplier)
+    updater.v2.replace_window(_window("300001"), "old-source")
+    updater.v3.replace_window(_window("300001", days=DAYS[-61:]), "old-source")
+    shard = tmp_path / "v2/qfq_szse_chinext.sqlite3"
+    journal = Path(f"{shard}-journal")
+    _leave_hot_journal(shard)
+    assert journal.is_file() and journal.stat().st_size > 0
+
+    class UnavailableHistory:
+        def manifest(self):
+            raise AssertionError("online qfq must not inspect full history")
+
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    messages: list[str] = []
+    runner = QfqUpdateRunner(
+        UnavailableHistory(),
+        replace(updater, report=messages.append),
+        updater.v2,
+        updater.v3,
+        tmp_path / ".lock",
+        lambda: observed,
+    )
+    result = runner.execute()
+
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert not journal.exists()
+    assert len(updater.v2.read_code("300001").cells) == 251
+    assert len(updater.v3.read_code("300001").cells) == 61
+    assert any("qfq 本地恢复 | 已恢复事务 1 个分片" in message for message in messages)
 
 
 def test_checkpoint_restart_preserves_all_codes_and_failed_write_does_not_advance(tmp_path, monkeypatch) -> None:
@@ -566,6 +641,51 @@ def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_p
     assert result.completed_codes == 2 and result.pending_codes == 0
     assert events == ["tencent", "tencent", "baostock", "baostock", "closed"]
     assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").source_identity("600001").startswith("baostock:")
+
+
+def test_qfq_composition_uses_the_published_training_st_population(tmp_path, monkeypatch) -> None:
+    from trader import bootstrap
+
+    eligible = BaoStockSecurity("600001", "正常公司", "main", DAYS[0], None, "fixture")
+    excluded = BaoStockSecurity("300010", "ST豆神", "chinext", DAYS[0], None, "fixture")
+    manifest = PublishedHistoryManifest("a" * 64, 1, DAYS[-1], DAYS, (eligible.code,))
+
+    class HistoryPublication:
+        def manifest(self):
+            return manifest
+
+    class Tencent(Supplier):
+        def __init__(self, dependencies):
+            super().__init__(codes=(eligible.code,))
+            self.dependencies = dependencies
+
+        def load_qfq_context(self, as_of, sessions):
+            context = super().load_qfq_context(as_of, sessions)
+            universe = self.dependencies.load_universe()
+            assert tuple(item.code for item in universe) == (eligible.code,)
+            return replace(context, universe=universe)
+
+    class BaoStock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(bootstrap, "SQLitePublishedHistoryArchive", lambda _root: HistoryPublication())
+    monkeypatch.setattr(bootstrap, "load_current_a_share_universe", lambda *_args: (eligible, excluded))
+    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
+    monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
+
+    result = bootstrap.execute_qfq_download(
+        tmp_path,
+        report=lambda _message: None,
+        now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
+    )
+
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").codes() == frozenset({eligible.code})
+    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v3").codes() == frozenset({eligible.code})
 
 
 def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_path, monkeypatch) -> None:

@@ -24,7 +24,7 @@ from trader.infra.market_data.providers.exchange_security_master import (
 )
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
-from trader.recommendation.domain.market.eligibility import manual_blacklist_fact
+from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, manual_blacklist_fact
 from trader.recommendation.infra.market_data.official_static_reference import parse_official_static_reference
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.status_projection import _stage_snapshot_payload
@@ -191,6 +191,19 @@ def test_unique_registry_filters_the_complete_population_before_quote_and_histor
     assert batch.dynamic_stage.snapshot.pending_count == 0
     assert history.calls == ["600001"]
     assert all(s.rejected_count == 0 for s in batch.static_stages[:3])
+
+
+def test_published_history_st_eligibility_prunes_realtime_requests_before_per_stock_history() -> None:
+    qualification = HistoricalStEligibilitySnapshot.ready("a" * 64, ("600001",))
+    _, _, _, history, service = _fixture(historical_st_eligibility=qualification)
+    service.references.schedule_security_master_refresh(NOW)
+
+    batch = service.fetch_market_feature_batch(NOW)
+
+    static = batch.static_stages[-1]
+    assert (static.input_count, static.output_count, static.pending_count) == (2, 1, 1)
+    assert [feature.quote.code for feature in batch.features] == ["600001"]
+    assert history.calls == ["600001"]
 
 
 def test_parser_rejects_mixed_versions_duplicate_and_missing_name_before_acceptance():

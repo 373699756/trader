@@ -126,6 +126,21 @@ class HistoryGapSummary:
 
 
 @dataclass(frozen=True)
+class HistoryStEligibilitySummary:
+    clear: int
+    ever_st: int
+    unknown: int
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value < 0 for value in (self.clear, self.ever_st, self.unknown)):
+            raise ValueError("history ST eligibility summary is invalid")
+
+    @property
+    def total(self) -> int:
+        return self.clear + self.ever_st + self.unknown
+
+
+@dataclass(frozen=True)
 class HistorySyncProgress:
     stage: HistorySyncProgressStage
     state: HistorySyncProgressState
@@ -138,6 +153,7 @@ class HistorySyncProgress:
     supplier_source: Literal["baostock", "tencent"] | None = None
     requested_sessions: int | None = None
     gap_summary: HistoryGapSummary | None = None
+    st_summary: HistoryStEligibilitySummary | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -157,6 +173,14 @@ class HistorySyncProgress:
             or (
                 self.requested_sessions is not None
                 and (type(self.requested_sessions) is not int or not 1 <= self.requested_sessions <= 2000)
+            )
+            or (
+                self.st_summary is not None
+                and (
+                    self.stage != "history_st_reference"
+                    or self.completed_units != self.total_units
+                    or self.st_summary.total != self.total_units
+                )
             )
         ):
             raise ValueError("history synchronization progress is invalid")
@@ -181,5 +205,6 @@ __all__ = [
     "HistorySyncProgressPort",
     "HistorySyncProgressStage",
     "HistoryGapSummary",
+    "HistoryStEligibilitySummary",
     "HistoryTwoStageSupplier",
 ]

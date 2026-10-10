@@ -19,12 +19,20 @@ from flask import Flask
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
+from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress, HistorySyncProgressPort
+from trader.download.domain.history_sync import (
+    HistorySyncConfiguration,
+    HistorySyncProgress,
+    HistorySyncProgressPort,
+)
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.exchange_security_universe import load_current_a_share_universe
+from trader.download.infra.exchange_security_universe import (
+    load_current_a_share_universe,
+    select_history_eligible_universe,
+)
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
@@ -206,8 +214,16 @@ def execute_history_download(
                         requests.get,
                         history_pool,
                         cancel_requested,
-                        report=lambda done, total: (
-                            progress.publish(HistorySyncProgress("history_st_reference", "completed", done, total))
+                        report=lambda done, total, summary: (
+                            progress.publish(
+                                HistorySyncProgress(
+                                    "history_st_reference",
+                                    "completed",
+                                    done,
+                                    total,
+                                    st_summary=summary,
+                                )
+                            )
                             if progress is not None
                             else None
                         ),
@@ -237,6 +253,18 @@ def execute_qfq_download(
     v2 = SQLiteQfqWindowCache(root, "v2")
     v3 = SQLiteQfqWindowCache(root, "v3")
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history"))
+
+    def load_qfq_universe() -> tuple[BaoStockSecurity, ...]:
+        manifest = history.manifest()
+        if manifest is None:
+            raise RuntimeError("qfq requires a published history ST eligibility snapshot")
+        official = load_current_a_share_universe(
+            partial(fetch_sse_listings, get=requests.get),
+            partial(fetch_szse_listings, get=requests.get),
+            15.0,
+        )
+        return select_history_eligible_universe(official, manifest.universe_codes)
+
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
     try:
@@ -247,12 +275,7 @@ def execute_qfq_download(
             tencent = TencentQfqSupplier(
                 TencentQfqDependencies(
                     requests.Session,
-                    partial(
-                        load_current_a_share_universe,
-                        partial(fetch_sse_listings, get=requests.get),
-                        partial(fetch_szse_listings, get=requests.get),
-                        15.0,
-                    ),
+                    load_qfq_universe,
                     cancel_requested,
                 )
             )
@@ -960,7 +983,11 @@ def _build_market_data(
             market_health,
             eligibility,
             time.monotonic,
-            StaticMarketPipeline(eligibility, monotonic=time.monotonic),
+            StaticMarketPipeline(
+                eligibility,
+                monotonic=time.monotonic,
+                historical_st_eligibility=history_cache.historical_st_eligibility,
+            ),
         )
     )
     return market_data

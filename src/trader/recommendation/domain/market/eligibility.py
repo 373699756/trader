@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.research import CorporateRiskCategory, ResearchObservation
@@ -33,6 +35,47 @@ class IssuerEligibilityState(str, Enum):
     ELIGIBLE_UNVERIFIED = "eligible_unverified"
     QUALIFICATION_PENDING = "qualification_pending"
     PERMANENTLY_EXCLUDED = "permanently_excluded"
+
+
+@dataclass(frozen=True)
+class HistoricalStEligibilitySnapshot:
+    """Published history population used as the shared ST qualification gate."""
+
+    status: Literal["ready", "unavailable"]
+    source_identity: str | None
+    eligible_codes: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        codes = tuple(self.eligible_codes)
+        ready = self.status == "ready"
+        if (
+            self.status not in {"ready", "unavailable"}
+            or ready != (self.source_identity is not None)
+            or ready != bool(codes)
+            or codes != tuple(sorted(set(codes)))
+            or any(_CODE.fullmatch(code) is None for code in codes)
+            or (
+                self.source_identity is not None
+                and (
+                    len(self.source_identity) != 64
+                    or any(char not in "0123456789abcdef" for char in self.source_identity)
+                )
+            )
+        ):
+            raise ValueError("historical ST eligibility snapshot is invalid")
+        object.__setattr__(self, "eligible_codes", codes)
+
+    @classmethod
+    def unavailable(cls) -> HistoricalStEligibilitySnapshot:
+        return cls("unavailable", None)
+
+    @classmethod
+    def ready(cls, source_identity: str, eligible_codes: tuple[str, ...]) -> HistoricalStEligibilitySnapshot:
+        return cls("ready", source_identity, eligible_codes)
+
+    def eligible(self, code: str) -> bool:
+        position = bisect_left(self.eligible_codes, code)
+        return position < len(self.eligible_codes) and self.eligible_codes[position] == code
 
 
 @dataclass(frozen=True, order=True)
@@ -126,13 +169,21 @@ class IssuerEligibilityBatch:
     input_count: int
     eligible_count: int
     reason_counts: tuple[IssuerEligibilityReasonCount, ...] = ()
+    pending_count: int = 0
 
     def __post_init__(self) -> None:
-        if self.input_count < 0 or not 0 <= self.eligible_count <= self.input_count:
+        if (
+            self.input_count < 0
+            or not 0 <= self.eligible_count <= self.input_count
+            or not 0 <= self.pending_count <= self.input_count - self.eligible_count
+        ):
             raise ValueError("issuer eligibility batch counts are invalid")
         if len({item.reason for item in self.reason_counts}) != len(self.reason_counts):
             raise ValueError("issuer eligibility batch reasons must be unique")
-        if sum(item.count for item in self.reason_counts) != self.input_count - self.eligible_count:
+        if (
+            sum(item.count for item in self.reason_counts)
+            != self.input_count - self.eligible_count - self.pending_count
+        ):
             raise ValueError("issuer eligibility batch reasons must explain every exclusion")
 
 
@@ -305,6 +356,7 @@ def _sha256(payload: dict[str, str]) -> str:
 
 
 __all__ = [
+    "HistoricalStEligibilitySnapshot",
     "IssuerEligibilityBatch",
     "IssuerEligibilityDecision",
     "IssuerEligibilityFact",

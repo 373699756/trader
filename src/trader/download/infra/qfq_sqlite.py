@@ -64,6 +64,26 @@ class SQLiteQfqWindowCache:
         self._ensure_layout()
         return tuple(name for name in QFQ_SHARD_NAMES if (self.root / name).is_file())
 
+    def recover_pending_transactions(self) -> tuple[str, ...]:
+        """Let SQLite roll back hot journals before any read-only window checks."""
+
+        recovered: list[str] = []
+        try:
+            for name in self._existing_names():
+                path = self.root / name
+                journal = Path(f"{path}-journal")
+                if not journal.is_file() or journal.stat().st_size == 0:
+                    continue
+                if path.is_symlink() or journal.is_symlink():
+                    raise RuntimeError("qfq shard recovery path is unsafe")
+                with closing(sqlite3.connect(path, timeout=5)) as connection:
+                    if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                        raise RuntimeError("qfq shard recovery integrity check failed")
+                recovered.append(f"{self.root.name}/{name}")
+        except (OSError, sqlite3.Error) as exc:
+            raise RuntimeError("qfq pending transaction recovery failed") from exc
+        return tuple(recovered)
+
     def codes(self) -> frozenset[str]:
         try:
             result: set[str] = set()
@@ -111,6 +131,35 @@ class SQLiteQfqWindowCache:
         except sqlite3.Error as exc:
             raise RuntimeError("qfq source identity unavailable") from exc
         return str(row[0]) if row is not None else None
+
+    def retain_codes(self, allowed_codes: frozenset[str]) -> tuple[tuple[str, ...], int]:
+        """Remove derived windows outside the active published history eligibility."""
+
+        if any(len(code) != 6 or not code.isascii() or not code.isdigit() for code in allowed_codes):
+            raise ValueError("qfq allowed code set is invalid")
+        changed: list[str] = []
+        deleted_rows = 0
+        try:
+            for name in self._existing_names():
+                with closing(self._read_connection(name)) as connection:
+                    excluded = tuple(
+                        (str(code), int(rows))
+                        for code, rows in connection.execute(
+                            "SELECT identities.code,COUNT(bars.day) FROM identities "
+                            "LEFT JOIN bars ON bars.code=identities.code GROUP BY identities.code"
+                        )
+                        if code not in allowed_codes
+                    )
+                if not excluded:
+                    continue
+                with closing(self._write_connection(name)) as connection, connection:
+                    connection.executemany("DELETE FROM bars WHERE code=?", ((code,) for code, _ in excluded))
+                    connection.executemany("DELETE FROM identities WHERE code=?", ((code,) for code, _ in excluded))
+                changed.append(f"{self.root.name}/{name}")
+                deleted_rows += sum(rows for _, rows in excluded)
+        except sqlite3.Error as exc:
+            raise RuntimeError("qfq eligibility pruning failed") from exc
+        return tuple(changed), deleted_rows
 
     def replace_window(self, window: PublishedHistoryWindow, source_identity: str) -> tuple[tuple[str, ...], int]:
         self._ensure_layout()

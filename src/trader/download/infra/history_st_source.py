@@ -14,11 +14,12 @@ import requests
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.history_sync import HistoryStEligibilitySummary
+from trader.download.domain.security_eligibility import is_st_security_name
 from trader.download.infra.history_reference_files import read_st_evidence, write_st_evidence
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 _NAME_HISTORY = re.compile(r"证券简称更名历史[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", re.S)
-_ST = re.compile(r"(?:^|[^A-Za-z])(?:S\*?ST|\*?ST)", re.I)
 
 
 def parse_name_history_st(code: str, current_name: str, checked_on: date, text: str) -> HistoryStEvidence:
@@ -29,7 +30,11 @@ def parse_name_history_st(code: str, current_name: str, checked_on: date, text: 
     current = unicodedata.normalize("NFKC", current_name).strip()
     if names in {"--", "-", "暂无", "暂无数据"} or not current:
         raise ValueError("history_st_name_history_empty")
-    return HistoryStEvidence(code, checked_on, "ever_st" if _ST.search(f"{current} {names}") else "clear")
+    return HistoryStEvidence(
+        code,
+        checked_on,
+        "ever_st" if is_st_security_name(f"{current} {names}") else "clear",
+    )
 
 
 class HistoryStNameSource:
@@ -40,7 +45,7 @@ class HistoryStNameSource:
         executor: WorkerExecutor,
         cancel_requested: Callable[[], bool],
         *,
-        report: Callable[[int, int], None],
+        report: Callable[[int, int, HistoryStEligibilitySummary | None], None],
         batch_size: int = 8,
     ) -> None:
         if batch_size < 1:
@@ -78,7 +83,15 @@ class HistoryStNameSource:
                         evidence[code] = HistoryStEvidence(code, as_of, "unknown")
                     completed += 1
                 write_st_evidence(self._path, tuple(sorted(evidence.values(), key=lambda item: item.code)))
-                self._report(completed, total)
+                summary = None
+                if completed == total:
+                    current = tuple(evidence[item.code] for item in universe)
+                    summary = HistoryStEligibilitySummary(
+                        sum(item.status == "clear" for item in current),
+                        sum(item.status == "ever_st" for item in current),
+                        sum(item.status == "unknown" for item in current),
+                    )
+                self._report(completed, total, summary)
             finally:
                 for future in futures:
                     future.cancel()

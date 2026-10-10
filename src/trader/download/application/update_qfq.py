@@ -29,6 +29,8 @@ class QfqWindowPort(Protocol):
 
     def source_identity(self, code: str) -> str | None: ...
 
+    def retain_codes(self, allowed_codes: frozenset[str]) -> tuple[tuple[str, ...], int]: ...
+
     def replace_window(self, window: PublishedHistoryWindow, source_identity: str) -> tuple[tuple[str, ...], int]: ...
 
 
@@ -116,6 +118,11 @@ class UpdateQfqWindows:
             self.report,
             lambda: self.monotonic() - started,
         )
+        allowed_codes = frozenset(security.code for security in context.universe)
+        for cache in (self.v2, self.v3):
+            files, deleted_rows = cache.retain_codes(allowed_codes)
+            progress.changed.update(files)
+            progress.rows += deleted_rows
         progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
         jobs = iter(self._jobs(context, progress))
         gaps: list[_GapJob] = []

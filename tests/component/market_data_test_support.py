@@ -290,6 +290,8 @@ def _service(
         )
         references._reference_versions["security_master"] = "fixture-official-population"
     eligibility = kwargs.pop("eligibility", _AllowAllEligibility())
+    historical_st_eligibility = kwargs.pop("historical_st_eligibility", None)
+    historical_st_source = (lambda: historical_st_eligibility) if historical_st_eligibility is not None else None
     research = ResearchLoader(
         kwargs.pop("research_client", None),
         runner,
@@ -336,7 +338,11 @@ def _service(
             health,
             eligibility,
             monotonic,
-            StaticMarketPipeline(eligibility, monotonic=monotonic),
+            StaticMarketPipeline(
+                eligibility,
+                monotonic=monotonic,
+                historical_st_eligibility=historical_st_source,
+            ),
         )
     )
     return service

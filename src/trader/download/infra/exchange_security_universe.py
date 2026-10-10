@@ -25,3 +25,18 @@ def load_current_a_share_universe(
         )
         for item in sorted(listings, key=lambda item: item.code)
     )
+
+
+def select_history_eligible_universe(
+    universe: tuple[BaoStockSecurity, ...], eligible_codes: tuple[str, ...]
+) -> tuple[BaoStockSecurity, ...]:
+    """Bind a current official universe to the active history training eligibility."""
+
+    official_codes = {security.code for security in universe}
+    eligible = frozenset(eligible_codes)
+    if not eligible or not eligible.issubset(official_codes):
+        raise RuntimeError("history eligible universe is unavailable or conflicts with the official universe")
+    return tuple(security for security in universe if security.code in eligible)
+
+
+__all__ = ["load_current_a_share_universe", "select_history_eligible_universe"]
