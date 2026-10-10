@@ -254,7 +254,7 @@ def execute_qfq_download(
                 updater,
                 v2,
                 v3,
-                project_root / "data/history/baostock/.maintenance.lock",
+                root / ".maintenance.lock",
                 ShanghaiClock(now).now,
             ).execute(seed_only=seed_only)
     finally:

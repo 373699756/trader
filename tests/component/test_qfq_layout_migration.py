@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from tests.component.test_qfq_windows import _window
+from trader.download.infra.history_control_repository import HistoryMaintenanceLock
 from trader.download.infra.qfq_layout_migration import build_qfq_layout
 from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, SQLiteQfqWindowCache, qfq_shard_name
 from trader.infra.atomic_files.json import atomic_write_json
@@ -84,3 +86,37 @@ def test_path_traversal_and_overlap_are_rejected(tmp_path):
     atomic_write_json(source / "v2/index.json", {"600001": "../../outside.sqlite3"})
     with pytest.raises(ValueError, match="routing invalid"):
         build_qfq_layout(source, tmp_path / "target", tmp_path / ".lock")
+
+
+@pytest.mark.parametrize("lock_owner", ("history", "qfq"))
+def test_migration_cli_locks_explicit_qfq_source_independently_of_history(tmp_path, monkeypatch, capsys, lock_owner):
+    from scripts.rename_qfq_shards import main
+
+    project = tmp_path / "project"
+    source = tmp_path / "legacy"
+    target = tmp_path / "target"
+    _legacy(source)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "rename_qfq_shards.py",
+            "--apply",
+            "--project-root",
+            str(project),
+            "--source-root",
+            str(source),
+            "--target-root",
+            str(target),
+        ],
+    )
+    lock = source / ".maintenance.lock" if lock_owner == "qfq" else project / "data/history/baostock/.maintenance.lock"
+    with HistoryMaintenanceLock(lock):
+        status = main()
+    report = json.loads(capsys.readouterr().out)
+    if lock_owner == "qfq":
+        assert status == 1 and report["reason"] == "HistoryMaintenanceAlreadyRunningError"
+        assert not target.exists() and not target.with_name("target.building").exists()
+    else:
+        assert status == 0 and report["status"] == "built_verified"
+        assert report["codes"] == 8 and report["source_unchanged"]
+        assert len(SQLiteQfqWindowCache(target, "v2").read_code("600001").cells) == 251

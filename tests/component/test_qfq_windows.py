@@ -507,14 +507,73 @@ def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_p
 
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
     monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
-    result = bootstrap.execute_qfq_download(
-        tmp_path,
-        report=lambda _message: None,
-        now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
-    )
+    with HistoryMaintenanceLock(tmp_path / "data/history/baostock/.maintenance.lock"):
+        result = bootstrap.execute_qfq_download(
+            tmp_path,
+            report=lambda _message: None,
+            now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
+        )
     assert result.completed_codes == 2 and result.pending_codes == 0
     assert events == ["tencent", "tencent", "baostock", "baostock", "closed"]
     assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").source_identity("600001").startswith("baostock:")
+
+
+def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_path, monkeypatch) -> None:
+    from trader import bootstrap
+
+    class Tencent(Supplier):
+        def load_qfq_context(self, as_of, sessions):
+            raise AssertionError("locked qfq must not load supplier context")
+
+    supplier = Tencent()
+    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: supplier)
+    with HistoryMaintenanceLock(tmp_path / "data/qfq/.maintenance.lock"):
+        result = bootstrap.execute_qfq_download(tmp_path, report=lambda _message: None)
+    assert result.failure_reason == "HistoryMaintenanceAlreadyRunningError"
+    assert supplier.calls == []
+    assert not (tmp_path / "data/qfq/.checkpoint.json").exists()
+    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").codes() == frozenset()
+
+
+def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, monkeypatch) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tests.unit.infra.research.test_history_archive_sync import FakeSupplier, _configuration
+    from trader import bootstrap
+    from trader.download.infra.history_archive_sync import run_history_sync
+
+    barrier = threading.Barrier(2)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+
+    class Tencent(Supplier):
+        def fetch_window(self, security, dates):
+            barrier.wait(timeout=10)
+            return super().fetch_window(security, dates)
+
+    class History(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            if security.code == "600001":
+                barrier.wait(timeout=10)
+            return super().fetch_tencent_window(security, dates)
+
+    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent())
+    root = tmp_path / "data/history/baostock"
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            bootstrap.execute_qfq_download, tmp_path, report=lambda _message: None, now=lambda: observed
+        )
+        history_result = run_history_sync(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
+        qfq_result = pending.result(timeout=15)
+
+    assert history_result.state == "completed" and history_result.active_snapshot_hash is not None
+    assert qfq_result.failure_reason is None and qfq_result.completed_codes == 1
+    assert qfq_result.pending_codes == 0
+    assert (root / "control.sqlite3").exists()
+    assert (tmp_path / "data/qfq/.checkpoint.json").exists()
+    for profile, sessions in (("v2", 251), ("v3", 61)):
+        cache = SQLiteQfqWindowCache(tmp_path / "data/qfq", profile)
+        assert len(cache.read_code("600001").cells) == sessions
 
 
 @pytest.mark.parametrize("conflict", (False, True))

@@ -28,9 +28,7 @@ def main() -> int:
             target = args.target_root.resolve()
             if target == args.project_root.resolve() or args.project_root.resolve() in target.parents:
                 raise ValueError("migration target must be outside the repository")
-            result = build_qfq_layout(
-                source, args.target_root, args.project_root / "data/history/baostock/.maintenance.lock"
-            )
+            result = build_qfq_layout(source, args.target_root, source / ".maintenance.lock")
             report = {"status": "built_verified", **asdict(result), "source_unchanged": True, "activated": False}
         else:
             report = {
