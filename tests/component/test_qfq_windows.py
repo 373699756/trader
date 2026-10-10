@@ -100,7 +100,7 @@ def test_changed_code_does_not_rewrite_other_range(tmp_path) -> None:
 
 def test_board_routing_covers_all_profiles_without_sidecar(tmp_path) -> None:
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    codes = ("600001", "605001", "000001", "003001", "300001", "301001", "688001", "689001")
+    codes = ("600001", "605001", "000001", "003001", "300001", "301001", "302132", "688001", "689001")
     for code in codes:
         cache.replace_window(_window(code), "seed")
     assert len(tuple(cache.root.glob("*.sqlite3"))) == 4
@@ -108,9 +108,17 @@ def test_board_routing_covers_all_profiles_without_sidecar(tmp_path) -> None:
     assert cache.codes() == frozenset(codes)
     assert cache.read_code("600002").cells == ()
     manifest = cache.manifest()
-    assert len(cache.read_windows(manifest, codes, sessions=20)) == 8
+    assert len(cache.read_windows(manifest, codes, sessions=20)) == len(codes)
     assert all(len(window.cells) == 20 for window in cache.iter_windows(manifest, sessions=20))
     assert all(len(cache.read_code(code).cells) == 251 for code in codes)
+
+
+@pytest.mark.parametrize("code", ("303132", "30213", "３０２１３２"))
+def test_unknown_or_malformed_codes_are_rejected_before_creating_a_shard(tmp_path, code) -> None:
+    cache = SQLiteQfqWindowCache(tmp_path, "v2")
+    with pytest.raises(ValueError, match="qfq code"):
+        cache.read_code(code)
+    assert not cache.root.exists()
 
 
 def test_large_local_shard_keeps_primary_key_queries_without_splitting(tmp_path) -> None:
@@ -221,6 +229,48 @@ def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_pa
     assert result.skipped_codes == 2 and result.changed_files == ()
     assert len(supplier.calls) == 2
     assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
+
+
+@pytest.mark.parametrize("tencent_failed", (False, True))
+def test_302_stock_download_recovery_publication_and_restart(tmp_path, tencent_failed) -> None:
+    recovery_calls = []
+
+    class Tencent(Supplier):
+        def load_qfq_context(self, as_of, sessions):
+            context = super().load_qfq_context(as_of, sessions)
+            return replace(context, universe=tuple(replace(security, board="chinext") for security in context.universe))
+
+    class Recovery:
+        source_identity = "baostock:fixture"
+
+        def fetch_window(self, security, dates):
+            assert len(supplier.calls) == 1
+            recovery_calls.append(security.code)
+            return _window(security.code, dates)
+
+    supplier = Tencent(codes=("302132",), fail=tencent_failed)
+    versions = supplier.load_qfq_context(DAYS[-1], 251).source_versions
+    expected_source = Recovery.source_identity if tencent_failed else f"{versions.sdk_version}:{versions.content_hash}"
+    logs = []
+    updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery(), report=logs.append)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == 1 and result.pending_codes == 0 and result.failure_reason is None
+    assert len(supplier.calls) == 1
+    assert recovery_calls == (["302132"] if tencent_failed else [])
+    assert any("本地检查失败 0 只" in line for line in logs)
+    assert result.changed_files == ("v2/qfq_szse_chinext.sqlite3", "v3/qfq_szse_chinext.sqlite3")
+    for cache in (updater.v2, updater.v3):
+        assert cache.codes() == frozenset({"302132"})
+        manifest = cache.manifest()
+        assert manifest is not None
+        assert cache.read_windows(manifest, ("302132",), sessions=cache.sessions) == (
+            _window("302132", DAYS[-cache.sessions :]),
+        )
+        assert cache.source_identity("302132") == expected_source
+    resumed = updater.execute(observed)
+    assert resumed.skipped_codes == 1 and resumed.pending_codes == 0 and resumed.changed_files == ()
+    assert len(supplier.calls) == 1 and len(recovery_calls) == int(tencent_failed)
 
 
 @pytest.mark.parametrize("sessions", (33, 251))

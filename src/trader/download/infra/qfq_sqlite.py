@@ -35,7 +35,7 @@ def qfq_shard_name(code: str) -> str:
         return QFQ_SHARD_NAMES[0]
     if code.startswith(("000", "001", "002", "003")):
         return QFQ_SHARD_NAMES[1]
-    if code.startswith(("300", "301")):
+    if code.startswith(("300", "301", "302")):
         return QFQ_SHARD_NAMES[2]
     if code.startswith(("688", "689")):
         return QFQ_SHARD_NAMES[3]
