@@ -345,6 +345,209 @@ def test_one_unreadable_code_does_not_block_other_stocks(tmp_path, monkeypatch):
     assert len(updater.v3.read_code("600002").cells) == 61
 
 
+def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(tmp_path, monkeypatch):
+    import threading
+
+    from trader.infra.workers import BoundedExecutor
+
+    second_published = threading.Event()
+    writer_ident = threading.get_ident()
+    messages = []
+    writes = []
+
+    class OutOfOrderSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            if security.code == "600001":
+                assert second_published.wait(timeout=5)
+            return super().fetch_window(security, dates)
+
+    supplier = OutOfOrderSupplier(codes=("600001", "600002", "600003"))
+    updater = _updater(tmp_path, supplier)
+    original = updater.v3.replace_window
+
+    def write(window, identity):
+        result = original(window, identity)
+        writes.append(window.code)
+        if window.code == "600002":
+            second_published.set()
+        return result
+
+    def report(message):
+        assert threading.get_ident() == writer_ident
+        messages.append(message)
+
+    monkeypatch.setattr(updater.v3, "replace_window", write)
+    pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-progress-fixture")
+    pool.start()
+    try:
+        updater = replace(updater, workers=2, worker_pool=pool, report=report)
+        observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+        result = updater.execute(observed)
+        assert result.completed_codes == 3
+        assert writes == ["600002", "600001", "600003"]
+        batches = [message for message in messages if " | qfq 批次完成 | " in message]
+        assert len(batches) == 2
+        assert "已处理 2/3（66.67%）| 合格 2 | 待补 0" in batches[0]
+        assert "已处理 3/3（100.00%）" in batches[1]
+        starts = [message for message in messages if " | qfq 下载 | " in message]
+        assert "本批 2 只 | 股票 600001 fixture、600002 fixture" in starts[0]
+        assert "本批 1 只 | 股票 600003 fixture" in starts[1]
+        assert " | qfq 完成 | " in messages[-1]
+        assert "股票 3 只" in messages[1] and "并发 2" in messages[1]
+
+        messages.clear()
+        resumed = updater.execute(observed)
+        assert resumed.skipped_codes == 3 and resumed.changed_files == ()
+        assert len(supplier.calls) == 3
+        assert "合格 3 | 待补 0 | 其中复用 3" in messages[-1]
+        assert "未处理 0" in messages[-1]
+    finally:
+        assert pool.stop(wait=True, cancel_futures=True).completed
+
+
+class _IncompleteSupplier(Supplier):
+    def fetch_window(self, security, dates):
+        window = super().fetch_window(security, dates)
+        if security.code == "600001":
+            return replace(
+                window,
+                cells=tuple(
+                    replace(cell, status="unknown_missing", unadjusted=None, qfq=None) if index < 4 else cell
+                    for index, cell in enumerate(window.cells)
+                ),
+            )
+        return window
+
+
+def test_pending_progress_groups_named_chinese_reasons_after_batch_and_preserves_old_window(tmp_path):
+    supplier = _IncompleteSupplier(codes=("600001", "600002"))
+    messages = []
+    updater = replace(_updater(tmp_path, supplier), report=messages.append)
+    updater.seed((_window(),), "old-source")
+    before = updater.v2.read_code("600001")
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == 1 and result.pending_codes == 1
+    assert updater.v2.read_code("600001") == before
+    summary = next(index for index, message in enumerate(messages) if " | qfq 批次完成 | " in message)
+    assert "已处理 2/2（100.00%）| 合格 1 | 待补 1" in messages[summary]
+    assert "qfq 待补 | 600001 fixture，未复权缺 4 日、前复权缺 4 日" in messages[summary + 1]
+    assert messages[summary + 1].endswith("reason=qfq_incomplete_raw_4_qfq_4")
+    assert " | qfq 结束（仍有待补） | " in messages[-1]
+
+
+def test_tencent_diagnostic_counts_pending_with_new_batch_feedback():
+    from scripts.runtime_diagnostics.tencent_download import _benchmark
+
+    supplier = _IncompleteSupplier(codes=("600001", "600002"))
+    context = supplier.load_qfq_context(DAYS[-1], 251)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    report = _benchmark(supplier, context, 2, 2, observed)
+    assert report["completed"] == report["pending"] == 1
+    assert report["failure_categories"] == {"qfq_incomplete_raw_4_qfq_4": 1}
+    assert report["restart_failure_categories"] == report["failure_categories"]
+    assert report["restart_skipped"] == 1 and report["restart_changed_files"] == 0
+
+
+def test_reused_codes_do_not_reduce_actual_download_wave_size(tmp_path):
+    supplier = Supplier(codes=("600001", "600003", "600005", "600007"))
+    updater = replace(_updater(tmp_path, supplier), workers=2)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    updater.execute(observed)
+    supplier.codes = tuple(f"60000{index}" for index in range(1, 9))
+    messages = []
+    result = replace(updater, report=messages.append).execute(observed)
+    starts = [message for message in messages if " | qfq 下载 | " in message]
+    assert len(starts) == 2
+    assert "本批 2 只 | 股票 600002 fixture、600004 fixture" in starts[0]
+    assert "本批 2 只 | 股票 600006 fixture、600008 fixture" in starts[1]
+    assert result.completed_codes == 8 and result.skipped_codes == 4
+    assert len(supplier.calls) == 8
+
+
+def test_preparation_pending_is_reported_without_any_download_and_hides_payload(tmp_path, monkeypatch):
+    supplier = Supplier()
+    messages = []
+    updater = replace(_updater(tmp_path, supplier), report=messages.append)
+
+    def read(_code):
+        raise RuntimeError("private supplier payload\nhttps://example.invalid?token=secret")
+
+    monkeypatch.setattr(updater.v2, "read_code", read)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == 0 and result.pending_codes == 1
+    assert supplier.calls == []
+    assert "已处理 1/1（100.00%）| 合格 0 | 待补 1" in messages[-1]
+    details = next(message for message in messages if " | qfq 待补 | " in message)
+    assert "600001 fixture，处理失败（RuntimeError）" in details
+    assert "payload" not in "\n".join(messages) and "secret" not in "\n".join(messages)
+
+
+def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context_loading(tmp_path):
+    clock = [100.0]
+
+    class FutureListingSupplier(Supplier):
+        def load_qfq_context(self, as_of, sessions):
+            context = super().load_qfq_context(as_of, sessions)
+            clock[0] += 65
+            return replace(
+                context,
+                universe=tuple(replace(item, listed_on=DAYS[-1] + timedelta(days=1)) for item in context.universe),
+            )
+
+    supplier = FutureListingSupplier()
+    messages = []
+    updater = replace(_updater(tmp_path, supplier), report=messages.append, monotonic=lambda: clock[0])
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == result.pending_codes == result.skipped_codes == 0
+    assert supplier.calls == []
+    assert messages[0].startswith("00:00:00 | qfq 准备 | ")
+    assert messages[-1].startswith("00:01:05 | qfq 完成 | 已处理 1/1（100.00%）")
+    assert "合格 0 | 待补 0 | 其中复用 0 | 无需下载 1 | 未处理 0" in messages[-1]
+
+
+def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_processed(tmp_path):
+    cancelled = False
+
+    class CancelSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            nonlocal cancelled
+            window = super().fetch_window(security, dates)
+            cancelled = True
+            return window
+
+    supplier = CancelSupplier(codes=("600001", "600002", "600003"))
+    messages = []
+    updater = replace(
+        _updater(tmp_path, supplier), report=messages.append, workers=2, cancel_requested=lambda: cancelled
+    )
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.failure_reason == "cancelled" and result.pending_codes == 3
+    assert result.completed_codes == 0 and result.changed_files == ()
+    assert len(supplier.calls) == 1
+    assert " | qfq 已取消 | 已处理 0/3（0.00%）| 合格 0 | 待补 0" in messages[-1]
+    assert "未处理 3" in messages[-1]
+    assert not any(" | qfq 待补 | " in message for message in messages)
+
+
+def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path):
+    clock = [100.0]
+
+    class BrokenContextSupplier(Supplier):
+        def load_qfq_context(self, as_of, sessions):
+            clock[0] += 3
+            raise RuntimeError("private supplier payload")
+
+    messages = []
+    updater = replace(_updater(tmp_path, BrokenContextSupplier()), report=messages.append, monotonic=lambda: clock[0])
+    with pytest.raises(RuntimeError, match="private supplier payload"):
+        updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
+    assert messages[-1] == "00:00:03 | qfq 准备失败 | RuntimeError"
+
+
 @pytest.mark.parametrize(
     "hour,minute,due", ((8, 0, False), (12, 0, False), (15, 9, False), (15, 10, True), (21, 0, True))
 )

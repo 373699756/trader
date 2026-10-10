@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from itertools import islice
+from time import monotonic
 from typing import Protocol
 
+from trader.download.application.qfq_download_progress import QfqDownloadProgress, qfq_message
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
@@ -38,32 +40,9 @@ class QfqResumePort(Protocol):
 
 @dataclass(frozen=True)
 class _DownloadJob:
-    position: int
     security: BaoStockSecurity
     dates: tuple[date, ...]
     previous: PublishedHistoryWindow
-
-
-@dataclass
-class _UpdateProgress:
-    day: date
-    source: str
-    completed: int = 0
-    pending: int = 0
-    skipped: int = 0
-    rows: int = 0
-    changed: set[str] = field(default_factory=set)
-
-    def result(self, cancelled: bool) -> QfqUpdateResult:
-        return QfqUpdateResult(
-            self.day,
-            self.completed,
-            self.pending,
-            tuple(sorted(self.changed)),
-            self.rows,
-            self.skipped,
-            "cancelled" if cancelled else None,
-        )
 
 
 @dataclass(frozen=True)
@@ -76,6 +55,7 @@ class UpdateQfqWindows:
     report: Callable[[str], None]
     workers: int = 8
     worker_pool: WorkerExecutor | None = None
+    monotonic: Callable[[], float] = monotonic
 
     def __post_init__(self) -> None:
         if not 1 <= self.workers <= 12:
@@ -99,41 +79,55 @@ class UpdateQfqWindows:
         return QfqUpdateResult(None, count, changed_files=tuple(sorted(changed)), changed_rows=rows)
 
     def execute(self, observed_at: datetime) -> QfqUpdateResult:
-        self.report("qfq context: loading current exchange universe and Tencent trading calendar")
-        context = self.supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
+        started = self.monotonic()
+        self.report(qfq_message(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
+        try:
+            context = self.supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
+        except (RuntimeError, OSError, ValueError) as exc:
+            stage = "已取消" if self.cancel_requested() else "准备失败"
+            self.report(qfq_message(self.monotonic() - started, stage, type(exc).__name__))
+            raise
         source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
-        progress = _UpdateProgress(context.calendar.open_dates[-1], source)
+        progress = QfqDownloadProgress(
+            context.calendar.open_dates[-1],
+            source,
+            len(context.universe),
+            self.report,
+            lambda: self.monotonic() - started,
+        )
+        progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
         jobs = iter(self._jobs(context, progress))
         while wave := tuple(islice(jobs, self.workers)):
             if self.cancel_requested():
-                progress.pending += len(wave)
-                continue
-            self.report(f"qfq downloading: wave={len(wave)} cutoff={progress.day}")
+                break
+            progress.begin_batch(tuple(job.security for job in wave))
             self._run_wave(wave, progress)
-            self.report(
-                f"qfq progress: completed={progress.completed} pending={progress.pending} "
-                f"changed_files={len(progress.changed)}"
-            )
-        return progress.result(self.cancel_requested())
+            progress.summary("批次完成")
+        return progress.finish(self.cancel_requested())
 
-    def _jobs(self, context: HistorySupplierContext, progress: _UpdateProgress) -> Iterable[_DownloadJob]:
-        for position, security in enumerate(context.universe, 1):
+    def _jobs(self, context: HistorySupplierContext, progress: QfqDownloadProgress) -> Iterable[_DownloadJob]:
+        checked = 0
+        for security in context.universe:
             if self.cancel_requested():
-                progress.pending += len(context.universe) - position + 1
                 return
             try:
-                job = self._prepare_job(position, security, context, progress)
+                job = self._prepare_job(security, context, progress)
             except (RuntimeError, OSError, ValueError) as exc:
-                self._pending(position, exc, progress)
-                continue
+                progress.record_pending(security, exc)
+                job = None
             if job is not None:
                 yield job
+            else:
+                checked += 1
+                if checked % self.workers == 0:
+                    progress.summary("检查完成")
 
     def _prepare_job(
-        self, position: int, security: BaoStockSecurity, context: HistorySupplierContext, progress: _UpdateProgress
+        self, security: BaoStockSecurity, context: HistorySupplierContext, progress: QfqDownloadProgress
     ) -> _DownloadJob | None:
         dates = context.calendar.expected_dates(security)[-251:]
         if not dates:
+            progress.not_applicable += 1
             return None
         previous = self.v2.read_code(security.code)
         smaller = self.v3.read_code(security.code)
@@ -149,11 +143,13 @@ class UpdateQfqWindows:
             return None
         if not same_source:
             previous = PublishedHistoryWindow(security.code, ())
-        return _DownloadJob(position, security, dates, previous)
+        return _DownloadJob(security, dates, previous)
 
-    def _run_wave(self, wave: tuple[_DownloadJob, ...], progress: _UpdateProgress) -> None:
+    def _run_wave(self, wave: tuple[_DownloadJob, ...], progress: QfqDownloadProgress) -> None:
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob] = {}
         for job in wave:
+            if self.cancel_requested():
+                break
             if self.worker_pool is None:
                 future: Future[PublishedHistoryWindow] = Future()
                 try:
@@ -167,20 +163,13 @@ class UpdateQfqWindows:
             job = futures[future]
             try:
                 if self.cancel_requested():
-                    progress.pending += 1
                     continue
                 self._commit_one(future.result(), progress)
                 progress.completed += 1
             except (RuntimeError, OSError, ValueError) as exc:
-                self._pending(job.position, exc, progress)
+                progress.record_pending(job.security, exc)
 
-    def _pending(self, position: int, exc: Exception, progress: _UpdateProgress) -> None:
-        progress.pending += 1
-        message = str(exc)
-        reason = message if len(message) <= 64 and message.replace("_", "").isalnum() else type(exc).__name__
-        self.report(f"qfq code pending: position={position} reason={reason}")
-
-    def _commit_one(self, window: PublishedHistoryWindow, progress: _UpdateProgress) -> None:
+    def _commit_one(self, window: PublishedHistoryWindow, progress: QfqDownloadProgress) -> None:
         for cache in (self.v2, self.v3):
             files, delta = cache.replace_window(window, progress.source)
             progress.changed.update(files)

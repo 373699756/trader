@@ -59,7 +59,7 @@ def _benchmark(supplier, context, size, workers, observed_at):
             failures: Counter[str] = Counter()
 
             def feedback(message):
-                if "qfq code pending:" in message:
+                if " | qfq 待补 | " in message:
                     failures[message.rsplit("reason=", 1)[-1]] += 1
 
             updater = UpdateQfqWindows(
