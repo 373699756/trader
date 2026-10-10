@@ -10,11 +10,17 @@ from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.cache_contracts import BoundedCache, CacheIdentity, CacheIdentitySpec, build_cache_identity
+from trader.infra.cache_contracts import (
+    BoundedCache,
+    CacheIdentity,
+    CacheIdentitySpec,
+    CacheRequestKey,
+    build_cache_identity,
+)
+from trader.infra.workers import BoundedExecutor, WorkerResourceRejectedError
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
 from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
-from trader.infra.workers import BoundedExecutor, WorkerResourceRejectedError
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -63,7 +69,7 @@ class MarketTaskRunner:
     def run_source_task(
         self,
         source: str,
-        identity: str,
+        identity: str | CacheRequestKey,
         observed_at: datetime,
         function: Callable[_P, _T],
         /,

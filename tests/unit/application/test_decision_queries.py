@@ -141,7 +141,7 @@ def test_current_overlay_replaces_every_quote_field_without_changing_decision_id
         NOW,
         "quote:2",
     )
-    overlay = DecisionOverlay(scored.strategy, scored.trade_date, scored.version, NOW, (overlay_quote,))
+    overlay = DecisionOverlay(scored.strategy, scored.trade_date, scored.version, NOW, (overlay_quote,), sequence=1)
     assert index.publish_overlay(overlay, expected_version=None).accepted
 
     view = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock()).current(
@@ -330,7 +330,7 @@ def test_not_ready_current_exposes_observation_draft_without_formal_items() -> N
     assert [item.code for item in view.draft.items] == ["600001"]
     assert [item.code for item in view.draft.top_scores] == ["600002", "600001"]
     assert view.draft.items[0].action == "observe"
-    assert view.etag == draft.content_hash
+    assert view.etag == draft.version
 
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
@@ -375,7 +375,7 @@ def test_observation_draft_visibility_follows_close_boundary(
         assert view.draft is not None
         assert view.draft.decision_version == draft.version
         assert [item.code for item in view.draft.items] == ["600001"]
-        assert view.etag == draft.content_hash
+        assert view.etag == draft.version
     else:
         assert view.draft is None
         assert view.top_scores == ()

@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from itertools import count
 from zoneinfo import ZoneInfo
 
+from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
-from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.domain.publication.decision_identity import LongProjection
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
 from trader.recommendation.domain.publication.models import Strategy
@@ -38,7 +39,7 @@ def _runtime(
 ) -> tuple[LongRuntime, UnifiedDecisionIndex]:
     index = UnifiedDecisionIndex()
     runtime = LongRuntime(
-        LongRuntimeDependencies(quotes=quotes, index=index, now=lambda: completed_at),
+        LongRuntimeDependencies(next_sequence=count(1).__next__, quotes=quotes, index=index, now=lambda: completed_at),
         config_version="runtime-current+strategy-fixture",
         watchlist_version="long-watchlist-fixture",
         items=(
@@ -151,7 +152,7 @@ def test_empty_long_watchlist_keeps_current_unready_without_fetching() -> None:
     quotes = _Quotes([])
     index = UnifiedDecisionIndex()
     runtime = LongRuntime(
-        LongRuntimeDependencies(quotes=quotes, index=index, now=lambda: NOW),
+        LongRuntimeDependencies(next_sequence=count(1).__next__, quotes=quotes, index=index, now=lambda: NOW),
         config_version="config-fixture",
         watchlist_version="empty-watchlist",
         items=(),
@@ -178,7 +179,9 @@ def test_long_rejects_duplicate_or_unassigned_group_membership() -> None:
     ):
         try:
             LongRuntime(
-                LongRuntimeDependencies(quotes=quotes, index=UnifiedDecisionIndex(), now=lambda: NOW),
+                LongRuntimeDependencies(
+                    next_sequence=count(1).__next__, quotes=quotes, index=UnifiedDecisionIndex(), now=lambda: NOW
+                ),
                 config_version="config-fixture",
                 watchlist_version="watchlist-fixture",
                 items=(item,),

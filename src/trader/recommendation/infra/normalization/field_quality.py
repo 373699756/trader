@@ -13,6 +13,7 @@ from datetime import datetime
 
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
+from trader.recommendation.infra.normalization.observation_ties import scalar_order
 
 REALTIME_FIELDS = frozenset(
     {
@@ -71,7 +72,9 @@ class FieldSelection:
 
 @dataclass
 class _SelectionState:
-    selected_orders: dict[str, tuple[datetime, datetime, int, str, str, str]]
+    selected_orders: dict[str, tuple[datetime, datetime, int, str, str]]
+    tied_values: dict[str, set[tuple[int, str | float]]]
+    tie_base_counts: dict[str, int]
     selected_observations: dict[str, SourceObservation]
     values: dict[str, JsonScalar]
     sources: dict[str, str]
@@ -104,11 +107,11 @@ def field_order(
     *,
     targeted: bool,
     field: str,
-) -> tuple[datetime, datetime, int, str, str, str]:
+) -> tuple[datetime, datetime, int, str, str]:
     """Deterministic per-field selection key.
 
     Tie-breakers include source time, receive time, normalized source priority,
-    data version, payload hash, and source name. This keeps input order irrelevant.
+    data version, lazily compared facts, and source name. This keeps input order irrelevant.
     """
 
     normalized_source = normalize_source(observation.source)
@@ -120,7 +123,6 @@ def field_order(
         observation.received_at,
         source_rank,
         observation.data_version,
-        observation.payload_hash,
         normalized_source,
     )
 
@@ -134,6 +136,8 @@ def select_fields(
 
     state = _SelectionState(
         selected_orders={},
+        tied_values={},
+        tie_base_counts={},
         selected_observations={},
         values={},
         sources={},
@@ -164,9 +168,13 @@ def select_fields(
             if order == current_order:
                 current_value = state.values[field]
                 if current_value != value:
+                    state.tied_values[field].add(scalar_order(value))
+                    if scalar_order(value) > scalar_order(current_value):
+                        _apply_new_selection(field, observation, value, order, state)
+                        current_value = value
                     state.conflicts.add(f"{field}:conflict")
                     state.quality[field] = FieldQualityState.CONFLICTING
-                    conflict_count = state.field_values[field].conflict_count + 1
+                    conflict_count = state.tie_base_counts[field] + len(state.tied_values[field]) - 1
                     state.field_values[field] = _set_field_state(
                         field,
                         current_value,
@@ -192,7 +200,7 @@ def _apply_new_selection(
     field_name: str,
     observation: SourceObservation,
     value: JsonScalar,
-    order: tuple[datetime, datetime, int, str, str, str],
+    order: tuple[datetime, datetime, int, str, str],
     state: _SelectionState,
 ) -> None:
     previous_quality = state.quality.get(field_name)
@@ -200,6 +208,9 @@ def _apply_new_selection(
     previous_conflict_count = previous_field.conflict_count if previous_field is not None else 0
     normalized_source = normalize_source(observation.source)
 
+    if state.selected_orders.get(field_name) != order:
+        state.tied_values[field_name] = {scalar_order(value)}
+        state.tie_base_counts[field_name] = previous_conflict_count
     state.selected_orders[field_name] = order
     state.selected_observations[field_name] = observation
     state.values[field_name] = value

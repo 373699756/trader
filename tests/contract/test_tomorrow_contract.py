@@ -15,7 +15,8 @@ def test_authoritative_contract_uses_one_identity_for_current_freeze_and_trace()
 
     for token in (
         "SchedulerRuntime",
-        "MarketDataAdapter",
+        "MarketInputCoordinator",
+        "LocalDecisionBuilder",
         "local ScoredDecision",
         "DecisionCheckpoint",
         "CommittedDecisionRecord",
@@ -41,11 +42,13 @@ def test_production_composition_has_no_tomorrow_shadow_or_cutover_dependencies()
 
 
 def test_tomorrow_freeze_control_is_owned_by_the_scheduler() -> None:
-    source = (
-        ROOT / "src" / "trader" / "recommendation" / "application" / "runtime" / "scheduler_runtime.py"
-    ).read_text(encoding="utf-8")
-    assert "self._dependencies.freezes.freeze" in source
-    assert "submit_due" in source
+    runtime = ROOT / "src/trader/recommendation/application/runtime"
+    scheduler = (runtime / "scheduler_runtime.py").read_text(encoding="utf-8")
+    close_control = (runtime / "close_control.py").read_text(encoding="utf-8")
+    assert "self._dependencies.freezes.freeze" in close_control
+    assert "self._dependencies.freezes.freeze" not in scheduler
+    assert "self._close_control.submit_freeze" in scheduler
+    assert "submit_due" in scheduler
 
 
 def test_retired_strategy_specific_tomorrow_runtime_is_absent() -> None:

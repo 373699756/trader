@@ -27,19 +27,13 @@ from trader.infra.market_data.history.history import (
 from trader.infra.market_data.history.history_seed import FallbackHistoryClient
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers import tushare_records as tushare_records_module
-from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
-from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
-from trader.recommendation.infra.market_data.providers.sina import SinaClient
-from trader.recommendation.infra.market_data.providers.tencent import TencentClient
 from trader.infra.market_data.providers.tushare import TushareClient
-from trader.recommendation.infra.market_data.trading_calendar import (
-    ChinaTradingCalendar,
-    TradingCalendarUnavailableError,
-)
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
+from trader.infra.workers import BoundedExecutor
+from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -59,7 +53,6 @@ from trader.recommendation.application.runtime.source_lanes import (
     SourceLaneScheduler,
     SourceRequestSupersededError,
 )
-from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.eligibility import IssuerEligibilitySnapshot
 from trader.recommendation.domain.market.models import (
     Board,
@@ -88,9 +81,17 @@ from trader.recommendation.infra.market_data.market_feature_service import (
     MarketFeatureService,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
+from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.recommendation.infra.market_data.providers.sina import SinaClient
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient
 from trader.recommendation.infra.market_data.research_component_persistence import persist_research_component_statuses
 from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
+from trader.recommendation.infra.market_data.trading_calendar import (
+    ChinaTradingCalendar,
+    TradingCalendarUnavailableError,
+)
 from trader.recommendation.infra.market_data.tushare_reference_loader import (
     ReferenceLoader,
     ReferenceLoadRequest,
@@ -326,7 +327,16 @@ def _service(
     assert kwargs == {}
     service = MarketFeatureService(
         MarketFeatureDependencies(
-            quotes, history, research, intraday, references, runner, health, eligibility, monotonic
+            quotes,
+            history,
+            research,
+            intraday,
+            references,
+            runner,
+            health,
+            eligibility,
+            monotonic,
+            StaticMarketPipeline(eligibility, monotonic=monotonic),
         )
     )
     return service

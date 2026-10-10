@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
+import threading
+from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -17,11 +18,11 @@ if TYPE_CHECKING:
 import requests
 
 from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
+from trader.infra.cache_contracts import CacheRequestKey, request_key
 from trader.infra.market_data.providers.akshare_http_contracts import (
     AkshareGetFunction,
     AkshareHttpResponse,
 )
-from trader.recommendation.infra.market_data.providers.akshare_news import fetch_news as _fetch_news
 from trader.infra.market_data.providers.akshare_parsing import (
     _announcement_rows,
     _clean_text,
@@ -29,7 +30,6 @@ from trader.infra.market_data.providers.akshare_parsing import (
     _parse_date,
     _parse_date_end,
     _parse_precise_datetime,
-    _payload_version,
     _point_in_time,
     _result_rows,
     _source_error,
@@ -47,6 +47,7 @@ from trader.recommendation.domain.market.research import (
     corporate_risk_facts_from_announcements,
     reduction_level,
 )
+from trader.recommendation.infra.market_data.providers.akshare_news import fetch_news as _fetch_news
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -164,10 +165,29 @@ class AkshareResearchClient:
         timeout_seconds = options.get("timeout_seconds", 8.0)
         self._timeout_seconds = max(0.1, timeout_seconds)
         self._get = options["get"]
+        self._version_lock = threading.Lock()
+        self._revision = 0
+        self._versions: OrderedDict[tuple[str, str], tuple[CacheRequestKey, str]] = OrderedDict()
         self._long_research_policy = options.get("long_research_policy")
         self._evidence_cache_dir = options.get("evidence_cache_dir")
         self._json_writer = options.get("json_writer")
         self._cancel_requested = options.get("cancel_requested", lambda: False)
+
+    def source_version(self, source: str, code: str, payload: Mapping[str, object]) -> str:
+        identity = (source, code)
+        facts = request_key(payload)
+        with self._version_lock:
+            previous = self._versions.get(identity)
+            if previous is not None and previous[0] == facts:
+                self._versions.move_to_end(identity)
+                return previous[1]
+            self._revision += 1
+            version = f"{source}:{self._revision}"
+            self._versions[identity] = (facts, version)
+            self._versions.move_to_end(identity)
+            while len(self._versions) > 128:
+                self._versions.popitem(last=False)
+            return version
 
     def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
         return _fetch_news(self, code, observed_at=observed_at, limit=limit)
@@ -303,7 +323,7 @@ class AkshareResearchClient:
         if not current_candidates:
             return None, ordered_history, history_complete, ()
         report = max(current_candidates, key=lambda item: (item.report_date, item.published_at))
-        version = _payload_version("eastmoney-financial", payload)
+        version = self.source_version("eastmoney-financial", code, payload)
         title = (
             f"财务点时：report={report.report_date.isoformat()};EPS={_summary_number(report.basic_eps)};"
             f"BPS={_summary_number(report.book_value_per_share)};rev_yoy={_summary_number(report.revenue_growth_pct)};"
@@ -361,7 +381,7 @@ class AkshareResearchClient:
         payload = self._announcement_payload(code, observed_at)
         rows = _announcement_rows(payload)
         cutoff = observed_at - timedelta(days=policy.announcement_lookback_days)
-        version = _payload_version("eastmoney-announcement", payload)
+        version = self.source_version("eastmoney-announcement", code, payload)
         parsed: list[tuple[ResearchAnnouncement, tuple[Evidence, ...], int]] = []
         historical_announcements: list[ResearchAnnouncement] = []
         seen: set[tuple[str, datetime]] = set()
@@ -390,9 +410,7 @@ class AkshareResearchClient:
                 continue
             negative_level = announcement_level(title, policy)
             ownership_level = reduction_level(title, policy)
-            evidence_id = hashlib.sha256(
-                f"{code}|{identity[0]}|{published_at.isoformat()}|{title}".encode()
-            ).hexdigest()[:32]
+            evidence_id = art_code or f"{version}:{len(parsed)}"
             evidence_types = ["announcement"]
             if ownership_level > 0:
                 evidence_types.append("ownership_filing")
@@ -492,7 +510,7 @@ class AkshareResearchClient:
             raise ValueError("pledge source returned no valid point-in-time ratio")
         latest = max(eligible, key=lambda item: item[0]) if eligible else None
         ratio = latest[1] if latest is not None else 0.0
-        version = _payload_version("eastmoney-pledge", payload)
+        version = self.source_version("eastmoney-pledge", code, payload)
         return ratio, (
             Evidence(
                 evidence_id=f"pledge:{code}:{version}",
@@ -551,7 +569,7 @@ class AkshareResearchClient:
                 total_ratio += ratio * 100.0
         if invalid_window_row or total_ratio > 100.0 + 1e-9:
             raise ValueError("unlock source returned an invalid upcoming ratio")
-        version = _payload_version("eastmoney-unlock", payload)
+        version = self.source_version("eastmoney-unlock", code, payload)
         return total_ratio, (
             Evidence(
                 evidence_id=f"unlock:{code}:{version}:{observed_at.date().isoformat()}",

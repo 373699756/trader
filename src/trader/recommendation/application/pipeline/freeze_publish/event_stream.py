@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import queue
 import threading
 from collections import deque
@@ -57,7 +56,7 @@ class DecisionEventPayload:
     strategy: Strategy
     trade_date: str
     version: str
-    content_hash: str
+    content_hash: str | None
     stage: str
     replacement: DecisionReplacementPatch | None
 
@@ -68,7 +67,7 @@ class OverlayEventPayload:
     trade_date: str
     version: str
     parent_version: str
-    content_hash: str
+    content_hash: str | None
     projection_version: str
     quotes: tuple[DecisionQuote, ...]
 
@@ -133,7 +132,7 @@ class UnifiedDecisionEventStream:
             selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
             top_scores = tuple(sorted(decision.items, key=lambda item: (-item.final_score, item.code))[:3])
             replacement = DecisionReplacementPatch(
-                event.projection_version or event.decision_hash,
+                event.projection_version or event.decision_version,
                 decision.observed_at,
                 decision.strategy_version,
                 decision.input_versions,
@@ -161,7 +160,7 @@ class UnifiedDecisionEventStream:
             Strategy.LONG,
             projection.trade_date.isoformat(),
             projection.version,
-            projection.content_hash,
+            None,
             "current",
             None,
         )
@@ -172,15 +171,15 @@ class UnifiedDecisionEventStream:
         self,
         overlay: DecisionOverlay,
         *,
-        parent_content_hash: str,
+        parent_version: str,
     ) -> UnifiedPublishedEvent:
-        projection_version = hashlib.sha256(f"{parent_content_hash}|{overlay.content_hash}".encode()).hexdigest()
+        projection_version = f"{parent_version}+{overlay.version}"
         payload = OverlayEventPayload(
             overlay.strategy,
             overlay.trade_date.isoformat(),
             overlay.version,
             overlay.parent_version,
-            overlay.content_hash,
+            None,
             projection_version,
             overlay.quotes,
         )

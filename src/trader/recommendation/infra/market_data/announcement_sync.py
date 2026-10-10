@@ -221,14 +221,15 @@ def parse_cninfo_announcement_rows(
             continue
         raw_id = _first_string(raw, ("announcementId", "announcement_id", "id", "art_code"))
         id_derived = not bool(raw_id.strip())
-        announcement_id = raw_id.strip() or _derived_id(code, title, published_at)
+        source_payload_hash = _mapping_hash(raw)
+        announcement_id = raw_id.strip() or f"derived:{code}:{source_payload_hash}"
         parsed.append(
             CninfoAnnouncementRow(
                 code=code,
                 announcement_id=announcement_id,
                 title=title[:240],
                 published_at=published_at,
-                source_payload_hash=_mapping_hash(raw),
+                source_payload_hash=source_payload_hash,
                 id_derived=id_derived,
             )
         )
@@ -429,19 +430,7 @@ def _mapping_hash(row: Mapping[str, object]) -> str:
 
 
 def _batch_version(rows: list[CninfoAnnouncementRow], cursor_value: str, observed_at: datetime) -> str:
-    material = "|".join(
-        (
-            cursor_value,
-            observed_at.isoformat(),
-            *(f"{row.announcement_id}:{row.published_at.isoformat()}:{row.source_payload_hash}" for row in rows),
-        )
-    )
-    return f"cninfo-announcements:{hashlib.sha256(material.encode()).hexdigest()[:16]}"
-
-
-def _derived_id(code: str, title: str, published_at: datetime) -> str:
-    digest = hashlib.sha256(f"{code}|{published_at.isoformat()}|{title}".encode()).hexdigest()[:24]
-    return f"derived-{digest}"
+    return f"cninfo-announcements:{observed_at.isoformat()}:{cursor_value}"
 
 
 def _validate_code(code: str) -> None:

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Sequence
 from dataclasses import replace
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_identity import source_name
 
@@ -46,7 +44,7 @@ def security_reference_observations(
                 source=f"{source_name(observation.source)}_security_master",
                 fields=fields,
                 missing_reasons={},
-                payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+                payload_hash="",
             )
         )
     return tuple(references)

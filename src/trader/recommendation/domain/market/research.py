@@ -252,6 +252,7 @@ class CorporateRiskFact:
 
 @dataclass(frozen=True)
 class ResearchObservation:
+    data_version: str = "research:unassigned"
     financial: FinancialReport | None = None
     financial_history: tuple[FinancialReport, ...] = ()
     financial_history_complete: bool = False

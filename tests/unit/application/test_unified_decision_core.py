@@ -88,13 +88,7 @@ def test_strategies_and_overlays_are_cas_isolated() -> None:
     d25 = decision(Strategy.D25)
     assert index.publish(tomorrow, expected_version=None).accepted
     assert index.publish(d25, expected_version=None).accepted
-    overlay = DecisionOverlay(
-        Strategy.TOMORROW,
-        tomorrow.trade_date,
-        tomorrow.version,
-        NOW,
-        (_quote(),),
-    )
+    overlay = DecisionOverlay(Strategy.TOMORROW, tomorrow.trade_date, tomorrow.version, NOW, (_quote(),), sequence=1)
 
     assert index.publish_overlay(overlay, expected_version=None).accepted
     assert index.snapshot(Strategy.D25).current == d25
@@ -113,13 +107,7 @@ def test_long_projection_uses_the_same_cas_and_overlay_without_a_scored_event() 
         items=(LongProjectionItem("600001", "core", "quote-fixture"),),
     )
     published = index.publish(projection, expected_version=None)
-    overlay = DecisionOverlay(
-        Strategy.LONG,
-        projection.trade_date,
-        projection.version,
-        NOW,
-        (_quote(),),
-    )
+    overlay = DecisionOverlay(Strategy.LONG, projection.trade_date, projection.version, NOW, (_quote(),), sequence=1)
 
     assert published.accepted
     assert published.event is None
@@ -131,13 +119,9 @@ def test_overlay_rejects_wrong_parent_and_out_of_scope_code() -> None:
     index = UnifiedDecisionIndex()
     current = decision()
     index.publish(current, expected_version=None)
-    wrong_parent = DecisionOverlay(Strategy.TOMORROW, current.trade_date, "wrong", NOW, ())
+    wrong_parent = DecisionOverlay(Strategy.TOMORROW, current.trade_date, "wrong", NOW, (), sequence=1)
     outside = DecisionOverlay(
-        Strategy.TOMORROW,
-        current.trade_date,
-        current.version,
-        NOW,
-        (replace(_quote(), code="600002"),),
+        Strategy.TOMORROW, current.trade_date, current.version, NOW, (replace(_quote(), code="600002"),), sequence=1
     )
 
     assert index.publish_overlay(wrong_parent, expected_version=None).reason == "parent_mismatch"
@@ -149,13 +133,7 @@ def test_scored_identity_and_complete_initial_overlay_publish_atomically() -> No
     local = decision()
     anchor = local.items[0].quote
     assert anchor is not None
-    overlay = DecisionOverlay(
-        local.strategy,
-        local.trade_date,
-        local.version,
-        NOW,
-        (anchor,),
-    )
+    overlay = DecisionOverlay(local.strategy, local.trade_date, local.version, NOW, (anchor,), sequence=1)
 
     published = index.publish_scored(local, overlay, expected_version=None)
 
@@ -173,13 +151,13 @@ def test_invalid_initial_overlay_leaves_previous_identity_and_overlay_unchanged(
     local = decision()
     anchor = local.items[0].quote
     assert anchor is not None
-    overlay = DecisionOverlay(local.strategy, local.trade_date, local.version, NOW, (anchor,))
+    overlay = DecisionOverlay(local.strategy, local.trade_date, local.version, NOW, (anchor,), sequence=1)
     assert index.publish_scored(local, overlay, expected_version=None).accepted
     before = index.snapshot(local.strategy)
     next_local = decision(sequence=3, score=90.0)
     next_anchor = next_local.items[0].quote
     assert next_anchor is not None
-    invalid = DecisionOverlay(next_local.strategy, next_local.trade_date, next_local.version, NOW, ())
+    invalid = DecisionOverlay(next_local.strategy, next_local.trade_date, next_local.version, NOW, (), sequence=1)
 
     result = index.publish_scored(next_local, invalid, expected_version=local.version)
 
@@ -192,6 +170,7 @@ def test_invalid_initial_overlay_leaves_previous_identity_and_overlay_unchanged(
         next_local.version,
         NOW,
         (replace(next_anchor, price=10.6),),
+        sequence=1,
     )
     result = index.publish_scored(next_local, mismatched, expected_version=local.version)
 

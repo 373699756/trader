@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -29,6 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
 from trader.infra.settings import load_runtime_settings  # noqa: E402
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (  # noqa: E402
     AsyncDecisionObserver,
 )
@@ -56,11 +58,8 @@ from trader.recommendation.application.ports.runtime import (  # noqa: E402
 )
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy  # noqa: E402
 from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
-from trader.recommendation.application.runtime.scheduler_runtime import (  # noqa: E402
-    RuntimeDependencies,
-    SchedulerRuntime,
-)
-from trader.infra.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
+from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies  # noqa: E402
+from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime  # noqa: E402
 from trader.recommendation.application.runtime.supervisor import (  # noqa: E402
     RuntimeSupervisor,
     RuntimeSupervisorConfig,
@@ -161,7 +160,9 @@ class _OverlayOnlyDecisions:
 
     def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
         quotes = tuple(item.quote for item in decision.items if item.quote is not None)
-        return DecisionOverlay(decision.strategy, decision.trade_date, decision.version, decision.observed_at, quotes)
+        return DecisionOverlay(
+            decision.strategy, decision.trade_date, decision.version, decision.observed_at, quotes, sequence=1
+        )
 
     def refreshed_overlay(
         self,
@@ -182,11 +183,18 @@ class _OverlayOnlyDecisions:
             )
             for quote in previous.quotes
         )
-        return DecisionOverlay(decision.strategy, decision.trade_date, decision.version, observed_at, quotes)
+        return DecisionOverlay(
+            decision.strategy,
+            decision.trade_date,
+            decision.version,
+            observed_at,
+            quotes,
+            sequence=previous.sequence + 1,
+        )
 
-    def research_audit(self, version: str) -> CommittedResearchAudit | None:
+    def research_audit_factory(self, version: str) -> Callable[[], CommittedResearchAudit | None]:
         del version
-        return None
+        return lambda: None
 
     def research_intent(self, decision: ScoredDecision) -> ResearchIntent:
         raise AssertionError(f"measurement does not build research intents: {decision.version}")
@@ -336,7 +344,7 @@ def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: s
         (item,),
         (),
     )
-    overlay = DecisionOverlay(strategy, at.date(), decision.version, at, (quote,))
+    overlay = DecisionOverlay(strategy, at.date(), decision.version, at, (quote,), sequence=1)
     result = index.publish_scored(decision, overlay, expected_version=None)
     if not result.accepted:
         raise RuntimeError(f"cannot seed {strategy.value}: {result.reason}")
@@ -380,6 +388,7 @@ def _publish_decision_replacement(
         replacement.version,
         observed_at,
         tuple(item.quote for item in replacement.items if item.quote is not None),
+        sequence=1,
     )
     published = index.publish_scored(replacement, overlay, expected_version=current.version)
     if not published.accepted or published.event is None:
@@ -512,7 +521,7 @@ def _run(
         current = index.snapshot(overlay.strategy).current
         if not isinstance(current, ScoredDecision):
             raise RuntimeError("measurement overlay parent is unavailable")
-        return events.publish_overlay(overlay, parent_content_hash=current.content_hash)
+        return events.publish_overlay(overlay, parent_version=current.version)
 
     runtime_settings = load_runtime_settings(args.runtime_config)
     cadence = CadencePlanner(

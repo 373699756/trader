@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -17,7 +16,6 @@ from trader.recommendation.domain.market.models import (
     Evidence,
     MarketQuote,
 )
-from trader.recommendation.domain.risk.fusion import STRUCTURED_REVIEW_FEATURES
 
 
 def _industry_scores(
@@ -153,22 +151,8 @@ def _structured_evidence(
         f"结构化点时数据：价格={quote.price}，涨幅={quote.pct_change}，量比={quote.volume_ratio}，"
         f"换手={quote.turnover_rate}，可用历史因子={len(available)}项"
     )
-    signature = hashlib.sha256(
-        repr(
-            (
-                quote.code,
-                tuple(
-                    sorted(
-                        (name, None if value is None else round(float(value), 4))
-                        for name, value in values.items()
-                        if name in STRUCTURED_REVIEW_FEATURES
-                    )
-                ),
-            )
-        ).encode("utf-8")
-    ).hexdigest()[:32]
     return Evidence(
-        evidence_id=f"structured:{quote.code}:{signature}",
+        evidence_id=f"structured:{quote.code}:{observed_at.date().isoformat()}",
         evidence_type="structured_point_in_time",
         title=summary[:240],
         source=quote.source,

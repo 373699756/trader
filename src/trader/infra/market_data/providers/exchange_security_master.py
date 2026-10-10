@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 import time
 import warnings
@@ -17,9 +16,9 @@ from zoneinfo import ZoneInfo
 import requests
 from typing_extensions import Unpack
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import SecurityMasterSourceHealth
+from trader.infra.revisions import ValueRevision
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SSE_URL = "https://query.sse.com.cn/sseQuery/commonQuery.do"
@@ -86,6 +85,7 @@ class ExchangeSecurityMasterClient:
             raise ValueError("exchange security master timeout must be positive")
         if minimum_rows <= 0:
             raise ValueError("exchange security master minimum rows must be positive")
+        self._revisions = ValueRevision[tuple[ExchangeSecurityMasterListing, ...]](_CONTRACT_VERSION)
         self._timeout_seconds = float(timeout_seconds)
         self._minimum_rows = minimum_rows
         self._sse_fetcher = options["sse_fetcher"]
@@ -124,7 +124,7 @@ class ExchangeSecurityMasterClient:
             received_at = self._wall_clock()
             if received_at.tzinfo is None or received_at.utcoffset() is None:
                 raise ValueError("exchange security master wall clock must be timezone-aware")
-            version = _snapshot_version(normalized)
+            version = self._revisions.accept(normalized)
             observations = tuple(
                 _to_observation(listing, observed_at=observed_at, received_at=received_at, version=version)
                 for listing in normalized
@@ -208,20 +208,6 @@ def _validate_snapshot(
     return tuple(by_code[code] for code in sorted(by_code))
 
 
-def _snapshot_version(listings: Sequence[ExchangeSecurityMasterListing]) -> str:
-    payload = [
-        {
-            "code": item.code,
-            "name": item.name,
-            "listing_date": item.listing_date.isoformat(),
-            "board": item.board,
-            "exchange": item.exchange,
-        }
-        for item in listings
-    ]
-    return f"{_CONTRACT_VERSION}:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
-
-
 def _to_observation(
     listing: ExchangeSecurityMasterListing,
     *,
@@ -246,7 +232,7 @@ def _to_observation(
         data_version=version,
         fields=fields,
         missing_reasons={},
-        payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+        payload_hash="",
         status="success",
         error_code=None,
     )

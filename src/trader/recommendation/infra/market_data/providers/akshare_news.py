@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime
 from typing import Any
 
 from trader.infra.market_data.providers.akshare_parsing import (
     _clean_text,
-    _content_version,
     _first_text,
     _news_rows,
     _parse_datetime,
@@ -54,7 +52,7 @@ def fetch_news(client: Any, code: str, *, observed_at: datetime, limit: int = 5)
     )
     client._cache_payload("news", code, point_in_time, response.text)
     rows = _news_rows(response.text, callback)
-    response_version = _content_version("eastmoney-news", response.text)
+    response_version = client.source_version("eastmoney-news", code, {"rows": rows})
     evidence: list[Evidence] = []
     for row in rows:
         if len(evidence) >= limit:
@@ -66,7 +64,7 @@ def fetch_news(client: Any, code: str, *, observed_at: datetime, limit: int = 5)
         if published is None or published > point_in_time:
             continue
         source = _first_text(row, ("mediaName", "文章来源", "来源", "source")) or "eastmoney_news"
-        identity = hashlib.sha256(f"{code}|{published.isoformat()}|{source}|{title}".encode()).hexdigest()[:32]
+        identity = f"{response_version}:{len(evidence)}"
         evidence.append(
             Evidence(
                 evidence_id=f"akshare-news:{code}:{identity}",

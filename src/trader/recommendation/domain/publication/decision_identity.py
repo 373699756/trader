@@ -8,6 +8,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from functools import cached_property
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
@@ -219,8 +220,15 @@ class ScoredDecision:
     selection_diagnostics: SelectionDiagnostics | None = None
     pipeline: RecommendationPipelineStatus | None = None
     schema_version: str = DECISION_IDENTITY_SCHEMA_VERSION
-    content_hash: str = field(init=False)
+    is_formal: bool = field(default=False, kw_only=True)
     version: str = field(init=False)
+
+    @cached_property
+    def content_hash(self) -> str:
+        """Integrity reference, materialized only by persistence/audit boundaries."""
+        return _hash(
+            _scored_payload(self, self.items, self.input_versions, self.filter_aggregates, self.degraded_reasons)
+        )
 
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
@@ -250,17 +258,15 @@ class ScoredDecision:
         aggregates = _normalize_counts(self.filter_aggregates)
         reasons = _normalize_reasons(self.degraded_reasons)
         _validate_coverage_counts(self.population_count, self.rejected_count, len(items))
-        payload = _scored_payload(self, items, versions, aggregates, reasons)
-        content_hash = _hash(payload)
         object.__setattr__(self, "input_versions", versions)
         object.__setattr__(self, "items", items)
         object.__setattr__(self, "filter_aggregates", aggregates)
         object.__setattr__(self, "degraded_reasons", reasons)
-        object.__setattr__(self, "content_hash", content_hash)
         object.__setattr__(
             self,
             "version",
-            f"decision:{self.strategy.value}:{self.trade_date.isoformat()}:{self.stage}:{self.sequence}:{content_hash[:16]}",
+            f"decision:{self.strategy.value}:{self.trade_date.isoformat()}:{self.stage}:{self.sequence}"
+            + (":formal" if self.is_formal else ""),
         )
 
 
@@ -315,7 +321,6 @@ class LongProjection:
     input_versions: tuple[tuple[str, str], ...]
     items: tuple[LongProjectionItem, ...]
     schema_version: str = LONG_PROJECTION_SCHEMA_VERSION
-    content_hash: str = field(init=False)
     version: str = field(init=False)
     strategy: Strategy = field(init=False, default=Strategy.LONG)
 
@@ -329,59 +334,31 @@ class LongProjection:
             raise ValueError("long projection items must contain unique codes")
         if any(item.source_time is not None and item.source_time > self.observed_at for item in items):
             raise ValueError("long projection cannot contain future quotes")
-        payload: dict[str, _Json] = {
-            "schema_version": self.schema_version,
-            "strategy": self.strategy.value,
-            "trade_date": self.trade_date.isoformat(),
-            "sequence": self.sequence,
-            "observed_at": self.observed_at.isoformat(),
-            "input_versions": [[name, version] for name, version in versions],
-            "items": [_long_item_payload(item) for item in items],
-        }
-        content_hash = _hash(payload)
         object.__setattr__(self, "input_versions", versions)
         object.__setattr__(self, "items", items)
-        object.__setattr__(self, "content_hash", content_hash)
         object.__setattr__(
             self,
             "version",
-            f"projection:long:{self.trade_date.isoformat()}:{self.sequence}:{content_hash[:16]}",
+            f"projection:long:{self.trade_date.isoformat()}:{self.sequence}",
         )
 
 
 DecisionIdentity: TypeAlias = ScoredDecision | LongProjection
 
 
-def _long_item_payload(item: LongProjectionItem) -> list[_Json]:
-    return [
-        item.code,
-        item.group,
-        item.quote_version,
-        item.name,
-        item.industry,
-        item.price,
-        item.pct_change,
-        item.amount,
-        item.turnover_rate,
-        item.market_cap,
-        item.source,
-        item.source_time.isoformat() if item.source_time is not None else None,
-        item.quote_status,
-    ]
-
-
 @dataclass(frozen=True)
 class DecisionOverlay:
+    sequence: int = field(kw_only=True)
     strategy: Strategy
     trade_date: date
     parent_version: str
     observed_at: datetime
     quotes: tuple[DecisionQuote, ...]
     schema_version: str = OVERLAY_SCHEMA_VERSION
-    content_hash: str = field(init=False)
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
+        _validate_coordinates(self.trade_date, self.sequence, self.observed_at)
         if self.schema_version != OVERLAY_SCHEMA_VERSION:
             raise ValueError(f"overlay schema_version must be {OVERLAY_SCHEMA_VERSION}")
         if self.strategy not in set(Strategy):
@@ -395,21 +372,11 @@ class DecisionOverlay:
             raise ValueError("overlay quotes must contain unique codes")
         if any(quote.source_time > self.observed_at for quote in quotes):
             raise ValueError("overlay cannot contain a future quote")
-        payload: dict[str, _Json] = {
-            "schema_version": self.schema_version,
-            "strategy": self.strategy.value,
-            "trade_date": self.trade_date.isoformat(),
-            "parent_version": self.parent_version,
-            "observed_at": self.observed_at.isoformat(),
-            "quotes": [_decision_quote_payload(quote) for quote in quotes],
-        }
-        content_hash = _hash(payload)
         object.__setattr__(self, "quotes", quotes)
-        object.__setattr__(self, "content_hash", content_hash)
         object.__setattr__(
             self,
             "version",
-            f"overlay:{self.strategy.value}:{self.trade_date.isoformat()}:{content_hash[:16]}",
+            f"overlay:{self.parent_version}:{self.sequence}",
         )
 
 
@@ -419,7 +386,11 @@ class CommittedDecisionRecord:
     committed_at: datetime
     commit_kind: CommitKind
     schema_version: str = COMMITTED_RECORD_SCHEMA_VERSION
-    payload_hash: str = field(init=False)
+
+    @cached_property
+    def payload_hash(self) -> str:
+        return _hash(committed_record_identity_payload(self))
+
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -432,12 +403,10 @@ class CommittedDecisionRecord:
             raise ValueError("formal record cannot predate its decision")
         if self.commit_kind not in {"scheduled", "checkpoint_recovery", "close_fallback"}:
             raise ValueError("formal decision commit kind is invalid")
-        payload_hash = _hash(committed_record_identity_payload(self))
-        object.__setattr__(self, "payload_hash", payload_hash)
         object.__setattr__(
             self,
             "version",
-            f"record:{self.strategy.value}:{self.trade_date.isoformat()}:{payload_hash[:16]}",
+            f"record:{self.strategy.value}:{self.trade_date.isoformat()}:{self.decision.stage}:{self.decision.sequence}",
         )
 
     @property
@@ -485,6 +454,7 @@ def formal_scored_decision(
         selection_diagnostics=decision.selection_diagnostics,
         pipeline=decision.pipeline,
         schema_version=decision.schema_version,
+        is_formal=True,
     )
 
 
@@ -511,6 +481,8 @@ def _scored_payload(
         "filter_aggregates": [[reason, count] for reason, count in aggregates],
         "degraded_reasons": list(reasons),
     }
+    if decision.is_formal:
+        payload["is_formal"] = True
     if decision.population_count is not None and decision.rejected_count is not None:
         payload["population_count"] = decision.population_count
         payload["rejected_count"] = decision.rejected_count

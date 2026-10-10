@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import date, datetime
 from enum import Enum
+from functools import cached_property
 from types import MappingProxyType
 from typing import Literal, Protocol, TypeAlias
 from zoneinfo import ZoneInfo
@@ -183,8 +184,25 @@ class DailyFeaturePack:
     source_versions: Mapping[str, str]
     coverage: DataPlaneCoverageEvidence
     schema_version: str = DAILY_FEATURE_PACK_SCHEMA_VERSION
-    content_hash: str = field(init=False)
     version: str = field(init=False)
+
+    @cached_property
+    def content_hash(self) -> str:
+        """Integrity material for persistence, never an online revision key."""
+        return _content_hash(
+            {
+                "schema_version": self.schema_version,
+                "trade_date": self.trade_date,
+                "sequence": self.sequence,
+                "observed_at": self.observed_at,
+                "received_at": self.received_at,
+                "config_version": self.config_version,
+                "calendar_version": self.calendar_version,
+                "rows": self.rows,
+                "source_versions": self.source_versions,
+                "coverage": self.coverage,
+            }
+        )
 
     def __post_init__(self) -> None:
         _validate_epoch_coordinates(self, DAILY_FEATURE_PACK_SCHEMA_VERSION)
@@ -208,24 +226,10 @@ class DailyFeaturePack:
         for row in rows:
             _validate_epoch_field_times(row.field_values, self.observed_at, self.received_at)
         sources = _freeze_source_versions(self.source_versions)
-        payload_hash = _content_hash(
-            {
-                "schema_version": self.schema_version,
-                "trade_date": self.trade_date,
-                "sequence": self.sequence,
-                "observed_at": self.observed_at,
-                "received_at": self.received_at,
-                "config_version": self.config_version,
-                "calendar_version": self.calendar_version,
-                "rows": rows,
-                "source_versions": sources,
-                "coverage": self.coverage,
-            }
-        )
+
         object.__setattr__(self, "rows", rows)
         object.__setattr__(self, "source_versions", sources)
-        object.__setattr__(self, "content_hash", payload_hash)
-        object.__setattr__(self, "version", _version("daily", self.trade_date, self.sequence, payload_hash))
+        object.__setattr__(self, "version", _version("daily", self.trade_date, self.sequence))
 
 
 @dataclass(frozen=True)
@@ -242,8 +246,27 @@ class MarketEpoch:
     market_regime: Literal["risk_on", "neutral", "risk_off"] = "neutral"
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = MARKET_EPOCH_SCHEMA_VERSION
-    content_hash: str = field(init=False)
     version: str = field(init=False)
+
+    @cached_property
+    def content_hash(self) -> str:
+        """Integrity material for persistence, never an online revision key."""
+        return _content_hash(
+            {
+                "schema_version": self.schema_version,
+                "trade_date": self.trade_date,
+                "sequence": self.sequence,
+                "observed_at": self.observed_at,
+                "received_at": self.received_at,
+                "config_version": self.config_version,
+                "daily_feature_pack_version": self.daily_feature_pack_version,
+                "quotes": self.quotes,
+                "source_versions": self.source_versions,
+                "field_values": self.field_values,
+                "market_regime": self.market_regime,
+                "degraded_reasons": self.degraded_reasons,
+            }
+        )
 
     def __post_init__(self) -> None:
         _validate_epoch_coordinates(self, MARKET_EPOCH_SCHEMA_VERSION)
@@ -265,28 +288,12 @@ class MarketEpoch:
             raise ValueError("market epoch market_regime is invalid")
         sources = _freeze_source_versions(self.source_versions)
         degraded = _sorted_unique_reason_codes(self.degraded_reasons, "degraded_reasons")
-        payload_hash = _content_hash(
-            {
-                "schema_version": self.schema_version,
-                "trade_date": self.trade_date,
-                "sequence": self.sequence,
-                "observed_at": self.observed_at,
-                "received_at": self.received_at,
-                "config_version": self.config_version,
-                "daily_feature_pack_version": self.daily_feature_pack_version,
-                "quotes": quotes,
-                "source_versions": sources,
-                "field_values": field_values,
-                "market_regime": self.market_regime,
-                "degraded_reasons": degraded,
-            }
-        )
+
         object.__setattr__(self, "quotes", quotes)
         object.__setattr__(self, "source_versions", sources)
         object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "degraded_reasons", degraded)
-        object.__setattr__(self, "content_hash", payload_hash)
-        object.__setattr__(self, "version", _version("market", self.trade_date, self.sequence, payload_hash))
+        object.__setattr__(self, "version", _version("market", self.trade_date, self.sequence))
 
 
 @dataclass(frozen=True)
@@ -334,8 +341,28 @@ class CandidateQuoteEpoch:
     feature_rows: tuple[CandidateFeatureRow, ...] = ()
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION
-    content_hash: str = field(init=False)
     version: str = field(init=False)
+
+    @cached_property
+    def content_hash(self) -> str:
+        """Integrity material for persistence, never an online revision key."""
+        return _content_hash(
+            {
+                "schema_version": self.schema_version,
+                "trade_date": self.trade_date,
+                "sequence": self.sequence,
+                "observed_at": self.observed_at,
+                "received_at": self.received_at,
+                "config_version": self.config_version,
+                "market_epoch_version": self.market_epoch_version,
+                "quotes": self.quotes,
+                "requested_codes": self.requested_codes,
+                "feature_rows": self.feature_rows,
+                "source_versions": self.source_versions,
+                "field_values": self.field_values,
+                "degraded_reasons": self.degraded_reasons,
+            }
+        )
 
     def __post_init__(self) -> None:
         _validate_epoch_coordinates(self, CANDIDATE_QUOTE_EPOCH_SCHEMA_VERSION)
@@ -370,31 +397,14 @@ class CandidateQuoteEpoch:
             _validate_epoch_field_times(row.field_values, self.observed_at, self.received_at)
         sources = _freeze_source_versions(self.source_versions)
         degraded = _sorted_unique_reason_codes(self.degraded_reasons, "degraded_reasons")
-        payload_hash = _content_hash(
-            {
-                "schema_version": self.schema_version,
-                "trade_date": self.trade_date,
-                "sequence": self.sequence,
-                "observed_at": self.observed_at,
-                "received_at": self.received_at,
-                "config_version": self.config_version,
-                "market_epoch_version": self.market_epoch_version,
-                "quotes": quotes,
-                "requested_codes": requested_codes,
-                "feature_rows": feature_rows,
-                "source_versions": sources,
-                "field_values": field_values,
-                "degraded_reasons": degraded,
-            }
-        )
+
         object.__setattr__(self, "quotes", quotes)
         object.__setattr__(self, "requested_codes", requested_codes)
         object.__setattr__(self, "feature_rows", feature_rows)
         object.__setattr__(self, "source_versions", sources)
         object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "degraded_reasons", degraded)
-        object.__setattr__(self, "content_hash", payload_hash)
-        object.__setattr__(self, "version", _version("candidate", self.trade_date, self.sequence, payload_hash))
+        object.__setattr__(self, "version", _version("candidate", self.trade_date, self.sequence))
 
 
 @dataclass(frozen=True)
@@ -409,8 +419,25 @@ class ResearchEpoch:
     field_values: Mapping[str, Mapping[str, FieldValue]]
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = RESEARCH_EPOCH_SCHEMA_VERSION
-    content_hash: str = field(init=False)
     version: str = field(init=False)
+
+    @cached_property
+    def content_hash(self) -> str:
+        """Integrity material for persistence, never an online revision key."""
+        return _content_hash(
+            {
+                "schema_version": self.schema_version,
+                "trade_date": self.trade_date,
+                "sequence": self.sequence,
+                "observed_at": self.observed_at,
+                "received_at": self.received_at,
+                "config_version": self.config_version,
+                "observations": self.observations,
+                "source_versions": self.source_versions,
+                "field_values": self.field_values,
+                "degraded_reasons": self.degraded_reasons,
+            }
+        )
 
     def __post_init__(self) -> None:
         _validate_epoch_coordinates(self, RESEARCH_EPOCH_SCHEMA_VERSION)
@@ -425,26 +452,12 @@ class ResearchEpoch:
             _validate_epoch_field_times(values, self.observed_at, self.received_at)
         sources = _freeze_source_versions(self.source_versions)
         degraded = _sorted_unique_reason_codes(self.degraded_reasons, "degraded_reasons")
-        payload_hash = _content_hash(
-            {
-                "schema_version": self.schema_version,
-                "trade_date": self.trade_date,
-                "sequence": self.sequence,
-                "observed_at": self.observed_at,
-                "received_at": self.received_at,
-                "config_version": self.config_version,
-                "observations": observations,
-                "source_versions": sources,
-                "field_values": field_values,
-                "degraded_reasons": degraded,
-            }
-        )
+
         object.__setattr__(self, "observations", MappingProxyType(observations))
         object.__setattr__(self, "source_versions", sources)
         object.__setattr__(self, "field_values", field_values)
         object.__setattr__(self, "degraded_reasons", degraded)
-        object.__setattr__(self, "content_hash", payload_hash)
-        object.__setattr__(self, "version", _version("research", self.trade_date, self.sequence, payload_hash))
+        object.__setattr__(self, "version", _version("research", self.trade_date, self.sequence))
 
 
 def _validate_epoch_coordinates(
@@ -703,8 +716,8 @@ def _freeze_optional_versions(versions: Mapping[str, str], name: str) -> Mapping
     return MappingProxyType(normalized)
 
 
-def _version(prefix: str, trade_date: date, sequence: int, content_hash: str) -> str:
-    return f"{prefix}:{trade_date.isoformat()}:{sequence}:{content_hash[:16]}"
+def _version(prefix: str, trade_date: date, sequence: int) -> str:
+    return f"{prefix}:{trade_date.isoformat()}:{sequence}"
 
 
 def _content_hash(payload: Mapping[str, object]) -> str:

@@ -8,12 +8,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from trader.recommendation.infra.normalization.field_quality import (
-    REALTIME_SOURCES as _REALTIME_SOURCES,
-)
-from trader.recommendation.infra.normalization.field_quality import (
-    select_fields as select_quote_fields,
-)
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.infra.market_data.source_identity import source_name, source_priority
 from trader.recommendation.domain.candidate.filters import board_for_code
@@ -21,6 +15,13 @@ from trader.recommendation.domain.market.models import (
     Board,
     MarketQuote,
 )
+from trader.recommendation.infra.normalization.field_quality import (
+    REALTIME_SOURCES as _REALTIME_SOURCES,
+)
+from trader.recommendation.infra.normalization.field_quality import (
+    select_fields as select_quote_fields,
+)
+from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
 _BOARD_SOURCES = frozenset({"exchange", "tushare", "akshare", "eastmoney", "sina", "tencent"})
 _BOARD_FIELDS = frozenset(
@@ -277,13 +278,13 @@ def _apply_board_defaults(
         sources["rule_effective_date"] = "local_rule"
 
 
-def observation_order(observation: SourceObservation) -> tuple[datetime, datetime, int, str, str]:
+def observation_order(observation: SourceObservation) -> tuple[datetime, datetime, int, str, ObservationFacts]:
     return (
         observation.source_time,
         observation.received_at,
         _SOURCE_PRIORITY.get(source_name(observation.source), 0),
         observation.data_version,
-        observation.payload_hash,
+        ObservationFacts(observation),
     )
 
 

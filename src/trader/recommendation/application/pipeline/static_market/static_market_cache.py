@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from dataclasses import dataclass
 from datetime import datetime
 
+from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.evidence.pipeline import SourceHealth, SourceHealthState
 from trader.recommendation.domain.market.static import StaticIssuer
-from trader.recommendation.infra.market_data.official_static_reference import StaticReferenceRead
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +53,7 @@ class StaticMarketCache:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._baseline: StaticIssuerBaseline | None = None
+        self._sequence = 0
 
     def read(self, source: StaticReferenceRead, observed_at: datetime) -> StaticBaselineRead:
         reference = source.reference
@@ -70,7 +70,8 @@ class StaticMarketCache:
                 baseline = StaticIssuerBaseline(records, reference_epoch, previous.identity, source_time, 1)
                 self._baseline = baseline
                 return StaticBaselineRead(baseline, True)
-            identity = hashlib.sha256(repr((reference_epoch, records)).encode("utf-8")).hexdigest()
+            self._sequence += 1
+            identity = f"static:{self._sequence}"
             baseline = StaticIssuerBaseline(
                 records,
                 reference_epoch,

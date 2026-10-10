@@ -17,10 +17,10 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
 )
+from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
+from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
-from trader.recommendation.infra.market_data.official_static_reference import StaticReferenceRead
-from trader.recommendation.infra.market_data.static_market_cache import StaticMarketCache
 
 
 def test_static_baseline_reuses_identity_and_source_age_across_dynamic_changes() -> None:

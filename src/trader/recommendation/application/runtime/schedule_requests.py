@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import cast
 
@@ -61,8 +60,7 @@ def failure_code(exc: BaseException, fallback: str) -> str:
 
 
 def research_input_version(result: ResearchRefreshResult) -> str:
-    material = (result.data_version, result.requested_codes, result.changed_codes, result.completed_at)
-    return hashlib.sha256(repr(material).encode("utf-8")).hexdigest()[:20]
+    return result.data_version + (f":{result.completed_at:%Y%m%dT%H%M%S%f}" if result.completed_at is not None else "")
 
 
 __all__ = [

@@ -22,8 +22,8 @@ from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_s
 )
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import assess_candidate_input_stage
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
-from trader.recommendation.domain.market.static import StaticIssuer
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, SourceHealth, SourceHealthState, StageState
+from trader.recommendation.domain.market.static import StaticIssuer
 from trader.recommendation.domain.publication.models import Strategy
 
 AS_OF = datetime(2026, 9, 23, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -64,7 +64,7 @@ def test_real_dynamic_pass_preserves_input_and_measures_each_stage(application_f
     assert snapshots[4].source_health.latest_success_at != AS_OF
     assert all(
         left.output_batch_id == right.input_batch_id and left.output_count == right.input_count
-        for left, right in zip(snapshots, snapshots[1:])
+        for left, right in zip(snapshots[:-1], snapshots[1:], strict=True)
     )
 
 
@@ -132,7 +132,7 @@ def test_partial_dynamic_collection_retains_static_input_population(application_
             latency_ms=1,
         ).business_rejections,
     )
-    result = build_dynamic_market_snapshot(static, (), as_of=AS_OF, latency_ms=5)
+    result = build_dynamic_market_snapshot(static, (), as_of=AS_OF, data_version="fixture:empty", latency_ms=5)
     assert (result.snapshot.input_count, result.snapshot.output_count, result.snapshot.pending_count) == (1, 0, 1)
     assert result.snapshot.reasons[0].code == "refresh_pending"
     assert result.snapshot.source_health.latest_success_at is None
@@ -148,7 +148,7 @@ def test_directed_quality_reads_new_immutable_candidate_batch(application_featur
     )
     original = pipeline.candidates[Strategy.TOMORROW]
     stale = replace(feature, quote=replace(feature.quote, source_time=AS_OF - timedelta(minutes=10)))
-    directed = assemble_candidate_inputs(original, (stale,), as_of=AS_OF)
+    directed = assemble_candidate_inputs(original, (stale,), as_of=AS_OF, data_version="fixture:correction")
     result = assess_candidate_input_stage(directed, as_of=AS_OF, minimum_history_sessions=20, latency_ms=7)
     assert original.records[0].features is None
     assert directed.snapshot.output_batch_id != original.snapshot.output_batch_id

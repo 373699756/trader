@@ -9,11 +9,11 @@ from datetime import date, datetime
 from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.application.ports.clock import TradingCalendarPort
-from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
+from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, ResearchAuditIdentity
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.application.runtime.schedule import MarketPhase
-from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
@@ -186,7 +186,7 @@ class DecisionBuilderPort(Protocol):
         previous: DecisionOverlay | None,
     ) -> DecisionOverlay | None: ...
 
-    def research_audit(self, version: str) -> object | None: ...
+    def research_audit_factory(self, version: str) -> Callable[[], ResearchAuditIdentity | None]: ...
 
     def research_intent(self, decision: ScoredDecision) -> ResearchIntent: ...
 

@@ -222,7 +222,7 @@ def build_scored_local(
     scored_stage = _local_score_stage(
         quality_batch.output, selection, runtime.monotonic, started, f"{native_input.input_version}:{sequence}"
     )
-    input_hash = native_input.input_version.removeprefix("native-input:")
+    input_version = native_input.input_version
     decision_request = ScoredDecisionRequest(
         selection=selection,
         reviews={},
@@ -232,8 +232,8 @@ def build_scored_local(
         config_version=native_input.config_version,
         strategy_version=policy.strategy_version,
         fusion_version=policy.fusion_version,
-        market_epoch_version=f"native-market:{input_hash}",
-        candidate_epoch_version=(f"native-candidate:{input_hash}" if native_input.candidate_features else None),
+        market_epoch_version=f"native-market:{input_version}",
+        candidate_epoch_version=(f"native-candidate:{input_version}" if native_input.candidate_features else None),
         research_epoch_version=None,
         projection_stage="local",
         parent_decision_version=None,

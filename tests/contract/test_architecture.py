@@ -7,7 +7,7 @@ from functools import cache
 from pathlib import Path
 
 from trader.recommendation.application.ports.runtime import DecisionBuilderPort
-from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies
+from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
@@ -115,7 +115,7 @@ def test_active_dependency_direction() -> None:
     for boundary, prefixes in forbidden.items():
         for path in (SOURCE_ROOT / boundary).rglob("*.py"):
             for imported in _imports(path):
-                if imported in {"trader.infra.shutdown", "trader.infra.workers"}:
+                if imported in {"trader.infra.shutdown", "trader.infra.workers", "trader.infra.cache_contracts"}:
                     continue
                 if imported.startswith(prefixes):
                     violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")
@@ -348,7 +348,7 @@ def test_application_runtime_modules_are_reachable_from_bootstrap() -> None:
 def test_bootstrap_wires_overlay_events_into_the_unified_scheduler() -> None:
     source = (SOURCE_ROOT / "bootstrap.py").read_text(encoding="utf-8")
     assert "def publish_overlay_event(overlay: DecisionOverlay)" in source
-    assert "parent_content_hash=current.content_hash" in source
+    assert "parent_version=current.version" in source
     assert "publish_overlay=publish_overlay_event" in source
 
 

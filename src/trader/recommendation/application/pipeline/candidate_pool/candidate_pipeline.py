@@ -16,16 +16,16 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     _maximum_age_seconds,
     _model_eligible_codes,
 )
+from trader.recommendation.application.pipeline.dynamic_filter.dynamic_hard_filter import qualify_candidate_inputs
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
 )
-from trader.recommendation.application.pipeline.dynamic_filter.dynamic_hard_filter import qualify_candidate_inputs
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
-    normalize_dynamic_market,
     normalize_candidate_discovery_population,
+    normalize_dynamic_market,
 )
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output, measured_output
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, measured_output, stage_output
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStage,
     PipelineStageSnapshot,
@@ -39,7 +39,6 @@ from trader.recommendation.domain.selection.scored_selection import (
     SelectedCandidateInput,
     rank_filtered_candidates,
 )
-from trader.recommendation.application.pipeline.data_source.input_identity import feature_batch_version, stable_digest
 
 
 @dataclass(frozen=True)
@@ -156,7 +155,7 @@ def select_candidate_output(
         output,
         snapshot=replace(
             output.snapshot,
-            output_batch_id=f"{source.snapshot.output_batch_id}:candidate_pool:{stable_digest((as_of.isoformat(), codes))}",
+            output_batch_id=f"{source.snapshot.output_batch_id}:candidate_pool:{as_of:%Y%m%dT%H%M%S%f}",
         ),
     )
 
@@ -166,14 +165,12 @@ def assemble_candidate_inputs(
     available: tuple[FeatureSnapshot, ...],
     *,
     as_of: datetime,
+    data_version: str,
 ) -> PipelineStageOutput[SelectedCandidateInput]:
     """Complete a new stage-8 batch; stage 9 reads only this immutable output."""
     by_code = {feature.quote.code: feature for feature in available}
     records = tuple(SelectedCandidateInput(item.code, by_code.get(item.code)) for item in source.records)
-    features = tuple(item.features for item in records if item.features is not None)
-    identity = stable_digest(
-        (source.snapshot.output_batch_id, as_of.isoformat(), feature_batch_version("directed", features))
-    )
+    identity = f"accepted:{data_version}:{as_of:%Y%m%dT%H%M%S%f}"
     return replace(
         source,
         records=records,

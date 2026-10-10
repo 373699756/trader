@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.infra.cache_contracts import CacheRequestKey
 from trader.infra.settings import DeepSeekSettings
 from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError
 from trader.recommendation.application.ports.json_values import JsonObject
@@ -102,7 +103,7 @@ class _ReviewExecution:
     contexts: Mapping[str, ReviewCandidateContext]
     thinking_mode: str
     requested_model: str
-    claimed_raw_keys: set[str] = field(default_factory=set)
+    claimed_raw_keys: set[CacheRequestKey] = field(default_factory=set)
 
 
 @dataclass(frozen=True)
@@ -558,7 +559,7 @@ class DeepSeekReviewer:
             results[candidate.quote.code] = self._annotate_primary(terminal, candidate, execution)
             self._release_raw_claim(self._raw_cache_key(candidate, execution), execution)
 
-    def _release_raw_claim(self, key: str, execution: _ReviewExecution) -> None:
+    def _release_raw_claim(self, key: CacheRequestKey, execution: _ReviewExecution) -> None:
         if key not in execution.claimed_raw_keys:
             return
         self._cache.release_raw(key)
@@ -586,7 +587,7 @@ class DeepSeekReviewer:
             prompt_cache_miss_tokens=response.prompt_cache_miss_tokens if response is not None else None,
         )
 
-    def _raw_cache_key(self, candidate: FeatureSnapshot, execution: _ReviewExecution) -> str:
+    def _raw_cache_key(self, candidate: FeatureSnapshot, execution: _ReviewExecution) -> CacheRequestKey:
         return review_cache_key(
             candidate,
             model=self._settings.model,

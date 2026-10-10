@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TypedDict
 
+from trader.infra.cache_contracts import CacheRequestKey
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -34,7 +35,7 @@ class StrategyCacheRequiredOptions(TypedDict):
 
 
 class StrategyCacheOptionalOptions(TypedDict, total=False):
-    challenger_identity: str
+    challenger_identity: str | CacheRequestKey
     challenger_status: str
 
 

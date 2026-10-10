@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 import threading
@@ -13,7 +12,12 @@ from datetime import date, datetime, time
 from typing import Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.cache_contracts import CacheIdentity, CacheIdentitySpec, build_cache_identity, canonical_json_bytes
+from trader.infra.cache_contracts import (
+    CacheIdentity,
+    CacheIdentitySpec,
+    build_cache_identity,
+    request_key,
+)
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.infra.market_data.source_health import (
     ModelIndustrySourceHealth,
@@ -28,6 +32,7 @@ from trader.recommendation.application.ports.data_plane_records import (
     SourceCursorRecord,
 )
 from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
+from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
@@ -44,7 +49,6 @@ from trader.recommendation.infra.market_data.model_industry_reference_loader imp
     ModelIndustryReferenceLoader,
 )
 from trader.recommendation.infra.market_data.official_static_reference import (
-    StaticReferenceRead,
     parse_official_static_reference,
 )
 from trader.recommendation.infra.market_data.provider_ports import (
@@ -139,7 +143,7 @@ class ReferenceLoader:
         self._reference_fields: dict[str, dict[str, float]] = {}
         self._reference_versions: dict[str, str] = {}
         self._reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
-        self._persisted_security_master_signatures: dict[str, str] = {}
+        self._persisted_security_master_signatures: dict[str, tuple[str, tuple[tuple[str, JsonScalar], ...]]] = {}
         self._trading_calendar_cursor: str | None = None
         self._trading_calendar_observations: dict[str, SourceObservation] = {}
         self._exchange_refresh_inflight = False
@@ -483,7 +487,7 @@ class ReferenceLoader:
                     {
                         record.code: _security_master_signature(
                             record.source,
-                            record.payload_hash or hashlib.sha256(canonical_json_bytes(record.payload)).hexdigest(),
+                            _source_fields_for_observation(record.payload),
                         )
                         for record in masters
                     }
@@ -533,13 +537,12 @@ class ReferenceLoader:
         if self._data_plane is None:
             return
         records: list[SecurityMasterRecord] = []
-        signatures: dict[str, str] = {}
+        signatures: dict[str, tuple[str, tuple[tuple[str, JsonScalar], ...]]] = {}
         for master in masters:
             if master.status != "success":
                 continue
             fields = dict(master.fields)
-            payload_hash = hashlib.sha256(canonical_json_bytes(fields)).hexdigest()
-            signature = _security_master_signature(master.source, payload_hash)
+            signature = _security_master_signature(master.source, master.fields)
             with self._lock:
                 if self._persisted_security_master_signatures.get(master.subject_key) == signature:
                     continue
@@ -551,7 +554,7 @@ class ReferenceLoader:
                     source=master.source,
                     data_version=master.data_version,
                     payload=fields,
-                    payload_hash=payload_hash,
+                    payload_hash="",
                 )
             )
             signatures[master.subject_key] = signature
@@ -627,7 +630,7 @@ class ReferenceLoader:
             data_version=record.data_version,
             fields=fields,
             missing_reasons={},
-            payload_hash=record.payload_hash or hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+            payload_hash=record.payload_hash,
             status="success",
             error_code=None,
         )
@@ -761,7 +764,19 @@ class ReferenceLoader:
         lanes = self._runner.source_lanes
         if lanes is None:
             return
-        refresh_identity = "tushare-refresh:" + hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
+        refresh_identity = request_key(
+            {
+                "dataset": identity.dataset,
+                "source": identity.source,
+                "subject": identity.subject_key,
+                "request": identity.request_key,
+                "date": identity.trade_date,
+                "phase": identity.phase,
+                "contract": identity.source_contract_version,
+                "config": identity.config_version,
+                "schema": identity.schema_version,
+            }
+        )
 
         def refresh() -> tuple[SourceObservation, ...]:
             return self.load(
@@ -860,17 +875,18 @@ class ReferenceLoader:
         fields["reference_data_degraded"] = True
         if "board" in fields:
             fields["board_reliability"] = "degraded"
-        payload_hash = hashlib.sha256(canonical_json_bytes(fields)).hexdigest()
         return replace(
             observation,
             fields=fields,
             missing_reasons={**dict(observation.missing_reasons), "cache_refresh": reason},
-            payload_hash=payload_hash,
+            payload_hash="",
         )
 
 
-def _security_master_signature(source: str, payload_hash: str) -> str:
-    return f"{source}:{payload_hash}"
+def _security_master_signature(
+    source: str, fields: Mapping[str, JsonScalar]
+) -> tuple[str, tuple[tuple[str, JsonScalar], ...]]:
+    return source, tuple(sorted(fields.items()))
 
 
 def _to_json_object(

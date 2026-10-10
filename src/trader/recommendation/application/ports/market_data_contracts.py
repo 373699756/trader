@@ -30,8 +30,6 @@ class MarketChangeSet:
     dirty_field_families: tuple[str, ...] = ()
     overlay_only: bool = False
     full_invalidation_reason: str | None = None
-    evidence_manifest_hash: str = ""
-    content_hash: str = ""
 
     def __post_init__(self) -> None:
         if self.schema_version != MARKET_CHANGE_SET_VERSION:
@@ -67,7 +65,6 @@ class FeatureSnapshotEnvelope:
     data_version: str
     config_version: str
     feature_schema: str
-    content_hash: str
     feature_snapshots: tuple[FeatureSnapshot, ...]
     market_change_set: MarketChangeSet
 
@@ -83,7 +80,6 @@ class FeatureSnapshotEnvelope:
             ("data_version", self.data_version),
             ("config_version", self.config_version),
             ("feature_schema", self.feature_schema),
-            ("content_hash", self.content_hash),
         ):
             _require_text(value, name)
         if self.merge_epoch != self.market_change_set.merge_epoch:

@@ -12,10 +12,10 @@ from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feat
     ScoredSelectionNotReadyError,
     assemble_scored_features,
 )
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
     normalize_candidate_discovery_population,
 )
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.ports.market_data import DataPlaneReadPort
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
@@ -27,8 +27,8 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
-    plan_scored_candidates,
     filter_candidate_inputs,
+    plan_scored_candidates,
     select_scored,
 )
 
@@ -133,7 +133,7 @@ def select_scored_snapshot(
         options,
         ScoredSelectionIdentity(
             trade_date=snapshot.market.trade_date,
-            data_version=snapshot.market.content_hash,
+            data_version=snapshot.market.version,
             merge_epoch=next(iter(merge_epochs)),
         ),
     )

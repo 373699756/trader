@@ -19,7 +19,6 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.static import StaticIssuer
-from trader.recommendation.application.pipeline.data_source.input_identity import feature_batch_version, stable_digest
 
 
 def build_dynamic_market_snapshot(
@@ -27,6 +26,7 @@ def build_dynamic_market_snapshot(
     loaded: tuple[FeatureSnapshot, ...],
     *,
     as_of: datetime,
+    data_version: str,
     latency_ms: int,
 ) -> PipelineStageOutput[FeatureSnapshot]:
     require_previous_stage(source, PipelineStage.DYNAMIC_MARKET)
@@ -48,7 +48,7 @@ def build_dynamic_market_snapshot(
         reasons=reasons,
         source_health=dynamic_source_health(loaded, as_of),
         latency_ms=latency_ms,
-        output_batch_id=f"{source.snapshot.output_batch_id}:dynamic_market:{stable_digest((as_of.isoformat(), feature_batch_version('market', loaded)))}",
+        output_batch_id=f"{source.snapshot.output_batch_id}:dynamic_market:{data_version}:{as_of:%Y%m%dT%H%M%S%f}",
     )
 
 

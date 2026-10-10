@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import date, datetime
 from enum import Enum
+from functools import cached_property
 from types import MappingProxyType
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
@@ -179,7 +180,6 @@ class DecisionEpoch:
     selection_limits: DecisionSelectionLimits
     degraded_reasons: tuple[str, ...] = ()
     schema_version: str = DECISION_EPOCH_SCHEMA_VERSION
-    content_hash: str = field(init=False)
     version: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -187,18 +187,20 @@ class DecisionEpoch:
         payload = _normalize_decision_payload(self)
         _validate_decision_entries(self, payload)
         _validate_decision_metadata(self, payload)
-        payload_hash = _decision_epoch_hash(self, payload)
         object.__setattr__(self, "entries", payload.entries)
         object.__setattr__(self, "review_candidate_codes", payload.review_codes)
         object.__setattr__(self, "filter_reason_counts", MappingProxyType(payload.reason_counts))
         object.__setattr__(self, "population_versions", MappingProxyType(payload.populations))
         object.__setattr__(self, "degraded_reasons", payload.reasons)
-        object.__setattr__(self, "content_hash", payload_hash)
         object.__setattr__(
             self,
             "version",
-            f"decision:{self.trade_date.isoformat()}:{self.sequence}:{payload_hash[:16]}",
+            f"decision:{self.trade_date.isoformat()}:{self.projection_stage}:{self.sequence}",
         )
+
+    @cached_property
+    def content_hash(self) -> str:
+        return _decision_epoch_hash(self, _normalize_decision_payload(self))
 
 
 @dataclass(frozen=True)

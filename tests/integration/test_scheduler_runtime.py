@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra.workers import BoundedExecutor
-
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.data_source.source_quality import failure_code
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
@@ -36,9 +36,9 @@ from trader.recommendation.application.runtime.cadence import (
     SchedulePointKey,
     SchedulePointStatus,
 )
+from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
-from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
+from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
@@ -214,11 +214,7 @@ class Decisions:
     def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
         quotes = tuple(item.quote for item in decision.items if item.selected and item.quote is not None)
         return DecisionOverlay(
-            decision.strategy,
-            decision.trade_date,
-            decision.version,
-            decision.observed_at,
-            quotes,
+            decision.strategy, decision.trade_date, decision.version, decision.observed_at, quotes, sequence=1
         )
 
     def refreshed_overlay(
@@ -241,16 +237,12 @@ class Decisions:
         if not quotes:
             return None
         return DecisionOverlay(
-            decision.strategy,
-            decision.trade_date,
-            decision.version,
-            request.observed_at,
-            quotes,
+            decision.strategy, decision.trade_date, decision.version, request.observed_at, quotes, sequence=1
         )
 
-    def research_audit(self, version: str):
+    def research_audit_factory(self, version: str):
         del version
-        return None
+        return lambda: None
 
     def tomorrow_profile_research_input(self, version: str):
         del version
@@ -367,7 +359,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
     candidate = (
         replace(current, sequence=3) if failure != "cas" else replace(current, sequence=1, degraded_reasons=("late",))
     )
-    published = runtime._publish(candidate, hybrid=False)
+    published = runtime._cycles._publish(candidate, hybrid=False)
     if failure in {"overlay", "cas"}:
         assert not published and index.snapshot(Strategy.TOMORROW).current == current
         operation = "current_publish"
@@ -392,7 +384,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
     visible = client.get("/api/decisions/tomorrow/current").get_json()
     expected = current if failure in {"overlay", "cas"} else candidate
     assert visible["decision_version"] == expected.version
-    assert visible["content_hash"] == expected.content_hash
+    assert visible["content_hash"] is None
 
 
 def test_scheduler_atomically_publishes_complete_quotes_for_local_and_hybrid() -> None:

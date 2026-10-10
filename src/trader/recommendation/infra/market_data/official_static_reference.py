@@ -3,21 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from datetime import date
 
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
-
-
-@dataclass(frozen=True, slots=True)
-class StaticReferenceRead:
-    reference: StaticMarketReference | None
-    reference_epoch: str
-    refresh_failed: bool
-    refresh_ttl_seconds: float
 
 
 def parse_official_static_reference(observations: Sequence[SourceObservation]) -> StaticMarketReference:

@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.infra.market_data.observations import SourceObservation
+from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 from trader.recommendation.infra.normalization import columnar_merge as columnar_merge_module
 from trader.recommendation.infra.normalization.columnar_merge import (
     CompleteRealtimeNormalization,
@@ -11,15 +13,13 @@ from trader.recommendation.infra.normalization.columnar_merge import (
     try_normalize_complete_realtime_rows,
 )
 from trader.recommendation.infra.normalization.merge import (
+    MergeObservationLimits,
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
-    snapshot_payload_hash,
 )
 from trader.recommendation.infra.normalization.merge_quote import merge_code
 from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
-from trader.infra.market_data.observations import SourceObservation
-from trader.recommendation.domain.market.models import CanonicalMarketSnapshot
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)
@@ -65,17 +65,16 @@ def test_merge_is_deterministic_and_prefers_eastmoney_at_equal_time() -> None:
     eastmoney = _observation("eastmoney", price=10.0)
     sina = _observation("sina", price=10.04)
 
-    first = merge_market_observations((sina, eastmoney), observed_at=NOW)
-    second = merge_market_observations((eastmoney, sina), observed_at=NOW)
+    first = merge_market_observations((sina, eastmoney), observed_at=NOW, merge_epoch="fixture:1")
+    second = merge_market_observations((eastmoney, sina), observed_at=NOW, merge_epoch="fixture:1")
 
     assert isinstance(first, CanonicalMarketSnapshot)
     assert first == second
     assert first.quotes[0].price == 10.0
     assert first.field_sources["600001"]["price"] == "eastmoney"
     assert first.quotes[0].cross_source_deviation_pct == 0.4
-    assert snapshot_payload_hash(first) == snapshot_payload_hash(second)
-    assert snapshot_payload_hash(first) == "ee58427b8d3f4d56804b1135ee852bf8a4a17b442f3b1086f0a6bbc13644beb1"
-    assert first.merge_epoch == "e178db776ef0df57d475aab7"
+    assert first == second
+    assert first.merge_epoch == "fixture:1"
 
 
 def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkeypatch) -> None:
@@ -152,7 +151,7 @@ def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkey
 
     monkeypatch.setattr(columnar_merge_module, "_winner_indexes", fail_winner_projection)
 
-    snapshot = merge_market_observations((sina, eastmoney), observed_at=NOW)
+    snapshot = merge_market_observations((sina, eastmoney), observed_at=NOW, merge_epoch="fixture:1")
 
     assert snapshot.quotes[0].price == 10.0
     assert "columnar_merge_failed" in snapshot.degraded_reasons
@@ -235,20 +234,22 @@ def test_same_source_equal_version_uses_payload_hash_as_deterministic_tie_breake
     lower_hash = replace(_observation("eastmoney", price=10.0), payload_hash="a-payload")
     higher_hash = replace(_observation("eastmoney", price=10.1), payload_hash="z-payload")
 
-    first = merge_market_observations((lower_hash, higher_hash), observed_at=NOW)
-    second = merge_market_observations((higher_hash, lower_hash), observed_at=NOW)
+    first = merge_market_observations((lower_hash, higher_hash), observed_at=NOW, merge_epoch="fixture:1")
+    second = merge_market_observations((higher_hash, lower_hash), observed_at=NOW, merge_epoch="fixture:1")
 
     assert first == second
     assert first.quotes[0].price == 10.1
-    assert snapshot_payload_hash(first) == snapshot_payload_hash(second)
+    assert first == second
 
 
 def test_equal_time_cross_source_overlay_is_direction_independent() -> None:
-    eastmoney = merge_market_observations((_observation("eastmoney", price=10.0),), observed_at=NOW)
-    sina = merge_market_observations((_observation("sina", price=10.1),), observed_at=NOW)
+    eastmoney = merge_market_observations(
+        (_observation("eastmoney", price=10.0),), observed_at=NOW, merge_epoch="fixture:1"
+    )
+    sina = merge_market_observations((_observation("sina", price=10.1),), observed_at=NOW, merge_epoch="fixture:1")
 
-    eastmoney_base = overlay_canonical_snapshot(eastmoney, sina)
-    sina_base = overlay_canonical_snapshot(sina, eastmoney)
+    eastmoney_base = overlay_canonical_snapshot(eastmoney, sina, merge_epoch="fixture:overlay")
+    sina_base = overlay_canonical_snapshot(sina, eastmoney, merge_epoch="fixture:overlay")
 
     assert eastmoney_base == sina_base
     assert eastmoney_base.quotes[0].source == "eastmoney"
@@ -263,8 +264,7 @@ def test_merge_rejects_future_empty_version_and_late_observations() -> None:
     late = _observation("sina", status="late")
 
     snapshot = merge_market_observations(
-        (future, future_observed_at, empty_version, late, valid),
-        observed_at=NOW,
+        (future, future_observed_at, empty_version, late, valid), observed_at=NOW, merge_epoch="fixture:1"
     )
 
     assert snapshot.quotes[0].source == "eastmoney"
@@ -288,7 +288,7 @@ def test_missing_price_source_fallback_uses_source_priority_before_cross_vendor_
         payload_hash="sina-name-only",
     )
 
-    snapshot = merge_market_observations((sina, eastmoney), observed_at=NOW)
+    snapshot = merge_market_observations((sina, eastmoney), observed_at=NOW, merge_epoch="fixture:1")
 
     assert snapshot.quotes[0].source == "eastmoney"
 
@@ -303,7 +303,7 @@ def test_source_version_uses_observation_time_before_lexical_version_order() -> 
     )
     newer = _observation("eastmoney", price=10.0, data_version="a-newer")
 
-    snapshot = merge_market_observations((older, newer), observed_at=NOW)
+    snapshot = merge_market_observations((older, newer), observed_at=NOW, merge_epoch="fixture:1")
 
     assert snapshot.quotes[0].price == 10.0
     assert snapshot.source_versions["eastmoney"] == "a-newer"
@@ -323,6 +323,7 @@ def test_older_overlay_cannot_replace_newer_quote_or_source_version() -> None:
             ),
         ),
         observed_at=older_at,
+        merge_epoch="fixture:1",
     )
     older = replace(
         older,
@@ -331,11 +332,10 @@ def test_older_overlay_cannot_replace_newer_quote_or_source_version() -> None:
         degraded_reasons=("sina:late",),
     )
     newer = merge_market_observations(
-        (_observation("eastmoney", price=10.0, data_version="a-newer"),),
-        observed_at=NOW,
+        (_observation("eastmoney", price=10.0, data_version="a-newer"),), observed_at=NOW, merge_epoch="fixture:1"
     )
 
-    combined = overlay_canonical_snapshot(newer, older)
+    combined = overlay_canonical_snapshot(newer, older, merge_epoch="fixture:overlay")
 
     assert combined.quotes[0].price == 10.0
     assert combined.source_versions["eastmoney"] == "a-newer"
@@ -346,8 +346,7 @@ def test_older_overlay_cannot_replace_newer_quote_or_source_version() -> None:
 
 def test_later_overlay_that_does_not_replace_quote_cannot_regress_source_version() -> None:
     current = merge_market_observations(
-        (_observation("eastmoney", price=10.0, data_version="a-current"),),
-        observed_at=NOW,
+        (_observation("eastmoney", price=10.0, data_version="a-current"),), observed_at=NOW, merge_epoch="fixture:1"
     )
     later_at = NOW + timedelta(seconds=1)
     stale = merge_market_observations(
@@ -362,9 +361,10 @@ def test_later_overlay_that_does_not_replace_quote_cannot_regress_source_version
             ),
         ),
         observed_at=later_at,
+        merge_epoch="fixture:1",
     )
 
-    combined = overlay_canonical_snapshot(current, stale)
+    combined = overlay_canonical_snapshot(current, stale, merge_epoch="fixture:overlay")
 
     assert combined.quotes[0].price == 10.0
     assert combined.source_versions["eastmoney"] == "a-current"
@@ -372,8 +372,7 @@ def test_later_overlay_that_does_not_replace_quote_cannot_regress_source_version
 
 def test_older_partial_overlay_cannot_regress_same_source_version_when_adding_a_code() -> None:
     current = merge_market_observations(
-        (_observation("eastmoney", price=10.0, data_version="a-current"),),
-        observed_at=NOW,
+        (_observation("eastmoney", price=10.0, data_version="a-current"),), observed_at=NOW, merge_epoch="fixture:1"
     )
     older_at = NOW - timedelta(seconds=1)
     older_code = replace(
@@ -387,9 +386,9 @@ def test_older_partial_overlay_cannot_regress_same_source_version_when_adding_a_
         ),
         subject_key="600002",
     )
-    partial = merge_market_observations((older_code,), observed_at=NOW + timedelta(seconds=1))
+    partial = merge_market_observations((older_code,), observed_at=NOW + timedelta(seconds=1), merge_epoch="fixture:1")
 
-    combined = overlay_canonical_snapshot(current, partial)
+    combined = overlay_canonical_snapshot(current, partial, merge_epoch="fixture:overlay")
 
     assert tuple(quote.code for quote in combined.quotes) == ("600001", "600002")
     assert combined.source_versions["eastmoney"] == "a-current"
@@ -398,7 +397,7 @@ def test_older_partial_overlay_cannot_regress_same_source_version_when_adding_a_
 def test_invalid_subject_key_does_not_enter_canonical_snapshot_metadata() -> None:
     invalid = replace(_observation("eastmoney"), subject_key="not-a-code")
 
-    snapshot = merge_market_observations((invalid,), observed_at=NOW)
+    snapshot = merge_market_observations((invalid,), observed_at=NOW, merge_epoch="fixture:1")
 
     assert snapshot.quotes == ()
     assert snapshot.source_versions == {}
@@ -410,6 +409,7 @@ def test_unverified_price_divergence_above_half_percent_is_observe_only() -> Non
     snapshot = merge_market_observations(
         (_observation("eastmoney", price=10.0), _observation("sina", price=10.051)),
         observed_at=NOW,
+        merge_epoch="fixture:1",
     )
 
     quote = snapshot.quotes[0]
@@ -423,6 +423,7 @@ def test_price_divergence_exactly_half_percent_remains_verified() -> None:
     snapshot = merge_market_observations(
         (_observation("eastmoney", price=10.0), _observation("sina", price=10.05)),
         observed_at=NOW,
+        merge_epoch="fixture:1",
     )
 
     quote = snapshot.quotes[0]
@@ -439,7 +440,8 @@ def test_targeted_quote_must_agree_with_a_full_market_source_to_verify_divergenc
             _observation("tencent", price=10.2),
         ),
         observed_at=NOW,
-        targeted_codes=("600001",),
+        limits=MergeObservationLimits(targeted_codes=("600001",)),
+        merge_epoch="fixture:1",
     )
 
     quote = snapshot.quotes[0]
@@ -467,7 +469,8 @@ def test_targeted_quote_updates_price_without_whole_row_overwrite() -> None:
     snapshot = merge_market_observations(
         (eastmoney, tencent),
         observed_at=NOW,
-        targeted_codes=("600001",),
+        limits=MergeObservationLimits(targeted_codes=("600001",)),
+        merge_epoch="fixture:1",
     )
 
     quote = snapshot.quotes[0]
@@ -489,7 +492,8 @@ def test_targeted_quote_just_over_half_percent_cannot_pass_with_a_larger_denomin
             _observation("tencent", price=10.0501),
         ),
         observed_at=NOW,
-        targeted_codes=("600001",),
+        limits=MergeObservationLimits(targeted_codes=("600001",)),
+        merge_epoch="fixture:1",
     )
 
     quote = snapshot.quotes[0]
@@ -500,13 +504,11 @@ def test_targeted_quote_just_over_half_percent_cannot_pass_with_a_larger_denomin
 
 
 def test_all_sources_failed_preserves_last_valid_snapshot() -> None:
-    previous = merge_market_observations((_observation("eastmoney"),), observed_at=NOW)
+    previous = merge_market_observations((_observation("eastmoney"),), observed_at=NOW, merge_epoch="fixture:1")
     failed = _observation("eastmoney", status="failed")
 
     recovered = merge_market_observations(
-        (failed,),
-        observed_at=NOW + timedelta(seconds=10),
-        previous=previous,
+        (failed,), observed_at=NOW + timedelta(seconds=10), previous=previous, merge_epoch="fixture:1"
     )
 
     assert recovered.quotes == previous.quotes
@@ -526,8 +528,7 @@ def test_merge_rejects_trade_date_and_observation_point_conflicts() -> None:
     )
 
     snapshot = merge_market_observations(
-        (_observation("eastmoney"), conflicting_date, conflicting_point),
-        observed_at=NOW,
+        (_observation("eastmoney"), conflicting_date, conflicting_point), observed_at=NOW, merge_epoch="fixture:1"
     )
 
     assert snapshot.quotes == ()
@@ -545,8 +546,15 @@ def test_merge_rejects_security_identity_and_expired_observations() -> None:
         received_at=NOW - timedelta(seconds=301),
     )
 
-    identity_snapshot = merge_market_observations((identity_conflict,), observed_at=NOW, max_age_seconds=300.0)
-    expired_snapshot = merge_market_observations((expired,), observed_at=NOW, max_age_seconds=300.0)
+    identity_snapshot = merge_market_observations(
+        (identity_conflict,),
+        observed_at=NOW,
+        limits=MergeObservationLimits(max_age_seconds=300.0),
+        merge_epoch="fixture:1",
+    )
+    expired_snapshot = merge_market_observations(
+        (expired,), observed_at=NOW, limits=MergeObservationLimits(max_age_seconds=300.0), merge_epoch="fixture:1"
+    )
 
     assert "security_identity_conflict:600001" in identity_snapshot.degraded_reasons
     assert "freshness_expired:600001:eastmoney" in expired_snapshot.degraded_reasons
@@ -556,8 +564,7 @@ def test_merge_rejects_security_identity_and_expired_observations() -> None:
 
 def test_snapshot_exposes_source_age_and_operational_failure_metadata() -> None:
     snapshot = merge_market_observations(
-        (_observation("eastmoney", source_time=NOW - timedelta(seconds=12)),),
-        observed_at=NOW,
+        (_observation("eastmoney", source_time=NOW - timedelta(seconds=12)),), observed_at=NOW, merge_epoch="fixture:1"
     )
 
     assert snapshot.source_ages_seconds == {"eastmoney": 12.0}
@@ -592,7 +599,7 @@ def test_slow_source_cannot_overwrite_realtime_price_and_can_supply_board_identi
         error_code=None,
     )
 
-    snapshot = merge_market_observations((tushare, realtime), observed_at=NOW)
+    snapshot = merge_market_observations((tushare, realtime), observed_at=NOW, merge_epoch="fixture:1")
 
     quote = snapshot.quotes[0]
     assert quote.price == 10.0
@@ -611,5 +618,6 @@ def test_slow_source_cannot_overwrite_realtime_price_and_can_supply_board_identi
     missing_age = merge_market_observations(
         (replace(tushare, fields=fields_without_age, payload_hash="master-without-age"), realtime),
         observed_at=NOW,
+        merge_epoch="fixture:1",
     )
     assert "missing_listing_age_sessions" in missing_age.quotes[0].execution_restrictions

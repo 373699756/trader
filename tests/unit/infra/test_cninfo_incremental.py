@@ -10,6 +10,7 @@ from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_COMPONENT_PREFIX,
     CNINFO_CURSOR_PREFIX,
     CninfoAnnouncementIncrementalSync,
+    parse_cninfo_announcement_rows,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
@@ -17,6 +18,21 @@ from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OBSERVED_AT = datetime(2026, 7, 30, 14, 50, tzinfo=SHANGHAI)
+
+
+def test_missing_announcement_id_uses_persistent_evidence_digest_once() -> None:
+    rows = {
+        "announcements": (
+            {"title": "关于重大违法强制退市决定的公告" * 30, "published_at": "2026-07-29 18:30:00"},
+            {"title": "关于同时间其他事项的公告", "published_at": "2026-07-29 18:30:00"},
+        )
+    }
+    parsed, invalid = parse_cninfo_announcement_rows("600001", rows, OBSERVED_AT)
+    again, _ = parse_cninfo_announcement_rows("600001", rows, OBSERVED_AT)
+    assert invalid == 0
+    assert len({item.announcement_id for item in parsed}) == 2
+    assert parsed == again
+    assert all(item.announcement_id.isascii() and len(item.announcement_id) <= 80 for item in parsed)
 
 
 def test_cninfo_sync_persists_unique_announcements_components_and_cursor(tmp_path: Path) -> None:
@@ -146,6 +162,7 @@ def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_pa
 
     observation = cached["600003"]
     assert observation.announcements_available is True
+    assert observation.data_version != "research:unassigned"
     assert observation.corporate_risk_history_complete is True
     assert observation.corporate_risk_evidence_version.startswith("cninfo-risk-evidence:")
     assert {fact.evidence_id for fact in observation.corporate_risk_facts} == {f"{CNINFO_ANNOUNCEMENT_PREFIX}case-1"}

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.infra.cache_contracts import CacheRequestKey
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
     ReviewCandidateContext,
@@ -183,7 +184,7 @@ class ReviewerRequestExecutor:
         strategy: Strategy,
         *,
         phase: str,
-    ) -> str:
+    ) -> CacheRequestKey:
         primary_key = review_cache_key(
             candidate,
             model=self._settings.model,
@@ -332,12 +333,12 @@ class ReviewerRequestExecutor:
 
     def fusion_cache_key(
         self,
-        raw_key: str,
+        raw_key: str | CacheRequestKey,
         strategy: Strategy,
         *,
-        challenger_identity: str = "",
+        challenger_identity: str | CacheRequestKey = "",
         challenger_status: str = "not_run",
-    ) -> str:
+    ) -> CacheRequestKey:
         return strategy_review_cache_key(
             raw_key,
             strategy=strategy,

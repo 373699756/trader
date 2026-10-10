@@ -6,13 +6,13 @@ from collections.abc import Collection, Mapping
 from datetime import datetime, time, timedelta
 from typing import TYPE_CHECKING
 
+from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
-    DecisionUnavailableError,
     DataRefreshUnavailableError,
+    DecisionUnavailableError,
     PipelineTaskRequest,
 )
-from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
 from trader.recommendation.application.runtime.cadence import task_execution_budget_seconds
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
@@ -20,7 +20,7 @@ from trader.recommendation.domain.publication.decision_identity import DecisionQ
 from trader.recommendation.domain.publication.models import Strategy
 
 if TYPE_CHECKING:
-    from trader.recommendation.application.pipeline.data_source.source_router import InputBatch
+    from trader.recommendation.application.ports.scoring_inputs import InputBatch
 
 
 def quote_order(feature: FeatureSnapshot) -> tuple[datetime, datetime, str]:
@@ -70,10 +70,12 @@ def merge_overlay_quote(quotes: dict[str, DecisionQuote], feature: FeatureSnapsh
         data_version=quote.data_version,
     )
     existing = quotes.get(quote.code)
-    if existing is not None and (candidate.source_time, candidate.data_version) <= (
+    if existing is not None and (candidate.source_time, candidate.data_version) < (
         existing.source_time,
         existing.data_version,
     ):
+        return False
+    if candidate == existing:
         return False
     quotes[quote.code] = candidate
     return True

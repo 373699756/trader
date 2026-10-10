@@ -8,8 +8,6 @@ from datetime import date, datetime
 from typing import ClassVar, Protocol
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.application.pipeline.policy_projection import preselection_replay_feature
-from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -165,59 +163,10 @@ def _unique_codes(features: tuple[FeatureSnapshot, ...], label: str) -> set[str]
 
 
 def _input_version(native_input: ScoredNativeInput) -> str:
-    material = {
-        "strategy": native_input.strategy,
-        "trade_date": native_input.trade_date,
-        "phase": native_input.phase,
-        "data_version": native_input.data_version,
-        "config_version": native_input.config_version,
-        "evaluated_at": native_input.evaluated_at,
-        "requested_codes": tuple(sorted(native_input.requested_codes)),
-        "market": tuple(
-            _market_feature_identity(feature)
-            for feature in sorted(native_input.market_features, key=lambda item: item.quote.code)
-        ),
-        "candidates": tuple(
-            _feature_identity(feature)
-            for feature in sorted(native_input.candidate_features, key=lambda item: item.quote.code)
-        ),
-        "preselect_max_age_seconds": native_input.preselect_max_age_seconds,
-        "score_max_age_seconds": native_input.score_max_age_seconds,
-        "candidate_pool_size": native_input.candidate_pool_size,
-    }
-    return f"native-input:{request_fingerprint(material)[:24]}"
-
-
-def _feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
-    quote = feature.quote
+    """The accepting owner must advance data_version on any material correction."""
     return (
-        quote.code,
-        quote.data_version,
-        _shanghai(quote.source_time),
-        _shanghai(quote.received_time),
-        _shanghai(feature.observed_at),
-        feature.merge_epoch or request_fingerprint({"feature": _normalize_feature_times(feature)}),
-        feature.history_days,
-        tuple(sorted(feature.missing_fields)),
-        tuple(sorted(feature.missing_reasons.items())),
-        (
-            (
-                feature.model_industry.industry_id,
-                feature.model_industry.classification,
-                feature.model_industry.effective_date,
-                feature.model_industry.source,
-                feature.model_industry.data_version,
-            )
-            if feature.model_industry is not None
-            else None
-        ),
+        f"native:{native_input.strategy.value}:{native_input.data_version}:{native_input.evaluated_at:%Y%m%dT%H%M%S%f}"
     )
-
-
-def _market_feature_identity(feature: FeatureSnapshot) -> tuple[object, ...]:
-    if feature.merge_epoch:
-        return _feature_identity(feature)
-    return _feature_identity(preselection_replay_feature(feature))
 
 
 def _shanghai(value: datetime) -> datetime:

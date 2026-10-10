@@ -13,7 +13,7 @@ import pytest
 
 from tests.unit.training.infra.profile.v3.test_profile import _publish
 from trader.bootstrap import _initialize_research_trace, build_system
-from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
+from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.recommendation.application.ports.read_only_queries import (
@@ -205,7 +205,7 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
 
     system = build_system(_config(tmp_path))
     native_data = system.scheduler._dependencies.data
-    assert isinstance(native_data, MarketDataAdapter)
+    assert isinstance(native_data, MarketInputCoordinator)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
     assert system.history_observer._history is native_data._market.history  # noqa: SLF001
     configuration = HistorySyncConfiguration.for_repository(system.settings.project_root)

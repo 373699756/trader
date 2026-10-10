@@ -45,13 +45,13 @@ EXPECTED_DEBT = frozenset(
         ("PLR0913", "recommendation/application/pipeline/quality_check/pipeline_status.py", "build_supply_status"),
         ("PLR0913", "recommendation/application/pipeline/stage_output.py", "stage_output"),
         ("PLR0913", "recommendation/application/pipeline/static_market/static_market_loader.py", "load_static_market"),
-        ("PLR0911", "recommendation/application/request_identity.py", "_canonical_value"),
         ("C901", "recommendation/domain/evidence/pipeline.py", "PipelineStageStatus.__post_init__"),
         ("C901", "recommendation/domain/market/refresh.py", "ResearchRefreshResult.__post_init__"),
         ("PLR0913", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.__init__"),
         ("C901", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
         ("PLR0912", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
         ("PLR0915", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.recover"),
+        ("PLR0913", "recommendation/infra/market_data/published_history_cache.py", "PublishedHistoryCache.__init__"),
     }
 )
 RUFF_TIMEOUT_SECONDS = 60
@@ -64,6 +64,7 @@ TOP_LEVEL_SCRIPT_MANIFEST = frozenset(
         "diagnose_runtime.py",
         "generate_long_watchlist_asset.py",
         "migrate_runtime_data.py",
+        "rename_qfq_shards.py",
         "repack_baostock_history_archive.py",
         "verify_wheel_install.py",
     }

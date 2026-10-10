@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import html
 import json
 import logging
@@ -147,21 +146,6 @@ def _finite_number(raw: object) -> float | None:
     except (TypeError, ValueError):
         return None
     return value if math.isfinite(value) else None
-
-
-def _payload_version(prefix: str, payload: Mapping[str, object]) -> str:
-    version = str(payload.get("version") or "").strip()
-    if version:
-        return f"{prefix}:{version[:64]}"
-    try:
-        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError("research payload cannot be versioned") from exc
-    return _content_version(prefix, canonical)
-
-
-def _content_version(prefix: str, content: str) -> str:
-    return f"{prefix}:sha256:{hashlib.sha256(content.encode()).hexdigest()[:20]}"
 
 
 def _source_error(source: str, error: BaseException) -> str:

@@ -19,13 +19,6 @@ from typing import cast
 
 from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.cache_contracts import canonical_json_bytes
-from trader.recommendation.infra.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
-from trader.recommendation.infra.normalization.merge import (
-    merge_market_observations,
-    observation_from_quote,
-    overlay_canonical_snapshot,
-)
-from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
@@ -73,6 +66,14 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
 )
+from trader.recommendation.infra.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
+from trader.recommendation.infra.normalization.merge import (
+    MergeObservationLimits,
+    merge_market_observations,
+    observation_from_quote,
+    overlay_canonical_snapshot,
+)
+from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.application.scoring_hot_path_baseline import (
     ScoringHotPathBaseline,
@@ -248,7 +249,7 @@ def _operations(
     model_scoring = context.model_scoring
     observed_at = market_quotes[0].received_time
     observations = _complete_realtime_observations(market_quotes, observed_at)
-    merged = merge_market_observations(observations, observed_at=observed_at)
+    merged = merge_market_observations(observations, merge_epoch="performance:market", observed_at=observed_at)
     changed_quotes = tuple(
         replace(
             quote,
@@ -266,9 +267,10 @@ def _operations(
             for quote in changed_quotes
         ),
         observed_at=changed_at,
-        targeted_codes=tuple(quote.code for quote in changed_quotes),
+        limits=MergeObservationLimits(targeted_codes=tuple(quote.code for quote in changed_quotes)),
+        merge_epoch="performance:market",
     )
-    committed_overlay = overlay_canonical_snapshot(merged, overlay_snapshot)
+    committed_overlay = overlay_canonical_snapshot(merged, overlay_snapshot, merge_epoch="performance:overlay")
     candidate_union_snapshot = merge_market_observations(
         tuple(
             observation_from_quote(
@@ -284,7 +286,8 @@ def _operations(
             for quote in candidate_union_fixture.quotes
         ),
         observed_at=changed_at,
-        targeted_codes=candidate_union_fixture.plans.physical_union(),
+        limits=MergeObservationLimits(targeted_codes=candidate_union_fixture.plans.physical_union()),
+        merge_epoch="performance:market",
     )
     market_features = tuple(
         FeatureSnapshot(quote, candidates[index % len(candidates)].values, observed_at, 61)
@@ -362,18 +365,20 @@ def _operations(
     def candidate_union_projection() -> object:
         if len(candidate_union_fixture.plans.physical_union()) != len(candidate_union_fixture.quotes):
             raise ValueError("candidate union fixture identity mismatch")
-        return overlay_canonical_snapshot(merged, candidate_union_snapshot)
+        return overlay_canonical_snapshot(merged, candidate_union_snapshot, merge_epoch="performance:candidate")
 
     operations: dict[str, Callable[[], object]] = {
         "market_normalization": lambda: tuple(build_market_quote(item) for item in market_inputs),
-        "market_merge": lambda: merge_market_observations(observations, observed_at=observed_at),
+        "market_merge": lambda: merge_market_observations(
+            observations, merge_epoch="performance:market", observed_at=observed_at
+        ),
         "canonical_snapshot": lambda: ColumnarQuoteBatch.from_snapshot(
             merged,
             config_version=config_version,
             schema_version="performance-market",
         ),
         "targeted_overlay_commit": lambda: (
-            overlay_canonical_snapshot(merged, overlay_snapshot),
+            overlay_canonical_snapshot(merged, overlay_snapshot, merge_epoch="performance:overlay"),
             targeted_market_changes(merged, committed_overlay, tuple(quote.code for quote in changed_quotes)),
             overlay_commit(),
         ),
@@ -405,17 +410,35 @@ def _operations(
         "market_normalization": "trader.recommendation.infra.normalization.quote.build_market_quote",
         "market_merge": "trader.recommendation.infra.normalization.merge.merge_market_observations",
         "canonical_snapshot": "trader.recommendation.infra.normalization.columnar.ColumnarQuoteBatch.from_snapshot",
-        "targeted_overlay_commit": "trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot + trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedDecisionIndex.publish_overlay",
-        "board_preselection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans",
-        "candidate_union_projection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot",
+        "targeted_overlay_commit": (
+            "trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot + trader."
+            "recommendation.application.pipeline.freeze_publish.snapshot_publisher.UnifiedDecisionIndex.publish_overlay"
+        ),
+        "board_preselection": (
+            "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans"
+        ),
+        "candidate_union_projection": (
+            "trader.recommendation.application.pipeline.candidate_pool.candidate_builder."
+            "CandidatePlanSet.physical_union + "
+            "trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot"
+        ),
         "board_local_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "two_strategy_board_scoring": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "three_board_wall_clock": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
         "global_selection": "trader.recommendation.domain.scoring.scoring.score_board_strategy",
-        "board_ready_to_draft": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local",
-        "quote_to_draft": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local",
-        "deepseek_to_hybrid": "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_hybrid",
-        "sse_publish": "trader.recommendation.application.pipeline.freeze_publish.event_stream.UnifiedDecisionEventStream.publish_committed",
+        "board_ready_to_draft": (
+            "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local"
+        ),
+        "quote_to_draft": (
+            "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_local"
+        ),
+        "deepseek_to_hybrid": (
+            "trader.recommendation.application.pipeline.final_selection.decision_projection.build_scored_hybrid"
+        ),
+        "sse_publish": (
+            "trader.recommendation.application.pipeline.freeze_publish.event_stream."
+            "UnifiedDecisionEventStream.publish_committed"
+        ),
         "snapshot_api": "trader.http_api.handlers.product_handler._current",
         "etag_api": "trader.http_api.handlers.product_handler._current",
         "dates_api": "trader.http_api.handlers.product_handler._dates",
@@ -438,6 +461,7 @@ def _api_operations(
         decision.version,
         decision.observed_at,
         tuple(item.quote for item in decision.items if item.quote is not None),
+        sequence=1,
     )
     if not index.publish_scored(decision, overlay, expected_version=None).accepted:
         raise RuntimeError("performance decision setup failed")
@@ -480,6 +504,7 @@ def _overlay_cas_operation(
         decision.version,
         observed_at,
         tuple(item.quote for item in decision.items if item.quote is not None),
+        sequence=1,
     )
     if not index.publish_scored(decision, initial, expected_version=None).accepted:
         raise RuntimeError("performance overlay setup failed")
@@ -496,7 +521,9 @@ def _overlay_cas_operation(
             replace(quote, price=quote.price + counter / 10000.0, source_time=at, data_version=f"overlay:{counter}")
             for quote in current.quotes
         )
-        overlay = DecisionOverlay(decision.strategy, decision.trade_date, decision.version, at, quotes)
+        overlay = DecisionOverlay(
+            decision.strategy, decision.trade_date, decision.version, at, quotes, sequence=counter + 1
+        )
         return index.publish_overlay(overlay, expected_version=current.version)
 
     return commit

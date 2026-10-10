@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime
 from typing import ParamSpec, TypeVar
 
-from trader.infra.cache_contracts import canonical_json_bytes
+from trader.infra.cache_contracts import CacheRequestKey, request_key
 from trader.infra.market_data.history.history import DailyBar
-from trader.recommendation.infra.normalization.merge_quote import source_name, source_priority
-from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
 from trader.recommendation.domain.market.models import (
     Evidence,
     MarketQuote,
@@ -25,6 +22,8 @@ from trader.recommendation.domain.market.research import (
     ResearchObservation,
 )
 from trader.recommendation.domain.market.tail import MinuteBar
+from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
+from trader.recommendation.infra.normalization.merge_quote import source_name, source_priority
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -34,8 +33,7 @@ _HISTORY_PRELOAD_PER_BOARD_LIMIT = 120
 def _reference_epoch(versions: Mapping[str, str]) -> str:
     """Return the single immutable identity for the active static reference set."""
 
-    digest = hashlib.sha256(canonical_json_bytes(dict(sorted(versions.items())))).hexdigest()[:24]
-    return f"reference:{digest}"
+    return f"reference:{tuple(sorted(versions.items()))!r}"
 
 
 def _source_batch_identity(
@@ -43,14 +41,14 @@ def _source_batch_identity(
     subjects: Sequence[str],
     observed_at: datetime,
     **options: object,
-) -> str:
+) -> CacheRequestKey:
     payload = {
         "dataset": dataset,
         "subjects": sorted(set(subjects)),
         "observed_at": observed_at,
         "options": options,
     }
-    return f"{dataset}:{hashlib.sha256(canonical_json_bytes(payload)).hexdigest()}"
+    return request_key(payload)
 
 
 def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[str, ...]:
@@ -205,8 +203,7 @@ def _research_source_time(observation: ResearchObservation) -> datetime | None:
 
 
 def _research_data_version(observation: ResearchObservation) -> str:
-    digest = hashlib.sha256(canonical_json_bytes(observation)).hexdigest()[:20]
-    return f"akshare-research:{digest}"
+    return observation.data_version
 
 
 def _research_is_older(observation: ResearchObservation, old_entry: _ResearchEntry | None) -> bool:
@@ -307,6 +304,7 @@ def _history_priority(quote: MarketQuote) -> tuple[float, float, str]:
 
 def _serialize_research_observation(observation: ResearchObservation) -> dict[str, object]:
     return {
+        "data_version": observation.data_version,
         "financial": _serialize_financial_report(observation.financial) if observation.financial is not None else None,
         "financial_history": tuple(_serialize_financial_report(item) for item in observation.financial_history),
         "financial_history_complete": observation.financial_history_complete,
@@ -334,6 +332,7 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
     if not isinstance(source_errors, list):
         raise ValueError("source_errors must be a list")
     return ResearchObservation(
+        data_version=str(raw.get("data_version") or "research:recovered"),
         financial=_deserialize_financial_report(financial_raw) if isinstance(financial_raw, dict) else None,
         financial_history=tuple(
             _deserialize_financial_report(item) for item in financial_history_raw if isinstance(item, dict)

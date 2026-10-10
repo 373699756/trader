@@ -5,8 +5,8 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Protocol
 
 from trader.recommendation.application.long_runtime import LongRuntime
@@ -27,49 +27,20 @@ from trader.recommendation.application.pipeline.data_source.input_assembly impor
     candidate_batch_is_complete as _candidate_batch_is_complete,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    decision_observed_at as _decision_observed_at,
-)
-from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    merge_overlay_quote as _merge_overlay_quote,
-)
-from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    model_scoring_context as _model_scoring_context,
-)
-from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    overlay_observed_at as _overlay_observed_at,
-)
-from trader.recommendation.application.pipeline.data_source.input_assembly import (
     refresh_completed_at as _refresh_completed_at,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     require_codes as _require_codes,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    selected_quote_features as _selected_quote_features,
-)
-from trader.recommendation.application.pipeline.data_source.input_assembly import (
     task_deadline as _task_deadline,
 )
+from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.pipeline.data_source.input_identity import (
     changed_version_codes as _changed_version_codes,
 )
 from trader.recommendation.application.pipeline.data_source.input_identity import (
-    data_version as _data_version,
-)
-from trader.recommendation.application.pipeline.data_source.input_identity import (
-    feature_batch_version as _feature_batch_version,
-)
-from trader.recommendation.application.pipeline.data_source.input_identity import (
     quote_versions as _quote_versions,
-)
-from trader.recommendation.application.pipeline.data_source.input_identity import (
-    stable_digest as _stable_digest,
-)
-from trader.recommendation.application.pipeline.data_source.source_quality import (
-    build_source_stage_output,
-)
-from trader.recommendation.application.pipeline.data_source.source_quality import (
-    decision_failure_code as _decision_failure_code,
 )
 from trader.recommendation.application.pipeline.data_source.source_quality import (
     failure_code as _failure_code,
@@ -77,27 +48,14 @@ from trader.recommendation.application.pipeline.data_source.source_quality impor
 from trader.recommendation.application.pipeline.data_source.source_quality import (
     uses_fallback as _uses_fallback,
 )
-from trader.recommendation.application.pipeline.final_selection.decision_projection import (
-    ScoredLocalProjection,
-    ScoredReviewProjection,
-)
-from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.local_score.base_scoring import (
-    LocalScoringContext,
-    LocalScoringPort,
-    LocalScoringService,
-)
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
-    QualityScoringBatch,
     assess_candidate_input_stage,
     has_transient_candidate_gap,
 )
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
     build_pending_pipeline,
     build_pending_stage_snapshots,
-    build_supply_status,
-    update_supply_status_decision,
 )
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, measured_output
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
@@ -108,41 +66,17 @@ from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPort,
     DataRefreshUnavailableError,
-    DecisionBuilderPort,
-    DecisionUnavailableError,
     PipelineTaskRequest,
     RefreshOutcome,
-    ResearchIntent,
 )
-from trader.recommendation.application.ports.scoring import D25NativeInput, TomorrowNativeInput
+from trader.recommendation.application.ports.scoring_inputs import InputBatch, TopKQuoteBatch
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
-from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.recommendation.domain.publication.decision_identity import (
-    DecisionIdentity,
-    DecisionOverlay,
-    ScoredDecision,
-    identity_codes,
-)
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
-
-
-@dataclass(frozen=True)
-class InputBatch:
-    request: CycleRequest
-    market_features: tuple[FeatureSnapshot, ...]
-    requested_codes: tuple[str, ...]
-    candidate_features: tuple[FeatureSnapshot, ...]
-    data_version: str
-    candidate_stage_counts: ScoredCandidateStageCounts | None = None
-    candidate_quote_eligible: int = 0
-    preselection_transient_invalid: bool = False
-    issuer_eligibility: IssuerEligibilityBatch | None = None
-    input_stages: tuple[PipelineStageSnapshot, ...] = ()
-    candidate_stage: PipelineStageOutput[SelectedCandidateInput] | None = None
 
 
 @dataclass(frozen=True)
@@ -164,18 +98,13 @@ class _ScoringFeatureBatch:
 
 
 @dataclass(frozen=True)
-class DecisionBuildDependencies:
+class InputRefreshDependencies:
     long_runtime: LongRuntime
     policy: RecommendationPolicy
-    draft_index: UnifiedDecisionDraftIndex
     now: Callable[[], datetime]
-    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
     model_scoring: ModelScoringPort | None = None
     candidate_filtering: CandidateFilteringPort | None = None
-    local_scoring: LocalScoringPort | None = None
-    research_audit_builder: Callable[[ScoredLocalProjection, ScoredDecision], object | None] = (
-        lambda _projection, _decision: None
-    )
+    monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -187,12 +116,6 @@ class _PendingQualityContext:
     primary_blocker: str
     apply_model_eligibility: bool = True
     issuer_eligibility: IssuerEligibilityBatch | None = None
-
-
-@dataclass(frozen=True)
-class _TopKQuoteBatch:
-    observed_at: datetime
-    features: tuple[FeatureSnapshot, ...]
 
 
 class MarketReader(Protocol):
@@ -263,40 +186,32 @@ class MarketReader(Protocol):
     ) -> Sequence[FeatureSnapshot]: ...
 
 
-class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
+class MarketInputCoordinator(DataRefreshPort):
     """Build immutable native inputs for the scheduler."""
 
     def __init__(
         self,
         market: MarketReader,
         *,
-        config_version: str,
         candidate_pool_size: int,
-        decision_build: DecisionBuildDependencies,
+        dependencies: InputRefreshDependencies,
     ) -> None:
+        self._versions = InputVersionClock()
         self._market = market
-        self._config_version = config_version
         self._candidate_pool_size = max(1, candidate_pool_size)
-        self._long_runtime = decision_build.long_runtime
-        self._policy = decision_build.policy
-        self._draft_index = decision_build.draft_index
-        self._now = decision_build.now
-        self._monotonic = decision_build.monotonic
-        self._research_audit_builder = decision_build.research_audit_builder
-        self._model_scoring = decision_build.model_scoring
+        self._long_runtime = dependencies.long_runtime
+        self._policy = dependencies.policy
+        self._now = dependencies.now
+        self._monotonic = dependencies.monotonic
+        self._model_scoring = dependencies.model_scoring
         self._candidate_filtering = (
-            decision_build.candidate_filtering
-            if decision_build.candidate_filtering is not None
+            dependencies.candidate_filtering
+            if dependencies.candidate_filtering is not None
             else CandidateFilteringService(
                 self._policy,
                 self._model_scoring,
                 self._candidate_pool_size,
             )
-        )
-        self._local_scoring = (
-            decision_build.local_scoring
-            if decision_build.local_scoring is not None
-            else LocalScoringService(self._model_scoring)
         )
         self._lock = threading.RLock()
         self._batches: dict[tuple[Strategy, str], InputBatch] = {}
@@ -316,19 +231,16 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         self._strategy_preselection_transient_invalid: dict[Strategy, bool] = {
             strategy: False for strategy in SCORED_STRATEGIES
         }
-        self._latest_topk_quotes: _TopKQuoteBatch | None = None
+        self._latest_topk_quotes: TopKQuoteBatch | None = None
         self._market_version = "market:unavailable"
         self._candidate_version = "candidate:unavailable"
         self._research_version = "research:initial"
         self._intraday_version = "intraday:initial"
-        self._market_quote_versions: dict[str, str] = {}
-        self._candidate_quote_versions: dict[str, str] = {}
+        self._market_quote_versions: dict[str, MarketQuote] = {}
+        self._candidate_quote_versions: dict[str, MarketQuote] = {}
         self._topk_version = "topk:unavailable"
         self._score_feature_batches: dict[tuple[str, bool, tuple[str, ...]], tuple[FeatureSnapshot, ...]] = {}
-        self._projections: dict[str, ScoredLocalProjection] = {}
-        self._decisions: dict[str, ScoredDecision] = {}
         self._input_quality: dict[Strategy, InputQualityStatus] = {}
-        self._sequences = {strategy: 1 for strategy in SCORED_STRATEGIES}
 
     def invalidate_history(self) -> None:
         with self._lock:
@@ -380,7 +292,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         market_batch = self._market.fetch_market_feature_batch(request.observed_at, force=True, deadline=deadline)
         features = market_batch.features
         issuer_eligibility = market_batch.issuer_eligibility
-        data_version = _feature_batch_version("market", features)
+        data_version = self._versions.features("market", features)
         completed_at = _refresh_completed_at(request, features)
         apply_model_eligibility = request.task is not PipelineTask.CLOSE_QUOTES
         candidate_pipeline = self._candidate_filtering.plan_observed(
@@ -491,7 +403,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             strategy: tuple(features_by_code[code] for code in strategy_requested[strategy] if code in features_by_code)
             for strategy in SCORED_STRATEGIES
         }
-        data_version = _feature_batch_version("candidate", final_features)
+        data_version = self._versions.features("candidate", final_features)
         quote_versions = _quote_versions(final_features)
         refresh_ms = max(0, int((self._monotonic() - started) * 1000))
         candidate_outputs = {
@@ -561,7 +473,12 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             first_eight, candidates = self._observed_input_locked(strategy)
             started = self._monotonic()
             candidates = assemble_candidate_inputs(
-                candidates, self._strategy_candidate_features[strategy], as_of=context.observed_at
+                candidates,
+                self._strategy_candidate_features[strategy],
+                as_of=context.observed_at,
+                data_version=self._versions.features(
+                    f"quality:{strategy.value}", self._strategy_candidate_features[strategy]
+                ),
             )
             first_eight = (*first_eight[:7], candidates.snapshot)
             quality_stage = assess_candidate_input_stage(
@@ -619,11 +536,11 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 deadline=deadline,
             )
         )
-        data_version = _feature_batch_version("topk", features)
+        data_version = self._versions.features("topk", features)
         with self._lock:
             changed = data_version != self._topk_version
             self._topk_version = data_version
-            self._latest_topk_quotes = _TopKQuoteBatch(request.observed_at, features)
+            self._latest_topk_quotes = TopKQuoteBatch(request.observed_at, features)
         return RefreshOutcome(
             request.task,
             changed,
@@ -653,7 +570,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
         _deadline: datetime | None,
     ) -> RefreshOutcome:
         features = tuple(self._market.refresh_industry_heat(request.observed_at))
-        version = _feature_batch_version("industry", features)
+        version = self._versions.features("industry", features)
         return RefreshOutcome(
             request.task,
             bool(features),
@@ -734,15 +651,27 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
                 candidate_features = scoring_batch.features
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
             raise DataRefreshUnavailableError(_failure_code(exc)) from exc
+        data_version = self._versions.accept(
+            f"native:{request.strategy.value}",
+            (
+                request.input_version,
+                self._market_version,
+                self._candidate_version,
+                self._research_version,
+                self._market.reference_version(),
+                shared.market_features,
+                candidate_features,
+            ),
+        )
         candidate_stage = assemble_candidate_inputs(
-            shared.candidate_stage, candidate_features, as_of=request.observed_at
+            shared.candidate_stage, candidate_features, as_of=request.observed_at, data_version=data_version
         )
         batch = InputBatch(
             request,
             shared.market_features,
             shared.requested_codes,
             candidate_features,
-            _data_version(request, shared.market_features, candidate_features),
+            data_version,
             shared.candidate_stage_counts,
             shared.candidate_quote_eligible,
             shared.preselection_transient_invalid,
@@ -846,7 +775,7 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             self._latest_requested_codes,
             tuple((strategy.value, self._strategy_requested_codes[strategy]) for strategy in SCORED_STRATEGIES),
         )
-        return f"input:{_stable_digest(versions)}"
+        return self._versions.accept("input", versions)
 
     def _invalidate_scoring_locked(self) -> None:
         self._score_feature_batches.clear()
@@ -868,209 +797,29 @@ class MarketDataAdapter(DataRefreshPort, DecisionBuilderPort):
             # Reference enrichment is best-effort; missing fields remain visible as controlled degradation.
             return
 
-    def has_local_draft(self, strategy: Strategy, trade_date: date) -> bool:
-        draft = self._draft_index.snapshot(strategy)
-        return draft is not None and draft.trade_date == trade_date
+    def batch(self, request: CycleRequest) -> InputBatch | None:
+        with self._lock:
+            return self._batches.get((request.strategy, request.input_version))
 
-    def build_local(self, request: CycleRequest) -> DecisionIdentity | None:
-        if request.strategy is Strategy.LONG:
-            return None
+    def topk_batch(self) -> TopKQuoteBatch | None:
         with self._lock:
-            batch = self._batches.get((request.strategy, request.input_version))
-            sequence = self._sequences[request.strategy]
-            self._sequences[request.strategy] += 2
-        if batch is None:
-            raise DecisionUnavailableError("current native input is unavailable")
-        if batch.candidate_stage is None:
-            raise DecisionUnavailableError("candidate observations are unavailable")
-        try:
-            evaluated_at = _decision_observed_at(batch)
-            started = self._monotonic()
-            quality_stage = assess_candidate_input_stage(
-                batch.candidate_stage,
-                as_of=evaluated_at,
-                minimum_history_sessions=(
-                    self._model_scoring.history_required_sessions(request.strategy)
-                    if self._model_scoring is not None
-                    and request.phase != "close_fallback"
-                    and self._model_scoring.uses_model(request.strategy)
-                    else 20
-                ),
-                latency_ms=0,
-                hard_filter=self._policy.hard_filter,
-            )
-            quality_stage = measured_output(quality_stage, started, self._monotonic)
-            native_input = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
-                batch.request.trade_date,
-                batch.request.phase,
-                batch.data_version,
-                self._config_version,
-                evaluated_at,
-                batch.market_features,
-                batch.requested_codes,
-                batch.candidate_features,
-                30.0,
-                30.0,
-                self._candidate_pool_size,
-            )
-            projection = self._local_scoring.score(
-                native_input,
-                self._policy,
-                sequence=sequence,
-                context=LocalScoringContext(
-                    model_context=_model_scoring_context(request, batch, self._now()),
-                    candidate_stage_counts=batch.candidate_stage_counts,
-                    preselection_transient_invalid=batch.preselection_transient_invalid,
-                    quality_batch=QualityScoringBatch(quality_stage, native_input),
-                    monotonic=self._monotonic,
-                ),
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            raise DecisionUnavailableError(_decision_failure_code(exc)) from exc
-        quality_status = build_supply_status(
-            projection,
-            batch.candidate_stage_counts,
-            candidate_quote_eligible=batch.candidate_quote_eligible,
-            candidate_score_threshold=self._policy.selection.candidate_min_score,
-            input_stages=(*batch.input_stages, quality_stage.snapshot),
-        )
-        projection = replace(
-            projection,
-            local=replace(projection.local, pipeline=quality_status.pipeline),
-        )
+            return self._latest_topk_quotes
+
+    def quality(self, strategy: Strategy) -> InputQualityStatus | None:
         with self._lock:
-            self._input_quality[request.strategy] = quality_status
-        if not projection.input_quality.publishable:
-            self._draft_index.publish(projection.local)
-            raise DecisionUnavailableError(projection.input_quality.status)
+            return self._input_quality.get(strategy)
+
+    def replace_quality(
+        self, strategy: Strategy, expected: InputQualityStatus | None, quality: InputQualityStatus
+    ) -> bool:
         with self._lock:
-            self._projections[projection.local.version] = projection
-            self._decisions[projection.local.version] = projection.local
-            self._trim_research_sources()
-        return projection.local
+            if self._input_quality.get(strategy) != expected:
+                return False
+            self._input_quality[strategy] = quality
+            return True
 
     def input_quality_status(self) -> tuple[InputQualityStatus, ...]:
         with self._lock:
             return tuple(
                 self._input_quality[strategy] for strategy in sorted(self._input_quality, key=lambda item: item.value)
             )
-
-    def projection(self, version: str) -> ScoredLocalProjection | None:
-        with self._lock:
-            return self._projections.get(version)
-
-    def register_review(
-        self,
-        projection: ScoredLocalProjection,
-        review: ScoredReviewProjection,
-    ) -> ScoredDecision | None:
-        decision = review.decision or projection.local
-        with self._lock:
-            current_quality = self._input_quality.get(decision.strategy)
-            if (
-                current_quality is not None
-                and current_quality.summary.trade_date == decision.trade_date
-                and current_quality.stage_snapshots[9] == projection.stages.local_score.snapshot
-            ):
-                current_quality = update_supply_status_decision(
-                    current_quality,
-                    projection,
-                    decision,
-                    candidate_score_threshold=self._policy.selection.candidate_min_score,
-                    scored_stages=review.stages,
-                )
-                decision = replace(decision, pipeline=current_quality.pipeline)
-                self._input_quality[decision.strategy] = current_quality
-            if review.decision is None:
-                return None
-            self._projections[decision.version] = projection
-            self._decisions[decision.version] = decision
-            self._trim_research_sources()
-            return decision
-
-    def research_audit(self, version: str) -> object | None:
-        with self._lock:
-            projection = self._projections.get(version)
-            decision = self._decisions.get(version)
-        if projection is None or decision is None:
-            return None
-        return self._research_audit_builder(projection, decision)
-
-    def research_intent(self, decision: ScoredDecision) -> ResearchIntent:
-        with self._lock:
-            projection = self._projections.get(decision.version)
-        if projection is None:
-            raise DecisionUnavailableError("research projection is unavailable")
-        candidates = projection.native_input.requested_codes
-        selected = sorted((item for item in decision.items if item.selected), key=lambda item: item.rank)
-        remaining = tuple(item for item in decision.items if not item.selected)
-        priority = tuple(dict.fromkeys(item.code for item in (*selected, *remaining)))
-        return ResearchIntent(decision.strategy, decision.trade_date, priority, candidates)
-
-    def initial_overlay(self, decision: ScoredDecision) -> DecisionOverlay:
-        quotes = tuple(item.quote for item in decision.items if item.selected and item.quote is not None)
-        selected_count = sum(item.selected for item in decision.items)
-        if len(quotes) != selected_count:
-            raise DecisionUnavailableError("decision_quote_unavailable")
-        return DecisionOverlay(
-            strategy=decision.strategy,
-            trade_date=decision.trade_date,
-            parent_version=decision.version,
-            observed_at=decision.observed_at,
-            quotes=quotes,
-        )
-
-    def refreshed_overlay(
-        self,
-        decision: ScoredDecision,
-        request: CycleRequest,
-        previous: DecisionOverlay | None,
-    ) -> DecisionOverlay | None:
-        if decision.trade_date != request.trade_date:
-            return None
-        if previous is not None and previous.parent_version != decision.version:
-            return None
-        if request.phase == "quote_overlay":
-            with self._lock:
-                topk = self._latest_topk_quotes
-            if topk is None or topk.observed_at != request.observed_at:
-                raise DecisionUnavailableError("topk quote batch is unavailable")
-            features_by_code = {feature.quote.code: feature for feature in topk.features}
-        else:
-            with self._lock:
-                batch = self._batches.get((request.strategy, request.input_version))
-            if batch is None:
-                return None
-            features_by_code = _selected_quote_features(batch, identity_codes(decision))
-        selected_codes = frozenset(identity_codes(decision))
-        features_by_code = {code: feature for code, feature in features_by_code.items() if code in selected_codes}
-        observed_at = _overlay_observed_at(request, tuple(features_by_code.values()))
-        if previous is not None and previous.observed_at >= observed_at:
-            return None
-        quotes = {quote.code: quote for quote in previous.quotes} if previous is not None else {}
-        changed = False
-        for feature in features_by_code.values():
-            changed = _merge_overlay_quote(quotes, feature, observed_at) or changed
-        if not changed:
-            return None
-        return DecisionOverlay(
-            strategy=decision.strategy,
-            trade_date=decision.trade_date,
-            parent_version=decision.version,
-            observed_at=observed_at,
-            quotes=tuple(quotes.values()),
-        )
-
-    def _trim_research_sources(self) -> None:
-        while len(self._decisions) > 64:
-            version = next(iter(self._decisions))
-            self._decisions.pop(version, None)
-            self._projections.pop(version, None)
-
-
-__all__ = [
-    "DecisionBuildDependencies",
-    "InputBatch",
-    "MarketDataAdapter",
-    "build_source_stage_output",
-]

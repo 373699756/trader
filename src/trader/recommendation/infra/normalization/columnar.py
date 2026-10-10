@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,7 +9,6 @@ from datetime import datetime
 import polars as pl
 from polars.datatypes import DataType, DataTypeClass
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.recommendation.application.ports import market_data_contracts
 from trader.recommendation.domain.market.models import CanonicalMarketSnapshot, FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.market.research import ResearchObservation
@@ -19,7 +17,6 @@ _CHANGE_SCHEMA_VERSION = "market_change_set_legacy"
 _QUOTE_SCHEMA_VERSION = "columnar_quote_batch"
 _RESEARCH_SCHEMA_VERSION = "columnar_research_batch"
 _FEATURE_SCHEMA_ID = "columnar_feature_batch"
-_EMPTY_MANIFEST_HASH = hashlib.sha256(canonical_json_bytes(())).hexdigest()
 _NO_VERSION = "not_applicable"
 _FIELD_FAMILIES: dict[str, str] = {
     "price": "quote_price",
@@ -46,22 +43,6 @@ class ColumnarBatchIdentity:
     strategy_version: str
     config_version: str
     schema_version: str
-    manifest_hash: str = ""
-    content_hash: str = ""
-
-    @property
-    def digest(self) -> str:
-        payload = {
-            "dataset": self.dataset,
-            "merge_epoch": self.merge_epoch,
-            "board_policy_version": self.board_policy_version,
-            "strategy_version": self.strategy_version,
-            "config_version": self.config_version,
-            "schema_version": self.schema_version,
-            "manifest_hash": self.manifest_hash,
-            "content_hash": self.content_hash,
-        }
-        return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -75,11 +56,9 @@ class NormalizedMarketChangeSet:
     dirty_boards: tuple[str, ...] = ()
     dirty_industries: tuple[str, ...] = ()
     dirty_field_families: tuple[str, ...] = ()
-    evidence_manifest_hash: str = ""
     risk_changed_codes: tuple[str, ...] = ()
     overlay_only: bool = False
     full_invalidation_reason: str | None = None
-    content_hash: str = ""
 
     @property
     def dirty_codes(self) -> tuple[str, ...]:
@@ -106,8 +85,6 @@ class NormalizedMarketChangeSet:
             dirty_field_families=self.dirty_field_families,
             overlay_only=self.overlay_only,
             full_invalidation_reason=self.full_invalidation_reason,
-            evidence_manifest_hash=_manifest_hash_or_empty(self.evidence_manifest_hash),
-            content_hash=self.content_hash,
         )
 
 
@@ -139,10 +116,8 @@ class ColumnarQuoteBatch:
         merge_epoch: str,
         config_version: str,
         schema_version: str = _QUOTE_SCHEMA_VERSION,
-        manifest_hash: str = "",
     ) -> ColumnarQuoteBatch:
         frame = _strict_frame([_quote_row(quote) for quote in quotes], _QUOTE_SCHEMA).sort("code")
-        content_hash = _frame_hash(frame)
         return cls(
             ColumnarBatchIdentity(
                 dataset="canonical_market_snapshot",
@@ -151,8 +126,6 @@ class ColumnarQuoteBatch:
                 strategy_version=_NO_VERSION,
                 config_version=config_version,
                 schema_version=schema_version,
-                manifest_hash=manifest_hash,
-                content_hash=content_hash,
             ),
             frame,
         )
@@ -176,7 +149,6 @@ class ColumnarResearchBatch:
             [_research_row(code, observation) for code, observation in observations.items()],
             _RESEARCH_SCHEMA,
         ).sort("code")
-        content_hash = _frame_hash(frame)
         return cls(
             ColumnarBatchIdentity(
                 dataset="research_observations",
@@ -185,8 +157,6 @@ class ColumnarResearchBatch:
                 strategy_version=_NO_VERSION,
                 config_version=config_version,
                 schema_version=schema_version,
-                manifest_hash=_evidence_manifest_hash(frame),
-                content_hash=content_hash,
             ),
             frame,
         )
@@ -207,7 +177,6 @@ class ColumnarFeatureBatch:
             [_feature_row(snapshot, options.feature_names) for snapshot in features],
             _feature_schema(options.feature_names),
         ).sort("code")
-        content_hash = _frame_hash(frame)
         return cls(
             ColumnarBatchIdentity(
                 dataset="feature_snapshots",
@@ -216,8 +185,6 @@ class ColumnarFeatureBatch:
                 strategy_version=options.strategy_version,
                 config_version=options.config_version,
                 schema_version=options.feature_schema,
-                manifest_hash=_evidence_manifest_hash(frame),
-                content_hash=content_hash,
             ),
             frame,
         )
@@ -230,7 +197,7 @@ class ColumnarFeatureBatch:
     ) -> market_data_contracts.FeatureSnapshotEnvelope:
         return market_data_contracts.FeatureSnapshotEnvelope(
             schema_version=market_data_contracts.FEATURE_ENVELOPE_VERSION,
-            snapshot_version=options.snapshot_version or self.identity.digest,
+            snapshot_version=options.snapshot_version or f"{self.identity.dataset}:{self.identity.merge_epoch}",
             feature_snapshot_version=options.feature_snapshot_version or self.identity.schema_version,
             trade_date=options.trade_date,
             phase=options.phase,
@@ -239,7 +206,6 @@ class ColumnarFeatureBatch:
             data_version=options.data_version,
             config_version=self.identity.config_version,
             feature_schema=self.identity.schema_version,
-            content_hash=self.identity.content_hash,
             feature_snapshots=tuple(sorted(features, key=lambda snapshot: snapshot.quote.code)),
             market_change_set=change_set.to_public(),
         )
@@ -280,9 +246,7 @@ def market_changes(
             dirty_boards=_dimension_values(current.frame, "board", inserted),
             dirty_industries=_dimension_values(current.frame, "industry", inserted),
             dirty_field_families=tuple(sorted(set(_FIELD_FAMILIES.values()))),
-            evidence_manifest_hash=_manifest_hash_or_empty(current.identity.manifest_hash),
             overlay_only=_overlay_only(tuple(sorted(set(_FIELD_FAMILIES.values())))),
-            content_hash=current.identity.content_hash,
         )
     comparable = tuple(_FIELD_FAMILIES)
     old = previous.frame.select("code", *comparable)
@@ -315,11 +279,9 @@ def market_changes(
         dirty_boards=_dimension_values_across(previous.frame, current.frame, "board", dirty_codes),
         dirty_industries=_dimension_values_across(previous.frame, current.frame, "industry", dirty_codes),
         dirty_field_families=dirty_families,
-        evidence_manifest_hash=_manifest_hash_or_empty(current.identity.manifest_hash),
         risk_changed_codes=tuple(sorted({*inserted_codes, *removed_codes, *_risk_changed_codes(shared)})),
         overlay_only=_overlay_only(dirty_families),
         full_invalidation_reason=full_invalidation_reason,
-        content_hash=current.identity.content_hash,
     )
 
 
@@ -359,15 +321,6 @@ def targeted_market_changes(
             risk_changed.append(code)
     dimensions = tuple((*old.values(), *new.values()))
     families = tuple(sorted(dirty_families))
-    content_hash = hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "previous_merge_epoch": None if previous is None else previous.merge_epoch,
-                "merge_epoch": current.merge_epoch,
-                "quotes": tuple(new[code] for code in sorted(new)),
-            }
-        )
-    ).hexdigest()
     return NormalizedMarketChangeSet(
         merge_epoch=current.merge_epoch,
         inserted_codes=inserted,
@@ -379,10 +332,8 @@ def targeted_market_changes(
             sorted({quote.industry for quote in dimensions if quote.code in dirty_codes and quote.industry})
         ),
         dirty_field_families=families,
-        evidence_manifest_hash=_EMPTY_MANIFEST_HASH,
         risk_changed_codes=tuple(sorted(risk_changed)),
         overlay_only=_overlay_only(families),
-        content_hash=content_hash,
     )
 
 
@@ -415,7 +366,7 @@ _RESEARCH_SCHEMA: dict[str, DataTypeClass | DataType] = {
     "unlock_ratio_pct": pl.Float64,
     "evidence_count": pl.Int64,
     "source_error_count": pl.Int64,
-    "evidence_manifest_hash": pl.String,
+    "evidence_versions": pl.List(pl.String),
 }
 
 
@@ -468,8 +419,8 @@ def _quote_row(
 def _research_row(
     code: str,
     observation: ResearchObservation,
-) -> tuple[str, bool, float | None, float | None, int, int, str]:
-    evidence_hash = hashlib.sha256(canonical_json_bytes(observation.evidence)).hexdigest()
+) -> tuple[str, bool, float | None, float | None, int, int, list[str]]:
+    evidence_versions = [f"{item.evidence_id}:{item.data_version}" for item in observation.evidence]
     return (
         code,
         observation.announcements_available,
@@ -477,7 +428,7 @@ def _research_row(
         observation.unlock_ratio_pct,
         len(observation.evidence),
         len(observation.source_errors),
-        evidence_hash,
+        evidence_versions,
     )
 
 
@@ -495,14 +446,14 @@ def _feature_schema(feature_names: tuple[str, ...]) -> dict[str, DataTypeClass |
         "board_supported_weight": pl.Float64,
         "competition_group_id": pl.String,
         "liquidity_bucket": pl.String,
-        "evidence_manifest_hash": pl.String,
+        "evidence_versions": pl.List(pl.String),
     }
     schema.update({name: pl.Float64 for name in feature_names})
     return schema
 
 
 def _feature_row(snapshot: FeatureSnapshot, feature_names: tuple[str, ...]) -> tuple[object, ...]:
-    evidence_hash = hashlib.sha256(canonical_json_bytes(snapshot.evidence)).hexdigest()
+    evidence_versions = [f"{item.evidence_id}:{item.data_version}" for item in snapshot.evidence]
     return (
         snapshot.quote.code,
         snapshot.quote.board.value,
@@ -516,7 +467,7 @@ def _feature_row(snapshot: FeatureSnapshot, feature_names: tuple[str, ...]) -> t
         snapshot.board_supported_weight,
         snapshot.competition_group_id,
         snapshot.liquidity_bucket,
-        evidence_hash,
+        evidence_versions,
         *(snapshot.values.get(name) for name in feature_names),
     )
 
@@ -528,21 +479,6 @@ def _strict_frame(rows: list[tuple[object, ...]], schema: dict[str, DataTypeClas
         joined = ",".join(object_columns)
         raise TypeError(f"columnar batches must not contain Object columns: {joined}")
     return frame
-
-
-def _frame_hash(frame: pl.DataFrame) -> str:
-    return hashlib.sha256(canonical_json_bytes(frame.to_dicts())).hexdigest()
-
-
-def _evidence_manifest_hash(frame: pl.DataFrame) -> str:
-    if "evidence_manifest_hash" not in frame.columns:
-        return ""
-    values = tuple(sorted(str(value) for value in frame.get_column("evidence_manifest_hash").to_list()))
-    return hashlib.sha256(canonical_json_bytes(values)).hexdigest()
-
-
-def _manifest_hash_or_empty(value: str) -> str:
-    return value or _EMPTY_MANIFEST_HASH
 
 
 def _sorted_strings(values: Iterable[object]) -> tuple[str, ...]:

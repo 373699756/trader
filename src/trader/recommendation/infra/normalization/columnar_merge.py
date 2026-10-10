@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -12,11 +11,11 @@ from typing import cast
 
 import polars as pl
 
-from trader.infra.cache_contracts import canonical_json_bytes
-from trader.recommendation.infra.normalization.merge_quote import observation_order, source_name
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.domain.candidate.filters import board_for_code
 from trader.recommendation.domain.market.models import Board, MarketQuote
+from trader.recommendation.infra.normalization.merge_quote import observation_order, source_name
+from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
 _QUOTE_FIELDS = (
     "name",
@@ -190,7 +189,7 @@ def _normalize_complete_realtime_rows(
                 data_version=normalized_version,
                 fields=fields,
                 missing_reasons={},
-                payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+                payload_hash="",
                 status="success",
                 error_code=None,
             )
@@ -305,14 +304,14 @@ def _winner_indexes(observations: Sequence[SourceObservation], sources: tuple[st
             observation.received_at,
             _SOURCE_PRIORITY[source],
             observation.data_version,
-            observation.payload_hash,
+            ObservationFacts(observation),
         )
         current_order = (
             current.source_time,
             current.received_at,
             _SOURCE_PRIORITY[current_source],
             current.data_version,
-            current.payload_hash,
+            ObservationFacts(current),
         )
         if candidate_order > current_order:
             winners[observation.subject_key] = index

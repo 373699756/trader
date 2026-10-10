@@ -178,7 +178,7 @@ def _apply_research_risk_values(
 
 def _market_evidence(market: MarketEpoch, quote: MarketQuote) -> Evidence:
     return Evidence(
-        evidence_id=f"market:{quote.code}:{market.content_hash[:16]}",
+        evidence_id=f"market:{quote.code}:{market.version}",
         evidence_type="structured_point_in_time",
         title="Point-in-time canonical market quote",
         source=quote.source,
@@ -190,7 +190,7 @@ def _market_evidence(market: MarketEpoch, quote: MarketQuote) -> Evidence:
 
 def _candidate_evidence(candidate_epoch: CandidateQuoteEpoch, quote: LiveQuote) -> Evidence:
     return Evidence(
-        evidence_id=f"tail:{quote.code}:{candidate_epoch.content_hash[:16]}",
+        evidence_id=f"tail:{quote.code}:{candidate_epoch.version}",
         evidence_type="intraday_tail",
         title="Verified candidate tail quote and intraday structure",
         source=quote.source,

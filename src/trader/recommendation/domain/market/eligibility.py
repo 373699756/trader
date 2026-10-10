@@ -170,14 +170,7 @@ def eligibility_facts_from_quote(
     observed_at: datetime,
 ) -> tuple[IssuerEligibilityFact, ...]:
     facts: list[IssuerEligibilityFact] = []
-    quote_version = _sha256(
-        {
-            "code": quote.code,
-            "data_version": quote.data_version,
-            "source": quote.source,
-        }
-    )
-    quote_identity = f"quote:{quote.code}:{quote_version}"
+    quote_identity = f"quote:{quote.code}:{observed_at.isoformat()}"
     evidence_material = (("data_version", quote.data_version), ("source", quote.source))
     if quote.is_st or "ST" in quote.name.upper():
         facts.append(
@@ -254,7 +247,7 @@ def eligibility_facts_from_research(
 
 
 def manual_blacklist_fact(code: str, effective_at: datetime, config_hash: str) -> IssuerEligibilityFact:
-    evidence_version = hashlib.sha256(config_hash.encode("utf-8")).hexdigest()
+    evidence_version = config_hash
     return _fact(
         code,
         IssuerEligibilityReason.MANUAL_PERMANENT_BLACKLIST,

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime
 from dataclasses import dataclass, replace
+from datetime import datetime
 
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
@@ -12,9 +12,6 @@ from trader.recommendation.application.pipeline.dynamic_filter.filter_executor i
     filter_feature_candidates,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.domain.selection.scored_selection import FilteredCandidateInputs
-from trader.recommendation.domain.publication.models import ScoredDisposition
-
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,
     require_previous_stage,
@@ -23,6 +20,8 @@ from trader.recommendation.application.pipeline.stage_output import (
 from trader.recommendation.domain.candidate.filters import HardFilterPolicy, apply_filters, level_two_filter_rules
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.models import ScoredDisposition
+from trader.recommendation.domain.selection.scored_selection import FilteredCandidateInputs
 
 
 def filter_dynamic_market(

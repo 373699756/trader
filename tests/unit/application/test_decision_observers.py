@@ -3,12 +3,12 @@ from __future__ import annotations
 import threading
 
 from tests.unit.domain.test_decision_identity import decision
+from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionObservation,
     build_decision_committed,
 )
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
-from trader.infra.shutdown import ShutdownDeadline
 
 
 def test_observer_is_bounded_non_blocking_and_isolates_consumer_failure() -> None:

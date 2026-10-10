@@ -11,11 +11,11 @@ from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGE_ORDER,
     PIPELINE_STAGES,
     PipelineStageSnapshot,
+    PipelineStageStatus,
+    RecommendationPipelineStatus,
     SourceHealth,
     SourceHealthState,
     StageState,
-    PipelineStageStatus,
-    RecommendationPipelineStatus,
 )
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import (
@@ -283,10 +283,11 @@ def test_overlay_and_formal_record_validate_parent_time_scope_and_hash() -> None
         parent_version=current.version,
         observed_at=NOW,
         quotes=(quote,),
+        sequence=1,
     )
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
-    assert overlay.version.startswith("overlay:tomorrow:")
+    assert overlay.version.startswith(f"overlay:{current.version}:")
     assert len(record.payload_hash) == 64
     with pytest.raises(ValueError, match="future quote"):
         replace(overlay, quotes=(replace(quote, source_time=NOW + timedelta(seconds=1)),))

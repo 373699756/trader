@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Protocol
@@ -44,11 +43,10 @@ class DecisionCheckpoint:
             raise ValueError("decision checkpoint boundary must use Asia/Shanghai")
         if self.decision.trade_date != self.boundary_at.date() or self.decision.observed_at > self.boundary_at:
             raise ValueError("decision checkpoint coordinates are invalid")
-        digest = hashlib.sha256(f"{self.decision.version}|{self.boundary_at.isoformat()}".encode()).hexdigest()
         object.__setattr__(
             self,
             "version",
-            f"checkpoint:{self.decision.strategy.value}:{self.decision.trade_date.isoformat()}:{digest[:16]}",
+            f"checkpoint:{self.decision.version}:{self.boundary_at:%H%M%S%f}",
         )
 
 

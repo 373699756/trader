@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.application.cycle_fixture import CycleFixtureDependencies, build_cycle_fixture
 from tests.unit.application.review_helpers import review
 from tests.unit.application.test_input_runtime import _decision_build, _Market, _prime_scoring_cache, _request
 from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _native_input, _verified_feature
@@ -19,10 +20,6 @@ from trader.infra.settings import load_strategy_settings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
     CandidateFilteringPort,
     CandidateFilteringService,
-)
-from trader.recommendation.application.pipeline.data_source.source_router import (
-    DecisionBuildDependencies,
-    MarketDataAdapter,
 )
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionUseCase,
@@ -164,11 +161,11 @@ def test_market_adapter_uses_candidate_and_local_boundaries(application_feature_
     policy = _runtime_policy()
     candidate = _RecordingCandidateFiltering(CandidateFilteringService(policy, None, 1))
     local = _RecordingLocalScoring(LocalScoringService())
-    adapter = MarketDataAdapter(
+    adapter = build_cycle_fixture(
         _Market((feature,)),
         config_version="test-config",
         candidate_pool_size=1,
-        decision_build=DecisionBuildDependencies(
+        decision_build=CycleFixtureDependencies(
             _decision_build().long_runtime,
             policy,
             UnifiedDecisionDraftIndex(),
@@ -180,9 +177,9 @@ def test_market_adapter_uses_candidate_and_local_boundaries(application_feature_
     request = _request(observed_at, phase="afternoon")
 
     _prime_scoring_cache(adapter, observed_at)
-    adapter.refresh(request)
+    adapter.data.refresh(request)
     try:
-        adapter.build_local(request)
+        adapter.decisions.build_local(request)
     except DecisionUnavailableError:
         # The fixture is intentionally minimal; the boundary call is the contract under test.
         pass
@@ -286,7 +283,12 @@ def test_recommendation_application_does_not_import_infrastructure_or_training()
             violations.extend(
                 f"{path.relative_to(SOURCE_ROOT)} -> {name}"
                 for name in names
-                if name.startswith(forbidden_prefixes) or ".training" in name or name.endswith(".download")
+                if (
+                    name.startswith(forbidden_prefixes)
+                    and name not in {"trader.infra.workers", "trader.infra.shutdown", "trader.infra.cache_contracts"}
+                )
+                or ".training" in name
+                or name.endswith(".download")
             )
     assert violations == []
 

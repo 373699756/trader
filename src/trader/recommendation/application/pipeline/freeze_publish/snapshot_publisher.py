@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -127,9 +126,7 @@ class UnifiedDecisionIndex:
                 self._seals.pop(decision.strategy, None)
                 self._formal.pop(decision.strategy, None)
                 self._closed.pop(decision.strategy, None)
-            projection_version = hashlib.sha256(
-                f"{decision.content_hash}|{initial_overlay.content_hash}".encode()
-            ).hexdigest()
+            projection_version = f"{decision.version}+{initial_overlay.version}"
             return UnifiedDecisionPublishResult(
                 True,
                 "accepted",
@@ -340,7 +337,7 @@ def _identity_rejection(
     if candidate.trade_date == current.trade_date:
         if candidate.sequence < current.sequence:
             return "stale_sequence"
-        if candidate.sequence == current.sequence and candidate.version != current.version:
+        if candidate.sequence == current.sequence and candidate != current:
             return "sequence_conflict"
     return _hybrid_parent_rejection(current, candidate)
 
@@ -379,11 +376,11 @@ def _overlay_rejection(
         rejection = "quote_scope_mismatch"
     elif (existing.version if existing is not None else None) != expected_version:
         rejection = "overlay_cas_mismatch"
-    elif existing is not None and candidate.observed_at < existing.observed_at:
-        rejection = "stale_overlay"
-    elif (
-        existing is not None and candidate.observed_at == existing.observed_at and candidate.version != existing.version
+    elif existing is not None and (
+        candidate.observed_at < existing.observed_at or candidate.sequence < existing.sequence
     ):
+        rejection = "stale_overlay"
+    elif existing is not None and candidate.sequence == existing.sequence and candidate != existing:
         rejection = "overlay_conflict"
     return rejection
 

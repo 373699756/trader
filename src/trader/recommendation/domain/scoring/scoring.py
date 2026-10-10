@@ -199,7 +199,7 @@ def _build_population(
         fallback_date=basis.fallback_date,
         fallback_age=basis.fallback_age,
     )
-    population_version = _population_version(identity, basis.population_source)
+    population_version = _population_version(identity)
     return BoardPopulation(
         trade_date=request.trade_date,
         phase=request.phase,

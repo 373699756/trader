@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 import time
 from collections import deque
@@ -15,7 +14,6 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers.tushare_records import (
     _calendar_observation,
@@ -347,7 +345,7 @@ class TushareClient:
             if self._cancel_requested():
                 raise _SourceStoppedError
             received_at = max(observed_at, self._wall_clock())
-            data_version = _data_version(dataset, records)
+            data_version = _data_version(dataset, observed_at, received_at)
             observations = tuple(
                 observation
                 for row in records
@@ -378,7 +376,7 @@ class TushareClient:
                 data_version=data_version,
                 fields={},
                 missing_reasons={dataset: "source_returned_no_rows"},
-                payload_hash=hashlib.sha256(canonical_json_bytes([])).hexdigest(),
+                payload_hash="",
                 status="no_data",
                 error_code="no_data",
             ),
@@ -442,7 +440,7 @@ class TushareClient:
                 empty_is_error=empty_is_error,
             )
             received_at = max(observed_at, self._wall_clock())
-            version = _data_version(dataset, records.rows)
+            version = _data_version(dataset, observed_at, received_at)
             observations = tuple(
                 _generic_observation(dataset, row, observed_at, received_at, version) for row in records.rows
             )
@@ -639,7 +637,7 @@ def _with_price_adjustment(
             replace(
                 observation,
                 fields=fields,
-                payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+                payload_hash="",
             )
         )
     return tuple(tagged)

@@ -32,7 +32,7 @@ class UnifiedDecisionDraftIndex:
                     if decision.sequence < current.sequence:
                         return DecisionDraftPublishResult(False, "stale_sequence")
                     if decision.sequence == current.sequence:
-                        if decision.version == current.version:
+                        if decision == current:
                             return DecisionDraftPublishResult(True, "already_current")
                         return DecisionDraftPublishResult(False, "conflicting_sequence")
             self._drafts[decision.strategy] = decision

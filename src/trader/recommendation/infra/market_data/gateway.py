@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 import time
 from bisect import bisect_left, bisect_right
@@ -15,9 +14,11 @@ from typing import TypedDict
 from polars.exceptions import PolarsError
 from typing_extensions import Unpack
 
-from trader.infra.cache_contracts import BoundedCache, canonical_json_bytes
+from trader.infra.cache_contracts import BoundedCache
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.references.security_references import security_reference_observations
+from trader.infra.workers import BoundedExecutor
+from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.ports.market_data import (
     MarketDataDeadlineExceededError,
     MarketDataFailedError,
@@ -27,7 +28,6 @@ from trader.recommendation.application.ports.market_data import (
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler, SourceRequestSupersededError
-from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
     MarketQuote,
@@ -40,7 +40,6 @@ from trader.recommendation.infra.market_data.gateway_health import (
 from trader.recommendation.infra.market_data.gateway_runtime import (
     _cache_error_code,
     _CircuitState,
-    _cycle_trace_id,
     _elapsed,
     _observation_version,
     _parallel_error_message,
@@ -70,10 +69,10 @@ from trader.recommendation.infra.normalization.columnar import (
     targeted_market_changes,
 )
 from trader.recommendation.infra.normalization.merge import (
+    MergeObservationLimits,
     merge_market_observations,
     observation_from_quote,
     overlay_canonical_snapshot,
-    snapshot_payload_hash,
 )
 from trader.recommendation.infra.normalization.merge_quote import rejection_reason, source_name
 
@@ -128,6 +127,7 @@ class MarketDataGateway:
         tencent: CandidateQuoteSource,
         **options: Unpack[_GatewayOptions],
     ) -> None:
+        self._versions = InputVersionClock()
         self._eastmoney = eastmoney
         self._sina = sina
         self._tencent = tencent
@@ -236,7 +236,7 @@ class MarketDataGateway:
         deadline: datetime | None = None,
     ) -> Sequence[MarketQuote]:
         requested_at = observed_at or self._wall_clock()
-        trace_id = _cycle_trace_id("full_market", requested_at, ())
+        trace_id = self._versions.advance("full_market")
         self._latency.plan(trace_id, "full_market")
         self._latency.enter(trace_id)
         try:
@@ -313,8 +313,9 @@ class MarketDataGateway:
         snapshot = merge_market_observations(
             (*observations, *references),
             observed_at=completed_at,
+            merge_epoch=self._versions.advance("market"),
             previous=previous,
-            max_age_seconds=max_observation_age_seconds,
+            limits=MergeObservationLimits(max_age_seconds=max_observation_age_seconds),
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         snapshot = _with_snapshot_degradation(snapshot, _source_degraded_reasons(results))
@@ -322,7 +323,9 @@ class MarketDataGateway:
             commit_started = self._monotonic()
             with self._state_lock:
                 latest = self._latest_snapshot
-            commit_snapshot = _preserve_newer_quotes(snapshot, latest)
+            commit_snapshot = _preserve_newer_quotes(
+                snapshot, latest, merge_epoch=self._versions.advance("market_commit")
+            )
             commit_snapshot, columnar = _try_columnar_snapshot(
                 commit_snapshot,
                 config_version=self._config_version,
@@ -359,7 +362,7 @@ class MarketDataGateway:
         if not codes:
             return ()
         requested_at = observed_at or self._wall_clock()
-        trace_id = _cycle_trace_id("candidate_quotes", requested_at, codes)
+        trace_id = self._versions.advance("candidate_quotes")
         self._latency.plan(trace_id, "candidate_quotes")
         self._latency.enter(trace_id)
         try:
@@ -407,7 +410,7 @@ class MarketDataGateway:
         if not codes:
             return ()
         requested_at = observed_at or self._wall_clock()
-        trace_id = _cycle_trace_id("topk_quotes", requested_at, codes)
+        trace_id = self._versions.advance("topk_quotes")
         self._latency.plan(trace_id, "topk_quotes")
         self._latency.enter(trace_id)
         try:
@@ -442,7 +445,7 @@ class MarketDataGateway:
         if not codes:
             return ()
         requested_at = observed_at or self._wall_clock()
-        trace_id = _cycle_trace_id("long_quotes", requested_at, codes)
+        trace_id = self._versions.advance("long_quotes")
         self._latency.plan(trace_id, "long_quotes")
         self._latency.enter(trace_id)
         try:
@@ -525,8 +528,8 @@ class MarketDataGateway:
         snapshot = merge_market_observations(
             (*raw_baseline, *baseline_observations, *observations, *references),
             observed_at=completed_at,
-            targeted_codes=codes,
-            max_age_seconds=request.max_observation_age_seconds,
+            merge_epoch=self._versions.advance("targeted"),
+            limits=MergeObservationLimits(targeted_codes=codes, max_age_seconds=request.max_observation_age_seconds),
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         with self._state_lock:
@@ -595,7 +598,9 @@ class MarketDataGateway:
         commit_started = self._monotonic()
         self._remember_observations_locked(observations, completed_at)
         previous = self._latest_snapshot
-        commit_snapshot = overlay_canonical_snapshot(previous, snapshot)
+        commit_snapshot = overlay_canonical_snapshot(
+            previous, snapshot, merge_epoch=self._versions.advance("targeted_commit")
+        )
         selected_codes = set(codes)
         self._latest_snapshot = commit_snapshot
         self._latest_changes = targeted_market_changes(previous, commit_snapshot, codes)
@@ -669,7 +674,7 @@ class MarketDataGateway:
                 winner,
                 fields=fields,
                 missing_reasons=missing_reasons,
-                payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+                payload_hash="",
             )
         self._reference_observations[incoming.subject_key] = self._with_listing_sessions(merged)
 
@@ -697,7 +702,7 @@ class MarketDataGateway:
         return replace(
             observation,
             fields=fields,
-            payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+            payload_hash="",
         )
 
     def _load_listing_open_dates_locked(self) -> None:
@@ -981,7 +986,6 @@ def _columnar_failure_changes(
         risk_changed_codes=dirty_codes,
         overlay_only=False,
         full_invalidation_reason="columnar_projection_failed",
-        content_hash=snapshot_payload_hash(current),
     )
 
 

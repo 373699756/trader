@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
-from decimal import Decimal
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from enum import Enum
 from types import MappingProxyType
 
@@ -16,7 +14,6 @@ from trader.recommendation.domain.evidence.review import (
     RiskFact,
     RiskRule,
 )
-from trader.recommendation.domain.market.factors import clamp
 from trader.recommendation.domain.market.models import (
     Evidence,
     FeatureSnapshot,
@@ -257,12 +254,8 @@ def _fact_from_rule(
         "observed_at": observed_at.isoformat(),
         "trade_date": observed_at.date().isoformat(),
     }
-    identity = {field: values[field] for field in rule.risk_fact_id_fields}
-    digest = hashlib.sha256(
-        json.dumps(identity, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:24]
     return RiskFact(
-        risk_fact_id=f"risk_{digest}",
+        risk_fact_id=f"risk:{tuple((field, values[field]) for field in rule.risk_fact_id_fields)!r}",
         risk_code=rule.risk_code,
         severity=rule.severity,
         penalty=rule.penalty,

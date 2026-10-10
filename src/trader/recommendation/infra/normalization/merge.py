@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -12,7 +11,12 @@ from typing import TYPE_CHECKING, Literal, TypedDict, cast
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.cache_contracts import canonical_json_bytes
+from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.recommendation.domain.market.models import (
+    Board,
+    CanonicalMarketSnapshot,
+    MarketQuote,
+)
 from trader.recommendation.infra.normalization.columnar_merge import (
     ColumnarMergeError,
     try_merge_complete_realtime,
@@ -24,17 +28,22 @@ from trader.recommendation.infra.normalization.merge_quote import (
     source_name,
     source_priority,
 )
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
-from trader.recommendation.domain.market.models import (
-    Board,
-    CanonicalMarketSnapshot,
-    MarketQuote,
-)
+from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
+
+
+@dataclass(frozen=True)
+class MergeObservationLimits:
+    targeted_codes: Sequence[str] = ()
+    max_age_seconds: float | None = None
+
+
+_DEFAULT_MERGE_LIMITS = MergeObservationLimits()
 
 
 @dataclass(frozen=True)
 class _MergeContext:
     observed_at: datetime
+    merge_epoch: str
     previous: CanonicalMarketSnapshot | None
     targeted_codes: frozenset[str]
     missing_reasons: dict[str, str]
@@ -45,9 +54,9 @@ def merge_market_observations(
     observations: Sequence[SourceObservation],
     *,
     observed_at: datetime,
+    merge_epoch: str,
     previous: CanonicalMarketSnapshot | None = None,
-    targeted_codes: Sequence[str] = (),
-    max_age_seconds: float | None = None,
+    limits: MergeObservationLimits = _DEFAULT_MERGE_LIMITS,
 ) -> CanonicalMarketSnapshot:
     _require_aware(observed_at, "merge observed_at")
     valid: list[SourceObservation] = []
@@ -70,7 +79,7 @@ def merge_market_observations(
             missing[f"{observation.subject_key}.{field}.{source_name(observation.source)}"] = value
 
     valid, consistency_reasons = _validate_observation_consistency(
-        valid, observed_at=observed_at, max_age_seconds=max_age_seconds
+        valid, observed_at=observed_at, max_age_seconds=limits.max_age_seconds
     )
     degraded.update(consistency_reasons)
     if not valid:
@@ -83,14 +92,15 @@ def merge_market_observations(
                 failure_categories=_failure_categories((*previous.failure_categories, *degraded)),
                 status="stale",
             )
-        return _empty_snapshot(observed_at, degraded or {"all_sources_failed:no_last_valid_snapshot"})
+        return _empty_snapshot(observed_at, merge_epoch, degraded or {"all_sources_failed:no_last_valid_snapshot"})
 
     return _merge_valid_observations(
         valid,
         _MergeContext(
             observed_at=observed_at,
+            merge_epoch=merge_epoch,
             previous=previous,
-            targeted_codes=frozenset(targeted_codes),
+            targeted_codes=frozenset(limits.targeted_codes),
             missing_reasons=missing,
             degraded_reasons=tuple(sorted(degraded)),
         ),
@@ -101,7 +111,7 @@ def _merge_valid_observations(
     valid: Sequence[SourceObservation],
     context: _MergeContext,
 ) -> CanonicalMarketSnapshot:
-    merge_epoch = _observation_merge_epoch(valid, context)
+    merge_epoch = context.merge_epoch
     if not context.targeted_codes:
         try:
             columnar = try_merge_complete_realtime(valid)
@@ -127,10 +137,12 @@ def _merge_valid_observations(
                         3,
                     )
                     for source in {source_name(item.source) for item in valid}
-                    for observation in [max(
-                        (item for item in valid if source_name(item.source) == source),
-                        key=observation_order,
-                    )]
+                    for observation in [
+                        max(
+                            (item for item in valid if source_name(item.source) == source),
+                            key=observation_order,
+                        )
+                    ]
                 },
                 failure_categories=_failure_categories((*context.degraded_reasons, *columnar.conflicts)),
                 status=_snapshot_status(context.degraded_reasons, columnar.conflicts),
@@ -199,46 +211,11 @@ def _merge_valid_observations(
     )
 
 
-def _observation_merge_epoch(
-    observations: Sequence[SourceObservation],
-    context: _MergeContext,
-) -> str:
-    """Identify the immutable accepted inputs without re-encoding projected quotes."""
-
-    identities = tuple(
-        (
-            observation.subject_key,
-            source_name(observation.source),
-            observation.source_time.isoformat(),
-            observation.received_at.isoformat(),
-            observation.effective_at.isoformat(),
-            observation.data_version,
-            observation.payload_hash,
-        )
-        for observation in sorted(
-            observations,
-            key=lambda item: (
-                item.subject_key,
-                source_name(item.source),
-                observation_order(item),
-            ),
-        )
-    )
-    return hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "accepted_observations": identities,
-                "missing_reasons": context.missing_reasons,
-                "observed_at": context.observed_at,
-                "targeted_codes": tuple(sorted(context.targeted_codes)),
-            }
-        )
-    ).hexdigest()[:24]
-
-
 def overlay_canonical_snapshot(
     base: CanonicalMarketSnapshot | None,
     overlay: CanonicalMarketSnapshot,
+    *,
+    merge_epoch: str,
 ) -> CanonicalMarketSnapshot:
     if base is None:
         return overlay
@@ -281,14 +258,6 @@ def overlay_canonical_snapshot(
         if source not in source_ages or overlay_codes:
             source_ages[source] = age
     merged_conflicts = tuple(sorted(conflicts))
-    merge_epoch = hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "component_merge_epochs": tuple(sorted((base.merge_epoch, overlay.merge_epoch))),
-                "observed_at": max(base.observed_at, overlay.observed_at),
-            }
-        )
-    ).hexdigest()[:24]
     return _canonical_snapshot(
         observed_at=max(base.observed_at, overlay.observed_at),
         quotes=tuple(quotes),
@@ -312,6 +281,7 @@ def subset_canonical_snapshot(
     quotes = tuple(quote for quote in snapshot.quotes if quote.code in selected)
     return _canonical_snapshot(
         observed_at=snapshot.observed_at,
+        merge_epoch=snapshot.merge_epoch,
         quotes=quotes,
         field_sources={
             code: dict(snapshot.field_sources.get(code, {})) for code in selected if code in snapshot.field_sources
@@ -326,24 +296,6 @@ def subset_canonical_snapshot(
         failure_categories=snapshot.failure_categories,
         status=snapshot.status,
     )
-
-
-def snapshot_payload_hash(snapshot: CanonicalMarketSnapshot) -> str:
-    # Keep the payload identity stable while operational age/failure metadata evolves.
-    return hashlib.sha256(
-        canonical_json_bytes(
-            {
-                "observed_at": snapshot.observed_at,
-                "merge_epoch": snapshot.merge_epoch,
-                "quotes": snapshot.quotes,
-                "field_sources": snapshot.field_sources,
-                "source_versions": snapshot.source_versions,
-                "conflicts": snapshot.conflicts,
-                "missing_reasons": snapshot.missing_reasons,
-                "degraded_reasons": snapshot.degraded_reasons,
-            }
-        )
-    ).hexdigest()
 
 
 def observation_from_quote(quote: MarketQuote, *, source: str, observed_at: datetime) -> SourceObservation:
@@ -389,7 +341,6 @@ def observation_from_quote(quote: MarketQuote, *, source: str, observed_at: date
                 else None,
             }
         )
-    payload_hash = hashlib.sha256(canonical_json_bytes(fields)).hexdigest()
     return SourceObservation(
         source=source,
         subject_key=quote.code,
@@ -400,14 +351,13 @@ def observation_from_quote(quote: MarketQuote, *, source: str, observed_at: date
         data_version=quote.data_version,
         fields=fields,
         missing_reasons={},
-        payload_hash=payload_hash,
+        payload_hash="",
         status="success",
         error_code=None,
     )
 
 
-def _empty_snapshot(observed_at: datetime, degraded: set[str]) -> CanonicalMarketSnapshot:
-    merge_epoch = hashlib.sha256(canonical_json_bytes({"observed_at": observed_at, "quotes": []})).hexdigest()[:24]
+def _empty_snapshot(observed_at: datetime, merge_epoch: str, degraded: set[str]) -> CanonicalMarketSnapshot:
     return CanonicalMarketSnapshot(
         observed_at=observed_at,
         merge_epoch=merge_epoch,
@@ -425,6 +375,7 @@ def _empty_snapshot(observed_at: datetime, degraded: set[str]) -> CanonicalMarke
 
 
 class _CanonicalSnapshotRequiredOptions(TypedDict):
+    merge_epoch: str
     observed_at: datetime
     quotes: tuple[MarketQuote, ...]
     field_sources: Mapping[str, Mapping[str, str]]
@@ -435,7 +386,6 @@ class _CanonicalSnapshotRequiredOptions(TypedDict):
 
 
 class _CanonicalSnapshotOptionalOptions(TypedDict, total=False):
-    merge_epoch: str | None
     reference_epoch: str
     source_ages_seconds: Mapping[str, float]
     failure_categories: tuple[str, ...]
@@ -456,19 +406,9 @@ def _canonical_snapshot(
     conflicts = options["conflicts"]
     missing_reasons = options["missing_reasons"]
     degraded_reasons = options["degraded_reasons"]
-    merge_epoch = options.get("merge_epoch")
-    projection = {
-        "observed_at": observed_at,
-        "quotes": quotes,
-        "field_sources": field_sources,
-        "source_versions": source_versions,
-        "conflicts": conflicts,
-        "missing_reasons": missing_reasons,
-    }
-    resolved_merge_epoch = merge_epoch or hashlib.sha256(canonical_json_bytes(projection)).hexdigest()[:24]
     return CanonicalMarketSnapshot(
         observed_at=observed_at,
-        merge_epoch=resolved_merge_epoch,
+        merge_epoch=options["merge_epoch"],
         quotes=quotes,
         reference_epoch=options.get("reference_epoch", "reference:unknown"),
         field_sources=field_sources,
@@ -499,15 +439,22 @@ def _validate_observation_consistency(
     accepted: list[SourceObservation] = []
     reasons: set[str] = set()
     for subject, items in grouped.items():
-        realtime_items = [
-            item for item in items if item.source.strip().lower() in {"eastmoney", "sina", "tencent"}
-        ]
+        realtime_items = [item for item in items if item.source.strip().lower() in {"eastmoney", "sina", "tencent"}]
         consistency_items = realtime_items or items
         inconsistent = False
         if len({item.trade_date for item in consistency_items}) > 1:
             reasons.add(f"trade_date_conflict:{subject}")
             inconsistent = True
-        if len({item.observation_point.astimezone(timezone.utc) for item in consistency_items if item.observation_point}) > 1:
+        if (
+            len(
+                {
+                    item.observation_point.astimezone(timezone.utc)
+                    for item in consistency_items
+                    if item.observation_point
+                }
+            )
+            > 1
+        ):
             reasons.add(f"observation_point_conflict:{subject}")
             inconsistent = True
         identities = {item.security_identity for item in items}
@@ -523,7 +470,9 @@ def _validate_observation_consistency(
             # A fixture or replay may carry a historical source timestamp while
             # the observation itself is freshly acquired. Freshness is enforced
             # within the same trade date; cross-date age is surfaced in metadata.
-            same_trade_date = item.source_time.astimezone(timezone.utc).date() == observed_at.astimezone(timezone.utc).date()
+            same_trade_date = (
+                item.source_time.astimezone(timezone.utc).date() == observed_at.astimezone(timezone.utc).date()
+            )
             age = max(0.0, (observed_at - item.source_time).total_seconds()) if same_trade_date else 0.0
             # Realtime quote deadlines must not evict durable security-reference
             # observations. Reference validity is owned by the reference loader.
@@ -600,7 +549,9 @@ def _same_source_overlay_replaces(
         return current_restrictions < incoming_restrictions
     if overlay_observed_at != base_observed_at:
         return overlay_observed_at > base_observed_at
-    return canonical_json_bytes(incoming) > canonical_json_bytes(current)
+    return ObservationFacts(
+        observation_from_quote(incoming, source=incoming.source, observed_at=overlay_observed_at)
+    ) > ObservationFacts(observation_from_quote(current, source=current.source, observed_at=base_observed_at))
 
 
 def _conflict_subject(conflict: str) -> str:
@@ -647,6 +598,5 @@ __all__ = [
     "merge_market_observations",
     "observation_from_quote",
     "overlay_canonical_snapshot",
-    "snapshot_payload_hash",
     "subset_canonical_snapshot",
 ]

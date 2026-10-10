@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import math
 from collections.abc import Callable, Mapping, Sequence
@@ -15,7 +14,6 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -226,7 +224,6 @@ def _generic_observation(
 def _observation(
     request: _ObservationRequest,
 ) -> SourceObservation:
-    payload_hash = hashlib.sha256(canonical_json_bytes(request.fields)).hexdigest()
     return SourceObservation(
         source="tushare",
         subject_key=request.subject_key,
@@ -237,7 +234,7 @@ def _observation(
         data_version=request.data_version,
         fields=request.fields,
         missing_reasons=request.missing_reasons or {},
-        payload_hash=payload_hash,
+        payload_hash="",
         status="success",
         error_code=None,
     )
@@ -251,7 +248,6 @@ def _failed_observation(
     *,
     subject_key: str | None = None,
 ) -> SourceObservation:
-    payload_hash = hashlib.sha256(canonical_json_bytes({"error_code": error_code})).hexdigest()
     return SourceObservation(
         source="tushare",
         subject_key=subject_key or dataset,
@@ -262,19 +258,14 @@ def _failed_observation(
         data_version="tushare-unavailable",
         fields={},
         missing_reasons={dataset: error_code},
-        payload_hash=payload_hash,
+        payload_hash="",
         status="failed",
         error_code=error_code,
     )
 
 
-def _data_version(dataset: str, rows: Sequence[Mapping[str, object]]) -> str:
-    normalized = [
-        {str(key): _json_scalar(value) for key, value in sorted(row.items(), key=lambda item: str(item[0]))}
-        for row in rows
-    ]
-    digest = hashlib.sha256(canonical_json_bytes(normalized)).hexdigest()[:20]
-    return f"tushare-{dataset}:{digest}"
+def _data_version(dataset: str, observed_at: datetime, received_at: datetime) -> str:
+    return f"tushare-{dataset}:{observed_at.isoformat()}:{received_at.isoformat()}"
 
 
 def _error_code(exc: Exception) -> str:

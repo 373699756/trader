@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
@@ -15,17 +14,18 @@ from trader.infra.cache_contracts import (
     BoundedCache,
     CacheIdentity,
     CacheIdentitySpec,
+    CacheRequestKey,
     build_cache_identity,
-    canonical_json_bytes,
+    request_key,
 )
 from trader.infra.market_data.observations import SourceObservation
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
 from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
 from trader.recommendation.application.runtime.source_lanes import (
     SourceLaneScheduler,
     SourceRequestSupersededError,
 )
-from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
@@ -539,7 +539,19 @@ class MarketSourceCoordinator:
                 return
 
         if self._source_lanes is not None:
-            refresh_identity = "refresh:" + hashlib.sha256(canonical_json_bytes(identity)).hexdigest()
+            refresh_identity = request_key(
+                {
+                    "dataset": identity.dataset,
+                    "source": identity.source,
+                    "subject": identity.subject_key,
+                    "request": identity.request_key,
+                    "date": identity.trade_date,
+                    "phase": identity.phase,
+                    "contract": identity.source_contract_version,
+                    "config": identity.config_version,
+                    "schema": identity.schema_version,
+                }
+            )
             self._source_lanes.submit(request.source, refresh_identity, request.observed_at, refresh)
             return
         worker_pool.submit(refresh)
@@ -547,7 +559,7 @@ class MarketSourceCoordinator:
     def lane_identity(
         self,
         request: SourceLaneIdentityRequest,
-    ) -> str:
+    ) -> CacheRequestKey:
         cache_identity = self._cache_identity(
             request.dataset,
             request.source,
@@ -555,16 +567,21 @@ class MarketSourceCoordinator:
             request.request,
             request.observed_at,
         )
-        digest = hashlib.sha256(
-            canonical_json_bytes(
-                {
-                    "cache_identity": cache_identity,
-                    "force": request.force,
-                    "deadline": request.deadline,
-                }
-            )
-        ).hexdigest()
-        return f"{request.dataset}:{digest}"
+        return request_key(
+            {
+                "dataset": cache_identity.dataset,
+                "source": cache_identity.source,
+                "subject": cache_identity.subject_key,
+                "request": cache_identity.request_key,
+                "date": cache_identity.trade_date,
+                "phase": cache_identity.phase,
+                "contract": cache_identity.source_contract_version,
+                "config": cache_identity.config_version,
+                "schema": cache_identity.schema_version,
+                "force": request.force,
+                "deadline": request.deadline,
+            }
+        )
 
     def _cache_identity(
         self,

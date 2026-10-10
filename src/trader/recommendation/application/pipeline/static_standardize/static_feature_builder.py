@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
@@ -39,13 +40,16 @@ class FeatureComputationPlan:
         return self.manifest.names
 
 
+FeatureFactValue: TypeAlias = str | int | float | None | tuple["FeatureFactValue", ...]
+
+
 @dataclass(frozen=True, order=True)
 class FeatureFactRevision:
     fact_id: str
-    revision: str
+    revision: str | tuple[FeatureFactValue, ...]
 
     def __post_init__(self) -> None:
-        if not self.fact_id or not self.revision:
+        if not self.fact_id or (isinstance(self.revision, str) and not self.revision):
             raise ValueError("feature fact revision identity must not be empty")
 
 
@@ -90,7 +94,7 @@ def affected_feature_stages(
 def _revision_map(
     revisions: tuple[FeatureFactRevision, ...],
     required_fact_ids: tuple[str, ...],
-) -> dict[str, str]:
+) -> dict[str, str | tuple[FeatureFactValue, ...]]:
     values = {item.fact_id: item.revision for item in revisions}
     if len(values) != len(revisions) or set(values) != set(required_fact_ids):
         raise ValueError("feature fact revisions do not match the computation plan")

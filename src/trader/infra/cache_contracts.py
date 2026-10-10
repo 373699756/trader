@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime
@@ -11,7 +11,10 @@ from decimal import Decimal
 from enum import Enum
 from functools import lru_cache
 from types import MappingProxyType
-from typing import Any, Generic, Protocol, TypeVar, cast
+from typing import Any, Generic, Protocol, TypeAlias, TypeVar, cast
+
+CacheRequestValue: TypeAlias = str | int | float | bool | None | tuple["CacheRequestValue", ...]
+CacheRequestKey: TypeAlias = tuple[tuple[str, CacheRequestValue], ...]
 
 _T = TypeVar("_T")
 
@@ -117,7 +120,7 @@ class CacheIdentity:
     dataset: str
     source: str
     subject_key: str
-    request_fingerprint: str
+    request_key: CacheRequestKey
     trade_date: str
     phase: str
     source_contract_version: str
@@ -129,7 +132,6 @@ class CacheIdentity:
             self.dataset,
             self.source,
             self.subject_key,
-            self.request_fingerprint,
             self.trade_date,
             self.phase,
             self.source_contract_version,
@@ -138,10 +140,6 @@ class CacheIdentity:
         )
         if any(not value.strip() for value in values):
             raise ValueError("cache identity fields must not be empty")
-        if len(self.request_fingerprint) != 64 or any(
-            character not in "0123456789abcdef" for character in self.request_fingerprint
-        ):
-            raise ValueError("cache request fingerprint must be a lowercase SHA-256")
 
 
 @dataclass(frozen=True)
@@ -229,7 +227,7 @@ def build_cache_identity(spec: CacheIdentitySpec) -> CacheIdentity:
         dataset=spec.dataset,
         source=spec.source,
         subject_key=spec.subject_key,
-        request_fingerprint=request_fingerprint(spec.request),
+        request_key=request_key(spec.request),
         trade_date=spec.trade_date,
         phase=normalized_phase,
         source_contract_version=spec.source_contract_version,
@@ -249,8 +247,50 @@ def normalize_cache_phase(phase: str) -> str:
     return aliases.get(normalized, normalized)
 
 
-def request_fingerprint(request: Mapping[str, object]) -> str:
-    return hashlib.sha256(canonical_json_bytes(_normalize_request(request))).hexdigest()
+def request_key(request: Mapping[str, object]) -> CacheRequestKey:
+    return tuple((key, _request_value(value)) for key, value in sorted(_normalize_request(request).items()))
+
+
+def _request_value(value: object) -> CacheRequestValue:
+    if isinstance(value, (Decimal, date, Enum)):
+        return _request_coordinate(value)
+    if isinstance(value, Mapping):
+        return ("mapping", tuple((str(key), _request_value(item)) for key, item in sorted(value.items())))
+    if isinstance(value, (tuple, list)):
+        return ("sequence", tuple(_request_value(item) for item in value))
+    return _request_scalar(value)
+
+
+def _request_scalar(value: object) -> CacheRequestValue:
+    if value is None:
+        return ("null", None)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("cache request numbers must be finite")
+        return ("float", value)
+    if isinstance(value, str):
+        return ("str", value)
+    raise TypeError("unsupported cache request value")
+
+
+def _request_coordinate(value: Decimal | date | Enum) -> CacheRequestValue:
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("cache request decimals must be finite")
+        return ("decimal", format(value, "f"))
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("cache request datetime must be timezone-aware")
+        return ("datetime", value.isoformat())
+    if isinstance(value, date):
+        return ("date", value.isoformat())
+    if isinstance(value, Enum):
+        return ("enum", _request_value(value.value))
+    raise TypeError("unsupported cache request value")
 
 
 def _normalize_request(request: Mapping[str, object]) -> dict[str, object]:
@@ -335,5 +375,5 @@ __all__ = [
     "canonical_json_bytes",
     "freeze_cache_value",
     "normalize_cache_phase",
-    "request_fingerprint",
+    "request_key",
 ]

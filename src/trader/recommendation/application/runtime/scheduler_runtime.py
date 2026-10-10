@@ -2,60 +2,45 @@ from __future__ import annotations
 
 import threading
 import time
-from collections import OrderedDict
-from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from datetime import time as wall_time
-from typing import Literal, cast
+from typing import Literal
 
-from trader.recommendation.application.pipeline.freeze_publish.current_publisher import publish_current_snapshot
+from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionCommitted,
     DecisionObservation,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (
-    DecisionObserverRuntime,
-)
 from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
     PublicationIoTarget,
-    PublicationIoTracker,
     observe_publication_io,
 )
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.ports.clock import Clock, TradingCalendarPort
-from trader.recommendation.application.ports.publisher import OverlayPublisher
-from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
-    DataRefreshPort,
     DataRefreshUnavailableError,
-    DecisionBuilderPort,
-    DecisionUnavailableError,
-    DeepSeekUpgradePort,
-    FreezePort,
-    FreezeUnavailableError,
     PipelineTaskRequest,
     RefreshOutcome,
-    ResearchRuntimeFactoryPort,
-    ReviewUnavailableError,
-    SettlementPort,
-    SettlementUnavailableError,
     TradingCalendarUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import (
-    CadencePlanner,
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointResult,
 )
-from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.recommendation.application.runtime.close_control import CloseControlCoordinator, CloseControlHooks
+from trader.recommendation.application.runtime.cycle_execution import (
+    CycleExecutionHooks,
+    HybridUpgradeRequest,
+    RecommendationCycleExecutor,
+)
 from trader.recommendation.application.runtime.latest_wins import (
     LatestWinsOffer,
     LatestWinsTelemetry,
     LatestWinsWorker,
 )
+from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueIndex
 from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
@@ -74,11 +59,8 @@ from trader.recommendation.application.runtime.schedule_requests import (
     pipeline_task_correlation_id,
     pipeline_task_order_key,
     research_input_version,
-    validate_cycle_identity,
 )
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
-from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
@@ -118,32 +100,6 @@ _SCORING_INPUT_TASKS = frozenset(
 _CALENDAR_RETRY_DELAYS_SECONDS = (30.0, 60.0, 120.0, 300.0)
 
 
-@dataclass(frozen=True)
-class RuntimeDependencies:
-    control_pool: BoundedExecutor
-    clock: Clock
-    calendar: TradingCalendarPort
-    cadence: CadencePlanner
-    data: DataRefreshPort
-    decisions: DecisionBuilderPort
-    reviews: DeepSeekUpgradePort
-    index: UnifiedDecisionIndex
-    observer: DecisionObserverRuntime[DecisionObservation]
-    freezes: FreezePort
-    settlement: SettlementPort
-    research_factory: ResearchRuntimeFactoryPort
-    publish_decision: Callable[[DecisionCommitted], object]
-    publish_overlay: OverlayPublisher
-    latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
-    publication_io: PublicationIoTracker | None = None
-
-
-@dataclass(frozen=True)
-class _HybridUpgradeRequest:
-    local: ScoredDecision
-    cycle: CycleRequest
-
-
 class SchedulerRuntime:
     """Scheduler-facing runtime that owns no legacy Pipeline resources."""
 
@@ -175,14 +131,11 @@ class SchedulerRuntime:
         self._shutdown_report: ShutdownReport | None = None
         self._phase = MarketPhase.CLOSED
         self._sequences = dict.fromkeys(Strategy, 0)
-        self._control_pending: set[str] = set()
-        self._control_completed: OrderedDict[str, None] = OrderedDict()
-        self._close_input: RefreshOutcome | None = None
         self._control = dependencies.control_pool
         self._lanes = {
             strategy: LatestWinsWorker(
                 f"trader-{strategy.value}",
-                self._process_cycle,
+                lambda request: self._cycles.execute(request),
                 order_key=cycle_order_key,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
@@ -192,10 +145,10 @@ class SchedulerRuntime:
             )
             for strategy in Strategy
         }
-        self._hybrid_lanes: dict[Strategy, LatestWinsWorker[_HybridUpgradeRequest]] = {
+        self._hybrid_lanes: dict[Strategy, LatestWinsWorker[HybridUpgradeRequest]] = {
             strategy: LatestWinsWorker(
                 f"trader-hybrid-{strategy.value}",
-                self._process_hybrid,
+                lambda request: self._cycles.upgrade(request),
                 order_key=_hybrid_order_key,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
@@ -238,6 +191,32 @@ class SchedulerRuntime:
         self._calendar_is_trading_day: bool | None = None
         self._calendar_consecutive_failure_count = 0
         self._calendar_next_retry_at: datetime | None = None
+        self._close_control = CloseControlCoordinator(
+            dependencies,
+            CloseControlHooks(
+                self._record_failure,
+                self._record_control_success,
+                self._record_pipeline_result,
+                self.submit_cycle,
+                self._scheduled_request,
+                lambda strategy: self._lanes[strategy].status(),
+            ),
+        )
+        self._cycles = RecommendationCycleExecutor(
+            dependencies,
+            overlay_refresher=self._overlay_refresher,
+            close_control=self._close_control,
+            research=self._research,
+            hooks=CycleExecutionHooks(
+                lambda strategy: self._lanes[strategy],
+                lambda strategy: self._hybrid_lanes[strategy],
+                self._record_failure,
+                lambda strategy, published: self._record_overlay_success(strategy, published=published),
+                lambda hybrid, event, identity: self._record_publish(hybrid=hybrid, event=event, identity=identity),
+                self._record_publish_rejection,
+                self._record_long_handoff,
+            ),
+        )
 
     def start(self) -> bool:
         with self._lock:
@@ -376,7 +355,7 @@ class SchedulerRuntime:
             accepted = offer is not LatestWinsOffer.REJECTED
         elif scheduled.task is PipelineTask.FREEZE:
             submissions = {
-                strategy: self._submit_freeze(
+                strategy: self._close_control.submit_freeze(
                     Strategy(strategy),
                     scheduled.scheduled_at,
                     scheduled=scheduled,
@@ -387,7 +366,7 @@ class SchedulerRuntime:
             rejected_freezes = tuple(strategy for strategy, submitted in submissions.items() if not submitted)
         elif scheduled.task is PipelineTask.CHECKPOINT:
             submissions = {
-                strategy: self._submit_checkpoint(
+                strategy: self._close_control.submit_checkpoint(
                     Strategy(strategy),
                     scheduled.scheduled_at,
                     scheduled=scheduled,
@@ -438,7 +417,7 @@ class SchedulerRuntime:
 
     def _process_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
         if scheduled.task is PipelineTask.CLOSE_QUOTES:
-            self._process_close_recovery(scheduled)
+            self._close_control.process_close_recovery(scheduled)
             return
         selected_codes = self._selected_overlay_codes() if scheduled.task is PipelineTask.TOPK_QUOTES else ()
         request = PipelineTaskRequest(
@@ -454,40 +433,6 @@ class SchedulerRuntime:
             return
         self._after_successful_data_refresh(scheduled, outcome)
         self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
-
-    def _process_close_recovery(self, scheduled: ScheduledPipelineTask) -> None:
-        at = scheduled.scheduled_at
-        missing = self._missing_after_close_scored_strategies(at)
-        with self._lock:
-            close_input = self._close_input
-        if missing and (close_input is None or close_input.completed_at.date() != at.date()):
-            try:
-                outcome = self._dependencies.data.refresh_task(
-                    PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, shanghai_now(self._dependencies.clock.now()), ())
-                )
-                if outcome.completed_at.date() != at.date():
-                    raise DataRefreshUnavailableError("close_input_trade_date_mismatch")
-            except DataRefreshUnavailableError as exc:
-                self._record_failure("refresh", failure_code(exc, "refresh_unavailable"))
-                self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
-                return
-            with self._lock:
-                self._close_input = outcome
-        # Reconcile authoritative formal/control state on later ticks; handoff is not completion.
-        with self._lock:
-            completed = f"settlement:{at.date().isoformat()}" in self._control_completed
-            self._record_pipeline_result(
-                scheduled, SchedulePointResult.COMPLETED if completed else SchedulePointResult.RETRY
-            )
-        if completed:
-            return
-        if not missing:
-            self._submit_settlement(at)
-            return
-        for strategy in missing:
-            lane = self._lanes[strategy].status()
-            if not lane.running and not lane.pending:
-                self.submit_cycle(self._scheduled_request(strategy, at, "close_fallback"))
 
     def _after_successful_data_refresh(
         self,
@@ -681,86 +626,6 @@ class SchedulerRuntime:
             review_deadline=review_deadline,
         )
 
-    def _process_cycle(self, request: CycleRequest) -> None:
-        lane = self._lanes[request.strategy]
-        if self._complete_existing_close_fallback(request):
-            return
-        local = self._build_fresh_local(request)
-        if local is None or not self._publish_fresh_local(local):
-            return
-        self._continue_after_local_publish(request, local, lane)
-
-    def _complete_existing_close_fallback(self, request: CycleRequest) -> bool:
-        if request.phase == "close_fallback" and request.strategy in {Strategy.TOMORROW, Strategy.D25}:
-            snapshot = self._dependencies.index.snapshot(request.strategy)
-            if snapshot.formal is not None and snapshot.formal.trade_date == request.trade_date:
-                return True
-            if isinstance(snapshot.current, ScoredDecision) and snapshot.current.trade_date == request.trade_date:
-                self._freeze_close_fallback(request, snapshot.current, recovery_path="current")
-                return True
-        return False
-
-    def _build_fresh_local(
-        self,
-        request: CycleRequest,
-    ) -> DecisionIdentity | None:
-        started_at = time.perf_counter()
-        if not self._prepare_cycle_data(request):
-            return None
-        self._record_latency("scoring_data_prepare", started_at)
-        started_at = time.perf_counter()
-        local = self._build_local(request)
-        self._record_latency("local_scoring", started_at)
-        if local is None:
-            return None
-        return local
-
-    def _publish_fresh_local(
-        self,
-        local: DecisionIdentity,
-    ) -> bool:
-        started_at = time.perf_counter()
-        if not self._publish(local, hybrid=False):
-            return False
-        self._record_latency("decision_publish", started_at)
-        return True
-
-    def _continue_after_local_publish(
-        self,
-        request: CycleRequest,
-        local: DecisionIdentity,
-        lane: LatestWinsWorker[CycleRequest],
-    ) -> None:
-        if lane.is_superseded(request) or not isinstance(local, ScoredDecision):
-            return
-        defer_initial_review = self._observe_research(local, request)
-        if request.phase == "close_fallback":
-            self._freeze_close_fallback(request, local, recovery_path="close_rebuild")
-            return
-        review_now = shanghai_now(self._dependencies.clock.now())
-        if request.allow_review and not defer_initial_review and review_now < request.review_deadline:
-            self._hybrid_lanes[request.strategy].offer(_HybridUpgradeRequest(local, request))
-
-    def _observe_research(self, local: ScoredDecision, request: CycleRequest) -> bool:
-        try:
-            return self._research.observe(
-                self._dependencies.decisions.research_intent(local),
-                request,
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            self._record_failure("research", failure_code(exc, "research_intent_failed"), request.strategy)
-            return False
-
-    def _process_hybrid(self, request: _HybridUpgradeRequest) -> None:
-        if self._hybrid_lanes[request.cycle.strategy].is_superseded(request):
-            return
-        if shanghai_now(self._dependencies.clock.now()) >= request.cycle.review_deadline:
-            return
-        self._upgrade_hybrid(request.local, request.cycle)
-
-    def _record_latency(self, stage: str, started_at: float) -> None:
-        self._dependencies.latency.record_duration(stage, (time.perf_counter() - started_at) * 1000.0)
-
     def _on_research_result(self, result: ResearchRefreshResult, initial_rescore: bool) -> None:
         del initial_rescore
         if not result.changed_codes:
@@ -783,75 +648,6 @@ class SchedulerRuntime:
                 continue
             request = self._scheduled_request(strategy, completed_at, schedule.phase.value)
             self.submit_cycle(replace(request, input_version=f"risk:{strategy.value}:{risk_version}"))
-
-    def _refresh_data(self, request: CycleRequest) -> bool:
-        try:
-            self._dependencies.data.refresh(request)
-        except DataRefreshUnavailableError as exc:
-            self._record_failure("refresh", failure_code(exc, "refresh_unavailable"), request.strategy)
-            return False
-        return True
-
-    def _prepare_cycle_data(self, request: CycleRequest) -> bool:
-        if not self._refresh_data(request):
-            return False
-        for outcome in self._overlay_refresher.refresh(request):
-            if outcome.status == "failed":
-                self._record_failure("overlay", outcome.error_code, outcome.strategy)
-            elif outcome.status != "skipped":
-                self._record_overlay_success(outcome.strategy, published=outcome.status == "published")
-        if request.phase == "midday_recovery" and request.strategy is Strategy.LONG:
-            with self._lock:
-                self._midday_long_handoff_date = request.trade_date
-        return True
-
-    def _build_local(self, request: CycleRequest) -> DecisionIdentity | None:
-        try:
-            local = self._dependencies.decisions.build_local(request)
-            if local is not None:
-                validate_cycle_identity(request, local)
-        except DecisionUnavailableError as exc:
-            self._record_failure("decision", failure_code(exc, "decision_unavailable"), request.strategy)
-            return None
-        return local
-
-    def _publish(self, identity: DecisionIdentity, *, hybrid: bool) -> bool:
-        expected = self._dependencies.index.snapshot(identity.strategy).current
-        try:
-            published = publish_current_snapshot(
-                self._dependencies.index,
-                self._dependencies.decisions,
-                identity,
-                expected_version=expected.version if expected is not None else None,
-                publication_io=self._dependencies.publication_io,
-            )
-        except DecisionUnavailableError as exc:
-            self._record_failure("decision", failure_code(exc, "decision_quote_unavailable"), identity.strategy)
-            return False
-        if not published.accepted:
-            self._record_publish_rejection(published.reason, identity.strategy)
-            return False
-        self._record_publish(hybrid=hybrid, event=published.event, identity=identity)
-        return True
-
-    def _upgrade_hybrid(self, local: ScoredDecision, request: CycleRequest) -> None:
-        try:
-            hybrid = self._dependencies.reviews.build_hybrid(local, request)
-        except ReviewUnavailableError as exc:
-            self._record_failure("review", failure_code(exc, "review_unavailable"), request.strategy)
-            return
-        if hybrid is None:
-            return
-        try:
-            validate_cycle_identity(request, hybrid)
-        except DecisionUnavailableError:
-            self._record_failure("review", "review_identity_mismatch", request.strategy)
-            return
-        upgrade = _HybridUpgradeRequest(local, request)
-        self._hybrid_lanes[request.strategy].execute_if_current(
-            upgrade,
-            lambda: self._publish(hybrid, hybrid=True),
-        )
 
     def _record_publish(
         self,
@@ -882,15 +678,9 @@ class SchedulerRuntime:
                 self._record_failure("publish", f"decision_event:{type(exc).__name__}", strategy)
         observation = None
         if event is not None:
-            try:
-                audit = cast(
-                    ResearchAuditIdentity | None,
-                    self._dependencies.decisions.research_audit(event.decision_version),
-                )
-            except (RuntimeError, TypeError, ValueError) as exc:
-                self._record_failure("observer", f"research_audit:{type(exc).__name__}", strategy)
-                audit = None
-            observation = DecisionObservation(event, audit)
+            observation = DecisionObservation(
+                event, None, audit_factory=self._dependencies.decisions.research_audit_factory(event.decision_version)
+            )
         if observation is not None:
             assert isinstance(identity, ScoredDecision)
             with observe_publication_io(
@@ -967,172 +757,17 @@ class SchedulerRuntime:
             strategies.append(Strategy.LONG)
         return tuple(strategies)
 
-    def _freeze_close_fallback(
-        self,
-        request: CycleRequest,
-        current: ScoredDecision,
-        *,
-        recovery_path: Literal["current", "close_rebuild"],
-    ) -> None:
-        native_version = dict(current.input_versions).get("native", current.content_hash)
-        try:
-            self._dependencies.freezes.freeze_close_fallback(
-                request.strategy,
-                request.observed_at,
-                current,
-                recovery_path=recovery_path,
-                official_close_version=f"official-close:{native_version}",
-            )
-        except FreezeUnavailableError:
-            self._record_failure("freeze", "close_fallback_unavailable", request.strategy)
-        except Exception as exc:
-            self._record_failure("freeze", f"close_fallback_unexpected:{type(exc).__name__}", request.strategy)
-        else:
-            with self._lock:
+    def _record_long_handoff(self, trade_date: date) -> None:
+        with self._lock:
+            self._midday_long_handoff_date = trade_date
+
+    def _record_control_success(self, stage: str, strategy: Strategy | None) -> None:
+        with self._lock:
+            if stage == "freeze":
                 self._freeze_completed_count += 1
-                self._resolve_issues_locked(strategy=request.strategy, stages=frozenset({"freeze"}))
-
-    def _submit_freeze(
-        self,
-        strategy: Strategy,
-        at: datetime,
-        *,
-        scheduled: ScheduledPipelineTask,
-    ) -> bool:
-        key = f"freeze:{at.date().isoformat()}:{strategy.value}"
-        if not self._reserve_control(key):
-            return False
-        future = self._control.submit_urgent(self._run_freeze, key, strategy, at, scheduled)
-        if future is None:
-            self._finish_control(key, success=False)
-            self._record_failure("freeze", "freeze_capacity_rejected", strategy)
-            return False
-        return True
-
-    def _submit_checkpoint(
-        self,
-        strategy: Strategy,
-        at: datetime,
-        *,
-        scheduled: ScheduledPipelineTask,
-    ) -> bool:
-        key = f"checkpoint:{at.date().isoformat()}:{strategy.value}"
-        if not self._reserve_control(key):
-            return False
-        future = self._control.submit_urgent(self._run_checkpoint, key, strategy, at, scheduled)
-        if future is None:
-            self._finish_control(key, success=False)
-            self._record_failure("checkpoint", "checkpoint_capacity_rejected", strategy)
-            return False
-        return True
-
-    def _run_checkpoint(
-        self,
-        key: str,
-        strategy: Strategy,
-        at: datetime,
-        scheduled: ScheduledPipelineTask,
-    ) -> None:
-        success = False
-        try:
-            self._dependencies.freezes.capture_checkpoint(strategy, at)
-        except FreezeUnavailableError as exc:
-            self._record_failure("checkpoint", failure_code(exc, "checkpoint_unavailable"), strategy)
-        except Exception as exc:
-            self._record_failure("checkpoint", f"checkpoint_unexpected:{type(exc).__name__}", strategy)
-        else:
-            success = True
-            with self._lock:
-                self._resolve_issues_locked(strategy=strategy, stages=frozenset({"checkpoint"}))
-        finally:
-            self._finish_control(key, success=success)
-            self._dependencies.cadence.record_point_result(
-                at.date().isoformat(),
-                scheduled.schedule_point or SchedulePoint.AFTERNOON_CHECKPOINT,
-                strategy.value,
-                SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
-                at=shanghai_now(self._dependencies.clock.now()),
-            )
-
-    def _run_freeze(
-        self,
-        key: str,
-        strategy: Strategy,
-        at: datetime,
-        scheduled: ScheduledPipelineTask,
-    ) -> None:
-        success = False
-        try:
-            current = self._dependencies.index.snapshot(strategy).current
-            self._dependencies.freezes.freeze(strategy, at, current)
-        except FreezeUnavailableError:
-            self._record_failure("freeze", "freeze_unavailable", strategy)
-        except Exception as exc:
-            self._record_failure("freeze", f"freeze_unexpected:{type(exc).__name__}", strategy)
-        else:
-            success = True
-            with self._lock:
-                self._freeze_completed_count += 1
-                self._resolve_issues_locked(strategy=strategy, stages=frozenset({"freeze"}))
-        finally:
-            self._finish_control(key, success=success)
-            self._dependencies.cadence.record_point_result(
-                at.date().isoformat(),
-                scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
-                strategy.value,
-                SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
-                at=shanghai_now(self._dependencies.clock.now()),
-            )
-
-    def _submit_settlement(self, at: datetime) -> None:
-        key = f"settlement:{at.date().isoformat()}"
-        if not self._reserve_control(key):
-            return
-        future = self._control.submit(self._run_settlement, key, at)
-        if future is None:
-            self._finish_control(key, success=False)
-            self._record_failure("settlement", "settlement_capacity_rejected")
-
-    def _run_settlement(self, key: str, at: datetime) -> None:
-        success = False
-        try:
-            self._dependencies.settlement.settle(at)
-        except SettlementUnavailableError:
-            self._record_failure("settlement", "settlement_unavailable")
-        except Exception as exc:
-            self._record_failure("settlement", f"settlement_unexpected:{type(exc).__name__}")
-        else:
-            success = True
-            with self._lock:
+            elif stage == "settlement":
                 self._settlement_completed_count += 1
-                self._resolve_issues_locked(stages=frozenset({"settlement"}))
-        finally:
-            with self._lock:
-                self._finish_control(key, success=success)
-                if success:
-                    self._dependencies.cadence.record_point_result(
-                        at.date().isoformat(),
-                        SchedulePoint.CLOSE_QUOTES,
-                        "-",
-                        SchedulePointResult.COMPLETED,
-                        at=shanghai_now(self._dependencies.clock.now()),
-                    )
-
-    def _reserve_control(self, key: str) -> bool:
-        with self._lock:
-            if key in self._control_pending or key in self._control_completed:
-                return False
-            self._control_pending.add(key)
-            return True
-
-    def _finish_control(self, key: str, *, success: bool) -> None:
-        with self._lock:
-            self._control_pending.discard(key)
-            if not success:
-                return
-            self._control_completed[key] = None
-            while len(self._control_completed) > 128:
-                self._control_completed.popitem(last=False)
+            self._resolve_issues_locked(strategy=strategy, stages=frozenset({stage}))
 
     def _record_failure(self, stage: str, code: str, strategy: Strategy | None = None) -> None:
         occurred_at = shanghai_now(self._dependencies.clock.now())
@@ -1171,8 +806,8 @@ class SchedulerRuntime:
         )
 
 
-def _hybrid_order_key(request: _HybridUpgradeRequest) -> int:
+def _hybrid_order_key(request: HybridUpgradeRequest) -> int:
     return cycle_order_key(request.cycle)
 
 
-__all__ = ["RuntimeDependencies", "RuntimeIssue", "SchedulerRuntimeStatus", "SchedulerRuntime"]
+__all__ = ["RuntimeIssue", "SchedulerRuntimeStatus", "SchedulerRuntime"]

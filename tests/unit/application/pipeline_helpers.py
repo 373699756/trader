@@ -72,7 +72,7 @@ def observed_market_batch(features: Sequence[FeatureSnapshot], as_of: datetime) 
             latency_ms=14,
         ).business_rejections,
     )
-    dynamic = build_dynamic_market_snapshot(static, records, as_of=as_of, latency_ms=21)
+    dynamic = build_dynamic_market_snapshot(static, records, as_of=as_of, data_version="fixture:dynamic", latency_ms=21)
     return FullMarketFeatureBatch(records, IssuerEligibilityBatch(len(records), len(records)), snapshots, dynamic)
 
 
@@ -98,7 +98,9 @@ def observed_quality_input(
         CandidatePlanningContext(as_of, "fixture", policy, None, 120),
         lambda: next(ticks),
     )
-    candidates = assemble_candidate_inputs(pipeline.candidates[strategy], tuple(features), as_of=as_of)
+    candidates = assemble_candidate_inputs(
+        pipeline.candidates[strategy], tuple(features), as_of=as_of, data_version="fixture:available"
+    )
     quality = assess_candidate_input_stage(candidates, as_of=as_of, minimum_history_sessions=20, latency_ms=17)
     snapshots = (
         *batch.static_stages,

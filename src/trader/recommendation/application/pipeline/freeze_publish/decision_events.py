@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
 from trader.recommendation.application.ports.read_only_queries import ResearchAuditIdentity
@@ -31,7 +32,7 @@ class DecisionCommitted:
     trade_date: date
     observed_at: datetime
     decision_version: str
-    decision_hash: str
+    decision_hash: str | None
     parent_version: str | None
     stage: DecisionStage
     input_versions: tuple[tuple[str, str], ...]
@@ -50,13 +51,24 @@ class DecisionCommitted:
 class DecisionObservation:
     event: DecisionCommitted
     research_audit: ResearchAuditIdentity | None
+    audit_factory: Callable[[], ResearchAuditIdentity | None] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         audit = self.research_audit
         if audit is not None and (
-            audit.decision_version != self.event.decision_version or audit.decision_hash != self.event.decision_hash
+            audit.decision_version != self.event.decision_version
+            or (self.event.decision_hash is not None and audit.decision_hash != self.event.decision_hash)
         ):
             raise ValueError("research audit must match committed decision identity")
+
+    def materialize(self) -> DecisionObservation:
+        event = self.event
+        if event.decision_hash is None:
+            if event.projection is None:
+                raise ValueError("research_event_integrity_unavailable")
+            event = replace(event, decision_hash=event.projection.content_hash)
+        audit = self.audit_factory() if self.audit_factory is not None else self.research_audit
+        return DecisionObservation(event, audit)
 
 
 def build_decision_committed(
@@ -70,7 +82,7 @@ def build_decision_committed(
         trade_date=decision.trade_date,
         observed_at=decision.observed_at,
         decision_version=decision.version,
-        decision_hash=decision.content_hash,
+        decision_hash=None,
         parent_version=decision.parent_version,
         stage=decision.stage,
         input_versions=decision.input_versions,
@@ -81,7 +93,7 @@ def build_decision_committed(
         filter_aggregates=decision.filter_aggregates,
         degraded_reasons=decision.degraded_reasons,
         items=tuple(_event_item(item) for item in decision.items),
-        projection_version=projection_version or decision.content_hash,
+        projection_version=projection_version or decision.version,
         projection=decision,
     )
 

@@ -6,6 +6,7 @@ from itertools import count
 
 import pytest
 
+from tests.unit.application.cycle_fixture import build_cycle_fixture
 from tests.unit.application.review_helpers import review
 from tests.unit.application.test_input_runtime import (
     _decision_build,
@@ -23,7 +24,6 @@ from tests.unit.application.test_tomorrow_projection import (
     _verified_feature,
     _with_model_features,
 )
-from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredProjectionInputs,
     build_scored_hybrid,
@@ -207,7 +207,7 @@ class _FailedReviewer:
 def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observations(
     application_feature_factory, failure, after_deadline
 ):
-    adapter = MarketDataAdapter(
+    adapter = build_cycle_fixture(
         _Market(_features(application_feature_factory)),
         config_version="fixture",
         candidate_pool_size=120,
@@ -215,24 +215,24 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     )
     request = _request(EVALUATED_AT, phase="afternoon")
     _prime_scoring_cache(adapter, EVALUATED_AT)
-    adapter.refresh(request)
-    local = adapter.build_local(request)
+    adapter.data.refresh(request)
+    local = adapter.decisions.build_local(request)
     assert local is not None
-    initial_status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    initial_status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert local.pipeline is not None
     assert local.pipeline.stage_snapshots == initial_status.stage_snapshots
     validate_stage_batch_continuity(local.pipeline.stage_snapshots)
-    projection = adapter.projection(local.version)
+    projection = adapter.decisions.projection(local.version)
     assert projection is not None and projection.review_candidates
     failed_at = request.review_deadline + timedelta(microseconds=1) if after_deadline else EVALUATED_AT
-    reviewer = DeepSeekAdapter(_FailedReviewer(failure), _policy(), adapter, now=lambda: failed_at)
+    reviewer = DeepSeekAdapter(_FailedReviewer(failure), _policy(), adapter.decisions, now=lambda: failed_at)
     if failure in {"exception", "manifest_exception"}:
         with pytest.raises(ReviewUnavailableError) as error:
             reviewer.build_hybrid(local, request)
         assert isinstance(error.value.__cause__, OSError if failure == "exception" else ValueError)
     else:
         assert reviewer.build_hybrid(local, request) is None
-    status = next(item for item in adapter.input_quality_status() if item.strategy is Strategy.TOMORROW)
+    status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     validate_stage_batch_continuity(status.stage_snapshots)
     expected = {
         "exception": "deepseek_review_unavailable",
@@ -244,12 +244,12 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     if after_deadline:
         assert "deepseek_late" in {reason.code for reason in status.stage_snapshots[10].reasons}
     assert status.summary.highest_final_score == max(item.final_score for item in local.items)
-    assert adapter.projection(local.version) is projection
+    assert adapter.decisions.projection(local.version) is projection
 
     observed = build_scored_hybrid(projection, _policy(), {}, review_deadline=request.review_deadline)
     assert observed is not None
     later = EVALUATED_AT + timedelta(seconds=1)
-    adapter.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, later))
-    pending = adapter.input_quality_status()
-    assert adapter.register_review(projection, observed) is None
-    assert adapter.input_quality_status() == pending
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, later))
+    pending = adapter.data.input_quality_status()
+    assert adapter.decisions.register_review(projection, observed) is None
+    assert adapter.data.input_quality_status() == pending

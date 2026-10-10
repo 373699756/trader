@@ -10,6 +10,7 @@ from dataclasses import replace
 
 from typing_extensions import Unpack
 
+from trader.infra.cache_contracts import CacheRequestKey, request_key
 from trader.recommendation.domain.market.models import Evidence, FeatureSnapshot
 from trader.recommendation.domain.risk.fusion import STRUCTURED_REVIEW_FEATURES
 from trader.recommendation.infra.deepseek.candidate_feature_evidence import render_batch_candidate_feature_evidence
@@ -81,7 +82,7 @@ def build_repair_messages(
 def review_cache_key(
     candidate: FeatureSnapshot,
     **options: Unpack[ReviewCacheOptions],
-) -> str:
+) -> CacheRequestKey:
     model = options["model"]
     generation = options.get("generation", "regular")
     model_role = options.get("model_role", "primary")
@@ -91,8 +92,13 @@ def review_cache_key(
     prompt_version = options.get("prompt_version", PROMPT_VERSION)
     payload = {
         "code": candidate.quote.code,
+        "trade_date": candidate.observed_at.date().isoformat(),
         "structured_features": _cache_features(candidate),
-        "evidence": sorted(_cache_evidence(item) for item in route_prompt_evidence(candidate).evidence),
+        "evidence": sorted(
+            _cache_evidence(item)
+            for item in route_prompt_evidence(candidate).evidence
+            if item.evidence_type != "structured_point_in_time"
+        ),
         "risk_facts": sorted(
             (
                 fact.risk_fact_id,
@@ -111,8 +117,7 @@ def review_cache_key(
         "schema_version": schema_version,
         "prompt_version": prompt_version,
     }
-    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return request_key(payload)
 
 
 def build_review_manifest_hash(candidate: FeatureSnapshot) -> str:
@@ -123,9 +128,9 @@ def build_review_manifest_hash(candidate: FeatureSnapshot) -> str:
 
 
 def strategy_review_cache_key(
-    raw_key: str,
+    raw_key: str | CacheRequestKey,
     **options: Unpack[StrategyCacheOptions],
-) -> str:
+) -> CacheRequestKey:
     strategy = options["strategy"]
     strategy_version = options["strategy_version"]
     dimension_weights = options["dimension_weights"]
@@ -143,8 +148,7 @@ def strategy_review_cache_key(
         "challenger_identity": challenger_identity,
         "challenger_status": challenger_status,
     }
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return request_key(payload)
 
 
 def _cache_features(candidate: FeatureSnapshot) -> list[tuple[str, float | None]]:
@@ -163,14 +167,13 @@ def _prompt_candidate(candidate: FeatureSnapshot) -> FeatureSnapshot:
     )
 
 
-def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str, str | None, str]:
+def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str, str]:
     return (
         item.evidence_id,
         item.evidence_type,
         item.title,
         item.source,
         item.published_at.isoformat(),
-        item.received_at.isoformat() if item.received_at is not None else None,
         item.data_version,
     )
 

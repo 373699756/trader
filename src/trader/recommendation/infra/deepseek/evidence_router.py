@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta, timezone
@@ -169,9 +168,8 @@ def _quality_key(item: Evidence) -> tuple[int, float, str]:
 
 def event_key(item: Evidence) -> str:
     normalized_title = " ".join(item.title.strip().lower().split())
-    content_hash = hashlib.sha256(normalized_title.encode("utf-8")).hexdigest()[:24]
     normalized_published_at = item.published_at.astimezone(timezone.utc).isoformat()
-    return f"{normalized_published_at}:{content_hash}"
+    return f"{normalized_published_at}:{normalized_title}"
 
 
 def source_tier(item: Evidence) -> str:

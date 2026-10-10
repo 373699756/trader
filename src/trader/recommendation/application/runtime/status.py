@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
+from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoSnapshot
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus
 from trader.recommendation.application.ports.runtime import ResearchRuntimeStatus, SharedDeepSeekRuntimeContract
@@ -13,7 +14,6 @@ from trader.recommendation.application.runtime.cadence import CadencePlannerStat
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue
 from trader.recommendation.application.runtime.schedule import MarketPhase
-from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 
 
 @dataclass(frozen=True)

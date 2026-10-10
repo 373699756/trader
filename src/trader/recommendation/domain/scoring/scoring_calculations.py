@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -300,22 +299,18 @@ class _PopulationVersionIdentity:
 
 def _population_version(
     identity: _PopulationVersionIdentity,
-    distributions: Mapping[str, Sequence[float]],
 ) -> str:
-    material = repr(
-        (
-            identity.board.value,
-            identity.trade_date,
-            identity.phase,
-            identity.data_version,
-            identity.schema_version,
-            identity.status,
-            identity.fallback_date,
-            identity.fallback_age,
-            tuple((name, tuple(values)) for name, values in sorted(distributions.items())),
-        )
+    coordinates = (
+        identity.board.value,
+        identity.trade_date,
+        identity.phase,
+        identity.data_version,
+        identity.schema_version,
+        identity.status,
+        identity.fallback_date,
+        identity.fallback_age,
     )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+    return f"population:{coordinates!r}"
 
 
 def _liquidity_bucket(value: float | None, p50: float | None, p80: float | None) -> str:

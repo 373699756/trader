@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from typing import Literal, Protocol
@@ -92,7 +91,7 @@ class DecisionItemView:
 @dataclass(frozen=True)
 class DecisionDraftView:
     decision_version: str
-    content_hash: str
+    content_hash: str | None
     observed_at: datetime
     input_versions: tuple[tuple[str, str], ...]
     items: tuple[DecisionItemView, ...]
@@ -158,7 +157,7 @@ class UnifiedDecisionQueries:
             if draft is None:
                 return empty
             draft_view = _observation_draft(draft)
-            return replace(empty, draft=draft_view, etag=draft.content_hash)
+            return replace(empty, draft=draft_view, etag=draft.version)
         return _scored_view(decision, snapshot.overlay, now, "current", formal)
 
     def history(self, strategy: Strategy, trade_date: date) -> DecisionView:
@@ -223,7 +222,7 @@ def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
     top_scores = tuple(sorted(all_items, key=_top_score_order)[:3])
     return DecisionDraftView(
         decision.version,
-        decision.content_hash,
+        None,
         decision.observed_at,
         decision.input_versions,
         tuple(_scored_item(item, None) for item in selected),
@@ -249,7 +248,7 @@ def _scored_view(
         )[:3]
     )
     coverage = scored_decision_coverage(decision)
-    etag = _etag(decision.content_hash, overlay.content_hash if overlay_quotes and overlay is not None else None)
+    etag = _etag(decision.version, overlay.version if overlay_quotes and overlay is not None else None)
     return DecisionView(
         "ready",
         decision.strategy,
@@ -257,7 +256,7 @@ def _scored_view(
         view,
         "scored",
         decision.version,
-        decision.content_hash,
+        None,
         decision.observed_at,
         max(0.0, (now - decision.observed_at).total_seconds()),
         decision.stage,
@@ -351,7 +350,7 @@ def _long_current(snapshot: UnifiedDecisionSnapshot, now: datetime) -> DecisionV
         "current",
         "not_applicable",
         projection.version,
-        projection.content_hash,
+        None,
         projection.observed_at,
         max(0.0, (now - projection.observed_at).total_seconds()),
         "current",
@@ -363,7 +362,7 @@ def _long_current(snapshot: UnifiedDecisionSnapshot, now: datetime) -> DecisionV
         (),
         degraded,
         items,
-        projection.content_hash,
+        projection.version,
     )
 
 
@@ -442,10 +441,10 @@ def _empty_view(
     )
 
 
-def _etag(content_hash: str, overlay_hash: str | None) -> str:
-    if overlay_hash is None:
-        return content_hash
-    return hashlib.sha256(f"{content_hash}|{overlay_hash}".encode()).hexdigest()
+def _etag(decision_version: str, overlay_version: str | None) -> str:
+    if overlay_version is None:
+        return decision_version
+    return f"{decision_version}+{overlay_version}"
 
 
 __all__ = [

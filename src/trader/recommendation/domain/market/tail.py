@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -148,24 +147,8 @@ def tail_signal_evidence(code: str, signals: TailSignals) -> Evidence | None:
         f"量比={_format_number(signals.volume_ratio)}，"
         f"有效分钟={signals.valid_bar_count}"
     )
-    identity = hashlib.sha256(
-        repr(
-            (
-                code,
-                signals.latest_at.isoformat(),
-                signals.return_pct,
-                signals.volume_ratio,
-                signals.reference_price,
-                signals.latest_price,
-                signals.baseline_mean_volume,
-                signals.tail_mean_volume,
-                signals.source,
-                signals.data_versions,
-            )
-        ).encode("utf-8")
-    ).hexdigest()[:32]
     return Evidence(
-        evidence_id=f"intraday-tail:{code}:{identity}",
+        evidence_id=f"intraday-tail:{code}:{signals.latest_at.isoformat()}",
         evidence_type="intraday_tail",
         title=title[:240],
         source=signals.source or "intraday_unavailable",

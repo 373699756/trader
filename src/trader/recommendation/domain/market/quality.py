@@ -71,8 +71,6 @@ class FieldValue:
             raise TypeError("field quality must be a FieldQualityState")
         if not self.data_version.strip():
             raise ValueError("field data_version must not be empty")
-        if not self.payload_hash.strip():
-            raise ValueError("field payload_hash must not be empty")
         if isinstance(self.value, float) and not math.isfinite(self.value):
             raise ValueError("field value must be finite when numeric")
         if not isinstance(self.conflict_count, int) or isinstance(self.conflict_count, bool):

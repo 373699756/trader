@@ -76,7 +76,7 @@ _DECISION_FIELDS = frozenset(
         "selection_diagnostics",
     }
 )
-_DECISION_OPTIONAL_FIELDS = frozenset({"population_count", "rejected_count", "pipeline"})
+_DECISION_OPTIONAL_FIELDS = frozenset({"population_count", "rejected_count", "pipeline", "is_formal"})
 _ITEM_FIELDS = frozenset(
     {
         "code",
@@ -189,7 +189,17 @@ def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
         rejected_count=_optional_integer(decision_raw.get("rejected_count"), "rejected_count"),
         selection_diagnostics=_selection_diagnostics_from_json(decision_raw.get("selection_diagnostics")),
         pipeline=_pipeline_from_json(decision_raw.get("pipeline")),
+        is_formal=_boolean(decision_raw, "is_formal") if "is_formal" in decision_raw else False,
     )
+    persisted_version = _text(value, "decision_version")
+    legacy_version = (
+        f"decision:{decision.strategy.value}:{decision.trade_date.isoformat()}:"
+        f"{decision.stage}:{decision.sequence}:{decision.content_hash[:16]}"
+    )
+    if persisted_version not in {decision.version, legacy_version}:
+        raise ValueError("formal decision payload decision identity mismatch")
+    # Immutable historical identities are restored only after integrity verification.
+    object.__setattr__(decision, "version", persisted_version)
     record = CommittedDecisionRecord(
         decision=decision,
         committed_at=_shanghai_datetime(_text(value, "committed_at")),
@@ -197,8 +207,14 @@ def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
     )
     if value.get("decision_version") != decision.version or value.get("decision_hash") != decision.content_hash:
         raise ValueError("formal decision payload decision identity mismatch")
-    if value.get("payload_hash") != record.payload_hash or value.get("version") != record.version:
+    persisted_record_version = _text(value, "version")
+    legacy_record_version = f"record:{record.strategy.value}:{record.trade_date.isoformat()}:{record.payload_hash[:16]}"
+    if value.get("payload_hash") != record.payload_hash or persisted_record_version not in {
+        record.version,
+        legacy_record_version,
+    }:
         raise ValueError("formal decision payload identity mismatch")
+    object.__setattr__(record, "version", persisted_record_version)
     return record
 
 

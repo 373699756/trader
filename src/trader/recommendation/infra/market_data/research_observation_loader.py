@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
@@ -19,6 +19,14 @@ if TYPE_CHECKING:
 
 from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
 from trader.infra.cache_contracts import CacheIdentity
+from trader.infra.workers import (
+    WorkerExecutor,
+    injected_executor,
+    submit_or_reject,
+)
+from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
+from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
+from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _add_action_restriction,
     _degraded_research_observation,
@@ -50,13 +58,6 @@ from trader.recommendation.infra.market_data.research_load_status import (
     ResearchLoaderStatus,
     ResearchLoadReport,
 )
-from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.infra.workers import (
-    WorkerExecutor,
-    injected_executor,
-    submit_or_reject,
-)
-from trader.recommendation.domain.market.research import ResearchObservation
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -123,6 +124,7 @@ class ResearchLoader:
         data_plane: _ResearchDataPlaneProtocol | None = None,
         **options: Unpack[ResearchLoaderOptions],
     ) -> None:
+        self._versions = InputVersionClock()
         self._client = client
         self._runner = runner
         self._data_plane = data_plane
@@ -517,6 +519,13 @@ class ResearchLoader:
         old_entry = state.previous.get(code)
         latency_ms = max(0.0, (self._monotonic() - started_at) * 1000.0)
         observation, ttl = self._resolve_research_result(future, old_entry, latency_ms)
+        changed = old_entry is None or _research_facts(old_entry.observation) != _research_facts(observation)
+        observation = replace(
+            observation,
+            data_version=old_entry.observation.data_version
+            if old_entry is not None and not changed
+            else self._versions.advance("research"),
+        )
         state.result[code] = observation
         if request.include_structured:
             if self._data_plane is not None:
@@ -543,7 +552,7 @@ class ResearchLoader:
                 observation,
                 self._monotonic() + ttl,
             )
-        return old_entry is None or _research_data_version(old_entry.observation) != _research_data_version(observation)
+        return changed
 
     def _resolve_research_result(
         self,
@@ -627,7 +636,9 @@ class ResearchLoader:
             observation = _deserialize_research_observation(observation_raw)
         except (KeyError, OSError, json.JSONDecodeError, TypeError, ValueError):
             return None
-        return _ResearchEntry(observation, self._monotonic() + remaining_seconds)
+        return _ResearchEntry(
+            replace(observation, data_version=self._versions.advance("research")), self._monotonic() + remaining_seconds
+        )
 
     def _mark_research_actionability(
         self,
@@ -774,6 +785,14 @@ class ResearchLoader:
     @property
     def client(self) -> ResearchSource | None:
         return self._client
+
+
+def _research_facts(observation: ResearchObservation) -> ResearchObservation:
+    return replace(
+        observation,
+        data_version="research:unassigned",
+        evidence=tuple(replace(item, received_at=item.published_at) for item in observation.evidence),
+    )
 
 
 __all__ = ["ResearchLoader"]

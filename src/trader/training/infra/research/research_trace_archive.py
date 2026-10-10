@@ -194,6 +194,7 @@ class SQLiteResearchTraceArchive:
 
     def record(self, observation: DecisionObservation) -> None:
         self.initialize()
+        observation = observation.materialize()
         event = observation.event
         if (
             observation.research_audit is not None

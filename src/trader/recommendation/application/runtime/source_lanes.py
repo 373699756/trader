@@ -11,9 +11,10 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import ParamSpec, TypeVar, cast
 
-from trader.recommendation.application.runtime.latency import LatencyWaterfall
+from trader.infra.cache_contracts import CacheRequestKey
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.infra.workers import BoundedExecutor
+from trader.recommendation.application.runtime.latency import LatencyWaterfall
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -61,7 +62,7 @@ class SourceLaneSnapshot:
 
 @dataclass
 class _LaneRequest:
-    identity: str
+    identity: str | CacheRequestKey
     observed_at: datetime
     sequence: int
     call: Callable[[], object]
@@ -103,7 +104,7 @@ class LatestRequestLane:
 
     def submit(
         self,
-        identity: str,
+        identity: str | CacheRequestKey,
         observed_at: datetime,
         function: Callable[_P, _T],
         /,
@@ -114,7 +115,7 @@ class LatestRequestLane:
 
     def submit_urgent(
         self,
-        identity: str,
+        identity: str | CacheRequestKey,
         observed_at: datetime,
         function: Callable[_P, _T],
         /,
@@ -126,14 +127,14 @@ class LatestRequestLane:
     def _submit(
         self,
         urgent: bool,
-        identity: str,
+        identity: str | CacheRequestKey,
         observed_at: datetime,
         function: Callable[_P, _T],
         /,
         *args: _P.args,
         **kwargs: _P.kwargs,
     ) -> Future[_T]:
-        normalized_identity = identity.strip()
+        normalized_identity = identity.strip() if isinstance(identity, str) else identity
         _validate_request(normalized_identity, observed_at)
         created: Future[object] = Future()
 
@@ -157,7 +158,7 @@ class LatestRequestLane:
 
     def _existing_future(
         self,
-        identity: str,
+        identity: str | CacheRequestKey,
         observed_at: datetime,
         call: Callable[[], object],
         created: Future[object],
@@ -353,7 +354,7 @@ class SourceLaneScheduler:
     def submit(
         self,
         source: str,
-        identity: str,
+        identity: str | CacheRequestKey,
         observed_at: datetime,
         function: Callable[_P, _T],
         /,
@@ -365,7 +366,7 @@ class SourceLaneScheduler:
     def submit_urgent(
         self,
         source: str,
-        identity: str,
+        identity: str | CacheRequestKey,
         observed_at: datetime,
         function: Callable[_P, _T],
         /,
@@ -419,7 +420,7 @@ __all__ = [
 ]
 
 
-def _validate_request(identity: str, observed_at: datetime) -> None:
+def _validate_request(identity: str | CacheRequestKey, observed_at: datetime) -> None:
     if not identity:
         raise ValueError("source lane request identity must not be empty")
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:

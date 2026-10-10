@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 from threading import Lock
 from typing import Protocol, cast
 
+from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneConflictError,
     DataPlaneUnavailableError,
@@ -53,6 +54,7 @@ _STATUS_PRIORITY: Mapping[ResearchComponentStatus, int] = {
 
 
 class _ResearchComponentPersistenceState(Protocol):
+    _versions: InputVersionClock
     _lock: Lock
     _component_statuses: dict[str, dict[str, ResearchComponentStatus]]
     _entries: dict[tuple[str, bool], _ResearchEntry]
@@ -270,7 +272,9 @@ def _recover_cninfo_observations(
         previous = entries.get(key)
         if previous is not None:
             observation = _merge_research_observation(previous, observation)
-        restored[key] = _ResearchEntry(observation, monotonic() + ttl_seconds)
+        restored[key] = _ResearchEntry(
+            replace(observation, data_version=state._versions.advance("research")), monotonic() + ttl_seconds
+        )
     if not restored:
         return
     with state._lock:
@@ -293,9 +297,8 @@ def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane) -> dict[str
 
 
 def _cninfo_evidence_version(code: str, announcements: tuple[ResearchAnnouncement, ...]) -> str:
-    material = "|".join(f"{item.announcement_id}:{item.published_at.isoformat()}" for item in announcements)
-    digest = hashlib.sha256(f"{code}|{material}".encode()).hexdigest()[:16]
-    return f"cninfo-risk-evidence:{digest}"
+    coordinates = tuple((item.announcement_id, item.published_at.isoformat()) for item in announcements)
+    return f"cninfo-risk-evidence:{code}:{coordinates!r}"
 
 
 def loader_status(state: _ResearchLoaderStatusState) -> ResearchLoaderStatus:

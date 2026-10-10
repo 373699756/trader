@@ -18,12 +18,18 @@ InputQualityState = Literal["ready", "business_empty", "transient_invalid_empty"
 
 
 class ResearchAuditIdentity(Protocol):
-    schema_version: str
-    decision_version: str
-    decision_hash: str
-    shadow_mode: str
-    input_observed_at: datetime | None
-    point_in_time_population: tuple[object, ...]
+    @property
+    def schema_version(self) -> str: ...
+    @property
+    def decision_version(self) -> str: ...
+    @property
+    def decision_hash(self) -> str: ...
+    @property
+    def shadow_mode(self) -> str: ...
+    @property
+    def input_observed_at(self) -> datetime | None: ...
+    @property
+    def point_in_time_population(self) -> tuple[object, ...]: ...
 
 
 @dataclass(frozen=True)

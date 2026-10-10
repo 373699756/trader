@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
-from tests.unit.domain.test_decision_identity import stage_snapshots
 
+from tests.unit.domain.test_decision_identity import stage_snapshots
 from trader.http_api.response.decision_projection import serialize_event
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
@@ -89,7 +89,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
     assert payload["replace"] is True
     assert payload["snapshot_id"] == decision.version
     assert payload["publication_id"] == decision.version
-    assert payload["projection_version"] == decision.content_hash
+    assert payload["projection_version"] == decision.version
     assert payload["removed_codes"] == []
     assert payload["removals"] == []
     assert payload["view"] == "live"
@@ -190,11 +190,11 @@ def test_unified_stream_publishes_explicit_identity_resync() -> None:
 def test_overlay_event_serializes_row_patch_with_parent_and_projection_identities() -> None:
     decision = _decision(Strategy.TOMORROW, 1)
     quote = DecisionQuote("600000", 10.2, 1.2, 100.0, 2.0, 1_000.0, "fixture", NOW, "quote:2")
-    overlay = DecisionOverlay(Strategy.TOMORROW, NOW.date(), decision.version, NOW, (quote,))
+    overlay = DecisionOverlay(Strategy.TOMORROW, NOW.date(), decision.version, NOW, (quote,), sequence=1)
 
     event = UnifiedDecisionEventStream().publish_overlay(
         overlay,
-        parent_content_hash=decision.content_hash,
+        parent_version=decision.version,
     )
     payload = serialize_event(event)
 

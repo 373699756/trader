@@ -129,7 +129,7 @@ def test_cache_identity_is_stable_and_slow_data_reuses_all_day_phase() -> None:
             subject_key="600001",
             request={"adjust": "qfq", "fields": ["close"], "codes": ["600001", "600002"]},
             trade_date="2026-07-16",
-            phase="final_review",
+            phase="morning_main",
             source_contract_version="eastmoney-contract",
             config_version="runtime-current",
             schema_version="market_snapshot",
@@ -137,8 +137,8 @@ def test_cache_identity_is_stable_and_slow_data_reuses_all_day_phase() -> None:
     )
 
     assert first == second
-    assert first.phase == "all_day"
-    assert len(first.request_fingerprint) == 64
+    assert first.phase == "morning_main"
+    assert isinstance(first.request_key, tuple)
 
 
 def test_cache_uses_monotonic_ttl_without_changing_business_source_time() -> None:

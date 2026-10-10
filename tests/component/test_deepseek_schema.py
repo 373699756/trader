@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -24,8 +25,25 @@ from trader.recommendation.infra.deepseek.challenger import parse_challenger_rev
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.deepseek.schema import SCHEMA_VERSION
+from trader.recommendation.infra.deepseek.schema_prompts import review_cache_key
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
+
+
+def test_review_cache_reuses_same_facts_after_delivery_refresh() -> None:
+    candidate = _candidate()
+    later = NOW + timedelta(seconds=30)
+    refreshed = replace(
+        candidate,
+        observed_at=later,
+        quote=replace(candidate.quote, received_time=later, price=12.1),
+        evidence=tuple(replace(item, received_at=later) for item in candidate.evidence),
+    )
+    assert review_cache_key(candidate, model="test") == review_cache_key(refreshed, model="test")
+    revised = replace(refreshed, evidence=tuple(replace(item, title="新监管事实") for item in refreshed.evidence))
+    assert review_cache_key(candidate, model="test") != review_cache_key(revised, model="test")
+    next_day = replace(refreshed, observed_at=later + timedelta(days=1))
+    assert review_cache_key(candidate, model="test") != review_cache_key(next_day, model="test")
 
 
 def test_finish_reason_length_uses_the_single_schema_repair_attempt(tmp_path) -> None:

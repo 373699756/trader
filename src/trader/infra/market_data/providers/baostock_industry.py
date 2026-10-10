@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import multiprocessing
 import threading
 import time
@@ -14,7 +13,6 @@ from multiprocessing.connection import Connection
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth
 
@@ -137,9 +135,7 @@ def _industry_observations(
     rows: tuple[BaoStockIndustryRow, ...],
     observed_at: datetime,
 ) -> tuple[SourceObservation, ...]:
-    batch_material = tuple((row.source_code, row.industry, row.update_date) for row in rows)
-    batch_hash = hashlib.sha256(canonical_json_bytes(batch_material)).hexdigest()
-    data_version = f"baostock-industry:{_shanghai(observed_at).date().isoformat()}:{batch_hash[:16]}"
+    data_version = f"baostock-industry:{observed_at.isoformat()}"
     observations: list[SourceObservation] = []
     for row in rows:
         fields = {
@@ -161,7 +157,7 @@ def _industry_observations(
                 data_version=data_version,
                 fields=fields,
                 missing_reasons={},
-                payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+                payload_hash="",
                 status="success",
                 error_code=None,
             )

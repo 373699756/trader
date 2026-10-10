@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Mapping, Sequence
 from datetime import date
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.application.ports.data_plane_records import SourceCursorRecord
 from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
@@ -99,7 +97,7 @@ def _calendar_observation_from_session(
         data_version=record.data_version,
         fields=fields,
         missing_reasons={},
-        payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+        payload_hash="",
         status="success",
         error_code=None,
     )

@@ -13,6 +13,7 @@ from typing import TypeVar, cast
 from trader.recommendation.application.pipeline.static_standardize.static_feature_builder import (
     FeatureComputationPlan,
     FeatureFactRevision,
+    FeatureFactValue,
     affected_feature_stages,
     build_feature_computation_plan,
 )
@@ -29,7 +30,6 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringDeadlineError,
     ScoringHeadRuntimeStatus,
 )
-from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.application.runtime.schedule import shanghai_now
 from trader.recommendation.domain.candidate.filters import board_for_snapshot
 from trader.recommendation.domain.market.factors import round_score
@@ -614,7 +614,7 @@ def _fact_revisions(
     return tuple(
         FeatureFactRevision(
             fact_id,
-            request_fingerprint({"fact_id": fact_id, "values": _fact_value(values, fact_id)}),
+            cast(tuple[FeatureFactValue, ...], _fact_value(values, fact_id)),
         )
         for fact_id in required_fact_ids
     )

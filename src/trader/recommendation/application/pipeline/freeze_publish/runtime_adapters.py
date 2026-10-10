@@ -7,8 +7,8 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Literal
 
-from trader.recommendation.application.pipeline.data_source.source_router import MarketDataAdapter
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import ScoredFreezeCoordinator
+from trader.recommendation.application.pipeline.local_score.local_decision_builder import LocalDecisionBuilder
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import normalize_scored_review_times
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionPort, ScoreFusionService
@@ -31,7 +31,7 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
         self,
         reviewer: TomorrowDeepSeekReviewPort,
         policy: RecommendationPolicy,
-        data: MarketDataAdapter,
+        data: LocalDecisionBuilder,
         fusion: ScoreFusionPort | None = None,
         *,
         monotonic: Callable[[], float] = time.monotonic,

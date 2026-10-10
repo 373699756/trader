@@ -6,8 +6,6 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra.workers import BoundedExecutor
-
 from tests.integration.test_scheduler_runtime import (
     DataRefresh,
     Decisions,
@@ -19,6 +17,8 @@ from tests.integration.test_scheduler_runtime import (
     _cadence,
     noop_research_factory,
 )
+from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
@@ -34,10 +34,10 @@ from trader.recommendation.application.ports.runtime import (
     SettlementUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import PipelineTask, SchedulePointKey, SchedulePointStatus
+from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import SHANGHAI, SchedulePoint
 from trader.recommendation.application.runtime.schedule_requests import pipeline_lane
-from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
-from trader.infra.shutdown import ShutdownDeadline
+from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 
@@ -151,7 +151,8 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
         assert formal is not None
         for view in (queries.current(Strategy.TOMORROW), queries.history(Strategy.TOMORROW, at.date())):
             assert view.status == "ready" and view.frozen
-            assert view.content_hash == formal.decision.content_hash
+            assert view.content_hash is None
+            assert view.decision_version == formal.decision.version
         if failure == "commit":
             assert len(attempts) == 2 and attempts[0] == attempts[1]
             assert builds.count(Strategy.TOMORROW) == 1

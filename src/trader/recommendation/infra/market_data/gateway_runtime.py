@@ -8,11 +8,8 @@ from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from hashlib import sha256
 from typing import Generic, TypeVar, cast
-from uuid import uuid4
 
-from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.failures import classify_adapter_failure
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.application.ports.market_data import MarketDataNoDataError
@@ -23,6 +20,7 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome, VendorResult, VendorSeverity
 from trader.recommendation.infra.normalization.merge import overlay_canonical_snapshot, subset_canonical_snapshot
 from trader.recommendation.infra.normalization.merge_quote import source_name, source_priority
+from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
 _T = TypeVar("_T")
 _FULL_MARKET_QUOTE_SOURCES = frozenset({"eastmoney", "sina"})
@@ -191,15 +189,6 @@ def _elapsed(started: float, finished: float) -> float:
     return max(0.0, (finished - started) * 1000.0)
 
 
-def _cycle_trace_id(kind: str, observed_at: datetime, codes: Sequence[str]) -> str:
-    payload = {
-        "kind": kind,
-        "observed_at": observed_at.isoformat(),
-        "codes": tuple(sorted(set(codes))),
-    }
-    return sha256(canonical_json_bytes(payload) + uuid4().bytes).hexdigest()[:24]
-
-
 def _before_deadline(now: datetime, deadline: datetime | None) -> bool:
     return deadline is None or now < deadline
 
@@ -211,12 +200,12 @@ def _cache_error_code(exc: Exception) -> str:
     return "late" if failure.code.value == "deadline" else failure.code.value
 
 
-def _observation_version(observation: SourceObservation) -> tuple[datetime, datetime, str, str]:
+def _observation_version(observation: SourceObservation) -> tuple[datetime, datetime, str, ObservationFacts]:
     return (
         observation.source_time,
         observation.received_at,
         observation.data_version,
-        observation.payload_hash,
+        ObservationFacts(observation),
     )
 
 
@@ -233,12 +222,14 @@ def _reference_replaces(current: SourceObservation, incoming: SourceObservation)
     incoming_degraded = incoming.fields.get("reference_data_degraded") is True
     if current_degraded != incoming_degraded:
         return incoming_degraded
-    return incoming.payload_hash >= current.payload_hash
+    return ObservationFacts(incoming) >= ObservationFacts(current)
 
 
 def _preserve_newer_quotes(
     current: CanonicalMarketSnapshot,
     previous: CanonicalMarketSnapshot | None,
+    *,
+    merge_epoch: str,
 ) -> CanonicalMarketSnapshot:
     if previous is None:
         return current
@@ -246,7 +237,7 @@ def _preserve_newer_quotes(
     if not overlay_codes:
         return current
     overlay = subset_canonical_snapshot(previous, overlay_codes)
-    return overlay_canonical_snapshot(current, replace(overlay, degraded_reasons=()))
+    return overlay_canonical_snapshot(current, replace(overlay, degraded_reasons=()), merge_epoch=merge_epoch)
 
 
 def _newer_previous_quote_codes(

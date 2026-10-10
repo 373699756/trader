@@ -4,18 +4,19 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+from itertools import permutations
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.infra.market_data.observations import JsonScalar, SourceObservation
+from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
 from trader.recommendation.infra.normalization.field_quality import (
     BOARD_FIELDS,
     REALTIME_FIELDS,
     normalize_source,
     select_fields,
 )
-from trader.infra.market_data.observations import JsonScalar, SourceObservation
-from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue, HistoricalFeature, SecurityMaster
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OBSERVED_AT = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)
@@ -70,6 +71,15 @@ def test_field_selection_targets_tencent_when_targeted_code() -> None:
     assert non_targeted.sources["price"] == "eastmoney"
     assert targeted.values["price"] == 10.5
     assert targeted.sources["price"] == "tencent"
+
+
+def test_same_coordinate_corrections_and_duplicates_have_order_independent_conflicts() -> None:
+    observations = tuple(_observation("eastmoney", payload_hash="", value=value) for value in (10.0, 10.0, 10.2))
+    for ordered in permutations(observations):
+        selected = select_fields(ordered, targeted=False)
+        assert selected.values["price"] == 10.2
+        assert selected.field_values["price"].conflict_count == 1
+        assert selected.quality["price"] is FieldQualityState.CONFLICTING
 
 
 def test_source_aliases_are_normalized_before_realtime_priority() -> None:
@@ -207,8 +217,7 @@ def test_conflict_state_is_exposed_when_value_disagrees() -> None:
 def test_field_values_validate_identity_time_order_and_missing_state() -> None:
     with pytest.raises(ValueError, match="data_version"):
         _field_value("price", 10.0, data_version="")
-    with pytest.raises(ValueError, match="payload_hash"):
-        _field_value("price", 10.0, payload_hash="")
+    assert _field_value("price", 10.0, payload_hash="").payload_hash == ""
     with pytest.raises(ValueError, match="cannot precede"):
         _field_value("price", 10.0, received_time=OBSERVED_AT - timedelta(seconds=1))
     with pytest.raises(ValueError, match="missing field"):

@@ -18,6 +18,7 @@ from trader.infra.cache_contracts import (
     BoundedCache,
     CacheIdentity,
     CacheIdentitySpec,
+    CacheRequestKey,
     CacheStatus,
     build_cache_identity,
 )
@@ -86,16 +87,16 @@ class ReviewCache:
         self._seen_capacity = max(1, seen_capacity)
         self._lock = threading.Lock()
         self._raw_condition = threading.Condition(self._lock)
-        self._raw_inflight: set[str] = set()
-        self._raw_entries: OrderedDict[str, _RawCacheEntry] = OrderedDict()
-        self._fusion_entries: OrderedDict[str, _FusionCacheEntry] = OrderedDict()
+        self._raw_inflight: set[str | CacheRequestKey] = set()
+        self._raw_entries: OrderedDict[str | CacheRequestKey, _RawCacheEntry] = OrderedDict()
+        self._fusion_entries: OrderedDict[str | CacheRequestKey, _FusionCacheEntry] = OrderedDict()
         self._seen_codes: OrderedDict[str, None] = OrderedDict()
         self._seen_trade_date = ""
         self._raw_hits = 0
         self._fusion_hits = 0
         self._misses = 0
 
-    def get_raw(self, key: str, candidate: FeatureSnapshot) -> DeepSeekReview | None:
+    def get_raw(self, key: str | CacheRequestKey, candidate: FeatureSnapshot) -> DeepSeekReview | None:
         if self._shared_cache is not None:
             lookup = self._shared_cache.get(self._raw_identity(key, candidate))
             value = lookup.value if lookup is not None else None
@@ -122,13 +123,13 @@ class ReviewCache:
             self._raw_hits += 1
             return entry.review
 
-    def put_raw(self, key: str, candidate: FeatureSnapshot, review: DeepSeekReview) -> None:
+    def put_raw(self, key: str | CacheRequestKey, candidate: FeatureSnapshot, review: DeepSeekReview) -> None:
         trade_date = _candidate_trade_date(candidate)
         if self._shared_cache is not None:
             self._shared_cache.put(
                 self._seen_identity(candidate.quote.code, trade_date),
                 True,
-                data_version=key,
+                data_version=f"review:{review.completed_at.isoformat()}",
                 source_time=review.completed_at,
             )
         else:
@@ -142,7 +143,7 @@ class ReviewCache:
                     price=_finite(candidate.quote.price),
                     volume_ratio=_finite(candidate.quote.volume_ratio),
                 ),
-                data_version=key,
+                data_version=f"review:{review.completed_at.isoformat()}",
                 source_time=review.completed_at,
             )
             return
@@ -157,27 +158,27 @@ class ReviewCache:
             while len(self._raw_entries) > self._maximum_entries:
                 self._raw_entries.popitem(last=False)
 
-    def claim_raw(self, key: str) -> bool:
+    def claim_raw(self, key: str | CacheRequestKey) -> bool:
         with self._raw_condition:
             if key in self._raw_inflight:
                 return False
             self._raw_inflight.add(key)
             return True
 
-    def wait_raw(self, key: str, timeout_seconds: float) -> bool:
+    def wait_raw(self, key: str | CacheRequestKey, timeout_seconds: float) -> bool:
         with self._raw_condition:
             return self._raw_condition.wait_for(
                 lambda: key not in self._raw_inflight,
                 timeout=max(0.0, timeout_seconds),
             )
 
-    def release_raw(self, key: str) -> None:
+    def release_raw(self, key: str | CacheRequestKey) -> None:
         with self._raw_condition:
             if key in self._raw_inflight:
                 self._raw_inflight.remove(key)
                 self._raw_condition.notify_all()
 
-    def get_fusion(self, key: str) -> DeepSeekReview | None:
+    def get_fusion(self, key: str | CacheRequestKey) -> DeepSeekReview | None:
         if self._shared_cache is not None:
             lookup = self._shared_cache.get(self._fusion_identity(key))
             value = lookup.value if lookup is not None else None
@@ -199,12 +200,12 @@ class ReviewCache:
             self._fusion_hits += 1
             return entry.review
 
-    def put_fusion(self, key: str, review: DeepSeekReview) -> None:
+    def put_fusion(self, key: str | CacheRequestKey, review: DeepSeekReview) -> None:
         if self._shared_cache is not None:
             self._shared_cache.put(
                 self._fusion_identity(key),
                 review,
-                data_version=key,
+                data_version=f"review:{review.completed_at.isoformat()}",
                 source_time=review.completed_at,
             )
             return
@@ -249,7 +250,7 @@ class ReviewCache:
         while len(self._seen_codes) > self._seen_capacity:
             self._seen_codes.popitem(last=False)
 
-    def _raw_identity(self, key: str, candidate: FeatureSnapshot) -> CacheIdentity:
+    def _raw_identity(self, key: str | CacheRequestKey, candidate: FeatureSnapshot) -> CacheIdentity:
         return build_cache_identity(
             CacheIdentitySpec(
                 dataset="raw_deepseek_review",
@@ -264,12 +265,12 @@ class ReviewCache:
             )
         )
 
-    def _fusion_identity(self, key: str) -> CacheIdentity:
+    def _fusion_identity(self, key: str | CacheRequestKey) -> CacheIdentity:
         return build_cache_identity(
             CacheIdentitySpec(
                 dataset="strategy_deepseek_review",
                 source="deepseek:fusion",
-                subject_key=key[:24],
+                subject_key="strategy-review",
                 request={"strategy_key": key},
                 trade_date="embedded",
                 phase="review",

@@ -86,6 +86,16 @@ def test_quote_status_creates_stable_permanent_facts_without_using_free_text_new
     assert all(len(fact.evidence_hash) == 64 for fact in facts)
 
 
+def test_quote_fact_identity_accepts_untrusted_supplier_version() -> None:
+    facts = eligibility_facts_from_quote(
+        _quote(is_st=True, source="来源 with spaces", data_version="版本 " * 200),
+        observed_at=OBSERVED_AT,
+    )
+    decision = resolve_issuer_eligibility(facts, "600001", OBSERVED_AT)
+    assert decision.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED
+    assert len(facts[0].evidence_id) < 80
+
+
 def test_research_creates_loss_and_confirmed_permanent_risk_facts_only() -> None:
     annual_loss = FinancialReport(
         report_date=date(2024, 12, 31),

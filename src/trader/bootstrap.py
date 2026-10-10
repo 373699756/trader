@@ -58,8 +58,8 @@ from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.data_source.source_router import (
-    DecisionBuildDependencies,
-    MarketDataAdapter,
+    InputRefreshDependencies,
+    MarketInputCoordinator,
 )
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlService
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionService
@@ -79,6 +79,10 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
+from trader.recommendation.application.pipeline.local_score.local_decision_builder import (
+    DecisionBuildDependencies,
+    LocalDecisionBuilder,
+)
 from trader.recommendation.application.pipeline.local_score.model_capability import PublishedModelScoringService
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
@@ -86,6 +90,7 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
     SharedModelFeatureCache,
 )
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
+from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.resource_orchestration import (
@@ -93,7 +98,8 @@ from trader.recommendation.application.runtime.resource_orchestration import (
     start_application_resources,
     stop_application_resources,
 )
-from trader.recommendation.application.runtime.scheduler_runtime import RuntimeDependencies, SchedulerRuntime
+from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
+from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisor,
@@ -131,6 +137,7 @@ from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
+from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
@@ -315,6 +322,7 @@ class _BuildContext:
 
 @dataclass(frozen=True)
 class _PersistenceContext:
+    sequence: PublicationSequence
     records: SQLiteDecisionRecords
     data_plane: SQLiteDataPlane
     budget: DeepSeekBudgetLedger
@@ -337,6 +345,7 @@ class _PublicationContext:
 
 @dataclass(frozen=True)
 class _PublicationDependencies:
+    sequence: PublicationSequence
     records: SQLiteDecisionRecords
     market_data: MarketFeatureService
     additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
@@ -420,28 +429,50 @@ def build_system(
         context,
         calendar,
         _PublicationDependencies(
+            persistence.sequence,
             persistence.records,
             market_data,
         ),
         publication_io=publication_io,
     )
-    native_data = MarketDataAdapter(
+    native_data = MarketInputCoordinator(
         market_data,
+        candidate_pool_size=settings.market_data.candidate_pool_size,
+        dependencies=InputRefreshDependencies(
+            publication.long_runtime,
+            policy,
+            ShanghaiClock(now).now,
+            model_scoring,
+            candidate_filtering,
+            monotonic=time.monotonic,
+        ),
+    )
+    decision_builder = LocalDecisionBuilder(
+        native_data,
         config_version=effective_config_version,
         candidate_pool_size=settings.market_data.candidate_pool_size,
-        decision_build=DecisionBuildDependencies(
-            publication.long_runtime,
+        dependencies=DecisionBuildDependencies(
             policy,
             publication.decision_drafts,
             ShanghaiClock(now).now,
             model_scoring,
-            candidate_filtering,
             local_scoring,
             try_build_committed_research_audit,
             monotonic=time.monotonic,
+            next_sequence=lambda: persistence.sequence.allocate(
+                width=2,
+                minimum=max(
+                    (
+                        current.sequence + 1
+                        for strategy in (Strategy.TOMORROW, Strategy.D25)
+                        if (current := publication.tomorrow_index.snapshot(strategy).current) is not None
+                    ),
+                    default=1,
+                ),
+            ),
         ),
     )
-    deepseek = DeepSeekAdapter(reviewer, policy, native_data, ScoreFusionService(), now=ShanghaiClock(now).now)
+    deepseek = DeepSeekAdapter(reviewer, policy, decision_builder, ScoreFusionService(), now=ShanghaiClock(now).now)
 
     def publish_overlay_event(overlay: DecisionOverlay) -> object:
         current = publication.tomorrow_index.snapshot(overlay.strategy).current
@@ -449,7 +480,7 @@ def build_system(
             raise ValueError("overlay event parent decision is unavailable")
         return publication.decision_events.publish_overlay(
             overlay,
-            parent_content_hash=current.content_hash,
+            parent_version=current.version,
         )
 
     scheduler = SchedulerRuntime(
@@ -459,7 +490,7 @@ def build_system(
             calendar=calendar,
             cadence=cadence_planner,
             data=native_data,
-            decisions=native_data,
+            decisions=decision_builder,
             reviews=deepseek,
             index=publication.tomorrow_index,
             observer=publication.observer,
@@ -505,6 +536,7 @@ def build_system(
         RuntimeSupervisorConfig(
             now=now,
             initializers=(
+                persistence.sequence.initialize,
                 publication.tomorrow_records.initialize,
                 lambda: _initialize_research_trace(publication.research_trace),
                 lambda: _initialize_outcome_evidence(persistence.outcomes),
@@ -830,6 +862,7 @@ def _build_market_data(
             market_health,
             eligibility,
             time.monotonic,
+            StaticMarketPipeline(eligibility, monotonic=time.monotonic),
         )
     )
     return market_data
@@ -859,7 +892,13 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
         ),
         write_lock=runtime_database_lock,
     )
-    return _PersistenceContext(records, data_plane, budget, outcomes)
+    return _PersistenceContext(
+        PublicationSequence(settings.runtime_dir / "publication-sequence.sqlite3"),
+        records,
+        data_plane,
+        budget,
+        outcomes,
+    )
 
 
 def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> DeepSeekReviewer:
@@ -912,6 +951,7 @@ def _build_publication(
         (research_trace.record, *dependencies.additional_observers),
         capacity=max(1, min(16, settings.pipeline.event_queue_size)),
         thread_name="trader-decision-observer",
+        prepare=DecisionObservation.materialize,
     )
     tomorrow_freezer = ScoredFreezeCoordinator(
         tomorrow_decisions,
@@ -943,6 +983,7 @@ def _build_publication(
             tomorrow_decisions,
             context.now,
             decision_events.publish_projection,
+            next_sequence=dependencies.sequence.allocate,
         ),
         config_version=context.effective_config_version,
         watchlist_version=context.watchlist.watchlist_version,

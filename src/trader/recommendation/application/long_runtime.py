@@ -5,17 +5,16 @@ from __future__ import annotations
 import math
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Literal
 
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError, QuoteReaderPort
-from trader.recommendation.application.request_identity import request_fingerprint
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus, LatestWinsWorker
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
@@ -24,6 +23,7 @@ from trader.recommendation.domain.publication.models import Strategy
 
 @dataclass(frozen=True)
 class LongRuntimeDependencies:
+    next_sequence: Callable[[], int] = field(kw_only=True)
     quotes: QuoteReaderPort
     index: UnifiedDecisionIndex
     now: Callable[[], datetime]
@@ -69,7 +69,7 @@ class LongRuntime:
         self._config_version = config_version
         self._watchlist_version = watchlist_version
         self._lock = threading.RLock()
-        self._sequence = 1
+        self._next_sequence = dependencies.next_sequence
         self._retained_trade_date: date | None = None
         self._retained_quotes: dict[str, MarketQuote] = {}
         self._last_observed_at: datetime | None = None
@@ -166,7 +166,7 @@ class LongRuntime:
             observed_at=completed_at,
             input_versions=(
                 ("config", self._config_version),
-                ("long_quotes", _quote_input_version(fresh, request)),
+                ("long_quotes", f"long-quotes:{request.observed_at:%Y%m%dT%H%M%S%f}"),
                 ("watchlist", self._watchlist_version),
             ),
             items=items,
@@ -241,12 +241,6 @@ class LongRuntime:
             available_status: Literal["live", "retained"] = "live" if quote_status == "live" else "retained"
             projection_items.append(_projection_item(item, self._groups[item.code], quote, available_status))
         return tuple(projection_items), retained, live_count, retained_count, missing_count
-
-    def _next_sequence(self) -> int:
-        with self._lock:
-            sequence = self._sequence
-            self._sequence += 1
-            return sequence
 
 
 def _validate_items(items: tuple[LongWatchItemDefinition, ...]) -> tuple[LongWatchItemDefinition, ...]:
@@ -343,29 +337,6 @@ def _projection_item(
         source_time=quote.source_time,
         quote_status=quote_status,
     )
-
-
-def _quote_input_version(features: dict[str, MarketQuote], request: LongRefreshRequest) -> str:
-    quotes = tuple(
-        (
-            quote.code,
-            quote.data_version,
-            quote.source_time,
-            quote.received_time,
-            quote.price,
-            quote.pct_change,
-            quote.amount,
-            quote.turnover_rate,
-            quote.market_cap,
-        )
-        for quote in sorted(features.values(), key=lambda value: value.code)
-    )
-    material = {
-        "observed_at": request.observed_at,
-        "phase": request.phase,
-        "quotes": quotes,
-    }
-    return f"long-quotes:{request_fingerprint(material)[:24]}"
 
 
 def _finite_or_none(value: float | None) -> float | None:

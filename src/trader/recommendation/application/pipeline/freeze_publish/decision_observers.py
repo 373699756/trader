@@ -54,9 +54,11 @@ class AsyncDecisionObserver(Generic[_ObservationT]):
         *,
         capacity: int,
         thread_name: str = "trader-observer",
+        prepare: Callable[[_ObservationT], _ObservationT] | None = None,
     ) -> None:
         if capacity < 1:
             raise ValueError("decision observer capacity must be positive")
+        self._prepare = prepare
         self._consumers = tuple(consumers)
         self._capacity = capacity
         self._thread_name = thread_name
@@ -153,7 +155,17 @@ class AsyncDecisionObserver(Generic[_ObservationT]):
                 event = self._queue.popleft()
                 self._running = True
             consumer_failed = False
-            for consumer in self._consumers:
+            consumers = self._consumers
+            if self._prepare is not None:
+                try:
+                    event = self._prepare(event)
+                except Exception as exc:
+                    consumer_failed = True
+                    consumers = ()
+                    with self._condition:
+                        self._consumer_failure_count += 1
+                        self._last_error_code = type(exc).__name__
+            for consumer in consumers:
                 try:
                     consumer(event)
                 except Exception as exc:
