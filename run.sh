@@ -22,7 +22,7 @@ usage() {
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh download                零参数历史维护" \
-    "  ./run.sh qfq_download            串行更新短窗口日线，支持断点续传" \
+    "  ./run.sh qfq_download            Tencent并发更新短窗口，支持断点续传" \
     "  ./run.sh train-v2                按 V2 251 日特征训练独立双头" \
     "  ./run.sh train-v3                按 V3 61 日特征训练独立双头" \
     "" \

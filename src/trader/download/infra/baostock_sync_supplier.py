@@ -49,6 +49,7 @@ class _LoadContext:
 class _FetchCode:
     security: BaoStockSecurity
     dates: tuple[date, ...]
+    raw_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -204,6 +205,12 @@ class BaoStockHistorySupplier:
 
     def fetch_code(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
         response = self._request(_FetchCode(security, dates))
+        if response.download is None:
+            raise RuntimeError(response.failure_reason or "supplier_query_failed")
+        return response.download
+
+    def fetch_raw_code(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
+        response = self._request(_FetchCode(security, dates, raw_only=True))
         if response.download is None:
             raise RuntimeError(response.failure_reason or "supplier_query_failed")
         return response.download
@@ -443,7 +450,12 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                 elif isinstance(command, _FetchCode):
                     calendar = BaoStockCalendar(command.dates)
                     spec = BaoStockDailySpec(sessions=len(command.dates), source_cutoff=command.dates[-1])
-                    connection.send(_Response(download=gateway.fetch_code_download(spec, command.security, calendar)))
+                    download = (
+                        gateway.fetch_raw_code(spec, command.security, calendar)
+                        if command.raw_only
+                        else gateway.fetch_code_download(spec, command.security, calendar)
+                    )
+                    connection.send(_Response(download=download))
                 else:
                     connection.send(_Response(failure_reason="supplier_protocol_invalid"))
             except Exception as exc:

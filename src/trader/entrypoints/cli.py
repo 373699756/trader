@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run the zero-argument historical-data maintenance workflow.",
     )
     subparsers.add_parser(
-        "qfq_download", help="Update serial BaoStock V2/V3 bounded daily windows; resume automatically."
+        "qfq_download", help="Update Tencent V2/V3 bounded daily windows concurrently; resume automatically."
     )
     subparsers.add_parser(
         "scheduled-history-maintenance",

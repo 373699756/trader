@@ -56,6 +56,7 @@ def test_entrypoints_route_download_and_training_through_application_use_cases()
     download_commands = (ROOT / "src" / "trader" / "download" / "entrypoints" / "commands.py").read_text(
         encoding="utf-8"
     )
-    assert "DownloadHistoryUseCase" in download_commands
+    assert "execute_history_download" in download_commands
+    assert "DownloadHistoryUseCase" in (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
     assert "TrainV2UseCase" in commands
     assert "TrainV3UseCase" in commands

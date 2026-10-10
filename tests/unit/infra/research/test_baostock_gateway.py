@@ -111,6 +111,21 @@ def test_gateway_consumes_only_baostock_row_iteration_boundary() -> None:
     assert download.daily_facts[1].is_st is True
 
 
+def test_raw_evidence_queries_no_baostock_qfq_and_retains_training_metadata() -> None:
+    class RawOnlySdk(_Sdk):
+        def query_history_k_data_plus(self, *args, **kwargs):
+            assert kwargs["adjustflag"] == "3"
+            return super().query_history_k_data_plus(*args, **kwargs)
+
+    gateway = BaoStockRowGateway(RawOnlySdk())
+    spec = BaoStockDailySpec(sessions=2)
+    calendar = gateway.fetch_calendar(spec)
+    result = gateway.fetch_raw_code(spec, gateway.fetch_universe(spec)[0], calendar)
+    assert all(cell.qfq is None for cell in result.batch.cells)
+    assert result.daily_facts[-1].is_st is True
+    assert result.batch.cells[0].unadjusted.preclose == 9.9
+
+
 def test_gateway_uses_real_historical_code_for_qfq_before_code_identity_change() -> None:
     class _AliasSdk(_Sdk):
         def __init__(self) -> None:

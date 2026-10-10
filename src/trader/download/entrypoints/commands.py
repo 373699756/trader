@@ -8,26 +8,20 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.entrypoints.history_maintenance_projection import project_history_maintenance_status
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 
 
 def run_download(repository_root: Path) -> int:
     """Run zero-argument initial or incremental archive maintenance."""
 
+    from trader.bootstrap import execute_history_download
+
     configuration = history_sync_configuration(repository_root)
     progress = StderrHistorySyncProgress()
-    with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
-        status = DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
-            configuration,
-            supplier,
-            progress=progress,
-        )
+    status = execute_history_download(configuration, progress=progress)
     progress.publish_result(status)
     print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
     return 0 if status.state in {"completed", "already_current"} else 1
@@ -58,8 +52,8 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         return 0
     if command != "scheduled-history-maintenance" or config_path is None:
         raise ValueError(f"unsupported download command: {command}")
+    from trader.bootstrap import execute_history_download
     from trader.download.entrypoints.history_automation_projection import project_history_automation_run_status
-    from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
     from trader.download.infra.history_maintenance_runner import (
         PlatformHistoryDesktopNotifier,
         RotatingHistoryAutomationLog,
@@ -73,13 +67,12 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
     task_log = RotatingHistoryAutomationLog(runtime.runtime_dir / "logs/history-automation.log")
 
     def synchronize(progress: HistorySyncProgressPort | None) -> HistoryMaintenanceStatus:
-        with BaoStockHistorySupplier(configuration, progress=task_log) as supplier:
-            return DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
-                configuration,
-                supplier,
-                clock=lambda: observed_at,
-                progress=progress,
-            )
+        return execute_history_download(
+            configuration,
+            supplier_progress=task_log,
+            clock=lambda: observed_at,
+            progress=progress,
+        )
 
     try:
         run_status = run_scheduled_history_maintenance(

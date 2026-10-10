@@ -32,6 +32,11 @@ from trader.download.domain.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
+from trader.download.domain.history_price_qualification import (
+    HISTORY_TAIL_CONTRACT,
+    TENCENT_HISTORY_MAX_SESSIONS,
+    require_history_qfq_overlap,
+)
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
@@ -353,9 +358,50 @@ def _download_for_security(
                 | {day for day in expected if day > context.active.data_cutoff}
             )
         )
+        if HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions:
+            if len(requested) <= TENCENT_HISTORY_MAX_SESSIONS:
+                anchor = tuple(day for day in expected if day <= context.active.data_cutoff)
+                requested = tuple(sorted(set(requested) | set(anchor[-context.configuration.reread_sessions :])))
     download = supplier.fetch_code(security, requested)
     _validate_download(download, security.code, requested)
+    if (
+        context.active is not None
+        and security.code in context.previous_codes
+        and len(requested) <= TENCENT_HISTORY_MAX_SESSIONS
+        and HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions
+    ):
+        _validate_tail_overlap(context, download)
     return download
+
+
+def _validate_tail_overlap(context: _CodeDownloadContext, download: BaoStockCodeDownload) -> None:
+    active = context.active
+    assert active is not None
+    overlap = tuple(cell for cell in download.batch.cells if cell.trade_date <= active.data_cutoff)
+    if not overlap:
+        raise RuntimeError("history_tail_qfq_overlap_missing")
+    for year, month in route_history_months(overlap[0].trade_date, overlap[-1].trade_date):
+        reference = next((item for item in active.partitions if _partition_month(item) == (year, month)), None)
+        if reference is None:
+            raise RuntimeError("history_tail_qfq_overlap_missing")
+        # The writer trusts published partition identities exactly as the existing
+        # incremental path does; read only this stock's bounded overlap via its index.
+        partition = SQLiteHistoryMonthPartitionRepository(
+            context.configuration.archive_root / reference.relative_path,
+            year,
+            month,
+        )
+        rows = partition.read_code(
+            download.batch.code,
+            overlap[0].trade_date,
+            overlap[-1].trade_date,
+            snapshot_sequence=active.sequence,
+        )
+        for cell in (item for item in overlap if (item.trade_date.year, item.trade_date.month) == (year, month)):
+            previous = next((row.cell for row in rows if row.trade_date == cell.trade_date), None)
+            if previous is None:
+                raise RuntimeError("history_tail_qfq_overlap_missing")
+            require_history_qfq_overlap(previous, cell)
 
 
 def _validate_download(download: BaoStockCodeDownload, code: str, expected: tuple[date, ...]) -> None:
@@ -693,6 +739,9 @@ def _matching_checkpoints(
     exact = tuple(item for item in checkpoints if item.sync_identity == sync_identity)
     if exact:
         return exact
+    if HISTORY_TAIL_CONTRACT in context.source_versions.dependency_versions:
+        # Price-owner/qualification changes cannot inherit a legacy partial batch.
+        return ()
     cutoff = context.calendar.open_dates[-1].strftime("%Y%m%d")
     prefix = f"sync-{cutoff}-"
     candidates = tuple(

@@ -15,9 +15,15 @@ from typing import TYPE_CHECKING, cast
 import requests
 from flask import Flask
 
+from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
+from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_exchange_universe import load_qfq_securities
@@ -150,6 +156,41 @@ from trader.web import create_app
 
 if TYPE_CHECKING:
     from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
+
+
+def execute_history_download(
+    configuration: HistorySyncConfiguration,
+    *,
+    progress: HistorySyncProgressPort | None = None,
+    supplier_progress: HistorySyncProgressPort | None = None,
+    clock: Callable[[], datetime] | None = None,
+    cancel_requested: Callable[[], bool] = lambda: False,
+) -> HistoryMaintenanceStatus:
+    """Compose both manual and scheduled history routes in the unique root."""
+    with BaoStockHistorySupplier(
+        configuration,
+        progress=supplier_progress or progress,
+        cancel_requested=cancel_requested,
+    ) as baseline:
+        prices = TencentQfqSupplier(
+            TencentQfqDependencies(
+                requests.Session,
+                partial(
+                    load_qfq_securities,
+                    partial(fetch_sse_listings, get=requests.get),
+                    partial(fetch_szse_listings, get=requests.get),
+                    15.0,
+                ),
+                cancel_requested,
+            )
+        )
+        return DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
+            configuration,
+            HistorySupplierRouter(baseline, prices, progress=progress),
+            clock=clock,
+            progress=progress,
+            cancel_requested=cancel_requested,
+        )
 
 
 def execute_qfq_download(

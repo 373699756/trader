@@ -54,7 +54,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 日常启动不需要参数，默认使用 V2 并加载 `data/train/v2/{tomorrow,d25}` 双头工件；
 追加 `--profile v2|v3` 可显式覆盖当前进程，该覆盖不会写回配置。启动不执行训练，所选档位任一bundle损坏时失败关闭。
 `check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download` 维护完整历史；
-`qfq_download` 串行维护在线短窗口。`train-v2`使用251日窗口和V2长期特征，`train-v3`使用61日窗口，各自一次扫描顺序训练Tomorrow/D25，不训练Today。
+`qfq_download` 使用 Tencent 有界并发维护在线短窗口。`train-v2`使用251日窗口和V2长期特征，`train-v3`使用61日窗口，各自一次扫描顺序训练Tomorrow/D25，不训练Today。
 两个命令每次直接重建并覆盖`data/train/{v2,v3}/{tomorrow,d25}`，不检查到期、不比较旧历史修订、不创建额外训练快照。
 stderr显示累计/阶段耗时，索引、统计和拟合等耗时阶段每30秒有反馈；失败保留该头上一完整工件组。V2/V3共享历史事实和
 训练引擎，但不共享特征合同、模型身份或输出目录。旧 H0 历史归档、回测和筛选入口已退役，
@@ -71,7 +71,9 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 占位冒充整体进度。失败摘要保留最后一个具体供应商阶段、当前日期或股票和稳定错误码；最终 stdout JSON 保持不变，
 供脚本消费。
 
-`./run.sh qfq_download` 不接受参数：优先从完整 history 提取缺失股票，再仅使用 BaoStock 串行补齐 raw/qfq。
+`./run.sh download` 按每股实际请求日数选择来源：不超过640日用 Tencent raw/qfq，超过640日和缺失的2000日完整历史用 BaoStock。短请求仍由一次 BaoStock raw 查询补齐真实训练字段，核对价格及已有 qfq 重叠；缺日或冲突保留旧快照。完成行显示来源和请求日数，history 首建与元数据查询仍受 BaoStock 限速。
+
+`./run.sh qfq_download` 不接受参数：独立取得官方股票名单与 Tencent 日历，默认8个worker下载短窗口，不调用 BaoStock 网络。
 在线 V2/V3 分别读取 `data/qfq/v2`、`data/qfq/v3`，保留251/61根日线（250/60日特征加一根前置日线），新日进入时删除最老日线。
 固定64代码范围分片，接近8 MB时拆分，每个SQLite文件严格小于10,000,000字节；分片和稳定索引可提交Git，断点和锁不提交。
 文件名如 `00002.sqlite3`；只有该组需要拆分时才追加序号，如 `00002-1.sqlite3`，省略首片的零序号。
@@ -208,7 +210,7 @@ chmod 600 .token_key
 ```
 
 Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。服务从 `data/qfq` 短窗口构造历史特征，
-后台短窗口维护与 `./run.sh qfq_download` 共用串行 BaoStock 用例；不通过腾讯、东方财富或 Tushare 补抓历史。
+后台短窗口维护与 `./run.sh qfq_download` 共用 Tencent 有界并发用例；不依赖 Tushare 或 BaoStock 网络。
 短窗口暂不可用时页面明确显示待下载/待更新，
 已有最近有效视图则继续降级使用。东方财富/新浪全市场实时行情、腾讯
 候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会写入配置、

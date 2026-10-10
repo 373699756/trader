@@ -18,6 +18,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_industry": "行业快照",
     "supplier_daily_raw": "未复权日线",
     "supplier_daily_qfq": "前复权日线",
+    "supplier_routing": "下载来源",
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
     "sealing_partitions": "封存月分片",
@@ -58,8 +59,11 @@ class StderrHistorySyncProgress:
         self._stock_counts: tuple[int, int] | None = None
         self._last_progress: tuple[HistorySyncProgressStage, str | None] | None = None
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
+        self._route: HistorySyncProgress | None = None
 
     def publish(self, progress: HistorySyncProgress) -> None:
+        if progress.stage == "supplier_routing":
+            self._route = progress
         if progress.stage == "downloading_codes":
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
@@ -77,6 +81,8 @@ class StderrHistorySyncProgress:
             self._specific_failure = self._last_progress
 
     def _should_suppress(self, progress: HistorySyncProgress) -> bool:
+        if progress.stage == "supplier_routing":
+            return True
         if progress.state in {"started", "waiting"}:
             return True
         if progress.stage in _DAILY_STAGES and progress.state == "completed":
@@ -96,6 +102,10 @@ class StderrHistorySyncProgress:
         if progress.current_item is not None:
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")
+        if progress.stage == "downloading_codes" and self._route is not None:
+            if progress.current_item == self._route.current_item:
+                source = "Tencent" if self._route.supplier_source == "tencent" else "BaoStock"
+                parts.extend((f"来源 {source}", f"请求 {self._route.requested_sessions} 日"))
         if progress.stage in _DAILY_STAGES and self._stock_counts is not None:
             parts.append(f"总进度 {_format_count(*self._stock_counts)}")
         if progress.max_attempts > 1:

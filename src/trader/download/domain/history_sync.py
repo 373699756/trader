@@ -26,6 +26,7 @@ HistorySyncProgressStage = Literal[
     "supplier_industry",
     "supplier_daily_raw",
     "supplier_daily_qfq",
+    "supplier_routing",
     "preparing_partitions",
     "downloading_codes",
     "sealing_partitions",
@@ -103,6 +104,8 @@ class HistorySyncProgress:
     attempt: int = 1
     max_attempts: int = 1
     call_elapsed_seconds: float = 0.0
+    supplier_source: Literal["baostock", "tencent"] | None = None
+    requested_sessions: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -117,6 +120,12 @@ class HistorySyncProgress:
             or not math.isfinite(self.call_elapsed_seconds)
             or self.call_elapsed_seconds < 0.0
             or (self.current_item is not None and _PROGRESS_ITEM.fullmatch(self.current_item) is None)
+            or self.supplier_source not in (None, "baostock", "tencent")
+            or (self.supplier_source is None) != (self.requested_sessions is None)
+            or (
+                self.requested_sessions is not None
+                and (type(self.requested_sessions) is not int or not 1 <= self.requested_sessions <= 2000)
+            )
         ):
             raise ValueError("history synchronization progress is invalid")
 

@@ -252,6 +252,35 @@ class BaoStockRowGateway:
             tuple(sorted(unavailable_dates)),
         )
 
+    def fetch_raw_code(
+        self,
+        spec: BaoStockDailySpec,
+        security: BaoStockSecurity,
+        calendar: BaoStockCalendar,
+    ) -> BaoStockCodeDownload:
+        """Read raw prices and genuine daily metadata without requesting qfq."""
+        expected = calendar.expected_dates(security)
+        if not expected:
+            return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
+        raw, facts, nulls, future, _unavailable = self._daily_sides(
+            spec, security, _DailySideQuery("unadjusted", "3", expected)
+        )
+        batch = join_baostock_daily_sides(
+            BaoStockDailyJoinRequest(security.code, expected, spec.source_cutoff, nulls), raw, ()
+        )
+        return BaoStockCodeDownload(
+            BaoStockCodeBatch(
+                batch.code,
+                batch.cells,
+                batch.duplicate_rows,
+                batch.null_rows,
+                batch.out_of_window_rows,
+                future,
+                batch.failure_reasons,
+            ),
+            facts,
+        )
+
     def fetch_daily_facts(
         self,
         spec: BaoStockDailySpec,

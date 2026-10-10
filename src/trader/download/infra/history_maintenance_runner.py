@@ -81,6 +81,8 @@ class RotatingHistoryAutomationLog:
                 "max_attempts": progress.max_attempts,
                 "call_elapsed_seconds": round(progress.call_elapsed_seconds, 3),
                 "elapsed_seconds": round(time.monotonic() - self._started_at, 3),
+                "supplier_source": progress.supplier_source,
+                "requested_sessions": progress.requested_sessions,
             }
         )
 

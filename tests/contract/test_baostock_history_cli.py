@@ -55,7 +55,10 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         False,
     )
 
-    def synchronize(*_args, progress, **_kwargs):
+    def synchronize(_configuration, supplier, progress, **_kwargs):
+        from trader.download.infra.history_supplier_router import HistorySupplierRouter
+
+        assert isinstance(supplier, HistorySupplierRouter)
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
