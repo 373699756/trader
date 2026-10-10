@@ -169,30 +169,41 @@ def execute_history_download(
     cancel_requested: Callable[[], bool] = lambda: False,
 ) -> HistoryMaintenanceStatus:
     """Compose both manual and scheduled history routes in the unique root."""
-    with BaoStockHistorySupplier(
-        configuration,
-        progress=supplier_progress or progress,
-        cancel_requested=cancel_requested,
-    ) as baseline:
-        prices = TencentQfqSupplier(
-            TencentQfqDependencies(
-                requests.Session,
-                partial(
-                    load_qfq_securities,
-                    partial(fetch_sse_listings, get=requests.get),
-                    partial(fetch_szse_listings, get=requests.get),
-                    15.0,
-                ),
-                cancel_requested,
-            )
-        )
-        return DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
+    history_pool = BoundedExecutor(
+        worker_count=configuration.history_workers,
+        queue_capacity=0,
+        thread_name_prefix="history-download",
+    )
+    history_pool.start()
+    try:
+        with BaoStockHistorySupplier(
             configuration,
-            HistorySupplierRouter(baseline, prices, progress=progress),
-            clock=clock,
-            progress=progress,
+            progress=supplier_progress or progress,
             cancel_requested=cancel_requested,
-        )
+        ) as baseline:
+            prices = TencentQfqSupplier(
+                TencentQfqDependencies(
+                    requests.Session,
+                    partial(
+                        load_qfq_securities,
+                        partial(fetch_sse_listings, get=requests.get),
+                        partial(fetch_szse_listings, get=requests.get),
+                        15.0,
+                    ),
+                    cancel_requested,
+                )
+            )
+            return DownloadHistoryUseCase(HistoryArchiveGateway(worker_pool=history_pool)).execute(
+                configuration,
+                HistorySupplierRouter(baseline, prices),
+                clock=clock,
+                progress=progress,
+                cancel_requested=cancel_requested,
+            )
+    finally:
+        stopped = history_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        if not stopped.completed:
+            raise RuntimeError("history worker shutdown exceeded 30 seconds")
 
 
 def execute_qfq_download(

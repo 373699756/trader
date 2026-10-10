@@ -11,6 +11,29 @@ from trader.download.domain.baostock_daily import BaoStockAdjustment, BaoStockCe
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
 
 
+def encode_published_history_cell(cell: PublishedHistoryCell) -> str:
+    return json.dumps(
+        {
+            "code": cell.code,
+            "trade_date": cell.trade_date.isoformat(),
+            "status": cell.status,
+            "unadjusted": _encode_side(cell.unadjusted),
+            "qfq": _encode_side(cell.qfq),
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def decode_published_history_cell_payload(code: str, trade_date: str, payload: str) -> PublishedHistoryCell:
+    value = json.loads(payload)
+    if not isinstance(value, dict) or value.get("code") != code or value.get("trade_date") != trade_date:
+        raise ValueError("published history cell payload identity is invalid")
+    return decode_published_history_cell((trade_date, code, payload))
+
+
 def decode_published_history_cell(row: tuple[object, ...]) -> PublishedHistoryCell:
     """The SQL projection excludes industry/ST and all full-revision hashing."""
     if len(row) != 3:
@@ -73,6 +96,26 @@ def _side(value: object, adjustment: BaoStockAdjustment) -> PublishedHistorySide
         _number(payload["turnover"]),
         cast(BaoStockTradingStatus, status),
     )
+
+
+def _encode_side(value: PublishedHistorySide | None) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        "code": value.code,
+        "trade_date": value.trade_date.isoformat(),
+        "adjustment": value.adjustment,
+        "open_price": value.open_price,
+        "high_price": value.high_price,
+        "low_price": value.low_price,
+        "close_price": value.close_price,
+        "volume": value.volume,
+        "amount": value.amount,
+        "preclose": value.preclose,
+        "pct_change": value.pct_change,
+        "turnover": value.turnover,
+        "trading_status": value.trading_status,
+    }
 
 
 def _object(value: object) -> dict[str, object]:

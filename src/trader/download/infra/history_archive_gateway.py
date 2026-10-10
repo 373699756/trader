@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 
 from trader.download.application.history_ports import HistorySupplierPort
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.infra.workers import WorkerExecutor
 
 
+@dataclass(frozen=True)
 class HistoryArchiveGateway:
     """Route both initial download and incremental update to the atomic synchronizer.
 
@@ -19,6 +22,8 @@ class HistoryArchiveGateway:
     downloads missing or reread data.  Keeping that decision in one owner
     prevents two writers from evolving different publication semantics.
     """
+
+    worker_pool: WorkerExecutor | None = None
 
     def download(
         self,
@@ -37,6 +42,7 @@ class HistoryArchiveGateway:
             progress=progress,
             clock=clock,
             cancel_requested=cancel_requested,
+            worker_pool=self.worker_pool,
         )
 
     def update(
@@ -66,6 +72,7 @@ class HistoryArchiveGateway:
             progress=progress,
             clock=clock,
             cancel_requested=cancel_requested,
+            worker_pool=self.worker_pool,
         )
 
 

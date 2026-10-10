@@ -7,7 +7,8 @@ import re
 import shutil
 import sqlite3
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import Future, as_completed
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -16,7 +17,6 @@ from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import (
-    BaoStockCodeBatch,
     BaoStockCodeDownload,
     BaoStockIndustryInterval,
     BaoStockSecurity,
@@ -34,7 +34,7 @@ from trader.download.domain.history_control import (
 from trader.download.domain.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
 from trader.download.domain.history_price_qualification import (
     HISTORY_TAIL_CONTRACT,
-    TENCENT_HISTORY_MAX_SESSIONS,
+    combine_history_sources,
     require_history_qfq_overlap,
 )
 from trader.download.domain.history_revision import HistoryRevision
@@ -44,8 +44,9 @@ from trader.download.domain.history_sync import (
     HistorySyncProgress,
     HistorySyncProgressPort,
     HistorySyncProgressStage,
-    HistorySyncSupplier,
+    HistoryTwoStageSupplier,
 )
+from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_archive_reader import route_history_months
 from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackFenceError,
@@ -62,6 +63,8 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.download.infra.history_tencent_stage import HistoryTencentStage
+from trader.infra.workers import WorkerExecutor, injected_executor, submit_or_reject
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -101,13 +104,14 @@ class _SealedPartitions:
     replacements: tuple[_PartitionReplacement, ...]
 
 
-def run_history_sync(
+def run_history_sync(  # noqa: PLR0913 - explicit external resource injection
     configuration: HistorySyncConfiguration,
-    supplier: HistorySyncSupplier,
+    supplier: HistoryTwoStageSupplier,
     *,
     clock: Clock | None = None,
     cancel_requested: Cancellation | None = None,
     progress: HistorySyncProgressPort | None = None,
+    worker_pool: WorkerExecutor | None = None,
 ) -> HistoryMaintenanceStatus:
     """Synchronize and publish one complete immutable snapshot."""
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
@@ -120,7 +124,7 @@ def run_history_sync(
     try:
         with HistoryMaintenanceLock(root / ".maintenance.lock"):
             require_history_archive_repack_inactive(root)
-            return _run_locked(configuration, supplier, observed_at, cancel, progress)
+            return _run_locked(configuration, supplier, observed_at, cancel, progress, worker_pool)
     except KeyboardInterrupt:
         active = _safe_active(SQLiteHistoryControlRepository(root / "control.sqlite3"))
         return _status("cancelled", "cancelled", configuration, active, observed_at)
@@ -134,12 +138,13 @@ def run_history_sync(
         return _status("blocked", "history_archive_repack_activation_pending", configuration, active, observed_at)
 
 
-def _run_locked(
+def _run_locked(  # noqa: PLR0913 - explicit external resource injection
     configuration: HistorySyncConfiguration,
-    supplier: HistorySyncSupplier,
+    supplier: HistoryTwoStageSupplier,
     observed_at: datetime,
     cancel_requested: Cancellation,
     progress: HistorySyncProgressPort | None,
+    worker_pool: WorkerExecutor | None,
 ) -> HistoryMaintenanceStatus:
     root = configuration.archive_root
     control = SQLiteHistoryControlRepository(root / "control.sqlite3")
@@ -182,6 +187,7 @@ def _run_locked(
             calendar,
             universe,
             progress,
+            worker_pool,
         )
     except (HistoryControlError, OSError, RuntimeError, TypeError, ValueError) as exc:
         active = _safe_active(control)
@@ -194,7 +200,7 @@ def _has_sufficient_disk(root: Path, minimum_free_bytes: int) -> bool:
 
 def _synchronize(  # noqa: PLR0913
     configuration: HistorySyncConfiguration,
-    supplier: HistorySyncSupplier,
+    supplier: HistoryTwoStageSupplier,
     observed_at: datetime,
     cancel_requested: Cancellation,
     control: SQLiteHistoryControlRepository,
@@ -204,10 +210,11 @@ def _synchronize(  # noqa: PLR0913
     calendar: HistoryCalendarIdentity,
     universe: HistoryUniverseIdentity,
     progress: HistorySyncProgressPort | None,
+    worker_pool: WorkerExecutor | None,
 ) -> HistoryMaintenanceStatus:
     sequence = 1 if active is None else active.sequence + 1
     sync_identity = _sync_identity(calendar, universe, active)
-    checkpoints = _matching_checkpoints(control.load_state().checkpoints, sync_identity, context, active)
+    checkpoints = _matching_checkpoints(control.load_state().checkpoints, sync_identity)
     completed = max((item.completed_units for item in checkpoints), default=0)
     ordinal = max((item.ordinal for item in checkpoints), default=0) + 1
     total = len(context.universe)
@@ -227,36 +234,33 @@ def _synchronize(  # noqa: PLR0913
             active,
             old_universe,
         )
-        for batch_start in range(completed, total, configuration.download_batch_size):
-            batch_end = min(batch_start + configuration.download_batch_size, total)
-            batch_revisions: list[HistoryRevision] = []
-            for index, security in enumerate(context.universe[batch_start:batch_end], start=batch_start):
-                _publish_progress(progress, "downloading_codes", "started", (index, total), security.code)
-                if cancel_requested():
-                    _publish_progress(progress, "downloading_codes", "cancelled", (index, total), security.code)
-                    control.save_checkpoint(
-                        HistorySyncCheckpoint(
-                            sync_identity, ordinal, "cancelled", observed_at, batch_start, total, "cancelled"
-                        )
-                    )
-                    return _status("cancelled", "cancelled", configuration, active, observed_at)
-                download = _download_for_security(supplier, download_context, security)
-                batch_revisions.extend(_revisions(download, security, context.industry_intervals, sequence))
-                _publish_progress(progress, "downloading_codes", "completed", (index + 1, total), security.code)
-
-            # Keep the in-memory batch bounded; only a fully validated batch reaches the pending month copies.
-            _write_revision_batch(pending, tuple(batch_revisions))
-            completed = batch_end
-            control.save_checkpoint(
-                HistorySyncCheckpoint(sync_identity, ordinal, "running", observed_at, completed, total, None)
-            )
-            ordinal += 1
-        if cancel_requested():
-            _publish_progress(progress, "downloading_codes", "cancelled", (completed, total))
-            control.save_checkpoint(
-                HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, completed, total, "cancelled")
-            )
-            return _status("cancelled", "cancelled", configuration, active, observed_at)
+        stage = HistoryTencentStage(
+            configuration.archive_root / ".tencent-stage" / f"{sync_identity.rsplit('-', 1)[-1]}.sqlite3",
+            sync_identity,
+        )
+        stage.initialize()
+        executor = worker_pool if worker_pool is not None else injected_executor(None)
+        phases = _HistoryDownloadPhases(
+            download_context,
+            supplier,
+            stage,
+            pending,
+            control,
+            executor,
+            observed_at,
+            sync_identity,
+            sequence,
+            ordinal,
+            completed,
+            progress,
+            cancel_requested,
+        )
+        phases.download_tencent()
+        completed, ordinal = phases.completed, phases.ordinal
+        phases.build_gap_inventory()
+        phases.supplement_baostock()
+        completed, ordinal = phases.completed, phases.ordinal
+        phases.check_cancel()
         snapshot = _seal_and_publish(
             configuration.archive_root,
             pending,
@@ -274,19 +278,244 @@ def _synchronize(  # noqa: PLR0913
             _remove_pending(pending)
         except OSError:
             pass
+        try:
+            stage.clear()
+        except OSError:
+            pass
         return _status("completed", None, configuration, snapshot, observed_at)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, _HistoryDownloadCancelledError):
         _publish_progress(progress, "downloading_codes", "cancelled", (completed, total))
+        # A completed wave/batch may have advanced its durable checkpoint before cancellation.
+        ordinal = max((item.ordinal for item in control.load_state().checkpoints), default=ordinal) + 1
         control.save_checkpoint(
             HistorySyncCheckpoint(sync_identity, ordinal, "cancelled", observed_at, completed, total, "cancelled")
         )
         return _status("cancelled", "cancelled", configuration, active, observed_at)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        reason = _failure_code(exc)
+    except (OSError, RuntimeError, TypeError, ValueError, sqlite3.Error) as exc:
+        reason = "cancelled" if cancel_requested() else _failure_code(exc)
+        ordinal = max((item.ordinal for item in control.load_state().checkpoints), default=ordinal) + 1
         control.save_checkpoint(
-            HistorySyncCheckpoint(sync_identity, ordinal, "failed", observed_at, completed, total, reason)
+            HistorySyncCheckpoint(
+                sync_identity,
+                ordinal,
+                "cancelled" if reason == "cancelled" else "failed",
+                observed_at,
+                completed,
+                total,
+                reason,
+            )
         )
-        return _status("failed", reason, configuration, active, observed_at)
+        return _status("cancelled" if reason == "cancelled" else "failed", reason, configuration, active, observed_at)
+
+
+class _HistoryDownloadCancelledError(RuntimeError):
+    """Stop orchestration while retaining only previously durable results."""
+
+
+@dataclass
+class _HistoryDownloadPhases:
+    context: _CodeDownloadContext
+    supplier: HistoryTwoStageSupplier
+    stage: HistoryTencentStage
+    pending: _PendingPartitions
+    control: SQLiteHistoryControlRepository
+    executor: WorkerExecutor
+    observed_at: datetime
+    sync_identity: str
+    sequence: int
+    ordinal: int
+    completed: int
+    progress: HistorySyncProgressPort | None
+    cancel_requested: Cancellation
+
+    def check_cancel(self) -> None:
+        if self.cancel_requested():
+            raise _HistoryDownloadCancelledError("cancelled")
+
+    def checkpoint(self, completed: int) -> None:
+        self.completed = completed
+        self.control.save_checkpoint(
+            HistorySyncCheckpoint(
+                self.sync_identity,
+                self.ordinal,
+                "running",
+                self.observed_at,
+                completed,
+                len(self.context.supplier_context.universe),
+                None,
+            )
+        )
+        self.ordinal += 1
+
+    def download_tencent(self) -> None:
+        universe = self.context.supplier_context.universe
+        wave_size = self.context.configuration.history_workers
+        for start in range(0, len(universe), wave_size):
+            self.check_cancel()
+            end = min(start + wave_size, len(universe))
+            self._tencent_wave(start, end)
+            self.checkpoint(end)
+
+    def _tencent_wave(self, start: int, end: int) -> None:
+        futures: dict[Future[PublishedHistoryWindow], tuple[BaoStockSecurity, tuple[date, ...]]] = {}
+        try:
+            for index, security in enumerate(self.context.supplier_context.universe[start:end], start=start):
+                self.check_cancel()
+                if self.stage.contains(security.code):
+                    continue
+                dates = _requested_dates(self.context, security)
+                self._price_progress("tencent_history", "started", index, security.code, dates)
+                if not dates:
+                    self.stage.save(PublishedHistoryWindow(security.code, ()))
+                    self._price_progress("tencent_history", "completed", index + 1, security.code, dates)
+                    continue
+                future = submit_or_reject(self.executor, self.supplier.fetch_tencent_window, security, dates)
+                futures[future] = (security, dates)
+            completed = end - len(futures)
+            for future in as_completed(futures):
+                self.check_cancel()
+                security, dates = futures[future]
+                state = self._save_tencent_result(future, security, dates)
+                completed += 1
+                self._price_progress("tencent_history", state, completed, security.code, dates)
+        finally:
+            for future in futures:
+                future.cancel()
+
+    def _save_tencent_result(
+        self, future: Future[PublishedHistoryWindow], security: BaoStockSecurity, dates: tuple[date, ...]
+    ) -> Literal["completed", "failed"]:
+        try:
+            window = future.result()
+            self.check_cancel()
+            if window.code != security.code or tuple(cell.trade_date for cell in window.cells) != dates:
+                raise RuntimeError("history_tencent_coverage_incomplete")
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            self.check_cancel()
+            self.stage.fail(security.code, _failure_code(exc))
+            return "failed"
+        self.stage.save(window)
+        return "completed"
+
+    def supplement_baostock(self) -> None:
+        universe = self.context.supplier_context.universe
+        supplemented = self.stage.supplemented_codes()
+        batch_size = self.context.configuration.download_batch_size
+        for start in range(0, len(universe), batch_size):
+            self.check_cancel()
+            end = min(start + batch_size, len(universe))
+            revisions: list[HistoryRevision] = []
+            for index, security in enumerate(universe[start:end], start=start):
+                if security.code not in supplemented:
+                    revisions.extend(self._supplement_security(index, security))
+            _write_revision_batch(self.pending, tuple(revisions))
+            self.stage.mark_supplemented(tuple(item.code for item in universe[start:end]))
+            self.checkpoint(end)
+
+    def build_gap_inventory(self) -> None:
+        total = len(self.context.supplier_context.universe)
+        _publish_progress(self.progress, "history_gap_inventory", "started", (0, total))
+        self.check_cancel()
+        self.stage.save_gap_inventory(_history_gap_rows(self.context, self.stage, self.cancel_requested))
+        if self.progress is not None:
+            try:
+                self.progress.publish(
+                    HistorySyncProgress(
+                        "history_gap_inventory",
+                        "completed",
+                        total,
+                        total,
+                        gap_summary=self.stage.gap_summary(),
+                    )
+                )
+            except OSError:
+                pass
+
+    def _supplement_security(self, index: int, security: BaoStockSecurity) -> tuple[HistoryRevision, ...]:
+        self.check_cancel()
+        dates = _requested_dates(self.context, security)
+        self._price_progress("baostock_gap_fill", "started", index, security.code, dates)
+        if not dates:
+            self._price_progress("baostock_gap_fill", "completed", index + 1, security.code, dates)
+            return ()
+        tencent = self.stage.read(security.code)
+        metadata_dates = tuple(
+            date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_raw_metadata")
+        )
+        metadata = self.supplier.fetch_baostock_raw(security, metadata_dates)
+        self.check_cancel()
+        missing_dates = tuple(
+            date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_price_pair")
+        )
+        anchors = tuple(date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_basis_anchor"))
+        price_dates = tuple(sorted(set(missing_dates) | set(anchors)))
+        price_gaps = self.supplier.fetch_baostock_prices(security, price_dates) if price_dates else None
+        self.check_cancel()
+        download = combine_history_sources(security, dates, tencent, metadata, price_gaps)
+        _validate_download(download, security.code, dates)
+        context = self.context
+        if (
+            context.active is not None
+            and security.code in context.previous_codes
+            and HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions
+        ):
+            _validate_tail_overlap(context, download)
+        self._price_progress("baostock_gap_fill", "completed", index + 1, security.code, dates)
+        return _revisions(download, security, context.supplier_context.industry_intervals, self.sequence)
+
+    def _price_progress(
+        self,
+        phase: Literal["tencent_history", "baostock_gap_fill"],
+        state: Literal["started", "completed", "failed"],
+        completed: int,
+        code: str,
+        dates: tuple[date, ...],
+    ) -> None:
+        if self.progress is None:
+            return
+        try:
+            self.progress.publish(
+                HistorySyncProgress(
+                    phase,
+                    state,
+                    completed,
+                    len(self.context.supplier_context.universe),
+                    code,
+                    supplier_source=("tencent" if phase == "tencent_history" else "baostock") if dates else None,
+                    requested_sessions=len(dates) if dates else None,
+                )
+            )
+        except OSError:
+            pass
+
+
+def _history_gap_rows(
+    context: _CodeDownloadContext,
+    stage: HistoryTencentStage,
+    cancel_requested: Cancellation,
+) -> Iterator[tuple[str, str, str]]:
+    for security in context.supplier_context.universe:
+        if cancel_requested():
+            raise _HistoryDownloadCancelledError("cancelled")
+        dates = _requested_dates(context, security)
+        if not dates:
+            continue
+        window = stage.read(security.code)
+        failed = stage.failure_reason(security.code) is not None
+        by_date = {cell.trade_date: cell for cell in window.cells}
+        missing = False
+        for day in dates:
+            yield security.code, day.isoformat(), "baostock_raw_metadata"
+            cell = by_date.get(day)
+            if failed or cell is None or cell.unadjusted is None or cell.qfq is None:
+                missing = True
+                yield security.code, day.isoformat(), "baostock_price_pair"
+        if missing:
+            anchors = tuple(
+                cell.trade_date for cell in window.cells if cell.unadjusted is not None and cell.qfq is not None
+            )
+            for day in anchors[-min(5, context.configuration.reread_sessions) :]:
+                yield security.code, day.isoformat(), "baostock_basis_anchor"
 
 
 def _seal_and_publish(  # noqa: PLR0913
@@ -335,20 +564,16 @@ def _seal_and_publish(  # noqa: PLR0913
     return snapshot
 
 
-def _download_for_security(
-    supplier: HistorySyncSupplier,
-    context: _CodeDownloadContext,
-    security: BaoStockSecurity,
-) -> BaoStockCodeDownload:
+def _requested_dates(context: _CodeDownloadContext, security: BaoStockSecurity) -> tuple[date, ...]:
     expected = context.supplier_context.calendar.expected_dates(security)
     if not expected:
-        return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
+        return ()
     if (
         context.active is not None
         and security.delisted_on is not None
         and security.delisted_on <= context.supplier_context.calendar.open_dates[-1]
     ):
-        return BaoStockCodeDownload(BaoStockCodeBatch(security.code, ()), ())
+        return ()
     if context.active is None or security.code not in context.previous_codes:
         requested = expected
     else:
@@ -359,19 +584,9 @@ def _download_for_security(
             )
         )
         if HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions:
-            if len(requested) <= TENCENT_HISTORY_MAX_SESSIONS:
-                anchor = tuple(day for day in expected if day <= context.active.data_cutoff)
-                requested = tuple(sorted(set(requested) | set(anchor[-context.configuration.reread_sessions :])))
-    download = supplier.fetch_code(security, requested)
-    _validate_download(download, security.code, requested)
-    if (
-        context.active is not None
-        and security.code in context.previous_codes
-        and len(requested) <= TENCENT_HISTORY_MAX_SESSIONS
-        and HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions
-    ):
-        _validate_tail_overlap(context, download)
-    return download
+            anchor = tuple(day for day in expected if day <= context.active.data_cutoff)
+            requested = tuple(sorted(set(requested) | set(anchor[-context.configuration.reread_sessions :])))
+    return requested
 
 
 def _validate_tail_overlap(context: _CodeDownloadContext, download: BaoStockCodeDownload) -> None:
@@ -479,6 +694,7 @@ def _prepare_pending(
             _ensure_pending(pending, month_key)
     else:
         _ensure_pending(pending, (dates[0].year, dates[0].month))
+        _ensure_pending(pending, (dates[-1].year, dates[-1].month))
         for month_key in paths.keys() - active_by_month.keys():
             _ensure_pending(pending, month_key)
     return pending
@@ -664,7 +880,7 @@ def _control_identities(
     cutoff = context.calendar.open_dates[-1]
     observed = datetime.combine(cutoff, _BAOSTOCK_DAILY_READY, _SHANGHAI)
     supplier_contract = f"python_sdk_{canonical_artifact_hash((context.source_versions, context.industry_intervals))}"
-    source = HistorySourceIdentity("baostock", "baostock_daily", supplier_contract[:128], observed)
+    source = HistorySourceIdentity("tencent_baostock", "history_daily", supplier_contract[:128], observed)
     calendar = HistoryCalendarIdentity(context.calendar.open_dates, source.content_hash)
     universe = HistoryUniverseIdentity(
         tuple(
@@ -727,34 +943,9 @@ def _sync_identity(
 def _matching_checkpoints(
     checkpoints: tuple[HistorySyncCheckpoint, ...],
     sync_identity: str,
-    context: HistorySupplierContext,
-    active: HistoryActiveSnapshot | None,
 ) -> tuple[HistorySyncCheckpoint, ...]:
-    """Reuse an interrupted batch when only a supplier contract hash changed.
-
-    The pending partitions are keyed by the calendar window, not by the supplier
-    version.  A new SDK/industry contract must not discard already validated
-    batches, but a different cutoff or universe size must never reuse them.
-    """
-    exact = tuple(item for item in checkpoints if item.sync_identity == sync_identity)
-    if exact:
-        return exact
-    if HISTORY_TAIL_CONTRACT in context.source_versions.dependency_versions:
-        # Price-owner/qualification changes cannot inherit a legacy partial batch.
-        return ()
-    cutoff = context.calendar.open_dates[-1].strftime("%Y%m%d")
-    prefix = f"sync-{cutoff}-"
-    candidates = tuple(
-        item
-        for item in checkpoints
-        if item.sync_identity.startswith(prefix)
-        and item.total_units == len(context.universe)
-        and item.completed_units > 0
-        and (active is None or item.completed_units <= item.total_units)
-    )
-    if not candidates:
-        return ()
-    return (max(candidates, key=lambda item: (item.completed_units, item.ordinal)),)
+    """Only identical calendar, universe, source contract and parent may resume."""
+    return tuple(item for item in checkpoints if item.sync_identity == sync_identity)
 
 
 def _safe_active(control: SQLiteHistoryControlRepository) -> HistoryActiveSnapshot | None:
@@ -806,8 +997,8 @@ def _status(
         state=state,
         reason=reason,
         archive_root=root,
-        selected_baseline_source="baostock",
-        efficient_daily_source=None,
+        selected_baseline_source="tencent_then_baostock_gap",
+        efficient_daily_source="tencent",
         active_snapshot_hash=snapshot.content_hash if snapshot is not None else None,
         data_cutoff=snapshot.data_cutoff if snapshot is not None else None,
         label_cutoff=snapshot.label_cutoff if snapshot is not None else None,

@@ -19,6 +19,9 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_daily_raw": "未复权日线",
     "supplier_daily_qfq": "前复权日线",
     "supplier_routing": "下载来源",
+    "tencent_history": "Tencent历史下载",
+    "history_gap_inventory": "统计历史缺口",
+    "baostock_gap_fill": "BaoStock补缺",
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
     "sealing_partitions": "封存月分片",
@@ -38,6 +41,8 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_daily_raw": "股票",
     "supplier_daily_qfq": "股票",
     "downloading_codes": "股票",
+    "tencent_history": "股票",
+    "baostock_gap_fill": "股票",
     "sealing_partitions": "月份",
 }
 _RESULT_LABELS = {
@@ -48,7 +53,7 @@ _RESULT_LABELS = {
     "blocked": "同步阻塞",
     "failed": "同步失败",
 }
-_COUNT_STAGES = frozenset({"downloading_codes", "sealing_partitions"})
+_COUNT_STAGES = frozenset({"downloading_codes", "tencent_history", "baostock_gap_fill", "sealing_partitions"})
 _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
 
 
@@ -64,7 +69,7 @@ class StderrHistorySyncProgress:
     def publish(self, progress: HistorySyncProgress) -> None:
         if progress.stage == "supplier_routing":
             self._route = progress
-        if progress.stage == "downloading_codes":
+        if progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"}:
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
         self._record_supplier_failure(progress)
@@ -99,13 +104,28 @@ class StderrHistorySyncProgress:
         ]
         if progress.stage in _COUNT_STAGES:
             parts.append(_format_count(progress.completed_units, progress.total_units))
+        if progress.gap_summary is not None:
+            summary = progress.gap_summary
+            parts.extend(
+                (
+                    f"元数据待补 {summary.metadata_cells} 股日",
+                    f"价格对待补 {summary.price_pair_cells} 股日",
+                    f"Tencent失败 {summary.failed_codes} 股",
+                )
+            )
         if progress.current_item is not None:
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")
-        if progress.stage == "downloading_codes" and self._route is not None:
-            if progress.current_item == self._route.current_item:
+        if progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"} and (
+            self._route is not None or progress.supplier_source is not None
+        ):
+            if progress.stage == "downloading_codes" and self._route is not None:
                 source = "Tencent" if self._route.supplier_source == "tencent" else "BaoStock"
-                parts.extend((f"来源 {source}", f"请求 {self._route.requested_sessions} 日"))
+                requested = self._route.requested_sessions
+            else:
+                source = "Tencent" if progress.supplier_source == "tencent" else "BaoStock"
+                requested = progress.requested_sessions
+            parts.extend((f"来源 {source}", f"请求 {requested} 日"))
         if progress.stage in _DAILY_STAGES and self._stock_counts is not None:
             parts.append(f"总进度 {_format_count(*self._stock_counts)}")
         if progress.max_attempts > 1:

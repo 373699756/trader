@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass, field
+import sqlite3
+import threading
+from contextlib import closing
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,12 +28,16 @@ from trader.download.domain.history_sync import (
     HistorySyncConfiguration,
     HistorySyncProgress,
 )
+from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra import history_archive_sync as history_sync_module
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_tencent_stage import HistoryTencentStage
+from trader.infra.shutdown import ShutdownDeadline
+from trader.infra.workers import BoundedExecutor
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -77,6 +84,7 @@ class FakeSupplier:
     changed_qfq_code: str | None = None
     industry: str | None = None
     calls: list[tuple[str, tuple[date, ...]]] = field(default_factory=list)
+    events: list[str] = field(default_factory=list)
 
     def load_context(self, _as_of: date, sessions: int) -> HistorySupplierContext:
         selected = self.dates[-sessions:]
@@ -108,6 +116,27 @@ class FakeSupplier:
             raise RuntimeError("supplier_query_failed")
         shift = 1.0 if security.code == self.changed_qfq_code else 0.0
         return _download(security.code, dates, shift)
+
+    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+        self.events.append("tencent")
+        self.calls.append((security.code, dates))
+        if security.code == self.fail_code:
+            raise RuntimeError("tencent_query_failed")
+        shift = 1.0 if security.code == self.changed_qfq_code else 0.0
+        return PublishedHistoryWindow(
+            security.code,
+            tuple(project_history_cell(cell) for cell in _download(security.code, dates, shift).batch.cells),
+        )
+
+    def fetch_baostock_raw(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
+        self.events.append("baostock_raw")
+        value = _download(security.code, dates)
+        cells = tuple(replace(cell, qfq=None, status="qfq_missing") for cell in value.batch.cells)
+        return BaoStockCodeDownload(BaoStockCodeBatch(security.code, cells), value.daily_facts)
+
+    def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
+        self.events.append("baostock_prices")
+        return self.fetch_code(security, dates)
 
 
 def _configuration(root: Path) -> HistorySyncConfiguration:
@@ -158,9 +187,7 @@ def test_incremental_sync_skips_security_delisted_before_current_cutoff(tmp_path
         frozenset({security.code}),
     )
 
-    result = history_sync_module._download_for_security(supplier, download_context, security)
-
-    assert result.batch.cells == ()
+    assert history_sync_module._requested_dates(download_context, security) == ()
     assert supplier.calls == []
 
 
@@ -200,6 +227,7 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     supplier = FakeSupplier(dates)
 
     completed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw"]
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
     snapshot = state.active_snapshot
     assert snapshot is not None
@@ -216,6 +244,168 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     assert repeated.state == "already_current"
     assert len(supplier.calls) == 2
     assert tuple(item.relative_path for item in snapshot.partitions) == ("partitions/2026/09.sqlite3",)
+
+
+def test_concurrent_tencent_stage_finishes_and_persists_inventory_before_baostock(tmp_path: Path) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    barrier = threading.Barrier(2)
+    finished: set[str] = set()
+    lock = threading.Lock()
+
+    class ConcurrentSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            barrier.wait(timeout=5)
+            value = super().fetch_tencent_window(security, dates)
+            with lock:
+                finished.add(security.code)
+            return value
+
+        def fetch_baostock_raw(self, security, dates):
+            assert finished == {"600001", "600002"}
+            path = next((tmp_path / ".tencent-stage").glob("*.sqlite3"))
+            with closing(sqlite3.connect(path)) as connection:
+                assert connection.execute("SELECT COUNT(*) FROM gaps").fetchone()[0] == 6
+                identity = connection.execute("SELECT sync_identity FROM metadata").fetchone()[0]
+            reopened = HistoryTencentStage(path, identity)
+            reopened.initialize()
+            assert reopened.gap_dates(security.code, "baostock_raw_metadata") == tuple(day.isoformat() for day in dates)
+            return super().fetch_baostock_raw(security, dates)
+
+    pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="history-test")
+    pool.start()
+    try:
+        result = run_history_sync(
+            replace(_configuration(tmp_path), history_workers=2),
+            ConcurrentSupplier(dates),
+            clock=lambda: NOW,
+            worker_pool=pool,
+        )
+    finally:
+        assert pool.stop(wait=True, deadline=ShutdownDeadline.start(5)).completed
+    assert result.state == "completed"
+    assert not tuple((tmp_path / ".tencent-stage").glob("*.sqlite3"))
+
+
+@pytest.mark.parametrize("failure", ("request", "missing_side"))
+def test_tencent_gaps_use_complete_baostock_pairs_and_preserve_all_training_fields(
+    tmp_path: Path, failure: str
+) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class GapSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            value = super().fetch_tencent_window(security, dates)
+            if security.code != "600002":
+                return value
+            if failure == "request":
+                raise RuntimeError("tencent_query_failed")
+            return replace(value, cells=tuple(replace(cell, qfq=None, status="qfq_missing") for cell in value.cells))
+
+    supplier = GapSupplier(dates)
+    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    assert result.state == "completed"
+    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw", "baostock_prices"]
+    snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)
+    assert len(rows) == 2
+    assert all(row.is_st is False for row in rows)
+    assert all(row.cell.unadjusted.preclose == 10 and row.cell.unadjusted.turnover == 0.01 for row in rows)
+    assert all(row.cell.qfq.close_price == 10 for row in rows)
+
+
+def test_resume_reuses_tencent_and_skips_persisted_baostock_batches(tmp_path: Path) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    config = replace(_configuration(tmp_path), download_batch_size=1)
+    cancel = False
+
+    class CancelAfterFirstBatch:
+        def publish(self, progress):
+            nonlocal cancel
+            if progress.stage == "baostock_gap_fill" and progress.state == "completed":
+                cancel = True
+
+    first = FakeSupplier(dates)
+    result = run_history_sync(
+        config, first, clock=lambda: NOW, progress=CancelAfterFirstBatch(), cancel_requested=lambda: cancel
+    )
+    assert result.state == "cancelled"
+    control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    assert control.load_state().active_snapshot is None
+    resumed = FakeSupplier(dates)
+    result = run_history_sync(config, resumed, clock=lambda: NOW)
+    assert result.state == "completed"
+    assert resumed.events == ["baostock_raw"]
+    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], control.load_state().active_snapshot)) == 2
+
+
+@pytest.mark.parametrize("conflict", (False, True))
+def test_price_gap_supplement_checks_tencent_adjustment_anchors(tmp_path: Path, conflict: bool) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class PartialSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            window = super().fetch_tencent_window(security, dates)
+            if security.code == "600002":
+                tail = replace(window.cells[-1], unadjusted=None, qfq=None, status="unknown_missing")
+                window = replace(window, cells=(*window.cells[:-1], tail))
+            return window
+
+        def fetch_baostock_prices(self, security, requested):
+            assert security.code == "600002"
+            assert requested == dates  # One missing day plus two adjustment anchors.
+            return _download(security.code, requested, qfq_shift=1.0 if conflict else 0.0)
+
+    recorder = ProgressRecorder()
+    status = run_history_sync(_configuration(tmp_path), PartialSupplier(dates), clock=lambda: NOW, progress=recorder)
+    summary = next(item.gap_summary for item in recorder.values if item.gap_summary is not None)
+    assert (summary.metadata_cells, summary.price_pair_cells, summary.failed_codes) == (6, 1, 0)
+    active = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    if conflict:
+        assert status.state == "failed"
+        assert status.reason == "history_tail_qfq_basis_conflict"
+        assert active is None
+    else:
+        assert status.state == "completed"
+        rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)
+        assert len(rows) == 2
+        assert all(row.cell.qfq.close_price == 10 for row in rows)
+
+
+def test_tencent_cancellation_discards_late_results_before_baostock(tmp_path: Path) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    barrier = threading.Barrier(2)
+    cancelled = threading.Event()
+
+    class CancellingSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            window = super().fetch_tencent_window(security, dates)
+            barrier.wait(timeout=5)
+            cancelled.set()
+            return window
+
+        def fetch_baostock_raw(self, security, dates):
+            pytest.fail("BaoStock must not start after cancellation")
+
+    pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="history-cancel-test")
+    pool.start()
+    try:
+        status = run_history_sync(
+            replace(_configuration(tmp_path), history_workers=2),
+            CancellingSupplier(dates),
+            clock=lambda: NOW,
+            cancel_requested=cancelled.is_set,
+            worker_pool=pool,
+        )
+    finally:
+        assert pool.stop(wait=True, deadline=ShutdownDeadline.start(5)).completed
+    assert status.state == "cancelled"
+    path = next((tmp_path / ".tencent-stage").glob("*.sqlite3"))
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM outcomes").fetchone()[0] == 0
+    assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot is None
+    supplier = FakeSupplier(dates)
+    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
+    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw"]
 
 
 def test_initial_sync_fails_disk_preflight_before_slow_supplier_context(tmp_path: Path) -> None:
@@ -270,10 +460,16 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
         ("loading_context", "completed"),
         ("preparing_partitions", "started"),
         ("preparing_partitions", "completed"),
-        ("downloading_codes", "started"),
-        ("downloading_codes", "completed"),
-        ("downloading_codes", "started"),
-        ("downloading_codes", "completed"),
+        ("tencent_history", "started"),
+        ("tencent_history", "started"),
+        ("tencent_history", "completed"),
+        ("tencent_history", "completed"),
+        ("history_gap_inventory", "started"),
+        ("history_gap_inventory", "completed"),
+        ("baostock_gap_fill", "started"),
+        ("baostock_gap_fill", "completed"),
+        ("baostock_gap_fill", "started"),
+        ("baostock_gap_fill", "completed"),
         ("sealing_partitions", "started"),
         ("sealing_partitions", "completed"),
         ("publishing_snapshot", "started"),
@@ -419,11 +615,9 @@ def test_supplier_failure_and_cancellation_keep_active_pointer_and_resume_comple
     resumed = run_history_sync(_configuration(tmp_path), resumed_supplier, clock=lambda: NOW)
 
     assert resumed.state == "completed"
-    # A partial batch never advances the checkpoint; resume re-fetches the whole bounded batch.
-    assert resumed_supplier.calls == [
-        ("600001", (date(2026, 9, 10), date(2026, 9, 11))),
-        ("600002", (date(2026, 9, 10), date(2026, 9, 11))),
-    ]
+    # Durable Tencent candidates survive interruption and are reused without refetching.
+    assert resumed_supplier.calls == [("600002", newer[-2:])]
+    assert "tencent" not in resumed_supplier.events
 
 
 def test_historical_industry_revision_stays_within_the_recent_window(tmp_path: Path) -> None:
@@ -477,22 +671,23 @@ def test_daily_sync_reuses_untouched_immutable_months(tmp_path: Path, monkeypatc
     assert next(item for item in second.partitions if Path(item.relative_path).stem == "08") == august
 
 
-def test_incomplete_late_payload_never_advances_cutoff(tmp_path: Path) -> None:
+def test_incomplete_tencent_payload_is_filled_by_baostock_before_publication(tmp_path: Path) -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     assert run_history_sync(_configuration(tmp_path), FakeSupplier(dates), clock=lambda: NOW).state == "completed"
 
     class IncompleteSupplier(FakeSupplier):
-        def fetch_code(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
-            value = super().fetch_code(security, dates)
-            return _download(security.code, dates[:-1]) if security.code == "600002" else value
+        def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
+            value = super().fetch_tencent_window(security, dates)
+            return PublishedHistoryWindow(security.code, value.cells[:-1]) if security.code == "600002" else value
 
+    supplier = IncompleteSupplier((date(2026, 9, 9), date(2026, 9, 10), date(2026, 9, 11)))
     result = run_history_sync(
         _configuration(tmp_path),
-        IncompleteSupplier((date(2026, 9, 9), date(2026, 9, 10), date(2026, 9, 11))),
+        supplier,
         clock=lambda: NOW,
     )
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
 
-    assert result.state == "failed"
-    assert result.reason == "supplier_data_incomplete"
-    assert state.active_snapshot is not None and state.active_snapshot.data_cutoff == dates[-1]
+    assert result.state == "completed"
+    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw", "baostock_prices"]
+    assert state.active_snapshot is not None and state.active_snapshot.data_cutoff == date(2026, 9, 11)

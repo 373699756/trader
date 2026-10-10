@@ -26,6 +26,7 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
@@ -92,6 +93,20 @@ class _Supplier:
             BaoStockCodeBatch(security.code, cells),
             tuple(BaoStockDailyFact(security.code, day, False) for day in dates),
         )
+
+    def fetch_tencent_window(self, security, dates):
+        return PublishedHistoryWindow(
+            security.code,
+            tuple(project_history_cell(cell) for cell in self.fetch_code(security, dates).batch.cells),
+        )
+
+    def fetch_baostock_raw(self, security, dates):
+        value = self.fetch_code(security, dates)
+        cells = tuple(replace(cell, qfq=None, status="qfq_missing") for cell in value.batch.cells)
+        return BaoStockCodeDownload(BaoStockCodeBatch(security.code, cells), value.daily_facts)
+
+    def fetch_baostock_prices(self, security, dates):
+        return self.fetch_code(security, dates)
 
 
 def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_path: Path, monkeypatch) -> None:

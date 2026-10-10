@@ -16,6 +16,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.history_archive_status import inspect_history_archive
 from trader.download.infra.history_archive_sync import run_history_sync
 
@@ -67,6 +68,17 @@ class _Supplier:
             BaoStockCodeBatch(security.code, cells),
             tuple(BaoStockDailyFact(security.code, day, False) for day in dates),
         )
+
+    def fetch_tencent_window(self, security, dates):
+        return PublishedHistoryWindow(
+            security.code, tuple(project_history_cell(cell) for cell in self.fetch_code(security, dates).batch.cells)
+        )
+
+    def fetch_baostock_raw(self, security, dates):
+        return self.fetch_code(security, dates)
+
+    def fetch_baostock_prices(self, security, dates):
+        return self.fetch_code(security, dates)
 
 
 def test_missing_archive_is_read_only_and_reports_the_current_snapshot_boundary(tmp_path: Path) -> None:

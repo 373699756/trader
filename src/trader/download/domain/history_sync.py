@@ -16,6 +16,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
+from trader.download.domain.published_history import PublishedHistoryWindow
 
 HistorySyncProgressStage = Literal[
     "initializing",
@@ -27,6 +28,9 @@ HistorySyncProgressStage = Literal[
     "supplier_daily_raw",
     "supplier_daily_qfq",
     "supplier_routing",
+    "tencent_history",
+    "history_gap_inventory",
+    "baostock_gap_fill",
     "preparing_partitions",
     "downloading_codes",
     "sealing_partitions",
@@ -46,6 +50,7 @@ class HistorySyncConfiguration:
     sessions: int = 2000
     reread_sessions: int = 5
     download_batch_size: int = 32
+    history_workers: int = 8
     minimum_free_bytes: int = 1 * 1024**3
     supplier_timeout_seconds: float = 45.0
     supplier_retries: int = 2
@@ -67,6 +72,7 @@ class HistorySyncConfiguration:
             not 1 <= self.sessions <= 2000
             or not 1 <= self.reread_sessions <= self.sessions
             or not 1 <= self.download_batch_size <= 256
+            or not 1 <= self.history_workers <= 12
             or self.minimum_free_bytes < 0
             or self.supplier_timeout_seconds <= 0
             or not 0 <= self.supplier_retries <= 2
@@ -95,6 +101,24 @@ class HistorySupplierContext:
 
 
 @dataclass(frozen=True)
+class HistoryGapSummary:
+    metadata_cells: int
+    price_pair_cells: int
+    failed_codes: int
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not int or value < 0
+            for value in (
+                self.metadata_cells,
+                self.price_pair_cells,
+                self.failed_codes,
+            )
+        ):
+            raise ValueError("history gap summary is invalid")
+
+
+@dataclass(frozen=True)
 class HistorySyncProgress:
     stage: HistorySyncProgressStage
     state: HistorySyncProgressState
@@ -106,6 +130,7 @@ class HistorySyncProgress:
     call_elapsed_seconds: float = 0.0
     supplier_source: Literal["baostock", "tencent"] | None = None
     requested_sessions: int | None = None
+    gap_summary: HistoryGapSummary | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -134,14 +159,14 @@ class HistorySyncProgressPort(Protocol):
     def publish(self, progress: HistorySyncProgress) -> None: ...
 
 
-class HistorySyncSupplier(Protocol):
+class HistoryTwoStageSupplier(Protocol):
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext: ...
 
-    def fetch_code(
-        self,
-        security: BaoStockSecurity,
-        dates: tuple[date, ...],
-    ) -> BaoStockCodeDownload: ...
+    def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
+
+    def fetch_baostock_raw(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload: ...
+
+    def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload: ...
 
 
 __all__ = [
@@ -150,5 +175,6 @@ __all__ = [
     "HistorySyncProgress",
     "HistorySyncProgressPort",
     "HistorySyncProgressStage",
-    "HistorySyncSupplier",
+    "HistoryGapSummary",
+    "HistoryTwoStageSupplier",
 ]

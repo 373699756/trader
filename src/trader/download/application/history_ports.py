@@ -11,11 +11,11 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import (
     HistorySyncConfiguration,
     HistorySyncProgressPort,
-    HistorySyncSupplier,
+    HistoryTwoStageSupplier,
 )
 
 
-class HistorySupplierPort(HistorySyncSupplier, Protocol):
+class HistorySupplierPort(HistoryTwoStageSupplier, Protocol):
     """Supplier capability for calendar, identity, and daily history facts."""
 
 
