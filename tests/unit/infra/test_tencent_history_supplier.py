@@ -115,11 +115,41 @@ def test_supplier_older_padding_is_trimmed_without_accepting_future_rows():
     assert len(http.supplier().fetch_window(SECURITY, (DAY,)).cells) == 1
 
 
-def test_neutral_adjustment_requires_supplier_evidence():
+@pytest.mark.parametrize("zero", ("0", "0.0", "0.00", "-0.00", "0e-9", 0, 0.0))
+def test_neutral_adjustment_accepts_numeric_zero_evidence(zero):
     http = _Http()
     http.adjusted = {"day": [ROW.copy()]}
-    assert http.supplier().fetch_window(SECURITY, (DAY,)).cells[0].status == "complete"
-    http.adjusted["day"][0][9] = "1"
+    http.adjusted["day"][0][9:11] = [zero, zero]
+    cell = http.supplier().fetch_window(SECURITY, (DAY,)).cells[0]
+    assert cell.status == "complete"
+    assert cell.unadjusted.close_price == cell.qfq.close_price == 10.5
+    assert cell.qfq.adjustment == "qfq"
+
+
+@pytest.mark.parametrize("index", (9, 10))
+@pytest.mark.parametrize("invalid", ("1", "-0.01", "1e-9999", "nan", "inf", "-inf", "bad", "", None, False, {}, []))
+def test_neutral_adjustment_rejects_invalid_or_nonzero_evidence(index, invalid):
+    http = _Http()
+    http.adjusted = {"day": [ROW.copy()]}
+    http.adjusted["day"][0][index] = invalid
+    with pytest.raises(ValueError, match="qualified_rows"):
+        http.supplier().fetch_window(SECURITY, (DAY,))
+
+
+@pytest.mark.parametrize("invalid", ("short", "adjustment_record", "mixed_rows"))
+def test_neutral_adjustment_requires_evidence_on_every_row(invalid):
+    http = _Http()
+    row = ROW.copy()
+    row[9:11] = ["0.00", "0.00"]
+    http.adjusted = {"day": [row]}
+    if invalid == "short":
+        del row[10:]
+    elif invalid == "adjustment_record":
+        row[6] = {"fixture": "adjusted"}
+    else:
+        changed = row.copy()
+        changed[9] = "1"
+        http.adjusted["day"].append(changed)
     with pytest.raises(ValueError, match="qualified_rows"):
         http.supplier().fetch_window(SECURITY, (DAY,))
 

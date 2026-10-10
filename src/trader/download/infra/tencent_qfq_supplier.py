@@ -8,6 +8,7 @@ import platform
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 import requests
@@ -174,9 +175,20 @@ def _neutral_adjustment(row: object) -> bool:
         and len(row) >= 11
         and isinstance(row[6], Mapping)
         and not row[6]
-        and str(row[9]) in ("0", "0.0")
-        and str(row[10]) in ("0", "0.0")
+        and _finite_zero(row[9])
+        and _finite_zero(row[10])
     )
+
+
+def _finite_zero(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return False
+    try:
+        # Decimal preserves tiny nonzero values that float conversion could round to zero.
+        number = Decimal(str(value))
+    except InvalidOperation:
+        return False
+    return number.is_finite() and number.is_zero()
 
 
 def _row_date(row: object) -> date:

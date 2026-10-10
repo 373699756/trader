@@ -28,6 +28,7 @@ from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
+from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.entrypoints import cli
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
@@ -220,6 +221,60 @@ def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_pa
     assert result.skipped_codes == 2 and result.changed_files == ()
     assert len(supplier.calls) == 2
     assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
+
+
+@pytest.mark.parametrize("sessions", (33, 251))
+def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, sessions) -> None:
+    calls = []
+
+    class Http:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def get(self, _url, **kwargs):
+            param = kwargs["params"]["param"]
+            calls.append(param)
+            symbol = param.split(",")[0]
+            rows = (
+                [[day.isoformat()] for day in DAYS[1:]]
+                if symbol == "sh000001"
+                else [
+                    [day.isoformat(), "10", "10.5", "11", "9.5", "100", {}, "1.2", "20", "0.00", "0.00"]
+                    for day in DAYS[-sessions:]
+                ]
+            )
+            # Tencent uses day even for qfq requests when there is no adjustment record.
+            return SimpleNamespace(
+                text=json.dumps({"code": 0, "data": {symbol: {"day": rows}}}),
+                raise_for_status=lambda: None,
+                close=lambda: None,
+            )
+
+    security = BaoStockSecurity("688001", "fixture", "star", DAYS[-sessions], None, "fixture")
+    supplier = TencentQfqSupplier(TencentQfqDependencies(Http, lambda: (security,), lambda: False))
+    logs = []
+    updater = UpdateQfqWindows(
+        SQLiteQfqWindowCache(tmp_path, "v2"),
+        SQLiteQfqWindowCache(tmp_path, "v3"),
+        supplier,
+        QfqCheckpoint(tmp_path / ".checkpoint.json"),
+        lambda: False,
+        logs.append,
+    )
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert len(updater.v2.read_code(security.code).cells) == sessions
+    assert len(updater.v3.read_code(security.code).cells) == min(sessions, 61)
+    assert any("合格 1 | 待补 0" in message for message in logs)
+    assert len(calls) == 3
+    resumed = updater.execute(observed)
+    assert resumed.skipped_codes == 1 and resumed.pending_codes == 0
+    assert resumed.changed_files == () and resumed.changed_rows == 0
+    assert len(calls) == 4  # Calendar refresh only; completed stock is not downloaded again.
 
 
 @pytest.mark.parametrize("conflict", (False, True))
