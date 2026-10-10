@@ -10,6 +10,15 @@ from trader.download.domain.published_history import PublishedHistoryCell, Publi
 QFQ_WINDOWS = (("v2", 251), ("v3", 61))
 
 
+class QfqWindowIncompleteError(RuntimeError):
+    """A requested calendar window contains an unpaired supplier gap."""
+
+    def __init__(self, raw_missing: tuple[date, ...], qfq_missing: tuple[date, ...]) -> None:
+        self.raw_missing = raw_missing
+        self.qfq_missing = qfq_missing
+        super().__init__(f"qfq_incomplete_raw_{len(raw_missing)}_qfq_{len(qfq_missing)}")
+
+
 @dataclass(frozen=True, slots=True)
 class QfqUpdateResult:
     target_date: date | None

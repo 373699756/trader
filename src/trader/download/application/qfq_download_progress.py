@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowIncompleteError
 
 
 def qfq_message(elapsed: float, stage: str, details: str) -> str:
@@ -23,8 +23,19 @@ def _pending_reason(exc: Exception) -> tuple[str, str]:
     reason = message if re.fullmatch(r"[a-zA-Z0-9_]{1,64}", message) else type(exc).__name__
     incomplete = re.fullmatch(r"qfq_incomplete_raw_(\d+)_qfq_(\d+)", reason)
     if incomplete:
-        return reason, f"未复权缺 {int(incomplete[1])} 日、前复权缺 {int(incomplete[2])} 日"
+        details = f"未复权缺 {int(incomplete[1])} 日、前复权缺 {int(incomplete[2])} 日"
+        if isinstance(exc, QfqWindowIncompleteError):
+            details += f"，Tencent未返回 {_format_missing_dates(exc)}"
+        return reason, details
     return reason, f"处理失败（{reason}）"
+
+
+def _format_missing_dates(exc: QfqWindowIncompleteError) -> str:
+    days = tuple(sorted(set(exc.raw_missing) | set(exc.qfq_missing)))
+    preview = ", ".join(day.isoformat() for day in days[:8])
+    if len(days) > 8:
+        preview += f" 等 {len(days)} 个交易日"
+    return preview or "交易日"
 
 
 @dataclass

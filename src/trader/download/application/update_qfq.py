@@ -14,7 +14,13 @@ from trader.download.application.qfq_download_progress import QfqDownloadProgres
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
-from trader.download.domain.qfq_window import QfqUpdateResult, completed_daily_cutoff, merge_daily_tail, paired_window
+from trader.download.domain.qfq_window import (
+    QfqUpdateResult,
+    QfqWindowIncompleteError,
+    completed_daily_cutoff,
+    merge_daily_tail,
+    paired_window,
+)
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 
@@ -196,7 +202,7 @@ class UpdateQfqWindows:
         if window.code != security.code or tuple(cell.trade_date for cell in window.cells) != dates:
             raise RuntimeError("qfq_window_identity_or_calendar_invalid")
         if not paired_window(window, dates):
-            raw_missing = sum(cell.unadjusted is None for cell in window.cells)
-            qfq_missing = sum(cell.qfq is None for cell in window.cells)
-            raise RuntimeError(f"qfq_incomplete_raw_{raw_missing}_qfq_{qfq_missing}")
+            raw_missing = tuple(cell.trade_date for cell in window.cells if cell.unadjusted is None)
+            qfq_missing = tuple(cell.trade_date for cell in window.cells if cell.qfq is None)
+            raise QfqWindowIncompleteError(raw_missing, qfq_missing)
         return window

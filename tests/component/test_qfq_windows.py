@@ -277,6 +277,40 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
     assert len(calls) == 4  # Calendar refresh only; completed stock is not downloaded again.
 
 
+def test_incomplete_supplier_gap_reports_dates_without_qualifying_window(tmp_path) -> None:
+    supplier = Supplier()
+    original = supplier.fetch_window
+
+    def incomplete(security, dates):
+        window = original(security, dates)
+        missing = dates[-2:]
+        return PublishedHistoryWindow(
+            security.code,
+            tuple(
+                replace(cell, unadjusted=None, qfq=None, status="unknown_missing")
+                if cell.trade_date in missing
+                else cell
+                for cell in window.cells
+            ),
+        )
+
+    supplier.fetch_window = incomplete
+    logs = []
+    updater = UpdateQfqWindows(
+        SQLiteQfqWindowCache(tmp_path, "v2"),
+        SQLiteQfqWindowCache(tmp_path, "v3"),
+        supplier,
+        QfqCheckpoint(tmp_path / ".checkpoint.json"),
+        lambda: False,
+        logs.append,
+    )
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == 0 and result.pending_codes == 1
+    assert any("Tencent未返回" in message and DAYS[-1].isoformat() in message for message in logs)
+    assert not (tmp_path / "v2").exists() and not (tmp_path / "v3").exists()
+
+
 @pytest.mark.parametrize("conflict", (False, True))
 def test_small_tail_exact_overlap_or_bounded_revision_refetch(tmp_path, conflict) -> None:
     supplier = Supplier(conflict=conflict)
