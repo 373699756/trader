@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from functools import partial
 from importlib.metadata import version
@@ -20,12 +20,13 @@ from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
+from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress, HistorySyncProgressPort
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import load_current_a_share_universe
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
+from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
@@ -183,7 +184,7 @@ def execute_history_download(
             15.0,
         )
         with BaoStockHistorySupplier(
-            configuration,
+            replace(configuration, supplier_retries=0, supplier_timeout_seconds=20.0),
             progress=supplier_progress or progress,
             cancel_requested=cancel_requested,
         ) as baseline:
@@ -196,7 +197,22 @@ def execute_history_download(
             )
             return DownloadHistoryUseCase(HistoryArchiveGateway(worker_pool=history_pool)).execute(
                 configuration,
-                HistorySupplierRouter(baseline, prices, load_current_securities),
+                HistorySupplierRouter(
+                    baseline,
+                    prices,
+                    load_current_securities,
+                    HistoryStNameSource(
+                        configuration.archive_root / "references" / "historical_st.json",
+                        requests.get,
+                        history_pool,
+                        cancel_requested,
+                        report=lambda done, total: (
+                            progress.publish(HistorySyncProgress("history_st_reference", "completed", done, total))
+                            if progress is not None
+                            else None
+                        ),
+                    ),
+                ),
                 clock=clock,
                 progress=progress,
                 cancel_requested=cancel_requested,

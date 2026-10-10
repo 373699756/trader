@@ -22,11 +22,13 @@ from trader.download.domain.history_revision import (
     HistoryTrainingWindow,
 )
 from trader.download.domain.published_history import PublishedHistoryCell
+from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     HistoryPartitionVerificationPhase,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.download.infra.history_reference_files import HistoryReferenceIndex, read_history_reference
 
 _CODE = re.compile(r"^[0-9]{6}$")
 
@@ -93,6 +95,33 @@ class SQLiteHistoryArchiveReader:
         self._root = root
         self._verified: dict[str, _VerifiedPartition] = {}
         self._verification_lock = threading.Lock()
+        self._references: dict[str, tuple[tuple[int, int, int, int], HistoryReferenceIndex]] = {}
+
+    def reference_index(self, snapshot: HistoryActiveSnapshot) -> HistoryReferenceIndex:
+        try:
+            source = SQLiteHistoryControlRepository(self._root / "control.sqlite3").read_source(
+                snapshot.source_identity_hash
+            )
+        except HistoryControlError as exc:
+            raise HistoryArchiveReadError("history_reference_unavailable") from exc
+        if not source.supplier_contract.startswith("history_ref_"):
+            raise HistoryArchiveReadError("history reference contract requires rebuilding history")
+        digest = source.supplier_contract[len("history_ref_") : len("history_ref_") + 64]
+        path = self._root / "references" / f"{digest}.json"
+        try:
+            stat = path.stat()
+            identity = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            cached = self._references.get(digest)
+            if cached is not None and cached[0] == identity:
+                return cached[1]
+            reference = read_history_reference(path)
+            if reference.content_hash != digest:
+                raise ValueError("history reference identity conflict")
+            index = HistoryReferenceIndex(reference)
+            self._references[digest] = (identity, index)
+            return index
+        except (OSError, ValueError) as exc:
+            raise HistoryArchiveReadError("history_reference_unavailable") from exc
 
     def verify_snapshot(
         self,
@@ -152,7 +181,11 @@ class SQLiteHistoryArchiveReader:
             raise ValueError("history day exceeds the snapshot cutoff")
         reference = self._reference(snapshot, trade_date.year, trade_date.month)
         repository = self._verified_repository(reference)
-        return repository.read_day(trade_date, snapshot_sequence=snapshot.sequence, board=board)
+        index = self.reference_index(snapshot)
+        return tuple(
+            index.apply(row)
+            for row in repository.read_day(trade_date, snapshot_sequence=snapshot.sequence, board=board)
+        )
 
     def read_code_window(
         self,
@@ -185,17 +218,22 @@ class SQLiteHistoryArchiveReader:
                 )
                 if row.trade_date in allowed
             )
-        return tuple(sorted(rows, key=lambda row: row.trade_date))
+        index = self.reference_index(snapshot)
+        return tuple(index.apply(row) for row in sorted(rows, key=lambda row: row.trade_date))
 
     def iter_snapshot_revisions(self, snapshot: HistoryActiveSnapshot) -> Iterator[HistoryRevision]:
+        reference_index = self.reference_index(snapshot)
         for reference in snapshot.partitions:
             year, month = _reference_month(reference)
             repository = self._verified_repository(reference)
             end_day = calendar.monthrange(year, month)[1]
-            yield from repository.iter_range(
-                date(year, month, 1),
-                date(year, month, end_day),
-                snapshot_sequence=snapshot.sequence,
+            yield from (
+                reference_index.apply(row)
+                for row in repository.iter_range(
+                    date(year, month, 1),
+                    date(year, month, end_day),
+                    snapshot_sequence=snapshot.sequence,
+                )
             )
 
     def iter_range(
@@ -208,9 +246,14 @@ class SQLiteHistoryArchiveReader:
 
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("history range scan is invalid")
+        reference_index = self.reference_index(snapshot)
+        yield from (reference_index.apply(row) for row in self._iter_price_revisions(start, end, snapshot))
+
+    def _iter_price_revisions(
+        self, start: date, end: date, snapshot: HistoryActiveSnapshot
+    ) -> Iterator[HistoryRevision]:
         for year, month in route_history_months(start, end):
-            reference = self._reference(snapshot, year, month)
-            repository = self._verified_repository(reference)
+            repository = self._verified_repository(self._reference(snapshot, year, month))
             yield from repository.iter_range(start, end, snapshot_sequence=snapshot.sequence)
 
     def iter_range_by_code(
@@ -231,7 +274,10 @@ class SQLiteHistoryArchiveReader:
             )
             for year, month in route_history_months(start, end)
         )
-        yield from heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+        reference_index = self.reference_index(snapshot)
+        yield from (
+            reference_index.apply(row) for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+        )
 
     def read_published_code_window(
         self,
@@ -332,10 +378,13 @@ class SQLiteHistoryArchiveReader:
 
         if _CODE.fullmatch(code) is None or start > end or end > snapshot.data_cutoff:
             raise ValueError("history code scan is invalid")
+        index = self.reference_index(snapshot)
         for year, month in route_history_months(start, end):
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)
-            yield from repository.read_code(code, start, end, snapshot_sequence=snapshot.sequence)
+            yield from (
+                index.apply(row) for row in repository.read_code(code, start, end, snapshot_sequence=snapshot.sequence)
+            )
 
     def iter_training_windows(
         self,
@@ -368,8 +417,11 @@ class SQLiteHistoryArchiveReader:
         buffers: dict[str, deque[HistoryTrainingPoint]] = {}
         previous_positions: dict[str, int] = {}
         processed_rows = 0
+        reference_index = self.reference_index(snapshot)
         current_revisions = (
-            revision for revision in self.iter_range(dates[0], dates[-1], snapshot) if revision.code in allowed_codes
+            revision
+            for revision in self._iter_price_revisions(dates[0], dates[-1], snapshot)
+            if revision.code in allowed_codes
         )
         for revision in current_revisions:
             processed_rows += 1
@@ -383,20 +435,22 @@ class SQLiteHistoryArchiveReader:
             previous_position = previous_positions.get(revision.code)
             if previous_position is not None and current_position != previous_position + 1:
                 buffer.clear()
-            training_point = revision.training_point
+            industry = reference_index.industry_on(revision.code, revision.trade_date)
+            training_point = (
+                revision.training_point if reference_index.eligible(revision.code) and industry is not None else None
+            )
             if training_point is None:
                 buffer.clear()
             else:
                 buffer.append(training_point)
                 if len(buffer) == window_sessions:
-                    assert revision.industry is not None
-                    assert revision.is_st is not None
+                    assert industry is not None
                     assert revision.cell.unadjusted is not None
                     yield HistoryTrainingWindow(
                         revision.code,
                         revision.board,
-                        revision.industry,
-                        revision.is_st,
+                        industry.industry,
+                        False,
                         revision.cell.unadjusted.trading_status,
                         tuple(buffer),
                         window_sessions,

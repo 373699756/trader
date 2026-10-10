@@ -18,6 +18,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.training.infra.research.historical_industry_archive import audit_archived_historical_industry_facts
@@ -67,6 +68,7 @@ class _Supplier:
             self._universe,
             BaoStockSourceVersions("00.9.30", "3.14.0", ()),
             intervals,
+            tuple(HistoryStEvidence(item.code, _as_of, "clear") for item in self._universe),
         )
 
     def fetch_code(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:

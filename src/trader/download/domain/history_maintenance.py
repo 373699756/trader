@@ -33,9 +33,10 @@ class HistoryMaintenanceStatus:
     training_due: bool
     training_due_reason: HistoryTrainingDueReason
     automatic_training: bool
+    unresolved_price_cells: int = 0
 
     def __post_init__(self) -> None:
-        if self.matured_label_days_since_training < 0:
+        if self.matured_label_days_since_training < 0 or self.unresolved_price_cells < 0:
             raise ValueError("matured label days must not be negative")
         due_reasons = {"initial_training_required", "cadence_due", "input_revision_due"}
         if self.training_due != (self.training_due_reason in due_reasons):

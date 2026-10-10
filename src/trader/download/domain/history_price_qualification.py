@@ -1,66 +1,43 @@
-"""Qualify history price pairs with genuine daily metadata."""
+"""Qualify same-source daily price pairs; an unknown gap never means suspended."""
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import date
 from math import isclose
 
-from trader.download.domain.baostock_daily import (
-    BaoStockCodeBatch,
-    BaoStockCodeDownload,
-    BaoStockDailyCell,
-    BaoStockDailySide,
-    BaoStockSecurity,
-)
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 
 TENCENT_HISTORY_MAX_SESSIONS = 640
-HISTORY_TAIL_CONTRACT = ("history", "tencent-first-baostock-gap")
-HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-a-share")
-
-
-def _require_raw_parity(raw: BaoStockDailySide, price: PublishedHistorySide | BaoStockDailySide) -> None:
-    comparisons = (
-        (raw.open_price, price.open_price, 0.0051),
-        (raw.high_price, price.high_price, 0.0051),
-        (raw.low_price, price.low_price, 0.0051),
-        (raw.close_price, price.close_price, 0.0051),
-        (raw.volume, price.volume, 100.0),
-        (raw.amount, price.amount, 100.0),
-    )
-    if price.trading_status != raw.trading_status or any(
-        left is None or right is None or not isclose(left, right, rel_tol=0.0, abs_tol=tolerance)
-        for left, right, tolerance in comparisons
-    ):
-        raise RuntimeError("history_tail_raw_price_conflict")
+HISTORY_TAIL_CONTRACT = ("history", "tencent-pairs-sparse-recovery")
+HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 
 
 def require_history_qfq_overlap(previous: BaoStockDailyCell, incoming: BaoStockDailyCell) -> None:
-    """Accept vendor price precision, reject an incompatible adjustment basis."""
     before, after = previous.qfq, incoming.qfq
     if before is None or after is None or before.trading_status != after.trading_status:
         raise RuntimeError("history_tail_qfq_basis_conflict")
-    if before.trading_status == "suspended":
-        return
+    if before.trading_status != "suspended":
+        _require_qfq_prices(before, after)
+
+
+def _require_qfq_prices(
+    left: PublishedHistorySide | BaoStockDailySide, right: PublishedHistorySide | BaoStockDailySide
+) -> None:
     if any(
-        left is None or right is None or not isclose(left, right, rel_tol=0.0, abs_tol=0.0051)
-        for left, right in (
-            (before.open_price, after.open_price),
-            (before.high_price, after.high_price),
-            (before.low_price, after.low_price),
-            (before.close_price, after.close_price),
+        a is None or b is None or not isclose(a, b, rel_tol=0.0, abs_tol=0.0051)
+        for a, b in zip(
+            (left.open_price, left.high_price, left.low_price, left.close_price),
+            (right.open_price, right.high_price, right.low_price, right.close_price),
+            strict=True,
         )
     ):
         raise RuntimeError("history_tail_qfq_basis_conflict")
 
 
 def merge_tencent_windows(
-    code: str,
-    dates: tuple[date, ...],
-    windows: tuple[PublishedHistoryWindow, ...],
+    code: str, dates: tuple[date, ...], windows: tuple[PublishedHistoryWindow, ...]
 ) -> PublishedHistoryWindow:
-    """Merge bounded Tencent segments while checking their overlapping dates."""
     cells: dict[date, PublishedHistoryCell] = {}
     for window in windows:
         if window.code != code:
@@ -76,179 +53,92 @@ def merge_tencent_windows(
 
 
 def _require_published_overlap(previous: PublishedHistoryCell, incoming: PublishedHistoryCell) -> None:
-    before = previous
-    after = incoming
-    for left, right in ((before.unadjusted, after.unadjusted), (before.qfq, after.qfq)):
+    for left, right in ((previous.unadjusted, incoming.unadjusted), (previous.qfq, incoming.qfq)):
         if (left is None) != (right is None):
             raise RuntimeError("history_tencent_overlap_conflict")
-        if left is None or right is None:
-            continue
-        if any(
-            value_left is None
-            or value_right is None
-            or not isclose(value_left, value_right, rel_tol=0.0, abs_tol=0.0051)
-            for value_left, value_right in (
-                (left.open_price, right.open_price),
-                (left.high_price, right.high_price),
-                (left.low_price, right.low_price),
-                (left.close_price, right.close_price),
-            )
-        ):
-            raise RuntimeError("history_tencent_overlap_conflict")
+        if left is not None and right is not None:
+            _require_qfq_prices(left, right)
 
 
-def combine_history_sources(
-    security: BaoStockSecurity,
+def repair_tencent_window(previous: PublishedHistoryWindow, retry: PublishedHistoryWindow) -> PublishedHistoryWindow:
+    if previous.code != retry.code or tuple(cell.trade_date for cell in previous.cells) != tuple(
+        cell.trade_date for cell in retry.cells
+    ):
+        raise RuntimeError("history_tencent_retry_identity_conflict")
+    cells = []
+    for before, after in zip(previous.cells, retry.cells, strict=True):
+        for left, right in ((before.unadjusted, after.unadjusted), (before.qfq, after.qfq)):
+            if left is not None and right is not None:
+                _require_qfq_prices(left, right)
+        cells.append(before if before.status == "complete" else after if after.status == "complete" else before)
+    return PublishedHistoryWindow(previous.code, tuple(cells))
+
+
+def qualify_history_pairs(
+    code: str,
     dates: tuple[date, ...],
     tencent: PublishedHistoryWindow,
-    metadata: BaoStockCodeDownload,
-    price_gaps: BaoStockCodeDownload | None,
-) -> BaoStockCodeDownload:
-    """Fill Tencent candidates from BaoStock without cross-vendor daily pairs."""
-    if tencent.code != security.code or any(cell.trade_date not in dates for cell in tencent.cells):
+    recovery: tuple[BaoStockDailyCell, ...] = (),
+) -> tuple[BaoStockDailyCell, ...]:
+    if tencent.code != code or any(cell.code != code or cell.trade_date not in dates for cell in recovery):
+        raise RuntimeError("history_supplier_identity_conflict")
+    if len({cell.trade_date for cell in recovery}) != len(recovery):
+        raise RuntimeError("history_supplier_duplicate_dates")
+    candidates = {cell.trade_date: cell for cell in tencent.cells}
+    if any(day not in dates for day in candidates):
         raise RuntimeError("history_tencent_identity_conflict")
-    _validate_baostock_batches(security.code, dates, metadata, price_gaps)
-    candidate_by_date = {cell.trade_date: cell for cell in tencent.cells}
-    fallback_by_date = {cell.trade_date: cell for cell in price_gaps.batch.cells} if price_gaps is not None else {}
-    _require_supplement_overlap(candidate_by_date, fallback_by_date)
-    cells = tuple(
-        _combine_history_day(security.code, facts, candidate_by_date.get(day), fallback_by_date.get(day))
-        for day, facts in zip(dates, metadata.batch.cells, strict=True)
-    )
-    return BaoStockCodeDownload(BaoStockCodeBatch(security.code, cells), metadata.daily_facts)
+    supplements = {cell.trade_date: cell for cell in recovery}
+    for day, cell in supplements.items():
+        candidate = candidates.get(day)
+        if candidate is not None and candidate.unadjusted is not None and candidate.qfq is not None:
+            _require_recovery_anchor(candidate, cell)
+    result = []
+    for day in dates:
+        candidate = candidates.get(day)
+        if candidate is not None and candidate.status == "complete":
+            result.append(BaoStockDailyCell(code, day, "complete", _side(candidate.unadjusted), _side(candidate.qfq)))
+        else:
+            recovered = supplements.get(day)
+            result.append(
+                recovered
+                if recovered is not None and recovered.obtained
+                else BaoStockDailyCell(code, day, "unknown_missing", None, None)
+            )
+    return tuple(result)
 
 
-def _validate_baostock_batches(
-    code: str,
-    dates: tuple[date, ...],
-    metadata: BaoStockCodeDownload,
-    price_gaps: BaoStockCodeDownload | None,
-) -> None:
-    baseline = metadata.batch
-    if (
-        baseline.code != code
-        or tuple(cell.trade_date for cell in baseline.cells) != dates
-        or baseline.duplicate_rows
-        or baseline.null_rows
-        or baseline.out_of_window_rows
-        or baseline.future_rows
-        or baseline.failure_reasons
+def _require_recovery_anchor(candidate: PublishedHistoryCell, recovery: BaoStockDailyCell) -> None:
+    raw, qfq = recovery.unadjusted, recovery.qfq
+    if raw is None or qfq is None or raw.trading_status != "trading" or qfq.trading_status != "trading":
+        raise RuntimeError("history_recovery_anchor_missing")
+    assert candidate.unadjusted is not None and candidate.qfq is not None
+    _require_qfq_prices(candidate.qfq, qfq)
+    for a, b, tolerance in (
+        (raw.open_price, candidate.unadjusted.open_price, 0.0051),
+        (raw.high_price, candidate.unadjusted.high_price, 0.0051),
+        (raw.low_price, candidate.unadjusted.low_price, 0.0051),
+        (raw.close_price, candidate.unadjusted.close_price, 0.0051),
+        (raw.volume, candidate.unadjusted.volume, 100.0),
+        (raw.amount, candidate.unadjusted.amount, 100.0),
     ):
-        raise RuntimeError("history_baostock_metadata_incomplete")
-    if price_gaps is not None and (
-        price_gaps.batch.code != code
-        or price_gaps.batch.duplicate_rows
-        or price_gaps.batch.null_rows
-        or price_gaps.batch.out_of_window_rows
-        or price_gaps.batch.future_rows
-        or price_gaps.batch.failure_reasons
-        or any(cell.trade_date not in dates for cell in price_gaps.batch.cells)
-    ):
-        raise RuntimeError("history_baostock_price_gap_incomplete")
+        if a is None or b is None or not isclose(a, b, rel_tol=0.0, abs_tol=tolerance):
+            raise RuntimeError("history_tail_raw_price_conflict")
 
 
-def _combine_history_day(
-    code: str,
-    facts: BaoStockDailyCell,
-    candidate: PublishedHistoryCell | None,
-    fallback: BaoStockDailyCell | None,
-) -> BaoStockDailyCell:
-    raw_facts = facts.unadjusted
-    if raw_facts is None:
-        raise RuntimeError("history_baostock_metadata_incomplete")
-    if raw_facts.trading_status == "suspended":
-        if candidate is not None and (candidate.unadjusted is not None or candidate.qfq is not None):
-            raise RuntimeError("history_trading_status_conflict")
-        return _suspended_cell(code, raw_facts)
-    if candidate is None or candidate.unadjusted is None or candidate.qfq is None:
-        return _qualify_baostock_pair(code, raw_facts, fallback)
-    _require_raw_parity(raw_facts, candidate.unadjusted)
-    raw = replace(
-        raw_facts,
-        open_price=candidate.unadjusted.open_price,
-        high_price=candidate.unadjusted.high_price,
-        low_price=candidate.unadjusted.low_price,
-        close_price=candidate.unadjusted.close_price,
-        volume=candidate.unadjusted.volume,
-        amount=candidate.unadjusted.amount,
-    )
-    side = candidate.qfq
-    qfq = BaoStockDailySide(
+def _side(side: PublishedHistorySide | None) -> BaoStockDailySide:
+    assert side is not None
+    return BaoStockDailySide(
         side.code,
         side.trade_date,
-        "qfq",
+        side.adjustment,
         side.open_price,
         side.high_price,
         side.low_price,
         side.close_price,
         side.volume,
         side.amount,
-        None,
-        None,
-        None,
-        raw.trading_status,
+        side.preclose,
+        side.pct_change,
+        side.turnover,
+        side.trading_status,
     )
-    return BaoStockDailyCell(code, facts.trade_date, "complete", raw, qfq)
-
-
-def _qualify_baostock_pair(
-    code: str,
-    raw_facts: BaoStockDailySide,
-    fallback: BaoStockDailyCell | None,
-) -> BaoStockDailyCell:
-    if fallback is None or not fallback.obtained or fallback.unadjusted is None or fallback.qfq is None:
-        raise RuntimeError("history_baostock_price_gap_incomplete")
-    _require_raw_parity(raw_facts, fallback.unadjusted)
-    return BaoStockDailyCell(code, raw_facts.trade_date, "complete", fallback.unadjusted, fallback.qfq)
-
-
-def _require_supplement_overlap(
-    candidates: dict[date, PublishedHistoryCell],
-    supplementation: dict[date, BaoStockDailyCell],
-) -> None:
-    for day, fallback in supplementation.items():
-        candidate = candidates.get(day)
-        if candidate is None:
-            continue
-        if candidate.unadjusted is not None:
-            if fallback.unadjusted is None:
-                raise RuntimeError("history_baostock_price_gap_incomplete")
-            _require_raw_parity(fallback.unadjusted, candidate.unadjusted)
-        if candidate.qfq is not None:
-            _require_published_qfq_parity(candidate.qfq, fallback.qfq)
-
-
-def _suspended_cell(code: str, raw: BaoStockDailySide) -> BaoStockDailyCell:
-    qfq = BaoStockDailySide(
-        code,
-        raw.trade_date,
-        "qfq",
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        "suspended",
-    )
-    return BaoStockDailyCell(code, raw.trade_date, "supplier_marked_suspended", raw, qfq)
-
-
-def _require_published_qfq_parity(candidate: PublishedHistorySide, fallback: BaoStockDailySide | None) -> None:
-    if fallback is None or candidate.trading_status != fallback.trading_status:
-        raise RuntimeError("history_tail_qfq_basis_conflict")
-    if candidate.trading_status == "suspended":
-        return
-    if any(
-        left is None or right is None or not isclose(left, right, rel_tol=0.0, abs_tol=0.0051)
-        for left, right in (
-            (candidate.open_price, fallback.open_price),
-            (candidate.high_price, fallback.high_price),
-            (candidate.low_price, fallback.low_price),
-            (candidate.close_price, fallback.close_price),
-        )
-    ):
-        raise RuntimeError("history_tail_qfq_basis_conflict")

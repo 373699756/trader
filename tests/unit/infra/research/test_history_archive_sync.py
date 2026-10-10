@@ -23,6 +23,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
     HistorySyncConfiguration,
@@ -110,6 +111,7 @@ class FakeSupplier:
             selected_universe,
             BaoStockSourceVersions("test", "3.12", ()),
             intervals,
+            tuple(HistoryStEvidence(item.code, _as_of, "clear") for item in selected_universe),
         )
 
     def fetch_code(
@@ -191,6 +193,7 @@ def test_incremental_sync_skips_security_delisted_before_current_cutoff(tmp_path
         context,
         SimpleNamespace(data_cutoff=date(2026, 9, 8)),
         frozenset({security.code}),
+        {},
     )
 
     assert history_sync_module._requested_dates(download_context, security) == ()
@@ -233,7 +236,7 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     supplier = FakeSupplier(dates)
 
     completed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
-    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw"]
+    assert supplier.events == ["tencent", "tencent"]
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
     snapshot = state.active_snapshot
     assert snapshot is not None
@@ -310,7 +313,7 @@ def test_tencent_gaps_use_complete_baostock_pairs_and_preserve_all_training_fiel
     supplier = GapSupplier(dates)
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed"
-    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw", "baostock_prices"]
+    assert supplier.events == ["tencent", "tencent", "baostock_prices"]
     snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
     rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)
     assert len(rows) == 2
@@ -327,10 +330,18 @@ def test_resume_reuses_tencent_and_skips_persisted_baostock_batches(tmp_path: Pa
     class CancelAfterFirstBatch:
         def publish(self, progress):
             nonlocal cancel
-            if progress.stage == "baostock_gap_fill" and progress.state == "completed":
+            if progress.stage == "persisting_prices" and progress.state == "completed":
                 cancel = True
 
-    first = FakeSupplier(dates)
+    class MissingPrice(FakeSupplier):
+        def fetch_tencent_window(self, security, requested):
+            window = super().fetch_tencent_window(security, requested)
+            if security.code == "600001":
+                tail = replace(window.cells[-1], unadjusted=None, qfq=None, status="unknown_missing")
+                return replace(window, cells=(*window.cells[:-1], tail))
+            return window
+
+    first = MissingPrice(dates)
     result = run_history_sync(
         config, first, clock=lambda: NOW, progress=CancelAfterFirstBatch(), cancel_requested=lambda: cancel
     )
@@ -340,7 +351,7 @@ def test_resume_reuses_tencent_and_skips_persisted_baostock_batches(tmp_path: Pa
     resumed = FakeSupplier(dates)
     result = run_history_sync(config, resumed, clock=lambda: NOW)
     assert result.state == "completed"
-    assert resumed.events == ["baostock_raw"]
+    assert resumed.events == []
     assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], control.load_state().active_snapshot)) == 2
 
 
@@ -364,12 +375,13 @@ def test_price_gap_supplement_checks_tencent_adjustment_anchors(tmp_path: Path, 
     recorder = ProgressRecorder()
     status = run_history_sync(_configuration(tmp_path), PartialSupplier(dates), clock=lambda: NOW, progress=recorder)
     summary = next(item.gap_summary for item in recorder.values if item.gap_summary is not None)
-    assert (summary.metadata_cells, summary.price_pair_cells, summary.failed_codes) == (6, 1, 0)
+    assert (summary.price_pair_cells, summary.failed_codes) == (1, 0)
     active = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
     if conflict:
-        assert status.state == "failed"
-        assert status.reason == "history_tail_qfq_basis_conflict"
-        assert active is None
+        assert status.state == "completed"
+        rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)
+        assert rows[0].cell.obtained
+        assert rows[1].cell.status == "unknown_missing"
     else:
         assert status.state == "completed"
         rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)
@@ -411,7 +423,7 @@ def test_tencent_cancellation_discards_late_results_before_baostock(tmp_path: Pa
     assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot is None
     supplier = FakeSupplier(dates)
     assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
-    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw"]
+    assert supplier.events == ["tencent", "tencent"]
 
 
 def test_initial_sync_fails_disk_preflight_before_slow_supplier_context(tmp_path: Path) -> None:
@@ -472,10 +484,10 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
         ("tencent_history", "completed"),
         ("history_gap_inventory", "started"),
         ("history_gap_inventory", "completed"),
-        ("baostock_gap_fill", "started"),
-        ("baostock_gap_fill", "completed"),
-        ("baostock_gap_fill", "started"),
-        ("baostock_gap_fill", "completed"),
+        ("persisting_prices", "started"),
+        ("persisting_prices", "completed"),
+        ("persisting_prices", "started"),
+        ("persisting_prices", "completed"),
         ("sealing_partitions", "started"),
         ("sealing_partitions", "completed"),
         ("publishing_snapshot", "started"),
@@ -603,8 +615,10 @@ def test_supplier_failure_and_cancellation_keep_active_pointer_and_resume_comple
 
     failed = run_history_sync(_configuration(tmp_path), FakeSupplier(newer, fail_code="600002"), clock=lambda: NOW)
     assert baseline.state == "completed"
-    assert failed.state == "failed"
-    assert control.load_state().active_snapshot_hash == original_hash
+    assert failed.state == "completed"
+    assert control.load_state().active_snapshot_hash != original_hash
+    assert failed.unresolved_price_cells > 0
+    sparse_hash = control.load_state().active_snapshot_hash
 
     checks = iter((False, True))
     cancelled_supplier = FakeSupplier(newer)
@@ -615,15 +629,15 @@ def test_supplier_failure_and_cancellation_keep_active_pointer_and_resume_comple
         cancel_requested=lambda: next(checks, True),
     )
     assert cancelled.state == "cancelled"
-    assert control.load_state().active_snapshot_hash == original_hash
+    assert control.load_state().active_snapshot_hash == sparse_hash
 
     resumed_supplier = FakeSupplier(newer)
     resumed = run_history_sync(_configuration(tmp_path), resumed_supplier, clock=lambda: NOW)
 
     assert resumed.state == "completed"
-    # Durable Tencent candidates survive interruption and are reused without refetching.
-    assert resumed_supplier.calls == [("600002", newer[-2:])]
-    assert "tencent" not in resumed_supplier.events
+    assert resumed.unresolved_price_cells == 0
+    assert "tencent" in resumed_supplier.events
+    assert "baostock_prices" not in resumed_supplier.events
 
 
 def test_historical_industry_revision_stays_within_the_recent_window(tmp_path: Path) -> None:
@@ -695,5 +709,5 @@ def test_incomplete_tencent_payload_is_filled_by_baostock_before_publication(tmp
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
 
     assert result.state == "completed"
-    assert supplier.events == ["tencent", "tencent", "baostock_raw", "baostock_raw", "baostock_prices"]
+    assert supplier.events == ["tencent", "tencent", "baostock_prices"]
     assert state.active_snapshot is not None and state.active_snapshot.data_cutoff == date(2026, 9, 11)

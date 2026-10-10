@@ -16,6 +16,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.published_history import PublishedHistoryWindow
 
 HistorySyncProgressStage = Literal[
@@ -29,8 +30,10 @@ HistorySyncProgressStage = Literal[
     "supplier_daily_qfq",
     "supplier_routing",
     "tencent_history",
+    "history_st_reference",
     "history_gap_inventory",
     "baostock_gap_fill",
+    "persisting_prices",
     "preparing_partitions",
     "downloading_codes",
     "sealing_partitions",
@@ -58,6 +61,8 @@ class HistorySyncConfiguration:
     cancellation_grace_seconds: float = 10.0
     progress_heartbeat_seconds: float = 5.0
     training_root: Path = Path("data/train")
+    baostock_max_codes: int = 30
+    baostock_budget_seconds: float = 180.0
 
     @classmethod
     def for_repository(cls, repository_root: Path) -> HistorySyncConfiguration:
@@ -77,6 +82,9 @@ class HistorySyncConfiguration:
             or self.supplier_timeout_seconds <= 0
             or not 0 <= self.supplier_retries <= 2
             or self.query_interval_seconds < BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
+            or not 0 <= self.baostock_max_codes <= 100
+            or not math.isfinite(self.baostock_budget_seconds)
+            or not 0 <= self.baostock_budget_seconds <= 600.0
             or not 0 < self.cancellation_grace_seconds <= 10.0
             or not 0 < self.progress_heartbeat_seconds <= self.supplier_timeout_seconds
         ):
@@ -89,6 +97,7 @@ class HistorySupplierContext:
     universe: tuple[BaoStockSecurity, ...]
     source_versions: BaoStockSourceVersions
     industry_intervals: tuple[BaoStockIndustryInterval, ...] = ()
+    st_evidence: tuple[HistoryStEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         universe = tuple(sorted(self.universe, key=lambda item: item.code))
@@ -102,7 +111,6 @@ class HistorySupplierContext:
 
 @dataclass(frozen=True)
 class HistoryGapSummary:
-    metadata_cells: int
     price_pair_cells: int
     failed_codes: int
 
@@ -110,7 +118,6 @@ class HistoryGapSummary:
         if any(
             type(value) is not int or value < 0
             for value in (
-                self.metadata_cells,
                 self.price_pair_cells,
                 self.failed_codes,
             )
@@ -163,8 +170,6 @@ class HistoryTwoStageSupplier(Protocol):
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext: ...
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
-
-    def fetch_baostock_raw(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload: ...
 
     def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload: ...
 

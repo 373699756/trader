@@ -42,9 +42,9 @@ def _revision(day: date, sequence: int, close: float) -> HistoryRevision:
         sequence,
         "main",
         BaoStockDailyCell("600001", day, "complete", raw, qfq),
-        False,
-        "bank",
-        "sw",
+        None,
+        None,
+        None,
     )
 
 

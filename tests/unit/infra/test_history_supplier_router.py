@@ -14,6 +14,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
 )
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryGapSummary, HistorySyncConfiguration, HistorySyncProgress
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow, project_history_cell
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
@@ -64,6 +65,11 @@ class Prices:
         return PublishedHistoryWindow(security.code, tuple(cells))
 
 
+class StSource:
+    def fetch(self, universe, as_of):
+        return tuple(HistoryStEvidence(item.code, as_of, "clear") for item in universe)
+
+
 def _current_universe(*codes: str) -> tuple[BaoStockSecurity, ...]:
     return tuple(
         BaoStockSecurity(
@@ -84,7 +90,7 @@ def _router(
     universe: tuple[BaoStockSecurity, ...] | None = None,
 ) -> HistorySupplierRouter:
     selected = universe or _current_universe("600001", "600002")
-    return HistorySupplierRouter(baseline, prices, lambda: selected)
+    return HistorySupplierRouter(baseline, prices, lambda: selected, StSource())
 
 
 def test_history_context_uses_the_current_exchange_universe() -> None:
@@ -109,15 +115,11 @@ def test_tencent_first_fetches_every_window_in_bounded_segments(count):
     assert prices.calls
     assert all(1 <= len(segment) <= 640 for segment in prices.calls)
     assert sum(len(segment) for segment in prices.calls) >= count
-    metadata = router.fetch_baostock_raw(security, dates)
-    assert baseline.calls == [("raw", dates)]
-    assert metadata.daily_facts[0].is_st is True
-    assert metadata.batch.cells[0].unadjusted.preclose == 1.0
-    assert metadata.batch.cells[0].unadjusted.turnover == 0.01
+    assert baseline.calls == []
     assert context.source_versions != baseline.load_context(dates[-1], count).source_versions
 
 
-@pytest.mark.parametrize("invalid", ("missing", "conflict", "qfq_basis"))
+@pytest.mark.parametrize("invalid", ("missing", "qfq_basis"))
 def test_invalid_tencent_tail_preserves_active_snapshot_and_checkpoint(tmp_path: Path, invalid):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
@@ -134,9 +136,9 @@ def test_invalid_tencent_tail_preserves_active_snapshot_and_checkpoint(tmp_path:
     assert result.state == "failed"
     assert state.active_snapshot == before
     assert state.checkpoints[-1].completed_units == 2
-    assert any(code == "raw" for code, _dates in baseline.calls)
+    assert not any(code == "raw" for code, _dates in baseline.calls)
     rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], before)
-    assert rows[0].is_st is True
+    assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
 
 
@@ -155,6 +157,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
 
     monkeypatch.setattr("trader.bootstrap.BaoStockHistorySupplier", lambda *_args, **_kwargs: Session(dates))
     monkeypatch.setattr("trader.bootstrap.TencentQfqSupplier", lambda _dependencies: Prices())
+    monkeypatch.setattr("trader.bootstrap.HistoryStNameSource", lambda *_args, **_kwargs: StSource())
     monkeypatch.setattr(
         "trader.bootstrap.load_current_a_share_universe",
         lambda *_args: _current_universe("600001", "600002"),
@@ -164,11 +167,11 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         clock=lambda: NOW,
     )
     assert result.state == "completed"
-    assert baseline.calls == [("raw", dates), ("raw", dates)]
+    assert baseline.calls == []
     snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
     assert snapshot is not None
     rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)
-    assert rows[0].is_st is True
+    assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
 
 
@@ -181,7 +184,7 @@ def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     result = run_history_sync(config, _router(baseline, prices), clock=lambda: NOW)
     assert result.state == "completed"
     assert prices.calls == [new_dates, new_dates]
-    assert baseline.calls == [("raw", new_dates), ("raw", new_dates)]
+    assert baseline.calls == []
     snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
     assert snapshot.sequence == 2
     assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(new_dates[-1], snapshot)) == 2
@@ -255,7 +258,9 @@ def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failu
             raise AssertionError("BaoStock must not replace an unavailable official universe")
 
     baseline, prices = NoContext(dates), Prices()
-    result = run_history_sync(config, HistorySupplierRouter(baseline, prices, unavailable), clock=lambda: NOW)
+    result = run_history_sync(
+        config, HistorySupplierRouter(baseline, prices, unavailable, StSource()), clock=lambda: NOW
+    )
 
     assert result.state == "failed"
     assert control.load_state().active_snapshot == before
@@ -272,7 +277,7 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     context = router.load_context(dates[-1], 2000)
     new_stock = replace(context.universe[1], listed_on=dates[-639])
     context = replace(context, universe=(context.universe[0], new_stock))
-    request = _CodeDownloadContext(HistorySyncConfiguration(tmp_path), context, None, frozenset())
+    request = _CodeDownloadContext(HistorySyncConfiguration(tmp_path), context, None, frozenset(), {})
     assert _requested_dates(request, context.universe[0]) == dates
     assert _requested_dates(request, new_stock) == dates[-639:]
     assert router.fetch_tencent_window(context.universe[0], dates).cells
@@ -302,7 +307,7 @@ def test_changed_price_contract_does_not_resume_legacy_short_batches():
 
 
 def test_only_explicit_baseline_suspension_can_qualify_missing_tencent_prices():
-    from trader.download.domain.history_price_qualification import combine_history_sources
+    from trader.download.domain.history_price_qualification import qualify_history_pairs
 
     day = date(2026, 9, 9)
     baseline = Baseline((day,))
@@ -333,11 +338,13 @@ def test_only_explicit_baseline_suspension_can_qualify_missing_tencent_prices():
             ),
         ),
     )
-    value = combine_history_sources(security, (day,), missing, evidence, None)
-    assert value.batch.cells[0].status == "supplier_marked_suspended"
-    assert value.daily_facts[0].is_st is True
-    with pytest.raises(RuntimeError, match="trading_status_conflict"):
-        combine_history_sources(security, (day,), Prices().fetch_window(security, (day,)), evidence, None)
+    qfq = replace(raw, adjustment="qfq", preclose=None, pct_change=None, turnover=None)
+    suspended = replace(evidence.batch.cells[0], qfq=qfq, status="supplier_marked_suspended")
+    value = qualify_history_pairs(security.code, (day,), missing, (suspended,))
+    assert value[0].status == "supplier_marked_suspended"
+    assert qualify_history_pairs(security.code, (day,), missing)[0].status == "unknown_missing"
+    with pytest.raises(RuntimeError, match="anchor_missing"):
+        qualify_history_pairs(security.code, (day,), Prices().fetch_window(security, (day,)), (suspended,))
 
 
 def test_completed_stock_reports_real_route_and_requested_sessions(capsys):
@@ -357,6 +364,19 @@ def test_completed_stock_reports_real_route_and_requested_sessions(capsys):
     assert "来源 Tencent | 请求 5 日" in capsys.readouterr().err
 
 
+def test_history_st_reference_batches_report_distinct_counts(capsys):
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0)
+
+    progress.publish(HistorySyncProgress("history_st_reference", "completed", 8, 5224))
+    progress.publish(HistorySyncProgress("history_st_reference", "completed", 16, 5224))
+
+    lines = capsys.readouterr().err.splitlines()
+    assert lines == [
+        "00:00:00 | 历史ST名单 | 完成 | 8/5224 (0.15%)",
+        "00:00:00 | 历史ST名单 | 完成 | 16/5224 (0.31%)",
+    ]
+
+
 def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
     progress = StderrHistorySyncProgress(monotonic=lambda: 0)
     progress.publish(
@@ -365,7 +385,7 @@ def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
             "completed",
             2,
             2,
-            gap_summary=HistoryGapSummary(6, 1, 0),
+            gap_summary=HistoryGapSummary(1, 0),
         )
     )
-    assert "统计历史缺口 | 完成 | 元数据待补 6 股日 | 价格对待补 1 股日 | Tencent失败 0 股" in capsys.readouterr().err
+    assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | Tencent失败 0 股" in capsys.readouterr().err

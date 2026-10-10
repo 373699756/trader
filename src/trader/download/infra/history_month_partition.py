@@ -22,7 +22,7 @@ from trader.download.infra.history_revision_codec import (
 )
 from trader.download.infra.published_history_codec import decode_published_history_cell
 
-_SCHEMA_IDENTITY = "history_month_partition"
+_SCHEMA_IDENTITY = "history_price_pairs"
 _CODE = re.compile(r"^[0-9]{6}$")
 _HASH_CHUNK_BYTES = 1024 * 1024
 _CACHE_RELEASE_BYTES = 16 * 1024 * 1024
@@ -60,6 +60,9 @@ CREATE INDEX IF NOT EXISTS history_month_date_board_code_idx
 ON daily_records(trade_date, board, code, first_seen_sequence DESC, revision_id);
 CREATE INDEX IF NOT EXISTS history_month_observation_code_date_idx
 ON daily_observations(code, trade_date, sync_sequence DESC, revision_id);
+CREATE INDEX IF NOT EXISTS history_month_price_gap_idx
+ON daily_records(code, trade_date, revision_id)
+WHERE json_extract(payload_json, '$.cell.status') IN ('unknown_missing','qfq_missing','unadjusted_missing');
 """
 _REVISION_COLUMNS = """records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
        records.board, records.payload_json, records.content_hash"""
@@ -246,6 +249,21 @@ class SQLiteHistoryMonthPartitionRepository:
         if _CODE.fullmatch(code) is None:
             raise ValueError("history month code is invalid")
         return tuple(self.iter_range(start, end, snapshot_sequence=snapshot_sequence, code=code))
+
+    def missing_price_dates(self, snapshot_sequence: int) -> tuple[tuple[str, date], ...]:
+        """Project only unresolved latest observations, without decoding daily payloads."""
+        with closing(self._read_connection()) as connection:
+            self._require_metadata(connection)
+            rows = connection.execute(
+                "SELECT r.code,r.trade_date FROM daily_records r INDEXED BY history_month_price_gap_idx "
+                "WHERE json_extract(r.payload_json, '$.cell.status') IN "
+                "('unknown_missing','qfq_missing','unadjusted_missing') "
+                "AND r.revision_id=(SELECT o.revision_id FROM daily_observations o "
+                "WHERE o.code=r.code AND o.trade_date=r.trade_date AND o.sync_sequence<=? "
+                "ORDER BY o.sync_sequence DESC LIMIT 1) ORDER BY r.code,r.trade_date",
+                (snapshot_sequence,),
+            ).fetchall()
+        return tuple((str(code), date.fromisoformat(str(day))) for code, day in rows)
 
     def count_range(
         self,

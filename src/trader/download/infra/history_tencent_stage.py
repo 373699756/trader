@@ -124,13 +124,20 @@ class HistoryTencentStage:
 
     def gap_summary(self) -> HistoryGapSummary:
         with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
-            metadata, prices = connection.execute(
-                "SELECT SUM(reason='baostock_raw_metadata'), SUM(reason='baostock_price_pair') FROM gaps"
-            ).fetchone()
+            prices = connection.execute("SELECT COUNT(*) FROM gaps WHERE reason='baostock_price_pair'").fetchone()[0]
             failures = connection.execute("SELECT COUNT(*) FROM outcomes WHERE failure_reason IS NOT NULL").fetchone()[
                 0
             ]
-        return HistoryGapSummary(int(metadata or 0), int(prices or 0), int(failures))
+        return HistoryGapSummary(int(prices), int(failures))
+
+    def price_gap_codes(self) -> tuple[str, ...]:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            return tuple(
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT DISTINCT code FROM gaps WHERE reason='baostock_price_pair' ORDER BY code"
+                )
+            )
 
     def failure_reason(self, code: str) -> str | None:
         with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:

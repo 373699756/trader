@@ -332,6 +332,18 @@ class SQLiteHistoryControlRepository:
             raise HistoryControlError("history active snapshot pointer is inconsistent")
         return state
 
+    def read_source(self, content_hash: str) -> HistorySourceIdentity:
+        """Read one immutable supplier identity without scanning historical checkpoints."""
+        try:
+            with closing(self._read_connection()) as connection:
+                connection.execute("PRAGMA query_only=ON")
+                source = _read_publication_record(connection, "source", content_hash)
+                if not isinstance(source, HistorySourceIdentity):
+                    raise HistoryControlError("history source identity is invalid")
+                return source
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryControlError("history source identity read failed") from exc
+
     def load_published_state(self) -> HistoryPublishedControlState | None:
         """Read and hash four publication records, never historical checkpoints."""
         try:

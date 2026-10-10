@@ -6,19 +6,19 @@ import os
 import re
 import shutil
 import sqlite3
+import time as monotonic_time
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future, as_completed
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import (
-    BaoStockCodeDownload,
-    BaoStockIndustryInterval,
+    BaoStockDailyCell,
     BaoStockSecurity,
 )
 from trader.download.domain.history_control import (
@@ -35,9 +35,10 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceState, 
 from trader.download.domain.history_price_qualification import (
     HISTORY_TAIL_CONTRACT,
     HISTORY_UNIVERSE_CONTRACT,
-    combine_history_sources,
+    qualify_history_pairs,
     require_history_qfq_overlap,
 )
+from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
@@ -64,6 +65,7 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.download.infra.history_reference_files import write_history_reference
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 from trader.infra.workers import WorkerExecutor, injected_executor, submit_or_reject
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
@@ -83,6 +85,7 @@ class _CodeDownloadContext:
     supplier_context: HistorySupplierContext
     active: HistoryActiveSnapshot | None
     previous_codes: frozenset[str]
+    previous_gaps: dict[str, tuple[date, ...]]
 
 
 @dataclass(frozen=True)
@@ -169,13 +172,18 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
         _publish_progress(progress, "loading_context", "completed", (1, 1))
         _validate_context(context, configuration.sessions)
         source, calendar, universe = _control_identities(context)
+        reference = HistoryReferenceSnapshot(
+            tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
+        )
+        write_history_reference(root / "references" / f"{reference.content_hash}.json", reference)
         previous_codes = _active_universe(control, active)
         if (
             not previous_codes.issubset(item.code for item in universe.securities)
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
         ):
             raise RuntimeError("supplier_universe_regressed")
-        if _is_current(active, calendar, universe):
+        previous_gaps = _previous_price_gaps(root, active, context)
+        if _is_current(active, calendar, universe) and not previous_gaps:
             return _status("already_current", None, configuration, active, observed_at)
         if not _has_sufficient_disk(root, configuration.minimum_free_bytes):
             return _status("blocked", "disk_space_insufficient", configuration, active, observed_at)
@@ -192,6 +200,7 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
             universe,
             progress,
             worker_pool,
+            previous_gaps,
         )
     except (HistoryControlError, OSError, RuntimeError, TypeError, ValueError) as exc:
         active = _safe_active(control)
@@ -215,6 +224,7 @@ def _synchronize(  # noqa: PLR0913
     universe: HistoryUniverseIdentity,
     progress: HistorySyncProgressPort | None,
     worker_pool: WorkerExecutor | None,
+    previous_gaps: dict[str, tuple[date, ...]],
 ) -> HistoryMaintenanceStatus:
     sequence = 1 if active is None else active.sequence + 1
     sync_identity = _sync_identity(calendar, universe, active)
@@ -237,6 +247,7 @@ def _synchronize(  # noqa: PLR0913
             context,
             active,
             old_universe,
+            previous_gaps,
         )
         stage = HistoryTencentStage(
             configuration.archive_root / ".tencent-stage" / f"{sync_identity.rsplit('-', 1)[-1]}.sqlite3",
@@ -265,6 +276,7 @@ def _synchronize(  # noqa: PLR0913
         phases.supplement_baostock()
         completed, ordinal = phases.completed, phases.ordinal
         phases.check_cancel()
+        unresolved = _pending_price_gap_count(pending, sequence, context)
         snapshot = _seal_and_publish(
             configuration.archive_root,
             pending,
@@ -286,7 +298,9 @@ def _synchronize(  # noqa: PLR0913
             stage.clear()
         except OSError:
             pass
-        return _status("completed", None, configuration, snapshot, observed_at)
+        return _status(
+            "completed", None, configuration, snapshot, observed_at, unresolved_price_cells=max(0, unresolved)
+        )
     except (KeyboardInterrupt, _HistoryDownloadCancelledError):
         _publish_progress(progress, "downloading_codes", "cancelled", (completed, total))
         # A completed wave/batch may have advanced its durable checkpoint before cancellation.
@@ -331,6 +345,9 @@ class _HistoryDownloadPhases:
     completed: int
     progress: HistorySyncProgressPort | None
     cancel_requested: Cancellation
+    recovery_started_at: float = field(default_factory=monotonic_time.monotonic)
+    recovery_codes: int = 0
+    recovery_selection: frozenset[str] = frozenset()
 
     def check_cancel(self) -> None:
         if self.cancel_requested():
@@ -402,6 +419,11 @@ class _HistoryDownloadPhases:
         return "completed"
 
     def supplement_baostock(self) -> None:
+        self.recovery_started_at = monotonic_time.monotonic()
+        gaps = self.stage.price_gap_codes()
+        cap = self.context.configuration.baostock_max_codes
+        offset = ((self.sequence - 1) * cap) % len(gaps) if gaps else 0
+        self.recovery_selection = frozenset((gaps[offset:] + gaps[:offset])[:cap])
         universe = self.context.supplier_context.universe
         supplemented = self.stage.supplemented_codes()
         batch_size = self.context.configuration.download_batch_size
@@ -438,38 +460,61 @@ class _HistoryDownloadPhases:
     def _supplement_security(self, index: int, security: BaoStockSecurity) -> tuple[HistoryRevision, ...]:
         self.check_cancel()
         dates = _requested_dates(self.context, security)
-        self._price_progress("baostock_gap_fill", "started", index, security.code, dates)
+        self._price_progress("persisting_prices", "started", index, security.code, dates)
         if not dates:
-            self._price_progress("baostock_gap_fill", "completed", index + 1, security.code, dates)
+            self._price_progress("persisting_prices", "completed", index + 1, security.code, dates)
             return ()
         tencent = self.stage.read(security.code)
-        metadata_dates = tuple(
-            date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_raw_metadata")
-        )
-        metadata = self.supplier.fetch_baostock_raw(security, metadata_dates)
-        self.check_cancel()
         missing_dates = tuple(
             date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_price_pair")
         )
         anchors = tuple(date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_basis_anchor"))
         price_dates = tuple(sorted(set(missing_dates) | set(anchors)))
-        price_gaps = self.supplier.fetch_baostock_prices(security, price_dates) if price_dates else None
+        recovery: tuple[BaoStockDailyCell, ...] = ()
+        settings = self.context.configuration
+        if (
+            missing_dates
+            and security.code in self.recovery_selection
+            and self.recovery_codes < settings.baostock_max_codes
+            and monotonic_time.monotonic() - self.recovery_started_at < settings.baostock_budget_seconds
+        ):
+            self.recovery_codes += 1
+            self._price_progress("baostock_gap_fill", "started", index, security.code, price_dates)
+            try:
+                price_gaps = self.supplier.fetch_baostock_prices(security, price_dates)
+                batch = price_gaps.batch
+                if (
+                    batch.code != security.code
+                    or batch.failure_reasons
+                    or tuple(cell.trade_date for cell in batch.cells) != price_dates
+                    or any((batch.duplicate_rows, batch.null_rows, batch.out_of_window_rows, batch.future_rows))
+                ):
+                    raise ValueError("history_recovery_invalid")
+                if any(fact.is_st for fact in price_gaps.daily_facts):
+                    raise RuntimeError("history_st_reference_conflict")
+                recovery = price_gaps.batch.cells
+                qualify_history_pairs(security.code, dates, tencent, recovery)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                self.check_cancel()
+                if str(exc) == "history_st_reference_conflict":
+                    raise
+                recovery = ()
+            self._price_progress("baostock_gap_fill", "completed", index + 1, security.code, price_dates)
         self.check_cancel()
-        download = combine_history_sources(security, dates, tencent, metadata, price_gaps)
-        _validate_download(download, security.code, dates)
+        cells = qualify_history_pairs(security.code, dates, tencent, recovery)
         context = self.context
         if (
             context.active is not None
             and security.code in context.previous_codes
             and HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions
         ):
-            _validate_tail_overlap(context, download)
-        self._price_progress("baostock_gap_fill", "completed", index + 1, security.code, dates)
-        return _revisions(download, security, context.supplier_context.industry_intervals, self.sequence)
+            cells = _validate_tail_overlap(context, cells, security.code)
+        self._price_progress("persisting_prices", "completed", index + 1, security.code, dates)
+        return tuple(HistoryRevision(self.sequence, security.board, cell, None, None, None) for cell in cells)
 
     def _price_progress(
         self,
-        phase: Literal["tencent_history", "baostock_gap_fill"],
+        phase: Literal["tencent_history", "baostock_gap_fill", "persisting_prices"],
         state: Literal["started", "completed", "failed"],
         completed: int,
         code: str,
@@ -485,8 +530,10 @@ class _HistoryDownloadPhases:
                     completed,
                     len(self.context.supplier_context.universe),
                     code,
-                    supplier_source=("tencent" if phase == "tencent_history" else "baostock") if dates else None,
-                    requested_sessions=len(dates) if dates else None,
+                    supplier_source=("tencent" if phase == "tencent_history" else "baostock")
+                    if dates and phase != "persisting_prices"
+                    else None,
+                    requested_sessions=len(dates) if dates and phase != "persisting_prices" else None,
                 )
             )
         except OSError:
@@ -509,7 +556,6 @@ def _history_gap_rows(
         by_date = {cell.trade_date: cell for cell in window.cells}
         missing = False
         for day in dates:
-            yield security.code, day.isoformat(), "baostock_raw_metadata"
             cell = by_date.get(day)
             if failed or cell is None or cell.unadjusted is None or cell.qfq is None:
                 missing = True
@@ -585,6 +631,7 @@ def _requested_dates(context: _CodeDownloadContext, security: BaoStockSecurity) 
             sorted(
                 set(expected[-context.configuration.reread_sessions :])
                 | {day for day in expected if day > context.active.data_cutoff}
+                | (set(context.previous_gaps.get(security.code, ())) & set(expected))
             )
         )
         if HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions:
@@ -593,12 +640,16 @@ def _requested_dates(context: _CodeDownloadContext, security: BaoStockSecurity) 
     return requested
 
 
-def _validate_tail_overlap(context: _CodeDownloadContext, download: BaoStockCodeDownload) -> None:
+def _validate_tail_overlap(
+    context: _CodeDownloadContext, cells: tuple[BaoStockDailyCell, ...], code: str
+) -> tuple[BaoStockDailyCell, ...]:
     active = context.active
     assert active is not None
-    overlap = tuple(cell for cell in download.batch.cells if cell.trade_date <= active.data_cutoff)
+    overlap = tuple(cell for cell in cells if cell.trade_date <= active.data_cutoff)
     if not overlap:
-        raise RuntimeError("history_tail_qfq_overlap_missing")
+        return tuple(BaoStockDailyCell(code, cell.trade_date, "unknown_missing", None, None) for cell in cells)
+    prior: dict[date, BaoStockDailyCell] = {}
+    anchored = False
     for year, month in route_history_months(overlap[0].trade_date, overlap[-1].trade_date):
         reference = next((item for item in active.partitions if _partition_month(item) == (year, month)), None)
         if reference is None:
@@ -611,64 +662,28 @@ def _validate_tail_overlap(context: _CodeDownloadContext, download: BaoStockCode
             month,
         )
         rows = partition.read_code(
-            download.batch.code,
+            code,
             overlap[0].trade_date,
             overlap[-1].trade_date,
             snapshot_sequence=active.sequence,
         )
+        prior.update((row.trade_date, row.cell) for row in rows)
         for cell in (item for item in overlap if (item.trade_date.year, item.trade_date.month) == (year, month)):
             previous = next((row.cell for row in rows if row.trade_date == cell.trade_date), None)
-            if previous is None:
-                raise RuntimeError("history_tail_qfq_overlap_missing")
-            require_history_qfq_overlap(previous, cell)
-
-
-def _validate_download(download: BaoStockCodeDownload, code: str, expected: tuple[date, ...]) -> None:
-    batch = download.batch
-    dates = tuple(item.trade_date for item in batch.cells)
-    if (
-        batch.code != code
-        or dates != expected
-        or not all(item.obtained for item in batch.cells)
-        or batch.duplicate_rows
-        or batch.null_rows
-        or batch.out_of_window_rows
-        or batch.future_rows
-        or batch.failure_reasons
-    ):
-        raise RuntimeError("supplier_data_incomplete")
-
-
-def _revisions(
-    download: BaoStockCodeDownload,
-    security: BaoStockSecurity,
-    intervals: tuple[BaoStockIndustryInterval, ...],
-    sequence: int,
-) -> tuple[HistoryRevision, ...]:
-    facts = {item.trade_date: item.is_st for item in download.daily_facts}
-    applicable = tuple(item for item in intervals if item.code == security.code)
-    values = []
-    for cell in download.batch.cells:
-        industry = next(
-            (
-                item
-                for item in reversed(applicable)
-                if item.effective_from <= cell.trade_date
-                and (item.effective_to is None or cell.trade_date < item.effective_to)
-            ),
-            None,
-        )
-        values.append(
-            HistoryRevision(
-                sequence,
-                security.board,
-                cell,
-                facts.get(cell.trade_date),
-                industry.industry if industry is not None else None,
-                industry.classification if industry is not None else None,
-            )
-        )
-    return tuple(values)
+            if previous is not None and previous.obtained and cell.obtained:
+                require_history_qfq_overlap(previous, cell)
+                anchored = True
+    security = next(item for item in context.supplier_context.universe if item.code == code)
+    if tuple(cell.trade_date for cell in cells) == context.supplier_context.calendar.expected_dates(security):
+        anchored = True
+    return tuple(
+        prior[cell.trade_date]
+        if not cell.obtained and cell.trade_date in prior and prior[cell.trade_date].obtained
+        else cell
+        if anchored or not cell.obtained
+        else BaoStockDailyCell(code, cell.trade_date, "unknown_missing", None, None)
+        for cell in cells
+    )
 
 
 def _prepare_pending(
@@ -878,12 +893,48 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _previous_price_gaps(
+    root: Path, active: HistoryActiveSnapshot | None, context: HistorySupplierContext
+) -> dict[str, tuple[date, ...]]:
+    if active is None:
+        return {}
+    gaps: dict[str, list[date]] = defaultdict(list)
+    allowed_codes = {item.code for item in context.universe}
+    allowed_dates = frozenset(context.calendar.open_dates)
+    for reference in active.partitions:
+        year, month = _partition_month(reference)
+        partition = SQLiteHistoryMonthPartitionRepository(root / reference.relative_path, year, month)
+        for code, day in partition.missing_price_dates(active.sequence):
+            if code in allowed_codes and day in allowed_dates:
+                gaps[code].append(day)
+    return {code: tuple(sorted(days)) for code, days in gaps.items()}
+
+
+def _pending_price_gap_count(pending: _PendingPartitions, sequence: int, context: HistorySupplierContext) -> int:
+    allowed_codes = {item.code for item in context.universe}
+    allowed_dates = frozenset(context.calendar.open_dates)
+    count = 0
+    for month, candidate in pending.paths.items():
+        previous = pending.active_by_month.get(month)
+        path = candidate if candidate.is_file() else pending.root / previous.relative_path if previous else None
+        if path is None:
+            continue
+        partition = SQLiteHistoryMonthPartitionRepository(path, *month)
+        count += sum(
+            code in allowed_codes and day in allowed_dates for code, day in partition.missing_price_dates(sequence)
+        )
+    return count
+
+
 def _control_identities(
     context: HistorySupplierContext,
 ) -> tuple[HistorySourceIdentity, HistoryCalendarIdentity, HistoryUniverseIdentity]:
     cutoff = context.calendar.open_dates[-1]
     observed = datetime.combine(cutoff, _BAOSTOCK_DAILY_READY, _SHANGHAI)
-    supplier_contract = f"python_sdk_{canonical_artifact_hash((context.source_versions, context.industry_intervals))}"
+    reference = HistoryReferenceSnapshot(
+        tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
+    )
+    supplier_contract = f"history_ref_{reference.content_hash}_{canonical_artifact_hash(context.source_versions)[:16]}"
     source = HistorySourceIdentity("tencent_baostock", "history_daily", supplier_contract[:128], observed)
     calendar = HistoryCalendarIdentity(context.calendar.open_dates, source.content_hash)
     universe = HistoryUniverseIdentity(
@@ -985,6 +1036,8 @@ def _status(
     configuration: HistorySyncConfiguration,
     snapshot: HistoryActiveSnapshot | None,
     observed_at: datetime,
+    *,
+    unresolved_price_cells: int = 0,
 ) -> HistoryMaintenanceStatus:
     root = configuration.archive_root
     due = None
@@ -1010,6 +1063,7 @@ def _status(
         training_due=(due_state.training_due if due_state else False),
         training_due_reason=(due_state.reason if due_state else "data_incomplete"),
         automatic_training=False,
+        unresolved_price_cells=unresolved_price_cells,
     )
 
 

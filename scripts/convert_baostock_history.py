@@ -29,7 +29,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide, BaoStockIndustryInterval
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
@@ -42,6 +42,7 @@ from trader.download.domain.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.infra.baostock_gap_supplier import (
     BaoStockGapFamily,
     BaoStockGapRecord,
@@ -77,6 +78,7 @@ from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,
 )
+from trader.download.infra.history_reference_files import write_history_reference
 
 DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")
 DEFAULT_TARGET = Path("data/history/baostock")
@@ -91,7 +93,7 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SOURCE_FAMILIES = frozenset(
     {"daily_raw", "daily_qfq", "is_st", "industry", "qualification", "hard_filter", "risk_facts"}
 )
-DOWNLOADABLE_FIELD_FAMILIES = frozenset({"daily_raw", "daily_qfq", "is_st"})
+DOWNLOADABLE_FIELD_FAMILIES = frozenset({"daily_raw", "daily_qfq"})
 
 
 class ConversionError(RuntimeError):
@@ -872,9 +874,6 @@ def _monthly_revision(record: DailyRecord) -> HistoryRevision:
             "unadjusted": json.loads(record.raw_payload_json) if record.raw_payload_json is not None else None,
             "qfq": json.loads(record.qfq_payload_json) if record.qfq_payload_json is not None else None,
         },
-        "is_st": bool(record.is_st) if record.is_st is not None else None,
-        "industry": record.industry,
-        "industry_classification": record.industry_classification,
     }
     try:
         return decode_history_revision(_canonical_json(payload))
@@ -1272,11 +1271,7 @@ def _missing_gap_requests(
                         revision = decode_history_revision(cast(str, payload_json))
                     except (TypeError, ValueError) as exc:
                         raise ConversionError("converted monthly revision is unreadable") from exc
-                    missing = (
-                        ("daily_raw", revision.cell.unadjusted),
-                        ("daily_qfq", revision.cell.qfq),
-                        ("is_st", revision.is_st),
-                    )
+                    missing = (("daily_raw", revision.cell.unadjusted), ("daily_qfq", revision.cell.qfq))
                     for family, value in missing:
                         if value is None:
                             grouped.setdefault((revision.code, family), set()).add(revision.trade_date)
@@ -1659,8 +1654,7 @@ def _read_completed_summary(
                     "GROUP BY trade_date, code"
                     ") SELECT COUNT(*), "
                     "COALESCE(SUM(json_extract(records.payload_json, '$.cell.unadjusted') IS NULL), 0), "
-                    "COALESCE(SUM(json_extract(records.payload_json, '$.cell.qfq') IS NULL), 0), "
-                    "COALESCE(SUM(json_extract(records.payload_json, '$.is_st') IS NULL), 0) "
+                    "COALESCE(SUM(json_extract(records.payload_json, '$.cell.qfq') IS NULL), 0) "
                     "FROM latest JOIN daily_observations AS observations "
                     "ON observations.trade_date=latest.trade_date AND observations.code=latest.code "
                     "AND observations.sync_sequence=latest.sync_sequence "
@@ -1669,10 +1663,10 @@ def _read_completed_summary(
                 ).fetchone()
                 if summary is None:
                     raise ConversionError("completed monthly partition summary is unavailable")
-                month_active_rows, missing_raw, missing_qfq, missing_is_st = cast(tuple[int, int, int, int], summary)
+                month_active_rows, missing_raw, missing_qfq = cast(tuple[int, int, int], summary)
                 physical_rows += partition.row_count
                 active_rows += month_active_rows
-                remaining_gaps += missing_raw + missing_qfq + missing_is_st
+                remaining_gaps += missing_raw + missing_qfq
             _remove_empty_sqlite_sidecars(path)
             progress.advance(1, partition.relative_path, force=True)
         return ConversionSummary(
@@ -2725,7 +2719,7 @@ def build_parser() -> argparse.ArgumentParser:
             "把旧 BaoStock 父/增量归档流式转换为 control.sqlite3 + YYYY/MM.sqlite3；"
             "转换全程单进程、逐月旁路构建、原子发布，并可续传已校验月份；"
             "已完成的 hash 子目录结果会在完整校验后原地归一化；"
-            "缺失 raw/qfq/is_st 默认由一个受控 SDK 子进程补齐。"
+            "缺失 raw/qfq 默认由一个受控 SDK 子进程补齐。"
         )
     )
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="旧 sessions-2000 归档目录")
@@ -2757,7 +2751,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--offline",
         action="store_true",
-        help="只转换现有父/增量归档，不联网补 raw/qfq/is_st 缺口",
+        help="只转换现有父/增量归档，不联网补 raw/qfq 缺口",
     )
     parser.add_argument("--no-nice", action="store_true", help="不降低 POSIX CPU 调度优先级")
     return parser

@@ -26,6 +26,7 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync
@@ -77,6 +78,7 @@ class _Supplier:
             (BaoStockSecurity("600001", "样本", "main", date(2000, 1, 1), None, "test"),),
             BaoStockSourceVersions("test", "3.12", ()),
             (BaoStockIndustryInterval("600001", date(2000, 1, 1), None, "银行", "test"),),
+            (HistoryStEvidence("600001", _as_of, "clear"),),
         )
 
     def fetch_code(self, security, dates):

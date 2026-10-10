@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import date
 from pathlib import Path
 
-from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_status import (
     HistoryArchiveError,
@@ -37,15 +36,8 @@ def audit_archived_historical_industry_facts(
 
     archive = load_active_history_archive(history_root)
     verify_active_history_archive(archive)
-    active_codes = frozenset(item.code for item in archive.universe.securities)
-    revisions = tuple(
-        revision
-        for revision in SQLiteHistoryArchiveReader(archive.root).iter_snapshot_revisions(archive.snapshot)
-        if revision.code in active_codes
-    )
-    if not revisions:
-        raise HistoryArchiveError("history_snapshot_rows_unavailable")
-    facts = _industry_facts(revisions, archive.snapshot.content_hash)
+    reference = SQLiteHistoryArchiveReader(archive.root).reference_index(archive.snapshot).reference
+    facts = _industry_facts(reference, archive.snapshot.content_hash)
     windows = tuple(
         _stock_window(item.code, item.board, item.listed_on, item.delisted_on, archive.calendar.open_dates)
         for item in archive.universe.securities
@@ -96,39 +88,23 @@ def audit_archived_historical_industry_facts(
 
 
 def _industry_facts(
-    revisions: tuple[HistoryRevision, ...],
+    reference: HistoryReferenceSnapshot,
     source_version: str,
 ) -> tuple[HistoricalIndustryFact, ...]:
-    grouped: dict[str, list[HistoryRevision]] = defaultdict(list)
-    for revision in revisions:
-        if revision.industry is not None and revision.industry_classification is not None:
-            grouped[revision.code].append(revision)
-    facts: list[HistoricalIndustryFact] = []
-    for code, values in sorted(grouped.items()):
-        ordered = sorted(values, key=lambda item: item.trade_date)
-        starts = [
-            index
-            for index, value in enumerate(ordered)
-            if index == 0
-            or (value.industry, value.industry_classification)
-            != (ordered[index - 1].industry, ordered[index - 1].industry_classification)
-        ]
-        for offset, index in enumerate(starts):
-            value = ordered[index]
-            facts.append(
-                HistoricalIndustryFact(
-                    "baostock_archived_industry",
-                    source_version,
-                    code,
-                    value.industry or "",
-                    value.industry_classification or "",
-                    value.trade_date,
-                    ordered[starts[offset + 1]].trade_date if offset + 1 < len(starts) else None,
-                    None,
-                    value.content_hash,
-                )
-            )
-    return tuple(facts)
+    return tuple(
+        HistoricalIndustryFact(
+            "baostock_archived_industry",
+            source_version,
+            item.code,
+            item.industry,
+            item.classification,
+            item.effective_from,
+            item.effective_to,
+            None,
+            item.content_hash,
+        )
+        for item in reference.industry_intervals
+    )
 
 
 def _stock_window(

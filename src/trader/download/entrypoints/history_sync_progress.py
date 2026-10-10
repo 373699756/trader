@@ -20,8 +20,10 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_daily_qfq": "前复权日线",
     "supplier_routing": "下载来源",
     "tencent_history": "Tencent历史下载",
+    "history_st_reference": "历史ST名单",
     "history_gap_inventory": "统计历史缺口",
     "baostock_gap_fill": "BaoStock补缺",
+    "persisting_prices": "历史价格整理",
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
     "sealing_partitions": "封存月分片",
@@ -43,6 +45,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "downloading_codes": "股票",
     "tencent_history": "股票",
     "baostock_gap_fill": "股票",
+    "persisting_prices": "股票",
     "sealing_partitions": "月份",
 }
 _RESULT_LABELS = {
@@ -53,7 +56,16 @@ _RESULT_LABELS = {
     "blocked": "同步阻塞",
     "failed": "同步失败",
 }
-_COUNT_STAGES = frozenset({"downloading_codes", "tencent_history", "baostock_gap_fill", "sealing_partitions"})
+_COUNT_STAGES = frozenset(
+    {
+        "history_st_reference",
+        "downloading_codes",
+        "tencent_history",
+        "baostock_gap_fill",
+        "persisting_prices",
+        "sealing_partitions",
+    }
+)
 _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
 
 
@@ -108,7 +120,6 @@ class StderrHistorySyncProgress:
             summary = progress.gap_summary
             parts.extend(
                 (
-                    f"元数据待补 {summary.metadata_cells} 股日",
                     f"价格对待补 {summary.price_pair_cells} 股日",
                     f"Tencent失败 {summary.failed_codes} 股",
                 )
@@ -146,6 +157,8 @@ class StderrHistorySyncProgress:
         if status.state in {"failed", "blocked"}:
             if status.reason is not None:
                 parts.append(f"错误 {status.reason}")
+        if status.unresolved_price_cells:
+            parts.append(f"未修复价格缺口 {status.unresolved_price_cells} 股日")
         self._print(parts)
 
     def _elapsed(self) -> float:

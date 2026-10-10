@@ -21,9 +21,6 @@ def encode_history_revision(value: HistoryRevision) -> str:
             "unadjusted": _encode_side(value.cell.unadjusted),
             "qfq": _encode_side(value.cell.qfq),
         },
-        "is_st": value.is_st,
-        "industry": value.industry,
-        "industry_classification": value.industry_classification,
     }
     return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
@@ -37,9 +34,6 @@ def decode_history_revision(payload_json: str) -> HistoryRevision:
                 "first_seen_sequence",
                 "board",
                 "cell",
-                "is_st",
-                "industry",
-                "industry_classification",
             },
             "revision",
         )
@@ -65,9 +59,9 @@ def decode_history_revision(payload_json: str) -> HistoryRevision:
             _integer(payload["first_seen_sequence"], "first seen sequence"),
             cast(Literal["main", "chinext", "star"], _text(payload["board"], "board")),
             cell,
-            _optional_boolean(payload["is_st"]),
-            _optional_text(payload["industry"], "industry"),
-            _optional_text(payload["industry_classification"], "industry classification"),
+            None,
+            None,
+            None,
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("history monthly revision payload is invalid") from exc
@@ -150,21 +144,9 @@ def _text(value: object, label: str) -> str:
     return value
 
 
-def _optional_text(value: object, label: str) -> str | None:
-    if value is not None and not isinstance(value, str):
-        raise TypeError(f"history monthly {label} must be optional text")
-    return value
-
-
 def _integer(value: object, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"history monthly {label} must be integer")
-    return value
-
-
-def _optional_boolean(value: object) -> bool | None:
-    if value is not None and not isinstance(value, bool):
-        raise TypeError("history monthly ST fact must be optional boolean")
     return value
 
 

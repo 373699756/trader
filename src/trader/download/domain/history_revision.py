@@ -42,9 +42,11 @@ class HistoryRevision:
             raise ValueError("history monthly revision industry facts are invalid")
         object.__setattr__(self, "industry", industry)
         object.__setattr__(self, "industry_classification", classification)
-        revision_id = canonical_artifact_hash((self.board, self.cell, self.is_st, industry, classification))
+        revision_id = canonical_artifact_hash((self.board, self.cell))
         object.__setattr__(self, "revision_id", revision_id)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(
+            self, "content_hash", canonical_artifact_hash((self.first_seen_sequence, self.board, self.cell))
+        )
 
     @property
     def code(self) -> str:
@@ -82,8 +84,8 @@ class HistoryRevision:
             not self.cell.obtained
             or self.cell.unadjusted is None
             or self.cell.qfq is None
-            or self.is_st is None
-            or self.industry is None
+            or self.cell.unadjusted.trading_status != "trading"
+            or self.cell.qfq.trading_status != "trading"
         ):
             return None
         return HistoryTrainingPoint(

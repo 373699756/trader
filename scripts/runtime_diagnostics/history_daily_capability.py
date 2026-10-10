@@ -19,8 +19,8 @@ from .reporting import emit_report
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from trader.download.domain.history_sync import BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS  # noqa: E402
 from trader.download.infra.baostock_session import (  # noqa: E402
-    BAOSTOCK_QUERY_INTERVAL_SECONDS,
     BaoStockSessionSdkPort,
     load_baostock_sdk,
     login_baostock,
@@ -74,7 +74,7 @@ def _validate(args: argparse.Namespace) -> None:
 def minimum_baostock_duration(
     security_count: int,
     *,
-    query_interval_seconds: float = BAOSTOCK_QUERY_INTERVAL_SECONDS,
+    query_interval_seconds: float = BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS,
 ) -> BaoStockDurationEstimate:
     if security_count < 1 or query_interval_seconds <= 0.0:
         raise ValueError("security count and query interval must be positive")

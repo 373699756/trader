@@ -3,14 +3,20 @@ from __future__ import annotations
 import os
 from collections import defaultdict
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
 import trader.download.infra.history_month_partition as partition_module
-from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide, BaoStockIndustryInterval
+from trader.download.domain.history_control import (
+    HistoryActiveSnapshot,
+    HistorySnapshotPartition,
+    HistorySourceIdentity,
+)
+from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import project_history_cell
 from trader.download.infra.history_archive_reader import (
@@ -19,7 +25,9 @@ from trader.download.infra.history_archive_reader import (
     SQLiteHistoryArchiveReader,
     route_history_months,
 )
+from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_reference_files import write_history_reference
 
 
 def _side(code: str, day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -65,13 +73,29 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         repository.initialize()
         repository.save_revisions(tuple(month_rows))
         references.append(repository.seal())
+    codes = tuple(sorted({row.code for row in rows}))
+    reference = HistoryReferenceSnapshot(
+        codes,
+        tuple(BaoStockIndustryInterval(code, date(2000, 1, 1), None, "bank", "sw") for code in codes),
+        tuple(HistoryStEvidence(code, max(row.trade_date for row in rows), "clear") for code in codes),
+    )
+    write_history_reference(root / "references" / f"{reference.content_hash}.json", reference)
+    source = HistorySourceIdentity(
+        "tencent",
+        "history_daily",
+        f"history_ref_{reference.content_hash}_fixture",
+        datetime(2026, 10, 10, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    control = SQLiteHistoryControlRepository(root / "control.sqlite3")
+    control.initialize()
+    control.save_source(source)
     return HistoryActiveSnapshot(
         1,
         max(row.trade_date for row in rows),
         max(row.trade_date for row in rows),
         "a" * 64,
         "b" * 64,
-        "c" * 64,
+        source.content_hash,
         tuple(references),
     )
 
@@ -181,7 +205,11 @@ def test_revision_comparison_uses_one_current_physical_partition_for_both_sequen
     first = date(2026, 9, 9)
     second = date(2026, 9, 10)
     original = _revision("600001", first)
-    revised = replace(original, first_seen_sequence=2, is_st=True)
+    revised = replace(
+        original,
+        first_seen_sequence=2,
+        cell=replace(original.cell, qfq=replace(original.cell.qfq, close_price=original.cell.qfq.close_price + 0.1)),
+    )
     unchanged = _revision("600001", second)
     snapshot = _build_snapshot(root, (original, revised, unchanged))
     comparison = HistoryPartitionRevisionComparison(snapshot.partitions[0], 1, 2)

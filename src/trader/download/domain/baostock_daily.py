@@ -50,7 +50,7 @@ def validate_daily_side_values(
 ) -> None:
     """Shared numeric qualification for supplier and published daily facts."""
     validate_daily_prices(adjustment, trading_status, prices, flows)
-    validate_daily_raw_fields(adjustment, trading_status, raw_values)
+    validate_daily_raw_fields(adjustment, trading_status, raw_values, require_raw_fields=False)
 
 
 def validate_daily_prices(
