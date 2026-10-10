@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 
+from tests.unit.infra.research.test_baostock_gateway import _Result
+from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.download.infra.baostock_gateway import BaoStockRowResult
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, _Activity, _RateLimitedSdk
@@ -188,7 +190,7 @@ def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage() -> None:
     supplier._connection = _SilentConnection(clock)  # type: ignore[assignment]  # bounded IPC test double
 
     with pytest.raises(RuntimeError, match="supplier_calendar_timeout"):
-        supplier.load_context(date(2026, 9, 11), 2000)
+        supplier.load_context(date(2026, 9, 11), 2000, universe=())
 
     waiting = [item for item in recorder.values if item.state == "waiting"]
     assert waiting
@@ -214,7 +216,74 @@ def test_supplier_result_handle_does_not_restart_the_call_deadline() -> None:
     supplier._connection = _TimedConnection(clock)  # type: ignore[assignment]  # bounded IPC test double
 
     with pytest.raises(RuntimeError, match="supplier_calendar_timeout"):
-        supplier.load_context(date(2026, 9, 11), 2000)
+        supplier.load_context(date(2026, 9, 11), 2000, universe=())
 
     assert recorder.values[-1].state == "failed"
     assert recorder.values[-1].call_elapsed_seconds == pytest.approx(1.0)
+
+
+def test_worker_context_keeps_official_universe_without_querying_stock_basic(monkeypatch) -> None:
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+
+    dates = (date(2026, 10, 8), date(2026, 10, 9))
+    universe = (BaoStockSecurity("302132", "fixture", "chinext", dates[0], None, "exchange_security_master"),)
+    calls: list[str] = []
+
+    class Sdk(_Sdk):
+        def login(self):
+            calls.append("login")
+            return _Result((), ())
+
+        def logout(self):
+            calls.append("logout")
+            return _Result((), ())
+
+        def query_stock_basic(self):
+            raise AssertionError("history must not reload BaoStock's universe")
+
+        def query_trade_dates(self, **_kwargs):
+            calls.append("calendar")
+            return _Result(("calendar_date", "is_trading_day"), tuple((day.isoformat(), "1") for day in dates))
+
+        def query_stock_industry(self, **_kwargs):
+            calls.append("industry")
+            return _Result(
+                ("updateDate", "code", "industry", "industryClassification"),
+                (("2026-10-08", "sz.302132", "fixture", "fixture"), ("2026-10-08", "sh.600002", "old", "fixture")),
+            )
+
+    class Connection:
+        def __init__(self):
+            self.commands = iter((supplier_module._LoadContext(dates[-1], 2, universe), supplier_module._Stop()))
+            self.responses = []
+            self.closed = False
+
+        def recv(self):
+            return next(self.commands)
+
+        def send(self, value):
+            self.responses.append(value)
+
+        def close(self):
+            self.closed = True
+
+    connection = Connection()
+    rate_limited_sdk = supplier_module._RateLimitedSdk
+    monkeypatch.setattr(supplier_module, "_silence_vendor_output", lambda: None)
+    monkeypatch.setattr(supplier_module, "load_baostock_sdk", Sdk)
+    monkeypatch.setattr(supplier_module, "baostock_dependency_versions", lambda: ())
+    monkeypatch.setattr(
+        supplier_module,
+        "_RateLimitedSdk",
+        lambda sdk, activity, interval: rate_limited_sdk(
+            sdk, activity, interval, monotonic=lambda: 0.0, sleep=lambda _seconds: None
+        ),
+    )
+    supplier_module._worker_main(connection, 1.5)
+    context = next(item.context for item in connection.responses if isinstance(item, supplier_module._Response))
+    assert context is not None
+    assert context.calendar.open_dates == dates
+    assert context.universe == universe
+    assert tuple(item.code for item in context.industry_intervals) == ("302132",)
+    assert calls == ["login", "calendar", "industry", "logout"]
+    assert connection.closed

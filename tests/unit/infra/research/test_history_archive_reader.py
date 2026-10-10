@@ -89,14 +89,23 @@ def test_archive_routes_single_day_code_window_and_cross_month_training_windows(
     assert tuple(row.trade_date for row in code_rows) == dates[-61:]
     assert tuple(archive.iter_snapshot_revisions(snapshot)) == rows
 
-    windows = tuple(archive.iter_training_windows(snapshot, dates))
+    windows = tuple(archive.iter_training_windows(snapshot, dates, {"600001", "600002"}))
     assert len(windows) == 4
     assert all(len(window.points) == 61 for window in windows)
+    current_windows = tuple(archive.iter_training_windows(snapshot, dates, {"600001"}))
+    assert len(current_windows) == 2
+    assert {window.code for window in current_windows} == {"600001"}
 
     with pytest.raises(ValueError, match="cutoff"):
         archive.read_day(dates[-1] + timedelta(days=1), snapshot)
     with pytest.raises(HistoryArchiveReadError, match="cover"):
-        tuple(archive.iter_training_windows(replace(snapshot, partitions=snapshot.partitions[:-1]), dates))
+        tuple(
+            archive.iter_training_windows(
+                replace(snapshot, partitions=snapshot.partitions[:-1]),
+                dates,
+                {"600001", "600002"},
+            )
+        )
 
 
 @pytest.mark.slow
@@ -115,7 +124,7 @@ def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows
         replayed_rows.append(row)
         if peak_descriptors is not None:
             peak_descriptors = max(peak_descriptors, len(tuple(descriptor_root.iterdir())))
-    windows = archive.iter_training_windows(snapshot, dates)
+    windows = archive.iter_training_windows(snapshot, dates, {"600001"})
     window_count = 0
     final_window = None
     for current_window in windows:
@@ -128,7 +137,7 @@ def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows
     assert final_window is not None
     assert len(final_window.points) == 61
     assert final_window.trade_date == dates[-1]
-    long_windows = tuple(archive.iter_training_windows(snapshot, dates, window_sessions=251))
+    long_windows = tuple(archive.iter_training_windows(snapshot, dates, {"600001"}, window_sessions=251))
     assert len(long_windows) == 1750
     assert len(long_windows[-1].points) == 251
     assert long_windows[-1].trade_date == dates[-1]

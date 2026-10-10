@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date
 
 from trader.download.domain.baostock_daily import BaoStockCodeDownload, BaoStockSecurity
 from trader.download.domain.history_price_qualification import (
     HISTORY_TAIL_CONTRACT,
+    HISTORY_UNIVERSE_CONTRACT,
     TENCENT_HISTORY_MAX_SESSIONS,
     merge_tencent_windows,
 )
@@ -22,19 +24,26 @@ class HistorySupplierRouter:
         self,
         baseline: BaoStockHistorySupplier,
         prices: TencentQfqSupplier,
+        load_universe: Callable[[], tuple[BaoStockSecurity, ...]],
     ) -> None:
         self._baseline = baseline
         self._prices = prices
+        self._load_universe = load_universe
 
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
-        context = self._baseline.load_context(as_of, sessions)
+        universe = self._load_universe()
+        context = self._baseline.load_context(as_of, sessions, universe=universe)
         versions = context.source_versions
         return replace(
             context,
             source_versions=replace(
                 versions,
                 sdk_version=f"{versions.sdk_version}+tencent-history",
-                dependency_versions=(*versions.dependency_versions, HISTORY_TAIL_CONTRACT),
+                dependency_versions=(
+                    *versions.dependency_versions,
+                    HISTORY_TAIL_CONTRACT,
+                    HISTORY_UNIVERSE_CONTRACT,
+                ),
             ),
         )
 

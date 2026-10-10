@@ -20,9 +20,9 @@ from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import completed_daily_cutoff
+from trader.download.infra.exchange_security_universe import load_current_a_share_universe
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
-from trader.download.infra.qfq_exchange_universe import load_qfq_securities
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqOptions, TencentQfqSupplier
 from trader.infra.market_data.providers.exchange_security_master import fetch_sse_listings, fetch_szse_listings
@@ -174,7 +174,7 @@ def main() -> int:
             TencentQfqDependencies(
                 requests.Session,
                 partial(
-                    load_qfq_securities,
+                    load_current_a_share_universe,
                     partial(fetch_sse_listings, get=requests.get),
                     partial(fetch_szse_listings, get=requests.get),
                     args.timeout_seconds,

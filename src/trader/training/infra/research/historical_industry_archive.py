@@ -37,7 +37,12 @@ def audit_archived_historical_industry_facts(
 
     archive = load_active_history_archive(history_root)
     verify_active_history_archive(archive)
-    revisions = tuple(SQLiteHistoryArchiveReader(archive.root).iter_snapshot_revisions(archive.snapshot))
+    active_codes = frozenset(item.code for item in archive.universe.securities)
+    revisions = tuple(
+        revision
+        for revision in SQLiteHistoryArchiveReader(archive.root).iter_snapshot_revisions(archive.snapshot)
+        if revision.code in active_codes
+    )
     if not revisions:
         raise HistoryArchiveError("history_snapshot_rows_unavailable")
     facts = _industry_facts(revisions, archive.snapshot.content_hash)

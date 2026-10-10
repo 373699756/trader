@@ -70,8 +70,11 @@ class SQLitePublishedHistoryArchive:
         archive = self._matching_archive(manifest)
         dates = _session_dates(manifest, sessions)
         windows: list[PublishedHistoryWindow] = []
+        allowed_codes = frozenset(manifest.universe_codes)
         try:
             for code in tuple(dict.fromkeys(codes)):
+                if code not in allowed_codes:
+                    continue
                 rows = self._reader.read_published_code_window(code, dates, archive.snapshot)
                 if rows:
                     windows.append(PublishedHistoryWindow(code, rows))

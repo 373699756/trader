@@ -182,6 +182,7 @@ class SQLiteHistoryTrainingInputArchive:
             yield from self._archive.iter_training_windows(
                 self._active,
                 dates,
+                self._codes,
                 progress,
                 window_sessions=window_sessions,
             )

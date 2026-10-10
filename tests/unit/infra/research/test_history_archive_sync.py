@@ -86,22 +86,28 @@ class FakeSupplier:
     calls: list[tuple[str, tuple[date, ...]]] = field(default_factory=list)
     events: list[str] = field(default_factory=list)
 
-    def load_context(self, _as_of: date, sessions: int) -> HistorySupplierContext:
+    def load_context(
+        self,
+        _as_of: date,
+        sessions: int,
+        *,
+        universe: tuple[BaoStockSecurity, ...] | None = None,
+    ) -> HistorySupplierContext:
         selected = self.dates[-sessions:]
-        universe = tuple(
+        selected_universe = universe or tuple(
             BaoStockSecurity(code, code, "main", date(2000, 1, 1), None, "test") for code in ("600001", "600002")
         )
         intervals = (
             tuple(
                 BaoStockIndustryInterval(code, date(2000, 1, 1), None, self.industry, "test")
-                for code in ("600001", "600002")
+                for code in (item.code for item in selected_universe)
             )
             if self.industry is not None
             else ()
         )
         return HistorySupplierContext(
             BaoStockCalendar(selected),
-            universe,
+            selected_universe,
             BaoStockSourceVersions("test", "3.12", ()),
             intervals,
         )

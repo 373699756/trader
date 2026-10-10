@@ -42,7 +42,7 @@ from trader.download.infra.baostock_session import (
 class _LoadContext:
     as_of: date
     sessions: int
-    include_industry: bool = True
+    universe: tuple[BaoStockSecurity, ...]
 
 
 @dataclass(frozen=True)
@@ -197,8 +197,14 @@ class BaoStockHistorySupplier:
     def __exit__(self, *_args: object) -> None:
         self.close()
 
-    def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
-        response = self._request(_LoadContext(as_of, sessions))
+    def load_context(
+        self,
+        as_of: date,
+        sessions: int,
+        *,
+        universe: tuple[BaoStockSecurity, ...],
+    ) -> HistorySupplierContext:
+        response = self._request(_LoadContext(as_of, sessions, universe))
         if response.context is None:
             raise RuntimeError(response.failure_reason or "supplier_context_failed")
         return response.context
@@ -214,12 +220,6 @@ class BaoStockHistorySupplier:
         if response.download is None:
             raise RuntimeError(response.failure_reason or "supplier_query_failed")
         return response.download
-
-    def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
-        response = self._request(_LoadContext(as_of, sessions, include_industry=False))
-        if response.context is None:
-            raise RuntimeError(response.failure_reason or "supplier_context_failed")
-        return response.context
 
     def close(self) -> None:
         process = self._process
@@ -440,12 +440,11 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                     requested = BaoStockDailySpec(sessions=command.sessions, source_cutoff=command.as_of)
                     calendar = gateway.fetch_calendar(requested)
                     spec = BaoStockDailySpec(sessions=command.sessions, source_cutoff=calendar.open_dates[-1])
-                    universe = gateway.fetch_universe(spec)
-                    industries = (
-                        gateway.fetch_industry_intervals(spec, calendar, universe) if command.include_industry else ()
-                    )
+                    industries = gateway.fetch_industry_intervals(spec, calendar, command.universe)
                     connection.send(
-                        _Response(HistorySupplierContext(calendar, universe, gateway.source_versions(), industries))
+                        _Response(
+                            HistorySupplierContext(calendar, command.universe, gateway.source_versions(), industries)
+                        )
                     )
                 elif isinstance(command, _FetchCode):
                     calendar = BaoStockCalendar(command.dates)

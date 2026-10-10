@@ -341,6 +341,7 @@ class SQLiteHistoryArchiveReader:
         self,
         snapshot: HistoryActiveSnapshot,
         calendar_dates: tuple[date, ...],
+        codes: Collection[str],
         progress: Callable[[int], None] | None = None,
         *,
         window_sessions: int = HISTORY_TRAINING_WINDOW_SESSIONS,
@@ -354,6 +355,7 @@ class SQLiteHistoryArchiveReader:
             or dates[-1] > snapshot.data_cutoff
         ):
             raise ValueError("history training calendar is invalid")
+        allowed_codes = _training_codes(codes)
         expected_months = route_history_months(dates[0], dates[-1])
         available_months = tuple(
             _reference_month(reference)
@@ -366,7 +368,10 @@ class SQLiteHistoryArchiveReader:
         buffers: dict[str, deque[HistoryTrainingPoint]] = {}
         previous_positions: dict[str, int] = {}
         processed_rows = 0
-        for revision in self.iter_range(dates[0], dates[-1], snapshot):
+        current_revisions = (
+            revision for revision in self.iter_range(dates[0], dates[-1], snapshot) if revision.code in allowed_codes
+        )
+        for revision in current_revisions:
             processed_rows += 1
             current_position = position.get(revision.trade_date)
             if current_position is None:
@@ -448,6 +453,13 @@ class SQLiteHistoryArchiveReader:
             month,
             immutable_read=True,
         )
+
+
+def _training_codes(codes: Collection[str]) -> frozenset[str]:
+    selected = frozenset(codes)
+    if not selected or any(_CODE.fullmatch(code) is None for code in selected):
+        raise ValueError("history training universe is invalid")
+    return selected
 
 
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:

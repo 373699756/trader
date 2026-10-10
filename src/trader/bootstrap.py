@@ -24,11 +24,11 @@ from trader.download.domain.history_sync import HistorySyncConfiguration, Histor
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.exchange_security_universe import load_current_a_share_universe
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
-from trader.download.infra.qfq_exchange_universe import load_qfq_securities
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
@@ -176,6 +176,12 @@ def execute_history_download(
     )
     history_pool.start()
     try:
+        load_current_securities = partial(
+            load_current_a_share_universe,
+            partial(fetch_sse_listings, get=requests.get),
+            partial(fetch_szse_listings, get=requests.get),
+            15.0,
+        )
         with BaoStockHistorySupplier(
             configuration,
             progress=supplier_progress or progress,
@@ -184,18 +190,13 @@ def execute_history_download(
             prices = TencentQfqSupplier(
                 TencentQfqDependencies(
                     requests.Session,
-                    partial(
-                        load_qfq_securities,
-                        partial(fetch_sse_listings, get=requests.get),
-                        partial(fetch_szse_listings, get=requests.get),
-                        15.0,
-                    ),
+                    load_current_securities,
                     cancel_requested,
                 )
             )
             return DownloadHistoryUseCase(HistoryArchiveGateway(worker_pool=history_pool)).execute(
                 configuration,
-                HistorySupplierRouter(baseline, prices),
+                HistorySupplierRouter(baseline, prices, load_current_securities),
                 clock=clock,
                 progress=progress,
                 cancel_requested=cancel_requested,
@@ -230,7 +231,7 @@ def execute_qfq_download(
                 TencentQfqDependencies(
                     requests.Session,
                     partial(
-                        load_qfq_securities,
+                        load_current_a_share_universe,
                         partial(fetch_sse_listings, get=requests.get),
                         partial(fetch_szse_listings, get=requests.get),
                         15.0,

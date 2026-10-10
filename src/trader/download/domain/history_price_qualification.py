@@ -17,6 +17,7 @@ from trader.download.domain.published_history import PublishedHistoryCell, Publi
 
 TENCENT_HISTORY_MAX_SESSIONS = 640
 HISTORY_TAIL_CONTRACT = ("history", "tencent-first-baostock-gap")
+HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-a-share")
 
 
 def _require_raw_parity(raw: BaoStockDailySide, price: PublishedHistorySide | BaoStockDailySide) -> None:

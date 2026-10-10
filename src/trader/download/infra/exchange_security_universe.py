@@ -1,4 +1,4 @@
-"""Current supported A-share identities for Tencent short-window downloads."""
+"""Current supported A-share identities shared by history and qfq downloads."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurit
 from trader.infra.market_data.providers.exchange_security_master import ListingFetcher
 
 
-def load_qfq_securities(
+def load_current_a_share_universe(
     sse_fetcher: ListingFetcher, szse_fetcher: ListingFetcher, timeout_seconds: float
 ) -> tuple[BaoStockSecurity, ...]:
     listings = tuple(sse_fetcher(timeout_seconds)) + tuple(szse_fetcher(timeout_seconds))
@@ -18,7 +18,7 @@ def load_qfq_securities(
         or {item.exchange for item in listings} != {"SSE", "SZSE"}
         or any(item.board not in ("main", "chinext", "star") for item in listings)
     ):
-        raise ValueError("qfq official security universe is incomplete")
+        raise ValueError("official A-share security universe is incomplete")
     return tuple(
         BaoStockSecurity(
             item.code, item.name, cast(BaoStockBoard, item.board), item.listing_date, None, "exchange_security_master"

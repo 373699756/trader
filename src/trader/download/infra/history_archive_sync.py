@@ -34,6 +34,7 @@ from trader.download.domain.history_control import (
 from trader.download.domain.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
 from trader.download.domain.history_price_qualification import (
     HISTORY_TAIL_CONTRACT,
+    HISTORY_UNIVERSE_CONTRACT,
     combine_history_sources,
     require_history_qfq_overlap,
 )
@@ -169,7 +170,10 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
         _validate_context(context, configuration.sessions)
         source, calendar, universe = _control_identities(context)
         previous_codes = _active_universe(control, active)
-        if not previous_codes.issubset(item.code for item in universe.securities):
+        if (
+            not previous_codes.issubset(item.code for item in universe.securities)
+            and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
+        ):
             raise RuntimeError("supplier_universe_regressed")
         if _is_current(active, calendar, universe):
             return _status("already_current", None, configuration, active, observed_at)
