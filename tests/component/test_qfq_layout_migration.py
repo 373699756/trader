@@ -109,7 +109,7 @@ def test_migration_cli_locks_explicit_qfq_source_independently_of_history(tmp_pa
             str(target),
         ],
     )
-    lock = source / ".maintenance.lock" if lock_owner == "qfq" else project / "data/history/baostock/.maintenance.lock"
+    lock = source / ".maintenance.lock" if lock_owner == "qfq" else project / "data/history/.maintenance.lock"
     with HistoryMaintenanceLock(lock):
         status = main()
     report = json.loads(capsys.readouterr().out)

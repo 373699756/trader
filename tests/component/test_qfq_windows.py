@@ -557,7 +557,7 @@ def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_p
 
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
     monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
-    with HistoryMaintenanceLock(tmp_path / "data/history/baostock/.maintenance.lock"):
+    with HistoryMaintenanceLock(tmp_path / "data/history/.maintenance.lock"):
         result = bootstrap.execute_qfq_download(
             tmp_path,
             report=lambda _message: None,
@@ -608,7 +608,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
             return super().fetch_tencent_window(security, dates)
 
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent())
-    root = tmp_path / "data/history/baostock"
+    root = tmp_path / "data/history"
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(
             bootstrap.execute_qfq_download, tmp_path, report=lambda _message: None, now=lambda: observed

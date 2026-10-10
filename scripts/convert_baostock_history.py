@@ -85,7 +85,7 @@ from trader.download.infra.history_revision_codec import (
 )
 
 DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")
-DEFAULT_TARGET = Path("data/history/baostock")
+DEFAULT_TARGET = Path("data/history")
 DEFAULT_BATCH_SIZE = 256
 DEFAULT_CACHE_MIB = 8
 DEFAULT_THROTTLE_MS = 5

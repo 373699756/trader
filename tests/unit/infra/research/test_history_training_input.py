@@ -113,7 +113,7 @@ class _Supplier:
 
 
 def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_path: Path, monkeypatch) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -132,7 +132,7 @@ def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_
 
 
 def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(tmp_path: Path) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -146,7 +146,7 @@ def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
 
 
 def test_training_input_streams_windows_in_date_code_order_without_per_code_queries(tmp_path: Path) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
     configuration = HistorySyncConfiguration(archive_root, sessions=62, reread_sessions=2, minimum_free_bytes=0)
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -162,7 +162,7 @@ def test_training_input_streams_windows_in_date_code_order_without_per_code_quer
 
 
 def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path: Path) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(251))
     configuration = HistorySyncConfiguration(archive_root, sessions=251, reread_sessions=2, minimum_free_bytes=0)
     result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -185,7 +185,7 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
 
 def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricates_history(tmp_path: Path) -> None:
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(tmp_path / "history" / "baostock")),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(tmp_path / "history")),
         lookback_sessions=61,
     )
     restrictions: dict[str, set[str]] = {}
@@ -203,7 +203,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
     previous_projection: bool,
     deadline: datetime | None,
 ) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     configuration = HistorySyncConfiguration(archive_root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -268,7 +268,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
 
 
 def test_shared_published_reader_reuses_partition_trust_for_projection_and_outcomes(tmp_path, monkeypatch):
-    root = tmp_path / "history" / "baostock"
+    root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     configuration = HistorySyncConfiguration(root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -304,7 +304,7 @@ def test_deadline_bound_history_load_never_starts_an_archive_scan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    archive = SQLitePublishedHistoryArchive(tmp_path / "history" / "baostock")
+    archive = SQLitePublishedHistoryArchive(tmp_path / "history")
     history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
 
     def unexpected_manifest():
@@ -317,7 +317,7 @@ def test_deadline_bound_history_load_never_starts_an_archive_scan(
 
 
 def test_recommendation_retains_the_last_valid_projection_when_the_archive_becomes_unreadable(tmp_path: Path) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     configuration = HistorySyncConfiguration(archive_root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -339,7 +339,7 @@ def test_recommendation_retains_the_last_valid_projection_when_the_archive_becom
 def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_active_history(
     tmp_path: Path,
 ) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(70))
     configuration = HistorySyncConfiguration(archive_root, sessions=70, reread_sessions=2, minimum_free_bytes=0)
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -366,7 +366,7 @@ def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_activ
 
 
 def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tmp_path: Path) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -385,7 +385,7 @@ def test_training_due_expands_revision_cache_invalidation_to_the_selected_profil
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
@@ -418,7 +418,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    archive_root = tmp_path / "history" / "baostock"
+    archive_root = tmp_path / "history"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     first_dates = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
     run_history_sync(configuration, _Supplier(first_dates), clock=lambda: NOW)

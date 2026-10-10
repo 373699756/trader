@@ -19,7 +19,7 @@ def _status() -> HistoryMaintenanceStatus:
     return HistoryMaintenanceStatus(
         "completed",
         None,
-        Path("data/history/baostock"),
+        Path("data/history"),
         "baostock",
         None,
         "a" * 64,

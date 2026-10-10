@@ -13,7 +13,6 @@ from trader.download.infra.history_archive_reader import HistoryArchiveReadError
 from trader.download.infra.history_archive_status import (
     ActiveHistoryArchive,
     HistoryArchiveError,
-    history_archive_root,
     load_active_history_archive,
 )
 
@@ -24,7 +23,7 @@ class PublishedHistoryReadError(RuntimeError):
 
 class SQLitePublishedHistoryArchive:
     def __init__(self, root: Path) -> None:
-        self._root = history_archive_root(root)
+        self._root = root
         self._reader = SQLiteHistoryArchiveReader(self._root)
 
     def manifest(self) -> PublishedHistoryManifest | None:

@@ -89,7 +89,7 @@ BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboar
 身份在每个上海日期最多通知一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会
 自动训练、切换档位或重启服务。只读 `history-automation-status` 仍可查看持久化 due、提醒和活动快照状态。
 
-历史归档只接受 `data/history/baostock/control.sqlite3` 与 `partitions/YYYY/MM.sqlite3` 月分片；文件 hash 保存在
+历史归档只接受 `data/history/control.sqlite3` 与 `partitions/YYYY/MM.sqlite3` 月分片；文件 hash 保存在
 控制状态中用于校验，旧目录和兼容读取均不进入活动产品。
 若仍有唯一旧归档，可显式运行 `.venv/bin/python3 scripts/convert_baostock_history.py` 一次性转换；该脚本不被启动、
 Web、`check`、训练或零参数同步隐式调用。`research-status` 和统一诊断的 `research` profile 只读投影同一个

@@ -35,7 +35,7 @@ class ActiveHistoryArchive:
 
 
 def inspect_history_archive(root: Path, *, verify_partitions: bool = False) -> HistoryArchiveStatus:
-    archive_root = history_archive_root(root)
+    archive_root = root
     if not (archive_root / "control.sqlite3").is_file():
         return _unavailable()
     try:
@@ -52,7 +52,7 @@ def inspect_history_archive(root: Path, *, verify_partitions: bool = False) -> H
 
 
 def load_active_history_archive(root: Path) -> ActiveHistoryArchive:
-    archive_root = history_archive_root(root)
+    archive_root = root
     control_path = archive_root / "control.sqlite3"
     if not control_path.is_file():
         raise HistoryArchiveError("history_snapshot_unavailable")
@@ -81,10 +81,6 @@ def verify_active_history_archive(archive: ActiveHistoryArchive) -> None:
             SQLiteHistoryMonthPartitionRepository.verify(archive.root / reference.relative_path, reference)
     except (HistoryMonthPartitionError, OSError, ValueError) as exc:
         raise HistoryArchiveError("history_snapshot_partition_invalid") from exc
-
-
-def history_archive_root(root: Path) -> Path:
-    return root if root.name == "baostock" else root / "baostock"
 
 
 def _unavailable() -> HistoryArchiveStatus:
@@ -117,7 +113,6 @@ __all__ = [
     "ActiveHistoryArchive",
     "HistoryArchiveError",
     "inspect_history_archive",
-    "history_archive_root",
     "load_active_history_archive",
     "verify_active_history_archive",
 ]

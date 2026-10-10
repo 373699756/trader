@@ -41,7 +41,7 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         from trader.download.entrypoints.history_automation_projection import project_history_automation_status
         from trader.download.infra.history_automation_status import read_history_automation_status
 
-        automation_status = read_history_automation_status(repository_root / "data/history/baostock", _shanghai_now())
+        automation_status = read_history_automation_status(repository_root / "data/history", _shanghai_now())
         print(
             json.dumps(
                 project_history_automation_status(automation_status),

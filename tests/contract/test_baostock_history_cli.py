@@ -43,7 +43,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     status = HistoryMaintenanceStatus(
         "completed",
         None,
-        Path("data/history/baostock"),
+        Path("data/history"),
         "baostock",
         None,
         "a" * 64,
@@ -70,7 +70,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     payload = json.loads(captured.out)
     assert payload == {
         "active_snapshot_hash": "a" * 64,
-        "archive_root": "data/history/baostock",
+        "archive_root": "data/history",
         "automatic_training": False,
         "data_cutoff": "2026-09-10",
         "efficient_daily_source": None,
@@ -93,7 +93,7 @@ def test_download_contract_exposes_an_immutable_typed_status() -> None:
     status = HistoryMaintenanceStatus(
         "already_current",
         None,
-        Path("data/history/baostock"),
+        Path("data/history"),
         "baostock",
         None,
         "a" * 64,
@@ -107,7 +107,7 @@ def test_download_contract_exposes_an_immutable_typed_status() -> None:
 
     assert status.state == "already_current"
     assert status.reason is None
-    assert status.archive_root == Path("data/history/baostock")
+    assert status.archive_root == Path("data/history")
     assert status.training_due is False
     assert status.training_due_reason == "data_incomplete"
     with pytest.raises(ValueError, match="flag and reason disagree"):

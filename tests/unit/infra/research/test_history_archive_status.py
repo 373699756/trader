@@ -96,12 +96,12 @@ def test_missing_archive_is_read_only_and_reports_the_current_snapshot_boundary(
 
 
 def test_active_monthly_snapshot_projects_typed_counts_and_optional_full_verification(tmp_path: Path) -> None:
-    root = tmp_path / "history" / "baostock"
+    root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
-    status = inspect_history_archive(tmp_path / "history", verify_partitions=True)
+    status = inspect_history_archive(root, verify_partitions=True)
 
     assert status.state == "active"
     assert status.calendar_sessions == 3
@@ -113,8 +113,20 @@ def test_active_monthly_snapshot_projects_typed_counts_and_optional_full_verific
     assert len(status.active_snapshot_hash or "") == 64
 
 
+def test_legacy_nested_archive_is_not_discovered(tmp_path: Path) -> None:
+    legacy_root = tmp_path / "history" / "baostock"
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    configuration = HistorySyncConfiguration(legacy_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
+
+    status = inspect_history_archive(tmp_path / "history")
+
+    assert status.state == "unavailable"
+    assert status.reason == "history_snapshot_unavailable"
+
+
 def test_partition_tamper_fails_closed_without_losing_the_snapshot_identity(tmp_path: Path) -> None:
-    root = tmp_path / "history" / "baostock"
+    root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"

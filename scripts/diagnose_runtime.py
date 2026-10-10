@@ -209,7 +209,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--history-root",
         type=Path,
-        default=PROJECT_ROOT / "data/history/baostock",
+        default=PROJECT_ROOT / "data/history",
         help="stable BaoStock monthly SQLite data used by the read-only history-sqlite profile",
     )
     parser.add_argument(

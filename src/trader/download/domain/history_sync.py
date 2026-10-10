@@ -49,7 +49,7 @@ BAOSTOCK_PREPARATION_INTERVAL_SECONDS = 2.0
 
 @dataclass(frozen=True)
 class HistorySyncConfiguration:
-    archive_root: Path = Path("data/history/baostock")
+    archive_root: Path = Path("data/history")
     sessions: int = 2000
     reread_sessions: int = 5
     download_batch_size: int = 32
@@ -68,7 +68,7 @@ class HistorySyncConfiguration:
     def for_repository(cls, repository_root: Path) -> HistorySyncConfiguration:
         root = repository_root.resolve()
         return cls(
-            archive_root=root / "data" / "history" / "baostock",
+            archive_root=root / "data" / "history",
             training_root=root / "data" / "train",
         )
 

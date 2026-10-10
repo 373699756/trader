@@ -50,7 +50,7 @@ def test_current_docs_and_tools_only_name_the_monthly_history_owner() -> None:
     ):
         assert retired not in active_text
     for current in (
-        "data/history/baostock/control.sqlite3",
+        "data/history/control.sqlite3",
         "partitions/YYYY/MM.sqlite3",
         "SQLiteHistoryControlRepository",
         "SQLiteHistoryArchiveReader",

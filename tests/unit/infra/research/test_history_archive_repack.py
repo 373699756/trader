@@ -106,7 +106,7 @@ def _qfq_close(revision: HistoryRevision) -> float:
 
 
 def _archive(tmp_path: Path) -> tuple[Path, Path, HistoryActiveSnapshot]:
-    source = tmp_path / "data/history/baostock"
+    source = tmp_path / "data/history"
     target = tmp_path / "data/historyless/baostock"
     month = source / "partitions/2026/09.sqlite3"
     repository = SQLiteHistoryMonthPartitionRepository(month, 2026, 9)

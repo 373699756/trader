@@ -86,7 +86,7 @@ def _patch_archive(monkeypatch: pytest.MonkeyPatch, archive: SimpleNamespace) ->
 
 
 def test_manual_training_does_not_compare_revisions_or_cadence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
         "trader.training.infra.history.history_training_due.evaluate_history_training_due",
@@ -107,7 +107,7 @@ def test_manual_training_does_not_compare_revisions_or_cadence(tmp_path: Path, m
 def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
         "trader.training.infra.engine.build_training_samples",
@@ -124,7 +124,7 @@ def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
 def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequentially(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    archive = _cadence_archive(tmp_path / "history")
     verify_calls = 0
 
     def verify(progress=None) -> None:
@@ -196,7 +196,7 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
 
 
 def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_path: Path) -> None:
-    snapshot = _cadence_archive(tmp_path / "history" / "baostock").snapshot
+    snapshot = _cadence_archive(tmp_path / "history").snapshot
 
     assert _mature_label_cutoff(snapshot, TOMORROW_HEAD_CONTRACT) == snapshot.calendar.open_dates[-2]
     assert _mature_label_cutoff(snapshot, D25_HEAD_CONTRACT) == snapshot.calendar.open_dates[-6]
@@ -208,7 +208,7 @@ def test_v3_head_maturity_and_contract_hashes_are_independent_and_stable(tmp_pat
 
 
 def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
 
     def build_samples(request: TrainingSampleBuildRequest) -> None:
@@ -247,7 +247,7 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
 def test_training_reports_both_heads_when_the_shared_scan_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
         "trader.training.infra.engine.build_training_samples",
@@ -268,7 +268,7 @@ def test_training_reports_both_heads_when_the_shared_scan_fails(
 def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    archive = _cadence_archive(tmp_path / "history")
     open_calls: list[Path] = []
 
     def open_archive(path: Path) -> SimpleNamespace:
@@ -295,7 +295,7 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
 
 
 def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    archive = _cadence_archive(tmp_path / "history" / "baostock")
+    archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
         "trader.training.infra.engine.require_history_archive_repack_inactive",

@@ -323,7 +323,7 @@ def _reopen_expected_archive(
 ) -> tuple[_TrainingInputArchive, bool]:
     if expected_snapshot_hash is None:
         return archive, True
-    reopened = SQLiteHistoryTrainingInputArchive.open(archive.archive_root.parent)
+    reopened = SQLiteHistoryTrainingInputArchive.open(archive.archive_root)
     return reopened, reopened.snapshot.active_snapshot_hash == expected_snapshot_hash
 
 

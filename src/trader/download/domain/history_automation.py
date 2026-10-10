@@ -137,7 +137,7 @@ def derive_history_automation_status(
     control: HistoryAutomationControlState | None,
     observed_at: datetime,
     *,
-    archive_root: Path = Path("data/history/baostock"),
+    archive_root: Path = Path("data/history"),
 ) -> HistoryAutomationStatus:
     """Project the already-persisted due/reminder state without recalculation."""
 

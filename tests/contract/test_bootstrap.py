@@ -239,7 +239,7 @@ def test_startup_history_observer_never_downloads_and_keeps_web_readable(
         assert client.get("/").status_code == 200
         payload = client.get("/api/status").get_json()
         assert payload["market_data"]["published_history_snapshot_hash"] is None
-        assert not (tmp_path / "data/history/baostock").exists()
+        assert not (tmp_path / "data/history").exists()
     finally:
         assert observer.stop(wait=True).completed is True
     assert observer.start() is False

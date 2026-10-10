@@ -44,7 +44,7 @@ def _options(**overrides: object) -> DiagnosticOptions:
         browser_duration_seconds=8.0,
         browser_minimum_updates=3,
         command_timeout_seconds=180.0,
-        history_root=Path("data/history/baostock"),
+        history_root=Path("data/history"),
         sqlite_page_sample_count=1,
         sqlite_query_rounds=3,
         sqlite_revision_write_sample_count=512,
@@ -364,7 +364,7 @@ def test_baostock_qfq_shadow_profile_is_read_only_and_uses_active_history_root()
 
     assert tuple(command.name for command in commands) == ("baostock_qfq_shadow",)
     assert commands[0].argv[:3] == ("/python", "-m", "scripts.runtime_diagnostics.baostock_qfq_shadow")
-    assert commands[0].argv[-2:] == ("--history-root", "data/history/baostock")
+    assert commands[0].argv[-2:] == ("--history-root", "data/history")
 
 
 def test_research_profile_runs_only_research_readiness_probe() -> None:

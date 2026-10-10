@@ -236,7 +236,7 @@ def execute_qfq_download(
     root = project_root / "data" / "qfq"
     v2 = SQLiteQfqWindowCache(root, "v2")
     v3 = SQLiteQfqWindowCache(root, "v3")
-    history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history/baostock"))
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history"))
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
     try:
@@ -866,7 +866,7 @@ def _build_market_data(
         schema_version="market_snapshot",
         wall_clock=now,
     )
-    history_root = settings.project_root / "data" / "history" / "baostock"
+    history_root = settings.project_root / "data" / "history"
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(history_root))
     history_cache = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(

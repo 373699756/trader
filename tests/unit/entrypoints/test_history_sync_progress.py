@@ -29,7 +29,7 @@ def _failed_status(reason: str) -> HistoryMaintenanceStatus:
     return HistoryMaintenanceStatus(
         "failed",
         reason,
-        Path("data/history/baostock"),
+        Path("data/history"),
         "baostock",
         None,
         None,

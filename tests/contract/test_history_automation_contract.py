@@ -46,7 +46,7 @@ def test_check_status_projection_is_explicit_and_keeps_automatic_training_disabl
     status = HistoryAutomationStatus(
         "ready",
         None,
-        Path("data/history/baostock"),
+        Path("data/history"),
         "a" * 64,
         date(2026, 9, 10),
         date(2026, 9, 10),
@@ -64,7 +64,7 @@ def test_check_status_projection_is_explicit_and_keeps_automatic_training_disabl
         "schema_version": "history_automation_status",
         "state": "ready",
         "reason": None,
-        "archive_root": "data/history/baostock",
+        "archive_root": "data/history",
         "active_snapshot_hash": "a" * 64,
         "data_cutoff": "2026-09-10",
         "label_cutoff": "2026-09-10",
@@ -87,7 +87,7 @@ def test_internal_status_command_reads_persisted_projection_without_loading_supp
     status = HistoryAutomationStatus(
         "data_incomplete",
         "history_control_unavailable",
-        Path("data/history/baostock"),
+        Path("data/history"),
         None,
         None,
         None,

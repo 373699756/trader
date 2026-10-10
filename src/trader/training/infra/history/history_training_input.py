@@ -96,7 +96,7 @@ class SQLiteHistoryTrainingInputArchive:
 
     @classmethod
     def open(cls, root: Path) -> SQLiteHistoryTrainingInputArchive:
-        archive_root = root / "baostock" if (root / "baostock").is_dir() else root
+        archive_root = root
         control = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
         try:
             state = control.load_published_state()

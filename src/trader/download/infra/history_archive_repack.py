@@ -371,19 +371,18 @@ def require_history_archive_repack_inactive(archive_root: Path) -> None:
     """Fail normal history work while a conventional repack activation is fenced."""
 
     root = archive_root.expanduser().resolve()
-    if root.name != "baostock" or root.parent.name != "history":
+    if root.name != "history":
         return
-    journal_path = root.parent.parent / "historyless" / _ACTIVATION_JOURNAL_NAME
+    journal_path = root.parent / "historyless" / _ACTIVATION_JOURNAL_NAME
     _require_no_activation_fence(journal_path)
 
 
 def _validate_layout(source: Path, target: Path) -> _RepackLayout:
     if (
-        source.name != "baostock"
+        source.name != "history"
         or target.name != "baostock"
-        or source.parent.name != "history"
         or target.parent.name != "historyless"
-        or source.parent.parent != target.parent.parent
+        or source.parent != target.parent.parent
         or source == target
         or source in target.parents
         or target in source.parents

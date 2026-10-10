@@ -104,7 +104,7 @@ def test_monthly_source_audit_covers_three_boards_and_keeps_missing_query_time_f
     tmp_path: Path,
 ) -> None:
     dates = (date(2026, 8, 28), date(2026, 8, 31))
-    root = tmp_path / "history" / "baostock"
+    root = tmp_path / "history"
     configuration = HistorySyncConfiguration(root, sessions=2, reread_sessions=1, minimum_free_bytes=0)
     assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
