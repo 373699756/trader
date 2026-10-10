@@ -1030,7 +1030,7 @@ def _publish_progress(
         pass
 
 
-def _status(
+def _status(  # noqa: PLR0913 - immutable status projection keeps the public fields explicit
     state: HistoryMaintenanceState,
     reason: str | None,
     configuration: HistorySyncConfiguration,

@@ -114,6 +114,12 @@ class StderrHistorySyncProgress:
             _STAGE_LABELS[progress.stage],
             _STATE_LABELS[progress.state],
         ]
+        if (
+            progress.stage == "history_st_reference"
+            and progress.state == "completed"
+            and progress.completed_units < progress.total_units
+        ):
+            parts[2] = "检查中"
         if progress.stage in _COUNT_STAGES:
             parts.append(_format_count(progress.completed_units, progress.total_units))
         if progress.gap_summary is not None:

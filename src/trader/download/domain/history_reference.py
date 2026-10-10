@@ -15,7 +15,7 @@ class HistoryStEvidence:
     code: str
     checked_on: date
     status: Literal["ever_st", "clear", "unknown"]
-    source: Literal["sina_company_name_history", "legacy_baostock_daily"] = "sina_company_name_history"
+    source: Literal["sina_company_name_history"] = "sina_company_name_history"
 
     def __post_init__(self) -> None:
         if (
@@ -23,7 +23,7 @@ class HistoryStEvidence:
             or not self.code.isdigit()
             or type(self.checked_on) is not date
             or self.status not in {"ever_st", "clear", "unknown"}
-            or self.source not in {"sina_company_name_history", "legacy_baostock_daily"}
+            or self.source != "sina_company_name_history"
         ):
             raise ValueError("history ST evidence is invalid")
 
@@ -40,6 +40,7 @@ class HistoryReferenceSnapshot:
         intervals = tuple(sorted(self.industry_intervals, key=lambda item: (item.code, item.effective_from)))
         if (
             not codes
+            or len(codes) != len(self.eligible_codes)
             or any(len(code) != 6 or not code.isdigit() for code in codes)
             or len({item.code for item in evidence}) != len(evidence)
             or any(item.code not in codes for item in intervals)

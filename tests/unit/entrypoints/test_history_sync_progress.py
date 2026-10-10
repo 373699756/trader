@@ -16,6 +16,15 @@ class _Clock:
         return next(self._values)
 
 
+def test_st_checkpoints_report_progress_before_completion(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 1.0, 2.0))
+    progress.publish(HistorySyncProgress("history_st_reference", "completed", 2, 4))
+    progress.publish(HistorySyncProgress("history_st_reference", "completed", 4, 4))
+    output = capsys.readouterr().err.splitlines()
+    assert "检查中" in output[0] and "2/4" in output[0]
+    assert "完成" in output[1] and "4/4" in output[1]
+
+
 def _failed_status(reason: str) -> HistoryMaintenanceStatus:
     return HistoryMaintenanceStatus(
         "failed",

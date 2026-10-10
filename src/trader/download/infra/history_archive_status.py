@@ -18,6 +18,7 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.download.infra.history_reference_files import read_bound_history_reference
 
 
 class HistoryArchiveError(RuntimeError):
@@ -61,10 +62,20 @@ def load_active_history_archive(root: Path) -> ActiveHistoryArchive:
         raise HistoryArchiveError("history_control_invalid") from exc
     if state is None:
         raise HistoryArchiveError("history_snapshot_unavailable")
+    try:
+        reference = read_bound_history_reference(archive_root, state.source.supplier_contract)
+        if set(reference.eligible_codes) != {item.code for item in state.universe.securities}:
+            raise ValueError("history reference universe conflict")
+    except (OSError, ValueError) as exc:
+        raise HistoryArchiveError("history_reference_unavailable") from exc
     return ActiveHistoryArchive(archive_root, state.snapshot, state.source, state.calendar, state.universe)
 
 
 def verify_active_history_archive(archive: ActiveHistoryArchive) -> None:
+    try:
+        read_bound_history_reference(archive.root, archive.source.supplier_contract)
+    except (OSError, ValueError) as exc:
+        raise HistoryArchiveError("history_reference_unavailable") from exc
     try:
         for reference in archive.snapshot.partitions:
             SQLiteHistoryMonthPartitionRepository.verify(archive.root / reference.relative_path, reference)

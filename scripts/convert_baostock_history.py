@@ -41,8 +41,8 @@ from trader.download.domain.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
+from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_revision import HistoryRevision
-from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.infra.baostock_gap_supplier import (
     BaoStockGapFamily,
     BaoStockGapRecord,
@@ -74,11 +74,15 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.download.infra.history_reference_files import (
+    read_bound_history_reference,
+    read_st_evidence,
+    write_history_reference,
+)
 from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,
 )
-from trader.download.infra.history_reference_files import write_history_reference
 
 DEFAULT_SOURCE = Path("data/history/baostock-daily/sessions-2000")
 DEFAULT_TARGET = Path("data/history/baostock")
@@ -834,6 +838,56 @@ def _load_industries(source: SourceArchive, cache_mib: int) -> dict[str, tuple[I
     return {code: tuple(items) for code, items in by_code.items()}
 
 
+def _conversion_reference(
+    source: SourceArchive,
+    industries: dict[str, tuple[IndustryInterval, ...]],
+    evidence_path: Path | None,
+) -> HistoryReferenceSnapshot:
+    """Build the immutable reference required by the converted archive.
+
+    Legacy daily non-ST observations cannot prove lifetime eligibility.
+    """
+
+    path = evidence_path or source.root / "references" / "historical_st.json"
+    if not path.is_file():
+        raise ConversionError("legacy daily facts cannot prove lifetime ST eligibility; provide --st-reference")
+    try:
+        evidence = read_st_evidence(path)
+    except (OSError, ValueError) as exc:
+        raise ConversionError("ST reference is unreadable") from exc
+    source_codes = {security.code for security in source.securities}
+    by_code = {item.code: item for item in evidence if item.code in source_codes}
+    if set(by_code) != source_codes:
+        raise ConversionError("ST reference does not cover the source universe")
+    cutoff = date.fromisoformat(source.source_cutoff)
+    if any(
+        item.source != "sina_company_name_history" or item.status == "clear" and item.checked_on < cutoff
+        for item in by_code.values()
+    ):
+        raise ConversionError("ST reference lacks current public name-history evidence")
+    eligible = tuple(code for code, item in by_code.items() if item.status == "clear")
+    if not eligible:
+        raise ConversionError("ST reference leaves no eligible securities")
+    intervals: list[BaoStockIndustryInterval] = []
+    for code in eligible:
+        values = industries.get(code, ())
+        for position, interval in enumerate(values):
+            end = date.fromisoformat(interval.effective_to) if interval.effective_to else None
+            if position + 1 < len(values):
+                next_start = date.fromisoformat(values[position + 1].effective_from)
+                end = min(end, next_start) if end is not None else next_start
+            intervals.append(
+                BaoStockIndustryInterval(
+                    code,
+                    date.fromisoformat(interval.effective_from),
+                    end,
+                    interval.industry,
+                    interval.classification,
+                )
+            )
+    return HistoryReferenceSnapshot(eligible, tuple(intervals), tuple(by_code.values()))
+
+
 def _industry_for(
     intervals_by_code: dict[str, tuple[IndustryInterval, ...]], code: str, day: str
 ) -> IndustryInterval | None:
@@ -1532,16 +1586,18 @@ def _finalize_control(
     all_dates: Sequence[str],
     results: Sequence[PartitionResult],
     snapshot_sequence: int,
+    reference: HistoryReferenceSnapshot,
 ) -> tuple[str, tuple[str, ...]]:
     active_dates = tuple(sorted(set(all_dates))[-source.sessions :])
     if not active_dates or active_dates[-1] != source.source_cutoff:
         raise ConversionError("active calendar does not end at the active source cutoff")
     cutoff = date.fromisoformat(source.source_cutoff)
     observed_at = datetime.combine(cutoff, datetime_time(15, 0), tzinfo=_SHANGHAI)
+    write_history_reference(staging / "references" / f"{reference.content_hash}.json", reference)
     source_identity = HistorySourceIdentity(
         "baostock",
         f"legacy_daily.{source.source_fingerprint}",
-        "sealed_parent_increment",
+        f"history_ref_{reference.content_hash}_legacy_conversion",
         observed_at,
     )
     calendar = HistoryCalendarIdentity(
@@ -1558,6 +1614,7 @@ def _finalize_control(
                 date.fromisoformat(item.delisted_on) if item.delisted_on is not None else None,
             )
             for item in source.securities
+            if item.code in reference.eligible_codes
         ),
         source_identity.content_hash,
     )
@@ -1638,6 +1695,7 @@ def _read_completed_summary(
         if snapshot is None:
             return None
         source = next(item for item in state.sources if item.content_hash == snapshot.source_identity_hash)
+        read_bound_history_reference(target, source.supplier_contract)
         if source.dataset != f"legacy_daily.{source_fingerprint}":
             raise ConversionError("target already exists for a different source archive")
         calendar = next(item for item in state.calendars if item.content_hash == snapshot.calendar_hash)
@@ -1685,7 +1743,7 @@ def _read_completed_summary(
         )
     except ConversionError:
         raise
-    except (HistoryControlError, StopIteration, TypeError, sqlite3.DatabaseError) as exc:
+    except (HistoryControlError, StopIteration, TypeError, sqlite3.DatabaseError, OSError, ValueError) as exc:
         raise ConversionError("existing target control database is invalid") from exc
 
 
@@ -2111,7 +2169,7 @@ def _repair_completed_qfq_gaps(  # noqa: PLR0913
     source = HistorySourceIdentity(
         "baostock",
         old_source.dataset,
-        "sealed_parent_increment_official_qfq_repair",
+        f"history_ref_{read_bound_history_reference(target, old_source.supplier_contract).content_hash}_qfq_repair",
         observed_at,
     )
     calendar = HistoryCalendarIdentity(old_calendar.open_dates, source.content_hash)
@@ -2433,6 +2491,7 @@ def _validate_staging_directory(staging: Path, progress_database: Path, *, publi
         "control.sqlite3.pending-shm",
         "control.sqlite3.pending-wal",
         "partitions",
+        "references",
     }
     unexpected = {item.name for item in staging.iterdir()} - allowed
     if unexpected:
@@ -2495,6 +2554,7 @@ def convert_archive(
     supplement_missing: bool = False,
     supplement_provider: SupplementProvider | None = None,
     fault_injector: FaultInjector | None = None,
+    st_reference: Path | None = None,
 ) -> ConversionSummary:
     """Convert a sealed archive and normalize this converter's completed hash layout."""
 
@@ -2634,6 +2694,7 @@ def convert_archive(
             months = _months(active_dates)
             board_by_code = {item.code: item.board for item in archive.securities}
             industries = _load_industries(archive, cache_mib)
+            reference = _conversion_reference(archive, industries, st_reference)
             total_source_rows = _source_rows_from(archive, active_start, cache_mib)
             progress = _ProgressTracker("转换", total_source_rows, progress_sink)
             results: list[PartitionResult] = []
@@ -2686,6 +2747,7 @@ def convert_archive(
                 all_dates,
                 results,
                 3 if supplemented_rows else 2,
+                reference,
             )
             physical_rows = sum(item.physical_rows for item in results)
             active_rows = sum(item.active_rows for item in results)
@@ -2724,6 +2786,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--source", type=Path, default=DEFAULT_SOURCE, help="旧 sessions-2000 归档目录")
     parser.add_argument("--target", type=Path, default=DEFAULT_TARGET, help="新月分片归档目录")
+    parser.add_argument(
+        "--st-reference",
+        type=Path,
+        help="公开曾用名ST证据文件；默认读取源目录 references/historical_st.json，旧逐日非ST不能证明从未ST",
+    )
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -2805,6 +2872,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             apply_niceness=not args.no_nice,
             progress_sink=_print_progress,
             supplement_missing=not args.offline,
+            st_reference=args.st_reference,
         )
     except ConversionError as exc:
         print(_canonical_json({"reason": str(exc), "state": "failed"}), file=sys.stderr)

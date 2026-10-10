@@ -28,7 +28,7 @@ from trader.download.infra.history_month_partition import (
     HistoryPartitionVerificationPhase,
     SQLiteHistoryMonthPartitionRepository,
 )
-from trader.download.infra.history_reference_files import HistoryReferenceIndex, read_history_reference
+from trader.download.infra.history_reference_files import HistoryReferenceIndex, read_bound_history_reference
 
 _CODE = re.compile(r"^[0-9]{6}$")
 
@@ -107,6 +107,8 @@ class SQLiteHistoryArchiveReader:
         if not source.supplier_contract.startswith("history_ref_"):
             raise HistoryArchiveReadError("history reference contract requires rebuilding history")
         digest = source.supplier_contract[len("history_ref_") : len("history_ref_") + 64]
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise HistoryArchiveReadError("history_reference_unavailable")
         path = self._root / "references" / f"{digest}.json"
         try:
             stat = path.stat()
@@ -114,9 +116,7 @@ class SQLiteHistoryArchiveReader:
             cached = self._references.get(digest)
             if cached is not None and cached[0] == identity:
                 return cached[1]
-            reference = read_history_reference(path)
-            if reference.content_hash != digest:
-                raise ValueError("history reference identity conflict")
+            reference = read_bound_history_reference(self._root, source.supplier_contract)
             index = HistoryReferenceIndex(reference)
             self._references[digest] = (identity, index)
             return index
@@ -128,6 +128,7 @@ class SQLiteHistoryArchiveReader:
         snapshot: HistoryActiveSnapshot,
         progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> None:
+        self.reference_index(snapshot)
         total = len(snapshot.partitions)
         for completed, reference in enumerate(snapshot.partitions, start=1):
             self._verified_repository(
@@ -148,12 +149,16 @@ class SQLiteHistoryArchiveReader:
     ) -> int:
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("history range count is invalid")
+        index = self.reference_index(snapshot)
+        eligible_codes = tuple(code for code in codes if index.eligible(code))
+        if not eligible_codes:
+            return 0
         return sum(
             self._verified_repository(self._reference(snapshot, year, month)).count_range(
                 start,
                 end,
                 snapshot_sequence=snapshot.sequence,
-                codes=codes,
+                codes=eligible_codes,
             )
             for year, month in route_history_months(start, end)
         )
@@ -185,6 +190,7 @@ class SQLiteHistoryArchiveReader:
         return tuple(
             index.apply(row)
             for row in repository.read_day(trade_date, snapshot_sequence=snapshot.sequence, board=board)
+            if index.eligible(row.code)
         )
 
     def read_code_window(
@@ -219,7 +225,9 @@ class SQLiteHistoryArchiveReader:
                 if row.trade_date in allowed
             )
         index = self.reference_index(snapshot)
-        return tuple(index.apply(row) for row in sorted(rows, key=lambda row: row.trade_date))
+        return tuple(
+            index.apply(row) for row in sorted(rows, key=lambda row: row.trade_date) if index.eligible(row.code)
+        )
 
     def iter_snapshot_revisions(self, snapshot: HistoryActiveSnapshot) -> Iterator[HistoryRevision]:
         reference_index = self.reference_index(snapshot)
@@ -234,6 +242,7 @@ class SQLiteHistoryArchiveReader:
                     date(year, month, end_day),
                     snapshot_sequence=snapshot.sequence,
                 )
+                if reference_index.eligible(row.code)
             )
 
     def iter_range(
@@ -247,7 +256,11 @@ class SQLiteHistoryArchiveReader:
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("history range scan is invalid")
         reference_index = self.reference_index(snapshot)
-        yield from (reference_index.apply(row) for row in self._iter_price_revisions(start, end, snapshot))
+        yield from (
+            reference_index.apply(row)
+            for row in self._iter_price_revisions(start, end, snapshot)
+            if reference_index.eligible(row.code)
+        )
 
     def _iter_price_revisions(
         self, start: date, end: date, snapshot: HistoryActiveSnapshot
@@ -276,7 +289,9 @@ class SQLiteHistoryArchiveReader:
         )
         reference_index = self.reference_index(snapshot)
         yield from (
-            reference_index.apply(row) for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+            reference_index.apply(row)
+            for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+            if reference_index.eligible(row.code)
         )
 
     def read_published_code_window(
@@ -296,6 +311,8 @@ class SQLiteHistoryArchiveReader:
         ):
             raise ValueError("published history dates are invalid")
         allowed = frozenset(dates)
+        if not self.reference_index(snapshot).eligible(code):
+            return ()
         rows: list[PublishedHistoryCell] = []
         for year, month in route_history_months(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
@@ -320,7 +337,10 @@ class SQLiteHistoryArchiveReader:
             self._verified_repository(reference).iter_published_cells(start, end, snapshot_sequence=snapshot.sequence)
             for reference in references
         )
-        yield from heapq.merge(*streams, key=lambda row: (row.code, row.trade_date))
+        index = self.reference_index(snapshot)
+        yield from (
+            row for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date)) if index.eligible(row.code)
+        )
         for reference in references:
             self._verified_repository(reference)
 
@@ -379,6 +399,8 @@ class SQLiteHistoryArchiveReader:
         if _CODE.fullmatch(code) is None or start > end or end > snapshot.data_cutoff:
             raise ValueError("history code scan is invalid")
         index = self.reference_index(snapshot)
+        if not index.eligible(code):
+            return
         for year, month in route_history_months(start, end):
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)

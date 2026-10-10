@@ -215,7 +215,6 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     assert snapshot is not None
     assert tuple(row.code for row in SQLiteHistoryArchiveReader(config.archive_root).read_day(dates[-1], snapshot)) == (
         "600001",
-        "600002",
     )
     training = SQLiteHistoryTrainingInputArchive.open(config.archive_root)
     assert training.snapshot.training_codes == ("600001",)
@@ -372,8 +371,8 @@ def test_history_st_reference_batches_report_distinct_counts(capsys):
 
     lines = capsys.readouterr().err.splitlines()
     assert lines == [
-        "00:00:00 | 历史ST名单 | 完成 | 8/5224 (0.15%)",
-        "00:00:00 | 历史ST名单 | 完成 | 16/5224 (0.31%)",
+        "00:00:00 | 历史ST名单 | 检查中 | 8/5224 (0.15%)",
+        "00:00:00 | 历史ST名单 | 检查中 | 16/5224 (0.31%)",
     ]
 
 

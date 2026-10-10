@@ -211,6 +211,7 @@ def execute_history_download(
                             if progress is not None
                             else None
                         ),
+                        batch_size=configuration.history_workers,
                     ),
                 ),
                 clock=clock,

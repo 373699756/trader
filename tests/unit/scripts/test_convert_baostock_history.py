@@ -11,6 +11,7 @@ import pytest
 
 from scripts import convert_baostock_history as converter
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.baostock_gap_supplier import (
     BaoStockGapRecord,
@@ -20,6 +21,7 @@ from trader.download.infra.baostock_gap_supplier import (
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_reference_files import write_st_evidence
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
 
 
@@ -198,7 +200,7 @@ def _create_increment(root: Path, *, qfq_gap: bool = False) -> tuple[Path, Path]
         records = (
             ("600001", "2026-09-02", "daily_raw", _json(_side("600001", "2026-09-02", "unadjusted", 12.0))),
             ("600001", "2026-09-02", "daily_qfq", _json(_side("600001", "2026-09-02", "qfq", 11.0))),
-            ("600001", "2026-09-02", "is_st", _json({"code": "600001", "is_st": True, "trade_date": "2026-09-02"})),
+            ("600001", "2026-09-02", "is_st", _json({"code": "600001", "is_st": False, "trade_date": "2026-09-02"})),
             (
                 "600001",
                 "2026-09-02",
@@ -336,6 +338,11 @@ def _create_source(root: Path, *, qfq_gap: bool = False) -> None:
     }
     (root / "active-manifest.json").write_text(_json(active), encoding="utf-8")
     (root / ".download.lock").touch()
+    (root / "references").mkdir()
+    write_st_evidence(
+        root / "references/historical_st.json",
+        (HistoryStEvidence("600001", date(2026, 9, 2), "clear"),),
+    )
 
 
 def _remove_increment_qfq(root: Path) -> None:
@@ -432,7 +439,7 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
         assert len(revisions) == 2
         assert json.loads(revisions[0][1])["cell"]["qfq"]["close_price"] == 10.0
         assert json.loads(revisions[1][1])["cell"]["qfq"]["close_price"] == 10.5
-        assert json.loads(revisions[1][1])["industry"] == "bank"
+        assert "industry" not in json.loads(revisions[1][1])
         active = connection.execute(
             "SELECT payload_json FROM daily_records WHERE code='600001' AND trade_date='2026-09-02' "
             "ORDER BY first_seen_sequence DESC LIMIT 1"
@@ -440,8 +447,8 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
         active_payload = json.loads(active[0])
         assert active_payload["cell"]["unadjusted"]["close_price"] == 12.0
         assert active_payload["cell"]["qfq"]["close_price"] == 11.0
-        assert active_payload["is_st"] is True
-        assert active_payload["industry"] == "finance"
+        assert "is_st" not in active_payload
+        assert "industry" not in active_payload
 
     repository = SQLiteHistoryControlRepository(target / "control.sqlite3")
     assert repository.integrity().state == "healthy"
@@ -460,6 +467,17 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
     visible = SQLiteHistoryArchiveReader(target).read_day(date(2026, 9, 1), state.active_snapshot)
     assert visible[0].cell.qfq is not None
     assert visible[0].cell.qfq.close_price == 10.5
+    assert visible[0].industry == "bank" and visible[0].is_st is False
+    assert SQLiteHistoryArchiveReader(target).read_day(date(2026, 9, 2), state.active_snapshot)[0].industry == "finance"
+
+
+def test_converter_requires_public_st_evidence_instead_of_daily_non_st(tmp_path: Path) -> None:
+    source, target = tmp_path / "source", tmp_path / "target"
+    _create_source(source)
+    (source / "references/historical_st.json").unlink()
+    with pytest.raises(converter.ConversionError, match="provide --st-reference"):
+        converter.convert_archive(source, target, minimum_free_bytes=0, apply_niceness=False)
+    assert not target.exists()
 
 
 def test_converter_is_idempotent_and_does_not_rewrite_completed_target(tmp_path: Path) -> None:
@@ -548,7 +566,7 @@ def test_converter_repairs_completed_qfq_gaps_with_official_factor_and_publishes
         item for item in state.sources if item.content_hash == state.active_snapshot.source_identity_hash
     )
     assert repair_source.source == "baostock"
-    assert repair_source.supplier_contract == "sealed_parent_increment_official_qfq_repair"
+    assert repair_source.supplier_contract.startswith("history_ref_")
     revisions = SQLiteHistoryArchiveReader(target).read_day(date(2026, 9, 1), state.active_snapshot)
     assert len(revisions) == 1
     assert revisions[0].cell.qfq is not None

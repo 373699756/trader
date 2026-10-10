@@ -33,7 +33,7 @@ def parse_name_history_st(code: str, current_name: str, checked_on: date, text: 
 
 
 class HistoryStNameSource:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - explicit supplier and cancellation boundaries
         self,
         path: Path,
         get: Callable[..., requests.Response],
@@ -41,22 +41,26 @@ class HistoryStNameSource:
         cancel_requested: Callable[[], bool],
         *,
         report: Callable[[int, int], None],
+        batch_size: int = 8,
     ) -> None:
+        if batch_size < 1:
+            raise ValueError("history ST worker batch size must be positive")
         self._path = path
         self._get = get
         self._executor = executor
         self._cancel_requested = cancel_requested
         self._report = report
+        self._batch_size = batch_size
 
     def fetch(self, universe: tuple[BaoStockSecurity, ...], as_of: date) -> tuple[HistoryStEvidence, ...]:
         evidence = {item.code: item for item in read_st_evidence(self._path)}
         total = len(universe)
         completed = 0
-        for start in range(0, total, 8):
+        for start in range(0, total, self._batch_size):
             self._check_cancel()
             futures: dict[Future[HistoryStEvidence], str] = {}
             try:
-                for security in universe[start : start + 8]:
+                for security in universe[start : start + self._batch_size]:
                     old = evidence.get(security.code)
                     if old is not None and (
                         old.status == "ever_st" or old.status == "clear" and old.checked_on == as_of

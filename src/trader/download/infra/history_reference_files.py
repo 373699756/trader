@@ -95,6 +95,18 @@ def read_history_reference(path: Path) -> HistoryReferenceSnapshot:
         raise ValueError("history reference file is invalid") from exc
 
 
+def read_bound_history_reference(root: Path, supplier_contract: str) -> HistoryReferenceSnapshot:
+    if not supplier_contract.startswith("history_ref_"):
+        raise ValueError("history reference contract requires rebuilding history")
+    digest = supplier_contract[len("history_ref_") : len("history_ref_") + 64]
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        raise ValueError("history reference identity is invalid")
+    reference = read_history_reference(root / "references" / f"{digest}.json")
+    if reference.content_hash != digest:
+        raise ValueError("history reference identity conflict")
+    return reference
+
+
 def read_st_evidence(path: Path) -> tuple[HistoryStEvidence, ...]:
     if not path.is_file():
         return ()

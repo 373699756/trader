@@ -6,8 +6,8 @@ from datetime import date, timedelta
 
 import pytest
 
-from tests.unit.infra.research.test_history_archive_sync import FakeSupplier, NOW, _download
-from tests.unit.infra.test_history_supplier_router import Baseline, Prices, StSource, _current_universe
+from tests.unit.infra.research.test_history_archive_sync import NOW, FakeSupplier, _download
+from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _current_universe
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_sync import HistorySyncConfiguration
@@ -198,7 +198,7 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
 
     dates = tuple(date(2026, 7, 1) + timedelta(days=i) for i in range(65))
     config = HistorySyncConfiguration(tmp_path, sessions=65, minimum_free_bytes=0)
-    assert run_history_sync(config, FakeSupplier(dates), clock=lambda: NOW).state == "completed"
+    assert run_history_sync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
     snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_published_state().snapshot
     reader = SQLiteHistoryArchiveReader(tmp_path)
     assert tuple(reader.iter_training_windows(snapshot, dates, {"600001"}))
@@ -228,3 +228,109 @@ def test_expired_baostock_budget_leaves_gaps_and_does_not_call_supplier(tmp_path
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     result = run_history_sync(config, Missing(dates), clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 4
+
+
+def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
+    import threading
+
+    from trader.infra.workers import BoundedExecutor
+
+    rendezvous = threading.Barrier(2)
+
+    class Response:
+        content = "<td>证券简称更名历史：</td><td>正常公司</td>".encode("gb18030")
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+
+    def get(*_args, **_kwargs):
+        rendezvous.wait(timeout=3)
+        return Response()
+
+    executor = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="st-test")
+    executor.start()
+    reports = []
+    try:
+        source = HistoryStNameSource(
+            tmp_path / "st.json",
+            get,
+            executor,
+            lambda: False,
+            report=lambda *counts: reports.append(counts),
+            batch_size=2,
+        )
+        result = source.fetch(_current_universe("600001", "600002", "600003", "600004"), date(2026, 10, 9))
+        assert len(result) == 4 and all(item.status == "clear" for item in result)
+        assert reports == [(2, 4), (4, 4)]
+        assert executor.status().rejected_count == 0
+    finally:
+        executor.stop(wait=True, cancel_futures=True)
+
+
+@pytest.mark.parametrize("damage", ("missing", "tampered"))
+def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, damage):
+    from trader.download.infra.history_archive_status import inspect_history_archive
+
+    root = tmp_path / "baostock"
+    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    supplier = FakeSupplier(dates, industry="bank")
+    config = HistorySyncConfiguration(root, sessions=2, reread_sessions=2, minimum_free_bytes=0)
+    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "completed"
+    snapshot = SQLiteHistoryControlRepository(root / "control.sqlite3").load_published_state().snapshot
+    reference = SQLiteHistoryArchiveReader(root).reference_index(snapshot).reference
+    path = root / "references" / f"{reference.content_hash}.json"
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_text("{}")
+    assert inspect_history_archive(root, verify_partitions=True).reason == "history_reference_unavailable"
+    supplier.calls.clear()
+    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "already_current"
+    assert supplier.calls == []
+    assert inspect_history_archive(root, verify_partitions=True).state == "active"
+
+
+def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
+    from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
+    from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+
+    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    config = HistorySyncConfiguration(tmp_path / "baostock", sessions=2, reread_sessions=2, minimum_free_bytes=0)
+    assert run_history_sync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
+
+    class Excluding(FakeSupplier):
+        def load_context(self, as_of, sessions):
+            context = super().load_context(as_of, sessions)
+            return replace(
+                context,
+                universe=tuple(item for item in context.universe if item.code == "600001"),
+                industry_intervals=tuple(item for item in context.industry_intervals if item.code == "600001"),
+                st_evidence=tuple(
+                    replace(item, status="ever_st") if item.code == "600002" else item for item in context.st_evidence
+                ),
+                source_versions=replace(context.source_versions, dependency_versions=(HISTORY_UNIVERSE_CONTRACT,)),
+            )
+
+    assert run_history_sync(config, Excluding(dates, industry="bank"), clock=lambda: NOW).state == "completed"
+    snapshot = SQLiteHistoryControlRepository(config.archive_root / "control.sqlite3").load_published_state().snapshot
+    reader = SQLiteHistoryArchiveReader(config.archive_root)
+    assert {item.code for item in reader.read_day(dates[0], snapshot)} == {"600001"}
+    assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(dates)
+    assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600002",)) == 0
+    assert reader.read_code_window("600002", dates, snapshot) == ()
+    assert tuple(reader.iter_code("600002", dates[0], dates[-1], snapshot)) == ()
+    assert {item.code for item in reader.iter_range(dates[0], dates[-1], snapshot)} == {"600001"}
+    assert {item.code for item in reader.iter_range_by_code(dates[0], dates[-1], snapshot)} == {"600001"}
+    assert {item.code for item in reader.iter_snapshot_revisions(snapshot)} == {"600001"}
+    published = SQLitePublishedHistoryArchive(config.archive_root)
+    manifest = published.manifest()
+    assert manifest.universe_codes == ("600001",)
+    assert [item.code for item in published.read_windows(manifest, ("600001", "600002"), sessions=2)] == ["600001"]
+    assert [item.code for item in published.iter_windows(manifest, sessions=2)] == ["600001"]
+    import sqlite3
+
+    with sqlite3.connect(config.archive_root / snapshot.partitions[0].relative_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM daily_records WHERE code='600002'").fetchone()[0] > 0
