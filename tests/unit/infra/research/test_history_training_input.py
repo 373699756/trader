@@ -32,6 +32,7 @@ from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -207,20 +208,31 @@ def test_history_consumers_do_not_wait_for_background_projection(
     archive = SQLitePublishedHistoryArchive(archive_root)
     manifest = archive.manifest()
     assert manifest is not None
-    history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
+    short = SQLiteQfqWindowCache(tmp_path / "qfq", "v3")
+    window = archive.read_windows(manifest, ("600001",), sessions=61)[0]
+    short.replace_window(window, "tencent:fixture")
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(short),
+        lookback_sessions=61,
+        outcome_history=ReadPublishedHistoryUseCase(archive),
+    )
+    old_manifest = short.manifest()
+    assert old_manifest is not None
     if previous_projection:
         assert history.refresh()
-    original_windows = archive.iter_windows
-    new_manifest = replace(manifest, snapshot_hash="a" * 64)
+    # Publish a genuine new short-window identity while complete history stays stable.
+    short.replace_window(window, "tencent:fixture-updated")
+    new_manifest = short.manifest()
+    assert new_manifest is not None and new_manifest.snapshot_hash != old_manifest.snapshot_hash
+    original_windows = short.iter_windows
     entered, release = threading.Event(), threading.Event()
 
-    def blocked_windows(_manifest, *, sessions):
+    def blocked_windows(manifest, *, sessions):
         entered.set()
         assert release.wait(5)
         yield from original_windows(manifest, sessions=sessions)
 
-    monkeypatch.setattr(archive, "manifest", lambda: new_manifest)
-    monkeypatch.setattr(archive, "iter_windows", blocked_windows)
+    monkeypatch.setattr(short, "iter_windows", blocked_windows)
     with ThreadPoolExecutor(max_workers=2) as pool:
         refresh = pool.submit(history.refresh)
         try:
@@ -228,13 +240,23 @@ def test_history_consumers_do_not_wait_for_background_projection(
             load = pool.submit(history.load, ("600001",), deadline=deadline)
             if previous_projection:
                 assert len(load.result(timeout=2)["600001"]) == 20
-                assert history.status().snapshot_hash == manifest.snapshot_hash
+                assert history.status().snapshot_hash == old_manifest.snapshot_hash
             else:
                 with pytest.raises(MarketDataUnavailableError, match="history_projection_loading"):
                     load.result(timeout=2)
                 assert history.status().snapshot_hash is None
             outcomes = pool.submit(history.read_outcome_bars, ("600001",), NOW)
-            assert bool(outcomes.result(timeout=2)) is previous_projection
+            bars = outcomes.result(timeout=2)["600001"]
+            assert len(bars) == 61
+            assert bars[-1].trade_date == manifest.data_cutoff.isoformat()
+            assert archive.manifest() == manifest
+            assert not refresh.done()
+            # Online bars must never mask a corrupt independent settlement source.
+            (archive_root / "control.sqlite3").write_bytes(b"invalid")
+            invalid_outcomes = pool.submit(history.read_outcome_bars, ("600001",), NOW)
+            assert invalid_outcomes.result(timeout=2) == {}
+            assert history.status().error_count == 1
+            assert bool(history.cached(("600001",))) is previous_projection
             assert not refresh.done()
         finally:
             release.set()

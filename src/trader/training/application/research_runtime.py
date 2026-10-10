@@ -6,15 +6,15 @@ import threading
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
+from trader.infra.workers import ManagedWorkerExecutor
 from trader.recommendation.application.ports.runtime import CycleRequest, ResearchIntent, ResearchRuntimeStatus
 from trader.recommendation.application.runtime.cadence import CadencePolicy, PipelineTask, cadence_band
 from trader.recommendation.application.runtime.schedule import MarketPhase
-from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.research_coordination import ResearchCoordinator
 from trader.training.application.research_ports import OfflineResearchReaderPort
-from trader.infra.workers import BoundedExecutor
 
 
 class ResearchRuntime:
@@ -23,7 +23,7 @@ class ResearchRuntime:
     def __init__(
         self,
         research: OfflineResearchReaderPort,
-        executor: BoundedExecutor,
+        executor: ManagedWorkerExecutor,
         *,
         cadence: CadencePolicy,
         now: Callable[[], datetime],

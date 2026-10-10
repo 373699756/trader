@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from datetime import datetime, timedelta
 
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.ports.runtime import CycleRequest, ResearchIntent
 from trader.recommendation.application.runtime.cadence import CadencePolicy
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase
@@ -70,6 +71,7 @@ def test_local_output_is_published_before_non_blocking_research_and_result_reque
     results: list[tuple[ResearchRefreshResult, bool]] = []
     runtime = ResearchRuntime(
         research,
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         cadence=_cadence(),
         now=lambda: NOW,
         on_result=lambda result, initial: results.append((result, initial)),
@@ -102,6 +104,7 @@ def test_periodic_stock_risk_uses_candidates_without_reoffering_on_every_tick() 
     research.release.set()
     runtime = ResearchRuntime(
         research,
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         cadence=_cadence(),
         now=lambda: NOW,
         on_result=lambda _result, _initial: None,
@@ -147,6 +150,7 @@ def test_failed_new_output_releases_the_initial_review_barrier() -> None:
     results: list[tuple[ResearchRefreshResult, bool]] = []
     runtime = ResearchRuntime(
         FailedResearch(),
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         cadence=_cadence(),
         now=lambda: NOW,
         on_result=lambda result, initial: results.append((result, initial)),
@@ -192,6 +196,7 @@ def test_earlier_batch_does_not_release_later_strategy_initial_barrier() -> None
     results: list[tuple[tuple[str, ...], bool]] = []
     runtime = ResearchRuntime(
         research,
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         cadence=_cadence(),
         now=lambda: NOW,
         on_result=lambda result, initial: results.append((result.requested_codes, initial)),
@@ -218,6 +223,7 @@ def test_candidate_already_in_periodic_research_still_defers_first_output_review
     results: list[tuple[ResearchRefreshResult, bool]] = []
     runtime = ResearchRuntime(
         research,
+        BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="test-company-research"),
         cadence=_cadence(),
         now=lambda: NOW,
         on_result=lambda result, initial: results.append((result, initial)),

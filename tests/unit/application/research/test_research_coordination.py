@@ -4,6 +4,7 @@ import threading
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.application.research_coordination import ResearchCoordinator, ResearchCoordinatorOptions
@@ -42,6 +43,43 @@ class RecordingResearch:
             started_at=observed_at,
             completed_at=observed_at + timedelta(seconds=1),
         )
+
+
+def test_research_lifecycle_accepts_a_narrow_executor_and_never_runs_rejected_work_inline() -> None:
+    class RejectingExecutor:
+        def __init__(self):
+            self.running = False
+            self.stop_deadlines = []
+
+        def start(self):
+            self.running = True
+            return True
+
+        def submit(self, function, /, *args, **kwargs):
+            return None
+
+        def stop(self, *, wait=True, cancel_futures=False, deadline=None):
+            assert cancel_futures
+            self.running = False
+            self.stop_deadlines.append(deadline)
+            return ShutdownStep("fixture-executor", True, False)
+
+    executor = RejectingExecutor()
+    research = RecordingResearch()
+    results = []
+    coordinator = ResearchCoordinator(research, executor, now=lambda: NOW, on_result=results.append)
+    assert coordinator.start()
+    assert not coordinator.start()
+    assert executor.running
+    assert not coordinator.offer(("600001",), NOW)
+    assert coordinator.status().last_error == "research_coordinator_queue_rejected"
+    assert research.calls == results == []
+    deadline = ShutdownDeadline.start(1.0)
+    assert coordinator.stop(wait=True, deadline=deadline).completed
+    assert coordinator.stop(wait=True, deadline=deadline).completed
+    assert not executor.running
+    assert executor.stop_deadlines == [deadline, deadline]
+    assert not coordinator.offer(("600001",), NOW)
 
 
 def test_research_coordinator_runs_after_close_in_bounded_priority_batches() -> None:

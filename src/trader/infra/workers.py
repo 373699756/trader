@@ -26,6 +26,20 @@ class WorkerExecutor(Protocol):
     ) -> Future[_T] | None: ...
 
 
+class ManagedWorkerExecutor(WorkerExecutor, Protocol):
+    """Injected execution capability for an application-owned start/stop sequence."""
+
+    def start(self) -> bool: ...
+
+    def stop(
+        self,
+        *,
+        wait: bool = True,
+        cancel_futures: bool = False,
+        deadline: ShutdownDeadline | None = None,
+    ) -> ShutdownStep: ...
+
+
 class WorkerResourceRejectedError(RuntimeError):
     """An injected execution resource cannot accept new work."""
 
@@ -339,6 +353,7 @@ class _InlineExecutor:
 __all__ = [
     "BoundedExecutor",
     "BoundedExecutorStatus",
+    "ManagedWorkerExecutor",
     "WorkerExecutor",
     "WorkerResourceRejectedError",
     "injected_executor",

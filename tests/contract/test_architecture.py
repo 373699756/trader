@@ -6,6 +6,7 @@ from dataclasses import MISSING, fields
 from functools import cache
 from pathlib import Path
 
+from tests.contract.test_history_training_application_boundaries import application_import_violations
 from trader.recommendation.application.ports.runtime import DecisionBuilderPort
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 
@@ -84,6 +85,7 @@ def test_active_source_files_do_not_exceed_1200_lines() -> None:
 
 def test_active_dependency_direction() -> None:
     forbidden = {
+        "download/application": ("trader.download.infra", "trader.infra", "trader.web", "trader.entrypoints"),
         "domain": ("trader.application", "trader.infra", "trader.web", "trader.entrypoints"),
         "application": ("trader.infra", "trader.web", "trader.entrypoints"),
         "training/domain": (
@@ -114,6 +116,14 @@ def test_active_dependency_direction() -> None:
     violations: list[str] = []
     for boundary, prefixes in forbidden.items():
         for path in (SOURCE_ROOT / boundary).rglob("*.py"):
+            if boundary in {"download/application", "training/application"}:
+                violations.extend(
+                    f"{path.relative_to(SOURCE_ROOT)} -> {imported}"
+                    for imported in application_import_violations(
+                        path.read_text(encoding="utf-8"), boundary.split("/")[0]
+                    )
+                )
+                continue
             for imported in _imports(path):
                 if imported in {"trader.infra.shutdown", "trader.infra.workers", "trader.infra.cache_contracts"}:
                     continue

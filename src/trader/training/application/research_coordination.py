@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
-from trader.infra.workers import BoundedExecutor
+from trader.infra.workers import ManagedWorkerExecutor
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.training.application.research_ports import OfflineResearchReaderPort
 
@@ -58,7 +58,7 @@ class ResearchCoordinator:
     def __init__(
         self,
         research: OfflineResearchReaderPort,
-        executor: BoundedExecutor,
+        executor: ManagedWorkerExecutor,
         *,
         now: Callable[[], datetime],
         on_result: Callable[[ResearchRefreshResult], None],
