@@ -38,6 +38,13 @@ class QfqSupplierPort(Protocol):
     def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
 
 
+class QfqGapRecoveryPort(Protocol):
+    @property
+    def source_identity(self) -> str: ...
+
+    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
+
+
 class QfqResumePort(Protocol):
     def completed(self, day: date, code: str, source: str) -> bool: ...
 
@@ -52,6 +59,13 @@ class _DownloadJob:
 
 
 @dataclass(frozen=True)
+class _GapJob:
+    security: BaoStockSecurity
+    dates: tuple[date, ...]
+    missing_dates: tuple[date, ...] | None
+
+
+@dataclass(frozen=True)
 class UpdateQfqWindows:
     v2: QfqWindowPort
     v3: QfqWindowPort
@@ -62,6 +76,7 @@ class UpdateQfqWindows:
     workers: int = 8
     worker_pool: WorkerExecutor | None = None
     monotonic: Callable[[], float] = monotonic
+    gap_supplier: QfqGapRecoveryPort | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.workers <= 12:
@@ -103,12 +118,15 @@ class UpdateQfqWindows:
         )
         progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
         jobs = iter(self._jobs(context, progress))
+        gaps: list[_GapJob] = []
         while wave := tuple(islice(jobs, self.workers)):
             if self.cancel_requested():
                 break
             progress.begin_batch(tuple(job.security for job in wave))
-            self._run_wave(wave, progress)
+            gaps.extend(self._run_wave(wave, progress))
             progress.summary("批次完成")
+        if not self.cancel_requested():
+            self._recover_gaps(tuple(sorted(gaps, key=lambda gap: gap.security.code)), progress)
         return progress.finish(self.cancel_requested())
 
     def _jobs(self, context: HistorySupplierContext, progress: QfqDownloadProgress) -> Iterable[_DownloadJob]:
@@ -138,8 +156,12 @@ class UpdateQfqWindows:
         previous = self.v2.read_code(security.code)
         smaller = self.v3.read_code(security.code)
         same_source = all(cache.source_identity(security.code) == progress.source for cache in (self.v2, self.v3))
+        recovery_source = self.gap_supplier.source_identity if self.gap_supplier is not None else None
+        recovered_source = recovery_source is not None and all(
+            cache.source_identity(security.code) == recovery_source for cache in (self.v2, self.v3)
+        )
         if (
-            same_source
+            (same_source or recovered_source)
             and self.resume.completed(progress.day, security.code, progress.source)
             and paired_window(previous, dates)
             and paired_window(smaller, dates[-61:])
@@ -151,7 +173,7 @@ class UpdateQfqWindows:
             previous = PublishedHistoryWindow(security.code, ())
         return _DownloadJob(security, dates, previous)
 
-    def _run_wave(self, wave: tuple[_DownloadJob, ...], progress: QfqDownloadProgress) -> None:
+    def _run_wave(self, wave: tuple[_DownloadJob, ...], progress: QfqDownloadProgress) -> list[_GapJob]:
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob] = {}
         for job in wave:
             if self.cancel_requested():
@@ -165,19 +187,61 @@ class UpdateQfqWindows:
             else:
                 future = submit_or_reject(self.worker_pool, self._download, job)
             futures[future] = job
+        gaps: list[_GapJob] = []
         for future in as_completed(futures):
             job = futures[future]
             try:
                 if self.cancel_requested():
                     continue
-                self._commit_one(future.result(), progress)
+                window = future.result()
+                self._commit_one(window, progress, progress.source)
                 progress.completed += 1
             except (RuntimeError, OSError, ValueError) as exc:
                 progress.record_pending(job.security, exc)
+                missing = (
+                    tuple(sorted(set(exc.raw_missing) | set(exc.qfq_missing)))
+                    if isinstance(exc, QfqWindowIncompleteError)
+                    else None
+                )
+                # Retain only identity/dates for failed stocks, never the full market's bars.
+                gaps.append(_GapJob(job.security, job.dates, missing))
+        return gaps
 
-    def _commit_one(self, window: PublishedHistoryWindow, progress: QfqDownloadProgress) -> None:
+    def _recover_gaps(self, gaps: tuple[_GapJob, ...], progress: QfqDownloadProgress) -> None:
+        missing_days = sum(len(gap.missing_dates or ()) for gap in gaps)
+        unknown = sum(gap.missing_dates is None for gap in gaps)
+        progress.publish(
+            "Tencent阶段完成",
+            f"合格 {progress.completed} | 待补股票 {len(gaps)} | 已知缺失股票交易日 {missing_days} "
+            f"| 缺日数未确定 {unknown} 只 | 本地检查失败 {progress.pending - len(gaps)} 只",
+        )
+        if self.gap_supplier is None or not gaps:
+            return
+        for index, job in enumerate(gaps, 1):
+            if self.cancel_requested():
+                break
+            progress.publish(
+                "BaoStock补缺",
+                f"{index}/{len(gaps)}（{index / len(gaps):.2%}）| {job.security.code} {job.security.name} "
+                f"| 同源配对窗口 {len(job.dates)} 日",
+            )
+            try:
+                window = self.gap_supplier.fetch_window(job.security, job.dates)
+                if self.cancel_requested():
+                    break
+                self._validate_window(job.security, job.dates, window)
+                self._commit_one(window, progress, self.gap_supplier.source_identity)
+                progress.pending -= 1
+                progress.completed += 1
+            except (RuntimeError, OSError, ValueError) as exc:
+                # Replace the existing pending detail without counting the stock twice.
+                progress.pending -= 1
+                progress.record_pending(job.security, exc)
+            progress.summary("补缺进度")
+
+    def _commit_one(self, window: PublishedHistoryWindow, progress: QfqDownloadProgress, source: str) -> None:
         for cache in (self.v2, self.v3):
-            files, delta = cache.replace_window(window, progress.source)
+            files, delta = cache.replace_window(window, source)
             progress.changed.update(files)
             progress.rows += delta
         if not self.cancel_requested():
@@ -199,10 +263,15 @@ class UpdateQfqWindows:
         if self.cancel_requested():
             raise RuntimeError("qfq cancelled")
         window = self.supplier.fetch_window(security, dates)
+        self._validate_window(security, dates, window)
+        return window
+
+    @staticmethod
+    def _validate_window(security: BaoStockSecurity, dates: tuple[date, ...], window: PublishedHistoryWindow) -> None:
         if window.code != security.code or tuple(cell.trade_date for cell in window.cells) != dates:
             raise RuntimeError("qfq_window_identity_or_calendar_invalid")
         if not paired_window(window, dates):
-            raw_missing = tuple(cell.trade_date for cell in window.cells if cell.unadjusted is None)
-            qfq_missing = tuple(cell.trade_date for cell in window.cells if cell.qfq is None)
-            raise QfqWindowIncompleteError(raw_missing, qfq_missing)
-        return window
+            raise QfqWindowIncompleteError(
+                tuple(cell.trade_date for cell in window.cells if cell.unadjusted is None),
+                tuple(cell.trade_date for cell in window.cells if cell.qfq is None),
+            )

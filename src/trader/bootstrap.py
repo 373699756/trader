@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
+from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -21,6 +22,7 @@ from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
@@ -209,36 +211,41 @@ def execute_qfq_download(
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
     try:
-        supplier = TencentQfqSupplier(
-            TencentQfqDependencies(
-                requests.Session,
-                partial(
-                    load_qfq_securities,
-                    partial(fetch_sse_listings, get=requests.get),
-                    partial(fetch_szse_listings, get=requests.get),
-                    15.0,
-                ),
-                cancel_requested,
+        with BaoStockHistorySupplier(
+            HistorySyncConfiguration.for_repository(project_root),
+            cancel_requested=cancel_requested,
+        ) as baostock:
+            tencent = TencentQfqSupplier(
+                TencentQfqDependencies(
+                    requests.Session,
+                    partial(
+                        load_qfq_securities,
+                        partial(fetch_sse_listings, get=requests.get),
+                        partial(fetch_szse_listings, get=requests.get),
+                        15.0,
+                    ),
+                    cancel_requested,
+                )
             )
-        )
-        updater = UpdateQfqWindows(
-            v2,
-            v3,
-            supplier,
-            QfqCheckpoint(root / ".checkpoint.json"),
-            cancel_requested,
-            report,
-            workers=8,
-            worker_pool=qfq_pool,
-        )
-        return QfqUpdateRunner(
-            history,
-            updater,
-            v2,
-            v3,
-            project_root / "data/history/baostock/.maintenance.lock",
-            ShanghaiClock(now).now,
-        ).execute(seed_only=seed_only)
+            updater = UpdateQfqWindows(
+                v2,
+                v3,
+                tencent,
+                QfqCheckpoint(root / ".checkpoint.json"),
+                cancel_requested,
+                report,
+                workers=8,
+                worker_pool=qfq_pool,
+                gap_supplier=BaoStockQfqRecovery(baostock, f"baostock:{version('baostock')}:qfq-paired-window"),
+            )
+            return QfqUpdateRunner(
+                history,
+                updater,
+                v2,
+                v3,
+                project_root / "data/history/baostock/.maintenance.lock",
+                ShanghaiClock(now).now,
+            ).execute(seed_only=seed_only)
     finally:
         stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         if not stopped.completed:

@@ -307,8 +307,214 @@ def test_incomplete_supplier_gap_reports_dates_without_qualifying_window(tmp_pat
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.completed_codes == 0 and result.pending_codes == 1
-    assert any("Tencent未返回" in message and DAYS[-1].isoformat() in message for message in logs)
+    assert any("供应商仍未返回" in message and DAYS[-1].isoformat() in message for message in logs)
     assert not (tmp_path / "v2").exists() and not (tmp_path / "v3").exists()
+
+
+def test_all_tencent_waves_finish_before_serial_recovery_and_recovered_checkpoint_is_reused(tmp_path) -> None:
+    import threading
+
+    from trader.infra.workers import BoundedExecutor
+
+    events = []
+    barrier = threading.Barrier(2)
+    main_thread = threading.get_ident()
+
+    class Tencent(Supplier):
+        def fetch_window(self, security, dates):
+            barrier.wait(timeout=3)
+            events.append(("tencent", security.code))
+            window = super().fetch_window(security, dates)
+            if security.code == "600004":
+                raise RuntimeError("supplier_failed")
+            if security.code == "600001":
+                return replace(
+                    window,
+                    cells=(
+                        replace(window.cells[0], status="unknown_missing", unadjusted=None, qfq=None),
+                        *window.cells[1:],
+                    ),
+                )
+            return window
+
+    class Recovery:
+        source_identity = "baostock:fixture"
+
+        def fetch_window(self, security, dates):
+            assert threading.get_ident() == main_thread
+            assert len([event for event in events if event[0] == "tencent"]) == 4
+            # Qualified Tencent windows were published before the recovery barrier.
+            assert updater.v2.read_code("600002").cells
+            assert updater.v2.read_code("600003").cells
+            events.append(("baostock", security.code))
+            assert len(dates) == 251
+            return _window(security.code, dates, price=20)
+
+    logs = []
+    supplier = Tencent(codes=("600001", "600002", "600003", "600004"))
+    pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-recovery-test")
+    pool.start()
+    try:
+        updater = replace(
+            _updater(tmp_path, supplier), workers=2, worker_pool=pool, report=logs.append, gap_supplier=Recovery()
+        )
+        observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+        result = updater.execute(observed)
+        assert result.completed_codes == 4 and result.pending_codes == 0
+        assert [event[0] for event in events] == ["tencent"] * 4 + ["baostock"] * 2
+        assert any("待补股票 2 | 已知缺失股票交易日 1 | 缺日数未确定 1 只" in line for line in logs)
+        assert any("已处理 4/4（100.00%）| 合格 4 | 待补 0" in line for line in logs)
+        for cache in (updater.v2, updater.v3):
+            assert cache.source_identity("600001") == "baostock:fixture"
+            assert all(cell.qfq.close_price == 20 for cell in cache.read_code("600001").cells)
+        before = (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3"))
+        resumed = updater.execute(observed)
+        assert resumed.skipped_codes == 4 and resumed.changed_files == ()
+        assert len(events) == 6
+        assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
+    finally:
+        assert pool.stop(wait=True, cancel_futures=True).completed
+
+
+@pytest.mark.parametrize("invalid", ("failure", "incomplete", "wrong_dates"))
+def test_recovery_failure_preserves_old_stock_and_continues_other_stocks(tmp_path, invalid) -> None:
+    calls = []
+
+    class Recovery:
+        source_identity = "baostock:fixture"
+
+        def fetch_window(self, security, dates):
+            calls.append(security.code)
+            if security.code == "600001":
+                if invalid == "failure":
+                    raise RuntimeError("supplier_failed")
+                if invalid == "wrong_dates":
+                    return _window(security.code, dates[:-1])
+                window = _window(security.code, dates)
+                return replace(
+                    window,
+                    cells=(
+                        replace(window.cells[0], status="unknown_missing", unadjusted=None, qfq=None),
+                        *window.cells[1:],
+                    ),
+                )
+            return _window(security.code, dates)
+
+    updater = replace(_updater(tmp_path, Supplier(codes=("600001", "600002"), fail=True)), gap_supplier=Recovery())
+    updater.seed((_window("600001", price=15),), "old")
+    previous = updater.v2.read_code("600001")
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert calls == ["600001", "600002"]
+    assert result.completed_codes == 1 and result.pending_codes == 1
+    assert updater.v2.read_code("600001") == previous
+    assert updater.v2.source_identity("600001") == "old"
+    source = updater.v2.source_identity("600002")
+    assert source == "baostock:fixture"
+    assert not updater.resume.completed(DAYS[-1], "600001", source)
+
+
+@pytest.mark.parametrize("phase", ("tencent", "baostock"))
+def test_cancel_does_not_start_recovery_or_publish_late_recovery_result(tmp_path, phase) -> None:
+    cancelled = False
+    calls = []
+
+    class Tencent(Supplier):
+        def fetch_window(self, security, dates):
+            nonlocal cancelled
+            if phase == "tencent":
+                cancelled = True
+            raise RuntimeError("supplier_failed")
+
+    class Recovery:
+        source_identity = "baostock:fixture"
+
+        def fetch_window(self, security, dates):
+            nonlocal cancelled
+            calls.append(security.code)
+            cancelled = True
+            return _window(security.code, dates)
+
+    updater = replace(
+        _updater(tmp_path, Tencent(codes=("600001", "600002"))),
+        cancel_requested=lambda: cancelled,
+        gap_supplier=Recovery(),
+    )
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.failure_reason == "cancelled" and result.pending_codes == 2
+    assert result.completed_codes == 0 and result.changed_files == ()
+    assert len(calls) == (1 if phase == "baostock" else 0)
+    assert not (tmp_path / ".checkpoint.json").exists()
+
+
+def test_new_day_refetches_tencent_full_window_after_baostock_recovery(tmp_path) -> None:
+    class Recovery:
+        source_identity = "baostock:fixture"
+
+        def fetch_window(self, security, dates):
+            return _window(security.code, dates, price=20)
+
+    supplier = Supplier(days=DAYS[:-1], fail=True)
+    updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery())
+    observed = datetime.combine(DAYS[-2], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    assert updater.execute(observed).completed_codes == 1
+    supplier.fail = False
+    supplier.days = DAYS[1:]
+    supplier.calls.clear()
+    result = updater.execute(observed + timedelta(days=1))
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert supplier.calls == [("600001", DAYS[1:])]
+    assert updater.v2.source_identity("600001").startswith("fixture:")
+    assert all(cell.qfq.close_price == 10 for cell in updater.v2.read_code("600001").cells)
+
+
+def test_complete_tencent_stocks_never_call_recovery(tmp_path) -> None:
+    class Recovery:
+        source_identity = "baostock:fixture"
+
+        def fetch_window(self, security, dates):
+            raise AssertionError("BaoStock should not be called")
+
+    updater = replace(_updater(tmp_path, Supplier()), gap_supplier=Recovery())
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    assert updater.execute(observed).completed_codes == 1
+
+
+def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_path, monkeypatch) -> None:
+    from trader import bootstrap
+    from trader.download.domain.baostock_daily import BaoStockCodeBatch, BaoStockCodeDownload, BaoStockDailyFact
+
+    events = []
+
+    class Tencent(Supplier):
+        def fetch_window(self, security, dates):
+            events.append("tencent")
+            raise RuntimeError("supplier_failed")
+
+    class BaoStock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            events.append("closed")
+
+        def fetch_code(self, security, dates):
+            assert events.count("tencent") == 2
+            events.append("baostock")
+            batch = BaoStockCodeBatch(security.code, tuple(_cell(security.code, day) for day in dates))
+            return BaoStockCodeDownload(batch, tuple(BaoStockDailyFact(security.code, day, False) for day in dates))
+
+    monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
+    monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
+    result = bootstrap.execute_qfq_download(
+        tmp_path,
+        report=lambda _message: None,
+        now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
+    )
+    assert result.completed_codes == 2 and result.pending_codes == 0
+    assert events == ["tencent", "tencent", "baostock", "baostock", "closed"]
+    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").source_identity("600001").startswith("baostock:")
 
 
 @pytest.mark.parametrize("conflict", (False, True))

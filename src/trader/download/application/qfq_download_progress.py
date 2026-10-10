@@ -25,7 +25,7 @@ def _pending_reason(exc: Exception) -> tuple[str, str]:
     if incomplete:
         details = f"未复权缺 {int(incomplete[1])} 日、前复权缺 {int(incomplete[2])} 日"
         if isinstance(exc, QfqWindowIncompleteError):
-            details += f"，Tencent未返回 {_format_missing_dates(exc)}"
+            details += f"，供应商仍未返回 {_format_missing_dates(exc)}"
         return reason, details
     return reason, f"处理失败（{reason}）"
 
