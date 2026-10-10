@@ -71,48 +71,75 @@ def _fingerprints(root: Path) -> dict[str, tuple[str, int]]:
 def test_sqlite_rolls_windows_and_noop_is_byte_identical(tmp_path, profile, sessions) -> None:
     cache = SQLiteQfqWindowCache(tmp_path, profile)
     changed, count = cache.replace_window(_window(days=DAYS[:-1]), "history:seed")
-    assert f"{profile}/index.json" in changed
+    assert changed == (f"{profile}/qfq_sse_main.sqlite3",)
+    assert not (cache.root / "index.json").exists()
     assert count == sessions
     before = _fingerprints(cache.root)
     assert cache.replace_window(_window(days=DAYS[:-1]), "history:seed") == ((), 0)
     assert _fingerprints(cache.root) == before
-    index_before = (cache.root / "index.json").read_bytes()
     changed, count = cache.replace_window(_window(), "baostock:refresh")
     assert count == 2
     assert len(changed) == 1 and changed[0].endswith(".sqlite3")
-    assert (cache.root / "index.json").read_bytes() == index_before
     assert tuple(cell.trade_date for cell in cache.read_code("600001").cells) == DAYS[-sessions:]
     manifest = cache.manifest()
     assert manifest is not None
     assert cache.read_windows(manifest, ("600001",), sessions=sessions)[0] == cache.read_code("600001")
-    assert max(path.stat().st_size for path in cache.root.glob("*.sqlite3")) < 10_000_000
 
 
 def test_changed_code_does_not_rewrite_other_range(tmp_path) -> None:
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
     cache.replace_window(_window("600001"), "seed")
     cache.replace_window(_window("300001"), "seed")
-    membership = json.loads((cache.root / "index.json").read_text())
     before = _fingerprints(cache.root)
     changed, count = cache.replace_window(_window("600001", price=11.0), "revision")
-    assert changed == (f"v2/{membership['600001']}",)
+    assert changed == ("v2/qfq_sse_main.sqlite3",)
     assert count == 251
-    assert _fingerprints(cache.root)[membership["300001"]] == before[membership["300001"]]
-    assert _fingerprints(cache.root)["index.json"] == before["index.json"]
+    assert _fingerprints(cache.root)["qfq_szse_chinext.sqlite3"] == before["qfq_szse_chinext.sqlite3"]
 
 
-def test_preemptive_split_keeps_stable_membership_and_hard_limit(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("trader.download.infra.qfq_sqlite.QFQ_SPLIT_BYTES", 180_000)
+def test_board_routing_covers_all_profiles_without_sidecar(tmp_path) -> None:
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    for code in ("600001", "600002", "600003", "600004"):
+    codes = ("600001", "605001", "000001", "003001", "300001", "301001", "688001", "689001")
+    for code in codes:
         cache.replace_window(_window(code), "seed")
-    membership = json.loads((cache.root / "index.json").read_text())
-    assert len(set(membership.values())) > 1
-    before = (cache.root / "index.json").read_bytes()
-    cache.replace_window(_window("600001"), "seed")
-    assert (cache.root / "index.json").read_bytes() == before
-    assert all(path.stat().st_size < 180_000 for path in cache.root.glob("*.sqlite3"))
-    assert all(len(cache.read_code(code).cells) == 251 for code in membership)
+    assert len(tuple(cache.root.glob("*.sqlite3"))) == 4
+    assert not (cache.root / "index.json").exists()
+    assert cache.codes() == frozenset(codes)
+    assert cache.read_code("600002").cells == ()
+    manifest = cache.manifest()
+    assert len(cache.read_windows(manifest, codes, sessions=20)) == 8
+    assert all(len(window.cells) == 20 for window in cache.iter_windows(manifest, sessions=20))
+    assert all(len(cache.read_code(code).cells) == 251 for code in codes)
+
+
+def test_large_local_shard_keeps_primary_key_queries_without_splitting(tmp_path) -> None:
+    cache = SQLiteQfqWindowCache(tmp_path, "v2")
+    cache.replace_window(_window(), "seed")
+    shard = cache.root / "qfq_sse_main.sqlite3"
+    with sqlite3.connect(shard) as connection:
+        connection.execute("CREATE TABLE local_capacity_probe(payload BLOB)")
+        connection.execute("INSERT INTO local_capacity_probe VALUES (zeroblob(11000000))")
+        plan = connection.execute(
+            "EXPLAIN QUERY PLAN SELECT day,payload FROM bars WHERE code=? ORDER BY day", ("600001",)
+        ).fetchall()
+    assert shard.stat().st_size > 10_000_000
+    assert "PRIMARY KEY" in str(plan) and "TEMP B-TREE" not in str(plan)
+    assert len(cache.read_code("600001").cells) == 251
+    cache.replace_window(_window("600002"), "seed")
+    assert len(tuple(cache.root.glob("*.sqlite3"))) == 1
+
+
+def test_legacy_layout_fails_explicitly_without_hidden_reads(tmp_path) -> None:
+    from trader.infra.atomic_files.json import atomic_write_json
+
+    root = tmp_path / "v2"
+    root.mkdir()
+    atomic_write_json(root / "index.json", {"600001": "09375.sqlite3"})
+    cache = SQLiteQfqWindowCache(tmp_path, "v2")
+    with pytest.raises(RuntimeError, match="requires_migration"):
+        cache.read_code("600001")
+    with pytest.raises(RuntimeError, match="requires_migration"):
+        cache.replace_window(_window(), "seed")
 
 
 def test_tampered_cells_fail_closed(tmp_path) -> None:

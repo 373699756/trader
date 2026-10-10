@@ -549,7 +549,7 @@ def build_system(
         lambda cancel: execute_qfq_download(settings.project_root, cancel_requested=cancel, now=now),
         now=ShanghaiClock(now).now,
         needs_initialization=lambda: any(
-            not (settings.project_root / "data/qfq" / profile / "index.json").is_file() for profile in ("v2", "v3")
+            not SQLiteQfqWindowCache(settings.project_root / "data/qfq", profile).codes() for profile in ("v2", "v3")
         ),
     )
     supervisor = RuntimeSupervisor(

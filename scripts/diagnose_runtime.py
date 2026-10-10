@@ -30,6 +30,7 @@ Profile = Literal[
     "baostock-qfq-shadow",
     "tencent-download",
     "history-sqlite",
+    "qfq-sqlite",
     "research",
     "long-watchlist",
     "browser",
@@ -54,6 +55,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "baostock-qfq-shadow": ("baostock_qfq_shadow",),
     "tencent-download": ("tencent_download",),
     "history-sqlite": ("history_sqlite_performance",),
+    "qfq-sqlite": ("qfq_sqlite_performance",),
     "research": ("research_readiness",),
     "long-watchlist": ("long_watchlist_admission",),
     "browser": ("browser_refresh",),
@@ -122,6 +124,7 @@ class DiagnosticOptions:
     )
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
+    qfq_root: Path = PROJECT_ROOT / "data/qfq"
 
 
 @dataclass(frozen=True)
@@ -158,6 +161,12 @@ def _parser() -> argparse.ArgumentParser:
         help="Tencent K-line host for bounded history probes",
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
+    parser.add_argument(
+        "--qfq-root",
+        type=Path,
+        default=PROJECT_ROOT / "data/qfq",
+        help="legacy qfq source for isolated migration benchmark",
+    )
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument(
         "--codes",
@@ -321,6 +330,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             ),
             eligibility_evidence=tuple(args.eligibility_evidence),
             download_sizes=tuple(args.download_sizes),
+            qfq_root=args.qfq_root.expanduser().resolve(),
         ),
         output,
     )
@@ -357,6 +367,19 @@ def build_commands(
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
     commands: dict[str, DiagnosticCommand] = {
+        "qfq_sqlite_performance": DiagnosticCommand(
+            "qfq_sqlite_performance",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.qfq_sqlite",
+                "--qfq-root",
+                str(options.qfq_root),
+                "--rounds",
+                str(options.sqlite_query_rounds),
+            ),
+            common_timeout,
+        ),
         "tencent_download": DiagnosticCommand(
             "tencent_download",
             (
@@ -916,6 +939,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "web_health": _web_health_details,
     "history_sources": _history_details,
     "tencent_download": _security_master_details,
+    "qfq_sqlite_performance": _security_master_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,

@@ -8,8 +8,6 @@ from datetime import date, datetime, time, timedelta
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 
 QFQ_WINDOWS = (("v2", 251), ("v3", 61))
-QFQ_FILE_LIMIT_BYTES = 10_000_000
-QFQ_SPLIT_BYTES = 8_000_000
 
 
 @dataclass(frozen=True, slots=True)

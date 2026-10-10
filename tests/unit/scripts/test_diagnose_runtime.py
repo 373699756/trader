@@ -667,3 +667,12 @@ def test_child_launch_failure_becomes_a_result_instead_of_aborting_scan(
     assert result.return_code == 126
     assert result.error_code == "command_launch_failed"
     assert result.payload is None
+
+
+def test_qfq_sqlite_profile_uses_isolated_migration_and_bounded_rounds():
+    options, _ = _validate(_parser().parse_args(["--profile", "qfq-sqlite", "--sqlite-query-rounds", "3"]))
+    command = build_commands(options, python_executable="python3")[0]
+    assert command.name == "qfq_sqlite_performance"
+    assert "scripts.runtime_diagnostics.qfq_sqlite" in command.argv
+    assert "--qfq-root" in command.argv
+    assert command.argv[-2:] == ("--rounds", "3")
