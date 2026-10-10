@@ -49,6 +49,16 @@ def validate_daily_side_values(
     raw_values: tuple[float | None, float | None, float | None],
 ) -> None:
     """Shared numeric qualification for supplier and published daily facts."""
+    validate_daily_prices(adjustment, trading_status, prices, flows)
+    validate_daily_raw_fields(adjustment, trading_status, raw_values)
+
+
+def validate_daily_prices(
+    adjustment: BaoStockAdjustment,
+    trading_status: BaoStockTradingStatus,
+    prices: tuple[float | None, ...],
+    flows: tuple[float | None, ...],
+) -> None:
     if adjustment not in ("unadjusted", "qfq") or trading_status not in ("trading", "suspended"):
         raise ValueError("BaoStock daily side semantics are invalid")
     supplied = tuple(value for value in (*prices, *flows) if value is not None)
@@ -58,8 +68,21 @@ def validate_daily_side_values(
         any(value is None or value <= 0 for value in prices) or any(value is None or value < 0 for value in flows)
     ):
         raise ValueError("BaoStock active daily side requires complete OHLCV and amount")
+
+
+def validate_daily_raw_fields(
+    adjustment: BaoStockAdjustment,
+    trading_status: BaoStockTradingStatus,
+    raw_values: tuple[float | None, float | None, float | None],
+    *,
+    require_raw_fields: bool = True,
+) -> None:
     if adjustment == "unadjusted":
-        if trading_status == "trading" and any(value is None or not math.isfinite(value) for value in raw_values):
+        if (
+            require_raw_fields
+            and trading_status == "trading"
+            and any(value is None or not math.isfinite(value) for value in raw_values)
+        ):
             raise ValueError("BaoStock unadjusted side requires preclose, pct_change, and turnover")
         if any(value is not None and not math.isfinite(value) for value in raw_values):
             raise ValueError("BaoStock unadjusted side contains an invalid number")
@@ -566,4 +589,6 @@ __all__ = [
     "daily_cell_status",
     "join_baostock_daily_sides",
     "validate_daily_side_values",
+    "validate_daily_prices",
+    "validate_daily_raw_fields",
 ]

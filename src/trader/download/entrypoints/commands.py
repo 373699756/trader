@@ -15,7 +15,6 @@ from trader.download.entrypoints.history_maintenance_projection import project_h
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
-from trader.download.infra.tencent_history_tail import TencentHistoryTailSupplier
 
 
 def run_download(repository_root: Path) -> int:
@@ -23,8 +22,7 @@ def run_download(repository_root: Path) -> int:
 
     configuration = history_sync_configuration(repository_root)
     progress = StderrHistorySyncProgress()
-    with BaoStockHistorySupplier(configuration, progress=progress) as baseline:
-        supplier = TencentHistoryTailSupplier(baseline, cancel_requested=lambda: False)
+    with BaoStockHistorySupplier(configuration, progress=progress) as supplier:
         status = DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
             configuration,
             supplier,
@@ -75,8 +73,7 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
     task_log = RotatingHistoryAutomationLog(runtime.runtime_dir / "logs/history-automation.log")
 
     def synchronize(progress: HistorySyncProgressPort | None) -> HistoryMaintenanceStatus:
-        with BaoStockHistorySupplier(configuration, progress=task_log) as baseline:
-            supplier = TencentHistoryTailSupplier(baseline, cancel_requested=lambda: False)
+        with BaoStockHistorySupplier(configuration, progress=task_log) as supplier:
             return DownloadHistoryUseCase(HistoryArchiveGateway()).execute(
                 configuration,
                 supplier,

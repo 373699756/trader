@@ -15,10 +15,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
-    BaoStockCodeBatch,
-    BaoStockCodeDownload,
     BaoStockDailyCell,
-    BaoStockDailyFact,
     BaoStockDailySide,
     BaoStockSecurity,
     BaoStockSourceVersions,
@@ -77,7 +74,7 @@ def test_sqlite_rolls_windows_and_noop_is_byte_identical(tmp_path, profile, sess
     assert f"{profile}/index.json" in changed
     assert count == sessions
     before = _fingerprints(cache.root)
-    assert cache.replace_window(_window(days=DAYS[:-1]), "baostock:new-provenance") == ((), 0)
+    assert cache.replace_window(_window(days=DAYS[:-1]), "history:seed") == ((), 0)
     assert _fingerprints(cache.root) == before
     index_before = (cache.root / "index.json").read_bytes()
     changed, count = cache.replace_window(_window(), "baostock:refresh")
@@ -112,7 +109,7 @@ def test_preemptive_split_keeps_stable_membership_and_hard_limit(tmp_path, monke
     membership = json.loads((cache.root / "index.json").read_text())
     assert len(set(membership.values())) > 1
     before = (cache.root / "index.json").read_bytes()
-    cache.replace_window(_window("600001"), "same")
+    cache.replace_window(_window("600001"), "seed")
     assert (cache.root / "index.json").read_bytes() == before
     assert all(path.stat().st_size < 180_000 for path in cache.root.glob("*.sqlite3"))
     assert all(len(cache.read_code(code).cells) == 251 for code in membership)
@@ -132,18 +129,19 @@ def test_checkpoint_restart_preserves_all_codes_and_failed_write_does_not_advanc
     path = tmp_path / ".checkpoint.json"
     checkpoint = QfqCheckpoint(path)
     for code in ("600001", "300001", "600002"):
-        checkpoint.confirm(DAYS[-1], code)
+        checkpoint.confirm(DAYS[-1], code, "fixture")
     checkpoint = QfqCheckpoint(path)
-    assert all(checkpoint.completed(DAYS[-1], code) for code in ("600001", "300001", "600002"))
+    assert all(checkpoint.completed(DAYS[-1], code, "fixture") for code in ("600001", "300001", "600002"))
 
     def fail(*_args):
         raise OSError("write failed")
 
     monkeypatch.setattr("trader.download.infra.qfq_checkpoint.atomic_write_json", fail)
     with pytest.raises(OSError):
-        checkpoint.confirm(DAYS[-1], "600003")
-    assert not checkpoint.completed(DAYS[-1], "600003")
-    assert not checkpoint.completed(DAYS[-1] + timedelta(days=1), "600001")
+        checkpoint.confirm(DAYS[-1], "600003", "fixture")
+    assert not checkpoint.completed(DAYS[-1], "600003", "fixture")
+    assert not checkpoint.completed(DAYS[-1] + timedelta(days=1), "600001", "fixture")
+    assert not checkpoint.completed(DAYS[-1], "600001", "changed-source")
 
 
 @dataclass
@@ -162,15 +160,12 @@ class Supplier:
             BaoStockSourceVersions("fixture", "3.11", ()),
         )
 
-    def fetch_code(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
+    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         self.calls.append((security.code, dates))
         if self.fail:
             raise RuntimeError("supplier fixture failure")
         cells = tuple(_cell(security.code, day, price=11.0 if self.conflict else 10.0) for day in dates)
-        return BaoStockCodeDownload(
-            BaoStockCodeBatch(security.code, cells),
-            tuple(BaoStockDailyFact(security.code, day, False) for day in dates),
-        )
+        return PublishedHistoryWindow(security.code, tuple(project_history_cell(cell) for cell in cells))
 
 
 def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
@@ -204,7 +199,9 @@ def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_pa
 def test_small_tail_exact_overlap_or_bounded_revision_refetch(tmp_path, conflict) -> None:
     supplier = Supplier(conflict=conflict)
     updater = _updater(tmp_path, supplier)
-    updater.seed((_window(days=DAYS[:-1]),), "history:seed")
+    context = supplier.load_qfq_context(DAYS[-1], 251)
+    source = f"fixture:{context.source_versions.content_hash}"
+    updater.seed((_window(days=DAYS[:-1]),), source)
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.pending_codes == 0
     assert supplier.calls[0][1] == DAYS[-4:]
@@ -217,7 +214,9 @@ def test_small_tail_exact_overlap_or_bounded_revision_refetch(tmp_path, conflict
 def test_same_day_without_checkpoint_only_rechecks_three_overlap_dates(tmp_path) -> None:
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
-    updater.seed((_window(),), "history:seed")
+    context = supplier.load_qfq_context(DAYS[-1], 251)
+    source = f"fixture:{context.source_versions.content_hash}"
+    updater.seed((_window(),), source)
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.changed_files == ()
     assert supplier.calls == [("600001", DAYS[-3:])]
@@ -235,13 +234,88 @@ def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repa
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.pending_codes == 1
-    assert not updater.resume.completed(DAYS[-1], "600001")
+    source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
+    assert not updater.resume.completed(DAYS[-1], "600001", source)
     assert updater.v2.read_code("600001").cells
     monkeypatch.setattr(updater.v3, "replace_window", write)
     result = updater.execute(observed)
     assert result.pending_codes == 0 and result.completed_codes == 1
     assert len(updater.v3.read_code("600001").cells) == 61
-    assert updater.resume.completed(DAYS[-1], "600001")
+    assert updater.resume.completed(DAYS[-1], "600001", source)
+
+
+def test_source_migration_ignores_legacy_checkpoint_and_refetches_full_window(tmp_path):
+    supplier = Supplier()
+    updater = _updater(tmp_path, supplier)
+    updater.seed((_window(),), "history:seed")
+    source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
+    # Even a valid same-day code checkpoint cannot relabel old-source rows.
+    updater.resume.confirm(DAYS[-1], "600001", source)
+    result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
+    assert result.completed_codes == 1 and result.skipped_codes == 0
+    assert supplier.calls == [("600001", DAYS[-251:])]
+    assert updater.v2.source_identity("600001") == updater.v3.source_identity("600001") == source
+
+
+def test_bounded_parallel_downloads_single_writer_and_cancelled_results_not_published(tmp_path, monkeypatch):
+    import threading
+
+    from trader.infra.workers import BoundedExecutor
+
+    barrier = threading.Barrier(2)
+    cancelled = threading.Event()
+    writer_ident = threading.get_ident()
+
+    class ParallelSupplier(Supplier):
+        cancel_on_return = False
+
+        def fetch_window(self, security, dates):
+            barrier.wait(timeout=5)
+            window = super().fetch_window(security, dates)
+            if self.cancel_on_return:
+                cancelled.set()
+            return window
+
+    supplier = ParallelSupplier(codes=("600001", "600002", "600003", "600004"))
+    updater = _updater(tmp_path, supplier)
+    original = updater.v2.replace_window
+
+    def write(window, identity):
+        assert threading.get_ident() == writer_ident
+        return original(window, identity)
+
+    monkeypatch.setattr(updater.v2, "replace_window", write)
+    pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-fixture")
+    pool.start()
+    try:
+        updater = replace(updater, workers=2, worker_pool=pool, cancel_requested=cancelled.is_set)
+        observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+        result = updater.execute(observed)
+        assert result.completed_codes == 4 and pool.status().submitted_count == 4
+        # A late successful return after cancellation must not create a new window or checkpoint.
+        supplier.cancel_on_return = True
+        supplier.codes = ("600005", "600006")
+        result = updater.execute(observed)
+        assert result.pending_codes == 2 and result.failure_reason == "cancelled"
+        assert updater.v2.read_code("600005").cells == ()
+    finally:
+        assert pool.stop(wait=True, cancel_futures=True).completed
+
+
+def test_one_unreadable_code_does_not_block_other_stocks(tmp_path, monkeypatch):
+    supplier = Supplier(codes=("600001", "600002"))
+    updater = _updater(tmp_path, supplier)
+    original = updater.v2.read_code
+
+    def read(code):
+        if code == "600001":
+            raise RuntimeError("corrupt shard")
+        return original(code)
+
+    monkeypatch.setattr(updater.v2, "read_code", read)
+    result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
+    assert result.pending_codes == 1 and result.completed_codes == 1
+    assert len(updater.v3.read_code("600002").cells) == 61
 
 
 @pytest.mark.parametrize(
@@ -356,6 +430,23 @@ def test_runner_lock_blocks_network_and_local_seeding_is_resumable(tmp_path) -> 
     assert runner.execute(seed_only=True).changed_files == ()
     assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
     assert supplier.calls == []
+
+
+def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
+    class UnavailableHistory:
+        def manifest(self):
+            raise AssertionError("online qfq must not inspect full history")
+
+    supplier = Supplier(codes=("600001",))
+    updater = _updater(tmp_path, supplier)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    runner = QfqUpdateRunner(
+        UnavailableHistory(), updater, updater.v2, updater.v3, tmp_path / ".lock", lambda: observed
+    )
+    result = runner.execute()
+    assert result.completed_codes == 1
+    assert len(updater.v2.read_code("600001").cells) == 251
+    assert len(updater.v3.read_code("600001").cells) == 61
 
 
 @pytest.mark.parametrize("pending,exit_code", ((0, 0), (2, 1)))

@@ -1,86 +1,142 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
-from trader.download.domain.baostock_daily import (
-    BaoStockCalendar,
-    BaoStockSecurity,
-    BaoStockSourceVersions,
-)
-from trader.download.domain.history_sync import HistorySupplierContext
-from trader.download.infra.tencent_history_tail import TencentHistoryTailSupplier
-from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier, context_from_manifest
+import pytest
+import requests
 
+from trader.download.domain.baostock_daily import BaoStockDailySide, BaoStockSecurity
+from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqOptions, TencentQfqSupplier
 
-class _Session:
-    def __enter__(self) -> _Session:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def get(self, _url: str, **kwargs: object) -> object:
-        params = kwargs.get("params")
-        mode = "qfq" if isinstance(params, dict) and params.get("param", "").endswith(",qfq") else "raw"
-        return _Response(mode)
-
-
-def _session_factory() -> _Session:
-    return _Session()
+DAY = date(2026, 10, 9)
+SECURITY = BaoStockSecurity("600001", "fixture", "main", date(2020, 1, 1), None, "fixture")
+ROW = [DAY.isoformat(), "10", "10.5", "11", "9.5", "100", {}, "1.2", "20", "0", "0"]
 
 
 class _Response:
-    def __init__(self, mode: str) -> None:
-        rows = [["2026-10-09", "10", "10.5", "11", "9.5", "100", "", "1.2", "20"]]
-        payload = {"data": {"sh600001": {"qfqday" if mode == "qfq" else "day": rows}}}
-        self.text = "v={" + json.dumps(payload)[1:]
+    def __init__(self, payload):
+        self.text = "v=" + json.dumps(payload)
 
-    def raise_for_status(self) -> None:
-        return None
+    def raise_for_status(self):
+        pass
 
-
-def _context() -> HistorySupplierContext:
-    return HistorySupplierContext(
-        BaoStockCalendar((date(2026, 10, 9),)),
-        (BaoStockSecurity("600001", "fixture", "main", date(2020, 1, 1), None, "fixture"),),
-        BaoStockSourceVersions("fixture", "3.14", ()),
-    )
+    def close(self):
+        pass
 
 
-def test_context_from_manifest_preserves_bounded_calendar_and_codes() -> None:
-    context = context_from_manifest((date(2026, 10, 9),), ("600001",))
-    assert context.calendar.open_dates == (date(2026, 10, 9),)
-    assert context.universe[0].code == "600001"
+class _Http:
+    def __init__(self):
+        self.raw = [ROW.copy()]
+        self.adjusted = [ROW.copy()]
+        self.calendar = [[(DAY - timedelta(days=offset)).isoformat()] for offset in reversed(range(251))]
+        self.calls = []
+        self.cancelled = False
+        self.error = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        pass
+
+    def get(self, _url, **kwargs):
+        param = kwargs["params"]["param"]
+        self.calls.append(param)
+        if self.error:
+            raise self.error
+        symbol = param.split(",")[0]
+        if symbol == "sh000001":
+            stock = {"day": self.calendar}
+        else:
+            stock = (
+                self.adjusted
+                if param.endswith(",qfq") and isinstance(self.adjusted, dict)
+                else {
+                    "qfqday" if param.endswith(",qfq") else "day": self.adjusted if param.endswith(",qfq") else self.raw
+                }
+            )
+        return _Response({"code": 0, "data": {symbol: stock}})
+
+    def supplier(self):
+        return TencentQfqSupplier(TencentQfqDependencies(lambda: self, lambda: (SECURITY,), lambda: self.cancelled))
 
 
-def test_tencent_qfq_supplier_pairs_raw_and_qfq_rows() -> None:
-    supplier = TencentQfqSupplier(_context(), session_factory=_session_factory)
-    result = supplier.fetch_code(_context().universe[0], (date(2026, 10, 9),))
-    assert result.batch.cells[0].status == "complete"
-    assert result.batch.cells[0].qfq is not None
-    assert result.batch.cells[0].unadjusted is not None
+def test_pairs_preserve_units_and_leave_unavailable_facts_missing():
+    window = _Http().supplier().fetch_window(SECURITY, (DAY,))
+    cell = window.cells[0]
+    assert cell.status == "complete"
+    assert cell.unadjusted.volume == 10000
+    assert cell.unadjusted.amount == 200000
+    assert cell.unadjusted.turnover == 1.2
+    assert cell.unadjusted.preclose is None and cell.unadjusted.pct_change is None
+    assert cell.qfq.turnover is None
+    with pytest.raises(ValueError, match="requires preclose"):
+        BaoStockDailySide("600001", DAY, "unadjusted", 10, 11, 9, 10, 100, 200, None, None, 1, "trading")
 
 
-def test_history_tail_uses_baseline_for_large_windows() -> None:
-    class Baseline:
-        def __init__(self) -> None:
-            self.calls: list[int] = []
+def test_calendar_advances_independently_of_old_history():
+    context = _Http().supplier().load_qfq_context(DAY, 251)
+    assert context.calendar.open_dates[-1] == DAY
+    assert context.universe == (SECURITY,)
 
-        def load_context(self, _as_of: date, _sessions: int) -> HistorySupplierContext:
-            return _context()
 
-        def fetch_code(self, security, dates):
-            self.calls.append(len(dates))
-            raise RuntimeError("baseline_called")
+@pytest.mark.parametrize("invalid", ("duplicate", "future", "short", "nan", "range"))
+def test_rejects_invalid_rows_without_silently_dropping_them(invalid):
+    http = _Http()
+    if invalid == "duplicate":
+        http.raw.append(ROW.copy())
+    elif invalid == "future":
+        http.raw[0][0] = (DAY + timedelta(days=1)).isoformat()
+    elif invalid == "short":
+        http.raw = [[DAY.isoformat()]]
+    elif invalid == "nan":
+        http.raw[0][5] = "nan"
+    else:
+        http.raw[0][3] = "9"
+    with pytest.raises(ValueError):
+        http.supplier().fetch_window(SECURITY, (DAY,))
+    assert len(http.calls) == 1
 
-    baseline = Baseline()
-    supplier = TencentHistoryTailSupplier(baseline)
-    supplier.load_context(date(2026, 10, 9), 2000)
-    try:
-        supplier.fetch_code(
-            baseline.load_context(date(2026, 10, 9), 1).universe[0], tuple(date(2020, 1, 1) for _ in range(641))
-        )
-    except RuntimeError as exc:
-        assert str(exc) == "baseline_called"
-    assert baseline.calls == [641]
+
+def test_missing_one_side_remains_pending_and_is_not_suspended():
+    http = _Http()
+    http.adjusted = []
+    cell = http.supplier().fetch_window(SECURITY, (DAY,)).cells[0]
+    assert cell.status == "qfq_missing" and cell.qfq is None
+
+
+def test_supplier_older_padding_is_trimmed_without_accepting_future_rows():
+    http = _Http()
+    older = ROW.copy()
+    older[0] = (DAY - timedelta(days=1)).isoformat()
+    http.raw.insert(0, older)
+    http.adjusted.insert(0, older)
+    assert len(http.supplier().fetch_window(SECURITY, (DAY,)).cells) == 1
+
+
+def test_neutral_adjustment_requires_supplier_evidence():
+    http = _Http()
+    http.adjusted = {"day": [ROW.copy()]}
+    assert http.supplier().fetch_window(SECURITY, (DAY,)).cells[0].status == "complete"
+    http.adjusted["day"][0][9] = "1"
+    with pytest.raises(ValueError, match="qualified_rows"):
+        http.supplier().fetch_window(SECURITY, (DAY,))
+
+
+def test_retries_transport_only_and_cancellation_stops_attempts():
+    http = _Http()
+    http.error = requests.Timeout()
+    with pytest.raises(RuntimeError, match="request_failed"):
+        http.supplier().fetch_window(SECURITY, (DAY,))
+    assert len(http.calls) == 3
+    http.cancelled = True
+    with pytest.raises(RuntimeError, match="cancelled"):
+        http.supplier().fetch_window(SECURITY, (DAY,))
+    assert len(http.calls) == 3
+
+
+def test_rejects_unbounded_or_nonfinite_options():
+    for kwargs in ({"retries": 3}, {"timeout_seconds": float("nan")}, {"timeout_seconds": 0}):
+        with pytest.raises(ValueError):
+            TencentQfqOptions(**kwargs)

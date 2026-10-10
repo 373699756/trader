@@ -108,9 +108,9 @@ data/qfq/v3/.offsets.json
 
 `./run.sh qfq_download` 保持以下行为：
 
-- 从已发布 history 读取交易日历和股票集合；逐股 raw/qfq 行情使用 Tencent，默认 8 个有界 worker；
+- 从沪深官方名单读取证券身份、从 Tencent 读取交易日期；逐股 raw/qfq 行情使用 Tencent，默认 8 个有界 worker；
 - 上海时间 15:10 后更新，晚启动补执行；
-- history 优先；缺少或不完整窗口由 Tencent 重取，供应商失败保留旧窗口并记录 pending；
+- 来源切换重取完整短窗口；同源尾部精确重叠，不完整窗口由 Tencent 重取，供应商失败保留旧窗口并记录 pending；
 - V2/V3 复用一次供应商结果；
 - 两档均持久化成功后才确认股票完成；
 - 支持取消、重启、失败重试和断点续传。
@@ -201,6 +201,6 @@ git diff --check
 - catalog 能独立说明月份、代码范围、大小、行数和摘要；
 - 日更只修改当前月份必要文件；
 - 续传记录可检查、可恢复且不进入 Git；
-- `run.sh qfq_download` 可从已发布 history 初始化并由 Tencent 补齐；
+- `run.sh qfq_download` 可独立于 history 从 Tencent 初始化与更新；
 - 实时荐股继续执行 V2/V3 完整窗口资格校验；
 - 删除 SQLite 后无残留消费者、旧索引或双写路径。

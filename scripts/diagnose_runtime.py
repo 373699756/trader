@@ -28,6 +28,7 @@ Profile = Literal[
     "history-daily-capability",
     "baostock-concurrency",
     "baostock-qfq-shadow",
+    "tencent-download",
     "history-sqlite",
     "research",
     "long-watchlist",
@@ -51,6 +52,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "history-daily-capability": ("history_daily_capability",),
     "baostock-concurrency": ("baostock_concurrency",),
     "baostock-qfq-shadow": ("baostock_qfq_shadow",),
+    "tencent-download": ("tencent_download",),
     "history-sqlite": ("history_sqlite_performance",),
     "research": ("research_readiness",),
     "long-watchlist": ("long_watchlist_admission",),
@@ -119,6 +121,7 @@ class DiagnosticOptions:
         PROJECT_ROOT / ".runtime/v2/evidence_cache",
     )
     eligibility_evidence: tuple[Path, ...] = ()
+    download_sizes: tuple[int, ...] = (10, 50, 100)
 
 
 @dataclass(frozen=True)
@@ -237,6 +240,9 @@ def _parser() -> argparse.ArgumentParser:
         "--baostock-sizes", nargs="+", type=int, default=(10, 50, 100), help="sample sizes within 1..100"
     )
     parser.add_argument("--baostock-rounds", type=int, default=1, help="serial experiment repetitions within 1..3")
+    parser.add_argument(
+        "--download-sizes", nargs="+", type=int, default=(10, 50, 100), help="Tencent updater sample sizes"
+    )
     return parser
 
 
@@ -269,6 +275,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     if not 1 <= args.sqlite_revision_write_sample_count <= 5_000:
         raise ValueError("--sqlite-revision-write-sample-count must be within 1..5000")
     _validate_baostock_options(args)
+    if len(args.download_sizes) > 3 or any(not 1 <= size <= 100 for size in args.download_sizes):
+        raise ValueError("--download-sizes accepts up to three sizes within 1..100")
     long_evidence_output = (
         _external_path(args.long_evidence_output, "--long-evidence-output") if args.long_evidence_output else None
     )
@@ -312,6 +320,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
                 )
             ),
             eligibility_evidence=tuple(args.eligibility_evidence),
+            download_sizes=tuple(args.download_sizes),
         ),
         output,
     )
@@ -348,6 +357,27 @@ def build_commands(
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
     commands: dict[str, DiagnosticCommand] = {
+        "tencent_download": DiagnosticCommand(
+            "tencent_download",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.tencent_download",
+                "--sizes",
+                *(str(size) for size in options.download_sizes),
+                "--workers",
+                str(min(options.history_workers, 12)),
+                "--timeout-seconds",
+                str(options.source_timeout_seconds),
+                "--tencent-history-host",
+                options.tencent_history_host,
+                "--history-root",
+                str(options.history_root),
+                "--codes",
+                *options.codes,
+            ),
+            common_timeout,
+        ),
         "long_watchlist_admission": DiagnosticCommand(
             "long_watchlist_admission",
             (
@@ -885,6 +915,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "long_watchlist_admission": _long_admission_details,
     "web_health": _web_health_details,
     "history_sources": _history_details,
+    "tencent_download": _security_master_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,

@@ -96,6 +96,17 @@ class SQLiteQfqWindowCache:
         except sqlite3.Error as exc:
             raise RuntimeError("qfq shard update failed") from exc
 
+    def source_identity(self, code: str) -> str | None:
+        name = self._membership().get(code)
+        if name is None:
+            return None
+        try:
+            with closing(self._read_connection(name)) as connection:
+                row = connection.execute("SELECT source FROM identities WHERE code=?", (code,)).fetchone()
+        except sqlite3.Error as exc:
+            raise RuntimeError("qfq source identity unavailable") from exc
+        return str(row[0]) if row is not None else None
+
     def _replace_window(self, window: PublishedHistoryWindow, source_identity: str) -> tuple[tuple[str, ...], int]:
         cells = window.cells[-self.sessions :]
         if not cells:
@@ -108,7 +119,8 @@ class SQLiteQfqWindowCache:
                 old = tuple(
                     connection.execute("SELECT day,payload FROM bars WHERE code=? ORDER BY day", (window.code,))
                 )
-            if old == target:
+                identity = connection.execute("SELECT source FROM identities WHERE code=?", (window.code,)).fetchone()
+            if old == target and identity is not None and identity[0] == source_identity:
                 return (), 0
         else:
             old = ()

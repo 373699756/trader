@@ -79,6 +79,16 @@ def test_live_profile_combines_runtime_and_all_source_probes() -> None:
     assert all("--output" not in command.argv for command in commands)
 
 
+def test_tencent_download_profile_uses_actual_updater_with_bounded_samples():
+    commands = build_commands(_options(profile="tencent-download", download_sizes=(10, 50, 100)))
+    assert len(commands) == 1 and commands[0].name == "tencent_download"
+    argv = commands[0].argv
+    assert "scripts.runtime_diagnostics.tencent_download" in argv
+    offset = argv.index("--sizes")
+    assert argv[offset + 1 : offset + 4] == ("10", "50", "100")
+    assert argv[argv.index("--workers") + 1] == "3"
+
+
 def test_full_profile_adds_browser_and_offline_performance_without_duplicate_probes() -> None:
     commands = build_commands(_options(profile="full"), python_executable="/python")
 

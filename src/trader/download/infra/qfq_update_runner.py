@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -30,13 +30,9 @@ class QfqUpdateRunner:
         rows = 0
         try:
             with HistoryMaintenanceLock(self.lock_path):
-                try:
-                    manifest = self.history.manifest()
-                except (RuntimeError, OSError, ValueError, sqlite3.Error):
-                    if seed_only:
-                        raise
-                    self.updater.report("qfq history unavailable: using BaoStock bounded windows")
-                    manifest = None
+                if not seed_only:
+                    return self.updater.execute(self.now())
+                manifest = self.history.manifest()
                 if manifest is not None:
                     needed = frozenset(manifest.universe_codes) - (self.v2.codes() & self.v3.codes())
                     if needed:
@@ -52,19 +48,12 @@ class QfqUpdateRunner:
                             )
                         changed.update(seeded.changed_files)
                         rows += seeded.changed_rows
-                if seed_only:
-                    return QfqUpdateResult(
-                        manifest.data_cutoff if manifest is not None else None,
-                        len(self.v2.codes() & self.v3.codes()),
-                        changed_files=tuple(sorted(changed)),
-                        changed_rows=rows,
-                        failure_reason="cancelled" if self.updater.cancel_requested() else None,
-                    )
-                result = self.updater.execute(self.now())
-                return replace(
-                    result,
-                    changed_files=tuple(sorted(changed | set(result.changed_files))),
-                    changed_rows=rows + result.changed_rows,
+                return QfqUpdateResult(
+                    manifest.data_cutoff if manifest is not None else None,
+                    len(self.v2.codes() & self.v3.codes()),
+                    changed_files=tuple(sorted(changed)),
+                    changed_rows=rows,
+                    failure_reason="cancelled" if self.updater.cancel_requested() else None,
                 )
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as exc:
             self.updater.report(f"qfq update failed: {type(exc).__name__}")

@@ -43,6 +43,21 @@ update. This gate does not prove the accuracy of declarations or enforce the
 runtime limits of every tool; review and isolated execution evidence remain
 necessary.
 
+Tencent qfq supplier and actual updater measurements use the unified CLI:
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile tencent-download \
+  --download-sizes 10 50 100 --history-workers 8 --output -
+```
+
+This profile fetches the official universe and Tencent calendar, writes only
+disposable temporary V2/V3 caches, measures paired publication and restart
+idempotency, and reads any available history for a bounded shadow comparison.
+Sizes are limited to three samples of 1–100 stocks and workers to 1–12.
+Missing trading dates remain pending. Supplier socket timeouts are inactivity
+limits; the diagnostic child deadline bounds the whole child command.
+The report never authorizes replacing complete history with Tencent.
+
 ## BaoStock rate experiments
 
 Use the existing public diagnostic entrypoint for one-session measurements:

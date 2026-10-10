@@ -17,14 +17,14 @@ from flask import Flask
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
-from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
+from trader.download.infra.qfq_exchange_universe import load_qfq_securities
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
-from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier, context_from_manifest
+from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
@@ -164,17 +164,22 @@ def execute_qfq_download(
     root = project_root / "data" / "qfq"
     v2 = SQLiteQfqWindowCache(root, "v2")
     v3 = SQLiteQfqWindowCache(root, "v3")
-    configuration = HistorySyncConfiguration.for_repository(project_root)
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history/baostock"))
-    manifest = history.manifest()
-    if manifest is None:
-        report("qfq update blocked: published history manifest unavailable")
-        return QfqUpdateResult(None, failure_reason="history_archive_missing")
-    context = context_from_manifest(manifest.calendar_dates, manifest.universe_codes)
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
     try:
-        supplier = TencentQfqSupplier(context, workers=8, cancel_requested=cancel_requested)
+        supplier = TencentQfqSupplier(
+            TencentQfqDependencies(
+                requests.Session,
+                partial(
+                    load_qfq_securities,
+                    partial(fetch_sse_listings, get=requests.get),
+                    partial(fetch_szse_listings, get=requests.get),
+                    15.0,
+                ),
+                cancel_requested,
+            )
+        )
         updater = UpdateQfqWindows(
             v2,
             v3,
@@ -194,7 +199,9 @@ def execute_qfq_download(
             ShanghaiClock(now).now,
         ).execute(seed_only=seed_only)
     finally:
-        qfq_pool.stop(wait=True, cancel_futures=True)
+        stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        if not stopped.completed:
+            report("qfq shutdown incomplete: worker deadline exceeded")
 
 
 def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
