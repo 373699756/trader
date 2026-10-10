@@ -2,7 +2,7 @@
 
 ## 1. 目标
 
-将 `data/qfq/v2` 和 `data/qfq/v3` 从 SQLite 分片改为适合 Git 跨 PC 共享的按月 JSONL 文本分片，同时保持实时荐股、`run.sh qfq_download`、BaoStock 串行更新、15:10 更新和断点续传行为。
+将 `data/qfq/v2` 和 `data/qfq/v3` 从 SQLite 分片改为适合 Git 跨 PC 共享的按月 JSONL 文本分片，同时保持实时荐股、`run.sh qfq_download`、Tencent 有界并发更新、15:10 更新和断点续传行为。
 
 完整 `data/history/baostock` 仍是训练、研究和结算事实源；qfq 只保存 V2/V3 的滚动派生窗口。
 
@@ -108,9 +108,9 @@ data/qfq/v3/.offsets.json
 
 `./run.sh qfq_download` 保持以下行为：
 
-- 只能串行使用 BaoStock；
+- 从已发布 history 读取交易日历和股票集合；逐股 raw/qfq 行情使用 Tencent，默认 8 个有界 worker；
 - 上海时间 15:10 后更新，晚启动补执行；
-- history 优先，BaoStock 只补缺失或不完整窗口；
+- history 优先；缺少或不完整窗口由 Tencent 重取，供应商失败保留旧窗口并记录 pending；
 - V2/V3 复用一次供应商结果；
 - 两档均持久化成功后才确认股票完成；
 - 支持取消、重启、失败重试和断点续传。
@@ -201,6 +201,6 @@ git diff --check
 - catalog 能独立说明月份、代码范围、大小、行数和摘要；
 - 日更只修改当前月份必要文件；
 - 续传记录可检查、可恢复且不进入 Git；
-- `run.sh qfq_download` 可从 history 初始化并由 BaoStock 补齐；
+- `run.sh qfq_download` 可从已发布 history 初始化并由 Tencent 补齐；
 - 实时荐股继续执行 V2/V3 完整窗口资格校验；
 - 删除 SQLite 后无残留消费者、旧索引或双写路径。

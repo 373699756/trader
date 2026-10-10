@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future, as_completed
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Protocol
@@ -16,6 +17,7 @@ from trader.download.domain.qfq_window import (
     merge_daily_tail,
     paired_window,
 )
+from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 
 class QfqWindowPort(Protocol):
@@ -44,6 +46,8 @@ class UpdateQfqWindows:
     resume: QfqResumePort
     cancel_requested: Callable[[], bool]
     report: Callable[[str], None]
+    workers: int = 8
+    worker_pool: WorkerExecutor | None = None
 
     def seed(self, windows: Iterable[PublishedHistoryWindow], identity: str) -> QfqUpdateResult:
         changed: set[str] = set()
@@ -62,8 +66,8 @@ class UpdateQfqWindows:
                 self.report(f"qfq history extraction: codes={count} changed_files={len(changed)}")
         return QfqUpdateResult(None, count, changed_files=tuple(sorted(changed)), changed_rows=rows)
 
-    def execute(self, observed_at: datetime) -> QfqUpdateResult:
-        self.report("qfq context: loading BaoStock calendar and universe")
+    def execute(self, observed_at: datetime) -> QfqUpdateResult:  # noqa: C901 - serial commit and bounded wave handling
+        self.report("qfq context: loading published history calendar and universe")
         context = self.supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
         day = context.calendar.open_dates[-1]
         completed = 0
@@ -71,6 +75,7 @@ class UpdateQfqWindows:
         skipped = 0
         changed: set[str] = set()
         rows = 0
+        jobs: list[tuple[int, BaoStockSecurity, tuple[date, ...], PublishedHistoryWindow]] = []
         for position, security in enumerate(context.universe, 1):
             if self.cancel_requested():
                 pending += len(context.universe) - position + 1
@@ -78,34 +83,68 @@ class UpdateQfqWindows:
             dates = context.calendar.expected_dates(security)[-251:]
             if not dates:
                 continue
-            try:
-                previous = self.v2.read_code(security.code)
-                smaller = self.v3.read_code(security.code)
-                if (
-                    self.resume.completed(day, security.code)
-                    and paired_window(previous, dates)
-                    and paired_window(smaller, dates[-61:])
-                ):
-                    completed += 1
-                    skipped += 1
-                    continue
-                window = self._download(security, dates, previous)
-                source = f"baostock:{context.source_versions.content_hash}"
-                for cache in (self.v2, self.v3):
-                    files, delta = cache.replace_window(window, source)
-                    changed.update(files)
-                    rows += delta
-                # Separate local checkpoint advances after both shard commits.
-                self.resume.confirm(day, security.code)
+            previous = self.v2.read_code(security.code)
+            smaller = self.v3.read_code(security.code)
+            if (
+                self.resume.completed(day, security.code)
+                and paired_window(previous, dates)
+                and paired_window(smaller, dates[-61:])
+            ):
                 completed += 1
-            except (RuntimeError, OSError, ValueError) as exc:
-                pending += 1
-                self.report(f"qfq code pending: position={position} reason={type(exc).__name__}")
-            self.report(
-                f"qfq progress: {position}/{len(context.universe)} completed={completed} "
-                f"pending={pending} changed_files={len(changed)}"
-            )
+                skipped += 1
+                continue
+            jobs.append((position, security, dates, previous))
+        width = max(1, min(self.workers, 12))
+        for offset in range(0, len(jobs), width):
+            wave = jobs[offset : offset + width]
+            futures: dict[Future[PublishedHistoryWindow], tuple[int, str]] = {}
+            if self.worker_pool is None:
+                for position, security, dates, previous in wave:
+                    try:
+                        rows += self._commit_one(
+                            self._download(security, dates, previous),
+                            security.code,
+                            context.source_versions.content_hash,
+                            day,
+                            changed,
+                        )
+                        completed += 1
+                    except (RuntimeError, OSError, ValueError) as exc:
+                        pending += 1
+                        self.report(f"qfq code pending: position={position} reason={type(exc).__name__}")
+            else:
+                for position, security, dates, previous in wave:
+                    future = submit_or_reject(self.worker_pool, self._download, security, dates, previous)
+                    futures[future] = (position, security.code)
+                for future in as_completed(futures):
+                    position, code = futures[future]
+                    try:
+                        rows += self._commit_one(
+                            future.result(), code, context.source_versions.content_hash, day, changed
+                        )
+                        completed += 1
+                    except (RuntimeError, OSError, ValueError) as exc:
+                        pending += 1
+                        self.report(f"qfq code pending: position={position} reason={type(exc).__name__}")
+            self.report(f"qfq progress: completed={completed} pending={pending} changed_files={len(changed)}")
         return QfqUpdateResult(day, completed, pending, tuple(sorted(changed)), rows, skipped)
+
+    def _commit_one(
+        self,
+        window: PublishedHistoryWindow,
+        code: str,
+        source_hash: str,
+        day: date,
+        changed: set[str],
+    ) -> int:
+        source = f"tencent:{source_hash}"
+        changed_rows = 0
+        for cache in (self.v2, self.v3):
+            files, delta = cache.replace_window(window, source)
+            changed.update(files)
+            changed_rows += delta
+        self.resume.confirm(day, code)
+        return changed_rows
 
     def _download(
         self, security: BaoStockSecurity, dates: tuple[date, ...], previous: PublishedHistoryWindow

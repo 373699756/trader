@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
@@ -19,13 +19,12 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.domain.qfq_window import QfqUpdateResult
-from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
-from trader.download.infra.qfq_progress import QfqSupplierProgress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
+from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier, context_from_manifest
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
@@ -166,21 +165,36 @@ def execute_qfq_download(
     v2 = SQLiteQfqWindowCache(root, "v2")
     v3 = SQLiteQfqWindowCache(root, "v3")
     configuration = HistorySyncConfiguration.for_repository(project_root)
-    # Short cancellation grace keeps the worker within the shared shutdown budget.
-    with BaoStockHistorySupplier(
-        replace(configuration, cancellation_grace_seconds=1.0),
-        cancel_requested=cancel_requested,
-        progress=QfqSupplierProgress(report),
-    ) as supplier:
-        updater = UpdateQfqWindows(v2, v3, supplier, QfqCheckpoint(root / ".checkpoint.json"), cancel_requested, report)
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history/baostock"))
+    manifest = history.manifest()
+    if manifest is None:
+        report("qfq update blocked: published history manifest unavailable")
+        return QfqUpdateResult(None, failure_reason="history_archive_missing")
+    context = context_from_manifest(manifest.calendar_dates, manifest.universe_codes)
+    qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
+    qfq_pool.start()
+    try:
+        supplier = TencentQfqSupplier(context, workers=8, cancel_requested=cancel_requested)
+        updater = UpdateQfqWindows(
+            v2,
+            v3,
+            supplier,
+            QfqCheckpoint(root / ".checkpoint.json"),
+            cancel_requested,
+            report,
+            workers=8,
+            worker_pool=qfq_pool,
+        )
         return QfqUpdateRunner(
-            ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history/baostock")),
+            history,
             updater,
             v2,
             v3,
             project_root / "data/history/baostock/.maintenance.lock",
             ShanghaiClock(now).now,
         ).execute(seed_only=seed_only)
+    finally:
+        qfq_pool.stop(wait=True, cancel_futures=True)
 
 
 def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:

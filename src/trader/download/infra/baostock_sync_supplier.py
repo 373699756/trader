@@ -16,6 +16,7 @@ from typing import Literal, cast
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeDownload,
+    BaoStockDailyFact,
     BaoStockDailySpec,
     BaoStockSecurity,
 )
@@ -47,6 +48,12 @@ class _LoadContext:
 
 @dataclass(frozen=True)
 class _FetchCode:
+    security: BaoStockSecurity
+    dates: tuple[date, ...]
+
+
+@dataclass(frozen=True)
+class _FetchFacts:
     security: BaoStockSecurity
     dates: tuple[date, ...]
 
@@ -95,6 +102,7 @@ class _Ready:
 class _Response:
     context: HistorySupplierContext | None = None
     download: BaoStockCodeDownload | None = None
+    daily_facts: tuple[BaoStockDailyFact, ...] = ()
     failure_reason: str | None = None
 
 
@@ -208,6 +216,12 @@ class BaoStockHistorySupplier:
             raise RuntimeError(response.failure_reason or "supplier_query_failed")
         return response.download
 
+    def fetch_daily_facts(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> tuple[BaoStockDailyFact, ...]:
+        response = self._request(_FetchFacts(security, dates))
+        if response.failure_reason:
+            raise RuntimeError(response.failure_reason)
+        return response.daily_facts
+
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         response = self._request(_LoadContext(as_of, sessions, include_industry=False))
         if response.context is None:
@@ -230,7 +244,7 @@ class BaoStockHistorySupplier:
         if process is not None:
             _terminate(process)
 
-    def _request(self, command: _LoadContext | _FetchCode) -> _Response:
+    def _request(self, command: _LoadContext | _FetchCode | _FetchFacts) -> _Response:
         failure = "supplier_process_failed"
         max_attempts = self._retries + 1
         initial_stage, initial_item = _command_progress(command)
@@ -257,7 +271,7 @@ class BaoStockHistorySupplier:
 
     def _request_once(
         self,
-        command: _LoadContext | _FetchCode,
+        command: _LoadContext | _FetchCode | _FetchFacts,
         state: _RequestState,
         attempt: _Attempt,
     ) -> _AttemptResult:
@@ -444,6 +458,11 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                     calendar = BaoStockCalendar(command.dates)
                     spec = BaoStockDailySpec(sessions=len(command.dates), source_cutoff=command.dates[-1])
                     connection.send(_Response(download=gateway.fetch_code_download(spec, command.security, calendar)))
+                elif isinstance(command, _FetchFacts):
+                    calendar = BaoStockCalendar(command.dates)
+                    spec = BaoStockDailySpec(sessions=len(command.dates), source_cutoff=command.dates[-1])
+                    facts = gateway.fetch_daily_facts(spec, command.security, calendar, start_on=command.dates[0])
+                    connection.send(_Response(daily_facts=facts))
                 else:
                     connection.send(_Response(failure_reason="supplier_protocol_invalid"))
             except Exception as exc:
@@ -470,7 +489,7 @@ def _failure_code(exc: BaseException) -> str:
     return value if value and len(value) <= 64 and value.replace("_", "").isalnum() else "supplier_failed"
 
 
-def _command_progress(command: _LoadContext | _FetchCode) -> tuple[HistorySyncProgressStage, str | None]:
+def _command_progress(command: _LoadContext | _FetchCode | _FetchFacts) -> tuple[HistorySyncProgressStage, str | None]:
     if isinstance(command, _LoadContext):
         return "supplier_calendar", None
     return "supplier_daily_raw", command.security.code
