@@ -48,6 +48,10 @@ def _digest(rows: tuple[tuple[str, str], ...]) -> str:
     return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode("ascii")).hexdigest()
 
 
+def _window_identity(rows: tuple[tuple[str, str], ...], source: str) -> tuple[str, str, str, str]:
+    return _digest(rows), source, rows[-1][0], json.dumps([day for day, _ in rows], separators=(",", ":"))
+
+
 class SQLiteQfqWindowCache:
     """Single-writer derived cache; complete history remains the research authority."""
 
@@ -223,20 +227,19 @@ class SQLiteQfqWindowCache:
             for name in self._existing_names():
                 with closing(self._read_connection(name)) as connection:
                     excluded = tuple(
-                        (str(code), int(rows))
-                        for code, rows in connection.execute(
-                            "SELECT identities.code,COUNT(bars.day) FROM identities "
-                            "LEFT JOIN bars ON bars.code=identities.code GROUP BY identities.code"
-                        )
+                        str(code)
+                        for (code,) in connection.execute("SELECT code FROM identities")
                         if code not in allowed_codes
                     )
                 if not excluded:
                     continue
                 with closing(self._write_connection(name)) as connection, connection:
-                    connection.executemany("DELETE FROM bars WHERE code=?", ((code,) for code, _ in excluded))
-                    connection.executemany("DELETE FROM identities WHERE code=?", ((code,) for code, _ in excluded))
+                    connection.execute("BEGIN IMMEDIATE")
+                    removed = connection.executemany("DELETE FROM bars WHERE code=?", ((code,) for code in excluded))
+                    row_count = removed.rowcount
+                    connection.executemany("DELETE FROM identities WHERE code=?", ((code,) for code in excluded))
                 changed.append(f"{self.root.name}/{name}")
-                deleted_rows += sum(rows for _, rows in excluded)
+                deleted_rows += row_count
         except sqlite3.Error as exc:
             raise RuntimeError("qfq eligibility pruning failed") from exc
         return tuple(changed), deleted_rows
@@ -273,8 +276,10 @@ class SQLiteQfqWindowCache:
             with closing(self._write_connection(name)) as connection, connection:
                 for code, target in entries:
                     old = self._read_rows(connection, code)
-                    identity = connection.execute("SELECT source FROM identities WHERE code=?", (code,)).fetchone()
-                    if old == target and identity is not None and identity[0] == source_identity:
+                    identity = connection.execute(
+                        "SELECT digest,source,cutoff,dates FROM identities WHERE code=?", (code,)
+                    ).fetchone()
+                    if old == target and identity == _window_identity(target, source_identity):
                         continue
                     self._write_code(connection, code, target, source_identity, previous=old)
                     old_by_day = dict(old)
@@ -348,9 +353,9 @@ class SQLiteQfqWindowCache:
                 connection.execute(f"SELECT day,payload FROM {schema}.bars WHERE code=? ORDER BY day", (window.code,))
             )
             identity = connection.execute(
-                f"SELECT source FROM {schema}.identities WHERE code=?", (window.code,)
+                f"SELECT digest,source,cutoff,dates FROM {schema}.identities WHERE code=?", (window.code,)
             ).fetchone()
-            if old == target and identity == (source,):
+            if old == target and identity == _window_identity(target, source):
                 continue
             self._write_code(connection, window.code, target, source, schema=schema, previous=old)
             before, after = dict(old), dict(target)
@@ -382,7 +387,7 @@ class SQLiteQfqWindowCache:
         )
         connection.execute(
             f"INSERT OR REPLACE INTO {schema}.identities VALUES (?,?,?,?,?)",
-            (code, _digest(rows), source, rows[-1][0], json.dumps([day for day, _ in rows], separators=(",", ":"))),
+            (code, *_window_identity(rows, source)),
         )
 
     def _write_connection(self, name: str) -> sqlite3.Connection:

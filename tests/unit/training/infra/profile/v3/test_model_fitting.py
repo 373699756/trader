@@ -4,29 +4,35 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from trader.download.domain.baostock_daily import build_baostock_training_split
 from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
 from trader.training.infra import model_fitting
-from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT
-from trader.training.infra.profile.v3.model_fitting import fit_industry_models
-from trader.training.infra.profile.v3.training_sample_repository import (
-    SQLiteV3TrainingSampleRepository,
-    V3TrainingSample,
-)
+from trader.training.infra.model_bundles.contracts import TrainedHeadContract
+from trader.training.infra.model_fitting import fit_industry_models
+from trader.training.infra.profile.v2.contracts import V2_HEAD_CONTRACTS
+from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS
+from trader.training.infra.sample_cache import TrainingSampleCache
+from trader.training.infra.sample_repository import TrainingSample
 
 
-def test_tomorrow_industry_fitting_remains_deterministic_with_the_two_thread_limit(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("contract", (*V2_HEAD_CONTRACTS, *HEAD_CONTRACTS), ids=lambda item: item.model_id)
+def test_industry_fitting_matches_after_complete_cache_reopen(
+    tmp_path: Path, monkeypatch, contract: TrainedHeadContract
+) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
     usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
 
-    with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
+    feature_count = max(contract.feature_positions) + 1
+    cache = TrainingSampleCache(tmp_path, contract.model_id, feature_count, split.content_hash)
+    with cache.open() as repository:
         for day_position, day in enumerate(usable_dates):
-            repository.add_final(_samples_for_day(day, day_position))
+            repository.add_final(_samples_for_day(day, day_position, feature_count))
         repository.prepare_for_model_fitting(split)
-        counts = repository.industry_counts(TOMORROW_HEAD_CONTRACT)[0]
-        data = repository.industry_data(counts, TOMORROW_HEAD_CONTRACT)
+        counts = repository.industry_counts(contract)[0]
+        data = repository.industry_data(counts, contract)
         means = data.training.features.mean(axis=0)
         deviations = data.training.features.std(axis=0)
         scales = np.where(deviations > 1e-12, deviations, 1.0)
@@ -42,31 +48,31 @@ def test_tomorrow_industry_fitting_remains_deterministic_with_the_two_thread_lim
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, first_training_rows, first_validation_rows = fit_industry_models(
-            repository, split, TOMORROW_HEAD_CONTRACT
-        )
-        second, second_training_rows, second_validation_rows = fit_industry_models(
-            repository, split, TOMORROW_HEAD_CONTRACT
-        )
+        first, first_training_rows, first_validation_rows = fit_industry_models(repository, split, contract)
+        cache.seal(repository)
+
+    with cache.open() as repository:
+        assert cache.reused
+        second, second_training_rows, second_validation_rows = fit_industry_models(repository, split, contract)
 
     assert TOMORROW_TRAINING_COMPUTE_THREADS == 2
     assert first == second
     assert first_training_rows == second_training_rows
     assert first_validation_rows == second_validation_rows
-    assert len(first["银行"]["ridge_coefficients"]) == 6
+    assert len(first["银行"]["ridge_coefficients"]) == len(contract.feature_positions)
     assert "[num_threads: 2]" in str(first["银行"]["lightgbm_model"])
     assert "[force_col_wise: 1]" in str(first["银行"]["lightgbm_model"])
 
 
-def _samples_for_day(day: date, day_position: int) -> tuple[V3TrainingSample, ...]:
+def _samples_for_day(day: date, day_position: int, feature_count: int) -> tuple[TrainingSample, ...]:
     return tuple(
-        V3TrainingSample(
+        TrainingSample(
             f"{code:06d}",
             day,
             "main",
             "银行",
             1_000_000.0 + code,
-            tuple((day_position % (offset + 11) + code % (offset + 5)) / 100.0 for offset in range(6)),
+            tuple((day_position % (offset + 11) + code % (offset + 5)) / 100.0 for offset in range(feature_count)),
             (((day_position % 17) - (code % 7)) / 1_000.0,) * 6,
         )
         for code in range(1, 36)

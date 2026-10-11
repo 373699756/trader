@@ -343,6 +343,50 @@ def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
     )
 
 
+@pytest.mark.parametrize("profile", ("v2", "v3"))
+@pytest.mark.parametrize("field,value", (("digest", "broken"), ("dates", "[]"), ("cutoff", "2000-01-01")))
+def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, profile, field, value):
+    supplier = Supplier()
+    updater = _updater(tmp_path, supplier)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    assert updater.execute(observed).completed_codes == 1
+    cache = updater.v2 if profile == "v2" else updater.v3
+    with sqlite3.connect(cache.root / "qfq_sse_main.sqlite3") as connection:
+        connection.execute(f"UPDATE identities SET {field}=? WHERE code=?", (value, "600001"))
+    assert not cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
+    result = updater.execute(observed)
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert result.changed_files == (f"{profile}/qfq_sse_main.sqlite3",)
+    assert result.changed_rows == 0
+    assert cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
+    assert cache.read_code("600001").cells
+    supplier.calls.clear()
+    repeat = updater.execute(observed)
+    assert repeat.skipped_codes == 1 and repeat.pending_codes == 0
+    assert supplier.calls == []
+
+
+def test_unchanged_eligibility_does_not_scan_price_rows(tmp_path, monkeypatch):
+    cache = SQLiteQfqWindowCache(tmp_path, "v2")
+    cache.replace_windows((_window("600001"), _window("600002")), "fixture")
+    read = cache._read_connection
+    statements = []
+
+    def traced(name):
+        connection = read(name)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(cache, "_read_connection", traced)
+    before = _fingerprints(cache.root)
+    assert cache.retain_codes(frozenset(("600001", "600002"))) == ((), 0)
+    assert _fingerprints(cache.root) == before
+    assert not any("bars" in sql for sql in statements)
+    assert cache.retain_codes(frozenset(("600001",))) == (("v2/qfq_sse_main.sqlite3",), 251)
+    assert cache.codes() == frozenset(("600001",))
+    assert len(cache.read_code("600001").cells) == 251
+
+
 def test_qfq_refills_worker_before_slowest_request_finishes(tmp_path) -> None:
     import threading
     from concurrent.futures import ThreadPoolExecutor

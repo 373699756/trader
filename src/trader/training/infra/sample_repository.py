@@ -80,19 +80,28 @@ class SQLiteTrainingSampleRepository:
         self._feature_count = feature_count
         self._prepared_split_hash = prepared_split_hash
         self._counts_by_target: dict[str, tuple[TrainingIndustryCounts, ...]] = {}
-        if prepared_split_hash is not None:
-            self._connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
-            self._connection.execute(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")
-            return
-        self._connection = sqlite3.connect(path)
+        self._connection = (
+            sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            if prepared_split_hash is not None
+            else sqlite3.connect(path)
+        )
+        try:
+            self._initialize()
+        except sqlite3.Error:
+            self._connection.close()
+            raise
+
+    def _initialize(self) -> None:
         self._connection.execute(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")  # noqa: S608
         self._connection.execute(f"PRAGMA mmap_size={TRAINING_SAMPLE_MMAP_BYTES}")  # noqa: S608
-        feature_columns = ", ".join(f"f{position} REAL NOT NULL" for position in range(feature_count))
+        self._connection.execute("PRAGMA temp_store=FILE")
+        if self._prepared_split_hash is not None:
+            return
+        feature_columns = ", ".join(f"f{position} REAL NOT NULL" for position in range(self._feature_count))
         self._connection.executescript(
             f"""
             PRAGMA journal_mode=OFF;
             PRAGMA synchronous=OFF;
-            PRAGMA temp_store=FILE;
             CREATE TABLE samples (
                 trade_date TEXT NOT NULL,
                 code TEXT NOT NULL,

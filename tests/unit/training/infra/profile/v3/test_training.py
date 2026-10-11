@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
@@ -23,7 +24,8 @@ from trader.training.infra.engine import (
     _mature_label_cutoff,
     _training_contract_hash,
 )
-from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
+from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
+from trader.training.infra.profile.v2.training import run_v2_training
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
     HEAD_CONTRACTS,
@@ -124,6 +126,27 @@ def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
     assert result.model_hash == result.report_hash == ""
 
 
+@pytest.mark.parametrize("run_training", (run_v2_training, run_v3_training))
+def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, monkeypatch, run_training):
+    archive = _cadence_archive(tmp_path / "history")
+    _patch_archive(monkeypatch, archive)
+
+    def fail_samples(_request):
+        raise sqlite3.OperationalError("fixture disk full with private supplier details")
+
+    monkeypatch.setattr("trader.training.infra.engine.build_training_samples", fail_samples)
+    result = run_training(tmp_path / "history", tmp_path / "train")
+    assert result.status == "blocked"
+    assert len(result.heads) == 2
+    assert all(head.failure_reasons == ("training_database_failed",) for head in result.heads)
+    assert all(not head.model_hash and not head.report_hash for head in result.heads)
+    assert result.sample_database_peak_bytes > 0
+    assert not tuple((tmp_path / "train").glob("*/.sample-cache/complete.json"))
+    monkeypatch.setattr("trader.training.infra.engine.build_training_samples", lambda _request: None)
+    retry = run_training(tmp_path / "history", tmp_path / "train")
+    assert all(head.failure_reasons == ("profile_training_rows_empty",) for head in retry.heads)
+
+
 def test_missing_industry_in_fit_split_blocks_before_price_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     archive = _cadence_archive(tmp_path / "history")
     archive.has_industry_window = lambda _dates, _sessions, **kwargs: kwargs.get("anchor_dates") is None
@@ -134,7 +157,9 @@ def test_missing_industry_in_fit_split_blocks_before_price_validation(tmp_path: 
     assert result.failure_reasons == ("history_industry_split_coverage_insufficient",)
 
 
-def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("run_training,profile", ((run_v2_training, "v2"), (run_v3_training, "v3")))
+@pytest.mark.parametrize("failure", (ValueError, sqlite3.OperationalError))
+def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeypatch, run_training, profile, failure):
     archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
     builds = 0
@@ -150,7 +175,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path: Path, m
                     "main",
                     "银行",
                     1.0,
-                    (0.0,) * 6,
+                    (0.0,) * len(request.profile.heads[0].feature_positions),
                     (0.01, 0.02, 0.03, 0.04, 0.05, 0.035),
                 ),
             )
@@ -158,14 +183,28 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path: Path, m
         request.repository.prepare_for_model_fitting(request.window.split)
 
     def fail(*_args, **_kwargs):
-        raise ValueError("fixture_fit_failed")
+        raise failure("fixture_fit_failed")
 
     monkeypatch.setattr("trader.training.infra.engine.build_training_samples", build_samples)
     monkeypatch.setattr("trader.training.infra.engine.fit_industry_models", fail)
-    first = run_v3_training(tmp_path / "history", tmp_path / "train")
+    first = run_training(tmp_path / "history", tmp_path / "train")
     assert first.status == "blocked"
     assert first.sample_database_peak_bytes > 0
-    assert (tmp_path / "train/v3/.sample-cache/complete.json").is_file()
+    assert (tmp_path / "train" / profile / ".sample-cache/complete.json").is_file()
+    if failure is sqlite3.OperationalError:
+        assert all(head.failure_reasons == ("training_database_failed",) for head in first.heads)
+
+    def reject_changed_input(_progress):
+        raise HistoryTrainingInputError("history_training_data_incomplete")
+
+    archive.verify_partitions = reject_changed_input
+    monkeypatch.setattr(
+        "trader.training.infra.engine.fit_industry_models",
+        lambda *_args, **_kwargs: pytest.fail("cached samples cannot bypass input verification"),
+    )
+    invalid = run_training(tmp_path / "history", tmp_path / "train")
+    assert all(head.failure_reasons == ("history_training_data_incomplete",) for head in invalid.heads)
+    assert builds == 1
 
     def fit(_samples, _split, contract, **_kwargs):
         return ({"银行": _industry_model(len(contract.feature_positions))}, 1, 1)
@@ -177,9 +216,12 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path: Path, m
         engine, "MODEL_FITTING_PARAMETERS", replace(engine.MODEL_FITTING_PARAMETERS, learning_rate=0.025)
     )
     monkeypatch.setattr("trader.training.infra.engine.publish_head_bundle", lambda *_args: None)
-    second = run_v3_training(tmp_path / "history", tmp_path / "train")
+    verified = []
+    archive.verify_partitions = lambda _progress: verified.append(True)
+    second = run_training(tmp_path / "history", tmp_path / "train")
     assert second.status == "engineering_ready" and builds == 1
-    assert not (tmp_path / "train/v3/.sample-cache/samples.sqlite3").exists()
+    assert verified == [True]
+    assert not (tmp_path / "train" / profile / ".sample-cache/samples.sqlite3").exists()
 
 
 def test_provably_insufficient_industry_rows_fail_before_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

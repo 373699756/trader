@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -324,7 +325,7 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                 )
         if all(item.status != "blocked" for item in completed):
             cache.clear()
-    except (HistoryTrainingInputError, OSError, ValueError, RuntimeError) as exc:
+    except (HistoryTrainingInputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         peak_bytes = max(peak_bytes, sample_cache_bytes(cache))
         reason = _reason(exc)
         for plan in plans:
@@ -587,7 +588,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
             label_cutoff=plan.label_cutoff,
             sample_database_peak_bytes=request.peak_bytes,
         )
-    except (LightGBMError, OSError, TypeError, ValueError, RuntimeError) as exc:
+    except (LightGBMError, OSError, TypeError, ValueError, RuntimeError, sqlite3.Error) as exc:
         return replace(
             _blocked_from_snapshot(contract, snapshot, _reason(exc)),
             run_id=request.run_id,
@@ -904,6 +905,8 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def _reason(exc: BaseException) -> str:
+    if isinstance(exc, sqlite3.Error):
+        return "training_database_failed"
     value = str(exc).lower()
     if value in {
         "history_manifest_unavailable",
