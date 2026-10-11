@@ -32,6 +32,7 @@ Profile = Literal[
     "history-sqlite",
     "history-source-compare",
     "history-space",
+    "history-industry",
     "qfq-sqlite",
     "research",
     "long-watchlist",
@@ -59,6 +60,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
     "history-space": ("history_space",),
+    "history-industry": ("history_industry",),
     "qfq-sqlite": ("qfq_sqlite_performance",),
     "research": ("research_readiness",),
     "long-watchlist": ("long_watchlist_admission",),
@@ -614,6 +616,19 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "history_industry": DiagnosticCommand(
+            "history_industry",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.history_industry_preparation",
+                "--history-root",
+                str(options.history_root),
+                "--timeout-seconds",
+                str(options.source_timeout_seconds),
+            ),
+            common_timeout,
+        ),
         "production_performance": DiagnosticCommand(
             "production_performance",
             (
@@ -981,6 +996,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "history_sqlite_performance": _history_sqlite_performance_details,
     "history_source_compare": _history_sqlite_performance_details,
     "history_space": _history_sqlite_performance_details,
+    "history_industry": _history_sqlite_performance_details,
     "baostock_qfq_shadow": _baostock_qfq_shadow_details,
     "research_readiness": _research_details,
     "browser_refresh": _browser_details,

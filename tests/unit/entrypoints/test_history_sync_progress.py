@@ -51,8 +51,8 @@ def _failed_status(reason: str) -> HistoryMaintenanceStatus:
     )
 
 
-def test_supplier_waiting_heartbeat_is_silent_but_retry_is_reported(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 978.061))
+def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 978.061, 978.061))
 
     progress.publish(
         HistorySyncProgress(
@@ -66,7 +66,7 @@ def test_supplier_waiting_heartbeat_is_silent_but_retry_is_reported(capsys) -> N
             call_elapsed_seconds=10.849,
         )
     )
-    assert capsys.readouterr().err == ""
+    assert "行业快照 | 等待 | 0/1" in capsys.readouterr().err
 
     progress.publish(
         HistorySyncProgress(
@@ -80,7 +80,22 @@ def test_supplier_waiting_heartbeat_is_silent_but_retry_is_reported(capsys) -> N
         )
     )
 
-    assert capsys.readouterr().err == "00:14:38 | 行业快照 | 重试 | 日期 2021-01-04 | 尝试 3/3\n"
+    assert capsys.readouterr().err == "00:14:38 | 行业快照 | 重试 | 0/1 (0.00%) | 日期 2021-01-04 | 尝试 3/3\n"
+
+
+def test_industry_progress_reports_date_counts_and_cache_without_duplicate_starts(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(0, 1, 2, 3))
+    started = HistorySyncProgress("supplier_industry", "started", 4, 18, "2020-07-01")
+    progress.publish(started)
+    progress.publish(started)
+    progress.publish(HistorySyncProgress("supplier_industry", "waiting", 4, 18, "2020-07-01", call_elapsed_seconds=1))
+    progress.publish(HistorySyncProgress("supplier_industry", "waiting", 4, 18, "2020-07-01", call_elapsed_seconds=5))
+    progress.publish(HistorySyncProgress("supplier_industry", "completed", 5, 18, "2020-07-01", cache_hit=True))
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 3
+    assert "开始 | 4/18" in lines[0]
+    assert "等待 | 4/18" in lines[1]
+    assert "完成 | 5/18" in lines[2] and "缓存复用" in lines[2]
 
 
 def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:

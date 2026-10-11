@@ -14,7 +14,9 @@ from trader.download.infra.baostock_sync_supplier import (
     BaoStockHistorySupplier,
     BaoStockRequestPolicy,
     _Activity,
+    _Attempt,
     _RateLimitedSdk,
+    _RequestState,
 )
 
 
@@ -89,6 +91,27 @@ class _Sdk:
 
     def query_history_k_data_plus(self, *_args: object, **_kwargs: object) -> BaoStockRowResult:
         return cast(BaoStockRowResult, object())
+
+
+def test_industry_date_progress_keeps_counts_and_elapsed_across_page_activity() -> None:
+    clock = _Clock()
+    recorder = _ProgressRecorder()
+    supplier = BaoStockHistorySupplier(progress=recorder, monotonic=clock)
+    attempt = _Attempt(2, 3)
+    state = _RequestState("supplier_industry", "2020-07-01", 0)
+    state = supplier._handle_industry_progress(
+        HistorySyncProgress("supplier_industry", "started", 4, 18, "2020-07-01"), state, attempt, 45
+    )
+    clock.value = 3
+    state = supplier._handle_activity(_Activity("supplier_industry", "started", "2020-07-01"), state, attempt, 45)
+    clock.value = 8
+    supplier._publish_failure("supplier_industry", attempt, "2020-07-01", 5, "supplier_industry_timeout")
+    assert (recorder.values[-1].completed_units, recorder.values[-1].total_units) == (4, 18)
+    supplier._handle_industry_progress(
+        HistorySyncProgress("supplier_industry", "completed", 5, 18, "2020-07-01", cache_hit=False), state, attempt, 45
+    )
+    assert recorder.values[-1].call_elapsed_seconds == 8
+    assert recorder.values[-1].attempt == 2
 
 
 def test_worker_activity_identifies_raw_and_qfq_supplier_calls() -> None:

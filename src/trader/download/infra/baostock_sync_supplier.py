@@ -5,10 +5,10 @@ from __future__ import annotations
 import os
 import platform
 import time
-from math import isfinite
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date
+from math import isfinite
 from multiprocessing import get_context
 from multiprocessing.connection import Connection
 from multiprocessing.process import BaseProcess
@@ -37,6 +37,7 @@ from trader.download.infra.baostock_session import (
     login_baostock,
     logout_baostock,
 )
+from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class _LoadContext:
     as_of: date
     sessions: int
     universe: tuple[BaoStockSecurity, ...]
+    industry_cache: HistoryIndustryQueryCache | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,7 @@ class _RequestState:
     deadline: float = 0.0
     next_heartbeat: float = 0.0
     worker_ready: bool = False
+    industry_started_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -201,6 +204,7 @@ class BaoStockHistorySupplier:
         self._cancellation_grace_seconds = settings.cancellation_grace_seconds
         self._heartbeat_interval_seconds = settings.progress_heartbeat_seconds
         self._progress = progress
+        self._industry_units = (0, 1)
         self._monotonic = monotonic
         self._cancel_requested = cancel_requested
         self._process: BaseProcess | None = None
@@ -218,8 +222,10 @@ class BaoStockHistorySupplier:
         sessions: int,
         *,
         universe: tuple[BaoStockSecurity, ...],
+        industry_cache: HistoryIndustryQueryCache | None = None,
     ) -> HistorySupplierContext:
-        response = self._request(_LoadContext(as_of, sessions, universe))
+        self._industry_units = (0, 1)
+        response = self._request(_LoadContext(as_of, sessions, universe, industry_cache))
         if response.context is None:
             raise RuntimeError(response.failure_reason or "supplier_context_failed")
         return response.context
@@ -313,6 +319,9 @@ class BaoStockHistorySupplier:
                 if isinstance(response, _Activity):
                     state = self._handle_activity(response, state, attempt, timeout_seconds)
                     continue
+                if isinstance(response, HistorySyncProgress):
+                    state = self._handle_industry_progress(response, state, attempt, timeout_seconds)
+                    continue
                 if not isinstance(response, _Response):
                     raise RuntimeError("supplier_protocol_invalid")
                 return _AttemptResult(response, state, response.failure_reason)
@@ -320,6 +329,32 @@ class BaoStockHistorySupplier:
             if not state.worker_ready:
                 state = replace(state, stage="supplier_login", current_item=None)
             return _AttemptResult(None, state, _failure_code(exc))
+
+    def _handle_industry_progress(
+        self, progress: HistorySyncProgress, state: _RequestState, attempt: _Attempt, timeout: float
+    ) -> _RequestState:
+        if progress.stage != "supplier_industry" or progress.state not in {"started", "completed"}:
+            raise RuntimeError("supplier_protocol_invalid")
+        now = self._monotonic()
+        started = now if progress.state == "started" else state.industry_started_at
+        self._industry_units = (progress.completed_units, progress.total_units)
+        self._emit_progress(
+            replace(
+                progress,
+                attempt=attempt.number,
+                max_attempts=attempt.total,
+                call_elapsed_seconds=max(0.0, now - started),
+            )
+        )
+        return replace(
+            state,
+            stage=progress.stage,
+            current_item=progress.current_item,
+            call_started_at=now,
+            industry_started_at=started,
+            deadline=now + timeout,
+            next_heartbeat=now + self._heartbeat_interval_seconds,
+        )
 
     def _receive(
         self,
@@ -422,12 +457,17 @@ class BaoStockHistorySupplier:
         current_item: str | None,
         call_elapsed_seconds: float,
     ) -> None:
+        if stage == "supplier_industry" and state == "completed" and self._industry_units[0] == self._industry_units[1]:
+            return  # The worker already emitted the final dated snapshot completion.
+        completed, total = (
+            self._industry_units if stage == "supplier_industry" else (1 if state == "completed" else 0, 1)
+        )
         self._emit_progress(
             HistorySyncProgress(
                 stage,
                 state,
-                1 if state == "completed" else 0,
-                1,
+                completed,
+                total,
                 current_item=current_item,
                 attempt=attempt.number,
                 max_attempts=attempt.total,
@@ -443,12 +483,13 @@ class BaoStockHistorySupplier:
         call_elapsed_seconds: float,
         failure_reason: str,
     ) -> None:
+        completed, total = self._industry_units if stage == "supplier_industry" else (0, 1)
         self._emit_progress(
             HistorySyncProgress(
                 stage,
                 "failed",
-                0,
-                1,
+                completed,
+                total,
                 current_item=current_item,
                 attempt=attempt.number,
                 max_attempts=attempt.total,
@@ -491,7 +532,9 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                     requested = BaoStockDailySpec(sessions=command.sessions, source_cutoff=command.as_of)
                     calendar = gateway.fetch_calendar(requested)
                     spec = BaoStockDailySpec(sessions=command.sessions, source_cutoff=calendar.open_dates[-1])
-                    industries = gateway.fetch_industry_intervals(spec, calendar, command.universe)
+                    industries = gateway.fetch_industry_intervals(
+                        spec, calendar, command.universe, cache=command.industry_cache, progress=connection.send
+                    )
                     connection.send(
                         _Response(
                             HistorySupplierContext(calendar, command.universe, gateway.source_versions(), industries)

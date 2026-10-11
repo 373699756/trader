@@ -59,6 +59,11 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         from trader.download.infra.history_supplier_router import HistorySupplierRouter
 
         assert isinstance(supplier, HistorySupplierRouter)
+        assert supplier._industry_cache is not None
+        assert (
+            supplier._industry_cache.path
+            == _configuration.archive_root.parent / "filter_config/industry_queries.sqlite3"
+        )
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
@@ -84,7 +89,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "training_due_reason": "data_incomplete",
     }
     progress_lines = captured.err.splitlines()
-    assert progress_lines == ["00:00:00 | 同步完成"]
+    assert progress_lines == ["00:00:00 | 交易日历 | 等待 | 调用 00:00:05", "00:00:00 | 同步完成"]
     assert "completed_units" not in captured.err
     assert "total_units" not in captured.err
 

@@ -18,6 +18,7 @@ from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import select_st_eligible_universe
+from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 
@@ -29,18 +30,20 @@ class HistorySupplierRouter:
         prices: TencentQfqSupplier,
         load_universe: Callable[[], tuple[BaoStockSecurity, ...]],
         st_source: HistoryStNameSource,
+        industry_cache: HistoryIndustryQueryCache | None = None,
     ) -> None:
         self._baseline = baseline
         self._prices = prices
         self._load_universe = load_universe
         self._st_source = st_source
+        self._industry_cache = industry_cache
         self._calendar: tuple[date, ...] = ()
 
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         universe = self._load_universe()
         evidence = self._st_source.fetch(universe, as_of)
         universe = select_st_eligible_universe(universe, evidence)
-        context = self._baseline.load_context(as_of, sessions, universe=universe)
+        context = self._baseline.load_context(as_of, sessions, universe=universe, industry_cache=self._industry_cache)
         self._calendar = context.calendar.open_dates
         versions = context.source_versions
         return replace(

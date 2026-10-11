@@ -24,10 +24,10 @@ from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import (
+    HistoryStEligibilitySummary,
     HistorySyncConfiguration,
     HistorySyncProgress,
     HistorySyncProgressPort,
-    HistoryStEligibilitySummary,
 )
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
@@ -37,6 +37,7 @@ from trader.download.infra.exchange_security_universe import (
     select_st_eligible_universe,
 )
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
+from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_reference_files import history_st_evidence_path
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
@@ -47,8 +48,8 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
-    TencentSessionPool,
     TencentQfqSupplier,
+    TencentSessionPool,
 )
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
@@ -245,6 +246,9 @@ def execute_history_download(
                             else None
                         ),
                         batch_size=configuration.history_workers,
+                    ),
+                    industry_cache=HistoryIndustryQueryCache(
+                        history_st_evidence_path(configuration.archive_root).with_name("industry_queries.sqlite3")
                     ),
                 ),
                 clock=clock,

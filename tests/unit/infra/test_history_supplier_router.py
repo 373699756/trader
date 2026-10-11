@@ -21,6 +21,7 @@ from trader.download.entrypoints.history_sync_progress import StderrHistorySyncP
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
@@ -28,6 +29,10 @@ from trader.training.infra.research.historical_industry_archive import audit_arc
 
 
 class Baseline(FakeSupplier):
+    def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
+        self.industry_cache = industry_cache
+        return super().load_context(as_of, sessions, universe=universe)
+
     def fetch_raw_code(self, security, dates):
         self.calls.append(("raw", dates))
         value = _download(security.code, dates)
@@ -101,6 +106,16 @@ def test_history_context_uses_the_current_exchange_universe() -> None:
     assert context.universe == tuple(sorted(universe, key=lambda item: item.code))
     assert context.universe[0].board == "chinext"
     assert HISTORY_UNIVERSE_CONTRACT in context.source_versions.dependency_versions
+
+
+def test_history_router_forwards_the_explicit_industry_query_cache(tmp_path) -> None:
+    dates = (date(2026, 10, 8), date(2026, 10, 9))
+    baseline = Baseline(dates)
+    universe = _current_universe("600001")
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    router = HistorySupplierRouter(baseline, Prices(), lambda: universe, StSource(), cache)
+    router.load_context(dates[-1], len(dates))
+    assert baseline.industry_cache is cache
 
 
 @pytest.mark.parametrize("count", (5, 639, 640, 641, 2000))
@@ -242,7 +257,7 @@ def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
     assert run_history_sync(config, Baseline(dates), clock=lambda: NOW).state == "completed"
 
     class Regressed(Baseline):
-        def load_context(self, as_of, sessions, *, universe=None):
+        def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
             context = super().load_context(as_of, sessions, universe=universe)
             return replace(context, universe=(context.universe[0],))
 

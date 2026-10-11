@@ -67,12 +67,16 @@ _COUNT_STAGES = frozenset(
         "baostock_gap_fill",
         "persisting_prices",
         "sealing_partitions",
+        "supplier_industry",
     }
 )
 _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
+_PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplier_industry"})
 
 
 def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.cache_hit is not None:
+        return ("缓存复用" if progress.cache_hit else "供应商查询",)
     if progress.gap_summary is not None:
         gap_summary = progress.gap_summary
         return (
@@ -97,6 +101,7 @@ class StderrHistorySyncProgress:
         self._last_progress: tuple[HistorySyncProgressStage, str | None] | None = None
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
         self._route: HistorySyncProgress | None = None
+        self._preparation_started: tuple[HistorySyncProgressStage, str | None, int] | None = None
 
     def publish(self, progress: HistorySyncProgress) -> None:
         if progress.stage == "supplier_routing":
@@ -120,6 +125,8 @@ class StderrHistorySyncProgress:
     def _should_suppress(self, progress: HistorySyncProgress) -> bool:
         if progress.stage == "supplier_routing":
             return True
+        if progress.stage in _PREPARATION_STAGES and progress.state in {"started", "waiting"}:
+            return self._suppress_preparation(progress)
         if progress.state in {"started", "waiting"} and not (
             progress.stage in {"history_active_gaps", "sealing_partitions"} and progress.state == "started"
         ):
@@ -129,6 +136,14 @@ class StderrHistorySyncProgress:
         return progress.stage == "loading_context" and (
             progress.state == "completed" or progress.state == "failed" and self._specific_failure is not None
         )
+
+    def _suppress_preparation(self, progress: HistorySyncProgress) -> bool:
+        if progress.state == "waiting":
+            return progress.call_elapsed_seconds < 5.0
+        key = (progress.stage, progress.current_item, progress.attempt)
+        duplicate = key == self._preparation_started
+        self._preparation_started = key
+        return duplicate
 
     def _progress_parts(self, progress: HistorySyncProgress) -> list[str]:
         parts = [

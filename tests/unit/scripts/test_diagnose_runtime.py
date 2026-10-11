@@ -126,6 +126,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("history-sqlite", "history_sqlite_performance"),
         ("history-source-compare", "history_source_compare"),
         ("history-space", "history_space"),
+        ("history-industry", "history_industry"),
         ("research", "research_readiness"),
         ("long-watchlist", "long_watchlist_admission"),
         ("browser", "browser_refresh"),
