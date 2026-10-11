@@ -141,6 +141,23 @@ def test_month_partition_seal_scans_rows_without_a_temporary_sort(tmp_path: Path
     assert not any("TEMP B-TREE" in detail for detail in plan)
 
 
+def test_month_partition_seal_checkpoints_before_bounded_mmap_verification(tmp_path: Path) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    statements: list[str] = []
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9, statement_trace=statements.append)
+    repository.initialize()
+    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+    statements.clear()
+
+    repository.seal()
+
+    checkpoint_index = statements.index("PRAGMA wal_checkpoint(TRUNCATE)")
+    mmap_index = statements.index(f"PRAGMA mmap_size={partition_module._VERIFICATION_MMAP_BYTES}")
+    quick_check_index = statements.index("PRAGMA quick_check")
+    assert checkpoint_index < mmap_index < quick_check_index
+    assert "PRAGMA cache_size=-8192" in statements
+
+
 @pytest.mark.parametrize("sequence", (1, 2, 3, 4))
 def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
     tmp_path: Path,
@@ -289,10 +306,15 @@ def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, mon
     SQLiteHistoryMonthPartitionRepository.verify(tmp_path / reference.relative_path, reference)
 
     assert calls[0] == partition_module.os.POSIX_FADV_SEQUENTIAL
-    assert partition_module.os.POSIX_FADV_DONTNEED in calls
+    assert calls.count(partition_module.os.POSIX_FADV_DONTNEED) == 1
     with repository._read_connection() as connection:
         assert connection.execute("PRAGMA cache_size").fetchone() == (-8192,)
         assert connection.execute("PRAGMA mmap_size").fetchone() == (0,)
+        assert connection.execute("PRAGMA temp_store").fetchone() == (1,)
+    with repository._verification_connection() as connection:
+        assert connection.execute("PRAGMA query_only").fetchone() == (1,)
+        assert connection.execute("PRAGMA cache_size").fetchone() == (-8192,)
+        assert connection.execute("PRAGMA mmap_size").fetchone() == (partition_module._VERIFICATION_MMAP_BYTES,)
         assert connection.execute("PRAGMA temp_store").fetchone() == (1,)
 
 

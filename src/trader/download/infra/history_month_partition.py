@@ -26,6 +26,7 @@ _SCHEMA_IDENTITY = "history_price_pairs"
 _CODE = re.compile(r"^[0-9]{6}$")
 _HASH_CHUNK_BYTES = 1024 * 1024
 _CACHE_RELEASE_BYTES = 16 * 1024 * 1024
+_VERIFICATION_MMAP_BYTES = 256 * 1024 * 1024
 HistoryPartitionVerificationPhase = Literal["hash", "integrity", "row_count"]
 HistoryPartitionVerificationProgress = Callable[[int, int, HistoryPartitionVerificationPhase], None]
 _SCHEMA = """
@@ -466,24 +467,31 @@ class SQLiteHistoryMonthPartitionRepository:
     def seal(self) -> HistorySnapshotPartition:
         try:
             with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+                if self._statement_trace is not None:
+                    connection.set_trace_callback(self._statement_trace)
+                self._require_metadata(connection)
+                self._require_schema(connection)
+                checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if checkpoint is None or checkpoint[0] != 0:
+                    raise HistoryMonthPartitionError("history month WAL checkpoint failed")
+            database_sha256 = _sha256_file(self._path, release_cache=False)
+            with closing(self._verification_connection()) as connection:
                 self._require_metadata(connection)
                 self._require_schema(connection)
                 check = connection.execute("PRAGMA quick_check").fetchone()
                 if check != ("ok",):
                     raise HistoryMonthPartitionError("history month integrity check failed")
-                checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if checkpoint is None or checkpoint[0] != 0:
-                    raise HistoryMonthPartitionError("history month WAL checkpoint failed")
                 row_count = self._validate_all_rows(connection)
         except HistoryMonthPartitionError:
             raise
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month sealing failed") from exc
+        finally:
+            _release_file_cache(self._path)
         try:
             _fsync_file(self._path)
             if self._path.parent.name != f"{self._calendar_year:04d}" or self._path.parent.parent.name != "partitions":
                 raise HistoryMonthPartitionError("history month partition path is outside the archive layout")
-            database_sha256 = _sha256_file(self._path)
             reference = HistorySnapshotPartition(
                 f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
                 database_sha256,
@@ -551,7 +559,7 @@ class SQLiteHistoryMonthPartitionRepository:
             raise HistoryMonthPartitionError("history month partition is missing")
         try:
             file_size = path.stat().st_size
-            if _sha256_file(path, progress) != reference.sha256:
+            if _sha256_file(path, progress, release_cache=False) != reference.sha256:
                 raise HistoryMonthPartitionError("history month partition hash mismatch")
             wal = Path(f"{path}-wal")
             if wal.exists() and wal.stat().st_size > 0:
@@ -560,7 +568,7 @@ class SQLiteHistoryMonthPartitionRepository:
             year = int(parts[1])
             month = int(Path(parts[2]).stem)
             candidate = cls(path, year, month)
-            with closing(candidate._read_connection()) as connection:
+            with closing(candidate._verification_connection()) as connection:
                 if progress is not None:
                     progress(file_size, file_size, "integrity")
                 candidate._require_metadata(connection)
@@ -779,6 +787,21 @@ class SQLiteHistoryMonthPartitionRepository:
         connection.execute("PRAGMA temp_store=FILE")
         return connection
 
+    def _verification_connection(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(
+            f"file:{self._path.as_posix()}?mode=ro&immutable=1",
+            uri=True,
+            timeout=5.0,
+        )
+        if self._statement_trace is not None:
+            connection.set_trace_callback(self._statement_trace)
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA cache_size=-8192")
+        connection.execute(f"PRAGMA mmap_size={_VERIFICATION_MMAP_BYTES}")
+        connection.execute("PRAGMA temp_store=FILE")
+        return connection
+
 
 def _latest_query(code: str | None, board: str | None) -> tuple[str, tuple[str, ...]]:
     if code is not None and board is not None:
@@ -830,7 +853,12 @@ def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
     return value
 
 
-def _sha256_file(path: Path, progress: HistoryPartitionVerificationProgress | None = None) -> str:
+def _sha256_file(
+    path: Path,
+    progress: HistoryPartitionVerificationProgress | None = None,
+    *,
+    release_cache: bool = True,
+) -> str:
     digest = hashlib.sha256()
     total = path.stat().st_size
     with path.open("rb", buffering=0) as handle:
@@ -840,7 +868,7 @@ def _sha256_file(path: Path, progress: HistoryPartitionVerificationProgress | No
         for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
             offset += len(chunk)
-            if offset - released_offset >= _CACHE_RELEASE_BYTES:
+            if release_cache and offset - released_offset >= _CACHE_RELEASE_BYTES:
                 _advise_file_access(
                     handle.fileno(),
                     released_offset,
@@ -850,7 +878,7 @@ def _sha256_file(path: Path, progress: HistoryPartitionVerificationProgress | No
                 released_offset = offset
                 if progress is not None:
                     progress(offset, total, "hash")
-        if offset > released_offset:
+        if release_cache and offset > released_offset:
             _advise_file_access(
                 handle.fileno(),
                 released_offset,
