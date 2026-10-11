@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 from datetime import date
+from dataclasses import replace
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncProgress, HistoryTencentSummary
+from trader.download.domain.history_sync import (
+    HistoryRecoverySummary,
+    HistoryStEligibilitySummary,
+    HistorySyncProgress,
+    HistoryTencentSummary,
+)
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 
 
@@ -14,6 +20,39 @@ class _Clock:
 
     def __call__(self) -> float:
         return next(self._values)
+
+
+def test_recovery_attempt_summary_and_incomplete_publication_are_explicit(capsys):
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+    progress.publish(
+        HistorySyncProgress(
+            "baostock_gap_fill",
+            "retrying",
+            0,
+            45,
+            "600001",
+            attempt=2,
+            max_attempts=3,
+            supplier_source="baostock",
+            requested_sessions=2000,
+        )
+    )
+    progress.publish(
+        HistorySyncProgress(
+            "baostock_gap_fill",
+            "completed",
+            45,
+            45,
+            recovery_summary=HistoryRecoverySummary(44, 1, 0),
+        )
+    )
+    progress.publish_result(
+        replace(_failed_status("fixture"), state="completed", reason=None, unresolved_price_cells=2000)
+    )
+    lines = capsys.readouterr().err.splitlines()
+    assert "0/45" in lines[0] and "尝试 2/3" in lines[0]
+    assert "缺口股 45 | 成功 44 股 | 三次未成功 1 股 | 未处理完 0 股" in lines[1]
+    assert "同步完成 | 数据不完整 | 未修复价格缺口 2000 股日" in lines[2]
 
 
 def test_st_checkpoints_report_progress_before_completion(capsys) -> None:

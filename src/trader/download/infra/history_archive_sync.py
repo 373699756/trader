@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import sqlite3
-import time as monotonic_time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
@@ -63,10 +62,10 @@ from trader.download.infra.history_control_repository import (
     inspect_history_disk,
 )
 from trader.download.infra.history_gap_recovery import (
-    HistoryGapRecovery,
     HistoryGapRecoveryContext,
     recover_selected_history_gaps,
 )
+from trader.download.infra.history_gap_resume import reopen_legacy_history_gaps
 from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
@@ -446,7 +445,6 @@ class _HistoryDownloadPhases:
     progress: HistorySyncProgressPort | None
     cancel_requested: Cancellation
     recovery_selection: frozenset[str] = frozenset()
-    recoveries: tuple[HistoryGapRecovery, ...] = ()
 
     def check_cancel(self) -> None:
         if self.cancel_requested():
@@ -581,23 +579,26 @@ class _HistoryDownloadPhases:
             )
 
     def supplement_baostock(self) -> None:
-        cap = self.context.configuration.baostock_max_codes
-        recovery_order = self.stage.prioritized_recovery_codes(self.sequence, cap)
+        reopen_legacy_history_gaps(
+            self.stage,
+            self.pending,
+            ((item.code, _requested_dates(self.context, item)) for item in self.context.supplier_context.universe),
+            self.sequence,
+            self.cancel_requested,
+        )
+        recovery_order = self.stage.prioritized_recovery_codes()
         self.recovery_selection = frozenset(recovery_order)
         universe = self.context.supplier_context.universe
         supplemented = self.stage.supplemented_codes()
-        if all(security.code in supplemented for security in universe):
-            return
-        self.recoveries = recover_selected_history_gaps(
+        recover_selected_history_gaps(
             HistoryGapRecoveryContext(
                 self.stage,
                 self.supplier,
                 universe,
-                tuple(code for code in recovery_order if code not in supplemented),
-                self.context.configuration,
+                recovery_order,
+                self.sequence,
                 self.progress,
                 self.cancel_requested,
-                monotonic_time.monotonic,
             )
         )
         batch_size = self.context.configuration.download_batch_size
@@ -678,7 +679,7 @@ class _HistoryDownloadPhases:
         if not dates:
             return _SupplementResult(index, security.code, dates, (), 0)
         tencent, _, _ = self.stage.read_supplement_context(security.code)
-        recovery = next((item.cells for item in self.recoveries if item.code == security.code), ())
+        recovery = self.stage.recovery_cells(security.code)
         self.check_cancel()
         cells = qualify_history_pairs(security.code, dates, tencent, recovery)
         context = self.context

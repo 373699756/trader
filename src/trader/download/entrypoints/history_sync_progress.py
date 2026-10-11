@@ -77,6 +77,18 @@ _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
 _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplier_industry"})
 
 
+def _recovery_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.recovery_summary is not None:
+        recovery = progress.recovery_summary
+        return (
+            f"缺口股 {recovery.total}",
+            f"成功 {recovery.succeeded_codes} 股",
+            f"三次未成功 {recovery.failed_codes} 股",
+            f"未处理完 {recovery.unattempted_codes} 股",
+        )
+    return ()
+
+
 def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.required_free_bytes is not None:
         return (f"保守可用空间需求 {progress.required_free_bytes / 1024**3:.2f} GiB",)
@@ -103,7 +115,7 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
             f"曾ST排除 {st_summary.ever_st}",
             f"未知排除 {st_summary.unknown}",
         )
-    return ()
+    return _recovery_summary_parts(progress)
 
 
 class StderrHistorySyncProgress:
@@ -153,7 +165,7 @@ class StderrHistorySyncProgress:
         if progress.stage in _PREPARATION_STAGES and progress.state in {"started", "waiting"}:
             return self._suppress_preparation(progress)
         if progress.state in {"started", "waiting"} and not (
-            progress.stage in {"history_active_gaps", "sealing_partitions", "preparing_partitions"}
+            progress.stage in {"history_active_gaps", "sealing_partitions", "preparing_partitions", "baostock_gap_fill"}
             or progress.stage in {"tencent_history", "persisting_prices"}
             and progress.state == "waiting"
         ):
@@ -232,6 +244,8 @@ class StderrHistorySyncProgress:
             if status.reason is not None:
                 parts.append(f"错误 {status.reason}")
         if status.unresolved_price_cells:
+            if status.state == "completed":
+                parts.append("数据不完整")
             parts.append(f"未修复价格缺口 {status.unresolved_price_cells} 股日")
         self._print(parts)
 

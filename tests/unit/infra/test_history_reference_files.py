@@ -114,9 +114,9 @@ def test_unknown_price_gap_breaks_training_window_and_resumes_with_tencent(tmp_p
             )
 
         def fetch_baostock_prices(self, *_args):
-            pytest.fail("zero recovery budget must not call BaoStock")
+            raise RuntimeError("supplier_query_failed")
 
-    config = HistorySyncConfiguration(tmp_path, sessions=125, minimum_free_bytes=0, baostock_max_codes=0)
+    config = HistorySyncConfiguration(tmp_path, sessions=125, minimum_free_bytes=0)
     result = run_history_sync(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 1
     control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
@@ -135,7 +135,7 @@ def test_unknown_price_gap_breaks_training_window_and_resumes_with_tencent(tmp_p
     assert run_history_sync(config, resumed, clock=lambda: NOW).state == "already_current"
 
 
-def test_baostock_recovery_cap_and_rotation_leave_explicit_gaps(tmp_path):
+def test_baostock_recovers_every_gap_before_publication(tmp_path):
     dates = (date(2026, 9, 8), date(2026, 9, 9))
 
     class Missing(FakeSupplier):
@@ -151,17 +151,15 @@ def test_baostock_recovery_cap_and_rotation_leave_explicit_gaps(tmp_path):
             self.recovered.append(security.code)
             return _download(security.code, requested)
 
-    config = HistorySyncConfiguration(
-        tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0, baostock_max_codes=1
-    )
+    config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     supplier = Missing(dates)
     first = run_history_sync(config, supplier, clock=lambda: NOW)
-    assert first.state == "completed" and first.unresolved_price_cells == 2
-    assert supplier.recovered == ["600001"]
+    assert first.state == "completed" and first.unresolved_price_cells == 0
+    assert supplier.recovered == ["600001", "600002"]
     supplier.recovered.clear()
     second = run_history_sync(config, supplier, clock=lambda: NOW)
-    assert second.state == "completed"
-    assert supplier.recovered == ["600002"]
+    assert second.state == "already_current"
+    assert supplier.recovered == []
 
 
 def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
@@ -272,9 +270,7 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
         tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
 
 
-def test_expired_baostock_budget_leaves_gaps_and_does_not_call_supplier(tmp_path, monkeypatch):
-    import trader.download.infra.history_archive_sync as sync
-
+def test_exhausted_stock_does_not_block_later_recovery_or_sparse_publication(tmp_path):
     dates = (date(2026, 9, 8), date(2026, 9, 9))
 
     class Missing(FakeSupplier):
@@ -284,14 +280,20 @@ def test_expired_baostock_budget_leaves_gaps_and_does_not_call_supplier(tmp_path
                 tuple(PublishedHistoryCell(security.code, day, "unknown_missing", None, None) for day in requested),
             )
 
-        def fetch_baostock_prices(self, *_args):
-            pytest.fail("expired recovery budget must not call BaoStock")
+        def fetch_baostock_prices(self, security, requested):
+            self.calls.append((security.code, requested))
+            if security.code == "600001":
+                raise RuntimeError("supplier_daily_raw_timeout")
+            return _download(security.code, requested)
 
-    readings = iter((0.0, 200.0))
-    monkeypatch.setattr(sync.monotonic_time, "monotonic", lambda: next(readings, 200.0))
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
-    result = run_history_sync(config, Missing(dates), clock=lambda: NOW)
-    assert result.state == "completed" and result.unresolved_price_cells == 4
+    supplier = Missing(dates)
+    result = run_history_sync(config, supplier, clock=lambda: NOW)
+    assert result.state == "completed" and result.unresolved_price_cells == 2
+    assert [code for code, _ in supplier.calls] == ["600001", "600001", "600001", "600002"]
+    snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)
+    assert [(row.code, row.cell.obtained) for row in rows] == [("600001", False), ("600002", True)]
 
 
 def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):

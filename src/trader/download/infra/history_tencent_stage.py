@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.download.domain.baostock_daily import BaoStockDailyCell
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import HistoryGapSummary, HistoryTencentSummary
@@ -41,6 +42,21 @@ CREATE TABLE IF NOT EXISTS outcomes (
     code TEXT PRIMARY KEY,
     failure_reason TEXT
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS recovery_attempts (
+    code TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL CHECK(attempts BETWEEN 1 AND 3),
+    succeeded INTEGER NOT NULL CHECK(succeeded IN (0,1)),
+    failure_reason TEXT
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS recovery_prices (
+    code TEXT NOT NULL,
+    trade_date TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY(code, trade_date)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS legacy_recovery (
+    code TEXT PRIMARY KEY
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS gaps (
     code TEXT NOT NULL,
     trade_date TEXT NOT NULL,
@@ -68,6 +84,13 @@ CREATE TABLE IF NOT EXISTS sealed_months (
     PRIMARY KEY (calendar_year, calendar_month)
 ) WITHOUT ROWID;
 """
+
+
+@dataclass(frozen=True)
+class HistoryRecoveryCheckpoint:
+    attempts: int = 0
+    succeeded: bool = False
+    failure_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +221,7 @@ class HistoryTencentStage:
                     ((item.trade_date.isoformat(), code, encode_history_revision(item)) for item in revisions),
                 )
                 connection.execute("INSERT OR REPLACE INTO supplemented VALUES (?,?)", (code, missing))
+                connection.execute("DELETE FROM recovery_prices WHERE code=?", (code,))
 
     def iter_qualified_month(self, year: int, month: int) -> Generator[HistoryRevision, None, None]:
         start = date(year, month, 1).isoformat()
@@ -422,25 +446,129 @@ class HistoryTencentStage:
                 )
             )
 
-    def prioritized_recovery_codes(self, sequence: int, limit: int) -> tuple[str, ...]:
-        if type(sequence) is not int or sequence < 1 or type(limit) is not int or limit < 0:
-            raise ValueError("history recovery selection is invalid")
+    def prioritized_recovery_codes(self) -> tuple[str, ...]:
         gaps = self.price_gap_codes()
-        gap_set = frozenset(gaps)
         failed_set = self.failed_codes()
-        failed = tuple(sorted(failed_set & gap_set))
-        selected = _rotating_prefix(failed, (sequence - 1) * limit, limit)
-        remaining = limit - len(selected)
-        partial = tuple(code for code in gaps if code not in failed_set)
-        return (*selected, *_rotating_prefix(partial, (sequence - 1) * limit, remaining))
+        return tuple(code for code in gaps if code in failed_set) + tuple(
+            code for code in gaps if code not in failed_set
+        )
+
+    def recovery_checkpoint(self, code: str) -> HistoryRecoveryCheckpoint:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            row = connection.execute(
+                "SELECT attempts,succeeded,failure_reason FROM recovery_attempts WHERE code=?", (code,)
+            ).fetchone()
+        return HistoryRecoveryCheckpoint(int(row[0]), bool(row[1]), row[2]) if row else HistoryRecoveryCheckpoint()
+
+    def begin_recovery_attempt(self, code: str) -> int:
+        """Count dispatch durably before contacting the supplier, including interrupted attempts."""
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT attempts,succeeded FROM recovery_attempts WHERE code=?", (code,)
+            ).fetchone()
+            if row is not None and (row[0] >= 3 or row[1]):
+                raise RuntimeError("history_recovery_attempts_exhausted")
+            attempt = 1 if row is None else int(row[0]) + 1
+            connection.execute(
+                "INSERT OR REPLACE INTO recovery_attempts VALUES (?,?,0,'history_recovery_interrupted')",
+                (code, attempt),
+            )
+        return attempt
+
+    def finish_recovery_attempt(
+        self, code: str, failure_reason: str | None, revisions: tuple[HistoryRevision, ...] = ()
+    ) -> None:
+        if (failure_reason is None) != bool(revisions) or any(item.code != code for item in revisions):
+            raise ValueError("history_recovery_result_invalid")
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM recovery_prices WHERE code=?", (code,))
+            connection.executemany(
+                "INSERT INTO recovery_prices VALUES (?,?,?)",
+                ((code, item.trade_date.isoformat(), encode_history_revision(item)) for item in revisions),
+            )
+            cursor = connection.execute(
+                "UPDATE recovery_attempts SET succeeded=?,failure_reason=? WHERE code=?",
+                (int(failure_reason is None), failure_reason, code),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("history_recovery_attempt_missing")
+
+    def recovery_cells(self, code: str) -> tuple[BaoStockDailyCell, ...]:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            rows = connection.execute(
+                "SELECT payload_json FROM recovery_prices WHERE code=? ORDER BY trade_date", (code,)
+            )
+            cells = tuple(decode_history_revision(row[0]).cell for row in rows)
+        if any(cell.code != code for cell in cells):
+            raise RuntimeError("history_recovery_checkpoint_identity_conflict")
+        return cells
+
+    def is_supplemented(self, code: str) -> bool:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            return connection.execute("SELECT 1 FROM supplemented WHERE code=?", (code,)).fetchone() is not None
+
+    def legacy_recovery_codes(self) -> frozenset[str]:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            return frozenset(
+                row[0]
+                for row in connection.execute(
+                    "SELECT code FROM supplemented WHERE (unresolved_price_cells IS NULL OR unresolved_price_cells>0) "
+                    "AND code NOT IN (SELECT code FROM recovery_attempts) UNION SELECT code FROM legacy_recovery"
+                )
+            )
+
+    def qualified_cells(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            return tuple(
+                decode_history_revision(row[0]).cell
+                for day in dates
+                for row in connection.execute(
+                    "SELECT payload_json FROM qualified_prices WHERE trade_date=? AND code=?", (day.isoformat(), code)
+                )
+            )
+
+    def reopen_legacy_recovery(self, window: PublishedHistoryWindow) -> None:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute("SELECT 1 FROM legacy_recovery WHERE code=?", (window.code,)).fetchone()
+            if exists:
+                return
+            connection.execute("INSERT INTO legacy_recovery VALUES (?)", (window.code,))
+            connection.execute("DELETE FROM supplemented WHERE code=?", (window.code,))
+            connection.execute("DELETE FROM gaps WHERE code=?", (window.code,))
+            missing = tuple(
+                cell for cell in window.cells if cell.status not in {"complete", "supplier_marked_suspended"}
+            )
+            anchors = tuple(cell for cell in window.cells if cell.status == "complete")[-5:]
+            connection.executemany(
+                "INSERT INTO gaps VALUES (?,?,'baostock_price_pair')",
+                ((window.code, cell.trade_date.isoformat()) for cell in missing),
+            )
+            if missing:
+                connection.executemany(
+                    "INSERT INTO gaps VALUES (?,?,'baostock_basis_anchor')",
+                    ((window.code, cell.trade_date.isoformat()) for cell in anchors),
+                )
+            for cell in window.cells:
+                connection.execute(
+                    "INSERT OR REPLACE INTO candidates VALUES (?,?,?,?)",
+                    (
+                        window.code,
+                        cell.trade_date.isoformat(),
+                        encode_published_history_cell(cell),
+                        int(cell.unadjusted is not None and cell.qfq is not None),
+                    ),
+                )
+                connection.execute(
+                    "DELETE FROM qualified_prices WHERE trade_date=? AND code=?",
+                    (cell.trade_date.isoformat(), window.code),
+                )
 
     def clear(self) -> None:
         for path in (self._path, Path(f"{self._path}-wal"), Path(f"{self._path}-shm")):
             path.unlink(missing_ok=True)
-
-
-def _rotating_prefix(values: tuple[str, ...], offset: int, limit: int) -> tuple[str, ...]:
-    if not values or limit == 0:
-        return ()
-    start = offset % len(values)
-    return (values[start:] + values[:start])[:limit]

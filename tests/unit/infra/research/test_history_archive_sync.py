@@ -498,7 +498,7 @@ def test_selected_tencent_failures_recover_before_the_first_partition_batch(
 
     assert result.state == "failed"
     assert events == [f"recover:{codes[0]}", f"recover:{codes[-1]}", f"recover:{partial_code}", "write"]
-    recovery_progress = [item for item in recorder.values if item.stage == "baostock_gap_fill"]
+    recovery_progress = [item for item in recorder.values if item.stage == "baostock_gap_fill" and item.current_item]
     assert [(item.state, item.completed_units, item.total_units, item.current_item) for item in recovery_progress] == [
         ("started", 0, 3, codes[0]),
         ("completed", 1, 3, codes[0]),
@@ -546,7 +546,7 @@ def test_tencent_stage_upgrades_legacy_resume_metadata_without_rewriting_candida
     assert stage.unresolved_price_counts() == ({}, frozenset(("600001",)))
 
 
-def test_tencent_stage_prioritizes_current_failures_and_rotates_overflow(tmp_path: Path) -> None:
+def test_tencent_stage_prioritizes_all_current_failures_without_truncation(tmp_path: Path) -> None:
     path = tmp_path / "stage.sqlite3"
     stage = HistoryTencentStage(path, "sync-priority")
     stage.initialize()
@@ -566,18 +566,15 @@ def test_tencent_stage_prioritizes_current_failures_and_rotates_overflow(tmp_pat
             ((code,) for code in (*failed, *partial)),
         )
 
-    first = stage.prioritized_recovery_codes(1, 30)
-    second = stage.prioritized_recovery_codes(2, 30)
+    selected = stage.prioritized_recovery_codes()
     summary = stage.tencent_summary()
 
-    assert len(first) == len(second) == 30
-    assert set(first) <= set(failed) and set(second) <= set(failed)
-    assert set(first) | set(second) == set(failed)
+    assert selected == (*failed, *partial)
     assert (summary.processed_codes, summary.succeeded_codes, summary.failed_codes) == (45, 10, 35)
     assert (summary.overlap_conflicts, summary.other_failures) == (24, 11)
 
 
-def test_tencent_stage_fills_recovery_capacity_with_partial_gaps_after_failures(tmp_path: Path) -> None:
+def test_tencent_stage_selects_all_partial_gaps_after_failures(tmp_path: Path) -> None:
     path = tmp_path / "stage.sqlite3"
     stage = HistoryTencentStage(path, "sync-partial")
     stage.initialize()
@@ -593,11 +590,9 @@ def test_tencent_stage_fills_recovery_capacity_with_partial_gaps_after_failures(
             ((code,) for code in (*failed, *partial)),
         )
 
-    selected = stage.prioritized_recovery_codes(2, 30)
+    selected = stage.prioritized_recovery_codes()
 
-    assert len(selected) == 30
-    assert set(failed) <= set(selected)
-    assert len(set(selected) & set(partial)) == 1
+    assert selected == (*failed, *partial)
 
 
 @pytest.mark.parametrize("failure", ("request", "missing_side"))
@@ -795,6 +790,7 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
         ("tencent_history", "completed"),
         ("history_gap_inventory", "started"),
         ("history_gap_inventory", "completed"),
+        ("baostock_gap_fill", "completed"),
         ("persisting_prices", "started"),
         ("persisting_prices", "started"),
         ("persisting_prices", "completed"),

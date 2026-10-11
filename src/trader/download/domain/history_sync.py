@@ -63,8 +63,6 @@ class HistorySyncConfiguration:
     cancellation_grace_seconds: float = 10.0
     progress_heartbeat_seconds: float = 5.0
     training_root: Path = Path("data/train")
-    baostock_max_codes: int = 30
-    baostock_budget_seconds: float = 180.0
 
     @classmethod
     def for_repository(cls, repository_root: Path) -> HistorySyncConfiguration:
@@ -84,9 +82,6 @@ class HistorySyncConfiguration:
             or self.supplier_timeout_seconds <= 0
             or not 0 <= self.supplier_retries <= 2
             or self.query_interval_seconds < BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS
-            or not 0 <= self.baostock_max_codes <= 100
-            or not math.isfinite(self.baostock_budget_seconds)
-            or not 0 <= self.baostock_budget_seconds <= 600.0
             or not 0 < self.cancellation_grace_seconds <= 10.0
             or not 0 < self.progress_heartbeat_seconds <= self.supplier_timeout_seconds
         ):
@@ -151,6 +146,24 @@ class HistoryTencentSummary:
 
 
 @dataclass(frozen=True)
+class HistoryRecoverySummary:
+    succeeded_codes: int
+    failed_codes: int
+    unattempted_codes: int
+
+    def __post_init__(self) -> None:
+        if any(
+            type(value) is not int or value < 0
+            for value in (self.succeeded_codes, self.failed_codes, self.unattempted_codes)
+        ):
+            raise ValueError("history recovery summary is invalid")
+
+    @property
+    def total(self) -> int:
+        return self.succeeded_codes + self.failed_codes + self.unattempted_codes
+
+
+@dataclass(frozen=True)
 class HistoryStEligibilitySummary:
     clear: int
     ever_st: int
@@ -179,6 +192,7 @@ class HistorySyncProgress:
     requested_sessions: int | None = None
     gap_summary: HistoryGapSummary | None = None
     tencent_summary: HistoryTencentSummary | None = None
+    recovery_summary: HistoryRecoverySummary | None = None
     st_summary: HistoryStEligibilitySummary | None = None
     failure_reason: str | None = None
     cache_hit: bool | None = None
@@ -227,6 +241,18 @@ class HistorySyncProgress:
                 )
             )
             or (
+                self.recovery_summary is not None
+                and (
+                    self.stage != "baostock_gap_fill"
+                    or self.current_item is not None
+                    or self.supplier_source is not None
+                    or (self.state == "completed" and self.recovery_summary.unattempted_codes != 0)
+                    or self.total_units != self.recovery_summary.total
+                    or self.completed_units
+                    != self.recovery_summary.succeeded_codes + self.recovery_summary.failed_codes
+                )
+            )
+            or (
                 self.st_summary is not None
                 and (
                     self.stage != "history_st_reference"
@@ -263,5 +289,6 @@ __all__ = [
     "HistoryGapSummary",
     "HistoryStEligibilitySummary",
     "HistoryTencentSummary",
+    "HistoryRecoverySummary",
     "HistoryTwoStageSupplier",
 ]
