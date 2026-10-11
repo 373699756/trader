@@ -200,6 +200,86 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     assert len(verified) == len(snapshot.partitions)
 
 
+def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "history"
+    dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
+    snapshot = _build_snapshot(root, tuple(_revision("600001", day) for day in dates))
+    published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
+    published_calls: list[HistorySnapshotPartition] = []
+
+    def verify_published(cls, path, reference, progress=None):
+        published_calls.append(reference)
+        return published(cls, path, reference, progress)
+
+    def unexpected_full_verify(*_args, **_kwargs):
+        pytest.fail("training trust must not repeat SQLite quick_check and row-count scans")
+
+    monkeypatch.setattr(
+        SQLiteHistoryMonthPartitionRepository,
+        "verify_published_bytes",
+        classmethod(verify_published),
+    )
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(unexpected_full_verify))
+    reader = SQLiteHistoryArchiveReader(root)
+    progress: list[tuple[int, int, int, int, int, str]] = []
+
+    reader.verify_published_snapshot(snapshot, lambda *values: progress.append(values))
+
+    assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
+    assert published_calls == list(snapshot.partitions)
+    assert progress[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
+    assert {item[-1] for item in progress} == {"hash"}
+
+
+def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> None:
+    root = tmp_path / "history"
+    day = date(2026, 9, 1)
+    snapshot = _build_snapshot(root, (_revision("600001", day),))
+    path = root / snapshot.partitions[0].relative_path
+    content = bytearray(path.read_bytes())
+    content[-1] ^= 1
+    path.write_bytes(content)
+
+    with pytest.raises(HistoryArchiveReadError, match="verification failed"):
+        SQLiteHistoryArchiveReader(root).verify_published_snapshot(snapshot)
+
+
+def test_explicit_full_verification_upgrades_published_byte_trust(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "history"
+    day = date(2026, 9, 1)
+    snapshot = _build_snapshot(root, (_revision("600001", day),))
+    published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
+    full = SQLiteHistoryMonthPartitionRepository.verify.__func__
+    calls: list[str] = []
+
+    def verify_published(cls, path, reference, progress=None):
+        calls.append("published_bytes")
+        return published(cls, path, reference, progress)
+
+    def verify_full(cls, path, reference, progress=None):
+        calls.append("full")
+        return full(cls, path, reference, progress)
+
+    monkeypatch.setattr(
+        SQLiteHistoryMonthPartitionRepository,
+        "verify_published_bytes",
+        classmethod(verify_published),
+    )
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(verify_full))
+    reader = SQLiteHistoryArchiveReader(root)
+
+    reader.verify_published_snapshot(snapshot)
+    reader.verify_snapshot(snapshot)
+
+    assert calls == ["published_bytes", "full"]
+
+
 def test_revision_comparison_uses_one_current_physical_partition_for_both_sequences(tmp_path: Path) -> None:
     root = tmp_path / "history"
     first = date(2026, 9, 9)

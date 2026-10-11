@@ -11,6 +11,7 @@ from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
@@ -55,6 +56,7 @@ class _VerifiedPartition:
     reference: HistorySnapshotPartition
     identity: _PartitionFileIdentity
     repository: SQLiteHistoryMonthPartitionRepository
+    level: Literal["published_bytes", "full"]
 
 
 def _partition_file_identity(path: Path) -> _PartitionFileIdentity:
@@ -135,13 +137,35 @@ class SQLiteHistoryArchiveReader:
         self.reference_index(snapshot)
         total = len(snapshot.partitions)
         for completed, reference in enumerate(snapshot.partitions, start=1):
-            self._verified_repository(
+            self._repository_with_trust(
                 reference,
                 None if progress is None else _partition_progress(progress, completed, total),
+                required_level="full",
+                establish_level="full",
             )
             if progress is not None:
                 size = (self._root / reference.relative_path).stat().st_size
                 progress(completed, total, completed, size, size, "row_count")
+
+    def verify_published_snapshot(
+        self,
+        snapshot: HistoryActiveSnapshot,
+        progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
+    ) -> None:
+        """Trust download-sealed SQLite facts after cross-process byte verification."""
+
+        self.reference_index(snapshot)
+        total = len(snapshot.partitions)
+        for completed, reference in enumerate(snapshot.partitions, start=1):
+            self._repository_with_trust(
+                reference,
+                None if progress is None else _partition_progress(progress, completed, total),
+                required_level=None,
+                establish_level="published_bytes",
+            )
+            if progress is not None:
+                size = (self._root / reference.relative_path).stat().st_size
+                progress(completed, total, completed, size, size, "hash")
 
     def count_range(
         self,
@@ -503,15 +527,38 @@ class SQLiteHistoryArchiveReader:
         reference: HistorySnapshotPartition,
         progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> SQLiteHistoryMonthPartitionRepository:
+        return self._repository_with_trust(
+            reference,
+            progress,
+            required_level=None,
+            establish_level="full",
+        )
+
+    def _repository_with_trust(
+        self,
+        reference: HistorySnapshotPartition,
+        progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None,
+        *,
+        required_level: Literal["full"] | None,
+        establish_level: Literal["published_bytes", "full"],
+    ) -> SQLiteHistoryMonthPartitionRepository:
         path = self._root / reference.relative_path
         with self._verification_lock:
             try:
                 identity = _partition_file_identity(path)
                 existing = self._verified.get(reference.relative_path)
-                if existing is not None and existing.reference == reference and existing.identity == identity:
+                if (
+                    existing is not None
+                    and existing.reference == reference
+                    and existing.identity == identity
+                    and (required_level is None or existing.level == required_level)
+                ):
                     return existing.repository
                 self._verified.pop(reference.relative_path, None)
-                SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
+                if establish_level == "full":
+                    SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
+                else:
+                    SQLiteHistoryMonthPartitionRepository.verify_published_bytes(path, reference, progress)
                 if _partition_file_identity(path) != identity:
                     raise HistoryArchiveReadError("history snapshot partition changed during verification")
             except (HistoryArchiveReadError, HistoryMonthPartitionError, OSError) as exc:
@@ -521,7 +568,9 @@ class SQLiteHistoryArchiveReader:
                 raise HistoryArchiveReadError("history snapshot partition verification failed") from exc
             year, month = _reference_month(reference)
             repository = SQLiteHistoryMonthPartitionRepository(path, year, month, immutable_read=True)
-            self._verified[reference.relative_path] = _VerifiedPartition(reference, identity, repository)
+            self._verified[reference.relative_path] = _VerifiedPartition(
+                reference, identity, repository, establish_level
+            )
             return repository
 
     def _shadow_repository(self, reference: HistorySnapshotPartition) -> SQLiteHistoryMonthPartitionRepository:

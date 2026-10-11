@@ -139,7 +139,7 @@ class SQLiteHistoryTrainingInputArchive:
         progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> None:
         try:
-            self._archive.verify_snapshot(self._active, progress)
+            self._archive.verify_published_snapshot(self._active, progress)
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 

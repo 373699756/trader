@@ -587,6 +587,30 @@ class SQLiteHistoryMonthPartitionRepository:
         if row_count != reference.row_count:
             raise HistoryMonthPartitionError("history month partition row count mismatch")
 
+    @classmethod
+    def verify_published_bytes(
+        _cls,
+        path: Path,
+        reference: HistorySnapshotPartition,
+        progress: HistoryPartitionVerificationProgress | None = None,
+    ) -> None:
+        """Re-establish byte identity for a partition fully sealed before publication."""
+
+        if not path.is_file():
+            raise HistoryMonthPartitionError("history month partition is missing")
+        wal = Path(f"{path}-wal")
+        try:
+            if wal.exists() and wal.stat().st_size > 0:
+                raise HistoryMonthPartitionError("history month partition has pending WAL")
+            if _sha256_file(path, progress) != reference.sha256:
+                raise HistoryMonthPartitionError("history month partition hash mismatch")
+            if wal.exists() and wal.stat().st_size > 0:
+                raise HistoryMonthPartitionError("history month partition has pending WAL")
+        except HistoryMonthPartitionError:
+            raise
+        except OSError as exc:
+            raise HistoryMonthPartitionError("history month published bytes verification failed") from exc
+
     def _prepare_revisions(self, revisions: Iterable[HistoryRevision]) -> tuple[_EncodedRevision, ...]:
         prepared: list[_EncodedRevision] = []
         previous_key: tuple[date, str, int, str] | None = None

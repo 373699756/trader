@@ -145,6 +145,37 @@ def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
     assert progress[-1][:3] == (1, 1, 1)
 
 
+def test_training_input_reuses_download_seal_after_hash_verification(tmp_path: Path, monkeypatch) -> None:
+    archive_root = tmp_path / "history"
+    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
+    calls: list[HistorySnapshotPartition] = []
+
+    def verify_published(cls, path, reference, progress=None):
+        calls.append(reference)
+        return published(cls, path, reference, progress)
+
+    def unexpected_full_verify(*_args, **_kwargs):
+        pytest.fail("training must reuse the download seal after matching its partition hash")
+
+    monkeypatch.setattr(
+        SQLiteHistoryMonthPartitionRepository,
+        "verify_published_bytes",
+        classmethod(verify_published),
+    )
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(unexpected_full_verify))
+    archive = SQLiteHistoryTrainingInputArchive.open(archive_root)
+    progress: list[tuple[int, int, int, int, int, str]] = []
+
+    archive.verify_partitions(lambda *values: progress.append(values))
+
+    assert archive.count_training_rows(frozenset(dates)) == len(dates)
+    assert calls == list(archive.active_snapshot.partitions)
+    assert {item[-1] for item in progress} == {"hash"}
+
+
 def test_training_input_streams_windows_in_date_code_order_without_per_code_queries(tmp_path: Path) -> None:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
