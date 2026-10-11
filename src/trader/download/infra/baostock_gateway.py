@@ -519,7 +519,14 @@ def _scaled_qfq(raw: BaoStockDailySide, factor: Decimal) -> BaoStockDailySide:
 def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:
     if not open_dates:
         return ()
-    return (open_dates[-1],)
+    snapshots = [open_dates[0]]
+    for day in open_dates[1:-1]:
+        previous = snapshots[-1]
+        if (day.year - previous.year) * 12 + day.month - previous.month >= 6:
+            snapshots.append(day)
+    if open_dates[-1] != snapshots[-1]:
+        snapshots.append(open_dates[-1])
+    return tuple(snapshots)
 
 
 def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, str], ...]:

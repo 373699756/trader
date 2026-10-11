@@ -263,6 +263,7 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
         ).encode()
     ).hexdigest()
     try:
+        training_window = _require_industry_coverage(archive, split, request.profile.history_sessions)
         _verify_partitions_once(archive, request.progress)
         request.train_root.mkdir(parents=True, exist_ok=True)
         _cleanup_abandoned_workspaces(request.train_root, request.contracts)
@@ -273,7 +274,7 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                     TrainingSampleBuildRequest(
                         archive,
                         snapshot.training_codes,
-                        TomorrowTrainingWindow(split),
+                        training_window,
                         samples,
                         request.profile,
                         request.progress,
@@ -316,6 +317,17 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                 )
     ordered = _ordered_results(request.contracts, completed)
     return TrainingRunResult(run_id, snapshot.active_snapshot_hash, peak_bytes, ordered)
+
+
+def _require_industry_coverage(
+    archive: _TrainingInputArchive,
+    split: BaoStockTrainingSplit,
+    history_sessions: int,
+) -> TomorrowTrainingWindow:
+    window = TomorrowTrainingWindow(split)
+    if not archive.has_industry_window(window.readable_dates, history_sessions):
+        raise ValueError("history_industry_coverage_insufficient")
+    return window
 
 
 def _reopen_expected_archive(
@@ -842,6 +854,7 @@ def _reason(exc: BaseException) -> str:
         "history_manifest_unavailable",
         "history_manifest_parent_unavailable",
         "profile_training_rows_empty",
+        "history_industry_coverage_insufficient",
         "history_training_data_incomplete",
         "training_split_unavailable",
     }:

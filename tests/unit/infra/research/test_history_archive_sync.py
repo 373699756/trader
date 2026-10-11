@@ -37,6 +37,7 @@ from trader.download.infra.history_archive_repack import HistoryArchiveRepackFen
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_reference_files import read_bound_history_reference
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
@@ -254,6 +255,57 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     assert repeated.state == "already_current"
     assert len(supplier.calls) == 2
     assert tuple(item.relative_path for item in snapshot.partitions) == ("partitions/2026/09.sqlite3",)
+
+
+def test_industry_reference_change_reuses_published_prices(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    assert (
+        run_history_sync(_configuration(tmp_path), FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state
+        == "completed"
+    )
+    control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    previous = control.load_state().active_snapshot
+    assert previous is not None
+    supplier = FakeSupplier(dates, industry="finance")
+    monkeypatch.setattr(
+        history_sync_module,
+        "scan_active_price_gaps",
+        lambda *_args, **_kwargs: pytest.fail("a reference-only publication must not scan price partitions"),
+    )
+
+    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+
+    published = control.load_published_state()
+    assert result.state == "completed"
+    assert published is not None
+    assert supplier.calls == []
+    assert published.snapshot.sequence == previous.sequence + 1
+    assert published.snapshot.partitions == previous.partitions
+    reference = read_bound_history_reference(tmp_path, published.source.supplier_contract)
+    assert {item.industry for item in reference.industry_intervals} == {"finance"}
+
+
+def test_industry_reference_failure_restores_previous_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    assert (
+        run_history_sync(_configuration(tmp_path), FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state
+        == "completed"
+    )
+    control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    previous = control.load_published_state()
+    assert previous is not None
+
+    def fail_publish(_self, _snapshot) -> None:
+        raise OSError("injected reference publication failure")
+
+    monkeypatch.setattr(SQLiteHistoryControlRepository, "publish_snapshot", fail_publish)
+    result = run_history_sync(_configuration(tmp_path), FakeSupplier(dates, industry="finance"), clock=lambda: NOW)
+
+    assert result.state == "failed"
+    assert control.load_state().active_snapshot == previous.snapshot
+    reference = read_bound_history_reference(tmp_path, previous.source.supplier_contract)
+    assert {item.industry for item in reference.industry_intervals} == {"bank"}
+    assert not (tmp_path.parent / "filter_config" / ".industry_mapping.rollback.json").exists()
 
 
 def test_concurrent_tencent_stage_finishes_and_persists_inventory_before_baostock(tmp_path: Path) -> None:

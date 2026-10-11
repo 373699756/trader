@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -59,6 +60,36 @@ class HistoryReferenceIndex:
         if industry is not None and industry.effective_to is not None and day >= industry.effective_to:
             industry = None
         return industry
+
+    def has_industry_window(
+        self,
+        codes: Collection[str],
+        calendar_dates: tuple[date, ...],
+        required_sessions: int,
+    ) -> bool:
+        """Return whether any eligible code has one continuous dated-industry window."""
+
+        dates = tuple(calendar_dates)
+        if not dates or dates != tuple(sorted(set(dates))) or required_sessions < 1 or required_sessions > len(dates):
+            return False
+        for code in codes:
+            if code not in self._eligible:
+                continue
+            covered_start: int | None = None
+            covered_end = 0
+            for interval in self._intervals.get(code, ()):
+                start = bisect_left(dates, interval.effective_from)
+                end = bisect_left(dates, interval.effective_to) if interval.effective_to is not None else len(dates)
+                if end <= start:
+                    continue
+                if covered_start is None or start > covered_end:
+                    covered_start = start
+                    covered_end = end
+                else:
+                    covered_end = max(covered_end, end)
+                if covered_end - covered_start >= required_sessions:
+                    return True
+        return False
 
 
 def write_history_reference(path: Path, reference: HistoryReferenceSnapshot) -> None:

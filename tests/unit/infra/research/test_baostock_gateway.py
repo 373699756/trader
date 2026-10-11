@@ -266,7 +266,7 @@ def test_gateway_fetches_missing_training_facts_without_redownloading_qfq() -> N
     assert sdk.requested_fields == ["date,code,tradestatus,isST"]
 
 
-def test_gateway_fetches_only_the_latest_industry_snapshot_before_daily_downloads() -> None:
+def test_gateway_fetches_semiannual_historical_industry_snapshots_before_daily_downloads() -> None:
     class _IndustrySdk(_Sdk):
         def __init__(self) -> None:
             self.requested_dates: list[str] = []
@@ -279,17 +279,25 @@ def test_gateway_fetches_only_the_latest_industry_snapshot_before_daily_download
     sdk = _IndustrySdk()
     gateway = BaoStockRowGateway(sdk, python_version="3.14.0", dependency_versions=(("pandas", "2.3.0"),))
     spec = BaoStockDailySpec(sessions=2)
-    calendar = BaoStockCalendar((date(2019, 1, 2), date(2020, 1, 2), date(2026, 8, 30)))
+    calendar = BaoStockCalendar(
+        (
+            date(2019, 1, 2),
+            date(2019, 6, 3),
+            date(2019, 7, 2),
+            date(2020, 1, 2),
+            date(2026, 8, 30),
+        )
+    )
     universe = gateway.fetch_universe(spec)
 
     intervals = gateway.fetch_industry_intervals(spec, calendar, universe)
 
-    assert sdk.requested_dates == ["2026-08-30"]
+    assert sdk.requested_dates == ["2019-01-02", "2019-07-02", "2020-01-02", "2026-08-30"]
     assert len(intervals) == 1
     assert intervals[0].code == "600001"
     assert intervals[0].industry == "银行"
     assert intervals[0].classification == "申万一级行业"
-    assert intervals[0].effective_from == calendar.open_dates[-1]
+    assert intervals[0].effective_from == calendar.open_dates[0]
 
 
 def test_gateway_uses_supplier_update_date_for_industry_effective_time() -> None:

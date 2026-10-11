@@ -75,6 +75,7 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
         describe_frozen_daily_input=lambda: descriptor,
         verify_partitions=lambda _progress=None: None,
         training_row_upper_bound=lambda _dates: 0,
+        has_industry_window=lambda _dates, _sessions: True,
     )
 
 
@@ -118,6 +119,25 @@ def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
 
     assert result.status == "blocked"
     assert result.failure_reasons == ("profile_training_rows_empty",)
+    assert result.model_hash == result.report_hash == ""
+
+
+def test_training_rejects_insufficient_industry_history_before_partition_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = _cadence_archive(tmp_path / "history")
+    archive.has_industry_window = lambda _dates, _sessions: False
+    archive.verify_partitions = lambda _progress=None: pytest.fail("industry preflight must precede partition hashes")
+    _patch_archive(monkeypatch, archive)
+    monkeypatch.setattr(
+        "trader.training.infra.engine.build_training_samples",
+        lambda *_args, **_kwargs: pytest.fail("industry preflight must precede the history scan"),
+    )
+
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
+
+    assert result.status == "blocked"
+    assert result.failure_reasons == ("history_industry_coverage_insufficient",)
     assert result.model_hash == result.report_hash == ""
 
 

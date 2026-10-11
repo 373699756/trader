@@ -37,6 +37,8 @@ class TrainingHistorySource(Protocol):
 
     def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int: ...
 
+    def has_industry_window(self, allowed_dates: frozenset[date], required_sessions: int) -> bool: ...
+
     def iter_training_rows(
         self,
         allowed_dates: frozenset[date],

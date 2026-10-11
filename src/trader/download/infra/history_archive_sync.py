@@ -76,6 +76,11 @@ from trader.download.infra.history_seal_resume import (
     recover_sealed_prefix,
     remove_sqlite_files,
 )
+from trader.download.infra.history_snapshot_publication import (
+    HistoryPublication,
+    is_reference_only_change,
+    publish_history_snapshot,
+)
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 from trader.infra.workers import WorkerExecutor, injected_executor, submit_or_reject
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
@@ -209,6 +214,33 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
         ):
             raise RuntimeError("supplier_universe_regressed")
+        if active is not None and is_reference_only_change(state, active, source, calendar, universe):
+            sync_identity = _sync_identity(calendar, universe, active)
+            checkpoints = _matching_checkpoints(state.checkpoints, sync_identity)
+            ordinal = max((item.ordinal for item in checkpoints), default=0) + 1
+            total = len(context.universe)
+            snapshot = HistoryActiveSnapshot(
+                active.sequence + 1,
+                calendar.open_dates[-1],
+                calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1],
+                calendar.content_hash,
+                universe.content_hash,
+                source.content_hash,
+                active.partitions,
+            )
+            _publish_progress(progress, "publishing_snapshot", "started")
+            publish_history_snapshot(
+                control,
+                HistoryPublication(
+                    root,
+                    (source, calendar, universe),
+                    snapshot,
+                    HistorySyncCheckpoint(sync_identity, ordinal, "completed", observed_at, total, total, None),
+                    reference,
+                ),
+            )
+            _publish_progress(progress, "publishing_snapshot", "completed", (1, 1))
+            return _status("completed", None, configuration, snapshot, observed_at)
         previous_gaps = scan_active_price_gaps(
             root,
             active,
@@ -576,6 +608,7 @@ class _HistoryDownloadPhases:
         ):
             self.recovery_codes += 1
             self._price_progress("baostock_gap_fill", "started", index, security.code, price_dates)
+            recovery_state: Literal["completed", "failed"] = "completed"
             try:
                 price_gaps = self.supplier.fetch_baostock_prices(security, price_dates)
                 batch = price_gaps.batch
@@ -595,7 +628,8 @@ class _HistoryDownloadPhases:
                 if str(exc) == "history_st_reference_conflict":
                     raise
                 recovery = ()
-            self._price_progress("baostock_gap_fill", "completed", index + 1, security.code, price_dates)
+                recovery_state = "failed"
+            self._price_progress("baostock_gap_fill", recovery_state, index + 1, security.code, price_dates)
         self.check_cancel()
         cells = qualify_history_pairs(security.code, dates, tencent, recovery)
         context = self.context
@@ -681,38 +715,20 @@ def _seal_and_publish(  # noqa: PLR0913
         source.content_hash,
         sealed.references,
     )
-    mapping_path = history_industry_mapping_path(root)
-    mapping_rollback = mapping_path.with_name(".industry_mapping.rollback.json")
-    mapping_rollback.unlink(missing_ok=True)
-    if mapping_path.is_file():
-        mapping_rollback.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(mapping_path, mapping_rollback)
-        _fsync_file(mapping_rollback)
     try:
-        write_history_reference(mapping_path, reference)
-        _publish_snapshot(
+        publish_history_snapshot(
             control,
-            identities,
-            snapshot,
-            HistorySyncCheckpoint(sync_identity, ordinal, "completed", observed_at, total, total, None),
+            HistoryPublication(
+                root,
+                identities,
+                snapshot,
+                HistorySyncCheckpoint(sync_identity, ordinal, "completed", observed_at, total, total, None),
+                reference,
+            ),
         )
     except BaseException:
-        try:
-            active_hash = control.load_state().active_snapshot_hash
-        except HistoryControlError:
-            raise
-        if active_hash == snapshot.content_hash:
-            mapping_rollback.unlink(missing_ok=True)
-            _discard_partition_replacements(sealed.replacements)
-            return snapshot
-        if mapping_rollback.is_file():
-            os.replace(mapping_rollback, mapping_path)
-            _fsync_directory(mapping_path.parent)
-        else:
-            mapping_path.unlink(missing_ok=True)
         _restore_partition_replacements(sealed.replacements)
         raise
-    mapping_rollback.unlink(missing_ok=True)
     _discard_partition_replacements(sealed.replacements)
     return snapshot
 
@@ -983,20 +999,6 @@ def _discard_partition_replacements(replacements: tuple[_PartitionReplacement, .
             _fsync_directory(replacement.destination.parent)
         except OSError:
             pass
-
-
-def _publish_snapshot(
-    control: SQLiteHistoryControlRepository,
-    identities: tuple[HistorySourceIdentity, HistoryCalendarIdentity, HistoryUniverseIdentity],
-    snapshot: HistoryActiveSnapshot,
-    checkpoint: HistorySyncCheckpoint,
-) -> None:
-    source, calendar, universe = identities
-    control.save_source(source)
-    control.save_calendar(calendar)
-    control.save_universe(universe)
-    control.save_checkpoint(checkpoint)
-    control.publish_snapshot(snapshot)
 
 
 def _backup_database(source: Path, destination: Path) -> None:

@@ -197,6 +197,7 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(251))
     configuration = HistorySyncConfiguration(archive_root, sessions=251, reread_sessions=2, minimum_free_bytes=0)
     result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    training = SQLiteHistoryTrainingInputArchive.open(archive_root)
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(archive_root)),
         lookback_sessions=251,
@@ -207,6 +208,7 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     status = history.status()
 
     assert status.snapshot_hash == result.active_snapshot_hash
+    assert training.has_industry_window(frozenset(dates), 251)
     assert status.universe_rows == 1
     assert status.covered_rows == 1
     assert len(loaded["600001"]) == 20

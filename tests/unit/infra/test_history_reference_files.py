@@ -19,6 +19,7 @@ from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveRea
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_reference_files import (
+    HistoryReferenceIndex,
     history_filter_config_root,
     history_industry_mapping_path,
     history_st_evidence_path,
@@ -187,6 +188,26 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError):
         read_history_reference(path)
+
+
+def test_reference_index_requires_a_continuous_industry_window() -> None:
+    code = "600001"
+    dates = tuple(date(2022, 9, 1) + timedelta(days=offset) for offset in range(300))
+    covered = HistoryReferenceSnapshot(
+        (code,),
+        (
+            BaoStockIndustryInterval(code, dates[0], date(2023, 1, 1), "bank", "csrc"),
+            BaoStockIndustryInterval(code, date(2023, 1, 1), None, "finance", "csrc"),
+        ),
+        (HistoryStEvidence(code, dates[-1], "clear"),),
+    )
+    current_only = replace(
+        covered,
+        industry_intervals=(BaoStockIndustryInterval(code, dates[-1], None, "finance", "csrc"),),
+    )
+
+    assert HistoryReferenceIndex(covered).has_industry_window((code,), dates, 251)
+    assert not HistoryReferenceIndex(current_only).has_industry_window((code,), dates, 251)
 
 
 def test_history_filter_files_use_fixed_names_beside_history(tmp_path):
