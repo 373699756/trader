@@ -145,6 +145,9 @@ _PUBLISHED_CODE_SQL = _LATEST_WINDOW.format(
     columns=_DAILY_COLUMNS, observation_filter="      AND code = ?", record_filter=""
 )
 _COUNT_CODE_BATCH_SIZE = 500
+_ALL_REVISION_SCAN_SQL = (
+    "SELECT trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash FROM daily_records"
+)
 
 
 @dataclass(frozen=True)
@@ -226,8 +229,6 @@ class SQLiteHistoryMonthPartitionRepository:
             raise
         except sqlite3.Error as exc:
             raise HistoryMonthPartitionError("history month revision write failed") from exc
-        finally:
-            _release_file_cache(self._path)
 
     def read_day(
         self,
@@ -462,7 +463,6 @@ class SQLiteHistoryMonthPartitionRepository:
             if self._path != destination:
                 os.replace(self._path, destination)
             _fsync_directory(destination.parent)
-            self.verify(destination, reference)
             return reference
         except HistoryMonthPartitionError:
             raise
@@ -664,10 +664,7 @@ class SQLiteHistoryMonthPartitionRepository:
                 raise HistoryMonthPartitionError("history month table contract is invalid")
 
     def _validate_all_rows(self, connection: sqlite3.Connection) -> int:
-        cursor = connection.execute(
-            "SELECT trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash "
-            "FROM daily_records ORDER BY trade_date, code, first_seen_sequence, revision_id"
-        )
+        cursor = connection.execute(_ALL_REVISION_SCAN_SQL)
         row_count = 0
         while rows := cursor.fetchmany(512):
             for row in rows:

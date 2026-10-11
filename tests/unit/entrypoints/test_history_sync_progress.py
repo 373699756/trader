@@ -106,6 +106,14 @@ def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
     assert capsys.readouterr().err == "00:00:35 | 股票下载 | 完成 | 13/100 (13.00%) | 股票 600001\n"
 
 
+def test_partition_sealing_prints_the_first_month_before_long_local_work(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 101.0))
+
+    progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 100, current_item="2018-07"))
+
+    assert capsys.readouterr().err == "00:00:01 | 封存月分片 | 开始 | 0/100 (0.00%) | 月份 2018-07\n"
+
+
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 145.0, 1070.569))
     progress.publish(

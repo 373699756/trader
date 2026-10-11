@@ -565,6 +565,72 @@ def test_snapshot_publication_failure_restores_stable_month_and_old_active(
     assert not tuple((tmp_path / "partitions").glob("*/.*.rollback.sqlite3"))
 
 
+def test_initial_sealing_reuses_pending_inode_without_a_full_database_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    copied: list[tuple[Path, Path]] = []
+    original_backup = history_sync_module._backup_database
+
+    def track_backup(source: Path, destination: Path) -> None:
+        copied.append((source, destination))
+        original_backup(source, destination)
+
+    monkeypatch.setattr(history_sync_module, "_backup_database", track_backup)
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    result = run_history_sync(_configuration(tmp_path), FakeSupplier(dates), clock=lambda: NOW)
+
+    assert result.state == "completed"
+    assert copied == []
+    assert not tuple((tmp_path / "partitions").glob("*/.*.pending.sqlite3"))
+
+
+def test_initial_sealing_does_not_copy_an_unpublished_orphan_for_rollback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    stable = tmp_path / "partitions/2026/09.sqlite3"
+    stable.parent.mkdir(parents=True)
+    stable.write_bytes(b"unpublished orphan")
+    monkeypatch.setattr(
+        history_sync_module,
+        "_create_partition_rollback",
+        lambda _destination: pytest.fail("unpublished files have no active rollback owner"),
+    )
+
+    result = run_history_sync(_configuration(tmp_path), FakeSupplier(dates), clock=lambda: NOW)
+
+    assert result.state == "completed"
+    assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot is not None
+
+
+def test_sealing_uses_sqlite_backup_when_the_filesystem_cannot_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "partitions/2026/.09.pending.sqlite3"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"checkpointed database")
+    candidate = source.with_name(".09.seal.sqlite3")
+    copied: list[tuple[Path, Path]] = []
+
+    def reject_link(_source: Path, _candidate: Path) -> None:
+        raise OSError
+
+    monkeypatch.setattr(history_sync_module.os, "link", reject_link)
+    monkeypatch.setattr(
+        history_sync_module,
+        "_backup_database",
+        lambda copy_source, copy_candidate: copied.append((copy_source, copy_candidate)),
+    )
+
+    history_sync_module._stage_partition_for_seal(source, candidate)
+
+    assert copied == [(source, candidate)]
+
+
 def test_post_commit_failure_keeps_new_active_and_stable_month(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

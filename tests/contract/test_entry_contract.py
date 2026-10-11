@@ -401,8 +401,8 @@ def test_run_script_isolates_history_download_from_the_desktop_terminal(tmp_path
     assert "--property=MemoryHigh=1792M" in completed.stdout
     assert "--property=MemoryMax=2048M" in completed.stdout
     assert "--property=MemorySwapMax=2048M" in completed.stdout
-    assert "--property=CPUWeight=20" in completed.stdout
-    assert "--property=IOWeight=20" in completed.stdout
+    assert "--property=CPUWeight=100" in completed.stdout
+    assert "--property=IOWeight=100" in completed.stdout
     assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} download")
 
 

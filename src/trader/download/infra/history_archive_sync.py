@@ -806,10 +806,11 @@ def _seal_pending(
             _publish_progress(progress, "sealing_partitions", "started", (index, total), current_item)
             if path.is_file():
                 candidate = path.with_name(f".{month:02d}.seal.sqlite3")
-                _remove_sqlite(candidate)
-                _backup_database(path, candidate)
+                _stage_partition_for_seal(path, candidate)
                 destination = root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3"
-                replacement = _create_partition_rollback(destination)
+                replacement = (
+                    _create_partition_rollback(destination) if (year, month) in pending.active_by_month else None
+                )
                 if replacement is not None:
                     replacements.append(replacement)
                 reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
@@ -824,6 +825,19 @@ def _seal_pending(
         _restore_partition_replacements(tuple(replacements))
         raise
     return _SealedPartitions(tuple(references), tuple(replacements))
+
+
+def _stage_partition_for_seal(source: Path, candidate: Path) -> None:
+    _remove_sqlite(candidate)
+    wal = Path(f"{source}-wal")
+    if not wal.exists() or wal.stat().st_size == 0:
+        try:
+            os.link(source, candidate)
+            _fsync_directory(candidate.parent)
+            return
+        except OSError:
+            candidate.unlink(missing_ok=True)
+    _backup_database(source, candidate)
 
 
 def _create_partition_rollback(destination: Path) -> _PartitionReplacement | None:

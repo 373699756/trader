@@ -106,22 +106,39 @@ def test_month_partition_batches_revision_context_and_uses_specialized_latest_sq
     assert "IS NULL OR" not in latest_sql
 
 
-def test_month_partition_bounds_write_cache_and_releases_committed_file_pages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_month_partition_bounds_write_cache_without_evicting_hot_index_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = tmp_path / "partitions/2026/09.sqlite3"
     statements: list[str] = []
-    released: list[Path] = []
     repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9, statement_trace=statements.append)
     repository.initialize()
     statements.clear()
-    monkeypatch.setattr(partition_module, "_release_file_cache", released.append)
+    monkeypatch.setattr(
+        partition_module,
+        "_release_file_cache",
+        lambda _path: pytest.fail("committed hot index pages were evicted"),
+    )
 
     repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
 
     assert "PRAGMA cache_size=-8192" in statements
     assert "PRAGMA mmap_size=0" in statements
-    assert released == [path]
+
+
+def test_month_partition_seal_scans_rows_without_a_temporary_sort(tmp_path: Path) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9)
+    repository.initialize()
+    repository.save_revisions(tuple(_revision(date(2026, 9, day), 1, 10.0 + day) for day in range(1, 16)))
+
+    with sqlite3.connect(path) as connection:
+        plan = tuple(
+            str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + partition_module._ALL_REVISION_SCAN_SQL)
+        )
+
+    assert not any("TEMP B-TREE" in detail for detail in plan)
 
 
 @pytest.mark.parametrize("sequence", (1, 2, 3, 4))
@@ -234,6 +251,26 @@ def test_sealed_month_partition_has_stable_hash_and_fails_closed_on_tamper(tmp_p
         handle.write(b"tamper")
     with pytest.raises(HistoryMonthPartitionError, match="hash"):
         SQLiteHistoryMonthPartitionRepository.verify(sealed_path, reference)
+
+
+def test_month_partition_seal_does_not_repeat_full_verification_after_atomic_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9)
+    repository.initialize()
+    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+
+    monkeypatch.setattr(
+        SQLiteHistoryMonthPartitionRepository,
+        "verify",
+        classmethod(lambda _cls, _path, _reference, _progress=None: pytest.fail("duplicate verification")),
+    )
+
+    reference = repository.seal()
+
+    assert reference.row_count == 1
 
 
 def test_partition_verification_bounds_sqlite_and_file_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

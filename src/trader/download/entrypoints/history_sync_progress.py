@@ -117,7 +117,9 @@ class StderrHistorySyncProgress:
     def _should_suppress(self, progress: HistorySyncProgress) -> bool:
         if progress.stage == "supplier_routing":
             return True
-        if progress.state in {"started", "waiting"}:
+        if progress.state in {"started", "waiting"} and not (
+            progress.stage == "sealing_partitions" and progress.state == "started"
+        ):
             return True
         if progress.stage in _DAILY_STAGES and progress.state == "completed":
             return True

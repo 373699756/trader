@@ -165,8 +165,8 @@ if [[ "$MODE" == "download" ]]; then
         --property=MemoryHigh=1792M \
         --property=MemoryMax=2048M \
         --property=MemorySwapMax=2048M \
-        --property=CPUWeight=20 \
-        --property=IOWeight=20 \
+        --property=CPUWeight=100 \
+        --property=IOWeight=100 \
         -- "$ENTRYPOINT" --config "$CONFIG_PATH" download
     fi
     printf '%s\n' '警告：当前用户 systemd scope 不可用；历史下载仍可断点续传，但不能隔离桌面终端的内存压力。' >&2
