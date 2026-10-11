@@ -121,12 +121,14 @@ def test_unknown_price_gap_breaks_training_window_and_resumes_with_tencent(tmp_p
     control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
     snapshot = control.load_state().active_snapshot
     reader = SQLiteHistoryArchiveReader(tmp_path)
-    windows = tuple(reader.iter_training_windows(snapshot, dates, {"600001"}))
-    assert windows and all(gap not in {point.trade_date for point in window.points} for window in windows)
+    rows = tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
+    assert next(row for row in rows if row.trade_date == gap).point is None
     assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
     resumed = FakeSupplier(dates, industry="bank")
     result = run_history_sync(config, resumed, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 0
+    snapshot = control.load_state().active_snapshot
+    assert next(row for row in reader.iter_training_rows(snapshot, dates, {"600001"}) if row.trade_date == gap).point
     assert gap in resumed.calls[0][1]
     assert "baostock_prices" not in resumed.events
     assert run_history_sync(config, resumed, clock=lambda: NOW).state == "already_current"
@@ -239,10 +241,10 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
     assert run_history_sync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
     snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_published_state().snapshot
     reader = SQLiteHistoryArchiveReader(tmp_path)
-    assert tuple(reader.iter_training_windows(snapshot, dates, {"600001"}))
+    assert tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
     history_industry_mapping_path(tmp_path).unlink()
     with pytest.raises(HistoryArchiveReadError, match="history_reference_unavailable"):
-        tuple(reader.iter_training_windows(snapshot, dates, {"600001"}))
+        tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
 
 
 def test_expired_baostock_budget_leaves_gaps_and_does_not_call_supplier(tmp_path, monkeypatch):

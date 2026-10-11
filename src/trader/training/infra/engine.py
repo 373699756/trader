@@ -53,8 +53,8 @@ from trader.training.infra.model_bundles.bundle_repository import (
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_fitting import MODEL_FITTING_PARAMETERS, fit_industry_models
 from trader.training.infra.sample_builder import (
+    TrainingHistorySource,
     TrainingSampleBuildRequest,
-    TrainingWindowArchive,
     build_training_samples,
 )
 from trader.training.infra.sample_repository import (
@@ -67,7 +67,7 @@ from trader.training.infra.sample_repository import (
 TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
 
 
-class _TrainingInputArchive(TrainingWindowArchive, Protocol):
+class _TrainingInputArchive(TrainingHistorySource, Protocol):
     snapshot: HistoryTrainingInputSnapshot
 
     @property
@@ -210,11 +210,12 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
     _publish(request.progress, TomorrowTrainingProgress("input_read", "completed", 1, 1))
     _publish(request.progress, TomorrowTrainingProgress("training_preparation", "started", 0, 1))
     try:
-        # Training owns a profile-specific lock and may read an immutable
-        # snapshot while history maintenance publishes a newer one.  The
-        # archive itself remains protected by snapshot identity checks.
+        # Full-history maintenance and either training profile are deliberately
+        # serialized: concurrent multi-gigabyte scans make a rotating disk seek
+        # bound even though the published snapshot itself is immutable.
         training_lock = request.train_root / ".training.lock"
-        with HistoryMaintenanceLock(training_lock):
+        with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"), HistoryMaintenanceLock(training_lock):
+            archive = SQLiteHistoryTrainingInputArchive.open(request.history_root)
             try:
                 require_history_archive_repack_inactive(archive.archive_root)
             except HistoryArchiveRepackFenceError:

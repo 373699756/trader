@@ -100,7 +100,7 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
     )
 
 
-def test_archive_routes_single_day_code_window_and_cross_month_training_windows(tmp_path: Path) -> None:
+def test_history_reader_routes_single_day_code_window_and_cross_month_training_rows(tmp_path: Path) -> None:
     root = tmp_path / "history"
     dates = tuple(date(2026, 8, 1) + timedelta(days=offset) for offset in range(62))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
@@ -113,18 +113,20 @@ def test_archive_routes_single_day_code_window_and_cross_month_training_windows(
     assert tuple(row.trade_date for row in code_rows) == dates[-61:]
     assert tuple(archive.iter_snapshot_revisions(snapshot)) == rows
 
-    windows = tuple(archive.iter_training_windows(snapshot, dates, {"600001", "600002"}))
-    assert len(windows) == 4
-    assert all(len(window.points) == 61 for window in windows)
-    current_windows = tuple(archive.iter_training_windows(snapshot, dates, {"600001"}))
-    assert len(current_windows) == 2
-    assert {window.code for window in current_windows} == {"600001"}
+    training_rows = tuple(archive.iter_training_rows(snapshot, dates, {"600001", "600002"}))
+    assert len(training_rows) == 124
+    assert tuple((row.trade_date, row.code) for row in training_rows) == tuple(
+        (day, code) for day in dates for code in ("600001", "600002")
+    )
+    current_rows = tuple(archive.iter_training_rows(snapshot, dates, {"600001"}))
+    assert len(current_rows) == 62
+    assert {row.code for row in current_rows} == {"600001"}
 
     with pytest.raises(ValueError, match="cutoff"):
         archive.read_day(dates[-1] + timedelta(days=1), snapshot)
     with pytest.raises(HistoryArchiveReadError, match="cover"):
         tuple(
-            archive.iter_training_windows(
+            archive.iter_training_rows(
                 replace(snapshot, partitions=snapshot.partitions[:-1]),
                 dates,
                 {"600001", "600002"},
@@ -133,7 +135,7 @@ def test_archive_routes_single_day_code_window_and_cross_month_training_windows(
 
 
 @pytest.mark.slow
-def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows(tmp_path: Path) -> None:
+def test_history_reader_streams_2000_sessions_without_directory_scan_or_unbounded_state(tmp_path: Path) -> None:
     root = tmp_path / "history"
     dates = tuple(date(2020, 1, 1) + timedelta(days=offset) for offset in range(2000))
     rows = tuple(_revision("600001", day) for day in dates)
@@ -148,23 +150,13 @@ def test_archive_reads_2000_sessions_without_directory_scan_or_unbounded_windows
         replayed_rows.append(row)
         if peak_descriptors is not None:
             peak_descriptors = max(peak_descriptors, len(tuple(descriptor_root.iterdir())))
-    windows = archive.iter_training_windows(snapshot, dates, {"600001"})
-    window_count = 0
-    final_window = None
-    for current_window in windows:
-        window_count += 1
-        final_window = current_window
+    training_rows = tuple(archive.iter_training_rows(snapshot, dates, {"600001"}))
 
     assert tuple(replayed_rows) == rows
     assert len(snapshot.partitions) == len(route_history_months(dates[0], dates[-1]))
-    assert window_count == 1940
-    assert final_window is not None
-    assert len(final_window.points) == 61
-    assert final_window.trade_date == dates[-1]
-    long_windows = tuple(archive.iter_training_windows(snapshot, dates, {"600001"}, window_sessions=251))
-    assert len(long_windows) == 1750
-    assert len(long_windows[-1].points) == 251
-    assert long_windows[-1].trade_date == dates[-1]
+    assert len(training_rows) == 2000
+    assert training_rows[-1].trade_date == dates[-1]
+    assert all(row.point is not None for row in training_rows)
     assert len(archive.read_code_window("600001", dates[-251:], snapshot)) == 251
     if baseline_descriptors is not None and peak_descriptors is not None:
         assert peak_descriptors <= baseline_descriptors + 4

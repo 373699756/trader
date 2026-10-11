@@ -17,7 +17,7 @@ from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistorySecurityIdentity,
 )
-from trader.download.domain.history_revision import HistoryTrainingWindow
+from trader.download.domain.history_revision import HistoryTrainingRow
 from trader.download.infra.history_archive_reader import (
     HistoryArchiveReadError,
     SQLiteHistoryArchiveReader,
@@ -168,23 +168,20 @@ class SQLiteHistoryTrainingInputArchive:
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
-    def iter_training_windows(
+    def iter_training_rows(
         self,
         allowed_dates: frozenset[date],
         progress: Callable[[int], None] | None = None,
-        *,
-        window_sessions: int = 61,
-    ) -> Iterator[HistoryTrainingWindow]:
+    ) -> Iterator[HistoryTrainingRow]:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         if not dates or frozenset(dates) != allowed_dates:
             raise HistoryTrainingInputError("history_training_dates_invalid")
         try:
-            yield from self._archive.iter_training_windows(
+            yield from self._archive.iter_training_rows(
                 self._active,
                 dates,
                 self._codes,
                 progress,
-                window_sessions=window_sessions,
             )
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc

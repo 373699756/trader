@@ -176,7 +176,7 @@ def test_training_input_reuses_download_seal_after_hash_verification(tmp_path: P
     assert {item[-1] for item in progress} == {"hash"}
 
 
-def test_training_input_streams_windows_in_date_code_order_without_per_code_queries(tmp_path: Path) -> None:
+def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Path) -> None:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
     configuration = HistorySyncConfiguration(archive_root, sessions=62, reread_sessions=2, minimum_free_bytes=0)
@@ -184,10 +184,10 @@ def test_training_input_streams_windows_in_date_code_order_without_per_code_quer
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
     progress: list[int] = []
 
-    windows = tuple(archive.iter_training_windows(frozenset(dates), progress.append))
+    rows = tuple(archive.iter_training_rows(frozenset(dates), progress.append))
 
-    assert tuple(window.trade_date for window in windows) == dates[60:]
-    assert all(len(window.points) == 61 for window in windows)
+    assert tuple(row.trade_date for row in rows) == dates
+    assert all(row.point is not None and row.industry == "银行" for row in rows)
     assert progress[-1] == len(dates)
     assert archive.training_row_upper_bound(frozenset(dates)) >= progress[-1]
 

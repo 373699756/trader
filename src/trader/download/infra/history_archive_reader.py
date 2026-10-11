@@ -6,9 +6,8 @@ import calendar
 import heapq
 import re
 import threading
-from collections import deque
 from collections.abc import Callable, Collection, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Literal
@@ -16,11 +15,9 @@ from typing import Literal
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import (
-    HISTORY_TRAINING_WINDOW_SESSIONS,
     MAX_HISTORY_TRAINING_WINDOW_SESSIONS,
     HistoryRevision,
-    HistoryTrainingPoint,
-    HistoryTrainingWindow,
+    HistoryTrainingRow,
 )
 from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
@@ -436,19 +433,18 @@ class SQLiteHistoryArchiveReader:
                 index.apply(row) for row in repository.read_code(code, start, end, snapshot_sequence=snapshot.sequence)
             )
 
-    def iter_training_windows(
+    def iter_training_rows(
         self,
         snapshot: HistoryActiveSnapshot,
         calendar_dates: tuple[date, ...],
         codes: Collection[str],
         progress: Callable[[int], None] | None = None,
-        *,
-        window_sessions: int = HISTORY_TRAINING_WINDOW_SESSIONS,
-    ) -> Iterator[HistoryTrainingWindow]:
+    ) -> Iterator[HistoryTrainingRow]:
+        """Stream only the typed fields consumed by training-owned rolling state."""
+
         dates = tuple(calendar_dates)
         if (
             not dates
-            or not HISTORY_TRAINING_WINDOW_SESSIONS <= window_sessions <= MAX_HISTORY_TRAINING_WINDOW_SESSIONS
             or len(dates) > BAOSTOCK_MAX_SESSIONS
             or dates != tuple(sorted(set(dates)))
             or dates[-1] > snapshot.data_cutoff
@@ -463,51 +459,30 @@ class SQLiteHistoryArchiveReader:
         )
         if available_months != expected_months:
             raise HistoryArchiveReadError("history snapshot does not cover the active calendar")
-        position = {day: index for index, day in enumerate(dates)}
-        buffers: dict[str, deque[HistoryTrainingPoint]] = {}
-        previous_positions: dict[str, int] = {}
+        allowed_dates = frozenset(dates)
         processed_rows = 0
         reference_index = self.reference_index(snapshot)
-        current_revisions = (
-            revision
-            for revision in self._iter_price_revisions(dates[0], dates[-1], snapshot)
-            if revision.code in allowed_codes
-        )
-        for revision in current_revisions:
-            processed_rows += 1
-            current_position = position.get(revision.trade_date)
-            if current_position is None:
-                raise HistoryArchiveReadError("history revision is outside the active calendar")
-            buffer = buffers.setdefault(
-                revision.code,
-                deque(maxlen=window_sessions),
-            )
-            previous_position = previous_positions.get(revision.code)
-            if previous_position is not None and current_position != previous_position + 1:
-                buffer.clear()
-            industry = reference_index.industry_on(revision.code, revision.trade_date)
-            training_point = (
-                revision.training_point if reference_index.eligible(revision.code) and industry is not None else None
-            )
-            if training_point is None:
-                buffer.clear()
-            else:
-                buffer.append(training_point)
-                if len(buffer) == window_sessions:
-                    assert industry is not None
-                    assert revision.cell.unadjusted is not None
-                    yield HistoryTrainingWindow(
-                        revision.code,
-                        revision.board,
-                        industry.industry,
-                        False,
-                        revision.cell.unadjusted.trading_status,
-                        tuple(buffer),
-                        window_sessions,
-                    )
-            previous_positions[revision.code] = current_position
-            if progress is not None and processed_rows % 512 == 0:
-                progress(processed_rows)
+        for year, month in expected_months:
+            repository = self._verified_repository(self._reference(snapshot, year, month))
+            for row in repository.iter_training_rows(
+                dates[0],
+                dates[-1],
+                snapshot_sequence=snapshot.sequence,
+            ):
+                if row.code not in allowed_codes:
+                    continue
+                processed_rows += 1
+                if row.trade_date not in allowed_dates:
+                    raise HistoryArchiveReadError("history training row is outside the active calendar")
+                industry = reference_index.industry_on(row.code, row.trade_date)
+                yield replace(
+                    row,
+                    industry=(
+                        industry.industry if reference_index.eligible(row.code) and industry is not None else None
+                    ),
+                )
+                if progress is not None and processed_rows % 512 == 0:
+                    progress(processed_rows)
         if progress is not None:
             progress(processed_rows)
 

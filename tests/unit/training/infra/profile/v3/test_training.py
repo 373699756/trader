@@ -10,7 +10,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     build_baostock_training_split,
 )
-from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingWindow
+from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_control_repository import HistoryMaintenanceAlreadyRunningError
 from trader.recommendation.domain.publication.models import Strategy
@@ -276,11 +276,12 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
         return archive
 
     class BusyMaintenanceLock:
-        def __init__(self, _path: Path) -> None:
-            pass
+        def __init__(self, path: Path) -> None:
+            self._path = path
 
         def __enter__(self) -> None:
-            raise HistoryMaintenanceAlreadyRunningError("busy")
+            if self._path.name == ".maintenance.lock":
+                raise HistoryMaintenanceAlreadyRunningError("busy")
 
         def __exit__(self, *_args: object) -> None:
             pass
@@ -336,10 +337,9 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
             return 66
 
         @staticmethod
-        def iter_training_windows(_dates, progress, *, window_sessions=61):
-            assert window_sessions == 61
-            for offset in range(6):
-                yield _training_window(rows[offset : offset + 61])
+        def iter_training_rows(_dates, progress):
+            for point in rows:
+                yield HistoryTrainingRow("600000", point.trade_date, "main", "银行", point)
             progress(66)
 
     with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
@@ -463,7 +463,3 @@ def _industry_model(width: int) -> dict[str, object]:
 
 def _training_point(day: date, close: float) -> HistoryTrainingPoint:
     return HistoryTrainingPoint(day, close, 1_000.0)
-
-
-def _training_window(points: tuple[HistoryTrainingPoint, ...]) -> HistoryTrainingWindow:
-    return HistoryTrainingWindow("600000", "main", "银行", False, "trading", points)

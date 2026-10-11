@@ -4,8 +4,8 @@ from trader.training.application.tomorrow_training import TomorrowTrainingProgre
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training_sample_repository import SQLiteV3TrainingSampleRepository
 from trader.training.infra.sample_builder import (
+    TrainingHistorySource,
     TrainingSampleBuildRequest,
-    TrainingWindowArchive,
     aligned_sample_dates,
     residualize_sample_day,
     training_alpha_target,
@@ -14,7 +14,7 @@ from trader.training.infra.sample_builder import build_training_samples as _buil
 
 
 def build_training_samples(
-    archive: TrainingWindowArchive,
+    archive: TrainingHistorySource,
     codes: tuple[str, ...],
     window: TomorrowTrainingWindow,
     repository: SQLiteV3TrainingSampleRepository,
@@ -34,7 +34,7 @@ def build_training_samples(
 
 
 __all__ = [
-    "TrainingWindowArchive",
+    "TrainingHistorySource",
     "aligned_sample_dates",
     "build_training_samples",
     "residualize_sample_day",

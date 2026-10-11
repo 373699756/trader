@@ -49,6 +49,7 @@ from trader.download.domain.history_sync import (
     HistoryTwoStageSupplier,
 )
 from trader.download.domain.published_history import PublishedHistoryWindow
+from trader.download.infra.history_active_gap_scan import scan_active_price_gaps
 from trader.download.infra.history_archive_reader import route_history_months
 from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackFenceError,
@@ -208,7 +209,15 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
         ):
             raise RuntimeError("supplier_universe_regressed")
-        previous_gaps = _previous_price_gaps(root, active, context)
+        previous_gaps = scan_active_price_gaps(
+            root,
+            active,
+            context,
+            cancel_requested,
+            lambda state, completed, total, item: _publish_progress(
+                progress, "history_active_gaps", state, (completed, total), item
+            ),
+        )
         if _is_current(active, calendar, universe) and not previous_gaps:
             write_history_reference(history_industry_mapping_path(root), reference)
             return _status("already_current", None, configuration, active, observed_at)
@@ -1020,23 +1029,6 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _previous_price_gaps(
-    root: Path, active: HistoryActiveSnapshot | None, context: HistorySupplierContext
-) -> dict[str, tuple[date, ...]]:
-    if active is None:
-        return {}
-    gaps: dict[str, list[date]] = defaultdict(list)
-    allowed_codes = {item.code for item in context.universe}
-    allowed_dates = frozenset(context.calendar.open_dates)
-    for reference in active.partitions:
-        year, month = _partition_month(reference)
-        partition = SQLiteHistoryMonthPartitionRepository(root / reference.relative_path, year, month)
-        for code, day in partition.missing_price_dates(active.sequence):
-            if code in allowed_codes and day in allowed_dates:
-                gaps[code].append(day)
-    return {code: tuple(sorted(days)) for code, days in gaps.items()}
 
 
 def _pending_price_gap_counts_for_codes(

@@ -13,8 +13,9 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
+from trader.download.domain.baostock_daily import BaoStockBoard
 from trader.download.domain.history_control import HistorySnapshotPartition
-from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_revision_codec import (
     decode_history_revision,
@@ -145,6 +146,26 @@ _LATEST_CODE_BOARD_SQL = _LATEST_WINDOW.format(
 _PUBLISHED_CODE_SQL = _LATEST_WINDOW.format(
     columns=_DAILY_COLUMNS, observation_filter="      AND code = ?", record_filter=""
 )
+_TRAINING_RANGE_SQL = """
+SELECT records.trade_date,
+       records.code,
+       records.board,
+       json_extract(records.payload_json, '$.cell.unadjusted.trading_status'),
+       json_extract(records.payload_json, '$.cell.qfq.trading_status'),
+       json_extract(records.payload_json, '$.cell.qfq.close_price'),
+       json_extract(records.payload_json, '$.cell.qfq.amount')
+FROM daily_records AS records
+WHERE records.trade_date BETWEEN ? AND ?
+  AND records.revision_id = (
+      SELECT observed.revision_id
+      FROM daily_observations AS observed
+      WHERE observed.code = records.code AND observed.trade_date = records.trade_date
+        AND observed.sync_sequence <= ?
+      ORDER BY observed.sync_sequence DESC
+      LIMIT 1
+  )
+ORDER BY records.trade_date, records.code
+"""
 _COUNT_CODE_BATCH_SIZE = 500
 _ALL_REVISION_SCAN_SQL = (
     "SELECT trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash FROM daily_records"
@@ -412,6 +433,32 @@ class SQLiteHistoryMonthPartitionRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month code-ordered query failed") from exc
 
+    def iter_training_rows(
+        self,
+        start: date,
+        end: date,
+        *,
+        snapshot_sequence: int,
+    ) -> Iterator[HistoryTrainingRow]:
+        """Stream the narrow training projection without revision hashes or temporary sorts."""
+
+        if start > end or snapshot_sequence < 1:
+            raise ValueError("history month training range is invalid")
+        try:
+            with closing(self._read_connection()) as connection:
+                self._require_metadata(connection)
+                cursor = connection.execute(
+                    _TRAINING_RANGE_SQL,
+                    (start.isoformat(), end.isoformat(), snapshot_sequence),
+                )
+                while rows := cursor.fetchmany(4_096):
+                    for row in rows:
+                        yield _decode_training_row(row)
+        except HistoryMonthPartitionError:
+            raise
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryMonthPartitionError("history month training query failed") from exc
+
     def iter_published_cells(
         self,
         start: date,
@@ -589,7 +636,7 @@ class SQLiteHistoryMonthPartitionRepository:
 
     @classmethod
     def verify_published_bytes(
-        _cls,
+        cls,
         path: Path,
         reference: HistorySnapshotPartition,
         progress: HistoryPartitionVerificationProgress | None = None,
@@ -875,6 +922,45 @@ def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
     ):
         raise HistoryMonthPartitionError("history month row identity is inconsistent")
     return value
+
+
+def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
+    if len(row) != 7:
+        raise HistoryMonthPartitionError("history month training row shape is invalid")
+    trade_date_value, code, board, raw_status, qfq_status, qfq_close, qfq_amount = row
+    if (
+        not isinstance(trade_date_value, str)
+        or not isinstance(code, str)
+        or not isinstance(board, str)
+        or raw_status not in {None, "trading", "suspended"}
+        or qfq_status not in {None, "trading", "suspended"}
+    ):
+        raise HistoryMonthPartitionError("history month training row fields are invalid")
+    trade_date = date.fromisoformat(trade_date_value)
+    point = (
+        HistoryTrainingPoint(
+            trade_date,
+            _training_number(qfq_close),
+            _training_number(qfq_amount),
+        )
+        if raw_status == qfq_status == "trading"
+        else None
+    )
+    return HistoryTrainingRow(
+        code,
+        trade_date,
+        cast(BaoStockBoard, board),
+        None,
+        point,
+    )
+
+
+def _training_number(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HistoryMonthPartitionError("history month training number is invalid")
+    return float(value)
 
 
 def _sha256_file(

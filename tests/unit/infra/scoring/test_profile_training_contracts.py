@@ -60,10 +60,10 @@ def test_profile_training_request_rejects_a_head_owned_by_another_profile(tmp_pa
         )
 
 
-def test_v2_sample_scan_requests_its_251_session_window(tmp_path: Path) -> None:
+def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
-    requested: list[int] = []
+    requested: list[frozenset[date]] = []
 
     class Archive:
         snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates))
@@ -73,8 +73,8 @@ def test_v2_sample_scan_requests_its_251_session_window(tmp_path: Path) -> None:
             return 0
 
         @staticmethod
-        def iter_training_windows(_dates, progress, *, window_sessions=61):
-            requested.append(window_sessions)
+        def iter_training_rows(readable_dates, progress):
+            requested.append(readable_dates)
             progress(0)
             return iter(())
 
@@ -89,4 +89,4 @@ def test_v2_sample_scan_requests_its_251_session_window(tmp_path: Path) -> None:
             )
         )
 
-    assert requested == [251]
+    assert requested == [TomorrowTrainingWindow(split).readable_dates]

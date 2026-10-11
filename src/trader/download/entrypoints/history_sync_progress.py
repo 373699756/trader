@@ -21,6 +21,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_routing": "下载来源",
     "tencent_history": "Tencent历史下载",
     "history_st_reference": "历史ST名单",
+    "history_active_gaps": "活动历史缺口",
     "history_gap_inventory": "统计历史缺口",
     "baostock_gap_fill": "BaoStock补缺",
     "persisting_prices": "历史价格整理",
@@ -47,6 +48,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "baostock_gap_fill": "股票",
     "persisting_prices": "股票",
     "sealing_partitions": "月份",
+    "history_active_gaps": "月份",
 }
 _RESULT_LABELS = {
     "completed": "同步完成",
@@ -59,6 +61,7 @@ _RESULT_LABELS = {
 _COUNT_STAGES = frozenset(
     {
         "history_st_reference",
+        "history_active_gaps",
         "downloading_codes",
         "tencent_history",
         "baostock_gap_fill",
@@ -118,7 +121,7 @@ class StderrHistorySyncProgress:
         if progress.stage == "supplier_routing":
             return True
         if progress.state in {"started", "waiting"} and not (
-            progress.stage == "sealing_partitions" and progress.state == "started"
+            progress.stage in {"history_active_gaps", "sealing_partitions"} and progress.state == "started"
         ):
             return True
         if progress.stage in _DAILY_STAGES and progress.state == "completed":

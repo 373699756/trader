@@ -31,6 +31,7 @@ HistorySyncProgressStage = Literal[
     "supplier_routing",
     "tencent_history",
     "history_st_reference",
+    "history_active_gaps",
     "history_gap_inventory",
     "baostock_gap_fill",
     "persisting_prices",

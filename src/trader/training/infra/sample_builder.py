@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Callable, Collection, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol, cast
 
-from trader.download.domain.history_revision import HistoryTrainingWindow
+from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.market.feature_contracts import (
     QfqPriceAnchors,
     calculate_profile_qfq_alpha,
@@ -31,23 +32,21 @@ from trader.training.infra.sample_repository import (
 )
 
 
-class TrainingWindowArchive(Protocol):
+class TrainingHistorySource(Protocol):
     snapshot: HistoryTrainingInputSnapshot
 
     def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int: ...
 
-    def iter_training_windows(
+    def iter_training_rows(
         self,
         allowed_dates: frozenset[date],
         progress: Callable[[int], None] | None = None,
-        *,
-        window_sessions: int = 61,
-    ) -> Iterator[HistoryTrainingWindow]: ...
+    ) -> Iterator[HistoryTrainingRow]: ...
 
 
 @dataclass(frozen=True)
 class TrainingSampleBuildRequest:
-    archive: TrainingWindowArchive
+    archive: TrainingHistorySource
     codes: tuple[str, ...]
     window: TomorrowTrainingWindow
     repository: SQLiteTrainingSampleRepository
@@ -76,6 +75,12 @@ class _PendingDay:
 
 
 @dataclass
+class _RollingCodeState:
+    points: deque[HistoryTrainingPoint]
+    previous_position: int | None = None
+
+
+@dataclass
 class _SampleBuildState:
     repository: SQLiteTrainingSampleRepository
     profile: TrainedProfileContract
@@ -87,6 +92,7 @@ class _SampleBuildState:
     converted_samples: int = 0
     processed_rows: int = 0
     pending_days: list[_PendingDay] = field(default_factory=list)
+    rolling_codes: dict[str, _RollingCodeState] = field(default_factory=dict)
     current_day: date | None = None
     current_position: int = -1
 
@@ -97,29 +103,41 @@ class _SampleBuildState:
             TomorrowTrainingProgress("history_conversion", "running", value, self.total_rows, self.converted_samples),
         )
 
-    def accept(self, training_window: HistoryTrainingWindow) -> None:
-        code = training_window.code
+    def accept(self, row: HistoryTrainingRow) -> None:
+        code = row.code
         if code not in self.allowed_codes:
             raise HistoryTrainingInputError("history_code_outside_active_universe")
-        position = self.calendar_positions[training_window.trade_date]
-        if self.current_day is not None and training_window.trade_date != self.current_day:
+        position = self.calendar_positions[row.trade_date]
+        if self.current_day is not None and row.trade_date != self.current_day:
             self.flush_matured(self.current_position)
-        if training_window.trade_date != self.current_day:
-            self.current_day = training_window.trade_date
+        if row.trade_date != self.current_day:
+            self.current_day = row.trade_date
             self.current_position = position
-            self.pending_days.append(_PendingDay(training_window.trade_date, position, {}))
-        self._record_future_close(training_window, position)
-        candidate = _pending_sample(training_window, position, self.readable_dates, self.profile)
-        if candidate is not None:
-            self.pending_days[-1].samples[code] = candidate
+            self.pending_days.append(_PendingDay(row.trade_date, position, {}))
+        rolling = self.rolling_codes.setdefault(
+            code,
+            _RollingCodeState(deque(maxlen=self.profile.history_sessions)),
+        )
+        if rolling.previous_position is not None and position != rolling.previous_position + 1:
+            rolling.points.clear()
+        if row.point is None or row.industry is None:
+            rolling.points.clear()
+        else:
+            rolling.points.append(row.point)
+            if len(rolling.points) == self.profile.history_sessions:
+                self._record_future_close(code, row.point, position)
+                candidate = _pending_sample(row, rolling.points, position, self.readable_dates, self.profile)
+                if candidate is not None:
+                    self.pending_days[-1].samples[code] = candidate
+        rolling.previous_position = position
 
-    def _record_future_close(self, training_window: HistoryTrainingWindow, position: int) -> None:
-        close = _eligible_future_close(training_window)
+    def _record_future_close(self, code: str, point: HistoryTrainingPoint, position: int) -> None:
+        close = _eligible_future_close(point)
         if close is None:
             return
         for pending_day in self.pending_days[:-1]:
             horizon = position - pending_day.calendar_position
-            candidate = pending_day.samples.get(training_window.code)
+            candidate = pending_day.samples.get(code)
             if candidate is not None and 1 <= horizon <= 5:
                 candidate.future_returns[horizon - 1] = close / candidate.close - 1.0
 
@@ -158,12 +176,11 @@ def build_training_samples(request: TrainingSampleBuildRequest) -> None:
     _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows))
     _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows))
 
-    for training_window in request.archive.iter_training_windows(
+    for row in request.archive.iter_training_rows(
         request.window.readable_dates,
         state.report_scanned,
-        window_sessions=request.profile.history_sessions,
     ):
-        state.accept(training_window)
+        state.accept(row)
 
     state.flush_matured(state.current_position, all_days=True)
     _publish(
@@ -191,28 +208,26 @@ def build_training_samples(request: TrainingSampleBuildRequest) -> None:
     _publish(request.progress, TomorrowTrainingProgress("sample_index", "completed", 1, 1))
 
 
-def _eligible_future_close(training_window: HistoryTrainingWindow) -> float | None:
-    current = training_window.points[-1]
-    if current.qfq_close_price is None or not math.isfinite(current.qfq_close_price) or current.qfq_close_price <= 0.0:
+def _eligible_future_close(point: HistoryTrainingPoint) -> float | None:
+    if point.qfq_close_price is None or not math.isfinite(point.qfq_close_price) or point.qfq_close_price <= 0.0:
         return None
-    return float(current.qfq_close_price)
+    return float(point.qfq_close_price)
 
 
 def _pending_sample(
-    training_window: HistoryTrainingWindow,
+    row: HistoryTrainingRow,
+    points: deque[HistoryTrainingPoint],
     calendar_position: int,
     readable_dates: frozenset[date],
     profile: TrainedProfileContract,
 ) -> _PendingSample | None:
-    points = training_window.points
-    if any(point.trade_date not in readable_dates for point in points):
+    if points[0].trade_date not in readable_dates or row.trade_date not in readable_dates:
         return None
-    if training_window.is_st or training_window.trading_status != "trading":
-        return None
-    close = _eligible_future_close(training_window)
+    current = points[-1]
+    close = _eligible_future_close(current)
     if close is None:
         return None
-    amounts = tuple(point.qfq_amount for point in points[-20:])
+    amounts = tuple(points[index].qfq_amount for index in range(len(points) - 20, len(points)))
     if any(amount is None or not math.isfinite(amount) or amount <= 0.0 for amount in amounts):
         return None
     anchor_horizons = (1, 3, 5, *profile.momentum_horizons)
@@ -228,11 +243,11 @@ def _pending_sample(
     if any(raw_features.missing_mask):
         return None
     return _PendingSample(
-        training_window.code,
-        training_window.trade_date,
+        row.code,
+        row.trade_date,
         calendar_position,
-        training_window.board,
-        training_window.industry,
+        row.board,
+        cast(str, row.industry),
         math.fsum(cast(float, amount) for amount in amounts) / 20.0,
         raw_features.require_complete(),
         close,
@@ -341,7 +356,7 @@ def _publish(progress: TomorrowTrainingProgressPort | None, update: TomorrowTrai
 
 
 __all__ = [
-    "TrainingWindowArchive",
+    "TrainingHistorySource",
     "TrainingSampleBuildRequest",
     "aligned_sample_dates",
     "build_training_samples",

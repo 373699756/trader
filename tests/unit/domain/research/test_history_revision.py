@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
-from datetime import date, timedelta
+from datetime import date
 
 import pytest
 
@@ -9,7 +9,7 @@ from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDai
 from trader.download.domain.history_revision import (
     HistoryRevision,
     HistoryTrainingPoint,
-    HistoryTrainingWindow,
+    HistoryTrainingRow,
 )
 
 
@@ -52,20 +52,18 @@ def test_monthly_revision_has_content_addressed_identity_and_typed_training_row(
     assert replay.content_hash != revision.content_hash
     assert revision.training_row is not None
     assert revision.training_row.industry == "bank"
-    assert revision.training_point == HistoryTrainingPoint(date(2026, 9, 10), 10.2, 1000.0)
     with pytest.raises(FrozenInstanceError):
         revision.board = "star"  # type: ignore[misc]
     with pytest.raises(ValueError, match="industry"):
         replace(revision, industry_classification=None)
 
 
-def test_training_window_requires_exact_consecutive_code_rows() -> None:
-    rows = tuple(_revision(date(2026, 1, 1) + timedelta(days=offset)).training_point for offset in range(61))
-    complete_rows = tuple(row for row in rows if row is not None)
-    window = HistoryTrainingWindow("600001", "main", "bank", False, "trading", complete_rows)
+def test_training_row_requires_matching_typed_point() -> None:
+    day = date(2026, 9, 10)
+    point = HistoryTrainingPoint(day, 10.2, 1000.0)
+    row = HistoryTrainingRow("600001", day, "main", " bank ", point)
 
-    assert len(window.points) == 61
-    assert window.code == "600001"
-    assert window.trade_date == complete_rows[-1].trade_date
-    with pytest.raises(ValueError, match="61"):
-        HistoryTrainingWindow("600001", "main", "bank", False, "trading", complete_rows[:-1])
+    assert row.industry == "bank"
+    assert row.point == point
+    with pytest.raises(ValueError, match="invalid"):
+        HistoryTrainingRow("600001", date(2026, 9, 11), "main", "bank", point)

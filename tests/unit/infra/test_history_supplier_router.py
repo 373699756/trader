@@ -230,7 +230,7 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     training = SQLiteHistoryTrainingInputArchive.open(config.archive_root)
     assert training.snapshot.training_codes == ("600001",)
     assert training.count_training_rows(frozenset(dates)) == len(dates)
-    assert tuple(window.code for window in training.iter_training_windows(frozenset(dates))) == ("600001",)
+    assert {row.code for row in training.iter_training_rows(frozenset(dates))} == {"600001"}
     industry_report = audit_archived_historical_industry_facts(config.archive_root)
     assert industry_report.sources[0].sampled_codes == 1
     assert len(industry_report.merged_fact_hashes) == 1
@@ -399,3 +399,15 @@ def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
         )
     )
     assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | Tencent失败 0 股" in capsys.readouterr().err
+
+
+def test_active_gap_scan_prints_the_month_before_the_query_starts(capsys):
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0)
+
+    progress.publish(HistorySyncProgress("history_active_gaps", "started", 88, 100, "2025-11"))
+    progress.publish(HistorySyncProgress("history_active_gaps", "completed", 89, 100, "2025-11"))
+
+    assert capsys.readouterr().err.splitlines() == [
+        "00:00:00 | 活动历史缺口 | 开始 | 88/100 (88.00%) | 月份 2025-11",
+        "00:00:00 | 活动历史缺口 | 完成 | 89/100 (89.00%) | 月份 2025-11",
+    ]

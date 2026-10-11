@@ -195,6 +195,29 @@ def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
     assert not any("TEMP B-TREE" in detail for detail in plan)
 
 
+def test_training_stream_projects_latest_points_without_revision_hashes_or_temporary_sort(tmp_path: Path) -> None:
+    path = tmp_path / "09.sqlite3"
+    statements: list[str] = []
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9, statement_trace=statements.append)
+    repository.initialize()
+    day = date(2026, 9, 10)
+    repository.save_revisions((_revision(day, 1, 10.0), _revision(day, 2, 11.0)))
+    statements.clear()
+
+    original = tuple(repository.iter_training_rows(day, day, snapshot_sequence=1))
+    revised = tuple(repository.iter_training_rows(day, day, snapshot_sequence=2))
+
+    assert original[0].point is not None
+    assert revised[0].point is not None
+    assert original[0].point.qfq_close_price == 9.0
+    assert revised[0].point.qfq_close_price == 10.0
+    query = next(value for value in statements if "$.cell.qfq.close_price" in value)
+    assert "content_hash" not in query
+    with sqlite3.connect(path) as connection:
+        plan = tuple(str(row[3]) for row in connection.execute("EXPLAIN QUERY PLAN " + query))
+    assert not any("TEMP B-TREE" in detail for detail in plan)
+
+
 def test_month_partition_batch_preserves_a_to_b_to_a_snapshot_replay(tmp_path: Path) -> None:
     repository = SQLiteHistoryMonthPartitionRepository(tmp_path / "09.sqlite3", 2026, 9)
     repository.initialize()

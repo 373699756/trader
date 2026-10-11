@@ -9,12 +9,10 @@ from datetime import date
 from trader.download.domain.baostock_daily import (
     BaoStockBoard,
     BaoStockDailyCell,
-    BaoStockTradingStatus,
     BaoStockTrainingRow,
 )
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 
-HISTORY_TRAINING_WINDOW_SESSIONS = 61
 MAX_HISTORY_TRAINING_WINDOW_SESSIONS = 251
 
 
@@ -76,24 +74,6 @@ class HistoryRevision:
             self.cell.qfq,
         )
 
-    @property
-    def training_point(self) -> HistoryTrainingPoint | None:
-        """Project a revision to the compact facts retained by rolling training windows."""
-
-        if (
-            not self.cell.obtained
-            or self.cell.unadjusted is None
-            or self.cell.qfq is None
-            or self.cell.unadjusted.trading_status != "trading"
-            or self.cell.qfq.trading_status != "trading"
-        ):
-            return None
-        return HistoryTrainingPoint(
-            self.trade_date,
-            self.cell.qfq.close_price,
-            self.cell.qfq.amount,
-        )
-
 
 @dataclass(frozen=True, slots=True)
 class HistoryTrainingPoint:
@@ -114,44 +94,32 @@ class HistoryTrainingPoint:
 
 
 @dataclass(frozen=True, slots=True)
-class HistoryTrainingWindow:
+class HistoryTrainingRow:
+    """One date/code observation for the training-owned rolling state."""
+
     code: str
+    trade_date: date
     board: BaoStockBoard
-    industry: str
-    is_st: bool
-    trading_status: BaoStockTradingStatus
-    points: tuple[HistoryTrainingPoint, ...]
-    required_sessions: int = HISTORY_TRAINING_WINDOW_SESSIONS
+    industry: str | None
+    point: HistoryTrainingPoint | None
 
     def __post_init__(self) -> None:
-        points = tuple(self.points)
-        if not HISTORY_TRAINING_WINDOW_SESSIONS <= self.required_sessions <= MAX_HISTORY_TRAINING_WINDOW_SESSIONS:
-            raise ValueError("history training window session count is invalid")
-        if len(points) != self.required_sessions:
-            raise ValueError(
-                f"history training window does not match its required {self.required_sessions} session count"
-            )
-        if len(self.code) != 6 or not self.code.isdigit():
-            raise ValueError("history training window code is invalid")
-        if self.board not in {"main", "chinext", "star"} or self.trading_status not in {"trading", "suspended"}:
-            raise ValueError("history training window market facts are invalid")
-        if not self.industry.strip() or not isinstance(self.is_st, bool):
-            raise ValueError("history training window security facts are invalid")
-        dates = tuple(point.trade_date for point in points)
-        if dates != tuple(sorted(set(dates))):
-            raise ValueError("history training window dates are invalid")
-        object.__setattr__(self, "industry", self.industry.strip())
-        object.__setattr__(self, "points", points)
-
-    @property
-    def trade_date(self) -> date:
-        return self.points[-1].trade_date
+        industry = self.industry.strip() if self.industry is not None else None
+        if (
+            len(self.code) != 6
+            or not self.code.isdigit()
+            or type(self.trade_date) is not date
+            or self.board not in {"main", "chinext", "star"}
+            or industry == ""
+            or (self.point is not None and self.point.trade_date != self.trade_date)
+        ):
+            raise ValueError("history training row is invalid")
+        object.__setattr__(self, "industry", industry)
 
 
 __all__ = [
-    "HISTORY_TRAINING_WINDOW_SESSIONS",
     "MAX_HISTORY_TRAINING_WINDOW_SESSIONS",
     "HistoryRevision",
     "HistoryTrainingPoint",
-    "HistoryTrainingWindow",
+    "HistoryTrainingRow",
 ]

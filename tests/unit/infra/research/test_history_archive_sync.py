@@ -585,6 +585,27 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
     assert recorder.values[9].completed_units == 2
 
 
+def test_current_history_reports_each_active_gap_partition_before_scanning(tmp_path: Path) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    configuration = _configuration(tmp_path)
+    assert run_history_sync(configuration, FakeSupplier(dates), clock=lambda: NOW).state == "completed"
+    recorder = ProgressRecorder()
+
+    result = run_history_sync(
+        configuration,
+        FakeSupplier(dates),
+        clock=lambda: NOW,
+        progress=recorder,
+    )
+
+    assert result.state == "already_current"
+    updates = tuple(item for item in recorder.values if item.stage == "history_active_gaps")
+    assert [(item.state, item.completed_units, item.total_units, item.current_item) for item in updates] == [
+        ("started", 0, 1, "2026-09"),
+        ("completed", 1, 1, "2026-09"),
+    ]
+
+
 def test_history_sync_cancels_cleanly_during_supplier_context_loading(tmp_path: Path) -> None:
     recorder = ProgressRecorder()
 
