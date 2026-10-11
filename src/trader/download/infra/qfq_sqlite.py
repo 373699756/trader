@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
-from trader.download.domain.qfq_window import QFQ_WINDOWS
+from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
 from trader.download.infra.qfq_codec import decode_cell, encode_cell
 
 QFQ_SHARD_NAMES = (
@@ -109,6 +109,73 @@ class SQLiteQfqWindowCache:
             raise RuntimeError("qfq shard read failed") from exc
         return PublishedHistoryWindow(code, tuple(decode_cell(code, day, payload) for day, payload in rows))
 
+    def read_codes(self, codes: Sequence[str]) -> tuple[PublishedHistoryWindow, ...]:
+        """Read a bounded batch while sharing one connection per touched board shard."""
+
+        self._ensure_layout()
+        grouped: dict[str, list[str]] = {}
+        for code in dict.fromkeys(codes):
+            grouped.setdefault(qfq_shard_name(code), []).append(code)
+        result: list[PublishedHistoryWindow] = []
+        try:
+            for name, requested in grouped.items():
+                if not (self.root / name).is_file():
+                    result.extend(PublishedHistoryWindow(code, ()) for code in requested)
+                    continue
+                with closing(self._read_connection(name)) as connection, connection:
+                    for code in requested:
+                        rows = self._read_rows(connection, code)
+                        result.append(
+                            PublishedHistoryWindow(
+                                code, tuple(decode_cell(code, day, payload) for day, payload in rows)
+                            )
+                        )
+        except sqlite3.Error as exc:
+            raise RuntimeError("qfq batch read failed") from exc
+        return tuple(sorted(result, key=lambda window: window.code))
+
+    def inspect_windows(self, allowed_codes: frozenset[str]) -> QfqWindowSnapshot:
+        """Verify stored identities in bulk without constructing domain bar objects."""
+
+        if any(len(code) != 6 or not code.isascii() or not code.isdigit() for code in allowed_codes):
+            raise ValueError("qfq inspected code set is invalid")
+        states: list[QfqWindowState] = []
+        try:
+            for name in self._existing_names():
+                with closing(self._read_connection(name)) as connection, connection:
+                    connection.execute("BEGIN")
+                    identities = tuple(
+                        connection.execute("SELECT code,digest,source,cutoff,dates FROM identities ORDER BY code")
+                    )
+                    for code, digest, source, cutoff, dates_json in identities:
+                        if code not in allowed_codes:
+                            continue
+                        if qfq_shard_name(code) != name:
+                            raise RuntimeError("qfq code routed to wrong shard")
+                        rows = tuple(
+                            connection.execute("SELECT day,payload FROM bars WHERE code=? ORDER BY day", (code,))
+                        )
+                        verified = False
+                        dates: tuple[date, ...] = ()
+                        try:
+                            stored_dates: object = json.loads(dates_json)
+                            if isinstance(stored_dates, list) and all(isinstance(day, str) for day in stored_dates):
+                                dates = tuple(date.fromisoformat(day) for day in stored_dates)
+                                row_dates = tuple(date.fromisoformat(day) for day, _payload in rows)
+                                verified = (
+                                    bool(rows)
+                                    and len(rows) <= self.sessions
+                                    and dates == row_dates
+                                    and cutoff == rows[-1][0]
+                                    and digest == _digest(rows)
+                                )
+                        except (TypeError, ValueError):
+                            verified = False
+                        states.append(QfqWindowState(str(code), str(source), dates, verified))
+        except sqlite3.Error as exc:
+            raise RuntimeError("qfq window inspection failed") from exc
+        return QfqWindowSnapshot(tuple(sorted(states, key=lambda state: state.code)))
+
     def _read_rows(self, connection: sqlite3.Connection, code: str) -> tuple[tuple[str, str], ...]:
         if not connection.in_transaction:
             connection.execute("BEGIN")
@@ -162,47 +229,66 @@ class SQLiteQfqWindowCache:
         return tuple(changed), deleted_rows
 
     def replace_window(self, window: PublishedHistoryWindow, source_identity: str) -> tuple[tuple[str, ...], int]:
+        return self.replace_windows((window,), source_identity)
+
+    def replace_windows(
+        self, windows: Sequence[PublishedHistoryWindow], source_identity: str
+    ) -> tuple[tuple[str, ...], int]:
         self._ensure_layout()
         try:
-            return self._replace_window(window, source_identity)
+            return self._replace_windows(windows, source_identity)
         except sqlite3.Error as exc:
             raise RuntimeError("qfq shard update failed") from exc
 
-    def _replace_window(self, window: PublishedHistoryWindow, source_identity: str) -> tuple[tuple[str, ...], int]:
-        name = qfq_shard_name(window.code)
-        cells = window.cells[-self.sessions :]
-        if not cells:
+    def _replace_windows(
+        self, windows: Sequence[PublishedHistoryWindow], source_identity: str
+    ) -> tuple[tuple[str, ...], int]:
+        grouped: dict[str, list[tuple[str, tuple[tuple[str, str], ...]]]] = {}
+        for window in windows:
+            cells = window.cells[-self.sessions :]
+            if cells:
+                grouped.setdefault(qfq_shard_name(window.code), []).append(
+                    (window.code, tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in cells))
+                )
+        if not grouped:
             return (), 0
-        target = tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in cells)
-        old: tuple[tuple[str, str], ...] = ()
-        if (self.root / name).exists():
-            with closing(self._read_connection(name)) as connection, connection:
-                old = self._read_rows(connection, window.code)
-                identity = connection.execute("SELECT source FROM identities WHERE code=?", (window.code,)).fetchone()
-            if old == target and identity is not None and identity[0] == source_identity:
-                return (), 0
         self.root.mkdir(parents=True, exist_ok=True)
-        self._write_code(name, window.code, target, source_identity)
-        old_by_day = dict(old)
-        new_by_day = dict(target)
-        count = sum(old_by_day.get(day) != new_by_day.get(day) for day in old_by_day.keys() | new_by_day.keys())
-        return (f"{self.root.name}/{name}",), count
+        changed: list[str] = []
+        changed_rows = 0
+        for name, entries in grouped.items():
+            shard_changed = False
+            with closing(self._write_connection(name)) as connection, connection:
+                for code, target in entries:
+                    old = self._read_rows(connection, code)
+                    identity = connection.execute("SELECT source FROM identities WHERE code=?", (code,)).fetchone()
+                    if old == target and identity is not None and identity[0] == source_identity:
+                        continue
+                    self._write_code(connection, code, target, source_identity)
+                    old_by_day = dict(old)
+                    new_by_day = dict(target)
+                    changed_rows += sum(
+                        old_by_day.get(day) != new_by_day.get(day) for day in old_by_day.keys() | new_by_day.keys()
+                    )
+                    shard_changed = True
+            if shard_changed:
+                changed.append(f"{self.root.name}/{name}")
+        return tuple(changed), changed_rows
 
-    def _write_code(self, name: str, code: str, rows: tuple[tuple[str, str], ...], source: str) -> None:
-        with closing(self._write_connection(name)) as connection, connection:
-            existing = dict(connection.execute("SELECT day,payload FROM bars WHERE code=?", (code,)))
-            incoming = dict(rows)
-            connection.executemany(
-                "DELETE FROM bars WHERE code=? AND day=?", ((code, day) for day in existing.keys() - incoming.keys())
-            )
-            connection.executemany(
-                "INSERT OR REPLACE INTO bars VALUES (?,?,?)",
-                ((code, day, payload) for day, payload in rows if existing.get(day) != payload),
-            )
-            connection.execute(
-                "INSERT OR REPLACE INTO identities VALUES (?,?,?,?,?)",
-                (code, _digest(rows), source, rows[-1][0], json.dumps([day for day, _ in rows], separators=(",", ":"))),
-            )
+    @staticmethod
+    def _write_code(connection: sqlite3.Connection, code: str, rows: tuple[tuple[str, str], ...], source: str) -> None:
+        existing = dict(connection.execute("SELECT day,payload FROM bars WHERE code=?", (code,)))
+        incoming = dict(rows)
+        connection.executemany(
+            "DELETE FROM bars WHERE code=? AND day=?", ((code, day) for day in existing.keys() - incoming.keys())
+        )
+        connection.executemany(
+            "INSERT OR REPLACE INTO bars VALUES (?,?,?)",
+            ((code, day, payload) for day, payload in rows if existing.get(day) != payload),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO identities VALUES (?,?,?,?,?)",
+            (code, _digest(rows), source, rows[-1][0], json.dumps([day for day, _ in rows], separators=(",", ":"))),
+        )
 
     def _write_connection(self, name: str) -> sqlite3.Connection:
         connection = sqlite3.connect(self.root / name, timeout=5)

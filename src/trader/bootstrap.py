@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from functools import partial
@@ -44,7 +45,11 @@ from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
-from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
+from trader.download.infra.tencent_qfq_supplier import (
+    TencentQfqDependencies,
+    TencentQfqSessionPool,
+    TencentQfqSupplier,
+)
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
@@ -278,13 +283,19 @@ def execute_qfq_download(
         return select_st_eligible_universe(official, st_source.fetch(official, as_of))
 
     try:
-        with BaoStockHistorySupplier(
-            HistorySyncConfiguration.for_repository(project_root),
-            cancel_requested=cancel_requested,
-        ) as baostock:
+        with (
+            BaoStockHistorySupplier(
+                HistorySyncConfiguration.for_repository(project_root),
+                cancel_requested=cancel_requested,
+            ) as baostock,
+            ExitStack() as http_resources,
+        ):
+            http_pool = TencentQfqSessionPool(
+                tuple(http_resources.enter_context(requests.Session()) for _index in range(8))
+            )
             tencent = TencentQfqSupplier(
                 TencentQfqDependencies(
-                    requests.Session,
+                    http_pool.borrow,
                     load_qfq_universe,
                     cancel_requested,
                 )

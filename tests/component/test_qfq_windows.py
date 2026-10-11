@@ -105,6 +105,23 @@ def test_changed_code_does_not_rewrite_other_range(tmp_path) -> None:
     assert _fingerprints(cache.root)["qfq_szse_chinext.sqlite3"] == before["qfq_szse_chinext.sqlite3"]
 
 
+def test_same_board_windows_share_one_full_sync_transaction(tmp_path, monkeypatch) -> None:
+    cache = SQLiteQfqWindowCache(tmp_path, "v2")
+    connect = cache._write_connection
+    opened = []
+
+    def tracked(name):
+        opened.append(name)
+        return connect(name)
+
+    monkeypatch.setattr(cache, "_write_connection", tracked)
+    changed, rows = cache.replace_windows((_window("600001"), _window("600002")), "fixture")
+
+    assert opened == ["qfq_sse_main.sqlite3"]
+    assert changed == ("v2/qfq_sse_main.sqlite3",) and rows == 502
+    assert cache.codes() == frozenset({"600001", "600002"})
+
+
 def test_qfq_eligibility_prunes_existing_excluded_windows_from_both_profiles(tmp_path) -> None:
     updater = _updater(tmp_path, Supplier(codes=("600001",)))
     for cache in (updater.v2, updater.v3):
@@ -240,8 +257,7 @@ def test_runner_recovers_hot_journal_before_read_only_window_checks(tmp_path) ->
 def test_checkpoint_restart_preserves_all_codes_and_failed_write_does_not_advance(tmp_path, monkeypatch) -> None:
     path = tmp_path / ".checkpoint.json"
     checkpoint = QfqCheckpoint(path)
-    for code in ("600001", "300001", "600002"):
-        checkpoint.confirm(DAYS[-1], code, "fixture")
+    checkpoint.confirm_many(DAYS[-1], ("600001", "300001", "600002"), "fixture")
     checkpoint = QfqCheckpoint(path)
     assert all(checkpoint.completed(DAYS[-1], code, "fixture") for code in ("600001", "300001", "600002"))
 
@@ -250,7 +266,7 @@ def test_checkpoint_restart_preserves_all_codes_and_failed_write_does_not_advanc
 
     monkeypatch.setattr("trader.download.infra.qfq_checkpoint.atomic_write_json", fail)
     with pytest.raises(OSError):
-        checkpoint.confirm(DAYS[-1], "600003", "fixture")
+        checkpoint.confirm_many(DAYS[-1], ("600003",), "fixture")
     assert not checkpoint.completed(DAYS[-1], "600003", "fixture")
     assert not checkpoint.completed(DAYS[-1] + timedelta(days=1), "600001", "fixture")
     assert not checkpoint.completed(DAYS[-1], "600001", "changed-source")
@@ -789,20 +805,30 @@ def test_same_day_without_checkpoint_only_rechecks_three_overlap_dates(tmp_path)
 
 def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repairs(tmp_path, monkeypatch) -> None:
     supplier = Supplier()
-    updater = _updater(tmp_path, supplier)
-    write = updater.v3.replace_window
+    recovery_calls = []
+
+    class Recovery:
+        source_identity = "baostock:fixture"
+
+        def fetch_window(self, security, dates):
+            recovery_calls.append(security.code)
+            return _window(security.code, dates)
+
+    updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery())
+    write = updater.v3.replace_windows
 
     def fail(*_args):
         raise RuntimeError("interrupted second profile")
 
-    monkeypatch.setattr(updater.v3, "replace_window", fail)
+    monkeypatch.setattr(updater.v3, "replace_windows", fail)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.pending_codes == 1
     source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
     assert not updater.resume.completed(DAYS[-1], "600001", source)
     assert updater.v2.read_code("600001").cells
-    monkeypatch.setattr(updater.v3, "replace_window", write)
+    assert recovery_calls == []
+    monkeypatch.setattr(updater.v3, "replace_windows", write)
     result = updater.execute(observed)
     assert result.pending_codes == 0 and result.completed_codes == 1
     assert len(updater.v3.read_code("600001").cells) == 61
@@ -815,7 +841,7 @@ def test_source_migration_ignores_legacy_checkpoint_and_refetches_full_window(tm
     updater.seed((_window(),), "history:seed")
     source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
     # Even a valid same-day code checkpoint cannot relabel old-source rows.
-    updater.resume.confirm(DAYS[-1], "600001", source)
+    updater.resume.confirm_many(DAYS[-1], ("600001",), source)
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.completed_codes == 1 and result.skipped_codes == 0
     assert supplier.calls == [("600001", DAYS[-251:])]
@@ -843,13 +869,13 @@ def test_bounded_parallel_downloads_single_writer_and_cancelled_results_not_publ
 
     supplier = ParallelSupplier(codes=("600001", "600002", "600003", "600004"))
     updater = _updater(tmp_path, supplier)
-    original = updater.v2.replace_window
+    original = updater.v2.replace_windows
 
-    def write(window, identity):
+    def write(windows, identity):
         assert threading.get_ident() == writer_ident
-        return original(window, identity)
+        return original(windows, identity)
 
-    monkeypatch.setattr(updater.v2, "replace_window", write)
+    monkeypatch.setattr(updater.v2, "replace_windows", write)
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-fixture")
     pool.start()
     try:
@@ -870,14 +896,18 @@ def test_bounded_parallel_downloads_single_writer_and_cancelled_results_not_publ
 def test_one_unreadable_code_does_not_block_other_stocks(tmp_path, monkeypatch):
     supplier = Supplier(codes=("600001", "600002"))
     updater = _updater(tmp_path, supplier)
-    original = updater.v2.read_code
+    context = supplier.load_qfq_context(DAYS[-1], 251)
+    source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
+    updater.seed((_window("600001"), _window("600002")), source)
+    original = updater.v2.read_codes
 
-    def read(code):
-        if code == "600001":
+    def read(codes):
+        if codes == ("600001",):
             raise RuntimeError("corrupt shard")
-        return original(code)
+        return original(codes)
 
-    monkeypatch.setattr(updater.v2, "read_code", read)
+    monkeypatch.setattr(updater.v2, "read_codes", read)
+    updater = replace(updater, workers=1)
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.pending_codes == 1 and result.completed_codes == 1
     assert len(updater.v3.read_code("600002").cells) == 61
@@ -897,24 +927,25 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         def fetch_window(self, security, dates):
             if security.code == "600001":
                 assert second_published.wait(timeout=5)
-            return super().fetch_window(security, dates)
+            window = super().fetch_window(security, dates)
+            if security.code == "600002":
+                second_published.set()
+            return window
 
     supplier = OutOfOrderSupplier(codes=("600001", "600002", "600003"))
     updater = _updater(tmp_path, supplier)
-    original = updater.v3.replace_window
+    original = updater.v3.replace_windows
 
-    def write(window, identity):
-        result = original(window, identity)
-        writes.append(window.code)
-        if window.code == "600002":
-            second_published.set()
+    def write(windows, identity):
+        result = original(windows, identity)
+        writes.extend(window.code for window in windows)
         return result
 
     def report(message):
         assert threading.get_ident() == writer_ident
         messages.append(message)
 
-    monkeypatch.setattr(updater.v3, "replace_window", write)
+    monkeypatch.setattr(updater.v3, "replace_windows", write)
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-progress-fixture")
     pool.start()
     try:
@@ -931,7 +962,8 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         assert "本批 2 只 | 股票 600001 fixture、600002 fixture" in starts[0]
         assert "本批 1 只 | 股票 600003 fixture" in starts[1]
         assert " | qfq 完成 | " in messages[-1]
-        assert "股票 3 只" in messages[1] and "并发 2" in messages[1]
+        ready = next(message for message in messages if " | qfq 就绪 | " in message)
+        assert "股票 3 只" in ready and "并发 2" in ready
 
         messages.clear()
         resumed = updater.execute(observed)
@@ -1008,10 +1040,14 @@ def test_preparation_pending_is_reported_without_any_download_and_hides_payload(
     messages = []
     updater = replace(_updater(tmp_path, supplier), report=messages.append)
 
-    def read(_code):
+    context = supplier.load_qfq_context(DAYS[-1], 251)
+    source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
+    updater.seed((_window(),), source)
+
+    def read(_codes):
         raise RuntimeError("private supplier payload\nhttps://example.invalid?token=secret")
 
-    monkeypatch.setattr(updater.v2, "read_code", read)
+    monkeypatch.setattr(updater.v2, "read_codes", read)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.completed_codes == 0 and result.pending_codes == 1

@@ -35,10 +35,14 @@ class QfqCheckpoint:
     def completed(self, day: date, code: str, source: str) -> bool:
         return self._day == day.isoformat() and self._source == source and code in self._codes
 
-    def confirm(self, day: date, code: str, source: str) -> None:
+    def confirm_many(self, day: date, codes: tuple[str, ...], source: str) -> None:
+        if not codes:
+            return
+        if any(len(code) != 6 or not code.isascii() or not code.isdigit() for code in codes):
+            raise ValueError("qfq checkpoint codes invalid")
         next_day = day.isoformat()
         next_codes = set() if self._day != next_day or self._source != source else set(self._codes)
-        next_codes.add(code)
+        next_codes.update(codes)
         atomic_write_json(self._path, {"day": next_day, "source": source, "codes": sorted(next_codes)})
         self._day = next_day
         self._source = source

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
@@ -17,6 +18,28 @@ class QfqWindowIncompleteError(RuntimeError):
         self.raw_missing = raw_missing
         self.qfq_missing = qfq_missing
         super().__init__(f"qfq_incomplete_raw_{len(raw_missing)}_qfq_{len(qfq_missing)}")
+
+
+@dataclass(frozen=True, slots=True)
+class QfqWindowState:
+    code: str
+    source: str
+    dates: tuple[date, ...]
+    verified: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QfqWindowSnapshot:
+    states: tuple[QfqWindowState, ...]
+
+    def __post_init__(self) -> None:
+        codes = tuple(state.code for state in self.states)
+        if codes != tuple(sorted(set(codes))):
+            raise ValueError("qfq window snapshot must contain ordered unique codes")
+
+    def state_for(self, code: str) -> QfqWindowState | None:
+        index = bisect_left(self.states, code, key=lambda state: state.code)
+        return self.states[index] if index < len(self.states) and self.states[index].code == code else None
 
 
 @dataclass(frozen=True, slots=True)

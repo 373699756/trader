@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import math
 import platform
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
+from queue import Queue
 from typing import Literal
 
 import requests
@@ -47,9 +49,28 @@ class TencentQfqOptions:
 
 @dataclass(frozen=True)
 class TencentQfqDependencies:
-    session_factory: Callable[[], requests.Session]
+    session_factory: Callable[[], AbstractContextManager[requests.Session]]
     load_universe: Callable[[date], tuple[BaoStockSecurity, ...]]
     cancel_requested: Callable[[], bool]
+
+
+class TencentQfqSessionPool:
+    """Borrow bootstrap-owned sessions exclusively so keep-alive survives stock boundaries."""
+
+    def __init__(self, sessions: tuple[requests.Session, ...]) -> None:
+        if not sessions:
+            raise ValueError("Tencent qfq session pool cannot be empty")
+        self._available: Queue[requests.Session] = Queue(maxsize=len(sessions))
+        for session in sessions:
+            self._available.put_nowait(session)
+
+    @contextmanager
+    def borrow(self) -> Iterator[requests.Session]:
+        session = self._available.get()
+        try:
+            yield session
+        finally:
+            self._available.put_nowait(session)
 
 
 class TencentQfqSupplier:
@@ -82,8 +103,9 @@ class TencentQfqSupplier:
         if not dates or len(dates) > 640 or dates != tuple(sorted(set(dates))):
             raise ValueError("Tencent window must contain 1..640 ordered unique dates")
         symbol = security.source_code.replace(".", "")
-        raw = self._fetch_side(symbol, dates, "bfq")
-        qfq = self._fetch_side(symbol, dates, "qfq")
+        with self._dependencies.session_factory() as session:
+            raw = self._fetch_side(session, symbol, dates, "bfq")
+            qfq = self._fetch_side(session, symbol, dates, "qfq")
         self._check_cancel()
         return PublishedHistoryWindow(
             security.code,
@@ -96,9 +118,13 @@ class TencentQfqSupplier:
         )
 
     def _fetch_side(
-        self, symbol: str, dates: tuple[date, ...], mode: Literal["bfq", "qfq"]
+        self,
+        session: requests.Session,
+        symbol: str,
+        dates: tuple[date, ...],
+        mode: Literal["bfq", "qfq"],
     ) -> dict[date, PublishedHistorySide]:
-        rows = self._request_rows(symbol, dates[0], dates[-1], mode)
+        rows = self._request_rows(symbol, dates[0], dates[-1], mode, session=session)
         result: dict[date, PublishedHistorySide] = {}
         expected = frozenset(dates)
         seen: set[date] = set()
@@ -116,34 +142,51 @@ class TencentQfqSupplier:
             result[side.trade_date] = side
         return result
 
-    def _request_rows(self, symbol: str, start: date, end: date, mode: Literal["bfq", "qfq"]) -> list[object]:
+    def _request_rows(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        mode: Literal["bfq", "qfq"],
+        *,
+        session: requests.Session | None = None,
+    ) -> list[object]:
         for attempt in range(self._options.retries + 1):
             self._check_cancel()
             try:
-                return self._request_once(symbol, start, end, mode)
+                if session is not None:
+                    return self._request_once(session, symbol, start, end, mode)
+                with self._dependencies.session_factory() as owned_session:
+                    return self._request_once(owned_session, symbol, start, end, mode)
             except (requests.RequestException, OSError) as exc:
                 if attempt == self._options.retries:
                     raise RuntimeError("tencent_qfq_request_failed") from exc
         raise RuntimeError("tencent_qfq_request_failed")
 
-    def _request_once(self, symbol: str, start: date, end: date, mode: Literal["bfq", "qfq"]) -> list[object]:
-        with self._dependencies.session_factory() as session:
-            response = session.get(
-                _ENDPOINTS[self._options.history_host],
-                params={
-                    "_var": f"kline_day{mode}{end.year}",
-                    "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},640,{mode}",
-                },
-                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-                timeout=self._options.timeout_seconds,
-                proxies=_PROXIES,
-            )
-            try:
-                response.raise_for_status()
-                marker = response.text.find("={")
-                payload: object = json.loads(response.text[marker + 1 :] if marker >= 0 else response.text)
-            finally:
-                response.close()
+    def _request_once(
+        self,
+        session: requests.Session,
+        symbol: str,
+        start: date,
+        end: date,
+        mode: Literal["bfq", "qfq"],
+    ) -> list[object]:
+        response = session.get(
+            _ENDPOINTS[self._options.history_host],
+            params={
+                "_var": f"kline_day{mode}{end.year}",
+                "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},640,{mode}",
+            },
+            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
+            timeout=self._options.timeout_seconds,
+            proxies=_PROXIES,
+        )
+        try:
+            response.raise_for_status()
+            marker = response.text.find("={")
+            payload: object = json.loads(response.text[marker + 1 :] if marker >= 0 else response.text)
+        finally:
+            response.close()
         self._check_cancel()
         return _payload_rows(payload, symbol, mode)
 

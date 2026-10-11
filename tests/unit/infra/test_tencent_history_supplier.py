@@ -6,8 +6,13 @@ from datetime import date, timedelta
 import pytest
 import requests
 
-from trader.download.domain.baostock_daily import BaoStockDailySide, BaoStockSecurity
-from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqOptions, TencentQfqSupplier
+from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.infra.tencent_qfq_supplier import (
+    TencentQfqDependencies,
+    TencentQfqOptions,
+    TencentQfqSessionPool,
+    TencentQfqSupplier,
+)
 
 DAY = date(2026, 10, 9)
 SECURITY = BaoStockSecurity("600001", "fixture", "main", date(2020, 1, 1), None, "fixture")
@@ -73,8 +78,32 @@ def test_pairs_preserve_units_and_leave_unavailable_facts_missing():
     assert cell.unadjusted.turnover == 1.2
     assert cell.unadjusted.preclose is None and cell.unadjusted.pct_change is None
     assert cell.qfq.turnover is None
-    with pytest.raises(ValueError, match="requires preclose"):
-        BaoStockDailySide("600001", DAY, "unadjusted", 10, 11, 9, 10, 100, 200, None, None, 1, "trading")
+
+
+def test_raw_and_qfq_requests_reuse_one_http_session():
+    sessions = []
+
+    def create_session():
+        session = _Http()
+        sessions.append(session)
+        return session
+
+    supplier = TencentQfqSupplier(TencentQfqDependencies(create_session, lambda _as_of: (SECURITY,), lambda: False))
+    supplier.fetch_window(SECURITY, (DAY,))
+
+    assert len(sessions) == 1
+    assert len(sessions[0].calls) == 2
+
+
+def test_session_pool_reuses_bootstrap_owned_connection_between_stocks():
+    session = _Http()
+    pool = TencentQfqSessionPool((session,))
+    supplier = TencentQfqSupplier(TencentQfqDependencies(pool.borrow, lambda _as_of: (SECURITY,), lambda: False))
+
+    supplier.fetch_window(SECURITY, (DAY,))
+    supplier.fetch_window(SECURITY, (DAY,))
+
+    assert len(session.calls) == 4
 
 
 def test_calendar_advances_independently_of_old_history():

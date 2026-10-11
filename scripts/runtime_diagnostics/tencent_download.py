@@ -24,7 +24,12 @@ from trader.download.infra.exchange_security_universe import load_current_a_shar
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqOptions, TencentQfqSupplier
+from trader.download.infra.tencent_qfq_supplier import (
+    TencentQfqDependencies,
+    TencentQfqOptions,
+    TencentQfqSessionPool,
+    TencentQfqSupplier,
+)
 from trader.infra.market_data.providers.exchange_security_master import fetch_sse_listings, fetch_szse_listings
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
@@ -166,13 +171,16 @@ def _parser():
 
 def main() -> int:
     args = _parser().parse_args()
+    sessions: tuple[requests.Session, ...] = ()
     try:
         if len(args.sizes) > 3 or any(not 1 <= size <= 100 for size in args.sizes) or not 1 <= args.workers <= 12:
             raise ValueError("Tencent diagnostic sizes/workers are out of bounds")
         observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
+        sessions = tuple(requests.Session() for _index in range(args.workers))
+        session_pool = TencentQfqSessionPool(sessions)
         supplier = TencentQfqSupplier(
             TencentQfqDependencies(
-                requests.Session,
+                session_pool.borrow,
                 partial(
                     load_current_a_share_universe,
                     partial(fetch_sse_listings, get=requests.get),
@@ -214,6 +222,9 @@ def main() -> int:
         }
     except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
         report = {"schema_version": "tencent-download-diagnostic", "status": "failed", "error": type(exc).__name__}
+    finally:
+        for session in sessions:
+            session.close()
     emit_report(report)
     return 1 if report["status"] == "failed" else 0
 
