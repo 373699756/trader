@@ -28,7 +28,7 @@ from trader.download.domain.published_history import (
     PublishedHistoryWindow,
     project_history_cell,
 )
-from trader.download.domain.qfq_window import QfqUpdateResult, completed_daily_cutoff
+from trader.download.domain.qfq_window import QfqPreparationError, QfqUpdateResult, completed_daily_cutoff
 from trader.download.infra.history_control_repository import HistoryMaintenanceLock
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
@@ -688,6 +688,36 @@ def test_qfq_composition_uses_the_published_training_st_population(tmp_path, mon
     assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v3").codes() == frozenset({eligible.code})
 
 
+def test_qfq_composition_fails_before_universe_requests_when_history_is_unpublished(tmp_path, monkeypatch) -> None:
+    from trader import bootstrap
+
+    class HistoryPublication:
+        def manifest(self):
+            return None
+
+    class BaoStock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+    monkeypatch.setattr(bootstrap, "SQLitePublishedHistoryArchive", lambda _root: HistoryPublication())
+    monkeypatch.setattr(
+        bootstrap,
+        "load_current_a_share_universe",
+        lambda *_args: pytest.fail("official universe must not be requested without published ST eligibility"),
+    )
+    monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
+    messages = []
+
+    result = bootstrap.execute_qfq_download(tmp_path, report=messages.append)
+
+    assert result.failure_reason == "history_manifest_unavailable"
+    assert any("请先执行 ./run.sh download" in message for message in messages)
+    assert not (tmp_path / "data/qfq/.checkpoint.json").exists()
+
+
 def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_path, monkeypatch) -> None:
     from trader import bootstrap
 
@@ -1072,6 +1102,38 @@ def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path
     assert messages[-1] == "00:00:03 | qfq 准备失败 | RuntimeError"
 
 
+def test_missing_history_manifest_reports_actionable_stable_reason(tmp_path):
+    clock = [100.0]
+
+    class MissingHistorySupplier(Supplier):
+        def load_qfq_context(self, as_of, sessions):
+            clock[0] += 2
+            raise QfqPreparationError()
+
+    messages = []
+    updater = replace(_updater(tmp_path, MissingHistorySupplier()), report=messages.append, monotonic=lambda: clock[0])
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    runner = QfqUpdateRunner(
+        SimpleNamespace(manifest=lambda: None),
+        updater,
+        updater.v2,
+        updater.v3,
+        tmp_path / ".lock",
+        lambda: observed,
+    )
+
+    result = runner.execute()
+
+    assert result.failure_reason == "history_manifest_unavailable"
+    assert result.completed_codes == result.pending_codes == 0
+    assert messages == [
+        "00:00:00 | qfq 准备 | 正在加载沪深股票名单和 Tencent 交易日历",
+        "00:00:02 | qfq 准备失败 | 完整 history 资格快照尚未发布；请先执行 ./run.sh download "
+        "并等待历史发布完成 | reason=history_manifest_unavailable",
+        "qfq update failed: history_manifest_unavailable",
+    ]
+
+
 @pytest.mark.parametrize(
     "hour,minute,due", ((8, 0, False), (12, 0, False), (15, 9, False), (15, 10, True), (21, 0, True))
 )
@@ -1224,6 +1286,23 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, cap
         cli.main(["--config", str(tmp_path / "runtime.json"), "qfq_download", "--profile", "v3"])
     assert rejected.value.code == 2
     assert calls == [tmp_path]
+
+
+def test_qfq_cli_preserves_actionable_history_manifest_failure(tmp_path, monkeypatch, capsys) -> None:
+    def execute(_root, *, report):
+        report(
+            "00:00:00 | qfq 准备失败 | 完整 history 资格快照尚未发布；"
+            "请先执行 ./run.sh download 并等待历史发布完成 | reason=history_manifest_unavailable"
+        )
+        return QfqUpdateResult(None, failure_reason="history_manifest_unavailable")
+
+    monkeypatch.setattr(cli, "load_runtime_settings", lambda _path: SimpleNamespace(project_root=tmp_path))
+    monkeypatch.setattr("trader.bootstrap.execute_qfq_download", execute)
+
+    assert cli.main(["--config", str(tmp_path / "runtime.json"), "qfq_download"]) == 1
+    captured = capsys.readouterr()
+    assert "请先执行 ./run.sh download" in captured.err
+    assert json.loads(captured.out)["failure_reason"] == "history_manifest_unavailable"
 
 
 def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:

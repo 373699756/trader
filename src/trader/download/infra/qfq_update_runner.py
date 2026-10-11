@@ -10,7 +10,7 @@ from pathlib import Path
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
-from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.domain.qfq_window import QfqPreparationError, QfqUpdateResult
 from trader.download.infra.history_control_repository import HistoryMaintenanceLock
 from trader.download.infra.qfq_progress import qfq_local_progress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
@@ -63,7 +63,6 @@ class QfqUpdateRunner:
                     failure_reason="cancelled" if self.updater.cancel_requested() else None,
                 )
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as exc:
-            self.updater.report(f"qfq update failed: {type(exc).__name__}")
-            return QfqUpdateResult(
-                None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=type(exc).__name__
-            )
+            reason = exc.reason if isinstance(exc, QfqPreparationError) else type(exc).__name__
+            self.updater.report(f"qfq update failed: {reason}")
+            return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)

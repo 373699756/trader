@@ -26,7 +26,7 @@ from trader.download.domain.history_sync import (
     HistorySyncProgress,
     HistorySyncProgressPort,
 )
-from trader.download.domain.qfq_window import QfqUpdateResult
+from trader.download.domain.qfq_window import QfqPreparationError, QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import (
@@ -258,7 +258,7 @@ def execute_qfq_download(
     def load_qfq_universe() -> tuple[BaoStockSecurity, ...]:
         manifest = history.manifest()
         if manifest is None:
-            raise RuntimeError("qfq requires a published history ST eligibility snapshot")
+            raise QfqPreparationError()
         official = load_current_a_share_universe(
             partial(fetch_sse_listings, get=requests.get),
             partial(fetch_szse_listings, get=requests.get),
