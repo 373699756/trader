@@ -168,6 +168,36 @@ class HistoryTencentStage:
                 connection.execute("INSERT INTO metadata VALUES (1, ?)", (self._sync_identity,))
             elif row[0] != self._sync_identity:
                 raise RuntimeError("history_tencent_stage_identity_conflict")
+            self._migrate_qualified_candidates(connection)
+
+    def _migrate_qualified_candidates(self, connection: sqlite3.Connection) -> None:
+        """Consume the legacy format marker once, in the initialization transaction."""
+        markers = connection.execute("SELECT name FROM phase_state WHERE name GLOB 'qualified:*'").fetchall()
+        for (marker,) in markers:
+            code = marker.removeprefix("qualified:")
+            rows = connection.execute(
+                "SELECT c.trade_date,c.payload_json,q.payload_json FROM candidates c "
+                "LEFT JOIN qualified_prices q ON q.trade_date=c.trade_date AND q.code=c.code "
+                "WHERE c.code=? ORDER BY c.trade_date",
+                (code,),
+            )
+            for day, payload, existing in rows:
+                try:
+                    revision = decode_history_revision(payload)
+                except ValueError as exc:
+                    raise RuntimeError("history_legacy_candidate_invalid") from exc
+                if revision.code != code or revision.trade_date.isoformat() != day:
+                    raise RuntimeError("history_legacy_candidate_identity_conflict")
+                if existing is not None and existing != payload:
+                    raise RuntimeError("history_legacy_qualified_conflict")
+            connection.execute(
+                "INSERT INTO qualified_prices(trade_date,code,payload_json) "
+                "SELECT trade_date,code,payload_json FROM candidates WHERE code=? "
+                "ON CONFLICT(trade_date,code) DO NOTHING",
+                (code,),
+            )
+            connection.execute("DELETE FROM candidates WHERE code=?", (code,))
+            connection.execute("DELETE FROM phase_state WHERE name=?", (marker,))
 
     def completed_codes(self) -> frozenset[str]:
         with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:

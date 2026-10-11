@@ -6,14 +6,24 @@ import sqlite3
 
 import pytest
 
-from tests.unit.infra.research.test_history_archive_sync import FakeSupplier, ProgressRecorder, _download
+from tests.unit.infra.research.test_history_archive_sync import (
+    NOW,
+    FakeSupplier,
+    ProgressRecorder,
+    _configuration,
+    _download,
+)
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_price_qualification import qualify_history_pairs
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
+from trader.download.infra.history_archive_sync import run_history_sync
+from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_gap_recovery import HistoryGapRecoveryContext, recover_selected_history_gaps
 from trader.download.infra.history_gap_resume import reopen_legacy_history_gaps
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.download.infra.history_pending_prices import prepare_pending, write_qualified_month
+from trader.download.infra.history_revision_codec import encode_history_revision
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 
 
@@ -145,7 +155,7 @@ def test_persistence_failure_stops_without_supplier_retry(tmp_path, monkeypatch)
     assert not any(item.state == "completed" for item in context.progress.values)
 
 
-@pytest.mark.parametrize("layout", ("pending", "qualified"))
+@pytest.mark.parametrize("layout", ("pending", "qualified", "legacy_candidates"))
 def test_legacy_unresolved_checkpoint_is_reopened_and_recovered(tmp_path, layout):
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     context = _context(tmp_path, FakeSupplier(dates), ("600001",))
@@ -158,8 +168,23 @@ def test_legacy_unresolved_checkpoint_is_reopened_and_recovered(tmp_path, layout
     if layout == "pending":
         SQLiteHistoryMonthPartitionRepository(pending.paths[month], *month).save_revisions(revisions)
         stage.mark_supplemented((("600001", 1),))
-    else:
+    elif layout == "qualified":
         stage.save_qualified((("600001", revisions, 1),))
+    else:
+        # An older checkpoint used revision JSON in candidates, tagged per code.
+        # Completed prices had already moved into pending months; only sparse rows remained.
+        SQLiteHistoryMonthPartitionRepository(pending.paths[month], *month).save_revisions(revisions)
+        with sqlite3.connect(tmp_path / "stage.sqlite3") as connection:
+            connection.executemany(
+                "INSERT INTO candidates VALUES (?,?,?,?)",
+                (
+                    (item.code, item.trade_date.isoformat(), encode_history_revision(item), int(item.cell.obtained))
+                    for item in revisions[1:]
+                ),
+            )
+            connection.execute("INSERT INTO phase_state VALUES ('qualified:600001')")
+        stage.mark_supplemented((("600001", 1),))
+        stage.initialize()
     # Detaching a shared unpublished file must leave the other link byte-identical.
     with sqlite3.connect(pending.paths[month]) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -185,3 +210,56 @@ def test_legacy_unresolved_checkpoint_is_reopened_and_recovered(tmp_path, layout
     assert all(row.cell.obtained for row in rows) and len(rows) == 2
     assert protected.read_bytes() == before
     assert stage.recovery_checkpoint("600001").attempts == 1
+
+
+@pytest.mark.parametrize("damaged", (False, True))
+def test_sync_from_revision_candidate_checkpoint_publishes_or_reports_specific_failure(tmp_path, damaged):
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    cancelled = False
+
+    class CancelAfterInventory:
+        def publish(self, progress):
+            nonlocal cancelled
+            if progress.stage == "history_gap_inventory" and progress.state == "completed":
+                cancelled = True
+
+    config = _configuration(tmp_path)
+    result = run_history_sync(
+        config,
+        FakeSupplier(dates),
+        clock=lambda: NOW,
+        progress=CancelAfterInventory(),
+        cancel_requested=lambda: cancelled,
+    )
+    assert result.state == "cancelled", result.reason
+    path = next((tmp_path / ".tencent-stage").glob("*.sqlite3"))
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM candidates")
+        for code in ("600001", "600002"):
+            cells = _download(code, dates).batch.cells
+            if code == "600001":
+                cells = (*cells[:-1], BaoStockDailyCell(code, dates[-1], "unknown_missing", None, None))
+            for cell in cells:
+                payload = encode_history_revision(HistoryRevision(1, "main", cell, None, None, None))
+                if damaged and code == "600002":
+                    payload = "{}"
+                connection.execute(
+                    "INSERT INTO candidates VALUES (?,?,?,?)",
+                    (code, cell.trade_date.isoformat(), payload, int(cell.obtained)),
+                )
+            connection.execute("INSERT INTO phase_state VALUES (?)", (f"qualified:{code}",))
+            connection.execute("INSERT INTO supplemented VALUES (?,?)", (code, int(code == "600001")))
+        connection.execute("INSERT INTO gaps VALUES (? ,?,'baostock_price_pair')", ("600001", dates[-1].isoformat()))
+    supplier = FakeSupplier(dates)
+    result = run_history_sync(config, supplier, clock=lambda: NOW)
+    active = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    if damaged:
+        assert result.state == "failed"
+        assert result.reason == "history_legacy_candidate_invalid"
+        assert active is None and supplier.events == []
+    else:
+        assert result.state == "completed" and result.unresolved_price_cells == 0
+        assert supplier.events == ["baostock_prices"]
+        rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)
+        assert len(rows) == 2 and all(row.cell.obtained for row in rows)
+        assert not path.exists()

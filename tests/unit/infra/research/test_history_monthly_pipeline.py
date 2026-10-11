@@ -11,6 +11,7 @@ from trader.download.domain.published_history import PublishedHistoryWindow, pro
 from trader.download.infra.history_active_gap_scan import scan_active_price_gaps
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.download.infra.history_pending_prices import prepare_pending, write_qualified_month
+from trader.download.infra.history_revision_codec import encode_history_revision
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 
@@ -137,3 +138,73 @@ def test_month_writer_bounds_durable_batches_without_changing_revision_semantics
         assert connection.execute("SELECT COUNT(*) FROM daily_records").fetchone() == (1,)
         assert connection.execute("SELECT COUNT(*) FROM daily_observations").fetchone() == (4097,)
     assert month.read_day(day, snapshot_sequence=4097) == (row,)
+
+
+def test_legacy_qualified_candidates_migrate_once_without_changing_other_state(tmp_path):
+    path = tmp_path / "stage.sqlite3"
+    stage = HistoryTencentStage(path, "fixture")
+    stage.initialize()
+    day = date(2026, 9, 1)
+    rows = tuple(
+        replace(_revision(code, day), is_st=None, industry=None, industry_classification=None)
+        for code in ("600001", "600002")
+    )
+    candidate = project_history_cell(_revision("600003", day).cell)
+    stage.save_batch((PublishedHistoryWindow(candidate.code, (candidate,)),), ())
+    stage.mark_supplemented((("600001", 0), ("600002", 1)))
+    stage.save_gap_inventory((("600002", day.isoformat(), "baostock_price_pair"),))
+    with sqlite3.connect(path) as connection:
+        connection.executemany(
+            "INSERT INTO candidates VALUES (?,?,?,1)",
+            ((row.code, day.isoformat(), encode_history_revision(row)) for row in rows),
+        )
+        connection.executemany("INSERT INTO phase_state VALUES (?)", ((f"qualified:{row.code}",) for row in rows))
+        connection.execute(
+            "INSERT INTO qualified_prices VALUES (?,?,?)",
+            (day.isoformat(), rows[0].code, encode_history_revision(rows[0])),
+        )
+    stage.initialize()
+    stage.initialize()
+    assert tuple(stage.iter_qualified_month(2026, 9)) == rows
+    assert stage.read_supplement_context("600001")[0].cells == ()
+    assert stage.read_supplement_context(candidate.code)[0].cells == (candidate,)
+    assert stage.unresolved_price_counts() == ({"600001": 0, "600002": 1}, frozenset())
+    assert stage.gap_dates("600002", "baostock_price_pair") == (day.isoformat(),)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT name FROM phase_state").fetchall() == [("gap_inventory",)]
+        assert connection.execute("SELECT COUNT(*) FROM candidates").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("failure", ("payload", "code", "date", "destination", "sync_identity"))
+def test_legacy_qualified_migration_failure_rolls_back_all_codes(tmp_path, failure):
+    path = tmp_path / "stage.sqlite3"
+    stage = HistoryTencentStage(path, "fixture")
+    stage.initialize()
+    day = date(2026, 9, 1)
+    first = encode_history_revision(_revision("600001", day))
+    second = encode_history_revision(_revision("600002", day))
+    reason = "history_legacy_candidate_identity_conflict"
+    if failure == "payload":
+        second, reason = "{}", "history_legacy_candidate_invalid"
+    elif failure == "code":
+        second = first
+    elif failure == "date":
+        second = encode_history_revision(_revision("600002", date(2026, 9, 2)))
+    elif failure == "destination":
+        reason = "history_legacy_qualified_conflict"
+    elif failure == "sync_identity":
+        stage = HistoryTencentStage(path, "different")
+        reason = "history_tencent_stage_identity_conflict"
+    with sqlite3.connect(path) as connection:
+        connection.executemany(
+            "INSERT INTO candidates VALUES (?,?,?,1)",
+            (("600001", day.isoformat(), first), ("600002", day.isoformat(), second)),
+        )
+        connection.executemany("INSERT INTO phase_state VALUES (?)", (("qualified:600001",), ("qualified:600002",)))
+        if failure == "destination":
+            connection.execute("INSERT INTO qualified_prices VALUES (?,?,?)", (day.isoformat(), "600002", first))
+        before = tuple(connection.iterdump())
+    with pytest.raises(RuntimeError, match=f"^{reason}$"):
+        stage.initialize()
+    with sqlite3.connect(path) as connection:
+        assert tuple(connection.iterdump()) == before
