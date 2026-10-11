@@ -12,6 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
@@ -36,7 +37,7 @@ from trader.download.domain.history_price_qualification import (
     HISTORY_TAIL_CONTRACT,
     HISTORY_UNIVERSE_CONTRACT,
     qualify_history_pairs,
-    require_history_qfq_overlap,
+    qualify_price_overlap,
 )
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_revision import HistoryRevision
@@ -50,7 +51,6 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_active_gap_scan import scan_active_price_gaps
-from trader.download.infra.history_archive_reader import route_history_months
 from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
@@ -71,12 +71,13 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.download.infra.history_overlap_prices import read_overlap_prices
 from trader.download.infra.history_pending_prices import (
     PendingHistoryPartitions,
     backup_database,
-    partition_month,
     prepare_pending,
-    write_revision_batch,
+    require_download_capacity,
+    write_qualified_month,
 )
 from trader.download.infra.history_reference_files import (
     history_industry_mapping_path,
@@ -94,6 +95,7 @@ from trader.download.infra.history_snapshot_publication import (
     is_reference_only_change,
     publish_history_snapshot,
 )
+from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 from trader.infra.workers import WorkerExecutor, injected_executor, submit_or_reject
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
@@ -319,26 +321,31 @@ def _synchronize(  # noqa: PLR0913
     completed = max((item.completed_units for item in checkpoints), default=0)
     ordinal = max((item.ordinal for item in checkpoints), default=0) + 1
     total = len(context.universe)
+    old_universe = _active_universe(control, active)
+    download_context = _CodeDownloadContext(configuration, context, active, old_universe, previous_gaps)
     try:
+        required_free_bytes = _download_capacity(download_context, bool(checkpoints))
         control.save_source(source)
         control.save_calendar(calendar)
         control.save_universe(universe)
-        _publish_progress(progress, "preparing_partitions", "started")
-        pending = prepare_pending(configuration.archive_root, calendar.open_dates, active, completed > 0)
-        _publish_progress(progress, "preparing_partitions", "completed", (1, 1))
+        _publish_progress(progress, "preparing_partitions", "started", required_free_bytes=required_free_bytes)
+        pending = prepare_pending(
+            configuration.archive_root,
+            calendar.open_dates,
+            active,
+            completed > 0,
+            HistorySqliteActivity(
+                partial(_publish_progress, progress, "preparing_partitions", "waiting"), cancel_requested
+            ),
+        )
+        _publish_progress(
+            progress, "preparing_partitions", "completed", (1, 1), required_free_bytes=required_free_bytes
+        )
         if not checkpoints:
             control.save_checkpoint(
                 HistorySyncCheckpoint(sync_identity, ordinal, "running", observed_at, 0, total, None)
             )
             ordinal += 1
-        old_universe = _active_universe(control, active)
-        download_context = _CodeDownloadContext(
-            configuration,
-            context,
-            active,
-            old_universe,
-            previous_gaps,
-        )
         stage = HistoryTencentStage(
             configuration.archive_root / ".tencent-stage" / f"{sync_identity.rsplit('-', 1)[-1]}.sqlite3",
             sync_identity,
@@ -380,6 +387,7 @@ def _synchronize(  # noqa: PLR0913
             progress,
             reference,
             stage,
+            cancel_requested,
         )
         _publish_progress(progress, "publishing_snapshot", "completed", (1, 1))
         try:
@@ -480,7 +488,7 @@ class _HistoryDownloadPhases:
                     continue
                 if not futures:
                     break
-                done, _pending = wait(tuple(futures), return_when=FIRST_COMPLETED)
+                done = self._wait_tencent(tuple(futures))
                 self.check_cancel()
                 for future in done:
                     _index, security, dates = futures.pop(future)
@@ -503,6 +511,17 @@ class _HistoryDownloadPhases:
                 )
             except OSError:
                 pass
+
+    def _wait_tencent(self, futures: tuple[Future[PublishedHistoryWindow], ...]) -> set[Future[PublishedHistoryWindow]]:
+        done, _pending = wait(futures, timeout=5.0, return_when=FIRST_COMPLETED)
+        if not done:
+            _publish_progress(
+                self.progress,
+                "tencent_history",
+                "waiting",
+                (self.completed, len(self.context.supplier_context.universe)),
+            )
+        return done
 
     def _fill_tencent_workers(
         self,
@@ -585,18 +604,35 @@ class _HistoryDownloadPhases:
         for start in range(0, len(universe), batch_size):
             self.check_cancel()
             end = min(start + batch_size, len(universe))
+            requests = tuple(
+                (security.code, _requested_dates(self.context, security))
+                for security in universe[start:end]
+                if security.code not in supplemented and security.code in self.context.previous_codes
+            )
+            previous = (
+                read_overlap_prices(
+                    self.context.configuration.archive_root,
+                    self.context.active,
+                    requests,
+                    activity=HistorySqliteActivity(
+                        partial(
+                            _publish_progress, self.progress, "persisting_prices", "waiting", (start, len(universe))
+                        ),
+                        self.cancel_requested,
+                    ),
+                )
+                if HISTORY_TAIL_CONTRACT in self.context.supplier_context.source_versions.dependency_versions
+                else {}
+            )
             results: list[_SupplementResult] = []
             for index, security in enumerate(universe[start:end], start=start):
                 if security.code not in supplemented:
-                    results.append(self._supplement_security(index, security))
+                    results.append(self._supplement_security(index, security, previous.get(security.code, ())))
             if not results:
                 continue
-            write_revision_batch(
-                self.pending,
-                tuple(revision for result in results for revision in result.revisions),
-                self.progress,
+            self.stage.save_qualified(
+                tuple((result.code, result.revisions, result.unresolved_price_cells) for result in results)
             )
-            self.stage.mark_supplemented(tuple((result.code, result.unresolved_price_cells) for result in results))
             self.checkpoint(end)
             for result in results:
                 self._price_progress(
@@ -633,7 +669,9 @@ class _HistoryDownloadPhases:
             except OSError:
                 pass
 
-    def _supplement_security(self, index: int, security: BaoStockSecurity) -> _SupplementResult:
+    def _supplement_security(
+        self, index: int, security: BaoStockSecurity, previous: tuple[BaoStockDailyCell, ...]
+    ) -> _SupplementResult:
         self.check_cancel()
         dates = _requested_dates(self.context, security)
         self._price_progress("persisting_prices", _ProgressOutcome("started"), index, security.code, dates)
@@ -649,7 +687,12 @@ class _HistoryDownloadPhases:
             and security.code in context.previous_codes
             and HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions
         ):
-            cells = _validate_tail_overlap(context, cells, security.code)
+            has_overlap = any(cell.trade_date <= context.active.data_cutoff for cell in cells)
+            cells = qualify_price_overlap(
+                cells,
+                previous,
+                full_window=has_overlap and dates == context.supplier_context.calendar.expected_dates(security),
+            )
         return _SupplementResult(
             index,
             security.code,
@@ -711,9 +754,10 @@ def _seal_and_publish(  # noqa: PLR0913
     progress: HistorySyncProgressPort | None,
     reference: HistoryReferenceSnapshot,
     stage: HistoryTencentStage,
+    cancel_requested: Cancellation = lambda: False,
 ) -> HistoryActiveSnapshot:
     source, calendar, universe = identities
-    sealed = _seal_pending(root, pending, stage, progress)
+    sealed = _seal_pending(root, pending, stage, progress, cancel_requested)
     _publish_progress(progress, "publishing_snapshot", "started")
     label_cutoff = calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1]
     snapshot = HistoryActiveSnapshot(
@@ -769,6 +813,17 @@ def _recover_reference_mapping(
     _fsync_directory(mapping_path.parent)
 
 
+def _download_capacity(context: _CodeDownloadContext, resume: bool) -> int | None:
+    if resume:
+        return None
+    return require_download_capacity(
+        context.configuration.archive_root,
+        context.active,
+        (_requested_dates(context, security) for security in context.supplier_context.universe),
+        context.configuration.minimum_free_bytes,
+    )
+
+
 def _requested_dates(context: _CodeDownloadContext, security: BaoStockSecurity) -> tuple[date, ...]:
     expected = context.supplier_context.calendar.expected_dates(security)
     if not expected:
@@ -795,56 +850,12 @@ def _requested_dates(context: _CodeDownloadContext, security: BaoStockSecurity) 
     return requested
 
 
-def _validate_tail_overlap(
-    context: _CodeDownloadContext, cells: tuple[BaoStockDailyCell, ...], code: str
-) -> tuple[BaoStockDailyCell, ...]:
-    active = context.active
-    assert active is not None
-    overlap = tuple(cell for cell in cells if cell.trade_date <= active.data_cutoff)
-    if not overlap:
-        return tuple(BaoStockDailyCell(code, cell.trade_date, "unknown_missing", None, None) for cell in cells)
-    prior: dict[date, BaoStockDailyCell] = {}
-    anchored = False
-    for year, month in route_history_months(overlap[0].trade_date, overlap[-1].trade_date):
-        reference = next((item for item in active.partitions if partition_month(item) == (year, month)), None)
-        if reference is None:
-            raise RuntimeError("history_tail_qfq_overlap_missing")
-        # Trust the published identity and read only this stock's bounded overlap via its index.
-        partition = SQLiteHistoryMonthPartitionRepository(
-            context.configuration.archive_root / reference.relative_path,
-            year,
-            month,
-        )
-        rows = partition.read_code(
-            code,
-            overlap[0].trade_date,
-            overlap[-1].trade_date,
-            snapshot_sequence=active.sequence,
-        )
-        prior.update((row.trade_date, row.cell) for row in rows)
-        for cell in (item for item in overlap if (item.trade_date.year, item.trade_date.month) == (year, month)):
-            previous = next((row.cell for row in rows if row.trade_date == cell.trade_date), None)
-            if previous is not None and previous.obtained and cell.obtained:
-                require_history_qfq_overlap(previous, cell)
-                anchored = True
-    security = next(item for item in context.supplier_context.universe if item.code == code)
-    if tuple(cell.trade_date for cell in cells) == context.supplier_context.calendar.expected_dates(security):
-        anchored = True
-    return tuple(
-        prior[cell.trade_date]
-        if not cell.obtained and cell.trade_date in prior and prior[cell.trade_date].obtained
-        else cell
-        if anchored or not cell.obtained
-        else BaoStockDailyCell(code, cell.trade_date, "unknown_missing", None, None)
-        for cell in cells
-    )
-
-
 def _seal_pending(
     root: Path,
     pending: PendingHistoryPartitions,
     stage: HistoryTencentStage,
     progress: HistorySyncProgressPort | None = None,
+    cancel_requested: Cancellation = lambda: False,
 ) -> _SealedPartitions:
     references = recover_sealed_months(root, pending.paths, stage, progress)
     replacements: list[_PartitionReplacement] = []
@@ -853,6 +864,11 @@ def _seal_pending(
         remaining = sorted((month, path) for month, path in pending.paths.items() if month not in references)
         for index, ((year, month), path) in enumerate(remaining, start=len(references)):
             current_item = f"{year:04d}-{month:02d}"
+            # Legacy supplemented codes already reside in pending. Only newly
+            # qualified codes are streamed; replay is idempotent by revision.
+            if cancel_requested():
+                raise KeyboardInterrupt
+            write_qualified_month(pending, stage, (year, month), progress, cancel_requested)
             _publish_progress(progress, "sealing_partitions", "started", (index, total), current_item)
             if path.is_file():
                 candidate = path.with_name(f".{month:02d}.seal.sqlite3")
@@ -865,7 +881,13 @@ def _seal_pending(
                     replacements.append(replacement)
                 reference = promote_completed_candidate(stage, (year, month), candidate, destination)
                 if reference is None:
-                    reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
+                    activity = HistorySqliteActivity(
+                        partial(
+                            _publish_progress, progress, "sealing_partitions", "waiting", (index, total), current_item
+                        ),
+                        cancel_requested,
+                    )
+                    reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month, activity=activity).seal()
                 record_sealed_month(stage, (year, month), destination, candidate, reference)
             else:
                 existing_reference = pending.active_by_month.get((year, month))
@@ -1118,17 +1140,21 @@ def _failure_code(exc: BaseException) -> str:
     return value if _ERROR_CODE.fullmatch(value) else "history_sync_failed"
 
 
-def _publish_progress(
+def _publish_progress(  # noqa: PLR0913 - typed progress projection, optional preparation capacity
     progress: HistorySyncProgressPort | None,
     stage: HistorySyncProgressStage,
     state: Literal["started", "waiting", "retrying", "completed", "failed", "cancelled"],
     counts: tuple[int, int] = (0, 1),
     current_item: str | None = None,
+    *,
+    required_free_bytes: int | None = None,
 ) -> None:
     if progress is None:
         return
     try:
-        progress.publish(HistorySyncProgress(stage, state, *counts, current_item))
+        progress.publish(
+            HistorySyncProgress(stage, state, *counts, current_item, required_free_bytes=required_free_bytes)
+        )
     except OSError:
         pass
 

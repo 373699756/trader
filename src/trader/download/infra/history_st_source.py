@@ -17,7 +17,8 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.security_eligibility import is_st_security_name
-from trader.download.infra.history_reference_files import read_st_evidence, write_st_evidence
+from trader.download.infra.history_reference_files import read_st_evidence
+from trader.download.infra.history_st_merge import merge_st_evidence
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 _NAME_HISTORY = re.compile(r"证券简称更名历史[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", re.S)
@@ -58,9 +59,11 @@ class HistoryStNameSource:
         self._cancel_requested = cancel_requested
         self._report = report
         self._batch_size = batch_size
+        self._observed: tuple[HistoryStEvidence, ...] = ()
 
     def fetch(self, universe: tuple[BaoStockSecurity, ...], as_of: date) -> tuple[HistoryStEvidence, ...]:
-        evidence = {item.code: item for item in read_st_evidence(self._path)}
+        self._observed = read_st_evidence(self._path)
+        evidence = {item.code: item for item in self._observed}
         total = len(universe)
         pending = tuple(
             security
@@ -99,8 +102,10 @@ class HistoryStNameSource:
         finally:
             for future in futures:
                 future.cancel()
-        if dirty:
-            self._write(evidence)
+        before_final_merge = tuple(sorted(evidence.values(), key=lambda item: item.code))
+        self._write(evidence)
+        if tuple(sorted(evidence.values(), key=lambda item: item.code)) != before_final_merge:
+            summary_reported = False
         if completed == total and not summary_reported:
             self._report(completed, total, self._summary(universe, evidence))
         codes = {item.code for item in universe}
@@ -136,7 +141,11 @@ class HistoryStNameSource:
         return len(done)
 
     def _write(self, evidence: dict[str, HistoryStEvidence]) -> None:
-        write_st_evidence(self._path, tuple(sorted(evidence.values(), key=lambda item: item.code)))
+        merged = merge_st_evidence(
+            self._path, tuple(sorted(evidence.values(), key=lambda item: item.code)), self._observed
+        )
+        self._observed = merged
+        evidence.update((item.code, item) for item in merged)
 
     @staticmethod
     def _summary(

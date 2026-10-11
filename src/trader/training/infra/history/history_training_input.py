@@ -168,6 +168,17 @@ class SQLiteHistoryTrainingInputArchive:
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
+    def industry_sample_upper_bounds(
+        self, allowed_dates: frozenset[date], required_sessions: int, anchors: frozenset[date]
+    ) -> tuple[tuple[str, int], ...]:
+        dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
+        try:
+            return self._archive.reference_index(self._active).industry_sample_upper_bounds(
+                self._codes, dates, required_sessions, anchors
+            )
+        except (HistoryArchiveReadError, OSError, ValueError) as exc:
+            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
+
     def has_industry_window(
         self, allowed_dates: frozenset[date], required_sessions: int, *, anchor_dates: frozenset[date] | None = None
     ) -> bool:
@@ -188,6 +199,8 @@ class SQLiteHistoryTrainingInputArchive:
         self,
         allowed_dates: frozenset[date],
         progress: Callable[[int], None] | None = None,
+        verification_progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None]
+        | None = None,
     ) -> Iterator[HistoryTrainingRow]:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         if not dates or frozenset(dates) != allowed_dates:
@@ -198,6 +211,7 @@ class SQLiteHistoryTrainingInputArchive:
                 dates,
                 self._codes,
                 progress,
+                verification_progress,
             )
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc

@@ -13,6 +13,10 @@ class QfqSupplierProgress:
         self._report = report
 
     def publish(self, progress: HistorySyncProgress) -> None:
+        if progress.state not in {"waiting", "retrying", "failed"}:
+            return
+        if progress.state == "waiting" and progress.call_elapsed_seconds < 5.0:
+            return
         self._report(
             f"qfq {progress.stage}: {progress.state} attempt={progress.attempt}/{progress.max_attempts} "
             f"elapsed={progress.call_elapsed_seconds:.1f}s"

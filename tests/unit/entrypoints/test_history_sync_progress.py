@@ -84,7 +84,7 @@ def test_supplier_preparation_waiting_and_retry_are_reported(capsys) -> None:
 
 
 def test_industry_progress_reports_date_counts_and_cache_without_duplicate_starts(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(0, 1, 2, 3))
+    progress = StderrHistorySyncProgress(monotonic=_Clock(0, 1, 1, 1, 2, 3))
     started = HistorySyncProgress("supplier_industry", "started", 4, 18, "2020-07-01")
     progress.publish(started)
     progress.publish(started)
@@ -99,7 +99,7 @@ def test_industry_progress_reports_date_counts_and_cache_without_duplicate_start
 
 
 def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 135.0))
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 100.0, 106.0, 110.0, 120.0, 135.0))
 
     progress.publish(HistorySyncProgress("downloading_codes", "started", 12, 100, current_item="600001"))
     progress.publish(
@@ -118,7 +118,7 @@ def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
     progress.publish(HistorySyncProgress("supplier_daily_qfq", "completed", 1, 1, current_item="sh.600001"))
     progress.publish(HistorySyncProgress("downloading_codes", "completed", 13, 100, current_item="600001"))
 
-    assert capsys.readouterr().err == "00:00:35 | 股票下载 | 完成 | 13/100 (13.00%) | 股票 600001\n"
+    assert capsys.readouterr().err == "00:00:35 | 股票下载 | 完成 | 13/100 (13.00%) | 股票 600001 | 阶段耗时 00:00:35\n"
 
 
 def test_partition_sealing_prints_the_first_month_before_long_local_work(capsys) -> None:
@@ -126,11 +126,13 @@ def test_partition_sealing_prints_the_first_month_before_long_local_work(capsys)
 
     progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 100, current_item="2018-07"))
 
-    assert capsys.readouterr().err == "00:00:01 | 封存月分片 | 开始 | 0/100 (0.00%) | 月份 2018-07\n"
+    assert (
+        capsys.readouterr().err == "00:00:01 | 封存月分片 | 开始 | 0/100 (0.00%) | 月份 2018-07 | 本月耗时 00:00:00\n"
+    )
 
 
 def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 0.0, 0.0, 1.0, 6.0, 6.0, 7.0, 7.0))
+    progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 0.0, 1.0, 6.0, 7.0))
 
     progress.publish(HistorySyncProgress("persisting_partitions", "started", 0, 3, "2026-07"))
     progress.publish(HistorySyncProgress("persisting_partitions", "completed", 1, 3, "2026-07"))
@@ -138,9 +140,9 @@ def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) ->
     progress.publish(HistorySyncProgress("persisting_partitions", "completed", 3, 3, "2026-09"))
 
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | 历史月分片写入 | 开始 | 0/3 (0.00%) | 月份 2026-07",
-        "00:00:06 | 历史月分片写入 | 开始 | 1/3 (33.33%) | 月份 2026-08",
-        "00:00:07 | 历史月分片写入 | 完成 | 3/3 (100.00%) | 月份 2026-09",
+        "00:00:00 | 历史月分片写入 | 开始 | 0/3 (0.00%) | 月份 2026-07 | 本月耗时 00:00:00",
+        "00:00:06 | 历史月分片写入 | 开始 | 1/3 (33.33%) | 月份 2026-08 | 本月耗时 00:00:00",
+        "00:00:07 | 历史月分片写入 | 完成 | 3/3 (100.00%) | 月份 2026-09 | 本月耗时 00:00:00",
     ]
 
 
@@ -171,14 +173,14 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
 
     assert capsys.readouterr().err.splitlines() == [
         "00:00:00 | Tencent历史下载 | 失败 | 29/4400 (0.66%) | 股票 600001 | 来源 Tencent | 请求 2000 日 "
-        "| 错误 history_tencent_overlap_conflict",
+        "| 错误 history_tencent_overlap_conflict | 阶段耗时 00:00:00",
         "00:00:00 | Tencent历史下载 | 完成 | 4400/4400 (100.00%) | 成功 4371 股 | 失败 29 股 "
-        "| 重叠冲突 24 股 | 其它失败 5 股",
+        "| 重叠冲突 24 股 | 其它失败 5 股 | 阶段耗时 00:00:00",
     ]
 
 
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:
-    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 145.0, 1070.569))
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 145.0, 145.0, 1070.569))
     progress.publish(
         HistorySyncProgress(
             "supplier_industry",

@@ -57,6 +57,7 @@ class _RevisionWriteMeasurement:
     elapsed_ms: float
     rows_per_second: float
     database_growth_bytes: int
+    seal_ms: float
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,7 @@ def main() -> int:
                 "elapsed_ms": report.revision_write.elapsed_ms,
                 "rows_per_second": report.revision_write.rows_per_second,
                 "database_growth_bytes": report.revision_write.database_growth_bytes,
+                "seal_ms": report.revision_write.seal_ms,
             },
         },
     }
@@ -312,12 +314,21 @@ def _measure_queries(
             "single_day_board",
             lambda: len(repository.read_day(sample_day, snapshot_sequence=active.sequence, board=board)),
         ),
+        (
+            "training_projection",
+            lambda: sum(
+                1 for _ in repository.iter_training_rows(month_start, month_end, snapshot_sequence=active.sequence)
+            ),
+        ),
+        ("active_price_gaps", lambda: len(repository.missing_price_dates(active.sequence))),
     )
     traced_workloads: tuple[Callable[[], int], ...] = (
         lambda: sum(1 for _ in traced.iter_range_by_code(month_start, month_end, snapshot_sequence=active.sequence)),
         lambda: sum(1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=active.sequence)),
         lambda: sum(1 for _ in traced.iter_range(month_start, month_end, snapshot_sequence=active.sequence, code=code)),
         lambda: len(traced.read_day(sample_day, snapshot_sequence=active.sequence, board=board)),
+        lambda: sum(1 for _ in traced.iter_training_rows(month_start, month_end, snapshot_sequence=active.sequence)),
+        lambda: len(traced.missing_price_dates(active.sequence)),
     )
     measurements: list[_QueryMeasurement] = []
     for (name, workload), traced_workload in zip(workloads, traced_workloads, strict=True):
@@ -326,7 +337,7 @@ def _measure_queries(
         statement = next(
             value
             for value in trace
-            if value.lstrip().upper().startswith(("WITH LATEST AS", "SELECT RECORDS.TRADE_DATE"))
+            if value.lstrip().upper().startswith(("WITH LATEST AS", "SELECT RECORDS.TRADE_DATE", "SELECT R.CODE"))
         )
         query_plan = _query_plan(path, statement)
         workload_paths = code_paths if name == "single_code_window" else (path,)
@@ -393,6 +404,9 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
         traced.save_revisions(sample)
         elapsed = time.perf_counter() - started
         growth = _database_bytes(path) - before
+        seal_started = time.perf_counter()
+        repository.seal()
+        seal_ms = (time.perf_counter() - seal_started) * 1000.0
     statement_count = sum(not value.lstrip().upper().startswith("PRAGMA") for value in statements)
     transaction_count = sum(value.lstrip().upper().startswith("BEGIN IMMEDIATE") for value in statements)
     return _RevisionWriteMeasurement(
@@ -402,6 +416,7 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
         round(elapsed * 1_000.0, 3),
         round(len(sample) / elapsed, 3),
         growth,
+        round(seal_ms, 3),
     )
 
 

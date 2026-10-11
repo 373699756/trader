@@ -44,6 +44,7 @@ from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
+from trader.download.infra.qfq_progress import QfqSupplierProgress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import (
@@ -283,6 +284,8 @@ def execute_qfq_download(
             BaoStockHistorySupplier(
                 HistorySyncConfiguration.for_repository(project_root),
                 cancel_requested=cancel_requested,
+                price_total_seconds=180.0,
+                progress=QfqSupplierProgress(report),
             ) as baostock,
             ExitStack() as http_resources,
         ):

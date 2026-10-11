@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,6 +77,7 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
         verify_partitions=lambda _progress=None: None,
         training_row_upper_bound=lambda _dates: 0,
         has_industry_window=lambda _dates, _sessions, **_kwargs: True,
+        industry_sample_upper_bounds=lambda *_args: (("fixture", 100_000),),
     )
 
 
@@ -169,10 +171,27 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path: Path, m
         return ({"银行": _industry_model(len(contract.feature_positions))}, 1, 1)
 
     monkeypatch.setattr("trader.training.infra.engine.fit_industry_models", fit)
+    from trader.training.infra import engine
+
+    monkeypatch.setattr(
+        engine, "MODEL_FITTING_PARAMETERS", replace(engine.MODEL_FITTING_PARAMETERS, learning_rate=0.025)
+    )
     monkeypatch.setattr("trader.training.infra.engine.publish_head_bundle", lambda *_args: None)
     second = run_v3_training(tmp_path / "history", tmp_path / "train")
     assert second.status == "engineering_ready" and builds == 1
     assert not (tmp_path / "train/v3/.sample-cache/samples.sqlite3").exists()
+
+
+def test_provably_insufficient_industry_rows_fail_before_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = _cadence_archive(tmp_path / "history")
+    archive.industry_sample_upper_bounds = lambda *_args: (("银行", 19999),)
+    _patch_archive(monkeypatch, archive)
+    monkeypatch.setattr(
+        "trader.training.infra.engine.build_training_samples", lambda *_args: pytest.fail("must fail early")
+    )
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
+    assert result.status == "blocked"
+    assert result.failure_reasons == ("history_industry_training_rows_insufficient",)
 
 
 def test_training_rejects_insufficient_industry_history_before_partition_scan(
@@ -250,7 +269,9 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
     assert result.status == "engineering_ready"
-    assert verify_calls == scan_calls == 1
+    # The real streaming reader now verifies each month immediately before
+    # consumption. This synthetic builder must not trigger an eager full scan.
+    assert verify_calls == 0 and scan_calls == 1
     assert fitted == [Strategy.TOMORROW, Strategy.D25]
     assert published == [
         (Strategy.TOMORROW, tmp_path / "train" / "v3" / "tomorrow"),
@@ -262,7 +283,7 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
     repeated = run_v3_training(tmp_path / "history", tmp_path / "train")
 
     assert repeated.status == "engineering_ready"
-    assert verify_calls == scan_calls == 2
+    assert verify_calls == 0 and scan_calls == 2
     assert fitted == [Strategy.TOMORROW, Strategy.D25] * 2
     assert published[2:] == published[:2]
     assert repeated.heads == result.heads
@@ -410,7 +431,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
             return 66
 
         @staticmethod
-        def iter_training_rows(_dates, progress):
+        def iter_training_rows(_dates, progress, verification_progress=None):
             for point in rows:
                 yield HistoryTrainingRow("600000", point.trade_date, "main", "银行", point)
             progress(66)

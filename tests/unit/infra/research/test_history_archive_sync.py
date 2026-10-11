@@ -322,7 +322,8 @@ def test_reference_update_does_not_skip_existing_price_gaps(tmp_path: Path) -> N
 
 def test_unchanged_price_batch_does_not_copy_or_add_observations(tmp_path: Path) -> None:
     from trader.download.domain.history_revision import HistoryRevision
-    from trader.download.infra.history_pending_prices import prepare_pending, write_revision_batch
+    from trader.download.infra.history_pending_prices import prepare_pending, write_qualified_month
+    from trader.download.infra.history_tencent_stage import HistoryTencentStage
 
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     assert run_history_sync(_configuration(tmp_path), FakeSupplier(dates), clock=lambda: NOW).state == "completed"
@@ -334,7 +335,10 @@ def test_unchanged_price_batch_does_not_copy_or_add_observations(tmp_path: Path)
         for cell in _download("600001", dates).batch.cells
     )
     recorder = ProgressRecorder()
-    write_revision_batch(pending, revisions, recorder)
+    stage = HistoryTencentStage(tmp_path / "test-stage.sqlite3", "same-prices")
+    stage.initialize()
+    stage.save_qualified((("600001", revisions, 0),))
+    write_qualified_month(pending, stage, (2026, 9), recorder)
     assert not any(path.exists() for path in pending.paths.values())
     assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot == active
     assert [(item.state, item.completed_units, item.total_units, item.current_item) for item in recorder.values] == [
@@ -445,6 +449,10 @@ def test_tencent_pipeline_reports_current_failure_reason_and_terminal_summary(tm
     failed = next(item for item in recorder.values if item.stage == "tencent_history" and item.state == "failed")
     terminal = next(item for item in recorder.values if item.tencent_summary is not None)
     assert result.state == "completed"
+    capacity = next(
+        item for item in recorder.values if item.stage == "preparing_partitions" and item.state == "completed"
+    )
+    assert capacity.required_free_bytes == 6 * 2048
     assert failed.failure_reason == "tencent_query_failed"
     assert terminal.tencent_summary is not None
     assert (terminal.tencent_summary.succeeded_codes, terminal.tencent_summary.failed_codes) == (1, 1)
@@ -480,11 +488,11 @@ def test_selected_tencent_failures_recover_before_the_first_partition_batch(
             events.append(f"recover:{security.code}")
             return _download(security.code, requested)
 
-    def stop_at_first_write(_pending, _revisions, _progress=None):
+    def stop_at_first_write(_pending, _stage, _month, _progress=None, _cancel=None):
         events.append("write")
         raise RuntimeError("stop_after_recovery")
 
-    monkeypatch.setattr(history_sync_module, "write_revision_batch", stop_at_first_write)
+    monkeypatch.setattr(history_sync_module, "write_qualified_month", stop_at_first_write)
 
     result = run_history_sync(_configuration(tmp_path), TwoFailures(dates), clock=lambda: NOW, progress=recorder)
 
@@ -789,10 +797,10 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
         ("history_gap_inventory", "completed"),
         ("persisting_prices", "started"),
         ("persisting_prices", "started"),
+        ("persisting_prices", "completed"),
+        ("persisting_prices", "completed"),
         ("persisting_partitions", "started"),
         ("persisting_partitions", "completed"),
-        ("persisting_prices", "completed"),
-        ("persisting_prices", "completed"),
         ("sealing_partitions", "started"),
         ("sealing_partitions", "completed"),
         ("publishing_snapshot", "started"),

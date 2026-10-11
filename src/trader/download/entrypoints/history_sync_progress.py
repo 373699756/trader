@@ -78,6 +78,8 @@ _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplie
 
 
 def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.required_free_bytes is not None:
+        return (f"保守可用空间需求 {progress.required_free_bytes / 1024**3:.2f} GiB",)
     if progress.cache_hit is not None:
         return ("缓存复用" if progress.cache_hit else "供应商查询",)
     if progress.tencent_summary is not None:
@@ -114,17 +116,26 @@ class StderrHistorySyncProgress:
         self._route: HistorySyncProgress | None = None
         self._preparation_started: tuple[HistorySyncProgressStage, str | None, int] | None = None
         self._partition_reported_at: float | None = None
+        self._phase_started: dict[tuple[HistorySyncProgressStage, str | None], float] = {}
 
     def publish(self, progress: HistorySyncProgress) -> None:
+        now = self._monotonic()
+        monthly = progress.stage in {"persisting_partitions", "sealing_partitions", "history_active_gaps"}
+        phase_key = (progress.stage, progress.current_item if monthly else None)
+        self._phase_started.setdefault(phase_key, now)
         if progress.stage == "supplier_routing":
             self._route = progress
         if progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"}:
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
         self._record_supplier_failure(progress)
-        if self._should_suppress(progress):
+        if self._should_suppress(progress, now):
             return
-        self._print(self._progress_parts(progress))
+        parts = self._progress_parts(progress, now)
+        if not progress.stage.startswith("supplier_"):
+            label = "本月耗时" if monthly else "阶段耗时"
+            parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
+        self._print(parts)
 
     def _record_supplier_failure(self, progress: HistorySyncProgress) -> None:
         if not progress.stage.startswith("supplier_"):
@@ -134,15 +145,17 @@ class StderrHistorySyncProgress:
         elif progress.state == "failed":
             self._specific_failure = self._last_progress
 
-    def _should_suppress(self, progress: HistorySyncProgress) -> bool:
+    def _should_suppress(self, progress: HistorySyncProgress, now: float) -> bool:
         if progress.stage == "supplier_routing":
             return True
         if progress.stage == "persisting_partitions":
-            return self._suppress_partition_progress(progress)
+            return self._suppress_partition_progress(progress, now)
         if progress.stage in _PREPARATION_STAGES and progress.state in {"started", "waiting"}:
             return self._suppress_preparation(progress)
         if progress.state in {"started", "waiting"} and not (
-            progress.stage in {"history_active_gaps", "sealing_partitions"} and progress.state == "started"
+            progress.stage in {"history_active_gaps", "sealing_partitions", "preparing_partitions"}
+            or progress.stage in {"tencent_history", "persisting_prices"}
+            and progress.state == "waiting"
         ):
             return True
         if progress.stage in _DAILY_STAGES and progress.state == "completed":
@@ -151,8 +164,7 @@ class StderrHistorySyncProgress:
             progress.state == "completed" or progress.state == "failed" and self._specific_failure is not None
         )
 
-    def _suppress_partition_progress(self, progress: HistorySyncProgress) -> bool:
-        now = self._monotonic()
+    def _suppress_partition_progress(self, progress: HistorySyncProgress, now: float) -> bool:
         if progress.state == "completed" and progress.completed_units == progress.total_units:
             self._partition_reported_at = None
             return False
@@ -169,9 +181,9 @@ class StderrHistorySyncProgress:
         self._preparation_started = key
         return duplicate
 
-    def _progress_parts(self, progress: HistorySyncProgress) -> list[str]:
+    def _progress_parts(self, progress: HistorySyncProgress, now: float) -> list[str]:
         parts = [
-            _format_duration(self._elapsed()),
+            _format_duration(max(0.0, now - self._started_at)),
             _STAGE_LABELS[progress.stage],
             _STATE_LABELS[progress.state],
         ]

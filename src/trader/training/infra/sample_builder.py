@@ -10,6 +10,7 @@ from datetime import date
 from typing import Protocol, cast
 
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
+from trader.download.infra.history_month_partition import HistoryPartitionVerificationPhase
 from trader.recommendation.domain.market.feature_contracts import (
     QfqPriceAnchors,
     calculate_profile_qfq_alpha,
@@ -20,6 +21,7 @@ from trader.recommendation.domain.scoring.residualization import (
     residualize_exposure_with_context,
 )
 from trader.training.application.tomorrow_training import (
+    TomorrowTrainingPartitionValidationProgress,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
@@ -46,6 +48,8 @@ class TrainingHistorySource(Protocol):
         self,
         allowed_dates: frozenset[date],
         progress: Callable[[int], None] | None = None,
+        verification_progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None]
+        | None = None,
     ) -> Iterator[HistoryTrainingRow]: ...
 
 
@@ -198,6 +202,18 @@ def build_training_samples(request: TrainingSampleBuildRequest) -> None:
     for row in request.archive.iter_training_rows(
         request.window.readable_dates,
         state.report_scanned,
+        lambda completed, total, current, size, total_bytes, phase: _publish(
+            request.progress,
+            TomorrowTrainingProgress(
+                "partition_validation",
+                "completed" if completed == total else "running",
+                completed,
+                total,
+                partition_validation=TomorrowTrainingPartitionValidationProgress(
+                    current, total, size, total_bytes, phase
+                ),
+            ),
+        ),
     ):
         state.accept(row)
 

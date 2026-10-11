@@ -25,6 +25,16 @@ from trader.download.domain.qfq_window import (
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 
+class QfqPairPublicationError(RuntimeError):
+    """A later board failed after earlier paired transactions committed."""
+
+    def __init__(self, codes: tuple[str, ...], files: tuple[str, ...], rows: int) -> None:
+        super().__init__("qfq_pair_publication_failed")
+        self.codes = codes
+        self.files = files
+        self.rows = rows
+
+
 class QfqWindowPort(Protocol):
     def replace_paired_windows(
         self, peer: QfqWindowPort, windows: tuple[PublishedHistoryWindow, ...], source_identity: str
@@ -142,6 +152,7 @@ class UpdateQfqWindows:
             progress.changed.update(files)
             progress.rows += deleted_rows
         inspection_started = self.monotonic()
+        progress.publish("本地窗口检查", "开始 | 逐板块校验两档内容")
         v2_snapshot = self.v2.inspect_windows(allowed_codes)
         v3_snapshot = self.v3.inspect_windows(allowed_codes)
         progress.publish(
@@ -327,6 +338,14 @@ class UpdateQfqWindows:
             return ()
         try:
             self._commit_many(tuple(window for _job, window in downloaded), progress, progress.source)
+        except QfqPairPublicationError as exc:
+            progress.changed.update(exc.files)
+            progress.rows += exc.rows
+            progress.completed += len(exc.codes)
+            for job, window in downloaded:
+                if window.code not in exc.codes:
+                    progress.record_pending(job.security, exc)
+            return exc.codes
         except (RuntimeError, OSError, ValueError) as exc:
             for job, _window in downloaded:
                 progress.record_pending(job.security, exc)
@@ -385,9 +404,13 @@ class UpdateQfqWindows:
     def _commit_many(
         self, windows: tuple[PublishedHistoryWindow, ...], progress: QfqDownloadProgress, source: str
     ) -> None:
+        started = self.monotonic()
         files, delta = self.v2.replace_paired_windows(self.v3, windows, source)
         progress.changed.update(files)
         progress.rows += delta
+        elapsed = self.monotonic() - started
+        if elapsed >= 5.0:
+            progress.publish("配对落库", f"完成 | 股票 {len(windows)} | 变更行 {delta} | 阶段耗时 {elapsed:.2f} 秒")
 
     def _flush_checkpoint(self, checkpoint_codes: list[str], progress: QfqDownloadProgress, *, threshold: int) -> None:
         if self.cancel_requested() or len(checkpoint_codes) < threshold:
@@ -398,7 +421,8 @@ class UpdateQfqWindows:
     def _download(self, job: _DownloadJob) -> PublishedHistoryWindow:
         if self.cancel_requested():
             raise RuntimeError("qfq cancelled")
-        missing = tuple(day for day in job.dates if day not in {cell.trade_date for cell in job.previous.cells})
+        previous_dates = {cell.trade_date for cell in job.previous.cells}
+        missing = tuple(day for day in job.dates if day not in previous_dates)
         if job.previous.cells and len(missing) <= 5:
             count = max(3, len(missing) + 3)
             tail = self._fetch(job.security, job.dates[-count:])

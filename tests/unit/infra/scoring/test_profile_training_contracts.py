@@ -73,7 +73,7 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
             return 0
 
         @staticmethod
-        def iter_training_rows(readable_dates, progress):
+        def iter_training_rows(readable_dates, progress, verification_progress=None):
             requested.append(readable_dates)
             progress(0)
             return iter(())

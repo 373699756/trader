@@ -186,7 +186,7 @@ class _RateLimitedSdk:
 class BaoStockHistorySupplier:
     """Own one long-lived SDK child with bounded calls and retries."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - explicit clock, cancellation and independent price deadline
         self,
         configuration: HistorySyncConfiguration | None = None,
         *,
@@ -194,10 +194,15 @@ class BaoStockHistorySupplier:
         monotonic: Callable[[], float] = time.monotonic,
         cancel_requested: Callable[[], bool] = lambda: False,
         price_policy: BaoStockRequestPolicy | None = None,
+        price_total_seconds: float | None = None,
     ) -> None:
         settings = configuration or HistorySyncConfiguration()
         self._context_policy = BaoStockRequestPolicy(settings.supplier_timeout_seconds, settings.supplier_retries)
         self._price_policy = price_policy or self._context_policy
+        if price_total_seconds is not None and (not isfinite(price_total_seconds) or price_total_seconds <= 0):
+            raise ValueError("BaoStock price total deadline is invalid")
+        self._price_total_seconds = price_total_seconds
+        self._request_deadline = float("inf")
         if settings.progress_heartbeat_seconds > self._price_policy.timeout_seconds:
             raise ValueError("BaoStock price request policy is invalid")
         self._query_interval_seconds = settings.query_interval_seconds
@@ -259,11 +264,18 @@ class BaoStockHistorySupplier:
             _terminate(process)
 
     def _request(self, command: _LoadContext | _FetchCode) -> _Response:
+        self._request_deadline = (
+            self._monotonic() + self._price_total_seconds
+            if isinstance(command, _FetchCode) and self._price_total_seconds is not None
+            else float("inf")
+        )
         policy = self._context_policy if isinstance(command, _LoadContext) else self._price_policy
         failure = "supplier_process_failed"
         max_attempts = policy.retries + 1
         initial_stage, initial_item = _command_progress(command)
         for attempt_number in range(1, max_attempts + 1):
+            if self._monotonic() >= self._request_deadline:
+                raise RuntimeError("supplier_price_total_timeout")
             if self._cancel_requested():
                 raise RuntimeError("supplier_cancelled")
             attempt = _Attempt(attempt_number, max_attempts)
@@ -276,6 +288,8 @@ class BaoStockHistorySupplier:
             state = result.state
             failure = result.failure_reason or ""
             if result.response is not None and not failure:
+                if self._monotonic() >= self._request_deadline:
+                    raise RuntimeError("supplier_price_total_timeout")
                 self._publish(state.stage, "completed", attempt, state.current_item, self._elapsed(state))
                 return result.response
             self._publish_failure(
@@ -365,7 +379,9 @@ class BaoStockHistorySupplier:
         now = self._monotonic()
         if self._cancel_requested():
             raise RuntimeError("supplier_cancelled")
-        remaining = state.deadline - now
+        if now >= self._request_deadline:
+            raise RuntimeError("supplier_price_total_timeout")
+        remaining = min(state.deadline, self._request_deadline) - now
         if remaining <= 0:
             raise RuntimeError(f"{state.stage}_timeout")
         poll_seconds = min(remaining, max(0.0, state.next_heartbeat - now), 0.1)
@@ -418,7 +434,7 @@ class BaoStockHistorySupplier:
         self._process = process
         self._connection = parent
         started_at = self._monotonic()
-        deadline = started_at + self._context_policy.timeout_seconds
+        deadline = min(started_at + self._context_policy.timeout_seconds, self._request_deadline)
         next_heartbeat = started_at + self._heartbeat_interval_seconds
         self._publish("supplier_login", "started", attempt, None, 0.0)
         while not parent.poll(min(0.1, max(0.0, min(deadline, next_heartbeat) - self._monotonic()))):

@@ -21,6 +21,28 @@ def require_history_qfq_overlap(previous: BaoStockDailyCell, incoming: BaoStockD
         _require_qfq_prices(before, after)
 
 
+def qualify_price_overlap(
+    cells: tuple[BaoStockDailyCell, ...], previous: tuple[BaoStockDailyCell, ...], *, full_window: bool
+) -> tuple[BaoStockDailyCell, ...]:
+    prior = {cell.trade_date: cell for cell in previous}
+    anchored = full_window
+    for cell in cells:
+        before = prior.get(cell.trade_date)
+        if before is not None and before.obtained and cell.obtained:
+            require_history_qfq_overlap(before, cell)
+            anchored = True
+    result = []
+    for cell in cells:
+        before = prior.get(cell.trade_date)
+        if not cell.obtained and before is not None and before.obtained:
+            result.append(before)
+        elif anchored or not cell.obtained:
+            result.append(cell)
+        else:
+            result.append(BaoStockDailyCell(cell.code, cell.trade_date, "unknown_missing", None, None))
+    return tuple(result)
+
+
 def _require_qfq_prices(
     left: PublishedHistorySide | BaoStockDailySide, right: PublishedHistorySide | BaoStockDailySide
 ) -> None:

@@ -8,9 +8,10 @@ import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing
 from datetime import date
+from itertools import groupby
 from pathlib import Path
 
-from trader.download.application.update_qfq import QfqWindowPort
+from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
 from trader.download.infra.qfq_codec import decode_cell, encode_cell
@@ -145,17 +146,23 @@ class SQLiteQfqWindowCache:
             for name in self._existing_names():
                 with closing(self._read_connection(name)) as connection, connection:
                     connection.execute("BEGIN")
-                    identities = tuple(
-                        connection.execute("SELECT code,digest,source,cutoff,dates FROM identities ORDER BY code")
-                    )
-                    for code, digest, source, cutoff, dates_json in identities:
+                    identities = {
+                        row[0]: row[1:]
+                        for row in connection.execute(
+                            "SELECT code,digest,source,cutoff,dates FROM identities ORDER BY code"
+                        )
+                    }
+                    if any(qfq_shard_name(code) != name for code in identities if code in allowed_codes):
+                        raise RuntimeError("qfq code routed to wrong shard")
+                    bars = connection.execute("SELECT code,day,payload FROM bars ORDER BY code,day")
+                    for code, group in groupby(bars, key=lambda row: row[0]):
+                        rows = tuple((day, payload) for _, day, payload in group)
+                        identity = identities.pop(code, None)
+                        if identity is None:
+                            continue
+                        digest, source, cutoff, dates_json = identity
                         if code not in allowed_codes:
                             continue
-                        if qfq_shard_name(code) != name:
-                            raise RuntimeError("qfq code routed to wrong shard")
-                        rows = tuple(
-                            connection.execute("SELECT day,payload FROM bars WHERE code=? ORDER BY day", (code,))
-                        )
                         verified = False
                         dates: tuple[date, ...] = ()
                         try:
@@ -173,6 +180,11 @@ class SQLiteQfqWindowCache:
                         except (TypeError, ValueError):
                             verified = False
                         states.append(QfqWindowState(str(code), str(source), dates, verified))
+                    states.extend(
+                        QfqWindowState(str(code), str(identity[1]), (), False)
+                        for code, identity in identities.items()
+                        if code in allowed_codes
+                    )
         except sqlite3.Error as exc:
             raise RuntimeError("qfq window inspection failed") from exc
         return QfqWindowSnapshot(tuple(sorted(states, key=lambda state: state.code)))
@@ -264,7 +276,7 @@ class SQLiteQfqWindowCache:
                     identity = connection.execute("SELECT source FROM identities WHERE code=?", (code,)).fetchone()
                     if old == target and identity is not None and identity[0] == source_identity:
                         continue
-                    self._write_code(connection, code, target, source_identity)
+                    self._write_code(connection, code, target, source_identity, previous=old)
                     old_by_day = dict(old)
                     new_by_day = dict(target)
                     changed_rows += sum(
@@ -288,9 +300,12 @@ class SQLiteQfqWindowCache:
             grouped.setdefault(qfq_shard_name(window.code), []).append(window)
         changed: list[str] = []
         count = 0
+        committed: list[str] = []
         try:
             for name, batch in grouped.items():
                 self._prepare_pair_files(peer, name)
+                board_files: list[str] = []
+                board_rows = 0
                 with closing(self._write_connection(name)) as connection, connection:
                     connection.execute("ATTACH DATABASE ? AS paired", (str(peer.root / name),))
                     connection.execute("PRAGMA paired.journal_mode=DELETE")
@@ -298,11 +313,14 @@ class SQLiteQfqWindowCache:
                     connection.execute("BEGIN IMMEDIATE")
                     for cache, schema in ((self, "main"), (peer, "paired")):
                         shard_changed, delta = cache._write_pair_cells(connection, batch, schema, source_identity)
-                        count += delta
+                        board_rows += delta
                         if shard_changed:
-                            changed.append(f"{cache.root.name}/{name}")
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq_pair_publication_failed") from exc
+                            board_files.append(f"{cache.root.name}/{name}")
+                changed.extend(board_files)
+                count += board_rows
+                committed.extend(window.code for window in batch)
+        except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+            raise QfqPairPublicationError(tuple(committed), tuple(changed), count) from exc
         return tuple(changed), count
 
     def _prepare_pair_files(self, peer: SQLiteQfqWindowCache, name: str) -> None:
@@ -334,24 +352,25 @@ class SQLiteQfqWindowCache:
             ).fetchone()
             if old == target and identity == (source,):
                 continue
-            self._write_code(connection, window.code, target, source, schema=schema)
+            self._write_code(connection, window.code, target, source, schema=schema, previous=old)
             before, after = dict(old), dict(target)
             count += sum(before.get(day) != after.get(day) for day in before.keys() | after.keys())
             changed = True
         return changed, count
 
     @staticmethod
-    def _write_code(
+    def _write_code(  # noqa: PLR0913 - reuse the caller's exact preimage in the selected attached schema
         connection: sqlite3.Connection,
         code: str,
         rows: tuple[tuple[str, str], ...],
         source: str,
         *,
+        previous: tuple[tuple[str, str], ...],
         schema: str = "main",
     ) -> None:
         if schema not in ("main", "paired"):
             raise ValueError("qfq_sql_schema_invalid")
-        existing = dict(connection.execute(f"SELECT day,payload FROM {schema}.bars WHERE code=?", (code,)))
+        existing = dict(previous)
         incoming = dict(rows)
         connection.executemany(
             f"DELETE FROM {schema}.bars WHERE code=? AND day=?",

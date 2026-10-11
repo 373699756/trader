@@ -79,9 +79,9 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
             )
 
     class RecordingBaseline(Baseline):
-        def load_context(self, as_of, sessions, *, universe):
+        def load_context(self, as_of, sessions, *, universe, industry_cache=None):
             assert tuple(item.code for item in universe) == ("600001",)
-            return super().load_context(as_of, sessions, universe=universe)
+            return super().load_context(as_of, sessions, universe=universe, industry_cache=industry_cache)
 
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     baseline, prices = RecordingBaseline(dates), Prices()

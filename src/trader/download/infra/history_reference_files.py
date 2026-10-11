@@ -61,6 +61,23 @@ class HistoryReferenceIndex:
             industry = None
         return industry
 
+    def industry_sample_upper_bounds(
+        self, codes: Collection[str], dates: tuple[date, ...], required_sessions: int, anchors: frozenset[date]
+    ) -> tuple[tuple[str, int], ...]:
+        """Conservative upper bounds: price, listing and interior gaps can only reduce them."""
+        if len(dates) < required_sessions:
+            return ()
+        allowed = tuple(day for day in dates[required_sessions - 1 :] if day in anchors)
+        counts: dict[str, int] = defaultdict(int)
+        for code in codes:
+            if code not in self._eligible:
+                continue
+            for interval in self._intervals.get(code, ()):
+                start = bisect_left(allowed, interval.effective_from)
+                end = bisect_left(allowed, interval.effective_to) if interval.effective_to else len(allowed)
+                counts[interval.industry] += max(0, end - start)
+        return tuple(sorted(counts.items()))
+
     def has_industry_window(
         self,
         codes: Collection[str],

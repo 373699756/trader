@@ -36,6 +36,33 @@ class _Clock:
         return self.value
 
 
+def test_price_total_deadline_survives_page_activity_and_bounds_retries(monkeypatch) -> None:
+    import trader.download.infra.baostock_sync_supplier as supplier_module
+
+    clock = _Clock()
+    supplier = BaoStockHistorySupplier(monotonic=clock, price_total_seconds=180.0)
+    attempts = []
+
+    def request(command, state, attempt, timeout):
+        attempts.append(attempt.number)
+        clock.value += 100.0
+        return supplier_module._AttemptResult(None, state, "supplier_daily_qfq_timeout")
+
+    monkeypatch.setattr(supplier, "_request_once", request)
+    monkeypatch.setattr(supplier, "close", lambda: None)
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
+        supplier.fetch_code(security, (date(2026, 10, 9),))
+    assert attempts == [1, 2]
+    clock.value = 179.0
+    state = supplier._handle_activity(
+        _Activity("supplier_daily_raw", "started"), _RequestState("supplier_daily_raw", None, 0), _Attempt(1, 3), 45
+    )
+    clock.value = 180.0
+    with pytest.raises(RuntimeError, match="supplier_price_total_timeout"):
+        supplier._receive(None, state, _Attempt(1, 3))
+
+
 class _SilentConnection:
     def __init__(self, clock: _Clock) -> None:
         self._clock = clock

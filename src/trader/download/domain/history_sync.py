@@ -182,6 +182,7 @@ class HistorySyncProgress:
     st_summary: HistoryStEligibilitySummary | None = None
     failure_reason: str | None = None
     cache_hit: bool | None = None
+    required_free_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -197,6 +198,14 @@ class HistorySyncProgress:
             or self.call_elapsed_seconds < 0.0
             or (self.current_item is not None and _PROGRESS_ITEM.fullmatch(self.current_item) is None)
             or self.supplier_source not in (None, "baostock", "tencent")
+            or (
+                self.required_free_bytes is not None
+                and (
+                    type(self.required_free_bytes) is not int
+                    or self.required_free_bytes < 0
+                    or self.stage != "preparing_partitions"
+                )
+            )
             or (
                 self.cache_hit is not None
                 and (type(self.cache_hit) is not bool or self.stage != "supplier_industry" or self.state != "completed")

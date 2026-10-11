@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.application.update_qfq import UpdateQfqWindows
+from trader.download.application.update_qfq import QfqPairPublicationError, UpdateQfqWindows
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockDailyCell,
@@ -72,6 +72,43 @@ def _fingerprints(root: Path) -> dict[str, tuple[str, int]]:
         for path in root.iterdir()
         if path.is_file()
     }
+
+
+def test_paired_board_failure_reports_only_durable_boards(tmp_path, monkeypatch) -> None:
+    primary, peer = SQLiteQfqWindowCache(tmp_path, "v2"), SQLiteQfqWindowCache(tmp_path, "v3")
+    prepare = primary._prepare_pair_files
+
+    def fail_second(cache, name):
+        if name == "qfq_szse_chinext.sqlite3":
+            raise OSError("fixture_second_board_failed")
+        prepare(cache, name)
+
+    monkeypatch.setattr(primary, "_prepare_pair_files", fail_second)
+    with pytest.raises(QfqPairPublicationError) as failure:
+        primary.replace_paired_windows(peer, (_window("600001"), _window("300001")), "fixture")
+    assert failure.value.codes == ("600001",)
+    assert set(failure.value.files) == {"v2/qfq_sse_main.sqlite3", "v3/qfq_sse_main.sqlite3"}
+    assert failure.value.rows == 251 + 61
+    assert len(primary.read_code("600001").cells) == 251
+    assert len(peer.read_code("600001").cells) == 61
+    assert primary.read_code("300001").cells == peer.read_code("300001").cells == ()
+
+
+def test_inspection_streams_each_board_without_per_code_queries(tmp_path, monkeypatch) -> None:
+    cache = SQLiteQfqWindowCache(tmp_path, "v2")
+    cache.replace_windows((_window("600001"), _window("600002")), "fixture")
+    read = cache._read_connection
+    statements = []
+
+    def traced(name):
+        connection = read(name)
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(cache, "_read_connection", traced)
+    result = cache.inspect_windows(frozenset(("600001", "600002")))
+    assert len(result.states) == 2 and all(state.verified for state in result.states)
+    assert sum(sql.startswith("SELECT") for sql in statements) == 2
 
 
 @pytest.mark.parametrize("profile,sessions", (("v2", 251), ("v3", 61)))
@@ -838,10 +875,10 @@ def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repa
     updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery())
     write = updater.v3._write_code
 
-    def fail(connection, code, rows, source, *, schema="main"):
+    def fail(connection, code, rows, source, *, schema="main", previous=None):
         if schema == "paired":
             raise RuntimeError("interrupted second profile")
-        return write(connection, code, rows, source, schema=schema)
+        return write(connection, code, rows, source, schema=schema, previous=previous)
 
     monkeypatch.setattr(updater.v3, "_write_code", fail)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)

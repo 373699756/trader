@@ -408,7 +408,7 @@ def test_failed_baostock_gap_reports_the_bounded_reason(capsys):
     assert (
         capsys.readouterr().err.strip()
         == "00:00:00 | BaoStock补缺 | 失败 | 1/2 (50.00%) | 股票 600001 | 来源 BaoStock | 请求 5 日 "
-        "| 错误 qfq_daily_query_failed"
+        "| 错误 qfq_daily_query_failed | 阶段耗时 00:00:00"
     )
 
 
@@ -420,8 +420,8 @@ def test_history_st_reference_batches_report_distinct_counts(capsys):
 
     lines = capsys.readouterr().err.splitlines()
     assert lines == [
-        "00:00:00 | 历史ST名单 | 检查中 | 8/5224 (0.15%)",
-        "00:00:00 | 历史ST名单 | 检查中 | 16/5224 (0.31%)",
+        "00:00:00 | 历史ST名单 | 检查中 | 8/5224 (0.15%) | 阶段耗时 00:00:00",
+        "00:00:00 | 历史ST名单 | 检查中 | 16/5224 (0.31%) | 阶段耗时 00:00:00",
     ]
 
 
@@ -446,6 +446,6 @@ def test_active_gap_scan_prints_the_month_before_the_query_starts(capsys):
     progress.publish(HistorySyncProgress("history_active_gaps", "completed", 89, 100, "2025-11"))
 
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | 活动历史缺口 | 开始 | 88/100 (88.00%) | 月份 2025-11",
-        "00:00:00 | 活动历史缺口 | 完成 | 89/100 (89.00%) | 月份 2025-11",
+        "00:00:00 | 活动历史缺口 | 开始 | 88/100 (88.00%) | 月份 2025-11 | 本月耗时 00:00:00",
+        "00:00:00 | 活动历史缺口 | 完成 | 89/100 (89.00%) | 月份 2025-11 | 本月耗时 00:00:00",
     ]

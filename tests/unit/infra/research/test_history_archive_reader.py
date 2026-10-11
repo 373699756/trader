@@ -62,6 +62,35 @@ def _revision(code: str, day: date, sequence: int = 1) -> HistoryRevision:
     )
 
 
+def test_training_stream_verifies_consumes_and_releases_each_month(tmp_path: Path, monkeypatch) -> None:
+    dates = (date(2026, 8, 31), date(2026, 9, 1))
+    snapshot = _build_snapshot(tmp_path, tuple(_revision("600001", day) for day in dates))
+    events = []
+    verify = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
+    consume = SQLiteHistoryMonthPartitionRepository.iter_training_rows
+    release = SQLiteHistoryMonthPartitionRepository.release_read_pages
+
+    def verifying(cls, path, reference, progress=None, **kwargs):
+        assert kwargs["retain_pages"] is True
+        events.append(("verify", path.stem))
+        return verify(cls, path, reference, progress, **kwargs)
+
+    def consuming(self, *args, **kwargs):
+        events.append(("consume", self._path.stem))
+        yield from consume(self, *args, **kwargs)
+
+    def releasing(self):
+        events.append(("release", self._path.stem))
+        release(self)
+
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify_published_bytes", classmethod(verifying))
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "iter_training_rows", consuming)
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "release_read_pages", releasing)
+    rows = tuple(SQLiteHistoryArchiveReader(tmp_path).iter_training_rows(snapshot, dates, ("600001",)))
+    assert len(rows) == 2
+    assert events == [(phase, month) for month in ("08", "09") for phase in ("verify", "consume", "release")]
+
+
 def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryActiveSnapshot:
     grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
     for row in rows:
@@ -202,9 +231,9 @@ def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
     published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
     published_calls: list[HistorySnapshotPartition] = []
 
-    def verify_published(cls, path, reference, progress=None):
+    def verify_published(cls, path, reference, progress=None, **kwargs):
         published_calls.append(reference)
-        return published(cls, path, reference, progress)
+        return published(cls, path, reference, progress, **kwargs)
 
     def unexpected_full_verify(*_args, **_kwargs):
         pytest.fail("training trust must not repeat SQLite quick_check and row-count scans")
@@ -250,9 +279,9 @@ def test_explicit_full_verification_upgrades_published_byte_trust(
     full = SQLiteHistoryMonthPartitionRepository.verify.__func__
     calls: list[str] = []
 
-    def verify_published(cls, path, reference, progress=None):
+    def verify_published(cls, path, reference, progress=None, **kwargs):
         calls.append("published_bytes")
-        return published(cls, path, reference, progress)
+        return published(cls, path, reference, progress, **kwargs)
 
     def verify_full(cls, path, reference, progress=None):
         calls.append("full")

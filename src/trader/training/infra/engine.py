@@ -71,6 +71,10 @@ TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
 class _TrainingInputArchive(TrainingHistorySource, Protocol):
     snapshot: HistoryTrainingInputSnapshot
 
+    def industry_sample_upper_bounds(
+        self, allowed_dates: frozenset[date], required_sessions: int, anchors: frozenset[date]
+    ) -> tuple[tuple[str, int], ...]: ...
+
     @property
     def archive_root(self) -> Path: ...
 
@@ -267,7 +271,6 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
     cache: TrainingSampleCache | None = None
     try:
         training_window = _require_industry_coverage(archive, split, request.profile.history_sessions)
-        _verify_partitions_once(archive, request.progress)
         request.train_root.mkdir(parents=True, exist_ok=True)
         _cleanup_abandoned_workspaces(request.train_root, request.contracts)
         feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
@@ -278,12 +281,22 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                 request.profile.profile_id,
                 split.content_hash,
                 feature_count,
-                tuple(_training_contract_hash(request.profile, contract) for contract in request.contracts),
+                "monthly_samples",
+                request.profile.history_sessions,
+                request.profile.momentum_horizons,
+                request.profile.market_state_momentum_horizons,
+                request.profile.raw_feature_manifest.content_hash,
+                TRAINED_HEAD_EXPOSURE_CONTRACT,
+                tuple(
+                    (contract.feature_manifest.content_hash, contract.label_target, contract.maturity_sessions)
+                    for contract in request.contracts
+                ),
             )
         )
         cache = TrainingSampleCache(request.train_root, cache_identity, feature_count, split.content_hash)
         _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
         with cache.open() as samples:
+            _verify_cached_sample_input(cache, archive, request.progress)
             _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
             metrics = _prepare_samples(
                 TrainingSampleBuildRequest(
@@ -327,6 +340,13 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
     return TrainingRunResult(run_id, snapshot.active_snapshot_hash, peak_bytes, ordered)
 
 
+def _verify_cached_sample_input(
+    cache: TrainingSampleCache, archive: _TrainingInputArchive, progress: TomorrowTrainingProgressPort | None
+) -> None:
+    if cache.reused:
+        _verify_partitions_once(archive, progress)
+
+
 def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleCache) -> tuple[TargetMetric, ...]:
     if not cache.reused:
         build_training_samples(request)
@@ -357,6 +377,11 @@ def _require_industry_coverage(
     ):
         if not archive.has_industry_window(window.readable_dates, history_sessions, anchor_dates=frozenset(anchors)):
             raise ValueError("history_industry_split_coverage_insufficient")
+    bounds = archive.industry_sample_upper_bounds(
+        window.readable_dates, history_sessions, frozenset(split.model_fit_dates)
+    )
+    if not any(count >= MODEL_FITTING_PARAMETERS.minimum_industry_training_rows for _, count in bounds):
+        raise ValueError("history_industry_training_rows_insufficient")
     return window
 
 
@@ -886,6 +911,7 @@ def _reason(exc: BaseException) -> str:
         "profile_training_rows_empty",
         "history_industry_coverage_insufficient",
         "history_industry_split_coverage_insufficient",
+        "history_industry_training_rows_insufficient",
         "history_training_data_incomplete",
         "training_split_unavailable",
     }:

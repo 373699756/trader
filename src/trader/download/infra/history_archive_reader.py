@@ -77,6 +77,26 @@ class HistoryPartitionRevisionComparison:
             raise ValueError("history partition revision comparison sequences are invalid")
 
 
+def _with_training_industry(row: HistoryTrainingRow, index: HistoryReferenceIndex) -> HistoryTrainingRow:
+    industry = index.industry_on(row.code, row.trade_date)
+    return replace(row, industry=industry.industry if index.eligible(row.code) and industry is not None else None)
+
+
+def _training_months(snapshot: HistoryActiveSnapshot, dates: tuple[date, ...]) -> tuple[tuple[int, int], ...]:
+    if (
+        not dates
+        or len(dates) > BAOSTOCK_MAX_SESSIONS
+        or dates != tuple(sorted(set(dates)))
+        or dates[-1] > snapshot.data_cutoff
+    ):
+        raise ValueError("history training calendar is invalid")
+    expected = route_history_months(dates[0], dates[-1])
+    available = tuple(_reference_month(item) for item in snapshot.partitions if _reference_month(item) in expected)
+    if available != expected:
+        raise HistoryArchiveReadError("history snapshot does not cover the active calendar")
+    return expected
+
+
 def route_history_months(start: date, end: date) -> tuple[tuple[int, int], ...]:
     if start > end:
         raise ValueError("history month route is invalid")
@@ -439,50 +459,48 @@ class SQLiteHistoryArchiveReader:
         calendar_dates: tuple[date, ...],
         codes: Collection[str],
         progress: Callable[[int], None] | None = None,
+        verification_progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None]
+        | None = None,
     ) -> Iterator[HistoryTrainingRow]:
         """Stream only the typed fields consumed by training-owned rolling state."""
 
         dates = tuple(calendar_dates)
-        if (
-            not dates
-            or len(dates) > BAOSTOCK_MAX_SESSIONS
-            or dates != tuple(sorted(set(dates)))
-            or dates[-1] > snapshot.data_cutoff
-        ):
-            raise ValueError("history training calendar is invalid")
         allowed_codes = _training_codes(codes)
-        expected_months = route_history_months(dates[0], dates[-1])
-        available_months = tuple(
-            _reference_month(reference)
-            for reference in snapshot.partitions
-            if _reference_month(reference) in expected_months
-        )
-        if available_months != expected_months:
-            raise HistoryArchiveReadError("history snapshot does not cover the active calendar")
+        expected_months = _training_months(snapshot, dates)
         allowed_dates = frozenset(dates)
         processed_rows = 0
         reference_index = self.reference_index(snapshot)
-        for year, month in expected_months:
-            repository = self._verified_repository(self._reference(snapshot, year, month))
-            for row in repository.iter_training_rows(
-                dates[0],
-                dates[-1],
-                snapshot_sequence=snapshot.sequence,
-            ):
-                if row.code not in allowed_codes:
+        total = len(snapshot.partitions)
+        for completed, reference in enumerate(snapshot.partitions, start=1):
+            repository = self._repository_with_trust(
+                reference,
+                None if verification_progress is None else _partition_progress(verification_progress, completed, total),
+                required_level=None,
+                establish_level="published_bytes",
+                retain_pages=True,
+            )
+            try:
+                if verification_progress is not None:
+                    size = (self._root / reference.relative_path).stat().st_size
+                    verification_progress(completed, total, completed, size, size, "hash")
+                if _reference_month(reference) not in expected_months:
                     continue
-                processed_rows += 1
-                if row.trade_date not in allowed_dates:
-                    raise HistoryArchiveReadError("history training row is outside the active calendar")
-                industry = reference_index.industry_on(row.code, row.trade_date)
-                yield replace(
-                    row,
-                    industry=(
-                        industry.industry if reference_index.eligible(row.code) and industry is not None else None
-                    ),
-                )
-                if progress is not None and processed_rows % 512 == 0:
-                    progress(processed_rows)
+                for row in repository.iter_training_rows(dates[0], dates[-1], snapshot_sequence=snapshot.sequence):
+                    if row.code not in allowed_codes:
+                        continue
+                    processed_rows += 1
+                    if row.trade_date not in allowed_dates:
+                        raise HistoryArchiveReadError("history training row is outside the active calendar")
+                    yield _with_training_industry(row, reference_index)
+                    if progress is not None and processed_rows % 512 == 0:
+                        progress(processed_rows)
+                if (
+                    _partition_file_identity(self._root / reference.relative_path)
+                    != self._verified[reference.relative_path].identity
+                ):
+                    raise HistoryArchiveReadError("history snapshot partition changed during consumption")
+            finally:
+                repository.release_read_pages()
         if progress is not None:
             progress(processed_rows)
 
@@ -516,6 +534,7 @@ class SQLiteHistoryArchiveReader:
         *,
         required_level: Literal["full"] | None,
         establish_level: Literal["published_bytes", "full"],
+        retain_pages: bool = False,
     ) -> SQLiteHistoryMonthPartitionRepository:
         path = self._root / reference.relative_path
         with self._verification_lock:
@@ -533,7 +552,9 @@ class SQLiteHistoryArchiveReader:
                 if establish_level == "full":
                     SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
                 else:
-                    SQLiteHistoryMonthPartitionRepository.verify_published_bytes(path, reference, progress)
+                    SQLiteHistoryMonthPartitionRepository.verify_published_bytes(
+                        path, reference, progress, retain_pages=retain_pages
+                    )
                 if _partition_file_identity(path) != identity:
                     raise HistoryArchiveReadError("history snapshot partition changed during verification")
             except (HistoryArchiveReadError, HistoryMonthPartitionError, OSError) as exc:

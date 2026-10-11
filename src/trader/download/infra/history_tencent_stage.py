@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_control import HistorySnapshotPartition
+from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import HistoryGapSummary, HistoryTencentSummary
 from trader.download.domain.published_history import PublishedHistoryWindow
+from trader.download.infra.history_revision_codec import decode_history_revision, encode_history_revision
 from trader.download.infra.published_history_codec import (
     decode_published_history_cell_payload,
     encode_published_history_cell,
@@ -28,6 +30,12 @@ CREATE TABLE IF NOT EXISTS candidates (
     payload_json TEXT NOT NULL,
     price_pair_complete INTEGER NOT NULL CHECK(price_pair_complete IN (0, 1)),
     PRIMARY KEY (code, trade_date)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS qualified_prices (
+    trade_date TEXT NOT NULL,
+    code TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY (trade_date, code)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS outcomes (
     code TEXT PRIMARY KEY,
@@ -178,6 +186,30 @@ class HistoryTencentStage:
                     "ON CONFLICT(code) DO UPDATE SET failure_reason=excluded.failure_reason",
                     (code, reason),
                 )
+
+    def save_qualified(self, batches: tuple[tuple[str, tuple[HistoryRevision, ...], int], ...]) -> None:
+        """Atomically move supplier candidates to date-clustered qualified rows in the same database."""
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for code, revisions, missing in batches:
+                connection.execute("DELETE FROM candidates WHERE code=?", (code,))
+                connection.executemany(
+                    "INSERT OR REPLACE INTO qualified_prices VALUES (?,?,?)",
+                    ((item.trade_date.isoformat(), code, encode_history_revision(item)) for item in revisions),
+                )
+                connection.execute("INSERT OR REPLACE INTO supplemented VALUES (?,?)", (code, missing))
+
+    def iter_qualified_month(self, year: int, month: int) -> Generator[HistoryRevision, None, None]:
+        start = date(year, month, 1).isoformat()
+        end = date(year + (month == 12), 1 if month == 12 else month + 1, 1).isoformat()
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            cursor = connection.execute(
+                "SELECT payload_json FROM qualified_prices "
+                "WHERE trade_date>=? AND trade_date<? ORDER BY trade_date,code",
+                (start, end),
+            )
+            for (payload,) in cursor:
+                yield decode_history_revision(payload)
 
     def read_supplement_context(
         self,

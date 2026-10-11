@@ -25,8 +25,8 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
-from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync
@@ -153,9 +153,9 @@ def test_training_input_reuses_download_seal_after_hash_verification(tmp_path: P
     published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
     calls: list[HistorySnapshotPartition] = []
 
-    def verify_published(cls, path, reference, progress=None):
+    def verify_published(cls, path, reference, progress=None, **kwargs):
         calls.append(reference)
-        return published(cls, path, reference, progress)
+        return published(cls, path, reference, progress, **kwargs)
 
     def unexpected_full_verify(*_args, **_kwargs):
         pytest.fail("training must reuse the download seal after matching its partition hash")
@@ -393,9 +393,12 @@ def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_activ
         "latest_month",
         "single_code_window",
         "single_day_board",
+        "training_projection",
+        "active_price_gaps",
     )
     assert report.revision_write.requested_rows == 10
     assert report.revision_write.transaction_count == 1
+    assert report.revision_write.seal_ms >= 0
 
 
 def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tmp_path: Path) -> None:

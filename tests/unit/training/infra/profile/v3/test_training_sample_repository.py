@@ -37,6 +37,7 @@ def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: 
     validation_day = split.confirmation_dates[0]
     with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
         assert repository._connection.execute("PRAGMA cache_size").fetchone() == (-32768,)
+        assert repository.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
         repository.add_final(
             (
                 _sample("600002", training_day),
@@ -47,6 +48,7 @@ def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: 
                 _sample("600006", training_day, "软件", targets=(0.02, None, None, None, None, None)),
             )
         )
+        assert repository.industry_counts(TOMORROW_HEAD_CONTRACT) == ()
         repository.prepare_for_model_fitting(split)
         repository.require_split(split)
         with pytest.raises(RuntimeError, match="identity is inconsistent"):
@@ -54,8 +56,12 @@ def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: 
         with pytest.raises(RuntimeError, match="already prepared"):
             repository.prepare_for_model_fitting(split)
 
+        statements = []
+        repository._connection.set_trace_callback(statements.append)
         tomorrow = next(item for item in repository.industry_counts(TOMORROW_HEAD_CONTRACT) if item.industry == "银行")
         d25 = next(item for item in repository.industry_counts(D25_HEAD_CONTRACT) if item.industry == "银行")
+        repository._connection.set_trace_callback(None)
+        assert len(statements) == 1 and "COUNT(samples.target_t1)" in statements[0]
         tomorrow_data = repository.industry_data(tomorrow, TOMORROW_HEAD_CONTRACT)
         d25_data = repository.industry_data(d25, D25_HEAD_CONTRACT)
 

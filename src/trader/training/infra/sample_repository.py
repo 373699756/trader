@@ -79,6 +79,7 @@ class SQLiteTrainingSampleRepository:
         self._path = path
         self._feature_count = feature_count
         self._prepared_split_hash = prepared_split_hash
+        self._counts_by_target: dict[str, tuple[TrainingIndustryCounts, ...]] = {}
         if prepared_split_hash is not None:
             self._connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
             self._connection.execute(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")
@@ -127,6 +128,7 @@ class SQLiteTrainingSampleRepository:
         self.close()
 
     def add_final(self, samples: Iterable[TrainingSample]) -> None:
+        self._counts_by_target.clear()
         placeholders = ", ".join("?" for _ in range(5 + self._feature_count + len(_TARGET_COLUMNS)))
         self._connection.executemany(
             f"INSERT INTO samples VALUES ({placeholders})",  # noqa: S608
@@ -136,6 +138,7 @@ class SQLiteTrainingSampleRepository:
     def prepare_for_model_fitting(self, split: BaoStockTrainingSplit) -> None:
         if self._prepared_split_hash is not None:
             raise RuntimeError("training sample split is already prepared")
+        self._counts_by_target.clear()
         split_dates = (
             *((day.isoformat(), "training") for day in split.model_fit_dates),
             *((day.isoformat(), "early_stopping") for day in split.early_stopping_dates),
@@ -156,26 +159,33 @@ class SQLiteTrainingSampleRepository:
 
     def industry_counts(self, contract: TrainedHeadContract) -> tuple[TrainingIndustryCounts, ...]:
         target = _require_target_column(contract.target_column)
+        if not self._counts_by_target:
+            self._prepare_industry_counts()
+        return self._counts_by_target[target]
+
+    def _prepare_industry_counts(self) -> None:
+        aggregates = ",".join(f"COUNT(samples.{target})" for target in _TARGET_COLUMNS)
         rows = self._connection.execute(
-            f"SELECT samples.industry, splits.split_name, COUNT(*) FROM samples "  # noqa: S608
+            f"SELECT samples.industry, splits.split_name, {aggregates} FROM samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
-            f"WHERE samples.{target} IS NOT NULL "  # noqa: S608
             "GROUP BY samples.industry, splits.split_name ORDER BY samples.industry, splits.split_name"
         )
-        counts: dict[str, dict[TrainingSplitName, int]] = {}
-        for industry, split_name, count in rows:
-            name = cast(TrainingSplitName, str(split_name))
-            counts.setdefault(str(industry), {})[name] = int(count)
-        return tuple(
-            TrainingIndustryCounts(
-                industry,
-                values.get("training", 0),
-                values.get("early_stopping", 0),
-                values.get("calibration", 0),
-                values.get("validation", 0),
+        grouped: dict[str, dict[str, dict[TrainingSplitName, int]]] = {target: {} for target in _TARGET_COLUMNS}
+        for industry, split_name, *counts in rows:
+            for target, count in zip(_TARGET_COLUMNS, counts, strict=True):
+                if count:
+                    grouped[target].setdefault(str(industry), {})[cast(TrainingSplitName, split_name)] = int(count)
+        for target, industries in grouped.items():
+            self._counts_by_target[target] = tuple(
+                TrainingIndustryCounts(
+                    industry,
+                    values.get("training", 0),
+                    values.get("early_stopping", 0),
+                    values.get("calibration", 0),
+                    values.get("validation", 0),
+                )
+                for industry, values in industries.items()
             )
-            for industry, values in counts.items()
-        )
 
     def industry_data(
         self,
@@ -192,7 +202,6 @@ class SQLiteTrainingSampleRepository:
             "training": 0,
             "early_stopping": 0,
             "calibration": 0,
-            "validation": 0,
         }
         feature_sql = ", ".join(f"samples.f{position}" for position in contract.feature_positions)
         target = _require_target_column(contract.target_column)
@@ -200,6 +209,7 @@ class SQLiteTrainingSampleRepository:
             f"SELECT splits.split_name, {feature_sql}, samples.{target} FROM samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
             f"WHERE samples.industry=? AND samples.{target} IS NOT NULL "  # noqa: S608
+            "AND splits.split_name != 'validation' "
             "ORDER BY samples.trade_date, samples.code",
             (counts.industry,),
         )
@@ -208,8 +218,6 @@ class SQLiteTrainingSampleRepository:
                 split_name = cast(TrainingSplitName, str(row[0]))
                 position = positions[split_name]
                 positions[split_name] += 1
-                if split_name == "validation":
-                    continue
                 matrix = matrices[split_name]
                 matrix.features[position] = tuple(float(cast(float, value)) for value in row[1:-1])
                 matrix.labels[position] = float(cast(float, row[-1]))
@@ -217,12 +225,11 @@ class SQLiteTrainingSampleRepository:
             "training": counts.training,
             "early_stopping": counts.early_stopping,
             "calibration": counts.calibration,
-            "validation": counts.validation,
         }
         if positions != expected:
             raise RuntimeError("training sample split count changed during its read")
         return TrainingIndustryData(
-            matrices["training"], matrices["early_stopping"], matrices["calibration"], positions["validation"]
+            matrices["training"], matrices["early_stopping"], matrices["calibration"], counts.validation
         )
 
     def split_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:

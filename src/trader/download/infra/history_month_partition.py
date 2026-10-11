@@ -5,11 +5,13 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import sqlite3
-from collections.abc import Callable, Collection, Iterable, Iterator
-from contextlib import closing
+from collections.abc import Callable, Collection, Generator, Iterable, Iterator
+from contextlib import closing, nullcontext
 from dataclasses import dataclass
 from datetime import date
+from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
 
@@ -21,6 +23,7 @@ from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,
 )
+from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.published_history_codec import decode_published_history_cell
 
 _SCHEMA_IDENTITY = "history_price_pairs"
@@ -221,7 +224,7 @@ class HistoryMonthPartitionConflictError(HistoryMonthPartitionError):
 
 
 class SQLiteHistoryMonthPartitionRepository:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - physical identity and optional diagnostic/cancellation boundaries
         self,
         path: Path,
         calendar_year: int,
@@ -229,6 +232,7 @@ class SQLiteHistoryMonthPartitionRepository:
         *,
         statement_trace: Callable[[str], None] | None = None,
         immutable_read: bool = False,
+        activity: HistorySqliteActivity | None = None,
     ) -> None:
         if calendar_year < 1990 or not 1 <= calendar_month <= 12:
             raise ValueError("history month partition identity is invalid")
@@ -237,6 +241,7 @@ class SQLiteHistoryMonthPartitionRepository:
         self._calendar_month = calendar_month
         self._statement_trace = statement_trace
         self._immutable_read = immutable_read
+        self._activity = activity
 
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -268,11 +273,15 @@ class SQLiteHistoryMonthPartitionRepository:
 
     def changed_revisions(self, revisions: tuple[HistoryRevision, ...]) -> tuple[HistoryRevision, ...]:
         """Compare bounded incoming keys with their latest visible price identity, read-only."""
-        changed: list[HistoryRevision] = []
+        return tuple(item for batch in self.iter_changed_batches(revisions) for item in batch)
+
+    def iter_changed_batches(
+        self, revisions: Iterable[HistoryRevision]
+    ) -> Generator[tuple[HistoryRevision, ...], None, None]:
+        incoming = iter(revisions)
         with closing(self._read_connection()) as connection:
             self._require_metadata(connection)
-            for offset in range(0, len(revisions), 200):
-                batch = revisions[offset : offset + 200]
+            while batch := tuple(islice(incoming, 200)):
                 placeholders = ",".join("(?,?,?)" for _ in batch)
                 rows = connection.execute(
                     "WITH requested(day,code,sequence) AS (VALUES " + placeholders + ") "
@@ -283,8 +292,59 @@ class SQLiteHistoryMonthPartitionRepository:
                         v for item in batch for v in (item.trade_date.isoformat(), item.code, item.first_seen_sequence)
                     ),
                 ).fetchall()
-                changed.extend(item for item, row in zip(batch, rows, strict=True) if item.revision_id != row[0])
-        return tuple(changed)
+                changed = tuple(item for item, row in zip(batch, rows, strict=True) if item.revision_id != row[0])
+                if changed:
+                    yield changed
+
+    def save_revision_batches(self, revisions: Iterable[HistoryRevision]) -> None:
+        """Keep one month connection warm; bound each durable transaction to 4096 rows."""
+        incoming = iter(revisions)
+        try:
+            with (
+                closing(self._write_connection()) as connection,
+                self._activity.watch(connection) if self._activity else nullcontext(),
+            ):
+                self._require_metadata(connection)
+                while batch := tuple(islice(incoming, 4096)):
+                    if shutil.disk_usage(self._path.parent).free < 64 * 1024**2:
+                        raise HistoryMonthPartitionError("disk_space_insufficient")
+                    with connection:
+                        connection.execute("BEGIN IMMEDIATE")
+                        self._save_batch(connection, self._prepare_revisions(batch))
+                        connection.execute("DROP TABLE requested_history_revisions")
+        except sqlite3.Error as exc:
+            raise HistoryMonthPartitionError("history month revision write failed") from exc
+
+    def read_price_keys(self, keys: tuple[tuple[str, date], ...], sequence: int) -> tuple[HistoryRevision, ...]:
+        """Read a bounded stock batch through exact observation/record keys on one connection."""
+        result: list[HistoryRevision] = []
+        with (
+            closing(self._read_connection()) as connection,
+            self._activity.watch(connection) if self._activity else nullcontext(),
+        ):
+            self._require_metadata(connection)
+            for start in range(0, len(keys), 200):
+                if self._activity is not None:
+                    self._activity.tick()
+                batch = keys[start : start + 200]
+                values = ",".join("(?,?)" for _ in batch)
+                sql = (
+                    "WITH requested(code,day) AS (VALUES "
+                    + values
+                    + ") SELECT "
+                    + _REVISION_COLUMNS
+                    + " FROM requested AS k CROSS JOIN daily_records AS records "
+                    "WHERE records.trade_date=k.day AND records.code=k.code AND records.revision_id=("
+                    "SELECT o.revision_id FROM daily_observations o WHERE o.trade_date=k.day AND o.code=k.code "
+                    "AND o.sync_sequence<=? ORDER BY o.sync_sequence DESC LIMIT 1)"
+                )
+                result.extend(
+                    _decode_row(row)
+                    for row in connection.execute(
+                        sql, (*tuple(value for code, day in batch for value in (code, day.isoformat())), sequence)
+                    )
+                )
+        return tuple(result)
 
     def contains_before(self, first_date: date) -> bool:
         with closing(self._read_connection()) as connection:
@@ -335,7 +395,10 @@ class SQLiteHistoryMonthPartitionRepository:
 
     def missing_price_dates(self, snapshot_sequence: int) -> tuple[tuple[str, date], ...]:
         """Project only unresolved latest observations, without decoding daily payloads."""
-        with closing(self._read_connection()) as connection:
+        with (
+            closing(self._read_connection()) as connection,
+            self._activity.watch(connection) if self._activity else nullcontext(),
+        ):
             self._require_metadata(connection)
             rows = connection.execute(
                 "SELECT r.code,r.trade_date FROM daily_records r INDEXED BY history_month_price_gap_idx "
@@ -579,8 +642,15 @@ class SQLiteHistoryMonthPartitionRepository:
                 checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if checkpoint is None or checkpoint[0] != 0:
                     raise HistoryMonthPartitionError("history month WAL checkpoint failed")
-            database_sha256 = _sha256_file(self._path, release_cache=False)
-            with closing(self._verification_connection()) as connection:
+            database_sha256 = _sha256_file(
+                self._path,
+                lambda *_: self._activity.tick() if self._activity is not None else None,
+                release_cache=False,
+            )
+            with (
+                closing(self._verification_connection()) as connection,
+                self._activity.watch(connection) if self._activity else nullcontext(),
+            ):
                 self._require_metadata(connection)
                 self._require_schema(connection)
                 check = connection.execute("PRAGMA quick_check").fetchone()
@@ -698,6 +768,8 @@ class SQLiteHistoryMonthPartitionRepository:
         path: Path,
         reference: HistorySnapshotPartition,
         progress: HistoryPartitionVerificationProgress | None = None,
+        *,
+        retain_pages: bool = False,
     ) -> None:
         """Re-establish byte identity for a partition fully sealed before publication."""
 
@@ -707,7 +779,7 @@ class SQLiteHistoryMonthPartitionRepository:
         try:
             if wal.exists() and wal.stat().st_size > 0:
                 raise HistoryMonthPartitionError("history month partition has pending WAL")
-            if _sha256_file(path, progress) != reference.sha256:
+            if _sha256_file(path, progress, release_cache=not retain_pages) != reference.sha256:
                 raise HistoryMonthPartitionError("history month partition hash mismatch")
             if wal.exists() and wal.stat().st_size > 0:
                 raise HistoryMonthPartitionError("history month partition has pending WAL")
@@ -715,6 +787,10 @@ class SQLiteHistoryMonthPartitionRepository:
             raise
         except OSError as exc:
             raise HistoryMonthPartitionError("history month published bytes verification failed") from exc
+
+    def release_read_pages(self) -> None:
+        """Release clean OS pages only after a sequential consumer finishes."""
+        _release_file_cache(self._path)
 
     def _prepare_revisions(self, revisions: Iterable[HistoryRevision]) -> tuple[_EncodedRevision, ...]:
         prepared: list[_EncodedRevision] = []
@@ -856,6 +932,8 @@ class SQLiteHistoryMonthPartitionRepository:
         cursor = connection.execute(_ALL_REVISION_SCAN_SQL)
         row_count = 0
         while rows := cursor.fetchmany(512):
+            if self._activity is not None:
+                self._activity.tick()
             for row in rows:
                 _decode_row(row)
                 row_count += 1
@@ -1017,13 +1095,11 @@ def _sha256_file(
         for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
             digest.update(chunk)
             offset += len(chunk)
-            if release_cache and offset - released_offset >= _CACHE_RELEASE_BYTES:
-                _advise_file_access(
-                    handle.fileno(),
-                    released_offset,
-                    offset - released_offset,
-                    "POSIX_FADV_DONTNEED",
-                )
+            if offset - released_offset >= _CACHE_RELEASE_BYTES:
+                if release_cache:
+                    _advise_file_access(
+                        handle.fileno(), released_offset, offset - released_offset, "POSIX_FADV_DONTNEED"
+                    )
                 released_offset = offset
                 if progress is not None:
                     progress(offset, total, "hash")
