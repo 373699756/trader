@@ -66,12 +66,15 @@ class HistoryReferenceIndex:
         codes: Collection[str],
         calendar_dates: tuple[date, ...],
         required_sessions: int,
+        *,
+        anchor_dates: frozenset[date] | None = None,
     ) -> bool:
         """Return whether any eligible code has one continuous dated-industry window."""
 
         dates = tuple(calendar_dates)
         if not dates or dates != tuple(sorted(set(dates))) or required_sessions < 1 or required_sessions > len(dates):
             return False
+        anchors = tuple(index for index, day in enumerate(dates) if anchor_dates is None or day in anchor_dates)
         for code in codes:
             if code not in self._eligible:
                 continue
@@ -87,7 +90,8 @@ class HistoryReferenceIndex:
                     covered_end = end
                 else:
                     covered_end = max(covered_end, end)
-                if covered_end - covered_start >= required_sessions:
+                position = bisect_left(anchors, covered_start + required_sessions - 1)
+                if position < len(anchors) and anchors[position] < covered_end:
                     return True
         return False
 

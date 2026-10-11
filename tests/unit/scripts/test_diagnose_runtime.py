@@ -19,6 +19,7 @@ from scripts.diagnose_runtime import (
 )
 from scripts.runtime_diagnostics import baostock_concurrency
 from scripts.runtime_diagnostics.browser_refresh import _seed
+from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_space
 from trader.download.infra.baostock_session import RateLimitedBaoStockSdk
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.runtime.schedule import SHANGHAI
@@ -123,6 +124,8 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("baostock-concurrency", "baostock_concurrency"),
         ("baostock-qfq-shadow", "baostock_qfq_shadow"),
         ("history-sqlite", "history_sqlite_performance"),
+        ("history-source-compare", "history_source_compare"),
+        ("history-space", "history_space"),
         ("research", "research_readiness"),
         ("long-watchlist", "long_watchlist_admission"),
         ("browser", "browser_refresh"),
@@ -134,6 +137,28 @@ def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, ex
 
     assert tuple(command.name for command in commands) == (expected,)
     assert commands[0].argv[:2] == ("/python", "-m")
+
+
+def test_history_space_counts_shared_inodes_once_without_cleanup(tmp_path: Path) -> None:
+    month = tmp_path / "partitions/2026"
+    month.mkdir(parents=True)
+    published = month / "01.sqlite3"
+    published.write_bytes(b"p" * 4096)
+    pending = month / ".01.pending.sqlite3"
+    pending.hardlink_to(published)
+    seal = month / ".01.seal.sqlite3"
+    seal.hardlink_to(published)
+    (tmp_path / "unsafe").symlink_to(month, target_is_directory=True)
+    report = inspect_history_space(tmp_path)
+    assert report["groups"] == {
+        "pending": {"files": 1, "logical_bytes": 4096},
+        "published": {"files": 1, "logical_bytes": 4096},
+        "seal": {"files": 1, "logical_bytes": 4096},
+    }
+    assert report["unique_allocated_bytes"] == published.stat().st_blocks * 512
+    assert report["unsafe_symlinks"] == 1
+    assert report["cleanup_performed"] is False
+    assert pending.exists() and seal.exists()
 
 
 def test_baostock_concurrency_profile_is_explicitly_non_production() -> None:

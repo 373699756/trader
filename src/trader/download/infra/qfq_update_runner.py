@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from trader.download.application.qfq_download_progress import qfq_failure_code
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.qfq_window import QfqUpdateResult
@@ -63,7 +64,6 @@ class QfqUpdateRunner:
                     failure_reason="cancelled" if self.updater.cancel_requested() else None,
                 )
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as exc:
-            self.updater.report(f"qfq update failed: {type(exc).__name__}")
-            return QfqUpdateResult(
-                None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=type(exc).__name__
-            )
+            reason = qfq_failure_code(exc)
+            self.updater.report(f"qfq update failed: {reason}")
+            return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)

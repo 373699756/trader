@@ -114,7 +114,7 @@ class HistoryTencentStage:
         with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
-            connection.executescript(_SCHEMA)
+            connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
             columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(supplemented)")}
             if "unresolved_price_cells" not in columns:
                 connection.execute(

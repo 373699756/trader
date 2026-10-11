@@ -25,14 +25,15 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "history_conversion": "历史行转换",
     "cross_section_conversion": "横截面转换",
     "sample_index": "样本索引",
+    "sample_cache": "完整样本缓存",
     "target_statistics": "标签统计",
     "industry_statistics": "行业统计",
     "model_fit": "行业模型",
     "artifact_publish": "工件发布",
 }
 _STATE_LABELS = {"started": "开始", "running": "运行中", "completed": "完成"}
-_PROGRESS_INTERVAL_SECONDS = 30.0
-_HEARTBEAT_INTERVAL_SECONDS = 30.0
+_PROGRESS_INTERVAL_SECONDS = 10.0
+_HEARTBEAT_INTERVAL_SECONDS = 10.0
 TomorrowTrainingCommandStatus = Literal["blocked", "rejected", "engineering_ready"]
 _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
     "blocked": "阻塞",
@@ -174,12 +175,20 @@ class StderrTomorrowTrainingProgress:
                 f"当前分片 {detail.current_partition}/{detail.total_partitions}"
                 f" {_PARTITION_PHASE_LABELS[detail.phase]} {completed_mib:.1f}/{total_mib:.1f} MiB"
             )
+        elif progress.stage == "sample_cache" and progress.state == "completed":
+            parts.append("复用已校验完整样本" if progress.produced_units else "需要构建样本")
         elif progress.stage == "history_conversion":
             parts.append(f"已生成样本 {progress.produced_units}")
         elif progress.stage == "cross_section_conversion":
             parts.append(f"有效样本 {progress.produced_units}")
         elif progress.stage == "model_fit":
             parts.append(f"有效模型 {progress.produced_units}")
+        if progress.sample_diagnostics is not None:
+            diagnostic = progress.sample_diagnostics
+            parts.append(
+                f"缺行业 {diagnostic.missing_industry} | 缺价格 {diagnostic.missing_prices} | 窗口不足 {diagnostic.short_window} "
+                f"| 特征无效 {diagnostic.invalid_features} | 标签不足 {diagnostic.missing_labels}"
+            )
         print(" | ".join(parts), file=sys.stderr, flush=True)
         self._last_emitted_at = now
 

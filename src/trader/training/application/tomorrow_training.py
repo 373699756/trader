@@ -17,6 +17,7 @@ TomorrowTrainingStage = Literal[
     "history_conversion",
     "cross_section_conversion",
     "sample_index",
+    "sample_cache",
     "target_statistics",
     "industry_statistics",
     "model_fit",
@@ -47,6 +48,15 @@ class TomorrowTrainingPartitionValidationProgress:
 
 
 @dataclass(frozen=True)
+class TrainingSampleDiagnostics:
+    missing_industry: int
+    missing_prices: int
+    short_window: int
+    invalid_features: int
+    missing_labels: int
+
+
+@dataclass(frozen=True)
 class TomorrowTrainingProgress:
     stage: TomorrowTrainingStage
     state: TomorrowTrainingProgressState
@@ -55,6 +65,7 @@ class TomorrowTrainingProgress:
     produced_units: int = 0
     partition_validation: TomorrowTrainingPartitionValidationProgress | None = None
     strategy: Strategy | None = None
+    sample_diagnostics: TrainingSampleDiagnostics | None = None
 
     def __post_init__(self) -> None:
         if (

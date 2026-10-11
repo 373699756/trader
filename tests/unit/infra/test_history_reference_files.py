@@ -207,6 +207,10 @@ def test_reference_index_requires_a_continuous_industry_window() -> None:
     )
 
     assert HistoryReferenceIndex(covered).has_industry_window((code,), dates, 251)
+    assert not HistoryReferenceIndex(covered).has_industry_window(
+        (code,), dates, 251, anchor_dates=frozenset(dates[:100])
+    )
+    assert HistoryReferenceIndex(covered).has_industry_window((code,), dates, 251, anchor_dates=frozenset(dates[-1:]))
     assert not HistoryReferenceIndex(current_only).has_industry_window((code,), dates, 251)
 
 

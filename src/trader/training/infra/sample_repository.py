@@ -73,12 +73,16 @@ class TargetMetric:
 class SQLiteTrainingSampleRepository:
     """Own one temporary SQLite database shared by both sequential fits."""
 
-    def __init__(self, path: Path, feature_count: int) -> None:
+    def __init__(self, path: Path, feature_count: int, *, prepared_split_hash: str | None = None) -> None:
         if feature_count < 1:
             raise ValueError("training sample feature count is invalid")
         self._path = path
         self._feature_count = feature_count
-        self._prepared_split_hash: str | None = None
+        self._prepared_split_hash = prepared_split_hash
+        if prepared_split_hash is not None:
+            self._connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+            self._connection.execute(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")
+            return
         self._connection = sqlite3.connect(path)
         self._connection.execute(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")  # noqa: S608
         self._connection.execute(f"PRAGMA mmap_size={TRAINING_SAMPLE_MMAP_BYTES}")  # noqa: S608
@@ -144,7 +148,10 @@ class SQLiteTrainingSampleRepository:
         self._prepared_split_hash = split.content_hash
 
     def require_split(self, split: BaoStockTrainingSplit) -> None:
-        if self._prepared_split_hash != split.content_hash:
+        self.require_split_hash(split.content_hash)
+
+    def require_split_hash(self, split_hash: str) -> None:
+        if self._prepared_split_hash != split_hash:
             raise RuntimeError("training sample split identity is inconsistent")
 
     def industry_counts(self, contract: TrainedHeadContract) -> tuple[TrainingIndustryCounts, ...]:

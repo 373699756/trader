@@ -18,9 +18,13 @@ def qfq_message(elapsed: float, stage: str, details: str) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d} | qfq {stage} | {details}"
 
 
-def _pending_reason(exc: Exception) -> tuple[str, str]:
+def qfq_failure_code(exc: Exception) -> str:
     message = str(exc)
-    reason = message if re.fullmatch(r"[a-zA-Z0-9_]{1,64}", message) else type(exc).__name__
+    return message if re.fullmatch(r"[a-zA-Z0-9_]{1,64}", message) else type(exc).__name__
+
+
+def _pending_reason(exc: Exception) -> tuple[str, str]:
+    reason = qfq_failure_code(exc)
     incomplete = re.fullmatch(r"qfq_incomplete_raw_(\d+)_qfq_(\d+)", reason)
     if incomplete:
         details = f"未复权缺 {int(incomplete[1])} 日、前复权缺 {int(incomplete[2])} 日"

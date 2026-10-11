@@ -239,8 +239,7 @@ class SQLiteHistoryControlRepository:
 
     def publish_snapshot(self, value: HistoryActiveSnapshot) -> None:
         self._require_snapshot_parents(value)
-        self._save("snapshot", str(value.sequence), value.content_hash, _snapshot_payload(value))
-        self._fault_injector("snapshot_committed")
+        payload = json.dumps(_snapshot_payload(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         try:
             with closing(self._connect()) as connection, connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -253,6 +252,19 @@ class SQLiteHistoryControlRepository:
                         return
                     if current_sequence >= value.sequence:
                         raise HistoryControlRegressionError("history active snapshot would regress or conflict")
+                existing = connection.execute(
+                    "SELECT content_hash, payload_json FROM immutable_records WHERE kind='snapshot' AND record_key=?",
+                    (str(value.sequence),),
+                ).fetchone()
+                if existing is not None and existing != (value.content_hash, payload):
+                    raise HistoryControlConflictError("history immutable control identity conflicts")
+                connection.execute(
+                    "INSERT OR IGNORE INTO immutable_records(kind,record_key,content_hash,payload_json) "
+                    "VALUES ('snapshot',?,?,?)",
+                    (str(value.sequence), value.content_hash, payload),
+                )
+                # The injection remains inside the transaction: neither row may survive alone.
+                self._fault_injector("snapshot_committed")
                 connection.execute(
                     "INSERT INTO active_snapshot(singleton, snapshot_hash, sequence) VALUES (1, ?, ?) "
                     "ON CONFLICT(singleton) DO UPDATE SET snapshot_hash=excluded.snapshot_hash, "

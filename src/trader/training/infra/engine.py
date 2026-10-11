@@ -57,6 +57,7 @@ from trader.training.infra.sample_builder import (
     TrainingSampleBuildRequest,
     build_training_samples,
 )
+from trader.training.infra.sample_cache import TrainingSampleCache, sample_cache_bytes
 from trader.training.infra.sample_repository import (
     TRAINING_SAMPLE_CACHE_MIB,
     TRAINING_SAMPLE_MMAP_BYTES,
@@ -262,49 +263,56 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
             f"{','.join(item.contract.strategy.value for item in plans)}"
         ).encode()
     ).hexdigest()
+    peak_bytes = 0
+    cache: TrainingSampleCache | None = None
     try:
         training_window = _require_industry_coverage(archive, split, request.profile.history_sessions)
         _verify_partitions_once(archive, request.progress)
         request.train_root.mkdir(parents=True, exist_ok=True)
         _cleanup_abandoned_workspaces(request.train_root, request.contracts)
-        with tempfile.TemporaryDirectory(prefix=".training-sample-workspace.", dir=request.train_root) as workspace:
-            feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
-            with SQLiteTrainingSampleRepository(Path(workspace) / "samples.sqlite3", feature_count) as samples:
-                build_training_samples(
-                    TrainingSampleBuildRequest(
-                        archive,
-                        snapshot.training_codes,
-                        training_window,
-                        samples,
-                        request.profile,
-                        request.progress,
-                    )
-                )
-                peak_bytes = samples.database_size_bytes
-                _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
-                if samples.count() == 0:
-                    raise ValueError("profile_training_rows_empty")
-                metrics = samples.validation_target_metrics()
-                _publish(request.progress, TomorrowTrainingProgress("target_statistics", "completed", 1, 1))
-                for plan in plans:
-                    completed.append(
-                        _fit_and_publish_head(
-                            _HeadFitRequest(
-                                plan,
-                                request.profile,
-                                snapshot,
-                                split,
-                                samples,
-                                metrics,
-                                request.train_root,
-                                run_id,
-                                request.progress,
-                                peak_bytes,
-                            )
+        feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
+        cache_identity = content_hash(
+            (
+                snapshot.active_snapshot_hash,
+                snapshot.input_descriptor_hash,
+                request.profile.profile_id,
+                split.content_hash,
+                feature_count,
+                tuple(_training_contract_hash(request.profile, contract) for contract in request.contracts),
+            )
+        )
+        cache = TrainingSampleCache(request.train_root, cache_identity, feature_count, split.content_hash)
+        _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
+        with cache.open() as samples:
+            _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
+            metrics = _prepare_samples(
+                TrainingSampleBuildRequest(
+                    archive, snapshot.training_codes, training_window, samples, request.profile, request.progress
+                ),
+                cache,
+            )
+            peak_bytes = samples.database_size_bytes
+            for plan in plans:
+                completed.append(
+                    _fit_and_publish_head(
+                        _HeadFitRequest(
+                            plan,
+                            request.profile,
+                            snapshot,
+                            split,
+                            samples,
+                            metrics,
+                            request.train_root,
+                            run_id,
+                            request.progress,
+                            peak_bytes,
                         )
                     )
+                )
+        if all(item.status != "blocked" for item in completed):
+            cache.clear()
     except (HistoryTrainingInputError, OSError, ValueError, RuntimeError) as exc:
-        peak_bytes = 0
+        peak_bytes = max(peak_bytes, sample_cache_bytes(cache))
         reason = _reason(exc)
         for plan in plans:
             if not any(item.strategy is plan.contract.strategy for item in completed):
@@ -319,6 +327,19 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
     return TrainingRunResult(run_id, snapshot.active_snapshot_hash, peak_bytes, ordered)
 
 
+def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleCache) -> tuple[TargetMetric, ...]:
+    if not cache.reused:
+        build_training_samples(request)
+    _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
+    if request.repository.count() == 0:
+        raise ValueError("profile_training_rows_empty")
+    if not cache.reused:
+        cache.seal(request.repository)
+    metrics = request.repository.validation_target_metrics()
+    _publish(request.progress, TomorrowTrainingProgress("target_statistics", "completed", 1, 1))
+    return metrics
+
+
 def _require_industry_coverage(
     archive: _TrainingInputArchive,
     split: BaoStockTrainingSplit,
@@ -327,6 +348,15 @@ def _require_industry_coverage(
     window = TomorrowTrainingWindow(split)
     if not archive.has_industry_window(window.readable_dates, history_sessions):
         raise ValueError("history_industry_coverage_insufficient")
+    for anchors in (
+        split.model_fit_dates,
+        split.early_stopping_dates,
+        split.calibration_dates,
+        split.confirmation_dates,
+        split.daily_proxy_holdout_dates,
+    ):
+        if not archive.has_industry_window(window.readable_dates, history_sessions, anchor_dates=frozenset(anchors)):
+            raise ValueError("history_industry_split_coverage_insufficient")
     return window
 
 
@@ -855,6 +885,7 @@ def _reason(exc: BaseException) -> str:
         "history_manifest_parent_unavailable",
         "profile_training_rows_empty",
         "history_industry_coverage_insufficient",
+        "history_industry_split_coverage_insufficient",
         "history_training_data_incomplete",
         "training_split_unavailable",
     }:

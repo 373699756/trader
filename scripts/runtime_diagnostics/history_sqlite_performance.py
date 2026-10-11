@@ -11,6 +11,7 @@ import statistics
 import sys
 import tempfile
 import time
+from collections import defaultdict
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
@@ -69,6 +70,7 @@ class _HistorySQLitePerformanceReport:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history-root", type=Path, required=True)
+    parser.add_argument("--inventory-only", action="store_true")
     parser.add_argument("--page-sample-count", type=int, default=1)
     parser.add_argument("--query-rounds", type=int, default=3)
     parser.add_argument("--revision-write-sample-count", type=int, default=512)
@@ -77,6 +79,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    if args.inventory_only:
+        emit_report(
+            {
+                "schema_version": "history-space-inventory",
+                "status": "passed",
+                "summary": inspect_history_space(args.history_root.resolve()),
+            }
+        )
+        return 0
     try:
         if not 1 <= args.page_sample_count <= 100 or not 1 <= args.query_rounds <= 9:
             raise ValueError("history SQLite sample counts are invalid")
@@ -129,6 +140,48 @@ def main() -> int:
     }
     emit_report(payload)
     return 0
+
+
+def inspect_history_space(root: Path) -> dict[str, object]:
+    """Count inode ownership without reading database payloads or deleting anything."""
+    groups: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    allocated: dict[tuple[int, int], int] = {}
+    links: dict[tuple[int, int], set[str]] = defaultdict(set)
+    unsafe = 0
+    for path in root.rglob("*"):
+        if path.is_symlink():
+            unsafe += 1
+            continue
+        if not path.is_file():
+            continue
+        status = path.stat()
+        name = path.name
+        category = (
+            "pending"
+            if name.endswith(".pending.sqlite3")
+            else "seal"
+            if name.endswith(".seal.sqlite3")
+            else "rollback"
+            if ".rollback.sqlite3" in name
+            else "sidecar"
+            if name.endswith(("-wal", "-shm", "-journal"))
+            else "published"
+            if name.endswith(".sqlite3") and path.parent.name.isdigit()
+            else "control_or_stage"
+        )
+        groups[category][0] += 1
+        groups[category][1] += status.st_size
+        inode = (status.st_dev, status.st_ino)
+        allocated[inode] = status.st_blocks * 512 if hasattr(status, "st_blocks") else status.st_size
+        links[inode].add(category)
+    return {
+        "groups": {name: {"files": counts[0], "logical_bytes": counts[1]} for name, counts in sorted(groups.items())},
+        "unique_allocated_bytes": sum(allocated.values()),
+        "shared_between_groups_bytes": sum(allocated[key] for key, owners in links.items() if len(owners) > 1),
+        "unsafe_symlinks": unsafe,
+        "cleanup_performed": False,
+        "cleanup_requires_task_and_snapshot_ownership": True,
+    }
 
 
 def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalSummary:

@@ -22,10 +22,9 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import (
-    PublishedHistoryManifest,
     PublishedHistoryWindow,
     project_history_cell,
 )
@@ -305,6 +304,28 @@ def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
         lambda: False,
         lambda _message: None,
     )
+
+
+def test_qfq_refills_worker_before_slowest_request_finishes(tmp_path) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    third_started = threading.Event()
+
+    class SlowFirstSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            if security.code == "600001":
+                assert third_started.wait(5), "next stock was blocked by the slowest wave member"
+            if security.code == "600003":
+                third_started.set()
+            return super().fetch_window(security, dates)
+
+    supplier = SlowFirstSupplier(codes=("600001", "600002", "600003"))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        updater = replace(_updater(tmp_path, supplier), workers=2, worker_pool=pool)
+        result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
+    assert third_started.is_set()
+    assert result.completed_codes == 3 and result.pending_codes == 0
 
 
 def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_path) -> None:
@@ -815,20 +836,23 @@ def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repa
             return _window(security.code, dates)
 
     updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery())
-    write = updater.v3.replace_windows
+    write = updater.v3._write_code
 
-    def fail(*_args):
-        raise RuntimeError("interrupted second profile")
+    def fail(connection, code, rows, source, *, schema="main"):
+        if schema == "paired":
+            raise RuntimeError("interrupted second profile")
+        return write(connection, code, rows, source, schema=schema)
 
-    monkeypatch.setattr(updater.v3, "replace_windows", fail)
+    monkeypatch.setattr(updater.v3, "_write_code", fail)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.pending_codes == 1
     source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
     assert not updater.resume.completed(DAYS[-1], "600001", source)
-    assert updater.v2.read_code("600001").cells
+    assert updater.v2.read_code("600001").cells == ()
+    assert updater.v3.read_code("600001").cells == ()
     assert recovery_calls == []
-    monkeypatch.setattr(updater.v3, "replace_windows", write)
+    monkeypatch.setattr(updater.v3, "_write_code", write)
     result = updater.execute(observed)
     assert result.pending_codes == 0 and result.completed_codes == 1
     assert len(updater.v3.read_code("600001").cells) == 61
@@ -869,13 +893,13 @@ def test_bounded_parallel_downloads_single_writer_and_cancelled_results_not_publ
 
     supplier = ParallelSupplier(codes=("600001", "600002", "600003", "600004"))
     updater = _updater(tmp_path, supplier)
-    original = updater.v2.replace_windows
+    original = updater.v2.replace_paired_windows
 
-    def write(windows, identity):
+    def write(peer, windows, identity):
         assert threading.get_ident() == writer_ident
-        return original(windows, identity)
+        return original(peer, windows, identity)
 
-    monkeypatch.setattr(updater.v2, "replace_windows", write)
+    monkeypatch.setattr(updater.v2, "replace_paired_windows", write)
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-fixture")
     pool.start()
     try:
@@ -934,10 +958,10 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
 
     supplier = OutOfOrderSupplier(codes=("600001", "600002", "600003"))
     updater = _updater(tmp_path, supplier)
-    original = updater.v3.replace_windows
+    original = updater.v2.replace_paired_windows
 
-    def write(windows, identity):
-        result = original(windows, identity)
+    def write(peer, windows, identity):
+        result = original(peer, windows, identity)
         writes.extend(window.code for window in windows)
         return result
 
@@ -945,7 +969,7 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         assert threading.get_ident() == writer_ident
         messages.append(message)
 
-    monkeypatch.setattr(updater.v3, "replace_windows", write)
+    monkeypatch.setattr(updater.v2, "replace_paired_windows", write)
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-progress-fixture")
     pool.start()
     try:
@@ -953,7 +977,7 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
         result = updater.execute(observed)
         assert result.completed_codes == 3
-        assert writes == ["600002", "600001", "600003"]
+        assert sorted(writes) == ["600001", "600002", "600003"]
         batches = [message for message in messages if " | qfq 批次完成 | " in message]
         assert len(batches) == 2
         assert "已处理 2/3（66.67%）| 合格 2 | 待补 0" in batches[0]

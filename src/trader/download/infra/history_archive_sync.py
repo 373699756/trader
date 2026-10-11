@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
 import sqlite3
 import time as monotonic_time
-from collections import defaultdict
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -24,6 +23,7 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
+    HistoryControlState,
     HistoryDiskRequirement,
     HistorySecurityIdentity,
     HistorySnapshotPartition,
@@ -66,14 +66,22 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
+from trader.download.infra.history_pending_prices import (
+    PendingHistoryPartitions,
+    backup_database,
+    partition_month,
+    prepare_pending,
+    write_revision_batch,
+)
 from trader.download.infra.history_reference_files import (
     history_industry_mapping_path,
     read_bound_history_reference,
     write_history_reference,
 )
 from trader.download.infra.history_seal_resume import (
+    promote_completed_candidate,
     record_sealed_month,
-    recover_sealed_prefix,
+    recover_sealed_months,
     remove_sqlite_files,
 )
 from trader.download.infra.history_snapshot_publication import (
@@ -92,6 +100,7 @@ Cancellation: TypeAlias = Callable[[], bool]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _BAOSTOCK_DAILY_READY = time(15, 10)
 _ERROR_CODE = re.compile(r"[a-z0-9_]{1,64}")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -101,14 +110,6 @@ class _CodeDownloadContext:
     active: HistoryActiveSnapshot | None
     previous_codes: frozenset[str]
     previous_gaps: dict[str, tuple[date, ...]]
-
-
-@dataclass(frozen=True)
-class _PendingPartitions:
-    root: Path
-    paths: dict[tuple[int, int], Path]
-    active_by_month: dict[tuple[int, int], HistorySnapshotPartition]
-    first_date: date
 
 
 @dataclass(frozen=True)
@@ -214,8 +215,21 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
             and HISTORY_UNIVERSE_CONTRACT not in context.source_versions.dependency_versions
         ):
             raise RuntimeError("supplier_universe_regressed")
-        if active is not None and is_reference_only_change(state, active, source, calendar, universe):
-            sync_identity = _sync_identity(calendar, universe, active)
+        previous_gaps = scan_active_price_gaps(
+            root,
+            active,
+            context,
+            cancel_requested,
+            lambda state, completed, total, item: _publish_progress(
+                progress, "history_active_gaps", state, (completed, total), item
+            ),
+        )
+        if (
+            active is not None
+            and not previous_gaps
+            and is_reference_only_change(state, active, source, calendar, universe)
+        ):
+            sync_identity = _sync_identity(calendar, universe, active, source, state)
             checkpoints = _matching_checkpoints(state.checkpoints, sync_identity)
             ordinal = max((item.ordinal for item in checkpoints), default=0) + 1
             total = len(context.universe)
@@ -241,15 +255,6 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
             )
             _publish_progress(progress, "publishing_snapshot", "completed", (1, 1))
             return _status("completed", None, configuration, snapshot, observed_at)
-        previous_gaps = scan_active_price_gaps(
-            root,
-            active,
-            context,
-            cancel_requested,
-            lambda state, completed, total, item: _publish_progress(
-                progress, "history_active_gaps", state, (completed, total), item
-            ),
-        )
         if _is_current(active, calendar, universe) and not previous_gaps:
             write_history_reference(history_industry_mapping_path(root), reference)
             return _status("already_current", None, configuration, active, observed_at)
@@ -297,14 +302,18 @@ def _synchronize(  # noqa: PLR0913
     reference: HistoryReferenceSnapshot,
 ) -> HistoryMaintenanceStatus:
     sequence = 1 if active is None else active.sequence + 1
-    sync_identity = _sync_identity(calendar, universe, active)
-    checkpoints = _matching_checkpoints(control.load_state().checkpoints, sync_identity)
+    state = control.load_state()
+    sync_identity = _sync_identity(calendar, universe, active, source, state)
+    checkpoints = _matching_checkpoints(state.checkpoints, sync_identity)
     completed = max((item.completed_units for item in checkpoints), default=0)
     ordinal = max((item.ordinal for item in checkpoints), default=0) + 1
     total = len(context.universe)
     try:
+        control.save_source(source)
+        control.save_calendar(calendar)
+        control.save_universe(universe)
         _publish_progress(progress, "preparing_partitions", "started")
-        pending = _prepare_pending(configuration.archive_root, calendar.open_dates, active, completed > 0)
+        pending = prepare_pending(configuration.archive_root, calendar.open_dates, active, completed > 0)
         _publish_progress(progress, "preparing_partitions", "completed", (1, 1))
         if not checkpoints:
             control.save_checkpoint(
@@ -365,11 +374,11 @@ def _synchronize(  # noqa: PLR0913
         try:
             _remove_pending(pending)
         except OSError:
-            pass
+            _LOGGER.warning("history_pending_cleanup_failed")
         try:
             stage.clear()
         except OSError:
-            pass
+            _LOGGER.warning("history_stage_cleanup_failed")
         return _status(
             "completed", None, configuration, snapshot, observed_at, unresolved_price_cells=max(0, unresolved)
         )
@@ -407,7 +416,7 @@ class _HistoryDownloadPhases:
     context: _CodeDownloadContext
     supplier: HistoryTwoStageSupplier
     stage: HistoryTencentStage
-    pending: _PendingPartitions
+    pending: PendingHistoryPartitions
     control: SQLiteHistoryControlRepository
     executor: WorkerExecutor
     observed_at: datetime
@@ -552,7 +561,7 @@ class _HistoryDownloadPhases:
                     results.append(self._supplement_security(index, security))
             if not results:
                 continue
-            _write_revision_batch(self.pending, tuple(revision for result in results for revision in result.revisions))
+            write_revision_batch(self.pending, tuple(revision for result in results for revision in result.revisions))
             self.stage.mark_supplemented(tuple((result.code, result.unresolved_price_cells) for result in results))
             self.checkpoint(end)
             for result in results:
@@ -690,7 +699,7 @@ class _HistoryDownloadPhases:
 
 def _seal_and_publish(  # noqa: PLR0913
     root: Path,
-    pending: _PendingPartitions,
+    pending: PendingHistoryPartitions,
     control: SQLiteHistoryControlRepository,
     identities: tuple[HistorySourceIdentity, HistoryCalendarIdentity, HistoryUniverseIdentity],
     sequence: int,
@@ -727,7 +736,9 @@ def _seal_and_publish(  # noqa: PLR0913
             ),
         )
     except BaseException:
-        _restore_partition_replacements(sealed.replacements)
+        published = control.load_published_state()
+        if published is None or published.snapshot.content_hash != snapshot.content_hash:
+            _restore_partition_replacements(sealed.replacements)
         raise
     _discard_partition_replacements(sealed.replacements)
     return snapshot
@@ -794,7 +805,7 @@ def _validate_tail_overlap(
     prior: dict[date, BaoStockDailyCell] = {}
     anchored = False
     for year, month in route_history_months(overlap[0].trade_date, overlap[-1].trade_date):
-        reference = next((item for item in active.partitions if _partition_month(item) == (year, month)), None)
+        reference = next((item for item in active.partitions if partition_month(item) == (year, month)), None)
         if reference is None:
             raise RuntimeError("history_tail_qfq_overlap_missing")
         # Trust the published identity and read only this stock's bounded overlap via its index.
@@ -828,75 +839,17 @@ def _validate_tail_overlap(
     )
 
 
-def _prepare_pending(
-    root: Path,
-    dates: tuple[date, ...],
-    active: HistoryActiveSnapshot | None,
-    resume: bool,
-) -> _PendingPartitions:
-    active_by_month = {_partition_month(item): item for item in active.partitions} if active is not None else {}
-    paths: dict[tuple[int, int], Path] = {}
-    for year, month in route_history_months(dates[0], dates[-1]):
-        path = root / "partitions" / f"{year:04d}" / f".{month:02d}.pending.sqlite3"
-        paths[(year, month)] = path
-        if not resume:
-            remove_sqlite_files(path)
-    pending = _PendingPartitions(root, paths, active_by_month, dates[0])
-    if resume:
-        required = {
-            (dates[0].year, dates[0].month),
-            (dates[-1].year, dates[-1].month),
-            *(paths.keys() - active_by_month.keys()),
-        }
-        if any(not paths[month].is_file() for month in required):
-            raise RuntimeError("sync_checkpoint_incomplete")
-    if active is None:
-        for month_key in paths:
-            _ensure_pending(pending, month_key)
-    else:
-        _ensure_pending(pending, (dates[0].year, dates[0].month))
-        _ensure_pending(pending, (dates[-1].year, dates[-1].month))
-        for month_key in paths.keys() - active_by_month.keys():
-            _ensure_pending(pending, month_key)
-    return pending
-
-
-def _ensure_pending(pending: _PendingPartitions, month: tuple[int, int]) -> Path:
-    year, calendar_month = month
-    path = pending.paths[month]
-    if path.is_file():
-        return path
-    reference = pending.active_by_month.get(month)
-    if reference is not None:
-        _backup_database(pending.root / reference.relative_path, path)
-    repository = SQLiteHistoryMonthPartitionRepository(path, year, calendar_month)
-    repository.initialize()
-    if month == (pending.first_date.year, pending.first_date.month):
-        repository.prune_before(pending.first_date)
-    return path
-
-
-def _write_revision_batch(pending: _PendingPartitions, revisions: tuple[HistoryRevision, ...]) -> None:
-    grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
-    for value in revisions:
-        grouped[(value.trade_date.year, value.trade_date.month)].append(value)
-    for (year, month), values in sorted(grouped.items()):
-        path = _ensure_pending(pending, (year, month))
-        repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
-        repository.save_revisions(sorted(values, key=lambda item: (item.trade_date, item.code, item.revision_id)))
-
-
 def _seal_pending(
     root: Path,
-    pending: _PendingPartitions,
+    pending: PendingHistoryPartitions,
     stage: HistoryTencentStage,
     progress: HistorySyncProgressPort | None = None,
 ) -> _SealedPartitions:
-    references = list(recover_sealed_prefix(root, pending.paths, stage, progress))
+    references = recover_sealed_months(root, pending.paths, stage, progress)
     replacements: list[_PartitionReplacement] = []
     total = len(pending.paths)
     try:
-        remaining = sorted(pending.paths.items())[len(references) :]
+        remaining = sorted((month, path) for month, path in pending.paths.items() if month not in references)
         for index, ((year, month), path) in enumerate(remaining, start=len(references)):
             current_item = f"{year:04d}-{month:02d}"
             _publish_progress(progress, "sealing_partitions", "started", (index, total), current_item)
@@ -909,19 +862,21 @@ def _seal_pending(
                 )
                 if replacement is not None:
                     replacements.append(replacement)
-                reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
+                reference = promote_completed_candidate(stage, (year, month), candidate, destination)
+                if reference is None:
+                    reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
                 record_sealed_month(stage, (year, month), destination, candidate, reference)
             else:
                 existing_reference = pending.active_by_month.get((year, month))
                 if existing_reference is None:
                     raise RuntimeError("history_snapshot_month_missing")
                 reference = existing_reference
-            references.append(reference)
+            references[(year, month)] = reference
             _publish_progress(progress, "sealing_partitions", "completed", (index + 1, total), current_item)
     except BaseException:
         _restore_partition_replacements(tuple(replacements))
         raise
-    return _SealedPartitions(tuple(references), tuple(replacements))
+    return _SealedPartitions(tuple(references[month] for month in sorted(references)), tuple(replacements))
 
 
 def _stage_partition_for_seal(source: Path, candidate: Path) -> None:
@@ -934,7 +889,7 @@ def _stage_partition_for_seal(source: Path, candidate: Path) -> None:
             return
         except OSError:
             candidate.unlink(missing_ok=True)
-    _backup_database(source, candidate)
+    backup_database(source, candidate)
 
 
 def _create_partition_rollback(destination: Path) -> _PartitionReplacement | None:
@@ -943,7 +898,10 @@ def _create_partition_rollback(destination: Path) -> _PartitionReplacement | Non
     rollback = destination.with_name(f".{destination.stem}.rollback.sqlite3")
     pending = rollback.with_suffix(f"{rollback.suffix}.pending")
     pending.unlink(missing_ok=True)
-    shutil.copyfile(destination, pending)
+    try:
+        os.link(destination, pending)
+    except OSError:
+        shutil.copyfile(destination, pending)
     _fsync_file(pending)
     os.replace(pending, rollback)
     _fsync_directory(destination.parent)
@@ -998,21 +956,13 @@ def _discard_partition_replacements(replacements: tuple[_PartitionReplacement, .
             replacement.rollback.unlink(missing_ok=True)
             _fsync_directory(replacement.destination.parent)
         except OSError:
-            pass
+            _LOGGER.warning("history_partition_cleanup_failed")
 
 
-def _backup_database(source: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with (
-        closing(sqlite3.connect(source)) as input_connection,
-        closing(sqlite3.connect(destination)) as output_connection,
-    ):
-        input_connection.backup(output_connection)
-
-
-def _remove_pending(pending: _PendingPartitions) -> None:
+def _remove_pending(pending: PendingHistoryPartitions) -> None:
     for path in pending.paths.values():
         remove_sqlite_files(path)
+        remove_sqlite_files(path.with_name(path.name.replace(".pending.sqlite3", ".seal.sqlite3")))
 
 
 def _fsync_file(path: Path) -> None:
@@ -1034,7 +984,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _pending_price_gap_counts_for_codes(
-    pending: _PendingPartitions,
+    pending: PendingHistoryPartitions,
     sequence: int,
     codes: frozenset[str],
 ) -> dict[str, int]:
@@ -1103,18 +1053,46 @@ def _latest_completed_daily_date(observed_at: datetime) -> date:
     return observed_at.date() - timedelta(days=1)
 
 
-def _partition_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
-    path = Path(reference.relative_path)
-    return int(path.parts[1]), int(path.stem)
-
-
 def _sync_identity(
     calendar: HistoryCalendarIdentity,
     universe: HistoryUniverseIdentity,
     active: HistoryActiveSnapshot | None,
+    source: HistorySourceIdentity,
+    state: HistoryControlState,
 ) -> str:
+    # Rebind an existing price-equivalent checkpoint explicitly, including pre-upgrade
+    # identities that included the reference hash. Never discard valid download work
+    # just because the ST check timestamp or industry intervals changed.
+    price_contract = source.supplier_contract.rsplit("_", 1)[-1]
+    compatible_sources = {
+        item.content_hash for item in state.sources if item.supplier_contract.rsplit("_", 1)[-1] == price_contract
+    }
+    compatible_sources.add(source.content_hash)
+    for previous_calendar in (*state.calendars, calendar):
+        if (
+            previous_calendar.open_dates != calendar.open_dates
+            or previous_calendar.source_identity_hash not in compatible_sources
+        ):
+            continue
+        for previous_universe in (*state.universes, universe):
+            if (
+                previous_universe.securities != universe.securities
+                or previous_universe.source_identity_hash != previous_calendar.source_identity_hash
+            ):
+                continue
+            previous_digest = canonical_artifact_hash(
+                (
+                    previous_calendar.content_hash,
+                    previous_universe.content_hash,
+                    active.content_hash if active else None,
+                )
+            )
+            previous_identity = f"sync-{calendar.open_dates[-1]:%Y%m%d}-{previous_digest[:20]}"
+            matches = _matching_checkpoints(state.checkpoints, previous_identity)
+            if matches and max(matches, key=lambda item: item.ordinal).state != "completed":
+                return previous_identity
     digest = canonical_artifact_hash(
-        (calendar.content_hash, universe.content_hash, active.content_hash if active else None)
+        (calendar.open_dates, universe.securities, price_contract, active.content_hash if active else None)
     )
     return f"sync-{calendar.open_dates[-1]:%Y%m%d}-{digest[:20]}"
 
@@ -1123,7 +1101,7 @@ def _matching_checkpoints(
     checkpoints: tuple[HistorySyncCheckpoint, ...],
     sync_identity: str,
 ) -> tuple[HistorySyncCheckpoint, ...]:
-    """Only identical calendar, universe, source contract and parent may resume."""
+    """Only identical prices contract, dates, securities and parent may resume."""
     return tuple(item for item in checkpoints if item.sync_identity == sync_identity)
 
 

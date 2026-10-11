@@ -48,6 +48,16 @@ def _revision(day: date, sequence: int, close: float) -> HistoryRevision:
     )
 
 
+def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> None:
+    statements: list[str] = []
+    month = SQLiteHistoryMonthPartitionRepository(
+        tmp_path / "partitions/2026/09.sqlite3", 2026, 9, statement_trace=statements.append
+    )
+    month.initialize()
+    assert sum(sql.strip().upper().startswith("BEGIN IMMEDIATE") for sql in statements) == 1
+    assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 1
+
+
 def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> None:
     path = tmp_path / "partitions/2026/09.sqlite3"
     repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9)

@@ -10,6 +10,7 @@ from contextlib import closing
 from datetime import date
 from pathlib import Path
 
+from trader.download.application.update_qfq import QfqWindowPort
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
 from trader.download.infra.qfq_codec import decode_cell, encode_cell
@@ -274,19 +275,94 @@ class SQLiteQfqWindowCache:
                 changed.append(f"{self.root.name}/{name}")
         return tuple(changed), changed_rows
 
+    def replace_paired_windows(
+        self, peer: QfqWindowPort, windows: tuple[PublishedHistoryWindow, ...], source_identity: str
+    ) -> tuple[tuple[str, ...], int]:
+        """Commit both profiles per board using SQLite's rollback super-journal."""
+        if not isinstance(peer, SQLiteQfqWindowCache) or self.root == peer.root or self.root.parent != peer.root.parent:
+            raise ValueError("qfq_pair_layout_invalid")
+        self._ensure_layout()
+        peer._ensure_layout()
+        grouped: dict[str, list[PublishedHistoryWindow]] = {}
+        for window in windows:
+            grouped.setdefault(qfq_shard_name(window.code), []).append(window)
+        changed: list[str] = []
+        count = 0
+        try:
+            for name, batch in grouped.items():
+                self._prepare_pair_files(peer, name)
+                with closing(self._write_connection(name)) as connection, connection:
+                    connection.execute("ATTACH DATABASE ? AS paired", (str(peer.root / name),))
+                    connection.execute("PRAGMA paired.journal_mode=DELETE")
+                    connection.execute("PRAGMA paired.synchronous=FULL")
+                    connection.execute("BEGIN IMMEDIATE")
+                    for cache, schema in ((self, "main"), (peer, "paired")):
+                        shard_changed, delta = cache._write_pair_cells(connection, batch, schema, source_identity)
+                        count += delta
+                        if shard_changed:
+                            changed.append(f"{cache.root.name}/{name}")
+        except sqlite3.Error as exc:
+            raise RuntimeError("qfq_pair_publication_failed") from exc
+        return tuple(changed), count
+
+    def _prepare_pair_files(self, peer: SQLiteQfqWindowCache, name: str) -> None:
+        for cache in (self, peer):
+            if cache.root.is_symlink() or (cache.root / name).is_symlink():
+                raise ValueError("qfq_pair_path_unsafe")
+            cache.root.mkdir(parents=True, exist_ok=True)
+            if not (cache.root / name).is_file():
+                with closing(cache._write_connection(name)):
+                    pass
+        if (self.root / name).stat().st_dev != (peer.root / name).stat().st_dev:
+            raise ValueError("qfq_pair_filesystem_mismatch")
+
+    def _write_pair_cells(
+        self, connection: sqlite3.Connection, windows: Sequence[PublishedHistoryWindow], schema: str, source: str
+    ) -> tuple[bool, int]:
+        if schema not in ("main", "paired"):
+            raise ValueError("qfq_sql_schema_invalid")
+        changed, count = False, 0
+        for window in windows:
+            target = tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in window.cells[-self.sessions :])
+            if not target:
+                continue
+            old = tuple(
+                connection.execute(f"SELECT day,payload FROM {schema}.bars WHERE code=? ORDER BY day", (window.code,))
+            )
+            identity = connection.execute(
+                f"SELECT source FROM {schema}.identities WHERE code=?", (window.code,)
+            ).fetchone()
+            if old == target and identity == (source,):
+                continue
+            self._write_code(connection, window.code, target, source, schema=schema)
+            before, after = dict(old), dict(target)
+            count += sum(before.get(day) != after.get(day) for day in before.keys() | after.keys())
+            changed = True
+        return changed, count
+
     @staticmethod
-    def _write_code(connection: sqlite3.Connection, code: str, rows: tuple[tuple[str, str], ...], source: str) -> None:
-        existing = dict(connection.execute("SELECT day,payload FROM bars WHERE code=?", (code,)))
+    def _write_code(
+        connection: sqlite3.Connection,
+        code: str,
+        rows: tuple[tuple[str, str], ...],
+        source: str,
+        *,
+        schema: str = "main",
+    ) -> None:
+        if schema not in ("main", "paired"):
+            raise ValueError("qfq_sql_schema_invalid")
+        existing = dict(connection.execute(f"SELECT day,payload FROM {schema}.bars WHERE code=?", (code,)))
         incoming = dict(rows)
         connection.executemany(
-            "DELETE FROM bars WHERE code=? AND day=?", ((code, day) for day in existing.keys() - incoming.keys())
+            f"DELETE FROM {schema}.bars WHERE code=? AND day=?",
+            ((code, day) for day in existing.keys() - incoming.keys()),
         )
         connection.executemany(
-            "INSERT OR REPLACE INTO bars VALUES (?,?,?)",
+            f"INSERT OR REPLACE INTO {schema}.bars VALUES (?,?,?)",
             ((code, day, payload) for day, payload in rows if existing.get(day) != payload),
         )
         connection.execute(
-            "INSERT OR REPLACE INTO identities VALUES (?,?,?,?,?)",
+            f"INSERT OR REPLACE INTO {schema}.identities VALUES (?,?,?,?,?)",
             (code, _digest(rows), source, rows[-1][0], json.dumps([day for day, _ in rows], separators=(",", ":"))),
         )
 

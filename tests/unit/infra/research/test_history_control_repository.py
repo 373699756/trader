@@ -204,6 +204,7 @@ def test_snapshot_publication_recovers_after_interruption_without_pointer_regres
     with pytest.raises(RuntimeError, match="power loss"):
         interrupted.publish_snapshot(second)
     assert interrupted.load_state().active_snapshot == first[-1]
+    assert second not in interrupted.load_state().snapshots
 
     recovered = SQLiteHistoryControlRepository(path)
     recovered.publish_snapshot(second)

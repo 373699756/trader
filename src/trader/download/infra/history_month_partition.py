@@ -243,11 +243,14 @@ class SQLiteHistoryMonthPartitionRepository:
         new_database = not self._path.exists() or self._path.stat().st_size == 0
         try:
             with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+                if self._statement_trace is not None:
+                    connection.set_trace_callback(self._statement_trace)
                 if new_database:
                     connection.execute("PRAGMA page_size=8192")
                 connection.execute("PRAGMA journal_mode=WAL")
                 connection.execute("PRAGMA synchronous=FULL")
-                connection.executescript(_SCHEMA)
+                # One durable schema transaction, not one FULL fsync per table/index.
+                connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
                 connection.execute(
                     "INSERT OR IGNORE INTO metadata"
                     "(singleton, schema_identity, calendar_year, calendar_month) VALUES (1, ?, ?, ?)",
@@ -262,6 +265,36 @@ class SQLiteHistoryMonthPartitionRepository:
             _fsync_directory(self._path.parent)
         except OSError as exc:
             raise HistoryMonthPartitionError("history month partition durability sync failed") from exc
+
+    def changed_revisions(self, revisions: tuple[HistoryRevision, ...]) -> tuple[HistoryRevision, ...]:
+        """Compare bounded incoming keys with their latest visible price identity, read-only."""
+        changed: list[HistoryRevision] = []
+        with closing(self._read_connection()) as connection:
+            self._require_metadata(connection)
+            for offset in range(0, len(revisions), 200):
+                batch = revisions[offset : offset + 200]
+                placeholders = ",".join("(?,?,?)" for _ in batch)
+                rows = connection.execute(
+                    "WITH requested(day,code,sequence) AS (VALUES " + placeholders + ") "
+                    "SELECT (SELECT o.revision_id FROM daily_observations o "
+                    "WHERE o.trade_date=r.day AND o.code=r.code AND o.sync_sequence<=r.sequence "
+                    "ORDER BY o.sync_sequence DESC LIMIT 1) FROM requested r",
+                    tuple(
+                        v for item in batch for v in (item.trade_date.isoformat(), item.code, item.first_seen_sequence)
+                    ),
+                ).fetchall()
+                changed.extend(item for item, row in zip(batch, rows, strict=True) if item.revision_id != row[0])
+        return tuple(changed)
+
+    def contains_before(self, first_date: date) -> bool:
+        with closing(self._read_connection()) as connection:
+            self._require_metadata(connection)
+            return (
+                connection.execute(
+                    "SELECT 1 FROM daily_records WHERE trade_date<? LIMIT 1", (first_date.isoformat(),)
+                ).fetchone()
+                is not None
+            )
 
     def save_revisions(self, revisions: Iterable[HistoryRevision]) -> None:
         prepared = self._prepare_revisions(revisions)

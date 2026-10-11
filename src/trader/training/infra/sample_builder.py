@@ -23,6 +23,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
+    TrainingSampleDiagnostics,
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
@@ -37,7 +38,9 @@ class TrainingHistorySource(Protocol):
 
     def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int: ...
 
-    def has_industry_window(self, allowed_dates: frozenset[date], required_sessions: int) -> bool: ...
+    def has_industry_window(
+        self, allowed_dates: frozenset[date], required_sessions: int, *, anchor_dates: frozenset[date] | None = None
+    ) -> bool: ...
 
     def iter_training_rows(
         self,
@@ -97,6 +100,11 @@ class _SampleBuildState:
     rolling_codes: dict[str, _RollingCodeState] = field(default_factory=dict)
     current_day: date | None = None
     current_position: int = -1
+    missing_industry: int = 0
+    missing_prices: int = 0
+    short_window: int = 0
+    invalid_features: int = 0
+    missing_labels: int = 0
 
     def report_scanned(self, value: int) -> None:
         self.processed_rows = value
@@ -124,6 +132,10 @@ class _SampleBuildState:
             rolling.points.clear()
         if row.point is None or row.industry is None:
             rolling.points.clear()
+            if row.industry is None:
+                self.missing_industry += 1
+            else:
+                self.missing_prices += 1
         else:
             rolling.points.append(row.point)
             if len(rolling.points) == self.profile.history_sessions:
@@ -131,6 +143,10 @@ class _SampleBuildState:
                 candidate = _pending_sample(row, rolling.points, position, self.readable_dates, self.profile)
                 if candidate is not None:
                     self.pending_days[-1].samples[code] = candidate
+                else:
+                    self.invalid_features += 1
+            else:
+                self.short_window += 1
         rolling.previous_position = position
 
     def _record_future_close(self, code: str, point: HistoryTrainingPoint, position: int) -> None:
@@ -147,6 +163,7 @@ class _SampleBuildState:
         while self.pending_days and (all_days or last_position - self.pending_days[0].calendar_position >= 5):
             pending = self.pending_days.pop(0)
             finalized = _finalize_sample_day(tuple(pending.samples.values()), self.profile)
+            self.missing_labels += len(pending.samples) - len(finalized)
             self.repository.add_final(finalized)
             self.converted_samples += len(finalized)
             _publish(
@@ -193,6 +210,13 @@ def build_training_samples(request: TrainingSampleBuildRequest) -> None:
             state.processed_rows,
             state.processed_rows,
             state.converted_samples,
+            sample_diagnostics=TrainingSampleDiagnostics(
+                state.missing_industry,
+                state.missing_prices,
+                state.short_window,
+                state.invalid_features,
+                state.missing_labels,
+            ),
         ),
     )
     _publish(

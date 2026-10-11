@@ -75,7 +75,7 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
         describe_frozen_daily_input=lambda: descriptor,
         verify_partitions=lambda _progress=None: None,
         training_row_upper_bound=lambda _dates: 0,
-        has_industry_window=lambda _dates, _sessions: True,
+        has_industry_window=lambda _dates, _sessions, **_kwargs: True,
     )
 
 
@@ -120,6 +120,59 @@ def test_training_rejects_empty_samples_instead_of_reusing_existing_result(
     assert result.status == "blocked"
     assert result.failure_reasons == ("profile_training_rows_empty",)
     assert result.model_hash == result.report_hash == ""
+
+
+def test_missing_industry_in_fit_split_blocks_before_price_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    archive = _cadence_archive(tmp_path / "history")
+    archive.has_industry_window = lambda _dates, _sessions, **kwargs: kwargs.get("anchor_dates") is None
+    archive.verify_partitions = lambda *_args: pytest.fail("preflight must run before expensive price validation")
+    _patch_archive(monkeypatch, archive)
+    result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
+    assert result.status == "blocked"
+    assert result.failure_reasons == ("history_industry_split_coverage_insufficient",)
+
+
+def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = _cadence_archive(tmp_path / "history")
+    _patch_archive(monkeypatch, archive)
+    builds = 0
+
+    def build_samples(request):
+        nonlocal builds
+        builds += 1
+        request.repository.add_final(
+            (
+                V3TrainingSample(
+                    "600000",
+                    request.window.split.model_fit_dates[0],
+                    "main",
+                    "银行",
+                    1.0,
+                    (0.0,) * 6,
+                    (0.01, 0.02, 0.03, 0.04, 0.05, 0.035),
+                ),
+            )
+        )
+        request.repository.prepare_for_model_fitting(request.window.split)
+
+    def fail(*_args, **_kwargs):
+        raise ValueError("fixture_fit_failed")
+
+    monkeypatch.setattr("trader.training.infra.engine.build_training_samples", build_samples)
+    monkeypatch.setattr("trader.training.infra.engine.fit_industry_models", fail)
+    first = run_v3_training(tmp_path / "history", tmp_path / "train")
+    assert first.status == "blocked"
+    assert first.sample_database_peak_bytes > 0
+    assert (tmp_path / "train/v3/.sample-cache/complete.json").is_file()
+
+    def fit(_samples, _split, contract, **_kwargs):
+        return ({"银行": _industry_model(len(contract.feature_positions))}, 1, 1)
+
+    monkeypatch.setattr("trader.training.infra.engine.fit_industry_models", fit)
+    monkeypatch.setattr("trader.training.infra.engine.publish_head_bundle", lambda *_args: None)
+    second = run_v3_training(tmp_path / "history", tmp_path / "train")
+    assert second.status == "engineering_ready" and builds == 1
+    assert not (tmp_path / "train/v3/.sample-cache/samples.sqlite3").exists()
 
 
 def test_training_rejects_insufficient_industry_history_before_partition_scan(

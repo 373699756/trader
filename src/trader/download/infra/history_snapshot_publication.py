@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ from trader.download.infra.history_control_repository import (
 from trader.download.infra.history_reference_files import history_industry_mapping_path, write_history_reference
 
 _REFERENCE_SOURCE_CONTRACT = re.compile(r"history_ref_[0-9a-f]{64}_([0-9a-f]{16})")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,7 +61,7 @@ def publish_history_snapshot(control: SQLiteHistoryControlRepository, publicatio
         except HistoryControlError:
             raise
         if active_hash == publication.snapshot.content_hash:
-            rollback.unlink(missing_ok=True)
+            _cleanup_rollback(rollback)
             return
         if rollback.is_file():
             os.replace(rollback, mapping_path)
@@ -67,7 +69,15 @@ def publish_history_snapshot(control: SQLiteHistoryControlRepository, publicatio
         else:
             mapping_path.unlink(missing_ok=True)
         raise
-    rollback.unlink(missing_ok=True)
+    _cleanup_rollback(rollback)
+
+
+def _cleanup_rollback(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        # Publication is committed. Recovery can retry cleanup, never undo active prices.
+        _LOGGER.warning("history_reference_cleanup_pending")
 
 
 def is_reference_only_change(

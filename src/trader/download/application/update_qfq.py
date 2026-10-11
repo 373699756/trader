@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from concurrent.futures import Future, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import date, datetime
 from itertools import islice
 from time import monotonic
 from typing import Protocol
 
-from trader.download.application.qfq_download_progress import QfqDownloadProgress, qfq_message
+from trader.download.application.qfq_download_progress import QfqDownloadProgress, qfq_failure_code, qfq_message
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
@@ -26,6 +26,10 @@ from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 
 class QfqWindowPort(Protocol):
+    def replace_paired_windows(
+        self, peer: QfqWindowPort, windows: tuple[PublishedHistoryWindow, ...], source_identity: str
+    ) -> tuple[tuple[str, ...], int]: ...
+
     def read_code(self, code: str) -> PublishedHistoryWindow: ...
 
     def read_codes(self, codes: tuple[str, ...]) -> tuple[PublishedHistoryWindow, ...]: ...
@@ -122,7 +126,7 @@ class UpdateQfqWindows:
             context = self.supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
         except (RuntimeError, OSError, ValueError) as exc:
             stage = "已取消" if self.cancel_requested() else "准备失败"
-            self.report(qfq_message(self.monotonic() - started, stage, type(exc).__name__))
+            self.report(qfq_message(self.monotonic() - started, stage, qfq_failure_code(exc)))
             raise
         source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
         progress = QfqDownloadProgress(
@@ -147,24 +151,8 @@ class UpdateQfqWindows:
         )
         progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
         plans = iter(self._plans(context, progress, v2_snapshot, v3_snapshot))
-        gaps: list[_GapJob] = []
         checkpoint_codes: list[str] = []
-        while plan_wave := tuple(islice(plans, self.workers)):
-            if self.cancel_requested():
-                break
-            try:
-                wave = self._hydrate_wave(plan_wave)
-            except (RuntimeError, OSError, ValueError) as exc:
-                for plan in plan_wave:
-                    progress.record_pending(plan.security, exc)
-                progress.summary("本地读取失败")
-                continue
-            progress.begin_batch(tuple(job.security for job in wave))
-            wave_gaps, completed_codes = self._run_wave(wave, progress)
-            gaps.extend(wave_gaps)
-            checkpoint_codes.extend(completed_codes)
-            self._flush_checkpoint(checkpoint_codes, progress, threshold=256)
-            progress.summary("批次完成")
+        gaps = self._download_rolling(plans, progress, checkpoint_codes)
         if not self.cancel_requested():
             self._recover_gaps(tuple(sorted(gaps, key=lambda gap: gap.security.code)), progress, checkpoint_codes)
             self._flush_checkpoint(checkpoint_codes, progress, threshold=1)
@@ -242,52 +230,76 @@ class UpdateQfqWindows:
             jobs.append(_DownloadJob(plan.security, plan.dates, window))
         return tuple(jobs)
 
-    def _run_wave(
-        self, wave: tuple[_DownloadJob, ...], progress: QfqDownloadProgress
-    ) -> tuple[list[_GapJob], tuple[str, ...]]:
-        futures = self._submit_wave(wave)
-        gaps, downloaded = self._collect_wave(futures, progress)
-        if not downloaded or self.cancel_requested():
-            return gaps, ()
-        try:
-            self._commit_many(tuple(window for _job, window in downloaded), progress, progress.source)
-        except (RuntimeError, OSError, ValueError) as exc:
-            for job, _window in downloaded:
-                progress.record_pending(job.security, exc)
-            return gaps, ()
-        progress.completed += len(downloaded)
-        return gaps, tuple(window.code for _job, window in downloaded)
-
-    def _submit_wave(self, wave: tuple[_DownloadJob, ...]) -> dict[Future[PublishedHistoryWindow], _DownloadJob]:
+    def _download_rolling(
+        self, plans: Iterable[_DownloadPlan], progress: QfqDownloadProgress, checkpoint_codes: list[str]
+    ) -> list[_GapJob]:
+        remaining = iter(plans)
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob] = {}
-        for job in wave:
+        downloaded: list[tuple[_DownloadJob, PublishedHistoryWindow]] = []
+        gaps: list[_GapJob] = []
+        exhausted = False
+        last_feedback = self.monotonic()
+        try:
+            while not self.cancel_requested():
+                capacity = self.workers - len(futures)
+                plan_batch = tuple(islice(remaining, capacity)) if not exhausted else ()
+                if len(plan_batch) < capacity:
+                    exhausted = True
+                if plan_batch:
+                    self._fill_slots(plan_batch, futures, progress)
+                if downloaded and (len(downloaded) >= self.workers or not futures):
+                    checkpoint_codes.extend(self._commit_downloaded(downloaded[: self.workers], progress))
+                    del downloaded[: self.workers]
+                    self._flush_checkpoint(checkpoint_codes, progress, threshold=256)
+                    progress.summary("批次完成")
+                if not futures:
+                    if exhausted and not downloaded:
+                        break
+                    continue
+                done, _pending = wait(tuple(futures), timeout=1.0, return_when=FIRST_COMPLETED)
+                if self.monotonic() - last_feedback >= 10.0:
+                    progress.publish("请求中", f"在途 {len(futures)} 只 | 已处理 {progress.processed}/{progress.total}")
+                    last_feedback = self.monotonic()
+                if self.cancel_requested():
+                    break
+                failed, ready = self._collect_completed(done, futures, progress)
+                gaps.extend(failed)
+                downloaded.extend(ready)
+        finally:
+            for future in futures:
+                future.cancel()
+        return gaps
+
+    def _fill_slots(
+        self,
+        plans: tuple[_DownloadPlan, ...],
+        futures: dict[Future[PublishedHistoryWindow], _DownloadJob],
+        progress: QfqDownloadProgress,
+    ) -> None:
+        try:
+            jobs = self._hydrate_wave(plans)
+        except (RuntimeError, OSError, ValueError) as exc:
+            for plan in plans:
+                progress.record_pending(plan.security, exc)
+            return
+        progress.begin_batch(tuple(job.security for job in jobs))
+        for job in jobs:
             if self.cancel_requested():
                 break
-            if self.worker_pool is None:
-                future: Future[PublishedHistoryWindow] = Future()
-                try:
-                    future.set_result(self._download(job))
-                except (RuntimeError, OSError, ValueError) as exc:
-                    future.set_exception(exc)
-            else:
-                future = submit_or_reject(self.worker_pool, self._download, job)
-            futures[future] = job
-        return futures
+            futures[self._submit(job)] = job
 
-    def _collect_wave(
+    def _collect_completed(
         self,
+        done: set[Future[PublishedHistoryWindow]],
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob],
         progress: QfqDownloadProgress,
     ) -> tuple[list[_GapJob], list[tuple[_DownloadJob, PublishedHistoryWindow]]]:
         gaps: list[_GapJob] = []
-        downloaded: list[tuple[_DownloadJob, PublishedHistoryWindow]] = []
-        for future in as_completed(futures):
-            job = futures[future]
+        ready: list[tuple[_DownloadJob, PublishedHistoryWindow]] = []
+        for future in done:
+            job = futures.pop(future)
             try:
-                if self.cancel_requested():
-                    continue
-                window = future.result()
-                downloaded.append((job, window))
+                ready.append((job, future.result()))
             except (RuntimeError, OSError, ValueError) as exc:
                 progress.record_pending(job.security, exc)
                 missing = (
@@ -295,9 +307,32 @@ class UpdateQfqWindows:
                     if isinstance(exc, QfqWindowIncompleteError)
                     else None
                 )
-                # Retain only identity/dates for failed stocks, never the full market's bars.
                 gaps.append(_GapJob(job.security, job.dates, missing))
-        return gaps, downloaded
+        return gaps, ready
+
+    def _submit(self, job: _DownloadJob) -> Future[PublishedHistoryWindow]:
+        if self.worker_pool is not None:
+            return submit_or_reject(self.worker_pool, self._download, job)
+        future: Future[PublishedHistoryWindow] = Future()
+        try:
+            future.set_result(self._download(job))
+        except (RuntimeError, OSError, ValueError) as exc:
+            future.set_exception(exc)
+        return future
+
+    def _commit_downloaded(
+        self, downloaded: list[tuple[_DownloadJob, PublishedHistoryWindow]], progress: QfqDownloadProgress
+    ) -> tuple[str, ...]:
+        if self.cancel_requested():
+            return ()
+        try:
+            self._commit_many(tuple(window for _job, window in downloaded), progress, progress.source)
+        except (RuntimeError, OSError, ValueError) as exc:
+            for job, _window in downloaded:
+                progress.record_pending(job.security, exc)
+            return ()
+        progress.completed += len(downloaded)
+        return tuple(window.code for _job, window in downloaded)
 
     def _recover_gaps(
         self, gaps: tuple[_GapJob, ...], progress: QfqDownloadProgress, checkpoint_codes: list[str]
@@ -350,10 +385,9 @@ class UpdateQfqWindows:
     def _commit_many(
         self, windows: tuple[PublishedHistoryWindow, ...], progress: QfqDownloadProgress, source: str
     ) -> None:
-        for cache in (self.v2, self.v3):
-            files, delta = cache.replace_windows(windows, source)
-            progress.changed.update(files)
-            progress.rows += delta
+        files, delta = self.v2.replace_paired_windows(self.v3, windows, source)
+        progress.changed.update(files)
+        progress.rows += delta
 
     def _flush_checkpoint(self, checkpoint_codes: list[str], progress: QfqDownloadProgress, *, threshold: int) -> None:
         if self.cancel_requested() or len(checkpoint_codes) < threshold:

@@ -41,6 +41,7 @@ def test_training_progress_throttles_advances_but_emits_stage_boundaries(capsys)
 
     assert capsys.readouterr().err.splitlines() == [
         "00:00:00 | 输入分片校验 | 0/100 (0.00%) | 开始 | 阶段耗时 00:00:00",
+        "00:00:10 | 输入分片校验 | 1/100 (1.00%) | 运行中 | 阶段耗时 00:00:10",
         "00:00:31 | 输入分片校验 | 25/100 (25.00%) | 运行中 | 阶段耗时 00:00:31",
         "00:00:32 | 输入分片校验 | 100/100 (100.00%) | 完成 | 阶段耗时 00:00:32",
     ]
@@ -82,17 +83,17 @@ def test_training_progress_prints_compact_blocked_and_cancelled_results(capsys) 
     ]
 
 
-def test_expensive_index_stage_emits_heartbeat_at_thirty_seconds(capsys) -> None:
+def test_expensive_index_stage_emits_heartbeat_at_ten_seconds(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(0.0, 0.0, 61.0), start_heartbeat=False)
     output.publish(TomorrowTrainingProgress("sample_index", "started", 0, 1))
     capsys.readouterr()
-    output._emit_heartbeat(29.0)
+    output._emit_heartbeat(9.0)
     assert capsys.readouterr().err == ""
-    output._emit_heartbeat(30.0)
-    output._emit_heartbeat(60.0)
+    output._emit_heartbeat(10.0)
+    output._emit_heartbeat(20.0)
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:30 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:30",
-        "00:01:00 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:01:00",
+        "00:00:10 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:10",
+        "00:00:20 | 样本索引 | 0/1 (0.00%) | 开始 | 阶段耗时 00:00:20",
     ]
     output.publish_result("engineering_ready", None)
     capsys.readouterr()

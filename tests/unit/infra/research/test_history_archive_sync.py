@@ -38,7 +38,8 @@ from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.download.infra.history_reference_files import read_bound_history_reference
-from trader.download.infra.history_tencent_stage import HistoryTencentStage
+from trader.download.infra.history_seal_resume import recover_sealed_months
+from trader.download.infra.history_tencent_stage import HistorySealedMonthCheckpoint, HistoryTencentStage
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 
@@ -267,11 +268,6 @@ def test_industry_reference_change_reuses_published_prices(tmp_path: Path, monke
     previous = control.load_state().active_snapshot
     assert previous is not None
     supplier = FakeSupplier(dates, industry="finance")
-    monkeypatch.setattr(
-        history_sync_module,
-        "scan_active_price_gaps",
-        lambda *_args, **_kwargs: pytest.fail("a reference-only publication must not scan price partitions"),
-    )
 
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
 
@@ -306,6 +302,40 @@ def test_industry_reference_failure_restores_previous_binding(tmp_path: Path, mo
     reference = read_bound_history_reference(tmp_path, previous.source.supplier_contract)
     assert {item.industry for item in reference.industry_intervals} == {"bank"}
     assert not (tmp_path.parent / "filter_config" / ".industry_mapping.rollback.json").exists()
+
+
+def test_reference_update_does_not_skip_existing_price_gaps(tmp_path: Path) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    first = run_history_sync(
+        _configuration(tmp_path), FakeSupplier(dates, fail_code="600002", industry="bank"), clock=lambda: NOW
+    )
+    assert first.state == "completed"
+    supplier = FakeSupplier(dates, industry="finance")
+    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    assert result.state == "completed"
+    assert any(code == "600002" for code, _dates in supplier.calls)
+    snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    assert snapshot is not None
+    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)
+    assert len(rows) == 2 and all(item.cell.obtained for item in rows)
+
+
+def test_unchanged_price_batch_does_not_copy_or_add_observations(tmp_path: Path) -> None:
+    from trader.download.domain.history_revision import HistoryRevision
+    from trader.download.infra.history_pending_prices import prepare_pending, write_revision_batch
+
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    assert run_history_sync(_configuration(tmp_path), FakeSupplier(dates), clock=lambda: NOW).state == "completed"
+    active = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    assert active is not None
+    pending = prepare_pending(tmp_path, dates, active, False)
+    revisions = tuple(
+        HistoryRevision(active.sequence + 1, "main", cell, None, None, None)
+        for cell in _download("600001", dates).batch.cells
+    )
+    write_revision_batch(pending, revisions)
+    assert not any(path.exists() for path in pending.paths.values())
+    assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot == active
 
 
 def test_concurrent_tencent_stage_finishes_and_persists_inventory_before_baostock(tmp_path: Path) -> None:
@@ -460,7 +490,8 @@ def test_tencent_gaps_use_complete_baostock_pairs_and_preserve_all_training_fiel
     assert all(row.cell.qfq.close_price == 10 for row in rows)
 
 
-def test_resume_reuses_tencent_and_skips_persisted_baostock_batches(tmp_path: Path) -> None:
+@pytest.mark.parametrize("industry", (None, "finance"))
+def test_resume_reuses_tencent_and_skips_persisted_baostock_batches(tmp_path: Path, industry: str | None) -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     config = replace(_configuration(tmp_path), download_batch_size=1)
     cancel = False
@@ -486,7 +517,7 @@ def test_resume_reuses_tencent_and_skips_persisted_baostock_batches(tmp_path: Pa
     assert result.state == "cancelled"
     control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
     assert control.load_state().active_snapshot is None
-    resumed = FakeSupplier(dates)
+    resumed = FakeSupplier(dates, industry=industry)
     result = run_history_sync(config, resumed, clock=lambda: NOW)
     assert result.state == "completed"
     assert resumed.events == []
@@ -718,6 +749,7 @@ def test_snapshot_publication_failure_restores_stable_month_and_old_active(
     def fail_publish(_self, _snapshot) -> None:
         raise OSError("injected snapshot publication failure")
 
+    publish = SQLiteHistoryControlRepository.publish_snapshot
     monkeypatch.setattr(SQLiteHistoryControlRepository, "publish_snapshot", fail_publish)
     updated = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     failed = run_history_sync(_configuration(tmp_path), FakeSupplier(updated), clock=lambda: NOW)
@@ -727,19 +759,29 @@ def test_snapshot_publication_failure_restores_stable_month_and_old_active(
     assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(original[0], old_snapshot)) == 2
     assert not tuple((tmp_path / "partitions").glob("*/.*.rollback.sqlite3"))
 
+    monkeypatch.setattr(SQLiteHistoryControlRepository, "publish_snapshot", publish)
+    monkeypatch.setattr(
+        SQLiteHistoryMonthPartitionRepository,
+        "_validate_all_rows",
+        lambda *_args: pytest.fail("sealed pending bytes must not repeat semantic validation"),
+    )
+    resumed = run_history_sync(_configuration(tmp_path), FakeSupplier(updated), clock=lambda: NOW)
+    assert resumed.state == "completed"
+    assert control.load_state().active_snapshot != old_snapshot
+
 
 def test_initial_sealing_reuses_pending_inode_without_a_full_database_copy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     copied: list[tuple[Path, Path]] = []
-    original_backup = history_sync_module._backup_database
+    original_backup = history_sync_module.backup_database
 
     def track_backup(source: Path, destination: Path) -> None:
         copied.append((source, destination))
         original_backup(source, destination)
 
-    monkeypatch.setattr(history_sync_module, "_backup_database", track_backup)
+    monkeypatch.setattr(history_sync_module, "backup_database", track_backup)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
     result = run_history_sync(_configuration(tmp_path), FakeSupplier(dates), clock=lambda: NOW)
@@ -803,7 +845,8 @@ def test_interrupted_sealing_resumes_after_the_last_completed_month(
     )
 
     assert resumed.state == "completed"
-    assert validated_months == ([8, 9] if resume_mode == "changed" else [9])
+    # A timestamp-only change requires hashing again, not semantic revalidation.
+    assert validated_months == [9]
     first_event = next(item for item in recorder.values if item.stage == "sealing_partitions")
     expected_event = ("started", 0, "2026-08") if resume_mode == "changed" else ("completed", 1, "2026-08")
     assert (first_event.state, first_event.completed_units, first_event.current_item) == expected_event
@@ -812,6 +855,21 @@ def test_interrupted_sealing_resumes_after_the_last_completed_month(
     )
     expected_first = (0, 2, "2026-08") if resume_mode == "changed" else (1, 2, "2026-09")
     assert (first_sealing.completed_units, first_sealing.total_units, first_sealing.current_item) == expected_first
+
+
+def test_sealing_resume_keeps_later_month_when_an_earlier_month_is_missing(tmp_path: Path) -> None:
+    stable = tmp_path / "partitions/2026/09.sqlite3"
+    month = SQLiteHistoryMonthPartitionRepository(stable, 2026, 9)
+    month.initialize()
+    reference = month.seal()
+    stage = HistoryTencentStage(tmp_path / "stage.sqlite3", "independent-months")
+    stage.initialize()
+    stage.save_sealed_month(2026, 9, HistorySealedMonthCheckpoint.capture(stable, reference))
+    pending = {
+        (2026, 8): stable.with_name(".08.pending.sqlite3"),
+        (2026, 9): stable.with_name(".09.pending.sqlite3"),
+    }
+    assert recover_sealed_months(tmp_path, pending, stage) == {(2026, 9): reference}
 
 
 def test_initial_sealing_does_not_copy_an_unpublished_orphan_for_rollback(
@@ -850,7 +908,7 @@ def test_sealing_uses_sqlite_backup_when_the_filesystem_cannot_link(
     monkeypatch.setattr(history_sync_module.os, "link", reject_link)
     monkeypatch.setattr(
         history_sync_module,
-        "_backup_database",
+        "backup_database",
         lambda copy_source, copy_candidate: copied.append((copy_source, copy_candidate)),
     )
 

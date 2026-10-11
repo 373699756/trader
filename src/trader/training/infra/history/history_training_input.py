@@ -168,7 +168,9 @@ class SQLiteHistoryTrainingInputArchive:
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
 
-    def has_industry_window(self, allowed_dates: frozenset[date], required_sessions: int) -> bool:
+    def has_industry_window(
+        self, allowed_dates: frozenset[date], required_sessions: int, *, anchor_dates: frozenset[date] | None = None
+    ) -> bool:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         if not dates or frozenset(dates) != allowed_dates:
             raise HistoryTrainingInputError("history_training_dates_invalid")
@@ -177,6 +179,7 @@ class SQLiteHistoryTrainingInputArchive:
                 self._codes,
                 dates,
                 required_sessions,
+                anchor_dates=anchor_dates,
             )
         except (HistoryArchiveReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
