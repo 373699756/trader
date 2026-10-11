@@ -155,7 +155,14 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         def __exit__(self, *_args):
             pass
 
-    monkeypatch.setattr("trader.bootstrap.BaoStockHistorySupplier", lambda *_args, **_kwargs: Session(dates))
+    supplier_settings = {}
+
+    def build_supplier(configuration, **kwargs):
+        supplier_settings["configuration"] = configuration
+        supplier_settings.update(kwargs)
+        return Session(dates)
+
+    monkeypatch.setattr("trader.bootstrap.BaoStockHistorySupplier", build_supplier)
     monkeypatch.setattr("trader.bootstrap.TencentQfqSupplier", lambda _dependencies: Prices())
     monkeypatch.setattr("trader.bootstrap.HistoryStNameSource", lambda *_args, **_kwargs: StSource())
     monkeypatch.setattr(
@@ -168,6 +175,10 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     )
     assert result.state == "completed"
     assert baseline.calls == []
+    assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
+    assert supplier_settings["configuration"].supplier_retries == 2
+    assert supplier_settings["price_policy"].timeout_seconds == 20.0
+    assert supplier_settings["price_policy"].retries == 0
     snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
     assert snapshot is not None
     rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)

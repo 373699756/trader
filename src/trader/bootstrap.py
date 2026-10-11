@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, datetime
 from functools import partial
 from importlib.metadata import version
@@ -31,7 +31,7 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
-from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.exchange_security_universe import (
     load_current_a_share_universe,
     select_st_eligible_universe,
@@ -201,9 +201,10 @@ def execute_history_download(
         )
         with (
             BaoStockHistorySupplier(
-                replace(configuration, supplier_retries=0, supplier_timeout_seconds=20.0),
+                configuration,
                 progress=supplier_progress or progress,
                 cancel_requested=cancel_requested,
+                price_policy=BaoStockRequestPolicy(20.0, 0),
             ) as baseline,
             ExitStack() as http_resources,
         ):

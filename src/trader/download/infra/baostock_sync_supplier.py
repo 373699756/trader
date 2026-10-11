@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import platform
 import time
+from math import isfinite
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date
@@ -68,6 +69,16 @@ class _Activity:
 class _Attempt:
     number: int
     total: int
+
+
+@dataclass(frozen=True)
+class BaoStockRequestPolicy:
+    timeout_seconds: float
+    retries: int
+
+    def __post_init__(self) -> None:
+        if not isfinite(self.timeout_seconds) or self.timeout_seconds <= 0 or not 0 <= self.retries <= 2:
+            raise ValueError("BaoStock request policy is invalid")
 
 
 @dataclass(frozen=True)
@@ -178,10 +189,13 @@ class BaoStockHistorySupplier:
         progress: HistorySyncProgressPort | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         cancel_requested: Callable[[], bool] = lambda: False,
+        price_policy: BaoStockRequestPolicy | None = None,
     ) -> None:
         settings = configuration or HistorySyncConfiguration()
-        self._timeout_seconds = settings.supplier_timeout_seconds
-        self._retries = settings.supplier_retries
+        self._context_policy = BaoStockRequestPolicy(settings.supplier_timeout_seconds, settings.supplier_retries)
+        self._price_policy = price_policy or self._context_policy
+        if settings.progress_heartbeat_seconds > self._price_policy.timeout_seconds:
+            raise ValueError("BaoStock price request policy is invalid")
         self._query_interval_seconds = settings.query_interval_seconds
         self._cancellation_grace_seconds = settings.cancellation_grace_seconds
         self._heartbeat_interval_seconds = settings.progress_heartbeat_seconds
@@ -238,8 +252,9 @@ class BaoStockHistorySupplier:
             _terminate(process)
 
     def _request(self, command: _LoadContext | _FetchCode) -> _Response:
+        policy = self._context_policy if isinstance(command, _LoadContext) else self._price_policy
         failure = "supplier_process_failed"
-        max_attempts = self._retries + 1
+        max_attempts = policy.retries + 1
         initial_stage, initial_item = _command_progress(command)
         for attempt_number in range(1, max_attempts + 1):
             if self._cancel_requested():
@@ -249,6 +264,7 @@ class BaoStockHistorySupplier:
                 command,
                 _RequestState(initial_stage, initial_item, self._monotonic()),
                 attempt,
+                policy.timeout_seconds,
             )
             state = result.state
             failure = result.failure_reason or ""
@@ -267,6 +283,7 @@ class BaoStockHistorySupplier:
         command: _LoadContext | _FetchCode,
         state: _RequestState,
         attempt: _Attempt,
+        timeout_seconds: float,
     ) -> _AttemptResult:
         try:
             self._start(attempt)
@@ -277,7 +294,7 @@ class BaoStockHistorySupplier:
             state = replace(
                 state,
                 call_started_at=started_at,
-                deadline=started_at + self._timeout_seconds,
+                deadline=started_at + timeout_seconds,
                 next_heartbeat=started_at + self._heartbeat_interval_seconds,
             )
             self._publish(state.stage, "started", attempt, state.current_item, 0.0)
@@ -286,7 +303,7 @@ class BaoStockHistorySupplier:
                 if response is None:
                     continue
                 if isinstance(response, _Activity):
-                    state = self._handle_activity(response, state, attempt)
+                    state = self._handle_activity(response, state, attempt, timeout_seconds)
                     continue
                 if not isinstance(response, _Response):
                     raise RuntimeError("supplier_protocol_invalid")
@@ -322,6 +339,7 @@ class BaoStockHistorySupplier:
         activity: _Activity,
         state: _RequestState,
         attempt: _Attempt,
+        timeout_seconds: float,
     ) -> _RequestState:
         now = self._monotonic()
         if activity.state == "started":
@@ -330,7 +348,7 @@ class BaoStockHistorySupplier:
                 stage=activity.stage,
                 current_item=activity.current_item,
                 call_started_at=now,
-                deadline=now + self._timeout_seconds,
+                deadline=now + timeout_seconds,
             )
             self._publish(state.stage, "started", attempt, state.current_item, 0.0)
         else:
@@ -357,7 +375,7 @@ class BaoStockHistorySupplier:
         self._process = process
         self._connection = parent
         started_at = self._monotonic()
-        deadline = started_at + self._timeout_seconds
+        deadline = started_at + self._context_policy.timeout_seconds
         next_heartbeat = started_at + self._heartbeat_interval_seconds
         self._publish("supplier_login", "started", attempt, None, 0.0)
         while not parent.poll(min(0.1, max(0.0, min(deadline, next_heartbeat) - self._monotonic()))):
@@ -496,4 +514,4 @@ def _terminate(process: BaseProcess) -> None:
         process.join(timeout=1.0)
 
 
-__all__ = ["BaoStockHistorySupplier"]
+__all__ = ["BaoStockHistorySupplier", "BaoStockRequestPolicy"]

@@ -10,7 +10,12 @@ from tests.unit.infra.research.test_baostock_gateway import _Result
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.download.infra.baostock_gateway import BaoStockRowResult
-from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, _Activity, _RateLimitedSdk
+from trader.download.infra.baostock_sync_supplier import (
+    BaoStockHistorySupplier,
+    BaoStockRequestPolicy,
+    _Activity,
+    _RateLimitedSdk,
+)
 
 
 @dataclass
@@ -220,6 +225,44 @@ def test_supplier_result_handle_does_not_restart_the_call_deadline() -> None:
 
     assert recorder.values[-1].state == "failed"
     assert recorder.values[-1].call_elapsed_seconds == pytest.approx(1.0)
+
+
+def test_supplier_keeps_context_and_price_request_policies_separate(monkeypatch) -> None:
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(
+            supplier_timeout_seconds=45.0,
+            supplier_retries=2,
+            progress_heartbeat_seconds=5.0,
+        ),
+        price_policy=BaoStockRequestPolicy(20.0, 0),
+    )
+    calls: list[tuple[str, int, int, float]] = []
+
+    def fail(command, state, attempt, timeout_seconds):
+        calls.append((type(command).__name__, attempt.number, attempt.total, timeout_seconds))
+        return supplier_module._AttemptResult(None, state, "supplier_failed")
+
+    monkeypatch.setattr(supplier, "_request_once", fail)
+    with pytest.raises(RuntimeError, match="supplier_failed"):
+        supplier.load_context(date(2026, 10, 9), 2000, universe=())
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    with pytest.raises(RuntimeError, match="supplier_failed"):
+        supplier.fetch_code(security, (date(2026, 10, 9),))
+
+    assert calls == [
+        ("_LoadContext", 1, 3, 45.0),
+        ("_LoadContext", 2, 3, 45.0),
+        ("_LoadContext", 3, 3, 45.0),
+        ("_FetchCode", 1, 1, 20.0),
+    ]
+
+
+@pytest.mark.parametrize(("timeout_seconds", "retries"), ((float("nan"), 0), (0.0, 0), (20.0, -1), (20.0, 3)))
+def test_supplier_request_policy_rejects_unbounded_values(timeout_seconds: float, retries: int) -> None:
+    with pytest.raises(ValueError, match="request policy"):
+        BaoStockRequestPolicy(timeout_seconds, retries)
 
 
 def test_worker_context_keeps_official_universe_without_querying_stock_basic(monkeypatch) -> None:
