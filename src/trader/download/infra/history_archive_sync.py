@@ -10,7 +10,7 @@ import sqlite3
 import time as monotonic_time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -61,6 +61,11 @@ from trader.download.infra.history_control_repository import (
     HistoryMaintenanceLock,
     SQLiteHistoryControlRepository,
     inspect_history_disk,
+)
+from trader.download.infra.history_gap_recovery import (
+    HistoryGapRecovery,
+    HistoryGapRecoveryContext,
+    recover_selected_history_gaps,
 )
 from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
@@ -124,6 +129,12 @@ class _TencentDownloadResult:
     dates: tuple[date, ...]
     window: PublishedHistoryWindow | None
     failure_reason: str | None
+
+
+@dataclass(frozen=True)
+class _ProgressOutcome:
+    state: Literal["started", "completed", "failed"]
+    failure_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -426,9 +437,8 @@ class _HistoryDownloadPhases:
     completed: int
     progress: HistorySyncProgressPort | None
     cancel_requested: Cancellation
-    recovery_started_at: float = field(default_factory=monotonic_time.monotonic)
-    recovery_codes: int = 0
     recovery_selection: frozenset[str] = frozenset()
+    recoveries: tuple[HistoryGapRecovery, ...] = ()
 
     def check_cancel(self) -> None:
         if self.cancel_requested():
@@ -483,6 +493,16 @@ class _HistoryDownloadPhases:
         finally:
             for future in futures:
                 future.cancel()
+        summary = self.stage.tencent_summary()
+        if self.progress is not None:
+            try:
+                self.progress.publish(
+                    HistorySyncProgress(
+                        "tencent_history", "completed", summary.processed_codes, len(universe), tencent_summary=summary
+                    )
+                )
+            except OSError:
+                pass
 
     def _fill_tencent_workers(
         self,
@@ -496,7 +516,7 @@ class _HistoryDownloadPhases:
             index, security = jobs[next_job]
             next_job += 1
             dates = _requested_dates(self.context, security)
-            self._price_progress("tencent_history", "started", index, security.code, dates)
+            self._price_progress("tencent_history", _ProgressOutcome("started"), index, security.code, dates)
             if dates:
                 future = submit_or_reject(self.executor, self.supplier.fetch_tencent_window, security, dates)
                 futures[future] = (index, security, dates)
@@ -535,22 +555,32 @@ class _HistoryDownloadPhases:
         for offset, result in enumerate(results):
             self._price_progress(
                 "tencent_history",
-                "failed" if result.failure_reason is not None else "completed",
+                _ProgressOutcome("failed" if result.failure_reason is not None else "completed", result.failure_reason),
                 first_completed + offset,
                 result.security.code,
                 result.dates,
             )
 
     def supplement_baostock(self) -> None:
-        self.recovery_started_at = monotonic_time.monotonic()
-        gaps = self.stage.price_gap_codes()
         cap = self.context.configuration.baostock_max_codes
-        offset = ((self.sequence - 1) * cap) % len(gaps) if gaps else 0
-        self.recovery_selection = frozenset((gaps[offset:] + gaps[:offset])[:cap])
+        recovery_order = self.stage.prioritized_recovery_codes(self.sequence, cap)
+        self.recovery_selection = frozenset(recovery_order)
         universe = self.context.supplier_context.universe
         supplemented = self.stage.supplemented_codes()
         if all(security.code in supplemented for security in universe):
             return
+        self.recoveries = recover_selected_history_gaps(
+            HistoryGapRecoveryContext(
+                self.stage,
+                self.supplier,
+                universe,
+                tuple(code for code in recovery_order if code not in supplemented),
+                self.context.configuration,
+                self.progress,
+                self.cancel_requested,
+                monotonic_time.monotonic,
+            )
+        )
         batch_size = self.context.configuration.download_batch_size
         for start in range(0, len(universe), batch_size):
             self.check_cancel()
@@ -561,11 +591,17 @@ class _HistoryDownloadPhases:
                     results.append(self._supplement_security(index, security))
             if not results:
                 continue
-            write_revision_batch(self.pending, tuple(revision for result in results for revision in result.revisions))
+            write_revision_batch(
+                self.pending,
+                tuple(revision for result in results for revision in result.revisions),
+                self.progress,
+            )
             self.stage.mark_supplemented(tuple((result.code, result.unresolved_price_cells) for result in results))
             self.checkpoint(end)
             for result in results:
-                self._price_progress("persisting_prices", "completed", result.index + 1, result.code, result.dates)
+                self._price_progress(
+                    "persisting_prices", _ProgressOutcome("completed"), result.index + 1, result.code, result.dates
+                )
 
     def build_gap_inventory(self) -> None:
         total = len(self.context.supplier_context.universe)
@@ -600,45 +636,11 @@ class _HistoryDownloadPhases:
     def _supplement_security(self, index: int, security: BaoStockSecurity) -> _SupplementResult:
         self.check_cancel()
         dates = _requested_dates(self.context, security)
-        self._price_progress("persisting_prices", "started", index, security.code, dates)
+        self._price_progress("persisting_prices", _ProgressOutcome("started"), index, security.code, dates)
         if not dates:
             return _SupplementResult(index, security.code, dates, (), 0)
-        tencent, missing_days, anchor_days = self.stage.read_supplement_context(security.code)
-        missing_dates = tuple(date.fromisoformat(day) for day in missing_days)
-        anchors = tuple(date.fromisoformat(day) for day in anchor_days)
-        price_dates = tuple(sorted(set(missing_dates) | set(anchors)))
-        recovery: tuple[BaoStockDailyCell, ...] = ()
-        settings = self.context.configuration
-        if (
-            missing_dates
-            and security.code in self.recovery_selection
-            and self.recovery_codes < settings.baostock_max_codes
-            and monotonic_time.monotonic() - self.recovery_started_at < settings.baostock_budget_seconds
-        ):
-            self.recovery_codes += 1
-            self._price_progress("baostock_gap_fill", "started", index, security.code, price_dates)
-            recovery_state: Literal["completed", "failed"] = "completed"
-            try:
-                price_gaps = self.supplier.fetch_baostock_prices(security, price_dates)
-                batch = price_gaps.batch
-                if (
-                    batch.code != security.code
-                    or batch.failure_reasons
-                    or tuple(cell.trade_date for cell in batch.cells) != price_dates
-                    or any((batch.duplicate_rows, batch.null_rows, batch.out_of_window_rows, batch.future_rows))
-                ):
-                    raise ValueError("history_recovery_invalid")
-                if any(fact.is_st for fact in price_gaps.daily_facts):
-                    raise RuntimeError("history_st_reference_conflict")
-                recovery = price_gaps.batch.cells
-                qualify_history_pairs(security.code, dates, tencent, recovery)
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                self.check_cancel()
-                if str(exc) == "history_st_reference_conflict":
-                    raise
-                recovery = ()
-                recovery_state = "failed"
-            self._price_progress("baostock_gap_fill", recovery_state, index + 1, security.code, price_dates)
+        tencent, _, _ = self.stage.read_supplement_context(security.code)
+        recovery = next((item.cells for item in self.recoveries if item.code == security.code), ())
         self.check_cancel()
         cells = qualify_history_pairs(security.code, dates, tencent, recovery)
         context = self.context
@@ -671,8 +673,8 @@ class _HistoryDownloadPhases:
 
     def _price_progress(
         self,
-        phase: Literal["tencent_history", "baostock_gap_fill", "persisting_prices"],
-        state: Literal["started", "completed", "failed"],
+        phase: Literal["tencent_history", "persisting_prices"],
+        outcome: _ProgressOutcome,
         completed: int,
         code: str,
         dates: tuple[date, ...],
@@ -683,14 +685,13 @@ class _HistoryDownloadPhases:
             self.progress.publish(
                 HistorySyncProgress(
                     phase,
-                    state,
+                    outcome.state,
                     completed,
                     len(self.context.supplier_context.universe),
                     code,
-                    supplier_source=("tencent" if phase == "tencent_history" else "baostock")
-                    if dates and phase != "persisting_prices"
-                    else None,
+                    supplier_source="tencent" if dates and phase == "tencent_history" else None,
                     requested_sessions=len(dates) if dates and phase != "persisting_prices" else None,
+                    failure_reason=outcome.failure_reason,
                 )
             )
         except OSError:

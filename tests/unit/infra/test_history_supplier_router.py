@@ -436,7 +436,7 @@ def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
             gap_summary=HistoryGapSummary(1, 0),
         )
     )
-    assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | Tencent失败 0 股" in capsys.readouterr().err
+    assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | 本轮Tencent失败 0 股" in capsys.readouterr().err
 
 
 def test_active_gap_scan_prints_the_month_before_the_query_starts(capsys):

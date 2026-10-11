@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
-from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncProgress
+from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncProgress, HistoryTencentSummary
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 
 
@@ -127,6 +127,54 @@ def test_partition_sealing_prints_the_first_month_before_long_local_work(capsys)
     progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 100, current_item="2018-07"))
 
     assert capsys.readouterr().err == "00:00:01 | 封存月分片 | 开始 | 0/100 (0.00%) | 月份 2018-07\n"
+
+
+def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 0.0, 0.0, 1.0, 6.0, 6.0, 7.0, 7.0))
+
+    progress.publish(HistorySyncProgress("persisting_partitions", "started", 0, 3, "2026-07"))
+    progress.publish(HistorySyncProgress("persisting_partitions", "completed", 1, 3, "2026-07"))
+    progress.publish(HistorySyncProgress("persisting_partitions", "started", 1, 3, "2026-08"))
+    progress.publish(HistorySyncProgress("persisting_partitions", "completed", 3, 3, "2026-09"))
+
+    assert capsys.readouterr().err.splitlines() == [
+        "00:00:00 | 历史月分片写入 | 开始 | 0/3 (0.00%) | 月份 2026-07",
+        "00:00:06 | 历史月分片写入 | 开始 | 1/3 (33.33%) | 月份 2026-08",
+        "00:00:07 | 历史月分片写入 | 完成 | 3/3 (100.00%) | 月份 2026-09",
+    ]
+
+
+def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+
+    progress.publish(
+        HistorySyncProgress(
+            "tencent_history",
+            "failed",
+            29,
+            4400,
+            "600001",
+            supplier_source="tencent",
+            requested_sessions=2000,
+            failure_reason="history_tencent_overlap_conflict",
+        )
+    )
+    progress.publish(
+        HistorySyncProgress(
+            "tencent_history",
+            "completed",
+            4400,
+            4400,
+            tencent_summary=HistoryTencentSummary(4400, 4371, 29, 24),
+        )
+    )
+
+    assert capsys.readouterr().err.splitlines() == [
+        "00:00:00 | Tencent历史下载 | 失败 | 29/4400 (0.66%) | 股票 600001 | 来源 Tencent | 请求 2000 日 "
+        "| 错误 history_tencent_overlap_conflict",
+        "00:00:00 | Tencent历史下载 | 完成 | 4400/4400 (100.00%) | 成功 4371 股 | 失败 29 股 "
+        "| 重叠冲突 24 股 | 其它失败 5 股",
+    ]
 
 
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:

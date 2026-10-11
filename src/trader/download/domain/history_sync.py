@@ -35,6 +35,7 @@ HistorySyncProgressStage = Literal[
     "history_gap_inventory",
     "baostock_gap_fill",
     "persisting_prices",
+    "persisting_partitions",
     "preparing_partitions",
     "downloading_codes",
     "sealing_partitions",
@@ -127,6 +128,29 @@ class HistoryGapSummary:
 
 
 @dataclass(frozen=True)
+class HistoryTencentSummary:
+    processed_codes: int
+    succeeded_codes: int
+    failed_codes: int
+    overlap_conflicts: int
+
+    def __post_init__(self) -> None:
+        if (
+            any(
+                type(value) is not int or value < 0
+                for value in (self.processed_codes, self.succeeded_codes, self.failed_codes, self.overlap_conflicts)
+            )
+            or self.succeeded_codes + self.failed_codes != self.processed_codes
+            or self.overlap_conflicts > self.failed_codes
+        ):
+            raise ValueError("history Tencent summary is invalid")
+
+    @property
+    def other_failures(self) -> int:
+        return self.failed_codes - self.overlap_conflicts
+
+
+@dataclass(frozen=True)
 class HistoryStEligibilitySummary:
     clear: int
     ever_st: int
@@ -154,6 +178,7 @@ class HistorySyncProgress:
     supplier_source: Literal["baostock", "tencent"] | None = None
     requested_sessions: int | None = None
     gap_summary: HistoryGapSummary | None = None
+    tencent_summary: HistoryTencentSummary | None = None
     st_summary: HistoryStEligibilitySummary | None = None
     failure_reason: str | None = None
     cache_hit: bool | None = None
@@ -180,6 +205,17 @@ class HistorySyncProgress:
             or (
                 self.requested_sessions is not None
                 and (type(self.requested_sessions) is not int or not 1 <= self.requested_sessions <= 2000)
+            )
+            or (
+                self.tencent_summary is not None
+                and (
+                    self.stage != "tencent_history"
+                    or self.state != "completed"
+                    or self.current_item is not None
+                    or self.tencent_summary.processed_codes != self.completed_units
+                    or self.completed_units != self.total_units
+                    or self.supplier_source is not None
+                )
             )
             or (
                 self.st_summary is not None
@@ -217,5 +253,6 @@ __all__ = [
     "HistorySyncProgressStage",
     "HistoryGapSummary",
     "HistoryStEligibilitySummary",
+    "HistoryTencentSummary",
     "HistoryTwoStageSupplier",
 ]

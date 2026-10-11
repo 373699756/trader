@@ -8,9 +8,11 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressPort
 from trader.download.infra.history_archive_reader import route_history_months
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.download.infra.history_seal_resume import remove_sqlite_files
@@ -86,18 +88,42 @@ def _ensure_pending(pending: PendingHistoryPartitions, month: tuple[int, int]) -
     return path
 
 
-def write_revision_batch(pending: PendingHistoryPartitions, revisions: tuple[HistoryRevision, ...]) -> None:
+def write_revision_batch(
+    pending: PendingHistoryPartitions,
+    revisions: tuple[HistoryRevision, ...],
+    progress: HistorySyncProgressPort | None = None,
+) -> None:
     grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
     for value in revisions:
         grouped[(value.trade_date.year, value.trade_date.month)].append(value)
-    for (year, month), values in sorted(grouped.items()):
+    months = sorted(grouped.items())
+    for index, ((year, month), values) in enumerate(months):
+        item = f"{year:04d}-{month:02d}"
+        _publish_partition_progress(progress, "started", index, len(months), item)
         previous = pending.active_by_month.get((year, month))
         candidate = pending.paths[(year, month)]
         readable = candidate if candidate.is_file() else pending.root / previous.relative_path if previous else None
         if readable is not None:
             values = list(SQLiteHistoryMonthPartitionRepository(readable, year, month).changed_revisions(tuple(values)))
         if not values:
+            _publish_partition_progress(progress, "completed", index + 1, len(months), item)
             continue
         path = _ensure_pending(pending, (year, month))
         repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
         repository.save_revisions(sorted(values, key=lambda item: (item.trade_date, item.code, item.revision_id)))
+        _publish_partition_progress(progress, "completed", index + 1, len(months), item)
+
+
+def _publish_partition_progress(
+    progress: HistorySyncProgressPort | None,
+    state: Literal["started", "completed"],
+    completed: int,
+    total: int,
+    item: str,
+) -> None:
+    if progress is None:
+        return
+    try:
+        progress.publish(HistorySyncProgress("persisting_partitions", state, completed, total, item))
+    except OSError:
+        pass

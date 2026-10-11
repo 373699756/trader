@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_control import HistorySnapshotPartition
-from trader.download.domain.history_sync import HistoryGapSummary
+from trader.download.domain.history_sync import HistoryGapSummary, HistoryTencentSummary
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.published_history_codec import (
     decode_published_history_cell_payload,
@@ -244,6 +244,25 @@ class HistoryTencentStage:
                 str(row[0]) for row in connection.execute("SELECT code FROM outcomes WHERE failure_reason IS NOT NULL")
             )
 
+    def tencent_summary(self) -> HistoryTencentSummary:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            row = connection.execute(
+                "SELECT COUNT(*), "
+                "SUM(CASE WHEN failure_reason IS NULL THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN failure_reason IS NOT NULL THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN failure_reason='history_tencent_overlap_conflict' THEN 1 ELSE 0 END) "
+                "FROM outcomes"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("history_tencent_summary_unavailable")
+        processed, succeeded, failed, overlap = row
+        return HistoryTencentSummary(
+            int(processed or 0),
+            int(succeeded or 0),
+            int(failed or 0),
+            int(overlap or 0),
+        )
+
     def price_gap_dates(self) -> dict[str, tuple[str, ...]]:
         grouped: dict[str, list[str]] = {}
         with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
@@ -371,6 +390,25 @@ class HistoryTencentStage:
                 )
             )
 
+    def prioritized_recovery_codes(self, sequence: int, limit: int) -> tuple[str, ...]:
+        if type(sequence) is not int or sequence < 1 or type(limit) is not int or limit < 0:
+            raise ValueError("history recovery selection is invalid")
+        gaps = self.price_gap_codes()
+        gap_set = frozenset(gaps)
+        failed_set = self.failed_codes()
+        failed = tuple(sorted(failed_set & gap_set))
+        selected = _rotating_prefix(failed, (sequence - 1) * limit, limit)
+        remaining = limit - len(selected)
+        partial = tuple(code for code in gaps if code not in failed_set)
+        return (*selected, *_rotating_prefix(partial, (sequence - 1) * limit, remaining))
+
     def clear(self) -> None:
         for path in (self._path, Path(f"{self._path}-wal"), Path(f"{self._path}-shm")):
             path.unlink(missing_ok=True)
+
+
+def _rotating_prefix(values: tuple[str, ...], offset: int, limit: int) -> tuple[str, ...]:
+    if not values or limit == 0:
+        return ()
+    start = offset % len(values)
+    return (values[start:] + values[:start])[:limit]

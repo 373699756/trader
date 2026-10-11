@@ -25,6 +25,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "history_gap_inventory": "统计历史缺口",
     "baostock_gap_fill": "BaoStock补缺",
     "persisting_prices": "历史价格整理",
+    "persisting_partitions": "历史月分片写入",
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
     "sealing_partitions": "封存月分片",
@@ -47,6 +48,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "tencent_history": "股票",
     "baostock_gap_fill": "股票",
     "persisting_prices": "股票",
+    "persisting_partitions": "月份",
     "sealing_partitions": "月份",
     "history_active_gaps": "月份",
 }
@@ -66,6 +68,7 @@ _COUNT_STAGES = frozenset(
         "tencent_history",
         "baostock_gap_fill",
         "persisting_prices",
+        "persisting_partitions",
         "sealing_partitions",
         "supplier_industry",
     }
@@ -77,11 +80,19 @@ _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplie
 def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.cache_hit is not None:
         return ("缓存复用" if progress.cache_hit else "供应商查询",)
+    if progress.tencent_summary is not None:
+        summary = progress.tencent_summary
+        return (
+            f"成功 {summary.succeeded_codes} 股",
+            f"失败 {summary.failed_codes} 股",
+            f"重叠冲突 {summary.overlap_conflicts} 股",
+            f"其它失败 {summary.other_failures} 股",
+        )
     if progress.gap_summary is not None:
         gap_summary = progress.gap_summary
         return (
             f"价格对待补 {gap_summary.price_pair_cells} 股日",
-            f"Tencent失败 {gap_summary.failed_codes} 股",
+            f"本轮Tencent失败 {gap_summary.failed_codes} 股",
         )
     if progress.st_summary is not None:
         st_summary = progress.st_summary
@@ -102,6 +113,7 @@ class StderrHistorySyncProgress:
         self._specific_failure: tuple[HistorySyncProgressStage, str | None] | None = None
         self._route: HistorySyncProgress | None = None
         self._preparation_started: tuple[HistorySyncProgressStage, str | None, int] | None = None
+        self._partition_reported_at: float | None = None
 
     def publish(self, progress: HistorySyncProgress) -> None:
         if progress.stage == "supplier_routing":
@@ -125,6 +137,8 @@ class StderrHistorySyncProgress:
     def _should_suppress(self, progress: HistorySyncProgress) -> bool:
         if progress.stage == "supplier_routing":
             return True
+        if progress.stage == "persisting_partitions":
+            return self._suppress_partition_progress(progress)
         if progress.stage in _PREPARATION_STAGES and progress.state in {"started", "waiting"}:
             return self._suppress_preparation(progress)
         if progress.state in {"started", "waiting"} and not (
@@ -136,6 +150,16 @@ class StderrHistorySyncProgress:
         return progress.stage == "loading_context" and (
             progress.state == "completed" or progress.state == "failed" and self._specific_failure is not None
         )
+
+    def _suppress_partition_progress(self, progress: HistorySyncProgress) -> bool:
+        now = self._monotonic()
+        if progress.state == "completed" and progress.completed_units == progress.total_units:
+            self._partition_reported_at = None
+            return False
+        if self._partition_reported_at is None or now - self._partition_reported_at >= 5.0:
+            self._partition_reported_at = now
+            return False
+        return True
 
     def _suppress_preparation(self, progress: HistorySyncProgress) -> bool:
         if progress.state == "waiting":
@@ -164,7 +188,7 @@ class StderrHistorySyncProgress:
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")
         if progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"} and (
-            self._route is not None or progress.supplier_source is not None
+            progress.supplier_source is not None or progress.stage == "downloading_codes" and self._route is not None
         ):
             if progress.stage == "downloading_codes" and self._route is not None:
                 source = "Tencent" if self._route.supplier_source == "tencent" else "BaoStock"

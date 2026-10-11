@@ -333,9 +333,14 @@ def test_unchanged_price_batch_does_not_copy_or_add_observations(tmp_path: Path)
         HistoryRevision(active.sequence + 1, "main", cell, None, None, None)
         for cell in _download("600001", dates).batch.cells
     )
-    write_revision_batch(pending, revisions)
+    recorder = ProgressRecorder()
+    write_revision_batch(pending, revisions, recorder)
     assert not any(path.exists() for path in pending.paths.values())
     assert SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot == active
+    assert [(item.state, item.completed_units, item.total_units, item.current_item) for item in recorder.values] == [
+        ("started", 0, 1, "2026-09"),
+        ("completed", 1, 1, "2026-09"),
+    ]
 
 
 def test_concurrent_tencent_stage_finishes_and_persists_inventory_before_baostock(tmp_path: Path) -> None:
@@ -426,6 +431,76 @@ def test_tencent_pipeline_refills_slow_workers_and_persists_results_in_batches(
     assert saved_batch_sizes[:2] == [2, 1]
 
 
+def test_tencent_pipeline_reports_current_failure_reason_and_terminal_summary(tmp_path: Path) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    recorder = ProgressRecorder()
+
+    result = run_history_sync(
+        _configuration(tmp_path),
+        FakeSupplier(dates, fail_code="600002"),
+        clock=lambda: NOW,
+        progress=recorder,
+    )
+
+    failed = next(item for item in recorder.values if item.stage == "tencent_history" and item.state == "failed")
+    terminal = next(item for item in recorder.values if item.tencent_summary is not None)
+    assert result.state == "completed"
+    assert failed.failure_reason == "tencent_query_failed"
+    assert terminal.tencent_summary is not None
+    assert (terminal.tencent_summary.succeeded_codes, terminal.tencent_summary.failed_codes) == (1, 1)
+
+
+def test_selected_tencent_failures_recover_before_the_first_partition_batch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    codes = tuple(f"60{index:04d}" for index in range(65))
+    failed_codes = frozenset((codes[0], codes[-1]))
+    partial_code = codes[1]
+    events: list[str] = []
+    recorder = ProgressRecorder()
+
+    class TwoFailures(FakeSupplier):
+        def load_context(self, as_of, sessions, *, universe=None):
+            selected = tuple(BaoStockSecurity(code, code, "main", date(2000, 1, 1), None, "test") for code in codes)
+            return super().load_context(as_of, sessions, universe=selected)
+
+        def fetch_tencent_window(self, security, requested):
+            if security.code in failed_codes:
+                raise RuntimeError("tencent_query_failed")
+            value = super().fetch_tencent_window(security, requested)
+            if security.code == partial_code:
+                return replace(
+                    value,
+                    cells=tuple(replace(cell, qfq=None, status="qfq_missing") for cell in value.cells),
+                )
+            return value
+
+        def fetch_baostock_prices(self, security, requested):
+            events.append(f"recover:{security.code}")
+            return _download(security.code, requested)
+
+    def stop_at_first_write(_pending, _revisions, _progress=None):
+        events.append("write")
+        raise RuntimeError("stop_after_recovery")
+
+    monkeypatch.setattr(history_sync_module, "write_revision_batch", stop_at_first_write)
+
+    result = run_history_sync(_configuration(tmp_path), TwoFailures(dates), clock=lambda: NOW, progress=recorder)
+
+    assert result.state == "failed"
+    assert events == [f"recover:{codes[0]}", f"recover:{codes[-1]}", f"recover:{partial_code}", "write"]
+    recovery_progress = [item for item in recorder.values if item.stage == "baostock_gap_fill"]
+    assert [(item.state, item.completed_units, item.total_units, item.current_item) for item in recovery_progress] == [
+        ("started", 0, 3, codes[0]),
+        ("completed", 1, 3, codes[0]),
+        ("started", 1, 3, codes[-1]),
+        ("completed", 2, 3, codes[-1]),
+        ("started", 2, 3, partial_code),
+        ("completed", 3, 3, partial_code),
+    ]
+
+
 def test_tencent_stage_upgrades_legacy_resume_metadata_without_rewriting_candidates(tmp_path: Path) -> None:
     path = tmp_path / ".tencent-stage" / "legacy.sqlite3"
     path.parent.mkdir(parents=True)
@@ -461,6 +536,60 @@ def test_tencent_stage_upgrades_legacy_resume_metadata_without_rewriting_candida
     assert "unresolved_price_cells" in supplemented_columns
     assert stage.price_gap_dates() == {"600001": ("2026-09-10",)}
     assert stage.unresolved_price_counts() == ({}, frozenset(("600001",)))
+
+
+def test_tencent_stage_prioritizes_current_failures_and_rotates_overflow(tmp_path: Path) -> None:
+    path = tmp_path / "stage.sqlite3"
+    stage = HistoryTencentStage(path, "sync-priority")
+    stage.initialize()
+    failed = tuple(f"60{index:04d}" for index in range(35))
+    partial = tuple(f"70{index:04d}" for index in range(10))
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executemany(
+            "INSERT INTO outcomes VALUES (?, ?)",
+            (
+                (code, "history_tencent_overlap_conflict" if index < 24 else "history_sync_failed")
+                for index, code in enumerate(failed)
+            ),
+        )
+        connection.executemany("INSERT INTO outcomes VALUES (?, NULL)", ((code,) for code in partial))
+        connection.executemany(
+            "INSERT INTO gaps VALUES (?, '2026-09-10', 'baostock_price_pair')",
+            ((code,) for code in (*failed, *partial)),
+        )
+
+    first = stage.prioritized_recovery_codes(1, 30)
+    second = stage.prioritized_recovery_codes(2, 30)
+    summary = stage.tencent_summary()
+
+    assert len(first) == len(second) == 30
+    assert set(first) <= set(failed) and set(second) <= set(failed)
+    assert set(first) | set(second) == set(failed)
+    assert (summary.processed_codes, summary.succeeded_codes, summary.failed_codes) == (45, 10, 35)
+    assert (summary.overlap_conflicts, summary.other_failures) == (24, 11)
+
+
+def test_tencent_stage_fills_recovery_capacity_with_partial_gaps_after_failures(tmp_path: Path) -> None:
+    path = tmp_path / "stage.sqlite3"
+    stage = HistoryTencentStage(path, "sync-partial")
+    stage.initialize()
+    failed = tuple(f"60{index:04d}" for index in range(29))
+    partial = tuple(f"70{index:04d}" for index in range(10))
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executemany(
+            "INSERT INTO outcomes VALUES (?, 'history_tencent_overlap_conflict')", ((code,) for code in failed)
+        )
+        connection.executemany("INSERT INTO outcomes VALUES (?, NULL)", ((code,) for code in partial))
+        connection.executemany(
+            "INSERT INTO gaps VALUES (?, '2026-09-10', 'baostock_price_pair')",
+            ((code,) for code in (*failed, *partial)),
+        )
+
+    selected = stage.prioritized_recovery_codes(2, 30)
+
+    assert len(selected) == 30
+    assert set(failed) <= set(selected)
+    assert len(set(selected) & set(partial)) == 1
 
 
 @pytest.mark.parametrize("failure", ("request", "missing_side"))
@@ -655,10 +784,13 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
         ("tencent_history", "started"),
         ("tencent_history", "completed"),
         ("tencent_history", "completed"),
+        ("tencent_history", "completed"),
         ("history_gap_inventory", "started"),
         ("history_gap_inventory", "completed"),
         ("persisting_prices", "started"),
         ("persisting_prices", "started"),
+        ("persisting_partitions", "started"),
+        ("persisting_partitions", "completed"),
         ("persisting_prices", "completed"),
         ("persisting_prices", "completed"),
         ("sealing_partitions", "started"),
@@ -670,6 +802,8 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
     assert recorder.values[6].completed_units == 0
     assert recorder.values[7].completed_units == 1
     assert recorder.values[9].completed_units == 2
+    assert recorder.values[10].tencent_summary is not None
+    assert recorder.values[10].tencent_summary.succeeded_codes == 2
 
 
 def test_current_history_reports_each_active_gap_partition_before_scanning(tmp_path: Path) -> None:
