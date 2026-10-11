@@ -12,7 +12,7 @@ from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIss
 
 def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path, monkeypatch, capsys) -> None:
     observed_at = datetime(2026, 9, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-    eligibility_index = SQLiteIssuerEligibilityIndex(tmp_path / "data" / "blacklist")
+    eligibility_index = SQLiteIssuerEligibilityIndex(tmp_path / "data" / "filter_config")
     eligibility_index.record(
         (
             IssuerEligibilityFact(

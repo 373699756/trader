@@ -21,7 +21,7 @@ from trader.download.infra.baostock_gap_supplier import (
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.download.infra.history_reference_files import write_st_evidence
+from trader.download.infra.history_reference_files import history_st_evidence_path, write_st_evidence
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
 
 
@@ -258,7 +258,7 @@ def _create_increment(root: Path, *, qfq_gap: bool = False) -> tuple[Path, Path]
     return manifest_path, shard
 
 
-def _create_source(root: Path, *, qfq_gap: bool = False) -> None:
+def _create_source(root: Path, *, qfq_gap: bool = False, filter_history_root: Path | None = None) -> None:
     root.mkdir(parents=True)
     parent_shard = _create_parent(root, qfq_gap=qfq_gap)
     increment_manifest, _increment_shard = _create_increment(root, qfq_gap=qfq_gap)
@@ -338,9 +338,8 @@ def _create_source(root: Path, *, qfq_gap: bool = False) -> None:
     }
     (root / "active-manifest.json").write_text(_json(active), encoding="utf-8")
     (root / ".download.lock").touch()
-    (root / "references").mkdir()
     write_st_evidence(
-        root / "references/historical_st.json",
+        history_st_evidence_path(filter_history_root or root),
         (HistoryStEvidence("600001", date(2026, 9, 2), "clear"),),
     )
 
@@ -391,7 +390,7 @@ def _rewrite_completed_target_as_hash_layout(target: Path) -> tuple[Path, Path]:
 def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp_path: Path) -> None:
     source = tmp_path / "baostock-daily/sessions-2000"
     target = tmp_path / "baostock"
-    _create_source(source)
+    _create_source(source, filter_history_root=target)
     before = _file_hashes(source)
 
     summary = converter.convert_archive(
@@ -474,7 +473,7 @@ def test_converter_streams_parent_and_active_increment_into_month_partitions(tmp
 def test_converter_requires_public_st_evidence_instead_of_daily_non_st(tmp_path: Path) -> None:
     source, target = tmp_path / "source", tmp_path / "target"
     _create_source(source)
-    (source / "references/historical_st.json").unlink()
+    history_st_evidence_path(source).unlink()
     with pytest.raises(converter.ConversionError, match="provide --st-reference"):
         converter.convert_archive(source, target, minimum_free_bytes=0, apply_niceness=False)
     assert not target.exists()

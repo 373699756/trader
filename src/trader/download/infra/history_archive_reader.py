@@ -28,7 +28,11 @@ from trader.download.infra.history_month_partition import (
     HistoryPartitionVerificationPhase,
     SQLiteHistoryMonthPartitionRepository,
 )
-from trader.download.infra.history_reference_files import HistoryReferenceIndex, read_bound_history_reference
+from trader.download.infra.history_reference_files import (
+    HistoryReferenceIndex,
+    history_industry_mapping_path,
+    read_bound_history_reference,
+)
 
 _CODE = re.compile(r"^[0-9]{6}$")
 
@@ -109,7 +113,7 @@ class SQLiteHistoryArchiveReader:
         digest = source.supplier_contract[len("history_ref_") : len("history_ref_") + 64]
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise HistoryArchiveReadError("history_reference_unavailable")
-        path = self._root / "references" / f"{digest}.json"
+        path = history_industry_mapping_path(self._root)
         try:
             stat = path.stat()
             identity = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)

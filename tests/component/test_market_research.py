@@ -120,7 +120,7 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
             requested = set(codes)
             return tuple(quote for quote in self._quotes if quote.code in requested)
 
-    registry = SQLiteIssuerEligibilityIndex(tmp_path / "blacklist")
+    registry = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
     registry.record(
         (
             IssuerEligibilityFact(
@@ -222,7 +222,7 @@ def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_
             announcements_available=True,
         ),
     )
-    registry = SQLiteIssuerEligibilityIndex(tmp_path / "blacklist")
+    registry = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
     gateway = RecordingGateway((_quote("600001"),))
     history = CountingHistoryClient(_history_bars())
     service = _service(

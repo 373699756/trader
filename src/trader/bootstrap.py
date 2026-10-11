@@ -34,6 +34,7 @@ from trader.download.infra.exchange_security_universe import (
     select_history_eligible_universe,
 )
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
+from trader.download.infra.history_reference_files import history_st_evidence_path
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
@@ -210,7 +211,7 @@ def execute_history_download(
                     prices,
                     load_current_securities,
                     HistoryStNameSource(
-                        configuration.archive_root / "references" / "historical_st.json",
+                        history_st_evidence_path(configuration.archive_root),
                         requests.get,
                         history_pool,
                         cancel_requested,
@@ -918,12 +919,12 @@ def _build_market_data(
         monotonic=time.monotonic,
     )
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
-    blacklist_root = settings.project_root / "data" / "blacklist"
+    filter_config_root = settings.project_root / "data" / "filter_config"
     SQLiteIssuerEligibilityIndex.migrate_legacy_database(
         settings.runtime_dir / "issuer-eligibility.sqlite3",
-        blacklist_root,
+        filter_config_root,
     )
-    eligibility = SQLiteIssuerEligibilityIndex(blacklist_root)
+    eligibility = SQLiteIssuerEligibilityIndex(filter_config_root)
     try:
         eligibility.record_manual_blacklist(
             strategy.hard_filters.blacklist_codes,

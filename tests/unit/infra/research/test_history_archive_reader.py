@@ -27,7 +27,7 @@ from trader.download.infra.history_archive_reader import (
 )
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.download.infra.history_reference_files import write_history_reference
+from trader.download.infra.history_reference_files import history_industry_mapping_path, write_history_reference
 
 
 def _side(code: str, day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -79,7 +79,7 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         tuple(BaoStockIndustryInterval(code, date(2000, 1, 1), None, "bank", "sw") for code in codes),
         tuple(HistoryStEvidence(code, max(row.trade_date for row in rows), "clear") for code in codes),
     )
-    write_history_reference(root / "references" / f"{reference.content_hash}.json", reference)
+    write_history_reference(history_industry_mapping_path(root), reference)
     source = HistorySourceIdentity(
         "tencent",
         "history_daily",

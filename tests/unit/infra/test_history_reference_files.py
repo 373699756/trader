@@ -16,7 +16,13 @@ from trader.download.domain.security_eligibility import is_st_security_name
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
-from trader.download.infra.history_reference_files import read_history_reference, write_history_reference
+from trader.download.infra.history_reference_files import (
+    history_filter_config_root,
+    history_industry_mapping_path,
+    history_st_evidence_path,
+    read_history_reference,
+    write_history_reference,
+)
 from trader.download.infra.history_st_source import HistoryStNameSource, parse_name_history_st
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 
@@ -167,10 +173,24 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
     write_history_reference(path, reference)
     assert read_history_reference(path) == reference
     payload = json.loads(path.read_text())
+    assert payload["st_statuses"] == {code: ["2026-10-09", "clear"]}
+    assert payload["industries"][code] == [
+        ["2020-01-01", "2023-01-01", "bank", "csrc"],
+        ["2023-01-01", None, "finance", "csrc"],
+    ]
+    assert "st_evidence" not in payload and "industry_intervals" not in payload
     payload["eligible_codes"] = ["600002"]
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError):
         read_history_reference(path)
+
+
+def test_history_filter_files_use_fixed_names_beside_history(tmp_path):
+    history = tmp_path / "data" / "history"
+
+    assert history_filter_config_root(history) == tmp_path / "data" / "filter_config"
+    assert history_st_evidence_path(history) == tmp_path / "data" / "filter_config" / "historical_st.json"
+    assert history_industry_mapping_path(history) == tmp_path / "data" / "filter_config" / "industry_mapping.json"
 
 
 def test_st_checkpoints_cache_clear_and_permanently_keep_ever_st(tmp_path):
@@ -214,8 +234,7 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
     snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_published_state().snapshot
     reader = SQLiteHistoryArchiveReader(tmp_path)
     assert tuple(reader.iter_training_windows(snapshot, dates, {"600001"}))
-    reference = reader.reference_index(snapshot).reference
-    (tmp_path / "references" / f"{reference.content_hash}.json").unlink()
+    history_industry_mapping_path(tmp_path).unlink()
     with pytest.raises(HistoryArchiveReadError, match="history_reference_unavailable"):
         tuple(reader.iter_training_windows(snapshot, dates, {"600001"}))
 
@@ -294,8 +313,8 @@ def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, da
     config = HistorySyncConfiguration(root, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     assert run_history_sync(config, supplier, clock=lambda: NOW).state == "completed"
     snapshot = SQLiteHistoryControlRepository(root / "control.sqlite3").load_published_state().snapshot
-    reference = SQLiteHistoryArchiveReader(root).reference_index(snapshot).reference
-    path = root / "references" / f"{reference.content_hash}.json"
+    SQLiteHistoryArchiveReader(root).reference_index(snapshot)
+    path = history_industry_mapping_path(root)
     if damage == "missing":
         path.unlink()
     else:

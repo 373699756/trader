@@ -65,7 +65,11 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
 )
-from trader.download.infra.history_reference_files import write_history_reference
+from trader.download.infra.history_reference_files import (
+    history_industry_mapping_path,
+    read_bound_history_reference,
+    write_history_reference,
+)
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 from trader.infra.workers import WorkerExecutor, injected_executor, submit_or_reject
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
@@ -157,6 +161,7 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
         state = control.load_state()
         _publish_progress(progress, "initializing", "completed", (1, 1))
         active = state.active_snapshot
+        _recover_reference_mapping(root, active, control)
         _recover_partition_replacements(root, active)
         if active is None and not _has_sufficient_disk(root, configuration.minimum_free_bytes):
             return _status("blocked", "disk_space_insufficient", configuration, None, observed_at)
@@ -175,7 +180,6 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
         reference = HistoryReferenceSnapshot(
             tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
         )
-        write_history_reference(root / "references" / f"{reference.content_hash}.json", reference)
         previous_codes = _active_universe(control, active)
         if (
             not previous_codes.issubset(item.code for item in universe.securities)
@@ -184,6 +188,7 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
             raise RuntimeError("supplier_universe_regressed")
         previous_gaps = _previous_price_gaps(root, active, context)
         if _is_current(active, calendar, universe) and not previous_gaps:
+            write_history_reference(history_industry_mapping_path(root), reference)
             return _status("already_current", None, configuration, active, observed_at)
         if not _has_sufficient_disk(root, configuration.minimum_free_bytes):
             return _status("blocked", "disk_space_insufficient", configuration, active, observed_at)
@@ -201,6 +206,7 @@ def _run_locked(  # noqa: PLR0913 - explicit external resource injection
             progress,
             worker_pool,
             previous_gaps,
+            reference,
         )
     except (HistoryControlError, OSError, RuntimeError, TypeError, ValueError) as exc:
         active = _safe_active(control)
@@ -225,6 +231,7 @@ def _synchronize(  # noqa: PLR0913
     progress: HistorySyncProgressPort | None,
     worker_pool: WorkerExecutor | None,
     previous_gaps: dict[str, tuple[date, ...]],
+    reference: HistoryReferenceSnapshot,
 ) -> HistoryMaintenanceStatus:
     sequence = 1 if active is None else active.sequence + 1
     sync_identity = _sync_identity(calendar, universe, active)
@@ -288,6 +295,7 @@ def _synchronize(  # noqa: PLR0913
             total,
             observed_at,
             progress,
+            reference,
         )
         _publish_progress(progress, "publishing_snapshot", "completed", (1, 1))
         try:
@@ -579,6 +587,7 @@ def _seal_and_publish(  # noqa: PLR0913
     total: int,
     observed_at: datetime,
     progress: HistorySyncProgressPort | None,
+    reference: HistoryReferenceSnapshot,
 ) -> HistoryActiveSnapshot:
     source, calendar, universe = identities
     sealed = _seal_pending(root, pending, progress)
@@ -593,7 +602,15 @@ def _seal_and_publish(  # noqa: PLR0913
         source.content_hash,
         sealed.references,
     )
+    mapping_path = history_industry_mapping_path(root)
+    mapping_rollback = mapping_path.with_name(".industry_mapping.rollback.json")
+    mapping_rollback.unlink(missing_ok=True)
+    if mapping_path.is_file():
+        mapping_rollback.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(mapping_path, mapping_rollback)
+        _fsync_file(mapping_rollback)
     try:
+        write_history_reference(mapping_path, reference)
         _publish_snapshot(
             control,
             identities,
@@ -606,12 +623,43 @@ def _seal_and_publish(  # noqa: PLR0913
         except HistoryControlError:
             raise
         if active_hash == snapshot.content_hash:
+            mapping_rollback.unlink(missing_ok=True)
             _discard_partition_replacements(sealed.replacements)
             return snapshot
+        if mapping_rollback.is_file():
+            os.replace(mapping_rollback, mapping_path)
+            _fsync_directory(mapping_path.parent)
+        else:
+            mapping_path.unlink(missing_ok=True)
         _restore_partition_replacements(sealed.replacements)
         raise
+    mapping_rollback.unlink(missing_ok=True)
     _discard_partition_replacements(sealed.replacements)
     return snapshot
+
+
+def _recover_reference_mapping(
+    root: Path,
+    active: HistoryActiveSnapshot | None,
+    control: SQLiteHistoryControlRepository,
+) -> None:
+    mapping_path = history_industry_mapping_path(root)
+    rollback = mapping_path.with_name(".industry_mapping.rollback.json")
+    if not rollback.is_file():
+        return
+    current_matches = False
+    if active is not None:
+        try:
+            source = control.read_source(active.source_identity_hash)
+            read_bound_history_reference(root, source.supplier_contract)
+            current_matches = True
+        except (HistoryControlError, OSError, ValueError):
+            pass
+    if current_matches:
+        rollback.unlink(missing_ok=True)
+        return
+    os.replace(rollback, mapping_path)
+    _fsync_directory(mapping_path.parent)
 
 
 def _requested_dates(context: _CodeDownloadContext, security: BaoStockSecurity) -> tuple[date, ...]:

@@ -75,6 +75,8 @@ from trader.download.infra.history_month_partition import (
     SQLiteHistoryMonthPartitionRepository,
 )
 from trader.download.infra.history_reference_files import (
+    history_industry_mapping_path,
+    history_st_evidence_path,
     read_bound_history_reference,
     read_st_evidence,
     write_history_reference,
@@ -841,18 +843,17 @@ def _load_industries(source: SourceArchive, cache_mib: int) -> dict[str, tuple[I
 def _conversion_reference(
     source: SourceArchive,
     industries: dict[str, tuple[IndustryInterval, ...]],
-    evidence_path: Path | None,
+    evidence_path: Path,
 ) -> HistoryReferenceSnapshot:
     """Build the immutable reference required by the converted archive.
 
     Legacy daily non-ST observations cannot prove lifetime eligibility.
     """
 
-    path = evidence_path or source.root / "references" / "historical_st.json"
-    if not path.is_file():
+    if not evidence_path.is_file():
         raise ConversionError("legacy daily facts cannot prove lifetime ST eligibility; provide --st-reference")
     try:
-        evidence = read_st_evidence(path)
+        evidence = read_st_evidence(evidence_path)
     except (OSError, ValueError) as exc:
         raise ConversionError("ST reference is unreadable") from exc
     source_codes = {security.code for security in source.securities}
@@ -1593,7 +1594,7 @@ def _finalize_control(
         raise ConversionError("active calendar does not end at the active source cutoff")
     cutoff = date.fromisoformat(source.source_cutoff)
     observed_at = datetime.combine(cutoff, datetime_time(15, 0), tzinfo=_SHANGHAI)
-    write_history_reference(staging / "references" / f"{reference.content_hash}.json", reference)
+    write_history_reference(history_industry_mapping_path(staging), reference)
     source_identity = HistorySourceIdentity(
         "baostock",
         f"legacy_daily.{source.source_fingerprint}",
@@ -2491,7 +2492,6 @@ def _validate_staging_directory(staging: Path, progress_database: Path, *, publi
         "control.sqlite3.pending-shm",
         "control.sqlite3.pending-wal",
         "partitions",
-        "references",
     }
     unexpected = {item.name for item in staging.iterdir()} - allowed
     if unexpected:
@@ -2694,7 +2694,11 @@ def convert_archive(
             months = _months(active_dates)
             board_by_code = {item.code: item.board for item in archive.securities}
             industries = _load_industries(archive, cache_mib)
-            reference = _conversion_reference(archive, industries, st_reference)
+            reference = _conversion_reference(
+                archive,
+                industries,
+                st_reference or history_st_evidence_path(target),
+            )
             total_source_rows = _source_rows_from(archive, active_start, cache_mib)
             progress = _ProgressTracker("转换", total_source_rows, progress_sink)
             results: list[PartitionResult] = []
@@ -2789,7 +2793,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--st-reference",
         type=Path,
-        help="公开曾用名ST证据文件；默认读取源目录 references/historical_st.json，旧逐日非ST不能证明从未ST",
+        help=(
+            "公开曾用名ST证据文件；默认读取目标history同级 filter_config/historical_st.json，旧逐日非ST不能证明从未ST"
+        ),
     )
     parser.add_argument(
         "--batch-size",

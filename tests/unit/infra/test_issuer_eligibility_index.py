@@ -28,7 +28,7 @@ def _fact(*, evidence_hash: str = "a" * 64) -> IssuerEligibilityFact:
 
 
 def test_index_is_idempotent_persistent_and_filters_only_after_effective_time(tmp_path) -> None:
-    root = tmp_path / "blacklist"
+    root = tmp_path / "filter_config"
     index = SQLiteIssuerEligibilityIndex(root)
 
     assert index.record((_fact(),)) == 1
@@ -47,7 +47,7 @@ def test_index_is_idempotent_persistent_and_filters_only_after_effective_time(tm
 
 
 def test_index_rejects_same_evidence_identity_with_different_content(tmp_path) -> None:
-    index = SQLiteIssuerEligibilityIndex(tmp_path / "blacklist")
+    index = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
     index.record((_fact(),))
 
     with pytest.raises(IssuerEligibilityConflictError):
@@ -55,7 +55,7 @@ def test_index_rejects_same_evidence_identity_with_different_content(tmp_path) -
 
 
 def test_index_detects_tampering_without_silently_clearing_exclusions(tmp_path) -> None:
-    root = tmp_path / "blacklist"
+    root = tmp_path / "filter_config"
     index = SQLiteIssuerEligibilityIndex(root)
     index.record((_fact(),))
     database = next((root / "snapshots").glob("*/financial_fraud.sqlite3"))
@@ -77,7 +77,7 @@ def test_index_migrates_legacy_single_file_once(tmp_path) -> None:
     legacy_file = next((tmp_path / "legacy" / "snapshots").glob("*/financial_fraud.sqlite3"))
     legacy_file.replace(legacy)
 
-    root = tmp_path / "blacklist"
+    root = tmp_path / "filter_config"
     assert SQLiteIssuerEligibilityIndex.migrate_legacy_database(legacy, root) == 1
     assert SQLiteIssuerEligibilityIndex.migrate_legacy_database(legacy, root) == 0
     migrated = SQLiteIssuerEligibilityIndex(root, read_only=True)
@@ -85,7 +85,7 @@ def test_index_migrates_legacy_single_file_once(tmp_path) -> None:
 
 
 def test_index_refresh_boundary_is_friday_at_1500(tmp_path) -> None:
-    index = SQLiteIssuerEligibilityIndex(tmp_path / "blacklist")
+    index = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
     before = datetime(2026, 9, 25, 14, 59, 59, tzinfo=SHANGHAI)
     after = datetime(2026, 9, 25, 15, 0, tzinfo=SHANGHAI)
 

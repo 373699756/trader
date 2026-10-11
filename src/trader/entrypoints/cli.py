@@ -276,7 +276,7 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise SystemExit("--as-of must include a timezone offset")
     observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
-    eligibility_index = SQLiteIssuerEligibilityIndex(runtime.project_root / "data" / "blacklist", read_only=True)
+    eligibility_index = SQLiteIssuerEligibilityIndex(runtime.project_root / "data" / "filter_config", read_only=True)
     facts = tuple(fact for fact in eligibility_index.facts() if fact.effective_at <= observed_at)
     status = eligibility_index.status()
     print(
