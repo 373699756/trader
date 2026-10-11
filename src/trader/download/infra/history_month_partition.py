@@ -170,6 +170,31 @@ _COUNT_CODE_BATCH_SIZE = 500
 _ALL_REVISION_SCAN_SQL = (
     "SELECT trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash FROM daily_records"
 )
+_EXISTING_OBSERVATIONS_SQL = """
+SELECT observations.trade_date, observations.code, observations.sync_sequence, observations.revision_id
+FROM requested_history_revisions AS requested
+CROSS JOIN daily_observations AS observations
+WHERE observations.trade_date=requested.trade_date
+  AND observations.code=requested.code
+  AND observations.sync_sequence=requested.sync_sequence
+"""
+_EXISTING_REVISIONS_SQL = """
+SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
+       records.payload_json, records.content_hash
+FROM requested_history_revisions AS requested
+CROSS JOIN daily_records AS records
+WHERE records.trade_date=requested.trade_date
+  AND records.code=requested.code
+  AND records.revision_id=requested.revision_id
+"""
+_LATEST_SEQUENCES_SQL = """
+SELECT requested.trade_date, requested.code, MAX(observations.sync_sequence)
+FROM requested_history_revisions AS requested
+CROSS JOIN daily_observations AS observations
+WHERE observations.trade_date=requested.trade_date
+  AND observations.code=requested.code
+GROUP BY requested.trade_date, requested.code
+"""
 
 
 @dataclass(frozen=True)
@@ -689,13 +714,7 @@ class SQLiteHistoryMonthPartitionRepository:
         )
         existing_observations = {
             (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): cast(str, row[3])
-            for row in connection.execute(
-                "SELECT observations.trade_date, observations.code, observations.sync_sequence, "
-                "observations.revision_id FROM daily_observations AS observations "
-                "JOIN requested_history_revisions AS requested "
-                "ON requested.trade_date=observations.trade_date AND requested.code=observations.code "
-                "AND requested.sync_sequence=observations.sync_sequence"
-            )
+            for row in connection.execute(_EXISTING_OBSERVATIONS_SQL)
         }
         existing_revisions = {
             (cast(str, row[0]), cast(str, row[1]), cast(str, row[2])): (
@@ -703,24 +722,11 @@ class SQLiteHistoryMonthPartitionRepository:
                 cast(str, row[4]),
                 cast(str, row[5]),
             )
-            for row in connection.execute(
-                "SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence, "
-                "records.payload_json, records.content_hash FROM daily_records AS records "
-                "JOIN requested_history_revisions AS requested "
-                "ON requested.trade_date=records.trade_date AND requested.code=records.code "
-                "AND requested.revision_id=records.revision_id GROUP BY records.trade_date, records.code, "
-                "records.revision_id"
-            )
+            for row in connection.execute(_EXISTING_REVISIONS_SQL)
         }
         latest_sequences = {
             (cast(str, row[0]), cast(str, row[1])): cast(int, row[2])
-            for row in connection.execute(
-                "SELECT observations.trade_date, observations.code, MAX(observations.sync_sequence) "
-                "FROM daily_observations AS observations JOIN ("
-                "SELECT DISTINCT trade_date, code FROM requested_history_revisions"
-                ") AS requested ON requested.trade_date=observations.trade_date "
-                "AND requested.code=observations.code GROUP BY observations.trade_date, observations.code"
-            )
+            for row in connection.execute(_LATEST_SEQUENCES_SQL)
         }
         new_records: list[tuple[object, ...]] = []
         new_observations: list[tuple[object, ...]] = []

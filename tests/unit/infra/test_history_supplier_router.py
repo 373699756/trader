@@ -374,6 +374,29 @@ def test_completed_stock_reports_real_route_and_requested_sessions(capsys):
     assert "来源 Tencent | 请求 5 日" in capsys.readouterr().err
 
 
+def test_failed_baostock_gap_reports_the_bounded_reason(capsys):
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0)
+
+    progress.publish(
+        HistorySyncProgress(
+            "baostock_gap_fill",
+            "failed",
+            1,
+            2,
+            "600001",
+            supplier_source="baostock",
+            requested_sessions=5,
+            failure_reason="qfq_daily_query_failed",
+        )
+    )
+
+    assert (
+        capsys.readouterr().err.strip()
+        == "00:00:00 | BaoStock补缺 | 失败 | 1/2 (50.00%) | 股票 600001 | 来源 BaoStock | 请求 5 日 "
+        "| 错误 qfq_daily_query_failed"
+    )
+
+
 def test_history_st_reference_batches_report_distinct_counts(capsys):
     progress = StderrHistorySyncProgress(monotonic=lambda: 0)
 

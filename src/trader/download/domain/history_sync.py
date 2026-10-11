@@ -155,6 +155,7 @@ class HistorySyncProgress:
     requested_sessions: int | None = None
     gap_summary: HistoryGapSummary | None = None
     st_summary: HistoryStEligibilitySummary | None = None
+    failure_reason: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -182,6 +183,10 @@ class HistorySyncProgress:
                     or self.completed_units != self.total_units
                     or self.st_summary.total != self.total_units
                 )
+            )
+            or (
+                self.failure_reason is not None
+                and (self.state != "failed" or _PROGRESS_ITEM.fullmatch(self.failure_reason) is None)
             )
         ):
             raise ValueError("history synchronization progress is invalid")

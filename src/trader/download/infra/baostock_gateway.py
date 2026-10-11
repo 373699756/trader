@@ -549,6 +549,17 @@ def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, 
 def _supplier_failure_code(vendor_code: str, fallback: str) -> str:
     if vendor_code == "10001011":
         return "supplier_query_failed_blacklisted"
+    if vendor_code == "10001001" or vendor_code in {
+        "10002001",
+        "10002002",
+        "10002003",
+        "10002004",
+        "10002005",
+        "10002006",
+        "10002007",
+        "10002008",
+    }:
+        return "supplier_query_session_failed"
     return fallback
 
 

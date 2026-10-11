@@ -513,7 +513,11 @@ def test_price_gap_supplement_checks_tencent_adjustment_anchors(tmp_path: Path, 
     recorder = ProgressRecorder()
     status = run_history_sync(_configuration(tmp_path), PartialSupplier(dates), clock=lambda: NOW, progress=recorder)
     summary = next(item.gap_summary for item in recorder.values if item.gap_summary is not None)
+    gap_result = next(
+        item for item in recorder.values if item.stage == "baostock_gap_fill" and item.state in {"completed", "failed"}
+    )
     assert (summary.price_pair_cells, summary.failed_codes) == (1, 0)
+    assert gap_result.state == ("failed" if conflict else "completed")
     active = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
     if conflict:
         assert status.state == "completed"

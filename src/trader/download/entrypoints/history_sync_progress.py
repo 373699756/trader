@@ -164,6 +164,8 @@ class StderrHistorySyncProgress:
             parts.append(f"尝试 {progress.attempt}/{progress.max_attempts}")
         if progress.call_elapsed_seconds > 0.0:
             parts.append(f"调用 {_format_duration(progress.call_elapsed_seconds)}")
+        if progress.failure_reason is not None:
+            parts.append(f"错误 {progress.failure_reason}")
         return parts
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:

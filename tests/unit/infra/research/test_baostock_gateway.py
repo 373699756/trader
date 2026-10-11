@@ -478,3 +478,12 @@ def test_gateway_does_not_treat_a_blacklisted_followup_page_as_complete() -> Non
 
     with pytest.raises(RuntimeError, match="supplier_query_failed_blacklisted"):
         _result_rows(result, "unadjusted_daily_query_failed")
+
+
+@pytest.mark.parametrize("vendor_code", ("10001001", "10002001", "10002008"))
+def test_gateway_marks_login_and_transport_query_errors_as_session_failures(vendor_code: str) -> None:
+    result = _Result(("value",), ())
+    result.error_code = vendor_code
+
+    with pytest.raises(RuntimeError, match="supplier_query_session_failed"):
+        _result_rows(result, "qfq_daily_query_failed")

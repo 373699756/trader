@@ -108,6 +108,7 @@ class _Response:
     context: HistorySupplierContext | None = None
     download: BaoStockCodeDownload | None = None
     failure_reason: str | None = None
+    restart_session: bool = False
 
 
 class _RateLimitedSdk:
@@ -271,8 +272,15 @@ class BaoStockHistorySupplier:
             if result.response is not None and not failure:
                 self._publish(state.stage, "completed", attempt, state.current_item, self._elapsed(state))
                 return result.response
-            self._publish(state.stage, "failed", attempt, state.current_item, self._elapsed(state))
-            self.close()
+            self._publish_failure(
+                state.stage,
+                attempt,
+                state.current_item,
+                self._elapsed(state),
+                failure,
+            )
+            if result.response is None or result.response.restart_session or attempt.number < attempt.total:
+                self.close()
             if attempt.number < attempt.total:
                 next_attempt = _Attempt(attempt.number + 1, attempt.total)
                 self._publish(state.stage, "retrying", next_attempt, state.current_item, 0.0)
@@ -414,21 +422,46 @@ class BaoStockHistorySupplier:
         current_item: str | None,
         call_elapsed_seconds: float,
     ) -> None:
+        self._emit_progress(
+            HistorySyncProgress(
+                stage,
+                state,
+                1 if state == "completed" else 0,
+                1,
+                current_item=current_item,
+                attempt=attempt.number,
+                max_attempts=attempt.total,
+                call_elapsed_seconds=max(0.0, call_elapsed_seconds),
+            )
+        )
+
+    def _publish_failure(
+        self,
+        stage: HistorySyncProgressStage,
+        attempt: _Attempt,
+        current_item: str | None,
+        call_elapsed_seconds: float,
+        failure_reason: str,
+    ) -> None:
+        self._emit_progress(
+            HistorySyncProgress(
+                stage,
+                "failed",
+                0,
+                1,
+                current_item=current_item,
+                attempt=attempt.number,
+                max_attempts=attempt.total,
+                call_elapsed_seconds=max(0.0, call_elapsed_seconds),
+                failure_reason=failure_reason,
+            )
+        )
+
+    def _emit_progress(self, progress: HistorySyncProgress) -> None:
         if self._progress is None:
             return
         try:
-            self._progress.publish(
-                HistorySyncProgress(
-                    stage,
-                    state,
-                    1 if state == "completed" else 0,
-                    1,
-                    current_item=current_item,
-                    attempt=attempt.number,
-                    max_attempts=attempt.total,
-                    call_elapsed_seconds=max(0.0, call_elapsed_seconds),
-                )
-            )
+            self._progress.publish(progress)
         except OSError:
             pass
 
@@ -476,7 +509,13 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                 else:
                     connection.send(_Response(failure_reason="supplier_protocol_invalid"))
             except Exception as exc:
-                connection.send(_Response(failure_reason=_failure_code(exc)))
+                failure_reason = _failure_code(exc)
+                connection.send(
+                    _Response(
+                        failure_reason=failure_reason,
+                        restart_session=failure_reason == "supplier_query_session_failed",
+                    )
+                )
     except Exception as exc:
         connection.send(_Ready(_failure_code(exc)))
     finally:

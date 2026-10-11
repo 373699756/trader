@@ -203,6 +203,7 @@ def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage() -> None:
     assert waiting[-1].call_elapsed_seconds >= 0.75
     assert recorder.values[-1].state == "failed"
     assert recorder.values[-1].stage == "supplier_calendar"
+    assert recorder.values[-1].failure_reason == "supplier_calendar_timeout"
 
 
 def test_supplier_result_handle_does_not_restart_the_call_deadline() -> None:
@@ -257,6 +258,41 @@ def test_supplier_keeps_context_and_price_request_policies_separate(monkeypatch)
         ("_LoadContext", 3, 3, 45.0),
         ("_FetchCode", 1, 1, 20.0),
     ]
+
+
+@pytest.mark.parametrize(("restart_session", "expected_closes"), ((False, 0), (True, 1)))
+def test_price_failure_restarts_only_an_unhealthy_supplier_session(
+    monkeypatch: pytest.MonkeyPatch,
+    restart_session: bool,
+    expected_closes: int,
+) -> None:
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(supplier_retries=0),
+        price_policy=BaoStockRequestPolicy(20.0, 0),
+    )
+    closes = 0
+
+    def fail(_command, state, _attempt, _timeout_seconds):
+        response = supplier_module._Response(
+            failure_reason="supplier_query_session_failed" if restart_session else "qfq_daily_query_failed",
+            restart_session=restart_session,
+        )
+        return supplier_module._AttemptResult(response, state, response.failure_reason)
+
+    def close() -> None:
+        nonlocal closes
+        closes += 1
+
+    monkeypatch.setattr(supplier, "_request_once", fail)
+    monkeypatch.setattr(supplier, "close", close)
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+
+    with pytest.raises(RuntimeError, match="query"):
+        supplier.fetch_code(security, (date(2026, 10, 9),))
+
+    assert closes == expected_closes
 
 
 @pytest.mark.parametrize(("timeout_seconds", "retries"), ((float("nan"), 0), (0.0, 0), (20.0, -1), (20.0, 3)))
@@ -328,5 +364,5 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
     assert context.calendar.open_dates == dates
     assert context.universe == universe
     assert tuple(item.code for item in context.industry_intervals) == ("302132",)
-    assert calls == ["login", "calendar", "industry", "logout"]
+    assert calls == ["login", "calendar", "industry", "industry", "logout"]
     assert connection.closed

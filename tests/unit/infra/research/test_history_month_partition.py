@@ -106,6 +106,46 @@ def test_month_partition_batches_revision_context_and_uses_specialized_latest_sq
     assert "IS NULL OR" not in latest_sql
 
 
+def test_month_partition_batch_context_uses_requested_keys_as_the_outer_query(tmp_path: Path) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9)
+    repository.initialize()
+    revision = _revision(date(2026, 9, 10), 1, 10.0)
+    repository.save_revisions((revision,))
+
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TEMP TABLE requested_history_revisions ("
+            "trade_date TEXT NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
+            "revision_id TEXT NOT NULL, PRIMARY KEY (trade_date, code, sync_sequence, revision_id)"
+            ") WITHOUT ROWID"
+        )
+        connection.execute(
+            "INSERT INTO requested_history_revisions VALUES (?, ?, ?, ?)",
+            (revision.trade_date.isoformat(), revision.code, revision.first_seen_sequence, revision.revision_id),
+        )
+        plans = {
+            "observations": tuple(
+                str(row[3])
+                for row in connection.execute("EXPLAIN QUERY PLAN " + partition_module._EXISTING_OBSERVATIONS_SQL)
+            ),
+            "records": tuple(
+                str(row[3])
+                for row in connection.execute("EXPLAIN QUERY PLAN " + partition_module._EXISTING_REVISIONS_SQL)
+            ),
+            "latest": tuple(
+                str(row[3])
+                for row in connection.execute("EXPLAIN QUERY PLAN " + partition_module._LATEST_SEQUENCES_SQL)
+            ),
+        }
+
+    assert not any("SCAN observations" in detail for detail in (*plans["observations"], *plans["latest"]))
+    assert not any("SCAN records" in detail for detail in plans["records"])
+    assert any("SEARCH observations USING PRIMARY KEY" in detail for detail in plans["observations"])
+    assert any("SEARCH records USING PRIMARY KEY" in detail for detail in plans["records"])
+    assert any("SEARCH observations USING" in detail for detail in plans["latest"])
+
+
 def test_month_partition_bounds_write_cache_without_evicting_hot_index_pages(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
