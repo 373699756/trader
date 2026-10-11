@@ -65,7 +65,7 @@ from trader.download.infra.history_gap_recovery import (
     HistoryGapRecoveryContext,
     recover_selected_history_gaps,
 )
-from trader.download.infra.history_gap_resume import reopen_legacy_history_gaps
+from trader.download.infra.history_gap_resume import HistoryGapResumeContext, reopen_legacy_history_gaps
 from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     SQLiteHistoryMonthPartitionRepository,
@@ -580,11 +580,8 @@ class _HistoryDownloadPhases:
 
     def supplement_baostock(self) -> None:
         reopen_legacy_history_gaps(
-            self.stage,
-            self.pending,
+            HistoryGapResumeContext(self.stage, self.pending, self.sequence, self.cancel_requested, self.progress),
             ((item.code, _requested_dates(self.context, item)) for item in self.context.supplier_context.universe),
-            self.sequence,
-            self.cancel_requested,
         )
         recovery_order = self.stage.prioritized_recovery_codes()
         self.recovery_selection = frozenset(recovery_order)
@@ -836,19 +833,20 @@ def _requested_dates(context: _CodeDownloadContext, security: BaoStockSecurity) 
     ):
         return ()
     if context.active is None or security.code not in context.previous_codes:
-        requested = expected
-    else:
-        requested = tuple(
-            sorted(
-                set(expected[-context.configuration.reread_sessions :])
-                | {day for day in expected if day > context.active.data_cutoff}
-                | (set(context.previous_gaps.get(security.code, ())) & set(expected))
-            )
-        )
-        if HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions:
-            anchor = tuple(day for day in expected if day <= context.active.data_cutoff)
-            requested = tuple(sorted(set(requested) | set(anchor[-context.configuration.reread_sessions :])))
-    return requested
+        return expected
+    if context.active.data_cutoff == context.supplier_context.calendar.open_dates[-1] and not context.previous_gaps.get(
+        security.code
+    ):
+        return ()
+    requested = (
+        set(expected[-context.configuration.reread_sessions :])
+        | {day for day in expected if day > context.active.data_cutoff}
+        | (set(context.previous_gaps.get(security.code, ())) & set(expected))
+    )
+    if HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions:
+        anchor = tuple(day for day in expected if day <= context.active.data_cutoff)
+        requested.update(anchor[-context.configuration.reread_sessions :])
+    return tuple(sorted(requested))
 
 
 def _seal_pending(
@@ -865,8 +863,7 @@ def _seal_pending(
         remaining = sorted((month, path) for month, path in pending.paths.items() if month not in references)
         for index, ((year, month), path) in enumerate(remaining, start=len(references)):
             current_item = f"{year:04d}-{month:02d}"
-            # Legacy supplemented codes already reside in pending. Only newly
-            # qualified codes are streamed; replay is idempotent by revision.
+            # Stream newly qualified codes; legacy pending rows remain revision-idempotent.
             if cancel_requested():
                 raise KeyboardInterrupt
             write_qualified_month(pending, stage, (year, month), progress, cancel_requested)

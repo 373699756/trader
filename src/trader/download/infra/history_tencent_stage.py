@@ -552,14 +552,18 @@ class HistoryTencentStage:
             )
 
     def qualified_cells(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
+        cells: list[BaoStockDailyCell] = []
         with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
-            return tuple(
-                decode_history_revision(row[0]).cell
-                for day in dates
-                for row in connection.execute(
-                    "SELECT payload_json FROM qualified_prices WHERE trade_date=? AND code=?", (day.isoformat(), code)
+            for start in range(0, len(dates), 200):
+                batch = dates[start : start + 200]
+                rows = connection.execute(
+                    "WITH requested(day) AS (VALUES " + ",".join("(?)" for _ in batch) + ") "
+                    "SELECT q.payload_json FROM requested r CROSS JOIN qualified_prices q "
+                    "WHERE q.trade_date=r.day AND q.code=? ORDER BY q.trade_date",
+                    (*tuple(day.isoformat() for day in batch), code),
                 )
-            )
+                cells.extend(decode_history_revision(row[0]).cell for row in rows)
+        return tuple(cells)
 
     def reopen_legacy_recovery(self, window: PublishedHistoryWindow) -> None:
         with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:

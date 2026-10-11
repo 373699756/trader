@@ -51,8 +51,26 @@ def test_recovery_attempt_summary_and_incomplete_publication_are_explicit(capsys
     )
     lines = capsys.readouterr().err.splitlines()
     assert "0/45" in lines[0] and "尝试 2/3" in lines[0]
-    assert "缺口股 45 | 成功 44 股 | 三次未成功 1 股 | 未处理完 0 股" in lines[1]
+    assert "缺口股 45 | 成功 44 股 | 补缺失败 1 股 | 未处理完 0 股" in lines[1]
     assert "同步完成 | 数据不完整 | 未修复价格缺口 2000 股日" in lines[2]
+
+
+def test_legacy_resume_progress_is_visible_with_counts_and_month(capsys):
+    reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+    reporter.publish(HistorySyncProgress("history_gap_resume", "waiting", 64, 65, current_item="2026-09"))
+    reporter.publish(HistorySyncProgress("history_gap_resume", "completed", 65, 65, current_item="2026-09"))
+    output = capsys.readouterr().err
+    assert "旧断点恢复 | 等待 | 64/65" in output
+    assert "旧断点恢复 | 完成 | 65/65" in output
+    assert "处理项 2026-09" in output
+
+
+def test_complete_code_reuse_is_not_reported_as_another_network_request(capsys):
+    reporter = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+    reporter.publish(HistorySyncProgress("tencent_history", "completed", 1, 2, "600001"))
+    output = capsys.readouterr().err
+    assert "无新增或缺口，复用" in output
+    assert "请求" not in output and "来源 Tencent" not in output
 
 
 def test_st_checkpoints_report_progress_before_completion(capsys) -> None:

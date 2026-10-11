@@ -63,6 +63,16 @@ def test_price_total_deadline_survives_page_activity_and_bounds_retries(monkeypa
         supplier._receive(None, state, _Attempt(1, 3))
 
 
+def test_worker_reports_price_fact_mismatch_without_hiding_it_as_supplier_failure():
+    from trader.download.infra.baostock_sync_supplier import _failure_code
+
+    assert (
+        _failure_code(ValueError("BaoStock code download facts do not match its daily batch"))
+        == "supplier_daily_facts_mismatch"
+    )
+    assert _failure_code(ValueError("unexpected private payload")) == "supplier_failed"
+
+
 class _SilentConnection:
     def __init__(self, clock: _Clock) -> None:
         self._clock = clock

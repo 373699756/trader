@@ -594,6 +594,8 @@ def _silence_vendor_output() -> None:
 
 def _failure_code(exc: BaseException) -> str:
     value = str(exc).strip()
+    if isinstance(exc, ValueError) and value == "BaoStock code download facts do not match its daily batch":
+        return "supplier_daily_facts_mismatch"
     return value if value and len(value) <= 64 and value.replace("_", "").isalnum() else "supplier_failed"
 
 

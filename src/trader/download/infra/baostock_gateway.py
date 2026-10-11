@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import platform
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Protocol
@@ -31,6 +31,17 @@ from trader.download.infra.history_industry_cache import HistoryIndustryQueryCac
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
 _DAILY_FACT_FIELDS = "date,code,tradestatus,isST"
 _QFQ_FACTOR_QUANTUM = Decimal("0.000001")
+
+
+def _sparse_query_windows(dates: tuple[date, ...]) -> tuple[tuple[date, ...], ...]:
+    # Split only long empty spans; cap request amplification within the per-stock deadline.
+    gaps = sorted(
+        ((dates[index] - dates[index - 1]).days, index)
+        for index in range(1, len(dates))
+        if (dates[index] - dates[index - 1]).days > 31
+    )
+    cuts = (0, *sorted(index for _, index in gaps[-3:]), len(dates))
+    return tuple(dates[start:end] for start, end in zip(cuts, cuts[1:]))
 
 
 @dataclass(frozen=True)
@@ -390,6 +401,24 @@ class BaoStockRowGateway:
         security: BaoStockSecurity,
         query: _DailySideQuery,
     ) -> tuple[tuple[BaoStockDailySide, ...], tuple[BaoStockDailyFact, ...], int, int, tuple[date, ...]]:
+        sides: list[BaoStockDailySide] = []
+        facts: list[BaoStockDailyFact] = []
+        unavailable: list[date] = []
+        nulls = future = 0
+        for dates in _sparse_query_windows(query.expected):
+            values, evidence, invalid, late, missing = self._daily_window(
+                spec, security, replace(query, expected=dates)
+            )
+            sides.extend(values)
+            facts.extend(evidence)
+            unavailable.extend(missing)
+            nulls += invalid
+            future += late
+        return tuple(sides), tuple(facts), nulls, future, tuple(unavailable)
+
+    def _daily_window(
+        self, spec: BaoStockDailySpec, security: BaoStockSecurity, query: _DailySideQuery
+    ) -> tuple[tuple[BaoStockDailySide, ...], tuple[BaoStockDailyFact, ...], int, int, tuple[date, ...]]:
         query_code = query.source_code or security.source_code
         result = self._sdk.query_history_k_data_plus(
             query_code,
@@ -404,6 +433,7 @@ class BaoStockRowGateway:
         facts: list[BaoStockDailyFact] = []
         null_rows = future_rows = 0
         unavailable_dates: list[date] = []
+        expected = frozenset(query.expected)
         for row in rows:
             try:
                 trade_date = _date(row.get("date"), "BaoStock daily date is missing")
@@ -412,6 +442,12 @@ class BaoStockRowGateway:
                     continue
                 if row.get("code") != query_code:
                     raise ValueError("BaoStock daily row identity is invalid")
+                if not query.expected[0] <= trade_date <= query.expected[-1]:
+                    raise RuntimeError("supplier_daily_window_conflict")
+                # The SDK accepts a range, not a sparse date list. Interior days
+                # are valid supplier rows but do not belong to this requested batch.
+                if trade_date not in expected:
+                    continue
                 if query.adjustment == "qfq" and row.get("adjustflag") == "3":
                     unavailable_dates.append(trade_date)
                     continue

@@ -22,6 +22,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "tencent_history": "Tencent历史下载",
     "history_st_reference": "历史ST名单",
     "history_active_gaps": "活动历史缺口",
+    "history_gap_resume": "旧断点恢复",
     "history_gap_inventory": "统计历史缺口",
     "baostock_gap_fill": "BaoStock补缺",
     "persisting_prices": "历史价格整理",
@@ -51,6 +52,7 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "persisting_partitions": "月份",
     "sealing_partitions": "月份",
     "history_active_gaps": "月份",
+    "history_gap_resume": "处理项",
 }
 _RESULT_LABELS = {
     "completed": "同步完成",
@@ -64,6 +66,7 @@ _COUNT_STAGES = frozenset(
     {
         "history_st_reference",
         "history_active_gaps",
+        "history_gap_resume",
         "downloading_codes",
         "tencent_history",
         "baostock_gap_fill",
@@ -78,12 +81,14 @@ _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplie
 
 
 def _recovery_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.stage == "tencent_history" and progress.current_item is not None and progress.supplier_source is None:
+        return ("无新增或缺口，复用",)
     if progress.recovery_summary is not None:
         recovery = progress.recovery_summary
         return (
             f"缺口股 {recovery.total}",
             f"成功 {recovery.succeeded_codes} 股",
-            f"三次未成功 {recovery.failed_codes} 股",
+            f"补缺失败 {recovery.failed_codes} 股",
             f"未处理完 {recovery.unattempted_codes} 股",
         )
     return ()
@@ -165,7 +170,14 @@ class StderrHistorySyncProgress:
         if progress.stage in _PREPARATION_STAGES and progress.state in {"started", "waiting"}:
             return self._suppress_preparation(progress)
         if progress.state in {"started", "waiting"} and not (
-            progress.stage in {"history_active_gaps", "sealing_partitions", "preparing_partitions", "baostock_gap_fill"}
+            progress.stage
+            in {
+                "history_active_gaps",
+                "history_gap_resume",
+                "sealing_partitions",
+                "preparing_partitions",
+                "baostock_gap_fill",
+            }
             or progress.stage in {"tencent_history", "persisting_prices"}
             and progress.state == "waiting"
         ):

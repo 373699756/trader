@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +6,96 @@ import pytest
 from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
 from trader.download.infra.baostock_gateway import BaoStockRowGateway, _result_rows, qfq_source_windows
 from trader.download.infra.baostock_session import RateLimitedBaoStockSdk, login_baostock
+
+
+class SparseRangeSdk:
+    __version__ = "fixture"
+
+    def __init__(self):
+        self.calls = []
+
+    def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+        start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+        self.calls.append((start, end, kwargs["adjustflag"]))
+        rows = []
+        for offset in range((end - start).days + 1):
+            day = start + timedelta(days=offset)
+            price = str(day.day)
+            rows.append(
+                (
+                    day.isoformat(),
+                    code,
+                    price,
+                    price,
+                    price,
+                    price,
+                    price,
+                    "100",
+                    "1000",
+                    kwargs["adjustflag"],
+                    "1",
+                    "1",
+                    "0",
+                    "0",
+                )
+            )
+        return _Result(tuple(fields.split(",")), rows)
+
+
+def test_sparse_sdk_range_projects_prices_and_facts_to_the_same_dates():
+    sdk = SparseRangeSdk()
+    dates = (date(2026, 9, 8), date(2026, 9, 10))
+    gateway = BaoStockRowGateway(sdk, python_version="fixture", dependency_versions=())
+    result = gateway.fetch_code_download(
+        BaoStockDailySpec(sessions=2, source_cutoff=dates[-1]),
+        BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture"),
+        BaoStockCalendar(dates),
+    )
+    assert tuple(cell.trade_date for cell in result.batch.cells) == dates
+    assert tuple(fact.trade_date for fact in result.daily_facts) == dates
+    assert all(cell.obtained for cell in result.batch.cells)
+    assert result.batch.out_of_window_rows == result.batch.null_rows == 0
+    assert len(sdk.calls) == 2
+
+
+def test_sparse_cross_year_queries_are_bounded_and_dense_history_is_not_fragmented():
+    sdk = SparseRangeSdk()
+    gateway = BaoStockRowGateway(sdk, python_version="fixture", dependency_versions=())
+    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
+    dates = (date(2018, 9, 8), date(2026, 9, 10))
+    result = gateway.fetch_code_download(
+        BaoStockDailySpec(sessions=2, source_cutoff=dates[-1]), security, BaoStockCalendar(dates)
+    )
+    assert all(cell.obtained for cell in result.batch.cells)
+    assert len(sdk.calls) == 4
+    assert all(start == end for start, end, _ in sdk.calls)
+    sdk.calls.clear()
+    dates = tuple(date(2026, 1, 1) + timedelta(days=index) for index in range(251))
+    gateway.fetch_code_download(
+        BaoStockDailySpec(sessions=251, source_cutoff=dates[-1]), security, BaoStockCalendar(dates)
+    )
+    assert len(sdk.calls) == 2
+    sdk.calls.clear()
+    dates = tuple(date(year, 1, 1) for year in range(2018, 2027))
+    gateway.fetch_code_download(
+        BaoStockDailySpec(sessions=len(dates), source_cutoff=dates[-1]), security, BaoStockCalendar(dates)
+    )
+    assert len(sdk.calls) == 8
+
+
+def test_sparse_projection_does_not_hide_genuinely_out_of_range_rows():
+    class Outside(SparseRangeSdk):
+        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+            return super().query_history_k_data_plus(code, fields, "2026-09-07", end_date, **kwargs)
+
+    dates = (date(2026, 9, 8), date(2026, 9, 10))
+    gateway = BaoStockRowGateway(Outside(), python_version="fixture", dependency_versions=())
+    with pytest.raises(RuntimeError, match="supplier_daily_window_conflict"):
+        gateway.fetch_code_download(
+            BaoStockDailySpec(sessions=2, source_cutoff=dates[-1]),
+            BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture"),
+            BaoStockCalendar(dates),
+        )
 
 
 class _Result:

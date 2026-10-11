@@ -36,13 +36,16 @@ def partition_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
     return int(path.parts[1]), int(path.stem)
 
 
-def backup_database(source: Path, destination: Path) -> None:
+def backup_database(source: Path, destination: Path, *, activity: HistorySqliteActivity | None = None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     with (
         closing(sqlite3.connect(f"file:{source.as_posix()}?mode=ro", uri=True)) as input_connection,
         closing(sqlite3.connect(destination)) as output_connection,
     ):
-        input_connection.backup(output_connection)
+        if activity is None:
+            input_connection.backup(output_connection)
+        else:
+            input_connection.backup(output_connection, pages=256, progress=lambda *_: activity.tick())
 
 
 def require_download_capacity(

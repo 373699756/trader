@@ -21,6 +21,15 @@ from trader.download.infra.history_tencent_stage import HistoryTencentStage
 
 _ERROR_CODE = re.compile(r"[a-z0-9_]{1,64}")
 _FATAL_FAILURES = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})
+_TERMINAL_FAILURES = frozenset(
+    {
+        "history_tail_qfq_basis_conflict",
+        "history_tail_raw_price_conflict",
+        "history_recovery_anchor_missing",
+        "supplier_daily_window_conflict",
+        "supplier_daily_facts_mismatch",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -71,7 +80,7 @@ def _recover_security(context: HistoryGapRecoveryContext, index: int, security: 
     checkpoint = context.stage.recovery_checkpoint(security.code)
     if checkpoint.failure_reason in _FATAL_FAILURES:
         raise RuntimeError(checkpoint.failure_reason)
-    if checkpoint.succeeded or checkpoint.attempts == 3:
+    if checkpoint.succeeded or checkpoint.attempts == 3 or checkpoint.failure_reason in _TERMINAL_FAILURES:
         return checkpoint.succeeded
     if context.stage.is_supplemented(security.code):
         return True
@@ -109,7 +118,7 @@ def _recover_security(context: HistoryGapRecoveryContext, index: int, security: 
             failure,
             tuple(HistoryRevision(context.sequence, security.board, cell, None, None, None) for cell in cells),
         )
-        terminal = failure is None or attempt == 3
+        terminal = failure is None or attempt == 3 or failure in _TERMINAL_FAILURES
         _emit(
             context.progress,
             _progress(
@@ -122,8 +131,8 @@ def _recover_security(context: HistoryGapRecoveryContext, index: int, security: 
         )
         if failure in _FATAL_FAILURES:
             raise RuntimeError(failure)
-        if failure is None:
-            return True
+        if terminal:
+            return failure is None
     return False
 
 

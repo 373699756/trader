@@ -1,11 +1,12 @@
 from collections import Counter
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 import os
 import sqlite3
 
 import pytest
 
+from tests.unit.infra.research.test_baostock_gateway import SparseRangeSdk
 from tests.unit.infra.research.test_history_archive_sync import (
     NOW,
     FakeSupplier,
@@ -13,18 +14,25 @@ from tests.unit.infra.research.test_history_archive_sync import (
     _configuration,
     _download,
 )
-from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
+from trader.download.domain.baostock_daily import (
+    BaoStockCalendar,
+    BaoStockDailyCell,
+    BaoStockDailySpec,
+    BaoStockSecurity,
+)
+from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_price_qualification import qualify_history_pairs
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.infra.baostock_gateway import BaoStockRowGateway
 from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
 from trader.download.infra.history_gap_recovery import HistoryGapRecoveryContext, recover_selected_history_gaps
-from trader.download.infra.history_gap_resume import reopen_legacy_history_gaps
+from trader.download.infra.history_gap_resume import HistoryGapResumeContext, reopen_legacy_history_gaps
 from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
 from trader.download.infra.history_pending_prices import prepare_pending, write_qualified_month
 from trader.download.infra.history_revision_codec import encode_history_revision
-from trader.download.infra.history_tencent_stage import HistoryTencentStage
+from trader.download.infra.history_tencent_stage import HistorySealedMonthCheckpoint, HistoryTencentStage
 
 
 def _context(tmp_path, supplier, codes, cancel=lambda: False):
@@ -155,6 +163,58 @@ def test_persistence_failure_stops_without_supplier_retry(tmp_path, monkeypatch)
     assert not any(item.state == "completed" for item in context.progress.values)
 
 
+@pytest.mark.parametrize(
+    "reason", ("history_tail_qfq_basis_conflict", "history_tail_raw_price_conflict", "supplier_daily_window_conflict")
+)
+def test_deterministic_conflict_stops_once_and_resume_does_not_retry(tmp_path, reason):
+    class Conflict(FakeSupplier):
+        def fetch_baostock_prices(self, security, dates):
+            self.calls.append((security.code, dates))
+            raise RuntimeError(reason)
+
+    context = _context(tmp_path, Conflict((date(2026, 9, 8),)), ("600001",))
+    recover_selected_history_gaps(context)
+    recover_selected_history_gaps(context)
+    assert len(context.supplier.calls) == 1
+    assert context.stage.recovery_checkpoint("600001").attempts == 1
+    assert context.progress.values[-1].recovery_summary.failed_codes == 1
+
+
+def test_sparse_supplier_range_recovers_and_publishes_without_redundant_retries(tmp_path):
+    dates = tuple(date(2026, 9, 1) + timedelta(days=index) for index in range(8))
+    sdk = SparseRangeSdk()
+    gateway = BaoStockRowGateway(sdk, python_version="fixture", dependency_versions=())
+
+    class SparseSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, requested):
+            window = super().fetch_tencent_window(security, requested)
+            if security.code == "600001":
+                return replace(
+                    window,
+                    cells=(
+                        replace(window.cells[0], status="unknown_missing", unadjusted=None, qfq=None),
+                        *window.cells[1:],
+                    ),
+                )
+            return window
+
+        def fetch_baostock_prices(self, security, requested):
+            self.calls.append((security.code, requested))
+            return gateway.fetch_code_download(
+                BaoStockDailySpec(sessions=len(requested), source_cutoff=requested[-1]),
+                security,
+                BaoStockCalendar(requested),
+            )
+
+    result = run_history_sync(
+        replace(_configuration(tmp_path), sessions=8, reread_sessions=5), SparseSupplier(dates), clock=lambda: NOW
+    )
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert len(sdk.calls) == 2
+    active = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    assert all(row.cell.obtained for row in SQLiteHistoryArchiveReader(tmp_path).read_day(dates[0], active))
+
+
 @pytest.mark.parametrize("layout", ("pending", "qualified", "legacy_candidates"))
 def test_legacy_unresolved_checkpoint_is_reopened_and_recovered(tmp_path, layout):
     dates = (date(2026, 9, 8), date(2026, 9, 9))
@@ -192,7 +252,7 @@ def test_legacy_unresolved_checkpoint_is_reopened_and_recovered(tmp_path, layout
     os.link(pending.paths[month], protected)
     before = protected.read_bytes()
     requests = (("600001", dates),)
-    reopen_legacy_history_gaps(stage, pending, requests, 1, lambda: False)
+    reopen_legacy_history_gaps(HistoryGapResumeContext(stage, pending, 1, lambda: False), requests)
     recover_selected_history_gaps(context)
 
     window, _, _ = stage.read_supplement_context("600001")
@@ -200,7 +260,7 @@ def test_legacy_unresolved_checkpoint_is_reopened_and_recovered(tmp_path, layout
     stage.save_qualified((("600001", tuple(HistoryRevision(1, "main", cell, None, None, None) for cell in cells), 0),))
     write_qualified_month(pending, stage, month)
     # Repeated migration after interruption is idempotent, preserving recovered observations.
-    reopen_legacy_history_gaps(stage, pending, requests, 1, lambda: False)
+    reopen_legacy_history_gaps(HistoryGapResumeContext(stage, pending, 1, lambda: False), requests)
     rows = SQLiteHistoryMonthPartitionRepository(pending.paths[month], *month).read_code(
         "600001",
         dates[0],
@@ -263,3 +323,118 @@ def test_sync_from_revision_candidate_checkpoint_publishes_or_reports_specific_f
         rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)
         assert len(rows) == 2 and all(row.cell.obtained for row in rows)
         assert not path.exists()
+
+
+def test_legacy_recovery_batches_month_reads_and_keeps_unchanged_seal(tmp_path, monkeypatch):
+    dates = (date(2026, 8, 31), date(2026, 9, 1))
+    codes = tuple(f"60{index:04d}" for index in range(65))
+    context = _context(tmp_path, FakeSupplier(dates), codes)
+    pending = prepare_pending(tmp_path, dates, None, False)
+    for index, month in enumerate(((2026, 8), (2026, 9))):
+        rows = tuple(
+            HistoryRevision(
+                1,
+                "main",
+                _download(code, dates).batch.cells[0]
+                if index == 0
+                else BaoStockDailyCell(code, dates[1], "unknown_missing", None, None),
+                None,
+                None,
+                None,
+            )
+            for code in codes
+        )
+        SQLiteHistoryMonthPartitionRepository(pending.paths[month], *month).save_revisions(rows)
+        reference = HistorySnapshotPartition(f"partitions/2026/{month[1]:02d}.sqlite3", "a" * 64, 65)
+        context.stage.save_sealed_month(*month, HistorySealedMonthCheckpoint.capture(pending.paths[month], reference))
+    previous_seal = context.stage.sealed_month(2026, 8)
+    context.stage.mark_supplemented(tuple((code, 1) for code in codes))
+    reads = []
+    original = SQLiteHistoryMonthPartitionRepository.read_price_keys
+
+    def read(self, keys, sequence):
+        reads.append(len(keys))
+        return original(self, keys, sequence)
+
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "read_price_keys", read)
+    progress = ProgressRecorder()
+    reopen_legacy_history_gaps(
+        HistoryGapResumeContext(context.stage, pending, 1, lambda: False, progress),
+        tuple((code, dates) for code in codes),
+    )
+    assert reads == [64, 64, 1, 1]  # Four monthly connections, formerly 130.
+    assert context.stage.sealed_month(2026, 8) == previous_seal
+    assert context.stage.sealed_month(2026, 9) is None
+    assert progress.values[-1].state == "completed"
+    with sqlite3.connect(pending.paths[(2026, 8)]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM daily_observations").fetchone() == (65,)
+    with sqlite3.connect(pending.paths[(2026, 9)]) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM daily_observations").fetchone() == (0,)
+
+
+def test_same_cutoff_only_retries_gaps_but_new_day_rereads_both_codes(tmp_path):
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class Incomplete(FakeSupplier):
+        def fetch_tencent_window(self, security, requested):
+            window = super().fetch_tencent_window(security, requested)
+            if security.code == "600001":
+                return replace(
+                    window,
+                    cells=(
+                        replace(window.cells[0], status="unknown_missing", unadjusted=None, qfq=None),
+                        *window.cells[1:],
+                    ),
+                )
+            return window
+
+        def fetch_baostock_prices(self, security, requested):
+            raise RuntimeError("supplier_daily_raw_timeout")
+
+    config = _configuration(tmp_path)
+    first = run_history_sync(config, Incomplete(dates), clock=lambda: NOW)
+    assert first.state == "completed" and first.unresolved_price_cells == 1
+    supplier = FakeSupplier(dates)
+    second = run_history_sync(config, supplier, clock=lambda: NOW)
+    assert second.state == "completed" and second.unresolved_price_cells == 0
+    assert [code for code, _ in supplier.calls] == ["600001"]
+    daily = FakeSupplier((*dates, date(2026, 9, 11)))
+    third = run_history_sync(config, daily, clock=lambda: NOW + timedelta(days=1))
+    assert third.state == "completed" and third.unresolved_price_cells == 0
+    assert {code for code, _ in daily.calls} == {"600001", "600002"}
+
+
+def test_cancelled_legacy_batch_resumes_without_losing_valid_prices(tmp_path, monkeypatch):
+    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    context = _context(tmp_path, FakeSupplier(dates), ("600001", "600002"))
+    pending = prepare_pending(tmp_path, dates, None, False)
+    rows = tuple(
+        HistoryRevision(1, "main", cell, None, None, None)
+        for code in ("600001", "600002")
+        for cell in (
+            _download(code, dates).batch.cells[0],
+            BaoStockDailyCell(code, dates[1], "unknown_missing", None, None),
+        )
+    )
+    month = SQLiteHistoryMonthPartitionRepository(pending.paths[(2026, 9)], 2026, 9)
+    month.save_revisions(sorted(rows, key=lambda item: (item.trade_date, item.code)))
+    context.stage.mark_supplemented((("600001", 1), ("600002", 1)))
+    cancelled = False
+    reopen = context.stage.reopen_legacy_recovery
+
+    def stop_after_one(window):
+        nonlocal cancelled
+        reopen(window)
+        cancelled = True
+
+    monkeypatch.setattr(context.stage, "reopen_legacy_recovery", stop_after_one)
+    requests = (("600001", dates), ("600002", dates))
+    with pytest.raises(KeyboardInterrupt):
+        reopen_legacy_history_gaps(HistoryGapResumeContext(context.stage, pending, 1, lambda: cancelled), requests)
+    monkeypatch.setattr(context.stage, "reopen_legacy_recovery", reopen)
+    reopen_legacy_history_gaps(HistoryGapResumeContext(context.stage, pending, 1, lambda: False), requests)
+    assert len(month.read_day(dates[0], snapshot_sequence=1)) == 2
+    assert month.read_day(dates[1], snapshot_sequence=1) == ()
+    for code, _ in requests:
+        window, missing, _ = context.stage.read_supplement_context(code)
+        assert window.cells[0].status == "complete" and missing == (dates[1].isoformat(),)
