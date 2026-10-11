@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import date, timedelta
+from types import SimpleNamespace
 
 import pytest
 
@@ -214,7 +216,11 @@ def test_st_checkpoints_cache_clear_and_permanently_keep_ever_st(tmp_path):
         return Response("*ST曾用 正常公司" if "600002" in url else "正常公司")
 
     source = HistoryStNameSource(
-        tmp_path / "st.json", get, injected_executor(None), lambda: False, report=lambda *_: None
+        tmp_path / "st.json",
+        lambda: nullcontext(SimpleNamespace(get=get)),
+        injected_executor(None),
+        lambda: False,
+        report=lambda *_: None,
     )
     universe = _current_universe("600001", "600002")
     as_of = date(2026, 10, 9)
@@ -287,7 +293,7 @@ def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
     try:
         source = HistoryStNameSource(
             tmp_path / "st.json",
-            get,
+            lambda: nullcontext(SimpleNamespace(get=get)),
             executor,
             lambda: False,
             report=lambda *counts: reports.append(counts),
@@ -301,6 +307,49 @@ def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
         assert executor.status().rejected_count == 0
     finally:
         executor.stop(wait=True, cancel_futures=True)
+
+
+def test_st_checks_refill_available_worker_without_waiting_for_slowest_stock(tmp_path):
+    import threading
+
+    from trader.infra.workers import BoundedExecutor
+
+    third_started = threading.Event()
+    second_observed_refill = False
+
+    class Response:
+        content = "<td>证券简称更名历史：</td><td>正常公司</td>".encode("gb18030")
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+
+    def get(url, **_kwargs):
+        nonlocal second_observed_refill
+        if "600002" in url:
+            second_observed_refill = third_started.wait(timeout=3)
+        elif "600003" in url:
+            third_started.set()
+        return Response()
+
+    executor = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="st-rolling-test")
+    executor.start()
+    try:
+        source = HistoryStNameSource(
+            tmp_path / "st.json",
+            lambda: nullcontext(SimpleNamespace(get=get)),
+            executor,
+            lambda: False,
+            report=lambda *_counts: None,
+            batch_size=2,
+        )
+        assert len(source.fetch(_current_universe("600001", "600002", "600003"), date(2026, 10, 9))) == 3
+    finally:
+        executor.stop(wait=True, cancel_futures=True)
+
+    assert second_observed_refill
 
 
 @pytest.mark.parametrize("damage", ("missing", "tampered"))

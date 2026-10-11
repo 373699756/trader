@@ -47,7 +47,7 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
-    TencentQfqSessionPool,
+    TencentSessionPool,
     TencentQfqSupplier,
 )
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
@@ -199,14 +199,22 @@ def execute_history_download(
             partial(fetch_szse_listings, get=requests.get),
             15.0,
         )
-        with BaoStockHistorySupplier(
-            replace(configuration, supplier_retries=0, supplier_timeout_seconds=20.0),
-            progress=supplier_progress or progress,
-            cancel_requested=cancel_requested,
-        ) as baseline:
+        with (
+            BaoStockHistorySupplier(
+                replace(configuration, supplier_retries=0, supplier_timeout_seconds=20.0),
+                progress=supplier_progress or progress,
+                cancel_requested=cancel_requested,
+            ) as baseline,
+            ExitStack() as http_resources,
+        ):
+            http_pool = TencentSessionPool(
+                tuple(
+                    http_resources.enter_context(requests.Session()) for _index in range(configuration.history_workers)
+                )
+            )
             prices = TencentQfqSupplier(
                 TencentQfqDependencies(
-                    requests.Session,
+                    http_pool.borrow,
                     lambda _as_of: load_current_securities(),
                     cancel_requested,
                 )
@@ -219,7 +227,7 @@ def execute_history_download(
                     load_current_securities,
                     HistoryStNameSource(
                         history_st_evidence_path(configuration.archive_root),
-                        requests.get,
+                        http_pool.borrow,
                         history_pool,
                         cancel_requested,
                         report=lambda done, total, summary: (
@@ -265,23 +273,6 @@ def execute_qfq_download(
     started = time.monotonic()
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
-    st_source = HistoryStNameSource(
-        history_st_evidence_path(history_root),
-        requests.get,
-        qfq_pool,
-        cancel_requested,
-        report=lambda done, total, summary: _report_qfq_st_progress(report, started, done, total, summary),
-        batch_size=8,
-    )
-
-    def load_qfq_universe(as_of: date) -> tuple[BaoStockSecurity, ...]:
-        official = load_current_a_share_universe(
-            partial(fetch_sse_listings, get=requests.get),
-            partial(fetch_szse_listings, get=requests.get),
-            15.0,
-        )
-        return select_st_eligible_universe(official, st_source.fetch(official, as_of))
-
     try:
         with (
             BaoStockHistorySupplier(
@@ -290,9 +281,26 @@ def execute_qfq_download(
             ) as baostock,
             ExitStack() as http_resources,
         ):
-            http_pool = TencentQfqSessionPool(
+            http_pool = TencentSessionPool(
                 tuple(http_resources.enter_context(requests.Session()) for _index in range(8))
             )
+            st_source = HistoryStNameSource(
+                history_st_evidence_path(history_root),
+                http_pool.borrow,
+                qfq_pool,
+                cancel_requested,
+                report=lambda done, total, summary: _report_qfq_st_progress(report, started, done, total, summary),
+                batch_size=8,
+            )
+
+            def load_qfq_universe(as_of: date) -> tuple[BaoStockSecurity, ...]:
+                official = load_current_a_share_universe(
+                    partial(fetch_sse_listings, get=requests.get),
+                    partial(fetch_szse_listings, get=requests.get),
+                    15.0,
+                )
+                return select_st_eligible_universe(official, st_source.fetch(official, as_of))
+
             tencent = TencentQfqSupplier(
                 TencentQfqDependencies(
                     http_pool.borrow,

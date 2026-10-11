@@ -52,7 +52,7 @@ class HistorySyncConfiguration:
     archive_root: Path = Path("data/history")
     sessions: int = 2000
     reread_sessions: int = 5
-    download_batch_size: int = 32
+    download_batch_size: int = 64
     history_workers: int = 8
     minimum_free_bytes: int = 1 * 1024**3
     supplier_timeout_seconds: float = 45.0

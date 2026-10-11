@@ -10,7 +10,7 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
-    TencentQfqSessionPool,
+    TencentSessionPool,
     TencentQfqSupplier,
 )
 
@@ -97,7 +97,7 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
 
 def test_session_pool_reuses_bootstrap_owned_connection_between_stocks():
     session = _Http()
-    pool = TencentQfqSessionPool((session,))
+    pool = TencentSessionPool((session,))
     supplier = TencentQfqSupplier(TencentQfqDependencies(pool.borrow, lambda _as_of: (SECURITY,), lambda: False))
 
     supplier.fetch_window(SECURITY, (DAY,))

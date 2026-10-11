@@ -268,6 +268,36 @@ class SQLiteHistoryMonthPartitionRepository:
             ).fetchall()
         return tuple((str(code), date.fromisoformat(str(day))) for code, day in rows)
 
+    def missing_price_counts(self, snapshot_sequence: int, codes: Collection[str]) -> dict[str, int]:
+        """Count unresolved latest observations by recovery code."""
+
+        ordered_codes = tuple(sorted(set(codes)))
+        if snapshot_sequence < 1 or any(_CODE.fullmatch(code) is None for code in ordered_codes):
+            raise ValueError("history month missing-price count input is invalid")
+        if not ordered_codes:
+            return {}
+        counts: dict[str, int] = {}
+        with closing(self._read_connection()) as connection:
+            self._require_metadata(connection)
+            for offset in range(0, len(ordered_codes), _COUNT_CODE_BATCH_SIZE):
+                batch = ordered_codes[offset : offset + _COUNT_CODE_BATCH_SIZE]
+                placeholders = ",".join("?" for _code in batch)
+                rows = connection.execute(
+                    "SELECT records.code, COUNT(*) FROM daily_records AS records "
+                    "INDEXED BY history_month_price_gap_idx "
+                    "WHERE records.code IN (" + placeholders + ") "
+                    "AND json_extract(records.payload_json, '$.cell.status') IN "
+                    "('unknown_missing','qfq_missing','unadjusted_missing') "
+                    "AND records.revision_id=(SELECT observations.revision_id FROM daily_observations AS observations "
+                    "WHERE observations.code=records.code AND observations.trade_date=records.trade_date "
+                    "AND observations.sync_sequence<=? ORDER BY observations.sync_sequence DESC LIMIT 1) "
+                    "GROUP BY records.code",
+                    (*batch, snapshot_sequence),
+                ).fetchall()
+                for code, count in rows:
+                    counts[str(code)] = counts.get(str(code), 0) + cast(int, count)
+        return counts
+
     def count_range(
         self,
         start: date,

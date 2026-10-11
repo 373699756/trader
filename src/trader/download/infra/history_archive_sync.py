@@ -8,8 +8,8 @@ import shutil
 import sqlite3
 import time as monotonic_time
 from collections import defaultdict
-from collections.abc import Callable, Iterator
-from concurrent.futures import Future, as_completed
+from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
@@ -104,6 +104,23 @@ class _PendingPartitions:
 class _PartitionReplacement:
     destination: Path
     rollback: Path
+
+
+@dataclass(frozen=True)
+class _TencentDownloadResult:
+    security: BaoStockSecurity
+    dates: tuple[date, ...]
+    window: PublishedHistoryWindow | None
+    failure_reason: str | None
+
+
+@dataclass(frozen=True)
+class _SupplementResult:
+    index: int
+    code: str
+    dates: tuple[date, ...]
+    revisions: tuple[HistoryRevision, ...]
+    unresolved_price_cells: int
 
 
 @dataclass(frozen=True)
@@ -283,7 +300,7 @@ def _synchronize(  # noqa: PLR0913
         phases.supplement_baostock()
         completed, ordinal = phases.completed, phases.ordinal
         phases.check_cancel()
-        unresolved = _pending_price_gap_count(pending, sequence, context)
+        unresolved = phases.unresolved_price_cells()
         snapshot = _seal_and_publish(
             configuration.archive_root,
             pending,
@@ -378,42 +395,66 @@ class _HistoryDownloadPhases:
 
     def download_tencent(self) -> None:
         universe = self.context.supplier_context.universe
-        wave_size = self.context.configuration.history_workers
-        for start in range(0, len(universe), wave_size):
-            self.check_cancel()
-            end = min(start + wave_size, len(universe))
-            self._tencent_wave(start, end)
-            self.checkpoint(end)
-
-    def _tencent_wave(self, start: int, end: int) -> None:
-        futures: dict[Future[PublishedHistoryWindow], tuple[BaoStockSecurity, tuple[date, ...]]] = {}
+        batch_size = self.context.configuration.history_workers
+        completed_codes = self.stage.completed_codes()
+        self.completed = sum(security.code in completed_codes for security in universe)
+        jobs = tuple(
+            (index, security) for index, security in enumerate(universe) if security.code not in completed_codes
+        )
+        futures: dict[Future[PublishedHistoryWindow], tuple[int, BaoStockSecurity, tuple[date, ...]]] = {}
+        durable_batch: list[_TencentDownloadResult] = []
+        next_job = 0
         try:
-            for index, security in enumerate(self.context.supplier_context.universe[start:end], start=start):
+            while futures or next_job < len(jobs):
                 self.check_cancel()
-                if self.stage.contains(security.code):
+                next_job = self._fill_tencent_workers(jobs, next_job, futures, durable_batch, batch_size)
+                if len(durable_batch) >= batch_size:
+                    self._save_tencent_batch(durable_batch[:batch_size])
+                    del durable_batch[:batch_size]
                     continue
-                dates = _requested_dates(self.context, security)
-                self._price_progress("tencent_history", "started", index, security.code, dates)
-                if not dates:
-                    self.stage.save(PublishedHistoryWindow(security.code, ()))
-                    self._price_progress("tencent_history", "completed", index + 1, security.code, dates)
-                    continue
-                future = submit_or_reject(self.executor, self.supplier.fetch_tencent_window, security, dates)
-                futures[future] = (security, dates)
-            completed = end - len(futures)
-            for future in as_completed(futures):
+                if not futures:
+                    break
+                done, _pending = wait(tuple(futures), return_when=FIRST_COMPLETED)
                 self.check_cancel()
-                security, dates = futures[future]
-                state = self._save_tencent_result(future, security, dates)
-                completed += 1
-                self._price_progress("tencent_history", state, completed, security.code, dates)
+                for future in done:
+                    _index, security, dates = futures.pop(future)
+                    durable_batch.append(self._tencent_result(future, security, dates))
+                if len(durable_batch) >= batch_size:
+                    self._save_tencent_batch(durable_batch[:batch_size])
+                    del durable_batch[:batch_size]
+            if durable_batch:
+                self._save_tencent_batch(durable_batch)
         finally:
             for future in futures:
                 future.cancel()
 
-    def _save_tencent_result(
+    def _fill_tencent_workers(
+        self,
+        jobs: tuple[tuple[int, BaoStockSecurity], ...],
+        next_job: int,
+        futures: dict[Future[PublishedHistoryWindow], tuple[int, BaoStockSecurity, tuple[date, ...]]],
+        durable_batch: list[_TencentDownloadResult],
+        batch_size: int,
+    ) -> int:
+        while len(futures) < batch_size and next_job < len(jobs):
+            index, security = jobs[next_job]
+            next_job += 1
+            dates = _requested_dates(self.context, security)
+            self._price_progress("tencent_history", "started", index, security.code, dates)
+            if dates:
+                future = submit_or_reject(self.executor, self.supplier.fetch_tencent_window, security, dates)
+                futures[future] = (index, security, dates)
+            else:
+                durable_batch.append(
+                    _TencentDownloadResult(security, dates, PublishedHistoryWindow(security.code, ()), None)
+                )
+                if len(durable_batch) >= batch_size:
+                    break
+        return next_job
+
+    def _tencent_result(
         self, future: Future[PublishedHistoryWindow], security: BaoStockSecurity, dates: tuple[date, ...]
-    ) -> Literal["completed", "failed"]:
+    ) -> _TencentDownloadResult:
         try:
             window = future.result()
             self.check_cancel()
@@ -421,10 +462,28 @@ class _HistoryDownloadPhases:
                 raise RuntimeError("history_tencent_coverage_incomplete")
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             self.check_cancel()
-            self.stage.fail(security.code, _failure_code(exc))
-            return "failed"
-        self.stage.save(window)
-        return "completed"
+            return _TencentDownloadResult(security, dates, None, _failure_code(exc))
+        return _TencentDownloadResult(security, dates, window, None)
+
+    def _save_tencent_batch(self, results: list[_TencentDownloadResult]) -> None:
+        self.check_cancel()
+        self.stage.save_batch(
+            tuple(result.window for result in results if result.window is not None),
+            tuple(
+                (result.security.code, result.failure_reason) for result in results if result.failure_reason is not None
+            ),
+        )
+        self.completed += len(results)
+        self.checkpoint(self.completed)
+        first_completed = self.completed - len(results) + 1
+        for offset, result in enumerate(results):
+            self._price_progress(
+                "tencent_history",
+                "failed" if result.failure_reason is not None else "completed",
+                first_completed + offset,
+                result.security.code,
+                result.dates,
+            )
 
     def supplement_baostock(self) -> None:
         self.recovery_started_at = monotonic_time.monotonic()
@@ -434,23 +493,40 @@ class _HistoryDownloadPhases:
         self.recovery_selection = frozenset((gaps[offset:] + gaps[:offset])[:cap])
         universe = self.context.supplier_context.universe
         supplemented = self.stage.supplemented_codes()
+        if all(security.code in supplemented for security in universe):
+            return
         batch_size = self.context.configuration.download_batch_size
         for start in range(0, len(universe), batch_size):
             self.check_cancel()
             end = min(start + batch_size, len(universe))
-            revisions: list[HistoryRevision] = []
+            results: list[_SupplementResult] = []
             for index, security in enumerate(universe[start:end], start=start):
                 if security.code not in supplemented:
-                    revisions.extend(self._supplement_security(index, security))
-            _write_revision_batch(self.pending, tuple(revisions))
-            self.stage.mark_supplemented(tuple(item.code for item in universe[start:end]))
+                    results.append(self._supplement_security(index, security))
+            if not results:
+                continue
+            _write_revision_batch(self.pending, tuple(revision for result in results for revision in result.revisions))
+            self.stage.mark_supplemented(tuple((result.code, result.unresolved_price_cells) for result in results))
             self.checkpoint(end)
+            for result in results:
+                self._price_progress("persisting_prices", "completed", result.index + 1, result.code, result.dates)
 
     def build_gap_inventory(self) -> None:
         total = len(self.context.supplier_context.universe)
         _publish_progress(self.progress, "history_gap_inventory", "started", (0, total))
         self.check_cancel()
-        self.stage.save_gap_inventory(_history_gap_rows(self.context, self.stage, self.cancel_requested))
+        if not self.stage.has_gap_inventory():
+            requested = (
+                (security.code, _requested_dates(self.context, security))
+                for security in self.context.supplier_context.universe
+            )
+            self.stage.save_gap_inventory(
+                self.stage.iter_gap_inventory(
+                    requested,
+                    self.context.configuration.reread_sessions,
+                    self.cancel_requested,
+                )
+            )
         if self.progress is not None:
             try:
                 self.progress.publish(
@@ -465,18 +541,15 @@ class _HistoryDownloadPhases:
             except OSError:
                 pass
 
-    def _supplement_security(self, index: int, security: BaoStockSecurity) -> tuple[HistoryRevision, ...]:
+    def _supplement_security(self, index: int, security: BaoStockSecurity) -> _SupplementResult:
         self.check_cancel()
         dates = _requested_dates(self.context, security)
         self._price_progress("persisting_prices", "started", index, security.code, dates)
         if not dates:
-            self._price_progress("persisting_prices", "completed", index + 1, security.code, dates)
-            return ()
-        tencent = self.stage.read(security.code)
-        missing_dates = tuple(
-            date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_price_pair")
-        )
-        anchors = tuple(date.fromisoformat(day) for day in self.stage.gap_dates(security.code, "baostock_basis_anchor"))
+            return _SupplementResult(index, security.code, dates, (), 0)
+        tencent, missing_days, anchor_days = self.stage.read_supplement_context(security.code)
+        missing_dates = tuple(date.fromisoformat(day) for day in missing_days)
+        anchors = tuple(date.fromisoformat(day) for day in anchor_days)
         price_dates = tuple(sorted(set(missing_dates) | set(anchors)))
         recovery: tuple[BaoStockDailyCell, ...] = ()
         settings = self.context.configuration
@@ -517,8 +590,26 @@ class _HistoryDownloadPhases:
             and HISTORY_TAIL_CONTRACT in context.supplier_context.source_versions.dependency_versions
         ):
             cells = _validate_tail_overlap(context, cells, security.code)
-        self._price_progress("persisting_prices", "completed", index + 1, security.code, dates)
-        return tuple(HistoryRevision(self.sequence, security.board, cell, None, None, None) for cell in cells)
+        return _SupplementResult(
+            index,
+            security.code,
+            dates,
+            tuple(HistoryRevision(self.sequence, security.board, cell, None, None, None) for cell in cells),
+            sum(not cell.obtained for cell in cells),
+        )
+
+    def unresolved_price_cells(self) -> int:
+        known, unknown = self.stage.unresolved_price_counts()
+        if unknown:
+            before_recovery = self.stage.pre_recovery_price_gap_counts()
+            recovery_codes = unknown & self.recovery_selection
+            inferred = {code: before_recovery.get(code, 0) for code in unknown - recovery_codes}
+            if recovery_codes:
+                recovered = _pending_price_gap_counts_for_codes(self.pending, self.sequence, recovery_codes)
+                inferred.update({code: recovered.get(code, 0) for code in recovery_codes})
+            self.stage.mark_supplemented(tuple(sorted(inferred.items())))
+            known.update(inferred)
+        return sum(known.values())
 
     def _price_progress(
         self,
@@ -546,34 +637,6 @@ class _HistoryDownloadPhases:
             )
         except OSError:
             pass
-
-
-def _history_gap_rows(
-    context: _CodeDownloadContext,
-    stage: HistoryTencentStage,
-    cancel_requested: Cancellation,
-) -> Iterator[tuple[str, str, str]]:
-    for security in context.supplier_context.universe:
-        if cancel_requested():
-            raise _HistoryDownloadCancelledError("cancelled")
-        dates = _requested_dates(context, security)
-        if not dates:
-            continue
-        window = stage.read(security.code)
-        failed = stage.failure_reason(security.code) is not None
-        by_date = {cell.trade_date: cell for cell in window.cells}
-        missing = False
-        for day in dates:
-            cell = by_date.get(day)
-            if failed or cell is None or cell.unadjusted is None or cell.qfq is None:
-                missing = True
-                yield security.code, day.isoformat(), "baostock_price_pair"
-        if missing:
-            anchors = tuple(
-                cell.trade_date for cell in window.cells if cell.unadjusted is not None and cell.qfq is not None
-            )
-            for day in anchors[-min(5, context.configuration.reread_sessions) :]:
-                yield security.code, day.isoformat(), "baostock_basis_anchor"
 
 
 def _seal_and_publish(  # noqa: PLR0913
@@ -702,8 +765,7 @@ def _validate_tail_overlap(
         reference = next((item for item in active.partitions if _partition_month(item) == (year, month)), None)
         if reference is None:
             raise RuntimeError("history_tail_qfq_overlap_missing")
-        # The writer trusts published partition identities exactly as the existing
-        # incremental path does; read only this stock's bounded overlap via its index.
+        # Trust the published identity and read only this stock's bounded overlap via its index.
         partition = SQLiteHistoryMonthPartitionRepository(
             context.configuration.archive_root / reference.relative_path,
             year,
@@ -972,20 +1034,21 @@ def _previous_price_gaps(
     return {code: tuple(sorted(days)) for code, days in gaps.items()}
 
 
-def _pending_price_gap_count(pending: _PendingPartitions, sequence: int, context: HistorySupplierContext) -> int:
-    allowed_codes = {item.code for item in context.universe}
-    allowed_dates = frozenset(context.calendar.open_dates)
-    count = 0
+def _pending_price_gap_counts_for_codes(
+    pending: _PendingPartitions,
+    sequence: int,
+    codes: frozenset[str],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
     for month, candidate in pending.paths.items():
         previous = pending.active_by_month.get(month)
         path = candidate if candidate.is_file() else pending.root / previous.relative_path if previous else None
         if path is None:
             continue
-        partition = SQLiteHistoryMonthPartitionRepository(path, *month)
-        count += sum(
-            code in allowed_codes and day in allowed_dates for code, day in partition.missing_price_dates(sequence)
-        )
-    return count
+        monthly = SQLiteHistoryMonthPartitionRepository(path, *month).missing_price_counts(sequence, codes)
+        for code, count in monthly.items():
+            counts[code] = counts.get(code, 0) + count
+    return counts
 
 
 def _control_identities(

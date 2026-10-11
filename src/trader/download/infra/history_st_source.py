@@ -6,7 +6,8 @@ import html
 import re
 import unicodedata
 from collections.abc import Callable
-from concurrent.futures import Future, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, wait
+from contextlib import AbstractContextManager
 from datetime import date
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from trader.download.infra.history_reference_files import read_st_evidence, writ
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 _NAME_HISTORY = re.compile(r"证券简称更名历史[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", re.S)
+_CHECKPOINT_CODES = 64
 
 
 def parse_name_history_st(code: str, current_name: str, checked_on: date, text: str) -> HistoryStEvidence:
@@ -41,7 +43,7 @@ class HistoryStNameSource:
     def __init__(  # noqa: PLR0913 - explicit supplier and cancellation boundaries
         self,
         path: Path,
-        get: Callable[..., requests.Response],
+        session_factory: Callable[[], AbstractContextManager[requests.Session]],
         executor: WorkerExecutor,
         cancel_requested: Callable[[], bool],
         *,
@@ -51,7 +53,7 @@ class HistoryStNameSource:
         if batch_size < 1:
             raise ValueError("history ST worker batch size must be positive")
         self._path = path
-        self._get = get
+        self._session_factory = session_factory
         self._executor = executor
         self._cancel_requested = cancel_requested
         self._report = report
@@ -60,57 +62,107 @@ class HistoryStNameSource:
     def fetch(self, universe: tuple[BaoStockSecurity, ...], as_of: date) -> tuple[HistoryStEvidence, ...]:
         evidence = {item.code: item for item in read_st_evidence(self._path)}
         total = len(universe)
-        completed = 0
-        for start in range(0, total, self._batch_size):
-            self._check_cancel()
-            futures: dict[Future[HistoryStEvidence], str] = {}
-            try:
-                for security in universe[start : start + self._batch_size]:
-                    old = evidence.get(security.code)
-                    if old is not None and (
-                        old.status == "ever_st" or old.status == "clear" and old.checked_on == as_of
-                    ):
-                        completed += 1
-                    else:
-                        future = submit_or_reject(self._executor, self._fetch_code, security.code, security.name, as_of)
-                        futures[future] = security.code
-                for future in as_completed(futures):
-                    self._check_cancel()
-                    code = futures[future]
-                    try:
-                        evidence[code] = future.result()
-                    except (requests.RequestException, OSError, ValueError):
-                        evidence[code] = HistoryStEvidence(code, as_of, "unknown")
-                    completed += 1
-                write_st_evidence(self._path, tuple(sorted(evidence.values(), key=lambda item: item.code)))
-                summary = None
-                if completed == total:
-                    current = tuple(evidence[item.code] for item in universe)
-                    summary = HistoryStEligibilitySummary(
-                        sum(item.status == "clear" for item in current),
-                        sum(item.status == "ever_st" for item in current),
-                        sum(item.status == "unknown" for item in current),
-                    )
-                self._report(completed, total, summary)
-            finally:
-                for future in futures:
-                    future.cancel()
+        pending = tuple(
+            security
+            for security in universe
+            if not (
+                (old := evidence.get(security.code)) is not None
+                and (old.status == "ever_st" or old.status == "clear" and old.checked_on == as_of)
+            )
+        )
+        completed = total - len(pending)
+        reported = completed
+        summary_reported = False
+        dirty = 0
+        next_security = 0
+        futures: dict[Future[HistoryStEvidence], str] = {}
+        try:
+            while futures or next_security < len(pending):
+                self._check_cancel()
+                next_security = self._fill_checks(pending, next_security, futures, as_of)
+                done, _remaining = wait(tuple(futures), return_when=FIRST_COMPLETED)
+                self._check_cancel()
+                accepted = self._accept_checks(done, futures, evidence, as_of)
+                completed += accepted
+                dirty += accepted
+                if dirty >= _CHECKPOINT_CODES:
+                    self._write(evidence)
+                    dirty = 0
+                if completed == total and dirty:
+                    self._write(evidence)
+                    dirty = 0
+                if completed == total or completed - reported >= self._batch_size:
+                    summary = self._summary(universe, evidence) if completed == total else None
+                    self._report(completed, total, summary)
+                    summary_reported = summary is not None
+                    reported = completed
+        finally:
+            for future in futures:
+                future.cancel()
+        if dirty:
+            self._write(evidence)
+        if completed == total and not summary_reported:
+            self._report(completed, total, self._summary(universe, evidence))
         codes = {item.code for item in universe}
         return tuple(item for code, item in sorted(evidence.items()) if code in codes)
 
+    def _fill_checks(
+        self,
+        pending: tuple[BaoStockSecurity, ...],
+        next_security: int,
+        futures: dict[Future[HistoryStEvidence], str],
+        as_of: date,
+    ) -> int:
+        while len(futures) < self._batch_size and next_security < len(pending):
+            security = pending[next_security]
+            next_security += 1
+            future = submit_or_reject(self._executor, self._fetch_code, security.code, security.name, as_of)
+            futures[future] = security.code
+        return next_security
+
+    @staticmethod
+    def _accept_checks(
+        done: set[Future[HistoryStEvidence]],
+        futures: dict[Future[HistoryStEvidence], str],
+        evidence: dict[str, HistoryStEvidence],
+        as_of: date,
+    ) -> int:
+        for future in done:
+            code = futures.pop(future)
+            try:
+                evidence[code] = future.result()
+            except (requests.RequestException, OSError, ValueError):
+                evidence[code] = HistoryStEvidence(code, as_of, "unknown")
+        return len(done)
+
+    def _write(self, evidence: dict[str, HistoryStEvidence]) -> None:
+        write_st_evidence(self._path, tuple(sorted(evidence.values(), key=lambda item: item.code)))
+
+    @staticmethod
+    def _summary(
+        universe: tuple[BaoStockSecurity, ...], evidence: dict[str, HistoryStEvidence]
+    ) -> HistoryStEligibilitySummary:
+        current = tuple(evidence[item.code] for item in universe)
+        return HistoryStEligibilitySummary(
+            sum(item.status == "clear" for item in current),
+            sum(item.status == "ever_st" for item in current),
+            sum(item.status == "unknown" for item in current),
+        )
+
     def _fetch_code(self, code: str, current_name: str, as_of: date) -> HistoryStEvidence:
         self._check_cancel()
-        response = self._get(
-            f"https://vip.stock.finance.sina.com.cn/corp/go.php/vCI_CorpInfo/stockid/{code}.phtml",
-            headers={"User-Agent": "Mozilla/5.0"},
-            timeout=15.0,
-        )
-        try:
-            response.raise_for_status()
-            text = response.content.decode("gb18030", errors="strict")
-            return parse_name_history_st(code, current_name, as_of, text)
-        finally:
-            response.close()
+        with self._session_factory() as session:
+            response = session.get(
+                f"https://vip.stock.finance.sina.com.cn/corp/go.php/vCI_CorpInfo/stockid/{code}.phtml",
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15.0,
+            )
+            try:
+                response.raise_for_status()
+                text = response.content.decode("gb18030", errors="strict")
+                return parse_name_history_st(code, current_name, as_of, text)
+            finally:
+                response.close()
 
     def _check_cancel(self) -> None:
         if self._cancel_requested():

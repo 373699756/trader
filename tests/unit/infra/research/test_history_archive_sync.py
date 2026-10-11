@@ -295,6 +295,91 @@ def test_concurrent_tencent_stage_finishes_and_persists_inventory_before_baostoc
     assert not tuple((tmp_path / ".tencent-stage").glob("*.sqlite3"))
 
 
+def test_tencent_pipeline_refills_slow_workers_and_persists_results_in_batches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    third_started = threading.Event()
+    second_observed_refill = False
+    saved_batch_sizes: list[int] = []
+    original_save_batch = HistoryTencentStage.save_batch
+
+    def record_batch(self, windows, failures):
+        saved_batch_sizes.append(len(windows) + len(failures))
+        return original_save_batch(self, windows, failures)
+
+    monkeypatch.setattr(HistoryTencentStage, "save_batch", record_batch)
+
+    class RollingSupplier(FakeSupplier):
+        def load_context(self, as_of, sessions, *, universe=None):
+            selected = tuple(
+                BaoStockSecurity(code, code, "main", date(2000, 1, 1), None, "test")
+                for code in ("600001", "600002", "600003")
+            )
+            return super().load_context(as_of, sessions, universe=selected)
+
+        def fetch_tencent_window(self, security, requested):
+            nonlocal second_observed_refill
+            if security.code == "600002":
+                second_observed_refill = third_started.wait(timeout=3)
+            elif security.code == "600003":
+                third_started.set()
+            return super().fetch_tencent_window(security, requested)
+
+    pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="history-rolling-test")
+    pool.start()
+    try:
+        result = run_history_sync(
+            replace(_configuration(tmp_path), history_workers=2),
+            RollingSupplier(dates),
+            clock=lambda: NOW,
+            worker_pool=pool,
+        )
+    finally:
+        assert pool.stop(wait=True, deadline=ShutdownDeadline.start(5)).completed
+
+    assert result.state == "completed"
+    assert second_observed_refill
+    assert saved_batch_sizes[:2] == [2, 1]
+
+
+def test_tencent_stage_upgrades_legacy_resume_metadata_without_rewriting_candidates(tmp_path: Path) -> None:
+    path = tmp_path / ".tencent-stage" / "legacy.sqlite3"
+    path.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(path)) as connection, connection:
+        connection.executescript(
+            "CREATE TABLE metadata(singleton INTEGER PRIMARY KEY, sync_identity TEXT NOT NULL);"
+            "CREATE TABLE candidates(code TEXT NOT NULL, trade_date TEXT NOT NULL, payload_json TEXT NOT NULL, "
+            "PRIMARY KEY(code, trade_date)) WITHOUT ROWID;"
+            "CREATE TABLE outcomes(code TEXT PRIMARY KEY, failure_reason TEXT) WITHOUT ROWID;"
+            "CREATE TABLE gaps(code TEXT NOT NULL, trade_date TEXT NOT NULL, reason TEXT NOT NULL, "
+            "PRIMARY KEY(code, trade_date, reason)) WITHOUT ROWID;"
+            "CREATE TABLE supplemented(code TEXT PRIMARY KEY) WITHOUT ROWID;"
+        )
+        connection.execute("INSERT INTO metadata VALUES (1, 'sync-legacy')")
+        connection.execute(
+            "INSERT INTO candidates VALUES (?, ?, ?)",
+            (
+                "600001",
+                "2026-09-10",
+                '{"code":"600001","qfq":null,"status":"unknown_missing","trade_date":"2026-09-10","unadjusted":null}',
+            ),
+        )
+        connection.execute("INSERT INTO outcomes VALUES ('600001', NULL)")
+        connection.execute("INSERT INTO supplemented VALUES ('600001')")
+
+    stage = HistoryTencentStage(path, "sync-legacy")
+    stage.initialize()
+
+    with closing(sqlite3.connect(path)) as connection:
+        candidate_columns = {row[1] for row in connection.execute("PRAGMA table_info(candidates)")}
+        supplemented_columns = {row[1] for row in connection.execute("PRAGMA table_info(supplemented)")}
+    assert "price_pair_complete" in candidate_columns
+    assert "unresolved_price_cells" in supplemented_columns
+    assert stage.price_gap_dates() == {"600001": ("2026-09-10",)}
+    assert stage.unresolved_price_counts() == ({}, frozenset(("600001",)))
+
+
 @pytest.mark.parametrize("failure", ("request", "missing_side"))
 def test_tencent_gaps_use_complete_baostock_pairs_and_preserve_all_training_fields(
     tmp_path: Path, failure: str
@@ -485,8 +570,8 @@ def test_history_sync_reports_context_code_sealing_and_publication_progress(tmp_
         ("history_gap_inventory", "started"),
         ("history_gap_inventory", "completed"),
         ("persisting_prices", "started"),
-        ("persisting_prices", "completed"),
         ("persisting_prices", "started"),
+        ("persisting_prices", "completed"),
         ("persisting_prices", "completed"),
         ("sealing_partitions", "started"),
         ("sealing_partitions", "completed"),

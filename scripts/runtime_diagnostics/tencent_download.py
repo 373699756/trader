@@ -27,7 +27,7 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
-    TencentQfqSessionPool,
+    TencentSessionPool,
     TencentQfqSupplier,
 )
 from trader.infra.market_data.providers.exchange_security_master import fetch_sse_listings, fetch_szse_listings
@@ -177,7 +177,7 @@ def main() -> int:
             raise ValueError("Tencent diagnostic sizes/workers are out of bounds")
         observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
         sessions = tuple(requests.Session() for _index in range(args.workers))
-        session_pool = TencentQfqSessionPool(sessions)
+        session_pool = TencentSessionPool(sessions)
         supplier = TencentQfqSupplier(
             TencentQfqDependencies(
                 session_pool.borrow,

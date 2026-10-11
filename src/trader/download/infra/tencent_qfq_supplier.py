@@ -54,7 +54,7 @@ class TencentQfqDependencies:
     cancel_requested: Callable[[], bool]
 
 
-class TencentQfqSessionPool:
+class TencentSessionPool:
     """Borrow bootstrap-owned sessions exclusively so keep-alive survives stock boundaries."""
 
     def __init__(self, sessions: tuple[requests.Session, ...]) -> None:
