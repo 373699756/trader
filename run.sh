@@ -157,6 +157,20 @@ if [[ "$COMMAND_KIND" == "server" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${PROFILE_ARGS[@]}" "${FORWARD_ARGS[@]}"
 fi
 if [[ "$MODE" == "download" ]]; then
+  if [[ "$(uname -s)" == "Linux" ]]; then
+    if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
+      exec systemd-run --user --scope --quiet --collect \
+        --unit="trader-history-download-${BASHPID}" \
+        --slice=background.slice \
+        --property=MemoryHigh=1792M \
+        --property=MemoryMax=2048M \
+        --property=MemorySwapMax=2048M \
+        --property=CPUWeight=20 \
+        --property=IOWeight=20 \
+        -- "$ENTRYPOINT" --config "$CONFIG_PATH" download
+    fi
+    printf '%s\n' '警告：当前用户 systemd scope 不可用；历史下载仍可断点续传，但不能隔离桌面终端的内存压力。' >&2
+  fi
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" download
 fi
 if [[ "$MODE" == "qfq_download" ]]; then

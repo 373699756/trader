@@ -226,6 +226,8 @@ class SQLiteHistoryMonthPartitionRepository:
             raise
         except sqlite3.Error as exc:
             raise HistoryMonthPartitionError("history month revision write failed") from exc
+        finally:
+            _release_file_cache(self._path)
 
     def read_day(
         self,
@@ -692,6 +694,8 @@ class SQLiteHistoryMonthPartitionRepository:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
+        connection.execute("PRAGMA cache_size=-8192")
+        connection.execute("PRAGMA mmap_size=0")
         connection.execute("PRAGMA temp_store=FILE")
         return connection
 

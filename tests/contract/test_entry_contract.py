@@ -348,12 +348,18 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     _write_fake_entrypoint(venv_bin / "python", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
         ("bash", str(ROOT / "run.sh"), "download"),
         cwd=ROOT,
-        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
+        env={
+            **os.environ,
+            "PATH": f"{venv_bin}:{os.environ['PATH']}",
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
         text=True,
         capture_output=True,
         check=False,
@@ -361,6 +367,72 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
 
     assert completed.returncode == 0
     assert completed.stdout == f"cli:--config {config} download\n"
+
+
+def test_run_script_isolates_history_download_from_the_desktop_terminal(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
+    _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
+    _write_fake_entrypoint(venv_bin / "systemctl", "exit 0")
+    _write_fake_entrypoint(venv_bin / "systemd-run", "printf 'scope:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "download"),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{venv_bin}:{os.environ['PATH']}",
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "scope:--user --scope --quiet --collect" in completed.stdout
+    assert "--unit=trader-history-download-" in completed.stdout
+    assert "--slice=background.slice" in completed.stdout
+    assert "--property=MemoryHigh=1792M" in completed.stdout
+    assert "--property=MemoryMax=2048M" in completed.stdout
+    assert "--property=MemorySwapMax=2048M" in completed.stdout
+    assert "--property=CPUWeight=20" in completed.stdout
+    assert "--property=IOWeight=20" in completed.stdout
+    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} download")
+
+
+def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
+    _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
+    _write_fake_entrypoint(venv_bin / "systemctl", "exit 1")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "download"),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{venv_bin}:{os.environ['PATH']}",
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert completed.stdout == f"cli:--config {config} download\n"
+    assert "不能隔离桌面终端的内存压力" in completed.stderr
 
 
 @pytest.mark.parametrize("command", ("train-v2", "train-v3"))

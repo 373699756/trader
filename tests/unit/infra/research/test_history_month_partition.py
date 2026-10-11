@@ -106,6 +106,24 @@ def test_month_partition_batches_revision_context_and_uses_specialized_latest_sq
     assert "IS NULL OR" not in latest_sql
 
 
+def test_month_partition_bounds_write_cache_and_releases_committed_file_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    statements: list[str] = []
+    released: list[Path] = []
+    repository = SQLiteHistoryMonthPartitionRepository(path, 2026, 9, statement_trace=statements.append)
+    repository.initialize()
+    statements.clear()
+    monkeypatch.setattr(partition_module, "_release_file_cache", released.append)
+
+    repository.save_revisions((_revision(date(2026, 9, 10), 1, 10.0),))
+
+    assert "PRAGMA cache_size=-8192" in statements
+    assert "PRAGMA mmap_size=0" in statements
+    assert released == [path]
+
+
 @pytest.mark.parametrize("sequence", (1, 2, 3, 4))
 def test_code_ordered_stream_preserves_point_in_time_revisions_without_sorting(
     tmp_path: Path,
