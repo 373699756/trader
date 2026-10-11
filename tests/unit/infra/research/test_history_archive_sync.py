@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 import threading
@@ -669,6 +670,71 @@ def test_initial_sealing_reuses_pending_inode_without_a_full_database_copy(
     assert result.state == "completed"
     assert copied == []
     assert not tuple((tmp_path / "partitions").glob("*/.*.pending.sqlite3"))
+
+
+@pytest.mark.parametrize("resume_mode", ("checkpoint", "legacy", "changed"))
+def test_interrupted_sealing_resumes_after_the_last_completed_month(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resume_mode: str,
+) -> None:
+    dates = (date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 2))
+
+    class InterruptAfterAugust:
+        def publish(self, progress: HistorySyncProgress) -> None:
+            if (
+                progress.stage == "sealing_partitions"
+                and progress.state == "completed"
+                and progress.completed_units == 1
+            ):
+                raise KeyboardInterrupt
+
+    interrupted = run_history_sync(
+        _configuration(tmp_path),
+        FakeSupplier(dates),
+        clock=lambda: NOW,
+        progress=InterruptAfterAugust(),
+    )
+
+    assert interrupted.state == "cancelled"
+    stage_path = next((tmp_path / ".tencent-stage").glob("*.sqlite3"))
+    with closing(sqlite3.connect(stage_path)) as connection:
+        assert connection.execute("SELECT calendar_year, calendar_month FROM sealed_months").fetchall() == [(2026, 8)]
+        if resume_mode == "legacy":
+            connection.execute("DELETE FROM sealed_months")
+            connection.commit()
+    if resume_mode == "changed":
+        stable = tmp_path / "partitions/2026/08.sqlite3"
+        status = stable.stat()
+        os.utime(stable, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000_000))
+        assert stable.stat().st_mtime_ns != status.st_mtime_ns
+
+    validated_months: list[int] = []
+    original_validate = SQLiteHistoryMonthPartitionRepository._validate_all_rows
+
+    def record_validation(self, connection):
+        validated_months.append(self._calendar_month)
+        return original_validate(self, connection)
+
+    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "_validate_all_rows", record_validation)
+    recorder = ProgressRecorder()
+    resumed = run_history_sync(
+        _configuration(tmp_path),
+        FakeSupplier(dates),
+        clock=lambda: NOW,
+        progress=recorder,
+    )
+
+    assert resumed.state == "completed"
+    assert validated_months == ([8, 9] if resume_mode == "changed" else [9])
+    first_event = next(item for item in recorder.values if item.stage == "sealing_partitions")
+    expected_event = ("started", 0, "2026-08") if resume_mode == "changed" else ("completed", 1, "2026-08")
+    assert (first_event.state, first_event.completed_units, first_event.current_item) == expected_event
+    first_sealing = next(
+        item for item in recorder.values if item.stage == "sealing_partitions" and item.state == "started"
+    )
+    expected_first = (0, 2, "2026-08") if resume_mode == "changed" else (1, 2, "2026-09")
+    assert (first_sealing.completed_units, first_sealing.total_units, first_sealing.current_item) == expected_first
 
 
 def test_initial_sealing_does_not_copy_an_unpublished_orphan_for_rollback(

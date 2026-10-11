@@ -70,6 +70,11 @@ from trader.download.infra.history_reference_files import (
     read_bound_history_reference,
     write_history_reference,
 )
+from trader.download.infra.history_seal_resume import (
+    record_sealed_month,
+    recover_sealed_prefix,
+    remove_sqlite_files,
+)
 from trader.download.infra.history_tencent_stage import HistoryTencentStage
 from trader.infra.workers import WorkerExecutor, injected_executor, submit_or_reject
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
@@ -313,6 +318,7 @@ def _synchronize(  # noqa: PLR0913
             observed_at,
             progress,
             reference,
+            stage,
         )
         _publish_progress(progress, "publishing_snapshot", "completed", (1, 1))
         try:
@@ -651,9 +657,10 @@ def _seal_and_publish(  # noqa: PLR0913
     observed_at: datetime,
     progress: HistorySyncProgressPort | None,
     reference: HistoryReferenceSnapshot,
+    stage: HistoryTencentStage,
 ) -> HistoryActiveSnapshot:
     source, calendar, universe = identities
-    sealed = _seal_pending(root, pending, progress)
+    sealed = _seal_pending(root, pending, stage, progress)
     _publish_progress(progress, "publishing_snapshot", "started")
     label_cutoff = calendar.open_dates[-2] if len(calendar.open_dates) > 1 else calendar.open_dates[-1]
     snapshot = HistoryActiveSnapshot(
@@ -808,7 +815,7 @@ def _prepare_pending(
         path = root / "partitions" / f"{year:04d}" / f".{month:02d}.pending.sqlite3"
         paths[(year, month)] = path
         if not resume:
-            _remove_sqlite(path)
+            remove_sqlite_files(path)
     pending = _PendingPartitions(root, paths, active_by_month, dates[0])
     if resume:
         required = {
@@ -857,13 +864,15 @@ def _write_revision_batch(pending: _PendingPartitions, revisions: tuple[HistoryR
 def _seal_pending(
     root: Path,
     pending: _PendingPartitions,
+    stage: HistoryTencentStage,
     progress: HistorySyncProgressPort | None = None,
 ) -> _SealedPartitions:
-    references = []
+    references = list(recover_sealed_prefix(root, pending.paths, stage, progress))
     replacements: list[_PartitionReplacement] = []
     total = len(pending.paths)
     try:
-        for index, ((year, month), path) in enumerate(sorted(pending.paths.items())):
+        remaining = sorted(pending.paths.items())[len(references) :]
+        for index, ((year, month), path) in enumerate(remaining, start=len(references)):
             current_item = f"{year:04d}-{month:02d}"
             _publish_progress(progress, "sealing_partitions", "started", (index, total), current_item)
             if path.is_file():
@@ -876,6 +885,7 @@ def _seal_pending(
                 if replacement is not None:
                     replacements.append(replacement)
                 reference = SQLiteHistoryMonthPartitionRepository(candidate, year, month).seal()
+                record_sealed_month(stage, (year, month), destination, candidate, reference)
             else:
                 existing_reference = pending.active_by_month.get((year, month))
                 if existing_reference is None:
@@ -890,7 +900,7 @@ def _seal_pending(
 
 
 def _stage_partition_for_seal(source: Path, candidate: Path) -> None:
-    _remove_sqlite(candidate)
+    remove_sqlite_files(candidate)
     wal = Path(f"{source}-wal")
     if not wal.exists() or wal.stat().st_size == 0:
         try:
@@ -991,12 +1001,7 @@ def _backup_database(source: Path, destination: Path) -> None:
 
 def _remove_pending(pending: _PendingPartitions) -> None:
     for path in pending.paths.values():
-        _remove_sqlite(path)
-
-
-def _remove_sqlite(path: Path) -> None:
-    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
-        candidate.unlink(missing_ok=True)
+        remove_sqlite_files(path)
 
 
 def _fsync_file(path: Path) -> None:

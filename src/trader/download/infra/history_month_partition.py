@@ -499,6 +499,47 @@ class SQLiteHistoryMonthPartitionRepository:
         except (OSError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month sealing failed") from exc
 
+    def recover_completed_seal(self) -> HistorySnapshotPartition:
+        """Rebuild a reference after the caller proves a prior seal completed."""
+        try:
+            wal = Path(f"{self._path}-wal")
+            if wal.exists() and wal.stat().st_size > 0:
+                raise HistoryMonthPartitionError("history month completed seal has pending WAL")
+            before = self._path.stat()
+            with closing(self._read_connection()) as connection:
+                self._require_metadata(connection)
+                self._require_schema(connection)
+                row_count = cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
+            database_sha256 = _sha256_file(self._path)
+            after = self._path.stat()
+            before_identity = (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            )
+            after_identity = (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
+            if before_identity != after_identity or (wal.exists() and wal.stat().st_size > 0):
+                raise HistoryMonthPartitionError("history month completed seal changed during recovery")
+            if self._path.parent.name != f"{self._calendar_year:04d}" or self._path.parent.parent.name != "partitions":
+                raise HistoryMonthPartitionError("history month partition path is outside the archive layout")
+            return HistorySnapshotPartition(
+                f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
+                database_sha256,
+                row_count,
+            )
+        except HistoryMonthPartitionError:
+            raise
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryMonthPartitionError("history month completed seal recovery failed") from exc
+
     @classmethod
     def verify(
         cls,

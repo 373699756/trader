@@ -5,9 +5,11 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_sync import HistoryGapSummary
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.published_history_codec import (
@@ -44,7 +46,62 @@ CREATE TABLE IF NOT EXISTS supplemented (
 CREATE TABLE IF NOT EXISTS phase_state (
     name TEXT PRIMARY KEY
 ) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS sealed_months (
+    calendar_year INTEGER NOT NULL,
+    calendar_month INTEGER NOT NULL CHECK(calendar_month BETWEEN 1 AND 12),
+    relative_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    row_count INTEGER NOT NULL CHECK(row_count >= 0),
+    device INTEGER NOT NULL,
+    inode INTEGER NOT NULL,
+    file_size INTEGER NOT NULL CHECK(file_size >= 0),
+    mtime_ns INTEGER NOT NULL,
+    ctime_ns INTEGER NOT NULL,
+    PRIMARY KEY (calendar_year, calendar_month)
+) WITHOUT ROWID;
 """
+
+
+@dataclass(frozen=True)
+class HistorySealedMonthCheckpoint:
+    reference: HistorySnapshotPartition
+    device: int
+    inode: int
+    file_size: int
+    mtime_ns: int
+    ctime_ns: int
+
+    def __post_init__(self) -> None:
+        if min(self.device, self.inode, self.file_size, self.mtime_ns, self.ctime_ns) < 0:
+            raise ValueError("history sealed month checkpoint identity is invalid")
+
+    @classmethod
+    def capture(cls, path: Path, reference: HistorySnapshotPartition) -> HistorySealedMonthCheckpoint:
+        status = path.stat()
+        return cls(
+            reference,
+            status.st_dev,
+            status.st_ino,
+            status.st_size,
+            status.st_mtime_ns,
+            status.st_ctime_ns,
+        )
+
+    def matches(self, path: Path) -> bool:
+        try:
+            status = path.stat()
+            wal = Path(f"{path}-wal")
+            return (
+                status.st_dev,
+                status.st_ino,
+                status.st_size,
+                status.st_mtime_ns,
+                status.st_ctime_ns,
+            ) == (self.device, self.inode, self.file_size, self.mtime_ns, self.ctime_ns) and (
+                not wal.exists() or wal.stat().st_size == 0
+            )
+        except OSError:
+            return False
 
 
 class HistoryTencentStage:
@@ -228,6 +285,50 @@ class HistoryTencentStage:
                 "INSERT INTO supplemented(code, unresolved_price_cells) VALUES (?, ?) "
                 "ON CONFLICT(code) DO UPDATE SET unresolved_price_cells=excluded.unresolved_price_cells",
                 results,
+            )
+
+    def sealed_month(self, year: int, month: int) -> HistorySealedMonthCheckpoint | None:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
+            row = connection.execute(
+                "SELECT relative_path, sha256, row_count, device, inode, file_size, mtime_ns, ctime_ns "
+                "FROM sealed_months WHERE calendar_year=? AND calendar_month=?",
+                (year, month),
+            ).fetchone()
+        if row is None:
+            return None
+        reference = HistorySnapshotPartition(str(row[0]), str(row[1]), int(row[2]))
+        if reference.relative_path != f"partitions/{year:04d}/{month:02d}.sqlite3":
+            raise ValueError("history sealed month checkpoint path is invalid")
+        return HistorySealedMonthCheckpoint(reference, *(int(value) for value in row[3:]))
+
+    def save_sealed_month(self, year: int, month: int, value: HistorySealedMonthCheckpoint) -> None:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+            connection.execute(
+                "INSERT INTO sealed_months(calendar_year, calendar_month, relative_path, sha256, row_count, "
+                "device, inode, file_size, mtime_ns, ctime_ns) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(calendar_year, calendar_month) DO UPDATE SET "
+                "relative_path=excluded.relative_path, sha256=excluded.sha256, row_count=excluded.row_count, "
+                "device=excluded.device, inode=excluded.inode, file_size=excluded.file_size, "
+                "mtime_ns=excluded.mtime_ns, ctime_ns=excluded.ctime_ns",
+                (
+                    year,
+                    month,
+                    value.reference.relative_path,
+                    value.reference.sha256,
+                    value.reference.row_count,
+                    value.device,
+                    value.inode,
+                    value.file_size,
+                    value.mtime_ns,
+                    value.ctime_ns,
+                ),
+            )
+
+    def discard_sealed_month(self, year: int, month: int) -> None:
+        with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+            connection.execute(
+                "DELETE FROM sealed_months WHERE calendar_year=? AND calendar_month=?",
+                (year, month),
             )
 
     def unresolved_price_counts(self) -> tuple[dict[str, int], frozenset[str]]:
