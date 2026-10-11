@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import cast
 
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.infra.market_data.providers.exchange_security_master import ListingFetcher
 
 
@@ -27,16 +28,19 @@ def load_current_a_share_universe(
     )
 
 
-def select_history_eligible_universe(
-    universe: tuple[BaoStockSecurity, ...], eligible_codes: tuple[str, ...]
+def select_st_eligible_universe(
+    universe: tuple[BaoStockSecurity, ...], evidence: tuple[HistoryStEvidence, ...]
 ) -> tuple[BaoStockSecurity, ...]:
-    """Bind a current official universe to the active history training eligibility."""
+    """Apply the one historical-ST rule to either independent download population."""
 
     official_codes = {security.code for security in universe}
-    eligible = frozenset(eligible_codes)
-    if not eligible or not eligible.issubset(official_codes):
-        raise RuntimeError("history eligible universe is unavailable or conflicts with the official universe")
+    current = {item.code: item for item in evidence if item.code in official_codes}
+    if not official_codes or set(current) != official_codes:
+        raise RuntimeError("historical ST evidence is unavailable or conflicts with the official universe")
+    eligible = frozenset(code for code, item in current.items() if item.status == "clear")
+    if not eligible:
+        raise RuntimeError("historical ST eligible universe is empty")
     return tuple(security for security in universe if security.code in eligible)
 
 
-__all__ = ["load_current_a_share_universe", "select_history_eligible_universe"]
+__all__ = ["load_current_a_share_universe", "select_st_eligible_universe"]

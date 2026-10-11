@@ -7,7 +7,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
@@ -17,6 +17,7 @@ import requests
 from flask import Flask
 
 from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.application.qfq_download_progress import qfq_message
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
@@ -25,13 +26,14 @@ from trader.download.domain.history_sync import (
     HistorySyncConfiguration,
     HistorySyncProgress,
     HistorySyncProgressPort,
+    HistoryStEligibilitySummary,
 )
-from trader.download.domain.qfq_window import QfqPreparationError, QfqUpdateResult
+from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import (
     load_current_a_share_universe,
-    select_history_eligible_universe,
+    select_st_eligible_universe,
 )
 from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.download.infra.history_reference_files import history_st_evidence_path
@@ -200,7 +202,7 @@ def execute_history_download(
             prices = TencentQfqSupplier(
                 TencentQfqDependencies(
                     requests.Session,
-                    load_current_securities,
+                    lambda _as_of: load_current_securities(),
                     cancel_requested,
                 )
             )
@@ -251,23 +253,30 @@ def execute_qfq_download(
 ) -> QfqUpdateResult:
     """Compose the zero-argument CLI/background use case without building the server."""
     root = project_root / "data" / "qfq"
+    history_root = project_root / "data/history"
     v2 = SQLiteQfqWindowCache(root, "v2")
     v3 = SQLiteQfqWindowCache(root, "v3")
-    history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(project_root / "data/history"))
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(history_root))
+    started = time.monotonic()
+    qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
+    qfq_pool.start()
+    st_source = HistoryStNameSource(
+        history_st_evidence_path(history_root),
+        requests.get,
+        qfq_pool,
+        cancel_requested,
+        report=lambda done, total, summary: _report_qfq_st_progress(report, started, done, total, summary),
+        batch_size=8,
+    )
 
-    def load_qfq_universe() -> tuple[BaoStockSecurity, ...]:
-        manifest = history.manifest()
-        if manifest is None:
-            raise QfqPreparationError()
+    def load_qfq_universe(as_of: date) -> tuple[BaoStockSecurity, ...]:
         official = load_current_a_share_universe(
             partial(fetch_sse_listings, get=requests.get),
             partial(fetch_szse_listings, get=requests.get),
             15.0,
         )
-        return select_history_eligible_universe(official, manifest.universe_codes)
+        return select_st_eligible_universe(official, st_source.fetch(official, as_of))
 
-    qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
-    qfq_pool.start()
     try:
         with BaoStockHistorySupplier(
             HistorySyncConfiguration.for_repository(project_root),
@@ -303,6 +312,21 @@ def execute_qfq_download(
         stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         if not stopped.completed:
             report("qfq shutdown incomplete: worker deadline exceeded")
+
+
+def _report_qfq_st_progress(
+    report: Callable[[str], None],
+    started: float,
+    completed: int,
+    total: int,
+    summary: HistoryStEligibilitySummary | None,
+) -> None:
+    if summary is None and completed % 256 != 0:
+        return
+    details = f"{completed}/{total}"
+    if summary is not None:
+        details += f" | 合格 {summary.clear} | 曾ST排除 {summary.ever_st} | 未知排除 {summary.unknown}"
+    report(qfq_message(time.monotonic() - started, "ST资格", details))
 
 
 def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:

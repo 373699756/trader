@@ -59,7 +59,9 @@ class _Http:
         return _Response({"code": 0, "data": {symbol: stock}})
 
     def supplier(self):
-        return TencentQfqSupplier(TencentQfqDependencies(lambda: self, lambda: (SECURITY,), lambda: self.cancelled))
+        return TencentQfqSupplier(
+            TencentQfqDependencies(lambda: self, lambda _as_of: (SECURITY,), lambda: self.cancelled)
+        )
 
 
 def test_pairs_preserve_units_and_leave_unavailable_facts_missing():

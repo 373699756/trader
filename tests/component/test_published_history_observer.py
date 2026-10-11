@@ -133,9 +133,10 @@ def test_read_health_preserves_outcome_failure_and_distinguishes_missing_from_in
     assert missing.status().maintenance_reason == "RuntimeError"
 
 
-def test_observer_refreshes_training_st_eligibility_when_qfq_content_is_unchanged() -> None:
-    qfq = _Archive(61, 1, ("300001", "600001"))
+def test_observer_uses_qfq_st_eligibility_without_reading_training_history(monkeypatch) -> None:
+    qfq = _Archive(61, 1, ("600001",))
     training = _Archive(61, 1, ("600001",))
+    monkeypatch.setattr(training, "manifest", lambda: pytest.fail("online eligibility must not read full history"))
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(qfq),
         lookback_sessions=61,
@@ -144,7 +145,7 @@ def test_observer_refreshes_training_st_eligibility_when_qfq_content_is_unchange
     assert history.refresh()
     assert history.historical_st_eligibility().eligible_codes == ("600001",)
 
-    training.current = replace(training.current, snapshot_hash="b" * 64, universe_codes=("300001", "600001"))
+    qfq.current = replace(qfq.current, snapshot_hash="b" * 64, universe_codes=("300001", "600001"))
 
     assert history.refresh()
     assert history.historical_st_eligibility().source_identity == "b" * 64

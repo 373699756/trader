@@ -39,7 +39,7 @@ class IssuerEligibilityState(str, Enum):
 
 @dataclass(frozen=True)
 class HistoricalStEligibilitySnapshot:
-    """Published history population used as the shared ST qualification gate."""
+    """Published qfq population used as the online ST qualification gate."""
 
     status: Literal["ready", "unavailable"]
     source_identity: str | None

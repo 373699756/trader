@@ -15,7 +15,6 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import (
-    QfqPreparationError,
     QfqUpdateResult,
     QfqWindowIncompleteError,
     completed_daily_cutoff,
@@ -52,10 +51,6 @@ class QfqResumePort(Protocol):
     def completed(self, day: date, code: str, source: str) -> bool: ...
 
     def confirm(self, day: date, code: str, source: str) -> None: ...
-
-
-def _preparation_failure_details(exc: QfqPreparationError) -> str:
-    return f"完整 history 资格快照尚未发布；请先执行 ./run.sh download 并等待历史发布完成 | reason={exc.reason}"
 
 
 @dataclass(frozen=True)
@@ -111,10 +106,6 @@ class UpdateQfqWindows:
         self.report(qfq_message(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
         try:
             context = self.supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
-        except QfqPreparationError as exc:
-            stage = "已取消" if self.cancel_requested() else "准备失败"
-            self.report(qfq_message(self.monotonic() - started, stage, _preparation_failure_details(exc)))
-            raise
         except (RuntimeError, OSError, ValueError) as exc:
             stage = "已取消" if self.cancel_requested() else "准备失败"
             self.report(qfq_message(self.monotonic() - started, stage, type(exc).__name__))

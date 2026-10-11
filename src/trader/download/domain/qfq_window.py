@@ -10,15 +10,6 @@ from trader.download.domain.published_history import PublishedHistoryCell, Publi
 QFQ_WINDOWS = (("v2", 251), ("v3", 61))
 
 
-class QfqPreparationError(RuntimeError):
-    """A stable, user-actionable failure before any qfq window download starts."""
-
-    reason = "history_manifest_unavailable"
-
-    def __init__(self) -> None:
-        super().__init__(self.reason)
-
-
 class QfqWindowIncompleteError(RuntimeError):
     """A requested calendar window contains an unpaired supplier gap."""
 

@@ -17,6 +17,7 @@ from trader.download.domain.history_price_qualification import (
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.exchange_security_universe import select_st_eligible_universe
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 
@@ -38,10 +39,7 @@ class HistorySupplierRouter:
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         universe = self._load_universe()
         evidence = self._st_source.fetch(universe, as_of)
-        clear = {item.code for item in evidence if item.status == "clear"}
-        universe = tuple(item for item in universe if item.code in clear)
-        if not universe:
-            raise RuntimeError("history_st_eligible_universe_empty")
+        universe = select_st_eligible_universe(universe, evidence)
         context = self._baseline.load_context(as_of, sessions, universe=universe)
         self._calendar = context.calendar.open_dates
         versions = context.source_versions

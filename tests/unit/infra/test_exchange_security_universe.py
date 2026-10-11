@@ -5,9 +5,10 @@ from datetime import date
 
 import pytest
 
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.infra.exchange_security_universe import (
     load_current_a_share_universe,
-    select_history_eligible_universe,
+    select_st_eligible_universe,
 )
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterListing
 
@@ -64,21 +65,29 @@ def test_exchange_request_failure_does_not_return_partial_universe() -> None:
         load_current_a_share_universe(lambda _timeout: _listings("SSE"), unavailable, 15.0)
 
 
-def test_history_eligibility_selects_the_exact_qfq_population() -> None:
+def test_shared_st_eligibility_selects_the_exact_download_population() -> None:
     universe = load_current_a_share_universe(
         lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0
     )
     eligible_codes = tuple(item.code for item in universe if not item.code.endswith("9"))
+    evidence = tuple(
+        HistoryStEvidence(
+            item.code,
+            date(2026, 10, 10),
+            "clear" if item.code in eligible_codes else "ever_st",
+        )
+        for item in universe
+    )
 
-    selected = select_history_eligible_universe(universe, eligible_codes)
+    selected = select_st_eligible_universe(universe, evidence)
 
     assert tuple(item.code for item in selected) == eligible_codes
 
 
-@pytest.mark.parametrize("eligible_codes", ((), ("999999",)))
-def test_qfq_fails_closed_without_a_matching_history_eligibility(eligible_codes) -> None:
+@pytest.mark.parametrize("evidence", ((), (HistoryStEvidence("999999", date(2026, 10, 10), "clear"),)))
+def test_downloads_fail_closed_without_complete_shared_st_evidence(evidence) -> None:
     universe = load_current_a_share_universe(
         lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0
     )
-    with pytest.raises(RuntimeError, match="history eligible universe"):
-        select_history_eligible_universe(universe, eligible_codes)
+    with pytest.raises(RuntimeError, match="historical ST evidence"):
+        select_st_eligible_universe(universe, evidence)

@@ -48,7 +48,7 @@ class TencentQfqOptions:
 @dataclass(frozen=True)
 class TencentQfqDependencies:
     session_factory: Callable[[], requests.Session]
-    load_universe: Callable[[], tuple[BaoStockSecurity, ...]]
+    load_universe: Callable[[date], tuple[BaoStockSecurity, ...]]
     cancel_requested: Callable[[], bool]
 
 
@@ -63,7 +63,7 @@ class TencentQfqSupplier:
         if not 1 <= sessions <= 251:
             raise ValueError("Tencent qfq context is limited to 251 sessions")
         self._check_cancel()
-        universe = self._dependencies.load_universe()
+        universe = self._dependencies.load_universe(as_of)
         if not universe or len({security.code for security in universe}) != len(universe):
             raise ValueError("Tencent qfq universe is empty or duplicated")
         rows = self._request_rows("sh000001", as_of - timedelta(days=640), as_of, "bfq")
