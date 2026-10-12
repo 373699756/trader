@@ -3,11 +3,10 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
-from shutil import copytree
-
-import tomllib
+from shutil import copy2
 
 import pytest
+import tomllib
 
 
 @pytest.mark.slow
@@ -16,16 +15,21 @@ def test_install_keeps_setuptools_metadata_out_of_source_tree(tmp_path: Path) ->
     isolated_repository = tmp_path / "repository"
 
     assert 'Path(".build-metadata").mkdir(exist_ok=True)' in (repository / "setup.py").read_text(encoding="utf-8")
-    copytree(
-        repository,
-        isolated_repository,
-        ignore=lambda _directory, names: {
-            name
-            for name in names
-            if name in {".git", ".venv", ".runtime", "data"}
-            or name.endswith((".egg-info", ".sqlite3-wal", ".sqlite3-shm"))
-        },
+    # Reproduce a clean checkout, not caches, previous builds or unrelated local data.
+    tracked = (
+        subprocess.run(
+            ["git", "ls-files", "-z", "src", "pyproject.toml", "setup.py", "setup.cfg", "README.md", "LICENSE*"],
+            cwd=repository,
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode("utf-8")
+        .split("\0")
     )
+    for relative in filter(None, tracked):
+        target = isolated_repository / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        copy2(repository / relative, target)
     hidden_metadata_root = isolated_repository / ".build-metadata"
     source_metadata = isolated_repository / "src" / "trader_research_dashboard.egg-info"
     install_target = isolated_repository / "install-target"
@@ -37,6 +41,8 @@ def test_install_keeps_setuptools_metadata_out_of_source_tree(tmp_path: Path) ->
             "pip",
             "install",
             "--no-deps",
+            "--no-index",
+            "--disable-pip-version-check",
             "--no-build-isolation",
             "--target",
             str(install_target),
@@ -46,6 +52,7 @@ def test_install_keeps_setuptools_metadata_out_of_source_tree(tmp_path: Path) ->
         check=True,
         capture_output=True,
         text=True,
+        timeout=90,
     )
 
     assert hidden_metadata_root.is_dir()

@@ -158,15 +158,15 @@ History SQLite performance is available through the unified read-only diagnostic
 It reads monthly SQLite headers, samples page classes, benchmarks latest-row,
 training-projection and active-gap queries, and measures bounded revision writes
 and sealing only in a disposable temporary database. It does not compact or switch the active history database. Maintenance rules
-are in [the architecture contract](../docs/项目重构详细.md), section 3.5.1.1;
-training performance is explained in [the training guide](../docs/04_策略回溯.md),
-section 12.4. The repack tool remains a separate explicit maintenance operation;
+are in [the download guide](../docs/04_下载训练.md), section 3.4;
+training performance is explained in [the training guide](../docs/04_下载训练.md),
+section 5. The repack tool remains a separate explicit maintenance operation;
 its default paths do not authorize active-data changes. During refactoring,
-rehearse only on explicit repository-external copies as required by section 10.5
-of the architecture contract.
+rehearse only on explicit repository-external copies as required by the
+[architecture contract](../docs/02_工程设计.md), section 14.
 
 Test commands and fast/full boundaries are defined by Makefile and documented
-in the architecture contract, section 10.2.1. Default `make test` runs the fast
+in the architecture contract, section 13. Default `make test` runs the fast
 set; release acceptance also requires `make test-full`. Work status and pending
 optimizations are recorded only in `docs/03_工程实施.md`.
 

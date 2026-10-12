@@ -18,8 +18,8 @@ def test_authoritative_contract_uses_one_identity_for_current_freeze_and_trace()
         "MarketInputCoordinator",
         "LocalDecisionBuilder",
         "local ScoredDecision",
-        "DecisionCheckpoint",
-        "CommittedDecisionRecord",
+        "哈希有效的检查点",
+        "15:00 后，已有正式记录不可覆盖",
         "14:59:20",
         "15:00 后",
     ):

@@ -4,21 +4,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_historical_industry_section_has_one_fail_closed_checkpoint_owner() -> None:
-    report = (ROOT / "docs/reports/historical-industry-facts-2026-09-09.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/04_下载训练.md").read_text(encoding="utf-8")
 
     for token in (
         "historical_data_insufficient",
-        "按用户明确要求暂不恢复正式归档",
-        "daily_archive_invalid",
-        "最终报告 schema 实物复跑：未验证",
-        "5453",
+        "至少300只分层样本",
         "查询时间",
-        "逐事实 hash",
+        "PointInTimeDataQualificationReport",
+        "terminal_holdout_opened=false",
+        "production_authority=false",
+        "effective_from <= trade_date < effective_to",
     ):
-        assert token in report
-    assert "historical_industry_dataset" in design
-    assert "trader-cli research-industry-audit" in design
+        assert token in design
 
 
 def test_industry_audit_is_separate_from_daily_archive_and_has_no_automatic_authority() -> None:

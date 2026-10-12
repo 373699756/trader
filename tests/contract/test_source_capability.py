@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-REPORT = ROOT / "docs" / "reports" / "v2-p1-source-capability-baseline.md"
 BOOTSTRAP = ROOT / "src" / "trader" / "bootstrap.py"
 GATEWAY = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_data" / "gateway.py"
 COORDINATOR = ROOT / "src" / "trader" / "recommendation" / "infra" / "market_data" / "source_coordinator.py"
@@ -13,26 +12,6 @@ SETTINGS_RUNTIME = ROOT / "src" / "trader" / "infra" / "settings" / "runtime_loa
 MARKET_DIR = ROOT / "src" / "trader" / "infra" / "market_data"
 MARKET_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "market_data.py"
 DATA_PLANE_PORTS = ROOT / "src" / "trader" / "recommendation" / "application" / "ports" / "data_plane_records.py"
-
-
-def test_source_capability_report_covers_required_sources() -> None:
-    report = REPORT.read_text(encoding="utf-8")
-
-    for source in (
-        "交易所官方",
-        "巨潮资讯 CNInfo",
-        "东方财富",
-        "新浪",
-        "腾讯",
-        "通达信/mootdx",
-        "BaoStock",
-        "AKShare",
-        "Tushare",
-    ):
-        assert source in report
-
-    assert "本批不引入新的网络抓取 fixture" in report
-    assert "SourceCapability 清单" in report
 
 
 def test_unimplemented_sources_are_not_wired_into_market_runtime() -> None:
@@ -71,6 +50,5 @@ def test_source_contract_freezes_unified_read_and_persisted_calendar_ports() -> 
     market_classes = {node.name for node in ast.walk(market_tree) if isinstance(node, ast.ClassDef)}
     data_plane_classes = {node.name for node in ast.walk(data_plane_tree) if isinstance(node, ast.ClassDef)}
 
-    assert "DataPlaneReadPort" in market_classes
     assert "DataPlaneReadPort" in market_classes
     assert "TradingCalendarRecord" in data_plane_classes

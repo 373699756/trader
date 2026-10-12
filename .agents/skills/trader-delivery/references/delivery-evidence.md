@@ -27,7 +27,7 @@ For a defect, preserve evidence at both ends:
 3. Add a negative assertion for the adjacent behavior that must remain unchanged.
 4. Re-run the historical failure shape when a `Regression-Key` already exists.
 
-For timing-sensitive current/freeze/Web behavior, cover the applicable freeze scenarios required by `docs/项目重构详细.md`: hot run, cold start, the applicable freeze boundary, 15:00+ recovery, formal-record hit, and permitted close fallback. Record why any scenario is not applicable.
+For timing-sensitive current/freeze/Web behavior, cover the applicable freeze scenarios required by `docs/02_工程设计.md`: hot run, cold start, the applicable freeze boundary, 15:00+ recovery, formal-record hit, and permitted close fallback. Record why any scenario is not applicable.
 
 For scoring-chain changes, record the first changed semantic owner and the resulting values at each affected boundary: evidence-quality score, local risk, model diagnostics, execution gate, fused score, action/rank, decision identities, frozen/current/history record, and external projection. Use [the scoring-chain guide](scoring-chain.md); do not collapse these values into a single “score passed” claim.
 

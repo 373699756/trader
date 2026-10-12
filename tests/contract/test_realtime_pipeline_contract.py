@@ -15,7 +15,7 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
     assert "当前唯一桌面界面" in design
     assert "versioned_dag" not in design
     assert "versioned_dag" not in strategy
-    assert "28 只" in design
+    assert "每策略每次最多 28 只" in strategy
     assert "待验证收益路线" in strategy
     assert "研究路线不改变安全规则、冻结记录或 DeepSeek 预算" in strategy
     assert "V2 人工越权生产切换" in strategy

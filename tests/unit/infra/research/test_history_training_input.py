@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -25,6 +26,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
@@ -112,11 +114,32 @@ class _Supplier:
         return self.fetch_code(security, dates)
 
 
-def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_path: Path, monkeypatch) -> None:
+@pytest.fixture(scope="module")
+def prepared_history(tmp_path_factory: pytest.TempPathFactory):
+    """Copy a closed seed; every writer receives independent database files."""
+    seeds: dict[tuple[date, ...], tuple[Path, HistoryMaintenanceStatus]] = {}
+
+    def prepare(root: Path, dates: tuple[date, ...]) -> HistoryMaintenanceStatus:
+        if dates not in seeds:
+            seed = tmp_path_factory.mktemp("published-history") / "history"
+            configuration = HistorySyncConfiguration(seed, sessions=len(dates), reread_sessions=2, minimum_free_bytes=0)
+            result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+            assert result.state == "completed"
+            seeds[dates] = seed, result
+        seed, result = seeds[dates]
+        # No hard links: corruption and append tests must not mutate another case.
+        shutil.copytree(seed, root)
+        return replace(result, archive_root=root)
+
+    return prepare
+
+
+def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(
+    tmp_path: Path, monkeypatch, prepared_history
+) -> None:
     archive_root = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    result = prepared_history(archive_root, dates)
 
     assert result.state == "completed"
     expected_hash = HistoryControlIndex(archive_root / "control.sqlite3").load_state().active_snapshot_hash
@@ -131,11 +154,12 @@ def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_
     assert archive.snapshot.label_cutoff == dates[-2]
 
 
-def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(tmp_path: Path) -> None:
+def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
+    tmp_path: Path, prepared_history
+) -> None:
     archive_root = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
     progress: list[tuple[int, int, int, int, int, str]] = []
 
@@ -145,11 +169,10 @@ def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
     assert progress[-1][:3] == (1, 1, 1)
 
 
-def test_training_cache_reuse_verifies_logical_payloads(tmp_path: Path, monkeypatch) -> None:
+def test_training_cache_reuse_verifies_logical_payloads(tmp_path: Path, monkeypatch, prepared_history) -> None:
     archive_root = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
     published = HistoryMonthPrices.verify_logical_content.__func__
     calls: list[HistorySnapshotPartition] = []
 
@@ -173,11 +196,10 @@ def test_training_cache_reuse_verifies_logical_payloads(tmp_path: Path, monkeypa
     assert {item[-1] for item in progress} == {"logical"}
 
 
-def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Path) -> None:
+def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Path, prepared_history) -> None:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
-    configuration = HistorySyncConfiguration(archive_root, sessions=62, reread_sessions=2, minimum_free_bytes=0)
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
     progress: list[int] = []
 
@@ -189,11 +211,10 @@ def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Pa
     assert archive.training_row_upper_bound(frozenset(dates)) >= progress[-1]
 
 
-def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path: Path) -> None:
+def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path: Path, prepared_history) -> None:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(251))
-    configuration = HistorySyncConfiguration(archive_root, sessions=251, reread_sessions=2, minimum_free_bytes=0)
-    result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    result = prepared_history(archive_root, dates)
     training = SQLiteHistoryTrainingInputArchive.open(archive_root)
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(archive_root)),
@@ -232,11 +253,11 @@ def test_history_consumers_do_not_wait_for_background_projection(
     monkeypatch: pytest.MonkeyPatch,
     previous_projection: bool,
     deadline: datetime | None,
+    prepared_history,
 ) -> None:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
-    configuration = HistorySyncConfiguration(archive_root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
     archive = SQLitePublishedHistoryArchive(archive_root)
     manifest = archive.manifest()
     assert manifest is not None
@@ -297,11 +318,12 @@ def test_history_consumers_do_not_wait_for_background_projection(
     assert len(history.load(("600001",))["600001"]) == 20
 
 
-def test_shared_published_reader_reuses_partition_trust_for_projection_and_outcomes(tmp_path, monkeypatch):
+def test_shared_published_reader_reuses_partition_trust_for_projection_and_outcomes(
+    tmp_path, monkeypatch, prepared_history
+):
     root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
-    configuration = HistorySyncConfiguration(root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(root, dates)
     verified = []
     verify = HistoryMonthPrices.verify.__func__
 
@@ -346,11 +368,12 @@ def test_deadline_bound_history_load_never_starts_an_archive_scan(
     assert restrictions == {"600001": {"history_data_pending"}}
 
 
-def test_recommendation_retains_the_last_valid_projection_when_the_archive_becomes_unreadable(tmp_path: Path) -> None:
+def test_recommendation_retains_the_last_valid_projection_when_the_archive_becomes_unreadable(
+    tmp_path: Path, prepared_history
+) -> None:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
-    configuration = HistorySyncConfiguration(archive_root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(archive_root)),
         lookback_sessions=61,
@@ -367,12 +390,11 @@ def test_recommendation_retains_the_last_valid_projection_when_the_archive_becom
 
 
 def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_active_history(
-    tmp_path: Path,
+    tmp_path: Path, prepared_history
 ) -> None:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(70))
-    configuration = HistorySyncConfiguration(archive_root, sessions=70, reread_sessions=2, minimum_free_bytes=0)
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
     before = {
         path.relative_to(archive_root): hashlib.sha256(path.read_bytes()).hexdigest()
         for path in archive_root.rglob("*.sqlite3")
@@ -398,11 +420,10 @@ def test_history_sqlite_performance_diagnostic_is_bounded_and_never_writes_activ
     assert report.revision_write.seal_ms >= 0
 
 
-def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tmp_path: Path) -> None:
+def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tmp_path: Path, prepared_history) -> None:
     archive_root = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
 
     evaluation = evaluate_history_training_due(
         HistoryTrainingDueQuery(archive_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE)
@@ -415,13 +436,11 @@ def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tm
 
 
 def test_training_due_expands_revision_cache_invalidation_to_the_selected_profile_window(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prepared_history
 ) -> None:
     archive_root = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+    prepared_history(archive_root, dates)
     observed_dependency_sessions: list[int] = []
 
     def calculate_invalidation(

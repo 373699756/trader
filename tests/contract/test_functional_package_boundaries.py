@@ -53,10 +53,12 @@ def _imports(path: Path) -> set[str]:
     return imports
 
 
-def test_final_target_packages_are_documented() -> None:
+def test_final_target_packages_exist_under_documented_business_owners() -> None:
     design = DESIGN.read_text(encoding="utf-8")
-    missing_targets = [target for target in TARGET_PACKAGES if target not in design]
+    missing_targets = [target for target in TARGET_PACKAGES if not (SOURCE_ROOT / target).is_dir()]
     assert missing_targets == []
+    for owner in ("download/", "training/", "recommendation/", "http_api/", "web/"):
+        assert f"`{owner}`" in design
     assert not (PROJECT_ROOT / "docs" / "plan.md").exists()
 
 
@@ -64,19 +66,14 @@ def test_scoring_profile_capability_matrix_uses_one_quality_scale_and_d25_single
     design = DESIGN.read_text(encoding="utf-8")
     strategy = (PROJECT_ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
 
-    for token in (
-        "| 评分档位 | Tomorrow | D25 |",
-        "| V2 | 板块证据质量评分 + V2 Tomorrow 预测头 | 板块证据质量评分 + V2 D25 预测头 |",
-        "| V3 | 板块证据质量评分 + V3 Tomorrow 预测头 | 板块证据质量评分 + V3 D25 预测头 |",
-        "D25 生产边界只输出一个面向未来 2–5 个交易日的策略信号",
-        "不得拆成 T+2、T+3、T+4、T+5 四个生产头",
-    ):
-        assert token in design
+    training = (PROJECT_ROOT / "docs" / "04_下载训练.md").read_text(encoding="utf-8")
+    assert "V2只产出LightGBM字段，V3只产出Ridge字段" in training
+    assert "两档各自拥有Tomorrow/D25双头" in strategy
     assert "D25 是一个完整且唯一的 2–5 日生产策略头" in strategy
     assert "四个观察点只用于 D25 的标签、终端留出、风险和稳定性评价" in strategy
-    assert "不覆盖公共评分器产生的 `base_score`" in design
-    assert "profile 不再复制单一" in design
-    assert "model ID/hash" in design
+    assert "不得再由模型预测的同批百分位覆盖" in strategy
+    assert "应用层不复制profile实现" in design
+    assert "绝不读取或改名复用 Tomorrow 模型" in strategy
 
 
 def test_currently_retired_paths_remain_absent() -> None:

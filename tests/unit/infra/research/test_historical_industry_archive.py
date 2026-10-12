@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.helpers.published_history import publish_history_fixture
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeBatch,
@@ -17,10 +18,8 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
-from trader.download.infra.history_archive_sync import run_history_sync
+from trader.download.domain.history_sync import HistorySupplierContext
 from trader.training.infra.research.historical_industry_archive import audit_archived_historical_industry_facts
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -87,17 +86,6 @@ class _Supplier:
             tuple(BaoStockDailyFact(security.code, day, False) for day in dates),
         )
 
-    def fetch_tencent_window(self, security, dates):
-        return PublishedHistoryWindow(
-            security.code, tuple(project_history_cell(cell) for cell in self.fetch_code(security, dates).batch.cells)
-        )
-
-    def fetch_baostock_raw(self, security, dates):
-        return self.fetch_code(security, dates)
-
-    def fetch_baostock_prices(self, security, dates):
-        return self.fetch_code(security, dates)
-
 
 @pytest.mark.slow
 def test_monthly_source_audit_covers_three_boards_and_keeps_missing_query_time_fail_closed(
@@ -105,8 +93,10 @@ def test_monthly_source_audit_covers_three_boards_and_keeps_missing_query_time_f
 ) -> None:
     dates = (date(2026, 8, 28), date(2026, 8, 31))
     root = tmp_path / "history"
-    configuration = HistorySyncConfiguration(root, sessions=2, reread_sessions=1, minimum_free_bytes=0)
-    assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
+    supplier = _Supplier(dates)
+    context = supplier.load_context(NOW.date(), len(dates))
+    cells = tuple(cell for security in context.universe for cell in supplier.fetch_code(security, dates).batch.cells)
+    publish_history_fixture(root, context, cells, NOW)
 
     report = audit_archived_historical_industry_facts(tmp_path / "history", tushare_access_points=120)
 

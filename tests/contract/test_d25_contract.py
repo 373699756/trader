@@ -15,11 +15,10 @@ def test_authoritative_contract_defines_d25_freeze_recovery_and_isolation() -> N
     compact_strategy = " ".join(strategy.split())
 
     for token in (
-        "D25NativeInput",
-        "strategy=d25 + trade_date",
-        "合法空结果与非空结果使用同一提交语义",
-        "待重试的 15:00 封口",
-        "纯本地 d25 评分",
+        "Tomorrow/D25分别持有输入身份",
+        "合法空结果与非空结果使用相同提交语义",
+        "同日正式记录缺失且没有待重试封口",
+        "完整同日 official-close 输入执行一次纯本地补算",
     ):
         assert token in design
     for token in (

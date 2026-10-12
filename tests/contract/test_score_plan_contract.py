@@ -4,7 +4,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src/trader"
-DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
 def _compact(path: Path) -> str:
@@ -26,9 +25,9 @@ def test_historical_only_score_validation_is_the_authoritative_route() -> None:
     ):
         assert token in strategy
     for token in (
-        "评分验证唯一使用历史 point-in-time 回放",
+        "收益公式与准入见评分逻辑第12节",
         "research_readiness",
-        "线上 T+1 outcome 只保存正式推荐历史和运行监控",
+        "研究不足时失败关闭，不用线上结果回灌调参",
     ):
         assert token in design
 
@@ -76,12 +75,12 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
     assert "download" in design
     assert "train-v3" in design
-    assert "不得接入生产组合根或在线请求链" in design
+    training = _compact(ROOT / "docs/04_下载训练.md")
+    assert "不接入HTTP、SSE、生产调度或活动数据库" in training
 
 
 def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
     strategy = _compact(ROOT / "docs/01_评分逻辑.md")
-    changelog = _compact(DELIVERY_HISTORY)
 
     for token in (
         "historical_rejected",
@@ -101,7 +100,6 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
         assert token in runtime_sources
     assert "automatic_t1_outcome_settlement" in runtime_sources
     artifact_hash = "27034e52813f1776e2ed218c1c397f481b244fb852b01be08ddc21249d887da5"
-    assert artifact_hash in changelog
     assert artifact_hash not in strategy
 
 

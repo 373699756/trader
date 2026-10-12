@@ -1,0 +1,80 @@
+"""Build real published inputs in monthly batches for reader-only tests.
+
+Download/retry/atomicity tests must still exercise the complete download use case.
+This builder uses production codecs and FULL transactions, not SQL shortcuts or
+mocked durability, but does not repeat per-stock network/checkpoint orchestration.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
+
+from trader.download.domain.baostock_daily import BaoStockDailyCell
+from trader.download.domain.history_control import (
+    HistoryActiveSnapshot,
+    HistoryCalendarIdentity,
+    HistorySecurityIdentity,
+    HistorySnapshotPartition,
+    HistorySourceIdentity,
+    HistoryUniverseIdentity,
+)
+from trader.download.domain.history_reference import HistoryReferenceSnapshot
+from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_reference_files import history_reference_path, write_history_reference
+
+
+def publish_history_fixture(
+    root: Path,
+    context: HistorySupplierContext,
+    cells: tuple[BaoStockDailyCell, ...],
+    observed_at: datetime,
+) -> HistoryActiveSnapshot:
+    """Publish one complete, isolated fixture through real persistence boundaries."""
+    assert not root.exists(), "fixture publication must not overwrite an existing history"
+    securities = {item.code: item for item in context.universe}
+    reference = HistoryReferenceSnapshot(tuple(sorted(securities)), context.industry_intervals, context.st_evidence)
+    source = HistorySourceIdentity(
+        "tencent_baostock", "history_daily", f"history_ref_{reference.content_hash}_{'0' * 16}", observed_at
+    )
+    calendar = HistoryCalendarIdentity(context.calendar.open_dates, source.content_hash)
+    universe = HistoryUniverseIdentity(
+        tuple(
+            HistorySecurityIdentity(item.code, item.name, item.board, item.listed_on, item.delisted_on)
+            for item in context.universe
+        ),
+        source.content_hash,
+    )
+    grouped: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
+    for cell in cells:
+        grouped[(cell.trade_date.year, cell.trade_date.month)].append(
+            HistoryRevision(1, securities[cell.code].board, cell, False, None, None)
+        )
+    partitions: list[HistorySnapshotPartition] = []
+    for (year, month), revisions in sorted(grouped.items()):
+        revisions.sort(key=lambda item: (item.trade_date, item.code, item.first_seen_sequence, item.revision_id))
+        prices = HistoryMonthPrices(root / f"partitions/{year:04d}/{month:02d}.sqlite3", year, month)
+        prices.initialize()
+        prices.save_revisions(tuple(revisions))
+        partitions.append(prices.seal())
+    write_history_reference(history_reference_path(root, reference.content_hash), reference)
+    control = HistoryControlIndex(root / "control.sqlite3")
+    control.initialize()
+    control.save_source(source)
+    control.save_calendar(calendar)
+    control.save_universe(universe)
+    snapshot = HistoryActiveSnapshot(
+        1,
+        calendar.open_dates[-1],
+        calendar.open_dates[-2] if len(calendar.open_dates) > 1 else None,
+        calendar.content_hash,
+        universe.content_hash,
+        source.content_hash,
+        tuple(partitions),
+    )
+    control.publish_snapshot(snapshot)
+    return snapshot

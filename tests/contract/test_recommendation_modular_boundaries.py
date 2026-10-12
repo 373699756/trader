@@ -14,9 +14,13 @@ def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> 
     decision_adapters = (SOURCE / "recommendation/application/pipeline/freeze_publish/runtime_adapters.py").read_text(
         encoding="utf-8"
     )
+    local_builder = (SOURCE / "recommendation/application/pipeline/local_score/local_decision_builder.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "CandidateFilteringPort" in input_runtime
-    assert "LocalScoringPort" in input_runtime
+    assert "LocalScoringPort" not in input_runtime
+    assert "LocalScoringPort" in local_builder
     assert "ScoreFusionPort" in decision_adapters
     assert "build_candidate_plans" not in input_runtime
     assert "refresh_candidate_reserves" not in input_runtime
@@ -24,6 +28,8 @@ def test_recommendation_runtime_uses_ports_instead_of_training_entrypoints() -> 
     assert "build_scored_hybrid" not in decision_adapters
     assert "run_v2_training" not in input_runtime
     assert "run_v3_training" not in input_runtime
+    assert "run_v2_training" not in local_builder
+    assert "run_v3_training" not in local_builder
 
 
 def test_composition_root_explicitly_assembles_recommendation_capabilities() -> None:
@@ -72,15 +78,14 @@ def test_infrastructure_technical_capabilities_have_single_owners() -> None:
 def test_architecture_contract_documents_the_three_boundaries() -> None:
     design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
     for name in (
-        "candidate_filtering.py",
-        "feature_calculation.py",
-        "local_scoring.py",
-        "model_scoring.py",
-        "risk_control.py",
-        "ranking_selection.py",
-        "score_fusion.py",
-        "infra/atomic_files",
-        "infra/clock",
+        "static_filter/",
+        "dynamic_filter/",
+        "candidate_pool/",
+        "quality_check/",
+        "local_score/",
+        "risk_review/",
+        "score_merge/",
+        "final_selection/",
     ):
         assert name in design
-    assert "运行链与训练链保持单向隔离" in design
+    assert "业务间只传有类型不可变对象，不共享可变缓存" in design

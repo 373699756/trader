@@ -11,7 +11,7 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
     for statement in (
         "current-only 最终 release 边界",
         "新 release 不读取旧运行目录、旧数据库、旧快照或旧 schema",
-        "当前唯一运行目录固定为 `.runtime/trader`",
+        "当前易失运行目录固定为 `.runtime/trader`",
         "旧 release 只能与其对应旧运行目录整体回退",
         "不得提供旧 API 别名、重定向、弃用窗口、双读或双写",
         "GET /api/decisions/<strategy>/current",

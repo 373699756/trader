@@ -17,7 +17,7 @@ def test_cost_aware_selection_is_documented_and_exploratory_only() -> None:
     )
 
     assert COST_AWARE_UTILITY_FIELDS == ("gross_expected_excess", "estimated_cost")
-    assert "`SelectionUtility` 首先只用于隔离研究和 Shadow" in strategy
+    assert "`SelectionUtility` 只在隔离研究中计算" in strategy
     assert "score_tomorrow_cost_aware_selection_report" in source_paths[2].read_text(encoding="utf-8")
     assert "成本不得把评分统一清零" in strategy
     for path in source_paths:

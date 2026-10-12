@@ -65,4 +65,6 @@ def test_outcome_contract_owns_explicit_price_basis_and_exit_tradability() -> No
     assert "expected_trade_dates=expected_dates" in application
     assert '"exit_untradable": outcome.exit_untradable' in persistence
     assert "read_windows" in history
-    assert "pair_outcome_history" in history
+    assert "outcome_bars(window.cells)" in history
+    pairing = (HISTORY.parent / "published_history_bars.py").read_text(encoding="utf-8")
+    assert "pair_outcome_history(qfq, raw)" in pairing

@@ -5,6 +5,8 @@ import re
 from functools import cache
 from pathlib import Path
 
+from tests.helpers.python_source import source_text, source_tree
+
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src" / "trader"
 
@@ -158,16 +160,6 @@ def _project_python_paths() -> tuple[Path, ...]:
     return tuple(sorted((*_active_python_paths(), *(ROOT / "tests").rglob("*.py"))))
 
 
-@cache
-def _python_source(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
-@cache
-def _python_tree(path: Path) -> ast.Module:
-    return ast.parse(_python_source(path), filename=str(path))
-
-
 def test_active_paths_use_stable_business_responsibilities() -> None:
     assert [relative for relative in FORBIDDEN_ACTIVE_PATHS if (SOURCE / relative).exists()] == []
     assert [relative for relative in FORBIDDEN_REPOSITORY_PATHS if (ROOT / relative).exists()] == []
@@ -178,16 +170,16 @@ def test_storage_responsibility_naming_rule_is_authoritative() -> None:
     collaboration_rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
 
-    for content in (collaboration_rules, design):
-        assert "不得使用 `store`、`stored` 或 `*Store`" in content
-        assert "Repository" in content
+    assert "不得使用 `store`、`stored` 或 `*Store`" in collaboration_rules
+    assert "Repository" in collaboration_rules
+    assert "不保留转发、兼容导出、双读或双写" in design
 
 
 def test_active_python_has_no_c3_or_relative_holdout_identity_names() -> None:
     violations: list[str] = []
     token = re.compile(r"(?<![a-z0-9])c3(?![a-z0-9])", re.IGNORECASE)
     for path in _active_python_paths():
-        content = _python_source(path)
+        content = source_text(path)
         if token.search(content) or "new_holdout_" in content or "legacy_holdout_" in content:
             violations.append(path.relative_to(ROOT).as_posix())
     assert violations == []
@@ -196,7 +188,7 @@ def test_active_python_has_no_c3_or_relative_holdout_identity_names() -> None:
 def test_public_python_names_describe_business_roles() -> None:
     violations: list[str] = []
     for path in _active_python_paths():
-        tree = _python_tree(path)
+        tree = source_tree(path)
         for node in tree.body:
             names: tuple[str, ...] = ()
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -214,7 +206,7 @@ def test_public_python_names_describe_business_roles() -> None:
 def test_module_constants_describe_business_roles() -> None:
     violations: list[str] = []
     for path in _active_python_paths():
-        tree = _python_tree(path)
+        tree = source_tree(path)
         for node in tree.body:
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else (node.target,)
@@ -234,7 +226,7 @@ def test_tomorrow_training_sample_boundary_uses_repository_responsibility_names(
     for path in paths:
         if not path.exists():
             continue
-        tree = _python_tree(path)
+        tree = source_tree(path)
         for node in ast.walk(tree):
             names: tuple[str, ...] = ()
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -253,7 +245,7 @@ def test_active_python_text_has_no_accidental_duplicate_words_or_e1_phase_relic(
     violations: list[str] = []
     repeated_word = re.compile(r"\b([A-Za-z][A-Za-z0-9_-]*)\s+\1\b", re.IGNORECASE)
     for path in _active_python_paths():
-        for line_number, line in enumerate(_python_source(path).splitlines(), 1):
+        for line_number, line in enumerate(source_text(path).splitlines(), 1):
             repeated = repeated_word.search(line)
             if (repeated is not None and repeated.group(1).lower() != "end") or re.search(r"\bE1\b", line):
                 violations.append(f"{path.relative_to(ROOT).as_posix()}:{line_number}")
@@ -268,7 +260,7 @@ def test_shared_application_contract_names_are_unique() -> None:
         "TradingCalendarPort": [],
     }
     for path in SOURCE.rglob("*.py"):
-        tree = _python_tree(path)
+        tree = source_tree(path)
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and node.name in occurrences:
                 occurrences[node.name].append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")
@@ -278,7 +270,7 @@ def test_shared_application_contract_names_are_unique() -> None:
 def test_project_owned_python_names_do_not_use_generic_storage_terms() -> None:
     violations: list[str] = []
     for path in _project_python_paths():
-        tree = _python_tree(path)
+        tree = source_tree(path)
         for node in ast.walk(tree):
             names: tuple[str, ...] = ()
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -299,7 +291,7 @@ def test_migrated_data_plane_names_describe_persistence_roles() -> None:
     forbidden = {"store", "stored", "repository", "archive", "registry"}
     for relative in MIGRATED_DATA_PLANE_PATHS:
         path = SOURCE / relative
-        tree = _python_tree(path)
+        tree = source_tree(path)
         for node in ast.walk(tree):
             names: tuple[str, ...] = ()
             if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -320,7 +312,7 @@ def test_migrated_data_plane_names_describe_persistence_roles() -> None:
 def test_active_public_class_names_are_unique() -> None:
     occurrences: dict[str, list[str]] = {}
     for path in _active_python_paths():
-        tree = _python_tree(path)
+        tree = source_tree(path)
         for node in tree.body:
             if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
                 occurrences.setdefault(node.name, []).append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}")

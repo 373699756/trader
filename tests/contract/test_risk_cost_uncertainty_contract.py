@@ -27,7 +27,7 @@ def test_authoritative_contracts_record_fail_closed_risk_cost_and_deepseek_bound
     for required in (
         "Brier",
         "ECE",
-        "预测区间覆盖率",
+        "预测区间报告覆盖率",
         "训练窗口分歧",
         "OOD",
         "缺失不确定性",

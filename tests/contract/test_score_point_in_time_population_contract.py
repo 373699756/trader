@@ -28,7 +28,7 @@ def test_research_trace_has_explicit_legacy_codec_and_cutoff_read() -> None:
         'RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event"',
         'LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"',
         "def latest_point_in_time_observation(",
-        "cutoff: time = time(hour=14, minute=50)",
+        "cutoff: time = time(hour=15, minute=0)",
         "point_in_time_population_hash",
     ):
         assert token in source

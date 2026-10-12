@@ -123,7 +123,8 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
 
     assert "docs/01_评分逻辑.md" in active_text
     assert "docs/02_工程设计.md" in active_text
-    assert "docs/changelog/" in active_text
+    assert "docs/03_工程实施.md" in active_text
+    assert "docs/04_下载训练.md" in active_text
     assert "src/trader/recommendation/application/runtime/" in active_text
     assert "tests/integration/test_scheduler_runtime.py" in active_text
     assert "/api/status" in active_text
@@ -133,7 +134,8 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
     for current_target in (
         ROOT / "docs" / "01_评分逻辑.md",
         ROOT / "docs" / "02_工程设计.md",
-        ROOT / "docs" / "changelog",
+        ROOT / "docs" / "03_工程实施.md",
+        ROOT / "docs" / "04_下载训练.md",
         ROOT / "src" / "trader" / "recommendation" / "application" / "runtime",
         ROOT / "tests" / "integration" / "test_scheduler_runtime.py",
         ROOT / "config" / "runtime.json",

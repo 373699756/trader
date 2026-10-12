@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from tests.component.test_qfq_windows import _window
+from tests.helpers.qfq import qfq_window
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_layout_migration import build_qfq_layout
 from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, SQLiteQfqWindowCache, qfq_shard_name
@@ -19,11 +20,18 @@ def _legacy(root: Path) -> None:
         cache = SQLiteQfqWindowCache(root, profile)
         codes = ("600001", "000001", "300001", "688001")
         for code in codes:
-            cache.replace_window(_window(code), "fixture:legacy")
+            cache.replace_window(qfq_window(code), "fixture:legacy")
         names = {name: f"{index:05d}.sqlite3" for index, name in enumerate(QFQ_SHARD_NAMES)}
         for name, old in names.items():
             (cache.root / name).rename(cache.root / old)
         atomic_write_json(cache.root / "index.json", {code: names[qfq_shard_name(code)] for code in codes})
+
+
+@pytest.fixture(scope="module")
+def legacy_seed(tmp_path_factory):
+    root = tmp_path_factory.mktemp("qfq-migration-seed") / "legacy"
+    _legacy(root)
+    return root
 
 
 def _files(root: Path):
@@ -34,10 +42,10 @@ def _files(root: Path):
     }
 
 
-def test_migration_preserves_windows_and_source_without_activating(tmp_path):
+def test_migration_preserves_windows_and_source_without_activating(tmp_path, legacy_seed):
     source = tmp_path / "legacy"
     target = tmp_path / "target"
-    _legacy(source)
+    shutil.copytree(legacy_seed, source)
     before = _files(source)
     result = build_qfq_layout(source, target, tmp_path / ".lock")
     assert result.codes == 8 and result.rows == 4 * (251 + 61)
@@ -46,7 +54,7 @@ def test_migration_preserves_windows_and_source_without_activating(tmp_path):
     for profile in ("v2", "v3"):
         cache = SQLiteQfqWindowCache(target, profile)
         for code in ("600001", "000001", "300001", "688001"):
-            window = _window(code)
+            window = qfq_window(code)
             assert cache.read_code(code).cells == window.cells[-cache.sessions :]
             assert cache.source_identity(code) == "fixture:legacy"
         assert not (cache.root / "index.json").exists()
@@ -54,10 +62,10 @@ def test_migration_preserves_windows_and_source_without_activating(tmp_path):
         build_qfq_layout(source, target, tmp_path / ".lock")
 
 
-def test_corrupt_source_never_publishes_target_or_changes_source(tmp_path):
+def test_corrupt_source_never_publishes_target_or_changes_source(tmp_path, legacy_seed):
     source = tmp_path / "legacy"
     target = tmp_path / "target"
-    _legacy(source)
+    shutil.copytree(legacy_seed, source)
     with sqlite3.connect(source / "v3/00001.sqlite3") as connection:
         connection.execute("UPDATE identities SET digest='tampered'")
     before = _files(source)
@@ -67,10 +75,10 @@ def test_corrupt_source_never_publishes_target_or_changes_source(tmp_path):
     assert _files(source) == before
 
 
-def test_changed_source_before_publication_is_rejected(tmp_path, monkeypatch):
+def test_changed_source_before_publication_is_rejected(tmp_path, monkeypatch, legacy_seed):
     source = tmp_path / "legacy"
     target = tmp_path / "target"
-    _legacy(source)
+    shutil.copytree(legacy_seed, source)
     calls = iter(("original", "changed"))
     monkeypatch.setattr("trader.download.infra.qfq_layout_migration.legacy_fingerprint", lambda _: next(calls))
     with pytest.raises(ValueError, match="source changed"):
@@ -78,9 +86,9 @@ def test_changed_source_before_publication_is_rejected(tmp_path, monkeypatch):
     assert not target.exists()
 
 
-def test_path_traversal_and_overlap_are_rejected(tmp_path):
+def test_path_traversal_and_overlap_are_rejected(tmp_path, legacy_seed):
     source = tmp_path / "legacy"
-    _legacy(source)
+    shutil.copytree(legacy_seed, source)
     with pytest.raises(ValueError, match="overlap"):
         build_qfq_layout(source, source / "target", tmp_path / ".lock")
     atomic_write_json(source / "v2/index.json", {"600001": "../../outside.sqlite3"})
@@ -89,13 +97,15 @@ def test_path_traversal_and_overlap_are_rejected(tmp_path):
 
 
 @pytest.mark.parametrize("lock_owner", ("history", "qfq"))
-def test_migration_cli_locks_explicit_qfq_source_independently_of_history(tmp_path, monkeypatch, capsys, lock_owner):
+def test_migration_cli_locks_explicit_qfq_source_independently_of_history(
+    tmp_path, monkeypatch, capsys, lock_owner, legacy_seed
+):
     from scripts.rename_qfq_shards import main
 
     project = tmp_path / "project"
     source = tmp_path / "legacy"
     target = tmp_path / "target"
-    _legacy(source)
+    shutil.copytree(legacy_seed, source)
     monkeypatch.setattr(
         "sys.argv",
         [

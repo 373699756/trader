@@ -27,10 +27,8 @@ def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -
     dashboard_css = (ROOT / "src/trader/web/static/dashboard_base.css").read_text(encoding="utf-8")
     scoring = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
     design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
-    retrospective = (ROOT / "docs/04_策略回溯.md").read_text(encoding="utf-8")
     normalized_scoring = " ".join(scoring.split())
     normalized_design = " ".join(design.split())
-    normalized_retrospective = " ".join(retrospective.split())
 
     assert "统一评分最高" not in template
     assert "统一0–100评分" in template
@@ -41,8 +39,3 @@ def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -
     assert "Tomorrow、D25 的最终分共享同一 0–100 质量标尺" in normalized_scoring
     assert "模型相对排名只作为诊断" in normalized_scoring
     assert "Decision coverage、 GET、SSE 完整替换和运行诊断统一读取该聚合" in normalized_design
-    assert "预测横截面分位只作为模型相对信号诊断" in normalized_retrospective
-    assert "Tomorrow | 15:00 到下一交易日收盘的成本后净超额，15:00 收盘价冻结 | 板块证据质量权重" in (
-        normalized_retrospective
-    )
-    assert "作为 Tomorrow `base_score`" not in retrospective

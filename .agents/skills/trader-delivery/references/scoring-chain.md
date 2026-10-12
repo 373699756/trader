@@ -3,7 +3,7 @@
 Read this guide whenever a task changes candidate eligibility, evidence-quality scoring, a scoring profile, model
 diagnostics, execution cost, risk, DeepSeek fusion, action thresholds, ranking, score identity, or offline score evidence.
 The authoritative rules remain `docs/01_评分逻辑.md`; architecture, freeze, API/SSE, Web, and acceptance remain in
-`docs/项目重构详细.md`.
+`docs/02_工程设计.md`.
 
 ## Trace semantic owners before editing
 

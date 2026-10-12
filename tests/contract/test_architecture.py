@@ -7,6 +7,7 @@ from functools import cache
 from pathlib import Path
 
 from tests.contract.test_history_training_application_boundaries import application_import_violations
+from tests.helpers.python_source import source_tree
 from trader.recommendation.application.ports.runtime import DecisionBuilderPort
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 
@@ -43,13 +44,8 @@ def test_active_product_tree_uses_precise_resource_and_state_names() -> None:
 
 
 @cache
-def _tree(path: Path) -> ast.Module:
-    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-
-
-@cache
 def _imports(path: Path) -> frozenset[str]:
-    tree = _tree(path)
+    tree = source_tree(path)
     result: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -147,7 +143,7 @@ def test_shared_technical_primitives_have_one_infra_owner() -> None:
 
     definitions: dict[str, list[Path]] = {name: [] for name in owners}
     for path in SOURCE_ROOT.rglob("*.py"):
-        tree = _tree(path)
+        tree = source_tree(path)
         for node in tree.body:
             name = node.name if isinstance(node, (ast.ClassDef, ast.FunctionDef)) else None
             if name in definitions:
@@ -163,7 +159,7 @@ def test_execution_resources_are_created_only_by_the_composition_root() -> None:
     violations: list[str] = []
     for path in SOURCE_ROOT.rglob("*.py"):
         relative = path.relative_to(SOURCE_ROOT)
-        for node in ast.walk(_tree(path)):
+        for node in ast.walk(source_tree(path)):
             if not isinstance(node, ast.Call):
                 continue
             name = node.func.id if isinstance(node.func, ast.Name) else ""
@@ -199,7 +195,7 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
     }
     violations: list[str] = []
     for path in application.rglob("*.py"):
-        tree = _tree(path)
+        tree = source_tree(path)
         for node in ast.walk(tree):
             if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in forbidden_names:
                 violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}:{node.name}")
@@ -386,7 +382,7 @@ def test_internal_state_is_typed_until_an_explicit_observability_boundary() -> N
     forbidden_status_types = {"Any", "JsonObject", "JsonValue", "Mapping", "MutableMapping", "dict", "object"}
     for path in trader_root.rglob("*.py"):
         relative = path.relative_to(trader_root)
-        tree = _tree(path)
+        tree = source_tree(path)
         for class_node in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
             for member in class_node.body:
                 if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and member.name in conversion_names:
@@ -440,7 +436,7 @@ def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -
     )
     violations: list[str] = []
     for path in paths:
-        tree = _tree(path)
+        tree = source_tree(path)
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in {"asdict", "__dict__"}:
                 violations.append(f"{path.relative_to(SOURCE_ROOT)}:{node.lineno}: automatic field projection")
@@ -501,9 +497,9 @@ def test_dashboard_stream_transport_is_a_separate_packaged_dependency() -> None:
 def test_functional_package_final_cutover_contract_is_authoritative() -> None:
     design = PROJECT_ROOT / "docs/02_工程设计.md"
     content = design.read_text(encoding="utf-8")
-    assert "### 3.1 功能包目标布局与迁移约束" in content
-    assert "最终包状态已固化" in content
-    assert "根级迁移路径不属于活动树" in content
+    assert "## 3. 架构与模块边界" in content
+    assert "entrypoints/infra -> application -> domain" in content
+    assert "每项迁移必须同时切换新owner、全部消费者并删除旧路径" in content
     assert not (PROJECT_ROOT / "docs/plan.md").exists()
 
 
@@ -516,7 +512,7 @@ def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> Non
     for boundary in ("domain", "application"):
         for path in (SOURCE_ROOT / boundary).rglob("*.py"):
             relative = path.relative_to(SOURCE_ROOT)
-            tree = _tree(path)
+            tree = source_tree(path)
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in forbidden_public_codecs:
                     violations.append(f"{relative}:{node.lineno}: persistence codec belongs in infra")
