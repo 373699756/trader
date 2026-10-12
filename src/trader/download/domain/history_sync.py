@@ -18,6 +18,7 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.history_trading_status import HistoryTradingFact
 from trader.download.domain.published_history import PublishedHistoryWindow
 
 HistorySyncProgressStage = Literal[
@@ -188,6 +189,22 @@ class HistoryStEligibilitySummary:
 
 
 @dataclass(frozen=True)
+class HistoryPipelineProgress:
+    downloaded_codes: int
+    queued_codes: int
+    download_seconds: float
+    write_seconds: float
+    backpressure_seconds: float
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value < 0 for value in (self.downloaded_codes, self.queued_codes)) or any(
+            not math.isfinite(value) or value < 0
+            for value in (self.download_seconds, self.write_seconds, self.backpressure_seconds)
+        ):
+            raise ValueError("history_pipeline_progress_invalid")
+
+
+@dataclass(frozen=True)
 class HistorySyncProgress:
     stage: HistorySyncProgressStage
     state: HistorySyncProgressState
@@ -207,6 +224,7 @@ class HistorySyncProgress:
     cache_hit: bool | None = None
     required_free_bytes: int | None = None
     price_coverage: HistoryPriceCoverage | None = None
+    pipeline: HistoryPipelineProgress | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -289,6 +307,10 @@ class HistoryTwoStageSupplier(Protocol):
 
     def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload: ...
 
+    def fetch_trading_facts(
+        self, security: BaoStockSecurity, dates: tuple[date, ...]
+    ) -> tuple[HistoryTradingFact, ...]: ...
+
 
 __all__ = [
     "HistorySupplierContext",
@@ -301,4 +323,5 @@ __all__ = [
     "HistoryTencentSummary",
     "HistoryRecoverySummary",
     "HistoryTwoStageSupplier",
+    "HistoryPipelineProgress",
 ]

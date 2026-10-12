@@ -135,6 +135,7 @@ class DiagnosticOptions:
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
     qfq_root: Path = PROJECT_ROOT / "data/qfq"
+    verify_trading_status: bool = False
 
 
 @dataclass(frozen=True)
@@ -202,6 +203,11 @@ def _parser() -> argparse.ArgumentParser:
         help="history route sampled by history/sources/live/full profiles",
     )
     parser.add_argument("--web-timeout-seconds", type=float, default=3.0, help="timeout per Web API request")
+    parser.add_argument(
+        "--verify-trading-status",
+        action="store_true",
+        help="Tencent whole-window probe: verify at most 20 missing dates per stock with BaoStock",
+    )
     parser.add_argument(
         "--source-timeout-seconds",
         type=float,
@@ -318,6 +324,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             tencent_history_host=args.tencent_history_host,
             web_timeout_seconds=args.web_timeout_seconds,
             source_timeout_seconds=args.source_timeout_seconds,
+            verify_trading_status=args.verify_trading_status,
             browser_duration_seconds=args.browser_duration_seconds,
             browser_minimum_updates=args.browser_minimum_updates,
             command_timeout_seconds=args.command_timeout_seconds,
@@ -397,6 +404,7 @@ def build_commands(
                 "-m",
                 "scripts.runtime_diagnostics.tencent_download",
                 "--whole-window",
+                *(("--verify-trading-status",) if options.verify_trading_status else ()),
                 "--history-root",
                 str(options.history_root),
                 "--codes",

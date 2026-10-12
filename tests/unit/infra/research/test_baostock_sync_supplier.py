@@ -380,6 +380,11 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
         def query_stock_basic(self):
             raise AssertionError("history must not reload BaoStock's universe")
 
+        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
+            calls.append("status")
+            assert fields == "date,code,tradestatus,isST" and kwargs["adjustflag"] == "3"
+            return _Result(tuple(fields.split(",")), ((day.isoformat(), code, "0", "0") for day in dates))
+
         def query_trade_dates(self, **_kwargs):
             calls.append("calendar")
             return _Result(("calendar_date", "is_trading_day"), tuple((day.isoformat(), "1") for day in dates))
@@ -393,7 +398,13 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
 
     class Connection:
         def __init__(self):
-            self.commands = iter((supplier_module._LoadContext(dates[-1], 2, universe), supplier_module._Stop()))
+            self.commands = iter(
+                (
+                    supplier_module._LoadContext(dates[-1], 2, universe),
+                    supplier_module._FetchCode(universe[0], dates, states_only=True),
+                    supplier_module._Stop(),
+                )
+            )
             self.responses = []
             self.closed = False
 
@@ -424,5 +435,12 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
     assert context.calendar.open_dates == dates
     assert context.universe == universe
     assert tuple(item.code for item in context.industry_intervals) == ("302132",)
-    assert calls == ["login", "calendar", "industry", "industry", "logout"]
+    facts = next(
+        item.trading_facts
+        for item in connection.responses
+        if isinstance(item, supplier_module._Response) and item.trading_facts is not None
+    )
+    assert tuple(fact.trade_date for fact in facts) == dates
+    assert all(fact.status == "suspended" for fact in facts)
+    assert calls == ["login", "calendar", "industry", "industry", "status", "logout"]
     assert connection.closed

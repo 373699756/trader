@@ -20,10 +20,12 @@ import requests
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import completed_daily_cutoff
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.exchange_security_universe import load_current_a_share_universe
+from trader.download.infra.history_download_flow import download_failure
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
@@ -174,6 +176,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--codes", nargs="+", default=("600519", "000001", "300750", "688981", "601318"))
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--whole-window", action="store_true", help="probe 2000-row responses without active data")
+    parser.add_argument("--verify-trading-status", action="store_true")
     return parser
 
 
@@ -266,6 +269,12 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
             try:
                 window = supplier.fetch_window(security, dates, request_count=2000, allow_interior_padding=True)
                 paired = tuple(cell.trade_date for cell in window.cells if cell.status == "complete")
+                paired_dates = frozenset(paired)
+                missing = tuple(day for day in dates if day not in paired_dates)
+                try:
+                    status_evidence = _probe_gap_status(args, security, missing)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    status_evidence = {"status_verification_failure": download_failure(exc)}
                 results.append(
                     {
                         "raw_rows": sum(cell.unadjusted is not None for cell in window.cells),
@@ -277,12 +286,13 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
                         "last_date": paired[-1].isoformat() if paired else None,
                         "seconds": round(time.monotonic() - started, 3),
                         "requests": list(observations),
+                        **status_evidence,
                     }
                 )
             except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
                 results.append({"failure": type(exc).__name__, "seconds": round(time.monotonic() - started, 3)})
-    failed = any("failure" in item for item in results)
-    passed = all(item.get("paired_rows") == 2000 for item in results)
+    failed = any("failure" in item or "status_verification_failure" in item for item in results)
+    passed = all(item.get("missing_sessions") == item.get("confirmed_suspended_sessions", 0) for item in results)
     emit_report(
         {
             "schema_version": "tencent-whole-window-probe",
@@ -296,6 +306,29 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
         }
     )
     return 1 if failed else 0
+
+
+def _probe_gap_status(
+    args: argparse.Namespace, security: BaoStockSecurity, missing: tuple[date, ...]
+) -> dict[str, object]:
+    if not args.verify_trading_status or not missing:
+        return {}
+    dates = missing[:20]
+    configuration = HistorySyncConfiguration(
+        supplier_timeout_seconds=max(5.0, args.timeout_seconds), supplier_retries=0
+    )
+    with BaoStockHistorySupplier(
+        configuration, price_policy=BaoStockRequestPolicy(args.timeout_seconds, 0)
+    ) as supplier:
+        facts = supplier.fetch_trading_facts(security, dates)
+    if any(fact.code != security.code or fact.trade_date not in dates or fact.is_st for fact in facts):
+        raise ValueError("history_trading_evidence_invalid")
+    return {
+        "status_checked_sessions": len(dates),
+        "confirmed_suspended_sessions": sum(fact.status == "suspended" for fact in facts),
+        "confirmed_trading_sessions": sum(fact.status == "trading" for fact in facts),
+        "unverified_status_sessions": len(missing) - len(facts),
+    }
 
 
 def _observe_history_response(

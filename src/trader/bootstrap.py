@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 
 import requests
 from flask import Flask
+
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.qfq_download_progress import qfq_message
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -66,6 +67,7 @@ from trader.infra.market_data.providers.exchange_security_master import (
 )
 from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.providers.tushare_records import build_tushare_sdk
+from trader.infra.serialization.canonical import content_hash
 from trader.infra.settings import (
     LongWatchlist,
     RuntimeSettings,
@@ -79,7 +81,6 @@ from trader.infra.settings.recommendation_policy import (
     _long_item_definitions,
     _recommendation_policy,
 )
-from trader.infra.serialization.canonical import content_hash
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
@@ -160,22 +161,22 @@ from trader.recommendation.infra.persistence.data_plane_initialization import _i
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
-from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem
 from trader.recommendation.infra.runtime.initialization import (
     fixed_cache_ttl as _fixed_cache_ttl,
 )
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
+from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.application.research_audit import try_build_committed_research_audit
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.training_settings import load_profile_training_settings
 from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
 from trader.training.infra.research.research_trace_archive import ResearchTraceLimits, SQLiteResearchTraceArchive
+from trader.training.infra.training_settings import load_profile_training_settings
 from trader.web import create_app
 
 if TYPE_CHECKING:
@@ -197,22 +198,22 @@ def execute_history_download(
         thread_name_prefix="history-download",
     )
     history_pool.start()
+    history_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="history-writer")
+    http_resources = ExitStack()
     try:
+        history_writer.start()
         load_current_securities = partial(
             load_current_a_share_universe,
             partial(fetch_sse_listings, get=requests.get),
             partial(fetch_szse_listings, get=requests.get),
             15.0,
         )
-        with (
-            BaoStockHistorySupplier(
-                configuration,
-                progress=supplier_progress or progress,
-                cancel_requested=cancel_requested,
-                price_policy=BaoStockRequestPolicy(20.0, 0),
-            ) as baseline,
-            ExitStack() as http_resources,
-        ):
+        with BaoStockHistorySupplier(
+            configuration,
+            progress=supplier_progress or progress,
+            cancel_requested=cancel_requested,
+            price_policy=BaoStockRequestPolicy(20.0, 0),
+        ) as baseline:
             http_pool = TencentSessionPool(
                 tuple(
                     http_resources.enter_context(requests.Session()) for _index in range(configuration.history_workers)
@@ -225,7 +226,9 @@ def execute_history_download(
                     cancel_requested,
                 )
             )
-            return DownloadHistoryUseCase(HistoryArchiveGateway(worker_pool=history_pool)).execute(
+            return DownloadHistoryUseCase(
+                HistoryArchiveGateway(worker_pool=history_pool, writer_pool=history_writer)
+            ).execute(
                 configuration,
                 HistorySupplierRouter(
                     baseline,
@@ -260,8 +263,11 @@ def execute_history_download(
                 cancel_requested=cancel_requested,
             )
     finally:
-        stopped = history_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
-        if not stopped.completed:
+        deadline = ShutdownDeadline.start(30.0)
+        writer_stopped = history_writer.stop(wait=True, cancel_futures=True, deadline=deadline)
+        stopped = history_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+        http_resources.close()
+        if not stopped.completed or not writer_stopped.completed:
             raise RuntimeError("history worker shutdown exceeded 30 seconds")
 
 

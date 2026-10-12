@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable
+from threading import Lock
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage
@@ -92,6 +93,20 @@ def _recovery_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 
 
 def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    if progress.pipeline is not None:
+        pipeline = progress.pipeline
+        return (
+            f"网络已返回/复用 {pipeline.downloaded_codes} 股",
+            f"已持久化 {progress.completed_units} 股",
+            f"待写库 {pipeline.queued_codes} 股",
+            f"下载累计 {pipeline.download_seconds:.2f} 秒",
+            f"写库累计 {pipeline.write_seconds:.2f} 秒",
+            f"回压等待 {pipeline.backpressure_seconds:.2f} 秒",
+        )
+    return _download_summary_parts(progress)
+
+
+def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.required_free_bytes is not None:
         return (f"保守可用空间需求 {progress.required_free_bytes / 1024**3:.2f} GiB",)
     if progress.cache_hit is not None:
@@ -126,8 +141,12 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 def _state_label(progress: HistorySyncProgress) -> str:
     if progress.failure_reason == "tencent_history_pending":
         return "待重试（暂不转BaoStock）"
+    if progress.failure_reason == "history_trading_status_unverified":
+        return "缺口原因待核实"
     if progress.price_coverage is not None and progress.price_coverage.missing and progress.state == "completed":
-        return "部分（Tencent补取后仍缺失或未通过校验）"
+        return "部分（缺口待核实或未通过校验）"
+    if progress.price_coverage is not None and not progress.price_coverage.missing and progress.state == "completed":
+        return "覆盖完成（已持久化）"
     if (
         progress.stage == "history_st_reference"
         and progress.state == "completed"
@@ -147,11 +166,15 @@ def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
         f"qfq {coverage.qfq} 日",
         f"完整配对 {coverage.paired} 日",
         f"剩余缺日 {coverage.missing} 日",
+        f"已确认停牌 {coverage.suspended} 日",
+        f"窗口交易日 {coverage.calendar_sessions if coverage.calendar_sessions is not None else coverage.expected} 日",
+        f"上市前/退市后不适用 {coverage.not_applicable} 日",
     )
 
 
 class StderrHistorySyncProgress:
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._lock = Lock()
         self._monotonic = monotonic
         self._started_at = monotonic()
         self._stock_counts: tuple[int, int] | None = None
@@ -163,6 +186,10 @@ class StderrHistorySyncProgress:
         self._phase_started: dict[tuple[HistorySyncProgressStage, str | None], float] = {}
 
     def publish(self, progress: HistorySyncProgress) -> None:
+        with self._lock:
+            self._publish(progress)
+
+    def _publish(self, progress: HistorySyncProgress) -> None:
         now = self._monotonic()
         monthly = progress.stage in {"persisting_partitions", "sealing_partitions", "history_active_gaps"}
         phase_key = (progress.stage, progress.current_item if monthly else None)

@@ -144,6 +144,11 @@ class FakeSupplier:
         self.events.append("baostock_prices")
         return self.fetch_code(security, dates)
 
+    def fetch_trading_facts(self, security, dates):
+        from trader.download.domain.history_trading_status import HistoryTradingFact
+
+        return tuple(HistoryTradingFact(security.code, day, "trading", False) for day in dates)
+
 
 def _configuration(root: Path) -> HistorySyncConfiguration:
     return HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)

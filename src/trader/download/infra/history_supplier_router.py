@@ -12,6 +12,7 @@ from trader.download.domain.history_price_qualification import (
     HISTORY_UNIVERSE_CONTRACT,
 )
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.history_trading_status import HistoryTradingFact
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import select_st_eligible_universe
@@ -62,6 +63,11 @@ class HistorySupplierRouter:
 
     def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
         return self._baseline.fetch_code(security, dates)
+
+    def fetch_trading_facts(
+        self, security: BaoStockSecurity, dates: tuple[date, ...]
+    ) -> tuple[HistoryTradingFact, ...]:
+        return self._baseline.fetch_trading_facts(security, dates)
 
 
 def fetch_tencent_history_window(

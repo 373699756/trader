@@ -28,6 +28,7 @@ from trader.download.domain.history_sync import (
     HistorySyncProgressPort,
     HistorySyncProgressStage,
 )
+from trader.download.domain.history_trading_status import HistoryTradingFact
 from trader.download.infra.baostock_gateway import BaoStockRowGateway, BaoStockRowResult
 from trader.download.infra.baostock_session import (
     BaoStockQueryLimiter,
@@ -53,6 +54,7 @@ class _FetchCode:
     security: BaoStockSecurity
     dates: tuple[date, ...]
     raw_only: bool = False
+    states_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,7 @@ class _Response:
     download: BaoStockCodeDownload | None = None
     failure_reason: str | None = None
     restart_session: bool = False
+    trading_facts: tuple[HistoryTradingFact, ...] | None = None
 
 
 class _RateLimitedSdk:
@@ -246,6 +249,14 @@ class BaoStockHistorySupplier:
         if response.download is None:
             raise RuntimeError(response.failure_reason or "supplier_query_failed")
         return response.download
+
+    def fetch_trading_facts(
+        self, security: BaoStockSecurity, dates: tuple[date, ...]
+    ) -> tuple[HistoryTradingFact, ...]:
+        response = self._request(_FetchCode(security, dates, states_only=True))
+        if response.trading_facts is None:
+            raise RuntimeError(response.failure_reason or "supplier_query_failed")
+        return response.trading_facts
 
     def close(self) -> None:
         process = self._process
@@ -557,6 +568,11 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                         )
                     )
                 elif isinstance(command, _FetchCode):
+                    if command.states_only:
+                        connection.send(
+                            _Response(trading_facts=gateway.fetch_trading_facts(command.security, command.dates))
+                        )
+                        continue
                     calendar = BaoStockCalendar(command.dates)
                     spec = BaoStockDailySpec(sessions=len(command.dates), source_cutoff=command.dates[-1])
                     download = (

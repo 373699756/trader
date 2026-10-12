@@ -79,6 +79,7 @@ class _HistorySync:
     cancel: Cancellation
     progress: HistorySyncProgressPort | None
     executor: WorkerExecutor
+    writer: WorkerExecutor
     control: HistoryControlIndex
     index: HistoryDownloadIndex
 
@@ -202,6 +203,7 @@ class _HistorySync:
                 prices,
                 self.index,
                 self.executor,
+                self.writer,
                 self.cancel,
                 self.progress,
             )
@@ -261,6 +263,7 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
     cancel_requested: Cancellation | None = None,
     progress: HistorySyncProgressPort | None = None,
     worker_pool: WorkerExecutor | None = None,
+    writer_pool: WorkerExecutor | None = None,
 ) -> HistoryMaintenanceStatus:
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -285,6 +288,7 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
                 cancel,
                 progress,
                 worker_pool or injected_executor(None),
+                writer_pool or injected_executor(None),
                 control,
                 index,
             ).execute()

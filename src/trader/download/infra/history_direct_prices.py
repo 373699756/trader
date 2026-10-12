@@ -20,6 +20,12 @@ from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 
 
 @dataclass(frozen=True)
+class HistoryPriceContext:
+    full_window: bool
+    previous: tuple[BaoStockDailyCell, ...] | None = None
+
+
+@dataclass(frozen=True)
 class HistoryPriceResult:
     task: HistoryDownloadTask
     revisions: tuple[HistoryRevision, ...]
@@ -43,6 +49,10 @@ class HistoryDirectPrices:
         self._activity = activity
         self._fresh = fresh
         self._written_codes: set[str] = set()
+        self._download_months = frozenset(
+            (int(path.parent.name), int(path.stem))
+            for path in (root / "partitions").glob("[0-9][0-9][0-9][0-9]/[0-9][0-9].sqlite3")
+        )
         self._previous = (
             {
                 (int(Path(item.relative_path).parts[1]), int(Path(item.relative_path).stem)): item
@@ -76,6 +86,15 @@ class HistoryDirectPrices:
                 )
         return tuple(sorted(cells, key=lambda cell: cell.trade_date))
 
+    def read_for_download(self, code: str, dates: tuple[date, ...]) -> tuple[BaoStockDailyCell, ...]:
+        # Each code is dispatched once. A fresh batch has no previous observations;
+        # recovery reads only after all Tencent writes have been acknowledged.
+        readable = tuple(day for day in dates if (day.year, day.month) in self._download_months)
+        return () if self._fresh else self.read(code, readable)
+
+    def cancel_pending(self) -> None:
+        self._activity.cancel()
+
     def prepare(
         self,
         security: BaoStockSecurity,
@@ -83,16 +102,26 @@ class HistoryDirectPrices:
         window: PublishedHistoryWindow,
         recovery: tuple[BaoStockDailyCell, ...] = (),
         *,
-        full_window: bool,
+        context: HistoryPriceContext,
     ) -> HistoryPriceResult:
-        previous = self.read(task.code, task.dates)
+        previous = context.previous
+        if previous is None:
+            previous = self.read(task.code, task.dates)
         cells = qualify_history_pairs(task.code, task.dates, window, recovery)
-        cells = qualify_price_overlap(cells, previous, full_window=full_window)
+        cells = qualify_price_overlap(cells, previous, full_window=context.full_window)
         obtained = {cell.trade_date for cell in previous if cell.obtained}
-        raw = obtained | {cell.trade_date for cell in window.cells if cell.unadjusted is not None}
-        qfq = obtained | {cell.trade_date for cell in window.cells if cell.qfq is not None}
-        raw.update(cell.trade_date for cell in cells if cell.obtained)
-        qfq.update(cell.trade_date for cell in cells if cell.obtained)
+        suspended = {cell.trade_date for cell in cells if cell.status == "supplier_marked_suspended"}
+        paired = {cell.trade_date for cell in cells if cell.status == "complete"}
+        raw = paired | {
+            cell.trade_date
+            for cell in window.cells
+            if cell.unadjusted is not None and cell.unadjusted.trading_status == "trading"
+        }
+        qfq = paired | {
+            cell.trade_date for cell in window.cells if cell.qfq is not None and cell.qfq.trading_status == "trading"
+        }
+        raw.difference_update(suspended)
+        qfq.difference_update(suspended)
         return HistoryPriceResult(
             task,
             tuple(
@@ -102,7 +131,7 @@ class HistoryDirectPrices:
             ),
             tuple(cell.trade_date for cell in cells if not cell.obtained),
             None,
-            HistoryPriceCoverage(len(task.dates), len(raw), len(qfq), sum(cell.obtained for cell in cells)),
+            HistoryPriceCoverage(len(task.dates), len(raw), len(qfq), len(paired), len(suspended)),
         )
 
     def commit(self, results: tuple[HistoryPriceResult, ...]) -> None:
@@ -168,4 +197,4 @@ class HistoryDirectPrices:
         return tuple(references)
 
 
-__all__ = ["HistoryDirectPrices", "HistoryPriceResult"]
+__all__ = ["HistoryDirectPrices", "HistoryPriceContext", "HistoryPriceResult"]

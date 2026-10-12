@@ -26,6 +26,7 @@ from trader.download.domain.baostock_daily import (
     join_baostock_daily_sides,
 )
 from trader.download.domain.history_sync import HistorySyncProgress
+from trader.download.domain.history_trading_status import HistoryTradingFact
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
@@ -41,7 +42,7 @@ def _sparse_query_windows(dates: tuple[date, ...]) -> tuple[tuple[date, ...], ..
         if (dates[index] - dates[index - 1]).days > 31
     )
     cuts = (0, *sorted(index for _, index in gaps[-3:]), len(dates))
-    return tuple(dates[start:end] for start, end in zip(cuts, cuts[1:]))
+    return tuple(dates[start:end] for start, end in zip(cuts[:-1], cuts[1:], strict=True))
 
 
 @dataclass(frozen=True)
@@ -293,6 +294,35 @@ class BaoStockRowGateway:
             ),
             facts,
         )
+
+    def fetch_trading_facts(
+        self, security: BaoStockSecurity, dates: tuple[date, ...]
+    ) -> tuple[HistoryTradingFact, ...]:
+        if not dates or dates != tuple(sorted(set(dates))) or len(dates) > 2000:
+            raise ValueError("history_trading_dates_invalid")
+        facts: dict[date, HistoryTradingFact] = {}
+        expected = frozenset(dates)
+        for window in _sparse_query_windows(dates):
+            result = self._sdk.query_history_k_data_plus(
+                security.source_code,
+                _DAILY_FACT_FIELDS,
+                window[0].isoformat(),
+                window[-1].isoformat(),
+                frequency="d",
+                adjustflag="3",
+            )
+            for row in _result_rows(result, "history_trading_status_query_failed"):
+                day = _date(row.get("date"), "history_trading_date_invalid")
+                if row.get("code") != security.source_code or not window[0] <= day <= window[-1]:
+                    raise RuntimeError("history_supplier_identity_conflict")
+                if day not in expected:
+                    continue
+                if day in facts:
+                    raise RuntimeError("supplier_daily_window_conflict")
+                facts[day] = HistoryTradingFact(
+                    security.code, day, _trading_status(row.get("tradestatus")), _is_st(row.get("isST"))
+                )
+        return tuple(facts[day] for day in sorted(facts))
 
     def fetch_daily_facts(
         self,

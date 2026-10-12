@@ -24,6 +24,7 @@ class HistoryArchiveGateway:
     """
 
     worker_pool: WorkerExecutor | None = None
+    writer_pool: WorkerExecutor | None = None
 
     def download(
         self,
@@ -43,6 +44,7 @@ class HistoryArchiveGateway:
             clock=clock,
             cancel_requested=cancel_requested,
             worker_pool=self.worker_pool,
+            writer_pool=self.writer_pool,
         )
 
     def update(
@@ -73,6 +75,7 @@ class HistoryArchiveGateway:
             clock=clock,
             cancel_requested=cancel_requested,
             worker_pool=self.worker_pool,
+            writer_pool=self.writer_pool,
         )
 
 

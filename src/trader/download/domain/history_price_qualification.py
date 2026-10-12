@@ -36,7 +36,7 @@ def qualify_price_overlap(
         before = prior.get(cell.trade_date)
         if before is not None and before.obtained:
             result.append(before)
-        elif anchored or not cell.obtained:
+        elif anchored or not cell.obtained or cell.status == "supplier_marked_suspended":
             result.append(cell)
         else:
             result.append(BaoStockDailyCell(cell.code, cell.trade_date, "unknown_missing", None, None))
