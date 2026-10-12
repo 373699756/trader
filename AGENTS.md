@@ -128,3 +128,11 @@ git log --format=fuller --grep='Regression-Key: <稳定标识>' --fixed-strings
 git log --oneline -- AGENTS.md
 git show <提交哈希>
 ```
+
+## Code Review Rules
+
+本节供 Codex 审查已获授权的 GitHub PR 时使用，不改变第 4–6 节的阶段顺序、PR 授权、提交前 Review 和验证要求。额外的 PR 审查仅通过已连接仓库的 GitHub 原生 `@codex review` 手动请求；不为此启用自动审查，也不增加本地 `/review`、Codex GitHub Action 或 API 审查任务。GitHub 原生审查按 Codex 的 Code Review 用量类别计，额度与费用以账户页面和官方当前说明为准，不承诺零 token 或无限次数。
+
+- **所有权切换**：审查迁移提交是否在同一批次切换新 owner、全部消费者并删除旧活动路径；若留下兼容转发、双读或双写，应指出具体残留及其造成的重复状态或错误行为。安全做法是按第 2、4 节完成原子切换。
+- **只读交付边界**：审查 `http_api/`、`web/` 的改动是否发起抓取、训练、评分、DeepSeek 调用或业务状态写入；若有，应指出越界调用及其副作用。安全做法是只调用 `recommendation/application/` 的只读用例，并在 adapter 中按白名单投影公开字段。
+- **已发布结果不可变**：审查历史同步与 Tomorrow/D25 冻结改动是否覆盖已发布历史快照、同日正式记录，或把迟到结果当成正式结果；若有，应指出受影响的身份与时点。安全做法是保留最近有效快照、遵守 15:00 first-wins，并仅按权威合同创建合法的 `close_fallback`。
