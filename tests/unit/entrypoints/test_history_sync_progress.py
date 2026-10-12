@@ -5,7 +5,9 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_sync import (
+    HistoryPipelineProgress,
     HistoryRecoverySummary,
     HistoryStEligibilitySummary,
     HistorySyncProgress,
@@ -203,6 +205,14 @@ def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) ->
     ]
 
 
+def test_partition_persistence_placeholder_waiting_is_suppressed(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(0.0, 21.0))
+
+    progress.publish(HistorySyncProgress("persisting_partitions", "waiting", 0, 1))
+
+    assert capsys.readouterr().err == ""
+
+
 def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=lambda: 0.0)
 
@@ -229,12 +239,35 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
     )
 
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | Tencent历史下载 | 失败 | 29/4400 (0.66%) | 股票 600001 | 来源 Tencent | 请求 2000 日 "
-        "| 错误 history_tencent_overlap_conflict | 阶段耗时 00:00:00",
-        "00:00:00 | Tencent历史下载 | 完成 | 4400/4400 (100.00%) | 完整 4371 股 | 部分 0 股 | 失败 29 股 "
+        "00:00:00 | Tencent下载 | 失败 | 29/4400 | 股票 600001 | 错误 history_tencent_overlap_conflict | 总计 00:00:00",
+        "00:00:00 | Tencent下载 | 完成 | 4400/4400 | 完整 4371 股 | 部分 0 股 | 失败 29 股 "
         "| 其中待重试 0 股 | 其中本地复用 0 股 "
-        "| 重叠冲突 24 股 | 其它失败 5 股 | 阶段耗时 00:00:00",
+        "| 重叠冲突 24 股 | 其它失败 5 股 | 总计 00:00:00",
     ]
+
+
+def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 100.0, 1486.0))
+    progress.publish(HistorySyncProgress("tencent_history", "started", 0, 4400))
+    progress.publish(
+        HistorySyncProgress(
+            "tencent_history",
+            "completed",
+            388,
+            4400,
+            "000952",
+            supplier_source="tencent",
+            requested_sessions=2000,
+            price_coverage=HistoryPriceCoverage(2000, 1980, 1980, 1980),
+            pipeline=HistoryPipelineProgress(404, 16, 843.67, 2300.15, 2258.73),
+        )
+    )
+
+    assert capsys.readouterr().err == (
+        "00:23:06 | Tencent下载 | 完成 | 388/4400 | 股票 000952 | raw 1980/2000 | qfq 1980/2000 "
+        "| 配对 1980/2000 | 网络 404/4400 | 落库 388/4400 | 待写 16 | 下载 00:14:03 "
+        "| 落库耗时 00:38:20 | 回压 00:37:38 | 总计 00:23:06\n"
+    )
 
 
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from threading import get_ident
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
@@ -15,7 +16,7 @@ from trader.download.domain.history_price_qualification import qualify_history_p
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_download_index import HistoryDownloadTask
-from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 
 
@@ -49,6 +50,8 @@ class HistoryDirectPrices:
         self._activity = activity
         self._fresh = fresh
         self._written_codes: set[str] = set()
+        self._write_sessions: dict[tuple[int, int], HistoryMonthWriteSession] = {}
+        self._write_thread: int | None = None
         self._download_months = frozenset(
             (int(path.parent.name), int(path.stem))
             for path in (root / "partitions").glob("[0-9][0-9][0-9][0-9]/[0-9][0-9].sqlite3")
@@ -137,17 +140,66 @@ class HistoryDirectPrices:
         )
 
     def commit(self, results: tuple[HistoryPriceResult, ...]) -> None:
-        groups: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
-        for result in results:
-            for revision in result.revisions:
-                groups[(revision.trade_date.year, revision.trade_date.month)].append(revision)
-        for (year, month), revisions in sorted(groups.items()):
+        for (year, month), revisions in self._revision_groups(results):
             self._activity.tick()
             target = self._month(year, month)
             if not (self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3").exists():
                 target.initialize()
-            target.save_revision_batches(sorted(revisions, key=lambda item: (item.trade_date, item.code)))
+            target.save_revision_batches(revisions)
         self._written_codes.update(result.task.code for result in results if result.revisions)
+
+    def commit_pipeline(self, results: tuple[HistoryPriceResult, ...]) -> None:
+        """Commit a pipeline batch while retaining bounded, thread-confined month connections."""
+        thread = get_ident()
+        if self._write_thread is None:
+            self._write_thread = thread
+        elif self._write_thread != thread:
+            raise RuntimeError("history_month_writer_thread_conflict")
+        for (year, month), revisions in self._revision_groups(results):
+            self._activity.tick()
+            key = year, month
+            session = self._write_sessions.get(key)
+            if session is None:
+                if len(self._write_sessions) >= 128:
+                    raise RuntimeError("history_month_writer_capacity_exceeded")
+                target = self._month(year, month)
+                if not (self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3").exists():
+                    target.initialize()
+                session = target.open_write_session()
+                self._write_sessions[key] = session
+            session.save_revision_batches(revisions)
+        self._written_codes.update(result.task.code for result in results if result.revisions)
+
+    def close_pipeline(self) -> None:
+        """Close pipeline connections on their owning writer thread."""
+        if self._write_sessions and self._write_thread != get_ident():
+            raise RuntimeError("history_month_writer_thread_conflict")
+        failure: BaseException | None = None
+        try:
+            for session in self._write_sessions.values():
+                try:
+                    session.close()
+                except (OSError, RuntimeError) as exc:
+                    if failure is None:
+                        failure = exc
+        finally:
+            self._write_sessions.clear()
+            self._write_thread = None
+        if failure is not None:
+            raise RuntimeError("history_month_writer_close_failed") from failure
+
+    @staticmethod
+    def _revision_groups(
+        results: tuple[HistoryPriceResult, ...],
+    ) -> tuple[tuple[tuple[int, int], tuple[HistoryRevision, ...]], ...]:
+        groups: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
+        for result in results:
+            for revision in result.revisions:
+                groups[(revision.trade_date.year, revision.trade_date.month)].append(revision)
+        return tuple(
+            (key, tuple(sorted(revisions, key=lambda item: (item.trade_date, item.code))))
+            for key, revisions in sorted(groups.items())
+        )
 
     def record_missing(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> None:
         """Publish explicit gaps once; a later successful batch appends a complete revision."""

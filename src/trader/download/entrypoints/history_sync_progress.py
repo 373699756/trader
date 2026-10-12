@@ -20,7 +20,7 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_daily_raw": "未复权日线",
     "supplier_daily_qfq": "前复权日线",
     "supplier_routing": "下载来源",
-    "tencent_history": "Tencent历史下载",
+    "tencent_history": "Tencent下载",
     "history_st_reference": "历史ST名单",
     "history_active_gaps": "活动历史缺口",
     "history_gap_resume": "旧断点恢复",
@@ -96,12 +96,12 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.pipeline is not None:
         pipeline = progress.pipeline
         return (
-            f"网络已返回/复用 {pipeline.downloaded_codes} 股",
-            f"已持久化 {progress.completed_units} 股",
-            f"待写库 {pipeline.queued_codes} 股",
-            f"下载累计 {pipeline.download_seconds:.2f} 秒",
-            f"写库累计 {pipeline.write_seconds:.2f} 秒",
-            f"回压等待 {pipeline.backpressure_seconds:.2f} 秒",
+            f"网络 {pipeline.downloaded_codes}/{progress.total_units}",
+            f"落库 {progress.completed_units}/{progress.total_units}",
+            f"待写 {pipeline.queued_codes}",
+            f"下载 {_format_duration(pipeline.download_seconds)}",
+            f"落库耗时 {_format_duration(pipeline.write_seconds)}",
+            f"回压 {_format_duration(pipeline.backpressure_seconds)}",
         )
     return _download_summary_parts(progress)
 
@@ -141,10 +141,6 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 def _state_label(progress: HistorySyncProgress) -> str:
     if progress.failure_reason == "tencent_history_pending":
         return "待重试（Tencent临时失败）"
-    if progress.price_coverage is not None and progress.price_coverage.missing and progress.state == "completed":
-        return "完成（按Tencent实际返回）"
-    if progress.price_coverage is not None and not progress.price_coverage.missing and progress.state == "completed":
-        return "覆盖完成（已持久化）"
     if (
         progress.stage == "history_st_reference"
         and progress.state == "completed"
@@ -159,13 +155,9 @@ def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if coverage is None:
         return ()
     return (
-        f"本次应有 {coverage.expected} 日",
-        f"raw {coverage.raw} 日",
-        f"qfq {coverage.qfq} 日",
-        f"完整配对 {coverage.paired} 日",
-        f"Tencent未返回 {coverage.missing} 日",
-        f"窗口交易日 {coverage.calendar_sessions if coverage.calendar_sessions is not None else coverage.expected} 日",
-        f"上市前/退市后不适用 {coverage.not_applicable} 日",
+        f"raw {coverage.raw}/{coverage.expected}",
+        f"qfq {coverage.qfq}/{coverage.expected}",
+        f"配对 {coverage.paired}/{coverage.expected}",
     )
 
 
@@ -201,7 +193,10 @@ class StderrHistorySyncProgress:
             return
         parts = self._progress_parts(progress, now)
         if not progress.stage.startswith("supplier_"):
-            label = "本月耗时" if monthly else "阶段耗时"
+            if progress.stage == "tencent_history":
+                label = "总计"
+            else:
+                label = "本月耗时" if monthly else "阶段耗时"
             parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
         self._print(parts)
 
@@ -215,6 +210,8 @@ class StderrHistorySyncProgress:
 
     def _should_suppress(self, progress: HistorySyncProgress, now: float) -> bool:
         if progress.stage == "supplier_routing":
+            return True
+        if progress.stage == "persisting_partitions" and progress.state == "waiting":
             return True
         if progress.stage == "persisting_partitions":
             return self._suppress_partition_progress(progress, now)
@@ -263,14 +260,24 @@ class StderrHistorySyncProgress:
             _state_label(progress),
         ]
         if progress.stage in _COUNT_STAGES:
-            parts.append(_format_count(progress.completed_units, progress.total_units))
-        parts.extend(_summary_parts(progress))
-        parts.extend(_price_coverage_parts(progress))
+            parts.append(
+                f"{progress.completed_units}/{progress.total_units}"
+                if progress.stage == "tencent_history"
+                else _format_count(progress.completed_units, progress.total_units)
+            )
         if progress.current_item is not None:
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")
-        if progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"} and (
-            progress.supplier_source is not None or progress.stage == "downloading_codes" and self._route is not None
+        parts.extend(_price_coverage_parts(progress))
+        parts.extend(_summary_parts(progress))
+        if (
+            progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"}
+            and (
+                progress.supplier_source is not None
+                or progress.stage == "downloading_codes"
+                and self._route is not None
+            )
+            and progress.stage != "tencent_history"
         ):
             if progress.stage == "downloading_codes" and self._route is not None:
                 source = "Tencent" if self._route.supplier_source == "tencent" else "BaoStock"

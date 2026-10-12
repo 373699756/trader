@@ -25,7 +25,11 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_direct_prices import HistoryDirectPrices, HistoryPriceContext, HistoryPriceResult
-from trader.download.infra.history_download_index import HistoryDownloadIndex, HistoryDownloadTask
+from trader.download.infra.history_download_index import (
+    HistoryDownloadCompletion,
+    HistoryDownloadIndex,
+    HistoryDownloadTask,
+)
 from trader.download.infra.history_month_partition import HistoryMonthPartitionError
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
@@ -102,17 +106,27 @@ class HistoryDownloadFlow:
         started = time.monotonic()
         self._check()
         results = tuple(self._tencent_result(result) for result in batch)
-        self._resources.prices.commit(results)
-        for result in results:
-            self._check()
-            self._resources.index.finish(
-                result.task,
-                result.missing if result.failure is not None else (),
-                result.failure,
+        self._resources.prices.commit_pipeline(results)
+        self._check()
+        self._resources.index.finish(
+            tuple(
+                HistoryDownloadCompletion(
+                    result.task,
+                    result.missing if result.failure is not None else (),
+                    result.failure,
+                )
+                for result in results
             )
+        )
         return _WriteResult(results, time.monotonic() - started)
 
-    def _acknowledge(self, results: tuple[HistoryPriceResult, ...], completed: int, total: int) -> int:
+    def _acknowledge(
+        self,
+        results: tuple[HistoryPriceResult, ...],
+        completed: int,
+        total: int,
+        pipeline: HistoryPipelineProgress,
+    ) -> int:
         for result in results:
             completed += 1
             self._emit(
@@ -126,6 +140,7 @@ class HistoryDownloadFlow:
                     requested_sessions=min(2000, len(result.task.dates)) if result.task.dates else None,
                     failure_reason=result.failure,
                     price_coverage=self._coverage(result),
+                    pipeline=pipeline,
                 )
             )
         return completed
@@ -151,6 +166,7 @@ class HistoryDownloadFlow:
             raise ValueError("history_download_task_too_large")
         completed = sum(task.tencent_done and task.code not in gap_codes for task in tasks)
         self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
+        self._emit(HistorySyncProgress("tencent_history", "started", completed, len(tasks)))
         _TencentPipeline(self, jobs, completed, len(tasks)).run()
         finished = resources.index.tasks()
         gap_codes = resources.index.gap_codes()
@@ -260,6 +276,7 @@ class _TencentPipeline:
         self._writing_cells = self._writing_codes = 0
         self._download_seconds = self._write_seconds = self._backpressure_seconds = 0.0
         self._exhausted = False
+        self._writer_closed = False
         self._last_commit = self._last_report = time.monotonic()
 
     def run(self) -> None:
@@ -273,18 +290,33 @@ class _TencentPipeline:
                 self._wait(blocked)
                 if time.monotonic() - self._last_report >= 5:
                     self._report()
-            self._report()
+            self._close_writer()
         finally:
             self._cancel_pending()
+            self._close_writer()
 
     def _acknowledge(self) -> None:
         if self._writing is None or not self._writing.done():
             return
         saved = self._writing.result()
-        self._completed = self._flow._acknowledge(saved.results, self._completed, self._total)
         self._write_seconds += saved.seconds
         self._writing = None
         self._writing_cells = self._writing_codes = 0
+        if self._exhausted and not self._jobs and not self._futures and not self._buffered:
+            self._close_writer()
+        self._completed = self._flow._acknowledge(
+            saved.results,
+            self._completed,
+            self._total,
+            HistoryPipelineProgress(
+                self._downloaded,
+                len(self._buffered),
+                self._download_seconds,
+                self._write_seconds,
+                self._backpressure_seconds,
+            ),
+        )
+        self._last_report = time.monotonic()
 
     def _collect(self) -> None:
         for future in tuple(self._futures):
@@ -360,6 +392,15 @@ class _TencentPipeline:
                 self._writing.result()
             except BaseException:
                 pass  # Preserve the original failure while joining cleanup.
+
+    def _close_writer(self) -> None:
+        if self._writer_closed:
+            return
+        started = time.monotonic()
+        future = submit_or_reject(self._flow._resources.writer, self._flow._resources.prices.close_pipeline)
+        future.result()
+        self._write_seconds += time.monotonic() - started
+        self._writer_closed = True
 
 
 __all__ = ["HistoryDownloadFlow", "HistoryDownloadResources", "download_failure"]

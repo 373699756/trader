@@ -29,7 +29,7 @@ from trader.download.domain.published_history import PublishedHistoryWindow, pro
 from trader.download.infra import history_archive_sync as history_sync_module
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -307,7 +307,7 @@ def test_database_write_failure_is_fatal_not_baostock_retry(tmp_path, monkeypatc
     def fail(*args):
         raise OSError("disk_full")
 
-    monkeypatch.setattr(HistoryMonthPrices, "save_revision_batches", fail)
+    monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", fail)
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "failed"
     assert "baostock_prices" not in supplier.events
@@ -355,7 +355,7 @@ def test_cross_month_interruption_only_requests_missing_dates_and_five_anchors(t
     days = tuple(date(2026, 8, 1) + timedelta(days=i) for i in range(35))
     supplier = FakeSupplier(days)
     config = HistorySyncConfiguration(tmp_path, sessions=35, reread_sessions=5, minimum_free_bytes=0)
-    original = HistoryMonthPrices.save_revision_batches
+    original = HistoryMonthWriteSession.save_revision_batches
 
     def interrupt_september(self, revisions, **kwargs):
         values = tuple(revisions)
@@ -363,9 +363,9 @@ def test_cross_month_interruption_only_requests_missing_dates_and_five_anchors(t
             raise KeyboardInterrupt
         return original(self, values, **kwargs)
 
-    monkeypatch.setattr(HistoryMonthPrices, "save_revision_batches", interrupt_september)
+    monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", interrupt_september)
     assert run_history_sync(config, supplier, clock=lambda: NOW).state == "cancelled"
-    monkeypatch.setattr(HistoryMonthPrices, "save_revision_batches", original)
+    monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", original)
     supplier.calls.clear()
     resumed = run_history_sync(config, supplier, clock=lambda: NOW)
     assert resumed.state == "completed", resumed.reason

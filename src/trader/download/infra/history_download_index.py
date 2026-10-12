@@ -33,6 +33,21 @@ class HistoryDownloadTask:
 
 
 @dataclass(frozen=True)
+class HistoryDownloadCompletion:
+    task: HistoryDownloadTask
+    missing: tuple[date, ...]
+    failure: str | None
+
+    def __post_init__(self) -> None:
+        if (
+            self.missing != tuple(sorted(set(self.missing)))
+            or not set(self.missing).issubset(self.task.dates)
+            or (self.failure is not None and re.fullmatch(r"[a-z0-9_]{1,64}", self.failure) is None)
+        ):
+            raise ValueError("history_download_completion_invalid")
+
+
+@dataclass(frozen=True)
 class HistoryDownloadBatch:
     sequence: int
     source_hash: str
@@ -138,18 +153,36 @@ class HistoryDownloadIndex:
         with closing(self._connect()) as connection:
             return frozenset(row[0] for row in connection.execute("SELECT DISTINCT code FROM download_gaps"))
 
-    def finish(self, task: HistoryDownloadTask, missing: tuple[date, ...], failure: str | None) -> None:
-        """Advance metadata only after all monthly price commits have succeeded."""
+    def finish(self, completions: tuple[HistoryDownloadCompletion, ...]) -> None:
+        """Advance one durable batch only after all of its monthly price commits succeed."""
+        if not completions or len({item.task.code for item in completions}) != len(completions):
+            raise ValueError("history_download_completions_invalid")
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.executemany(
-                "DELETE FROM download_gaps WHERE code=? AND trade_date=?",
-                ((task.code, day.isoformat()) for day in task.dates),
-            )
-            connection.executemany(
-                "INSERT OR IGNORE INTO download_gaps VALUES(?,?)", ((task.code, day.isoformat()) for day in missing)
-            )
-            connection.execute("UPDATE download_tasks SET tencent_done=1,failure=? WHERE code=?", (failure, task.code))
+            codes = tuple(item.task.code for item in completions)
+            placeholders = ",".join("?" for _ in codes)
+            gap_codes = {
+                row[0]
+                for row in connection.execute(
+                    f"SELECT DISTINCT code FROM download_gaps WHERE code IN ({placeholders})",  # noqa: S608
+                    codes,
+                )
+            }
+            for completion in completions:
+                task = completion.task
+                if task.code in gap_codes:
+                    connection.executemany(
+                        "DELETE FROM download_gaps WHERE code=? AND trade_date=?",
+                        ((task.code, day.isoformat()) for day in task.dates),
+                    )
+                connection.executemany(
+                    "INSERT OR IGNORE INTO download_gaps VALUES(?,?)",
+                    ((task.code, day.isoformat()) for day in completion.missing),
+                )
+                connection.execute(
+                    "UPDATE download_tasks SET tencent_done=1,failure=? WHERE code=?",
+                    (completion.failure, task.code),
+                )
 
     def begin_attempt(self, code: str) -> int:
         with closing(self._connect()) as connection, connection:
@@ -161,4 +194,4 @@ class HistoryDownloadIndex:
         return sum(len(self.gaps(code)) for code in codes)
 
 
-__all__ = ["HistoryDownloadBatch", "HistoryDownloadIndex", "HistoryDownloadTask"]
+__all__ = ["HistoryDownloadBatch", "HistoryDownloadCompletion", "HistoryDownloadIndex", "HistoryDownloadTask"]

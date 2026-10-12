@@ -16,7 +16,7 @@ from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -59,7 +59,11 @@ def test_short_tencent_response_completes_without_baostock_classification(tmp_pa
     assert all(row.point is None for row in training if row.trade_date == DAYS[1])
     assert {row.trade_date for row in training} == set(DAYS)
     logs = capsys.readouterr().err
-    assert "完成（按Tencent实际返回）" in logs and "Tencent未返回 1 日" in logs
+    assert "Tencent下载 | 完成" in logs
+    assert "raw 2/3 | qfq 2/3 | 配对 2/3" in logs
+    tencent_lines = [line for line in logs.splitlines() if "Tencent下载" in line]
+    last_stock = max(index for index, line in enumerate(tencent_lines) if "股票" in line)
+    assert all("等待" not in line for line in tencent_lines[last_stock + 1 :])
     supplier.calls.clear()
     assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).unresolved_price_cells == 0
     assert not supplier.calls
@@ -116,7 +120,8 @@ def test_listing_boundaries_are_reported_without_rows_outside_listing(tmp_path, 
     )
     assert result.state == "completed" and result.unresolved_price_cells == 0
     logs = capsys.readouterr().err
-    assert "本次应有 2 日" in logs and "上市前/退市后不适用 1 日" in logs
+    assert "raw 2/2 | qfq 2/2 | 配对 2/2" in logs
+    assert "/3" not in logs
 
 
 def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path, monkeypatch):
@@ -142,7 +147,7 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
                     reached_capacity.set()
             return window
 
-    original = HistoryDirectPrices.commit
+    original = HistoryDirectPrices.commit_pipeline
 
     def slow_commit(prices, results):
         if not started.is_set():
@@ -154,7 +159,7 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
             assert not any(task.tencent_done for task in tasks)
         return original(prices, results)
 
-    monkeypatch.setattr(HistoryDirectPrices, "commit", slow_commit)
+    monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", slow_commit)
     config = replace(_configuration(tmp_path / "parallel"), history_workers=2)
     progress = ProgressRecorder()
     with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
@@ -165,7 +170,7 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
     assert count_at_write[0] < 64
     assert all(task.tencent_done for task in HistoryDownloadIndex(config.archive_root / "control.sqlite3").tasks())
     assert any(item.pipeline and item.pipeline.write_seconds > 0 for item in progress.values)
-    monkeypatch.setattr(HistoryDirectPrices, "commit", original)
+    monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     serial = tmp_path / "serial"
     assert run_history_sync(_configuration(serial), ManySecurities(DAYS), clock=lambda: NOW).state == "completed"
     parallel_snapshot = HistoryControlIndex(config.archive_root / "control.sqlite3").load_state().active_snapshot
@@ -173,15 +178,54 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
     assert parallel_snapshot.content_hash == serial_snapshot.content_hash
 
 
+def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(tmp_path, monkeypatch):
+    class FortySecurities(FakeSupplier):
+        def load_context(self, as_of, sessions):
+            universe = tuple(
+                BaoStockSecurity(f"{600000 + i}", "fixture", "main", date(2000, 1, 1), None, "test") for i in range(40)
+            )
+            return super().load_context(as_of, sessions, universe=universe)
+
+    opened_months = []
+    checkpoint_sizes = []
+    open_session = HistoryMonthPrices.open_write_session
+    finish = HistoryDownloadIndex.finish
+
+    def tracked_open(month):
+        opened_months.append(1)
+        return open_session(month)
+
+    def tracked_finish(index, completions):
+        checkpoint_sizes.append(len(completions))
+        return finish(index, completions)
+
+    monkeypatch.setattr(HistoryMonthPrices, "open_write_session", tracked_open)
+    monkeypatch.setattr(HistoryDownloadIndex, "finish", tracked_finish)
+    with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
+        result = run_history_sync(
+            _configuration(tmp_path),
+            FortySecurities(DAYS),
+            clock=lambda: NOW,
+            worker_pool=network,
+            writer_pool=writer,
+        )
+
+    assert result.state == "completed", result.reason
+    assert opened_months == [1]
+    assert sum(checkpoint_sizes) == 40
+    assert len(checkpoint_sizes) < 40
+    assert all(size > 1 for size in checkpoint_sizes)
+
+
 @pytest.mark.parametrize("failure", [OSError("disk_full"), KeyboardInterrupt()])
 def test_async_write_failure_never_acknowledges_or_enters_baostock(tmp_path, monkeypatch, failure):
     supplier = FakeSupplier(DAYS)
-    original = HistoryDirectPrices.commit
+    original = HistoryDirectPrices.commit_pipeline
 
     def fail(prices, results):
         raise failure
 
-    monkeypatch.setattr(HistoryDirectPrices, "commit", fail)
+    monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", fail)
     with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
         result = run_history_sync(
             _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer
@@ -189,28 +233,28 @@ def test_async_write_failure_never_acknowledges_or_enters_baostock(tmp_path, mon
     assert result.state == ("failed" if isinstance(failure, OSError) else "cancelled")
     assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
     assert "baostock_prices" not in supplier.events
-    monkeypatch.setattr(HistoryDirectPrices, "commit", original)
+    monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
 
 
 def test_async_cross_month_failure_reuses_durable_rows_on_restart(tmp_path, monkeypatch):
     days = (date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 2))
     supplier = FakeSupplier(days)
-    original = HistoryMonthPrices.save_revision_batches
+    original = HistoryMonthWriteSession.save_revision_batches
 
     def fail_second_month(month, revisions):
         if revisions[0].trade_date.month == 9:
             raise OSError("disk_full")
         return original(month, revisions)
 
-    monkeypatch.setattr(HistoryMonthPrices, "save_revision_batches", fail_second_month)
+    monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", fail_second_month)
     with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
         result = run_history_sync(
             _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer
         )
     assert result.state == "failed"
     assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
-    monkeypatch.setattr(HistoryMonthPrices, "save_revision_batches", original)
+    monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", original)
     monkeypatch.setattr(supplier, "fetch_tencent_window", lambda *_args: (_ for _ in ()).throw(RuntimeError("offline")))
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 4

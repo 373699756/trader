@@ -325,6 +325,10 @@ class HistoryMonthPrices:
         except sqlite3.Error as exc:
             raise HistoryMonthPartitionError("history month revision write failed") from exc
 
+    def open_write_session(self) -> HistoryMonthWriteSession:
+        """Open one thread-confined writer reused across durable batch transactions."""
+        return HistoryMonthWriteSession(self)
+
     def read_price_keys(self, keys: tuple[tuple[str, date], ...], sequence: int) -> tuple[HistoryRevision, ...]:
         """Read a bounded stock batch through exact observation/record keys on one connection."""
         result: list[HistoryRevision] = []
@@ -949,6 +953,39 @@ class HistoryMonthPrices:
         return connection
 
 
+class HistoryMonthWriteSession:
+    """Reuse one month's connection without weakening per-batch FULL durability."""
+
+    def __init__(self, prices: HistoryMonthPrices) -> None:
+        self._prices = prices
+        self._connection = prices._write_connection()
+        try:
+            prices._require_metadata(self._connection)
+        except (HistoryMonthPartitionError, sqlite3.Error):
+            self._connection.close()
+            raise
+
+    def save_revision_batches(self, revisions: Iterable[HistoryRevision]) -> None:
+        incoming = iter(revisions)
+        try:
+            with self._prices._activity.watch(self._connection) if self._prices._activity else nullcontext():
+                while batch := tuple(islice(incoming, 4096)):
+                    if shutil.disk_usage(self._prices._path.parent).free < 64 * 1024**2:
+                        raise HistoryMonthPartitionError("disk_space_insufficient")
+                    with self._connection:
+                        self._connection.execute("BEGIN IMMEDIATE")
+                        self._prices._save_batch(self._connection, self._prices._prepare_revisions(batch))
+                        self._connection.execute("DROP TABLE requested_history_revisions")
+        except sqlite3.Error as exc:
+            raise HistoryMonthPartitionError("history month revision write failed") from exc
+
+    def close(self) -> None:
+        try:
+            self._connection.close()
+        except sqlite3.Error as exc:
+            raise HistoryMonthPartitionError("history month writer close failed") from exc
+
+
 def _latest_query(code: str | None, board: str | None) -> tuple[str, tuple[str, ...]]:
     if code is not None and board is not None:
         return _LATEST_CODE_BOARD_SQL, (code, board)
@@ -1118,4 +1155,5 @@ __all__ = [
     "HistoryMonthPartitionError",
     "HistoryPartitionVerificationPhase",
     "HistoryMonthPrices",
+    "HistoryMonthWriteSession",
 ]
