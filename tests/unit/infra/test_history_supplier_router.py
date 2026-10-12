@@ -134,27 +134,34 @@ def test_tencent_first_fetches_every_window_in_bounded_segments(count):
     assert context.source_versions != baseline.load_context(dates[-1], count).source_versions
 
 
-@pytest.mark.parametrize("invalid", ("missing", "qfq_basis"))
-def test_invalid_tencent_tail_preserves_active_snapshot_and_checkpoint(tmp_path: Path, invalid):
+@pytest.mark.parametrize("incoming", ("missing", "qfq_basis", "raw"))
+def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, incoming):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     assert run_history_sync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
     before = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], before)
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline = Baseline(new_dates)
     result = run_history_sync(
         config,
-        _router(baseline, Prices(shift=1.0) if invalid == "qfq_basis" else Prices(**{invalid: True})),
+        _router(baseline, Prices(shift=1.0, missing=incoming == "missing", conflict=incoming == "raw")),
         clock=lambda: NOW,
     )
     state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
-    assert result.state == "failed"
-    assert state.active_snapshot == before
-    assert state.checkpoints[-1].completed_units == 2
+    if incoming == "raw":
+        assert result.state == "failed" and result.reason == "history_tail_raw_price_conflict"
+        assert state.active_snapshot == before
+        return
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert state.active_snapshot != before
     assert not any(code == "raw" for code, _dates in baseline.calls)
-    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], before)
     assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
+    current = SQLiteHistoryArchiveReader(tmp_path)
+    assert current.read_day(dates[-1], state.active_snapshot)[0].cell == rows[0].cell
+    tail = current.read_day(new_dates[-1], state.active_snapshot)[0].cell
+    assert tail.qfq.close_price == (11.0 if incoming == "qfq_basis" else 10.0)
 
 
 def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypatch):
@@ -367,9 +374,21 @@ def test_only_explicit_baseline_suspension_can_qualify_missing_tencent_prices():
     suspended = replace(evidence.batch.cells[0], qfq=qfq, status="supplier_marked_suspended")
     value = qualify_history_pairs(security.code, (day,), missing, (suspended,))
     assert value[0].status == "supplier_marked_suspended"
+    existing = PublishedHistoryWindow(security.code, (project_history_cell(suspended),))
+    assert qualify_history_pairs(security.code, (day,), existing) == (suspended,)
     assert qualify_history_pairs(security.code, (day,), missing)[0].status == "unknown_missing"
     with pytest.raises(RuntimeError, match="anchor_missing"):
         qualify_history_pairs(security.code, (day,), Prices().fetch_window(security, (day,)), (suspended,))
+
+
+def test_first_existing_policy_does_not_relax_tencent_segment_conflicts():
+    from trader.download.domain.history_price_qualification import merge_tencent_windows
+
+    day = date(2026, 9, 9)
+    security = _current_universe("600001")[0]
+    windows = (Prices(shift=0).fetch_window(security, (day,)), Prices(shift=0.1).fetch_window(security, (day,)))
+    with pytest.raises(RuntimeError, match="history_tail_qfq_basis_conflict"):
+        merge_tencent_windows(security.code, (day,), windows)
 
 
 def test_completed_stock_reports_real_route_and_requested_sessions(capsys):

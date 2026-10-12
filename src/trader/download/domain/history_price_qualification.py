@@ -1,4 +1,4 @@
-"""Qualify same-source daily price pairs; an unknown gap never means suspended."""
+"""Keep existing valid daily pairs and fill gaps; unknown never means suspended."""
 
 from __future__ import annotations
 
@@ -13,28 +13,29 @@ HISTORY_TAIL_CONTRACT = ("history", "tencent-pairs-sparse-recovery")
 HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 
 
-def require_history_qfq_overlap(previous: BaoStockDailyCell, incoming: BaoStockDailyCell) -> None:
-    before, after = previous.qfq, incoming.qfq
+def _require_raw_overlap(previous: BaoStockDailyCell, incoming: BaoStockDailyCell) -> None:
+    before, after = previous.unadjusted, incoming.unadjusted
     if before is None or after is None or before.trading_status != after.trading_status:
-        raise RuntimeError("history_tail_qfq_basis_conflict")
+        raise RuntimeError("history_tail_raw_price_conflict")
     if before.trading_status != "suspended":
-        _require_qfq_prices(before, after)
+        _require_raw_prices(before, after)
 
 
 def qualify_price_overlap(
     cells: tuple[BaoStockDailyCell, ...], previous: tuple[BaoStockDailyCell, ...], *, full_window: bool
 ) -> tuple[BaoStockDailyCell, ...]:
+    """Check raw anchors but preserve the entire previously qualified daily pair."""
     prior = {cell.trade_date: cell for cell in previous}
     anchored = full_window
     for cell in cells:
         before = prior.get(cell.trade_date)
         if before is not None and before.obtained and cell.obtained:
-            require_history_qfq_overlap(before, cell)
+            _require_raw_overlap(before, cell)
             anchored = True
     result = []
     for cell in cells:
         before = prior.get(cell.trade_date)
-        if not cell.obtained and before is not None and before.obtained:
+        if before is not None and before.obtained:
             result.append(before)
         elif anchored or not cell.obtained:
             result.append(cell)
@@ -117,8 +118,10 @@ def qualify_history_pairs(
     result = []
     for day in dates:
         candidate = candidates.get(day)
-        if candidate is not None and candidate.status == "complete":
-            result.append(BaoStockDailyCell(code, day, "complete", _side(candidate.unadjusted), _side(candidate.qfq)))
+        if candidate is not None and candidate.status in {"complete", "supplier_marked_suspended"}:
+            result.append(
+                BaoStockDailyCell(code, day, candidate.status, _side(candidate.unadjusted), _side(candidate.qfq))
+            )
         else:
             recovered = supplements.get(day)
             result.append(
@@ -134,14 +137,20 @@ def _require_recovery_anchor(candidate: PublishedHistoryCell, recovery: BaoStock
     if raw is None or qfq is None or raw.trading_status != "trading" or qfq.trading_status != "trading":
         raise RuntimeError("history_recovery_anchor_missing")
     assert candidate.unadjusted is not None and candidate.qfq is not None
-    _require_qfq_prices(candidate.qfq, qfq)
+    # Complete existing pairs win; recovery supplies missing dates, not qfq revisions.
+    _require_raw_prices(candidate.unadjusted, raw)
+
+
+def _require_raw_prices(
+    left: PublishedHistorySide | BaoStockDailySide, right: PublishedHistorySide | BaoStockDailySide
+) -> None:
     for a, b, tolerance in (
-        (raw.open_price, candidate.unadjusted.open_price, 0.0051),
-        (raw.high_price, candidate.unadjusted.high_price, 0.0051),
-        (raw.low_price, candidate.unadjusted.low_price, 0.0051),
-        (raw.close_price, candidate.unadjusted.close_price, 0.0051),
-        (raw.volume, candidate.unadjusted.volume, 100.0),
-        (raw.amount, candidate.unadjusted.amount, 100.0),
+        (left.open_price, right.open_price, 0.0051),
+        (left.high_price, right.high_price, 0.0051),
+        (left.low_price, right.low_price, 0.0051),
+        (left.close_price, right.close_price, 0.0051),
+        (left.volume, right.volume, 100.0),
+        (left.amount, right.amount, 100.0),
     ):
         if a is None or b is None or not isclose(a, b, rel_tol=0.0, abs_tol=tolerance):
             raise RuntimeError("history_tail_raw_price_conflict")

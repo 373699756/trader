@@ -656,8 +656,8 @@ def test_resume_reuses_tencent_and_skips_persisted_baostock_batches(tmp_path: Pa
     assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], control.load_state().active_snapshot)) == 2
 
 
-@pytest.mark.parametrize("conflict", (False, True))
-def test_price_gap_supplement_checks_tencent_adjustment_anchors(tmp_path: Path, conflict: bool) -> None:
+@pytest.mark.parametrize("conflict", ("none", "qfq", "raw"))
+def test_price_gap_supplement_keeps_existing_qfq_but_rejects_raw_conflicts(tmp_path: Path, conflict: str) -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
     class PartialSupplier(FakeSupplier):
@@ -671,7 +671,14 @@ def test_price_gap_supplement_checks_tencent_adjustment_anchors(tmp_path: Path, 
         def fetch_baostock_prices(self, security, requested):
             assert security.code == "600002"
             assert requested == dates  # One missing day plus two adjustment anchors.
-            return _download(security.code, requested, qfq_shift=1.0 if conflict else 0.0)
+            result = _download(security.code, requested, qfq_shift=1.0 if conflict == "qfq" else 0.0)
+            if conflict == "raw":
+                cells = tuple(
+                    replace(cell, unadjusted=replace(cell.unadjusted, close_price=cell.unadjusted.close_price + 1))
+                    for cell in result.batch.cells
+                )
+                result = replace(result, batch=replace(result.batch, cells=cells))
+            return result
 
     recorder = ProgressRecorder()
     status = run_history_sync(_configuration(tmp_path), PartialSupplier(dates), clock=lambda: NOW, progress=recorder)
@@ -680,9 +687,9 @@ def test_price_gap_supplement_checks_tencent_adjustment_anchors(tmp_path: Path, 
         item for item in recorder.values if item.stage == "baostock_gap_fill" and item.state in {"completed", "failed"}
     )
     assert (summary.price_pair_cells, summary.failed_codes) == (1, 0)
-    assert gap_result.state == ("failed" if conflict else "completed")
+    assert gap_result.state == ("failed" if conflict == "raw" else "completed")
     active = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
-    if conflict:
+    if conflict == "raw":
         assert status.state == "completed"
         rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)
         assert rows[0].cell.obtained
@@ -691,7 +698,11 @@ def test_price_gap_supplement_checks_tencent_adjustment_anchors(tmp_path: Path, 
         assert status.state == "completed"
         rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], active)
         assert len(rows) == 2
-        assert all(row.cell.qfq.close_price == 10 for row in rows)
+        assert rows[0].cell.qfq.close_price == 10
+        assert rows[1].cell.qfq.close_price == (11 if conflict == "qfq" else 10)
+        overlap = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[0], active)
+        assert all(row.cell.qfq.close_price == 8 for row in overlap)
+        assert len([item for item in recorder.values if item.stage == "baostock_gap_fill" and item.attempt > 1]) == 0
 
 
 def test_tencent_cancellation_discards_late_results_before_baostock(tmp_path: Path) -> None:

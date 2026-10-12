@@ -171,7 +171,10 @@ def test_legacy_qualified_candidates_migrate_once_without_changing_other_state(t
     assert stage.unresolved_price_counts() == ({"600001": 0, "600002": 1}, frozenset())
     assert stage.gap_dates("600002", "baostock_price_pair") == (day.isoformat(),)
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT name FROM phase_state").fetchall() == [("gap_inventory",)]
+        assert connection.execute("SELECT name FROM phase_state ORDER BY name").fetchall() == [
+            ("existing_price_priority",),
+            ("gap_inventory",),
+        ]
         assert connection.execute("SELECT COUNT(*) FROM candidates").fetchone() == (1,)
 
 

@@ -372,6 +372,44 @@ def test_legacy_recovery_batches_month_reads_and_keeps_unchanged_seal(tmp_path, 
         assert connection.execute("SELECT COUNT(*) FROM daily_observations").fetchone() == (0,)
 
 
+@pytest.mark.parametrize("layout", ("candidate", "qualified", "pending"))
+def test_old_qfq_rejection_reopens_once_without_redownloading_valid_candidates(tmp_path, layout):
+    dates = (date(2026, 9, 8), date(2026, 9, 9))
+    context = _context(tmp_path, FakeSupplier(dates), ("600001", "600002"))
+    stage = context.stage
+    pair = _download("600001", dates).batch.cells[0]
+    missing = BaoStockDailyCell("600001", dates[1], "unknown_missing", None, None)
+    from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
+
+    window = PublishedHistoryWindow("600001", tuple(project_history_cell(cell) for cell in (pair, missing)))
+    stage.save_batch((window,), ())
+    pending = prepare_pending(tmp_path, dates, None, False)
+    if layout != "candidate":
+        revisions = tuple(HistoryRevision(1, "main", cell, None, None, None) for cell in (pair, missing))
+        stage.save_qualified((("600001", revisions, 1),))
+        if layout == "pending":
+            write_qualified_month(pending, stage, (2026, 9))
+    for code, reason in (("600001", "history_tail_qfq_basis_conflict"), ("600002", "supplier_daily_raw_timeout")):
+        for _ in range(3):
+            stage.begin_recovery_attempt(code)
+            stage.finish_recovery_attempt(code, reason)
+    with sqlite3.connect(tmp_path / "stage.sqlite3") as connection:
+        connection.execute("DELETE FROM phase_state WHERE name='existing_price_priority'")
+    stage.initialize()
+    assert stage.recovery_checkpoint("600001").attempts == 0
+    assert stage.recovery_checkpoint("600002").attempts == 3
+    reopen_legacy_history_gaps(HistoryGapResumeContext(stage, pending, 1, lambda: False), (("600001", dates),))
+    stage.initialize()
+    recover_selected_history_gaps(context)
+    assert stage.recovery_checkpoint("600001").succeeded
+    assert stage.recovery_checkpoint("600001").attempts == 1
+    assert [code for code, _ in context.supplier.calls] == ["600001"]
+    stage.initialize()
+    assert stage.recovery_checkpoint("600001").succeeded
+    recovered, _, _ = stage.read_supplement_context("600001")
+    assert recovered.cells[0] == project_history_cell(pair)
+
+
 def test_same_cutoff_only_retries_gaps_but_new_day_rereads_both_codes(tmp_path):
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 

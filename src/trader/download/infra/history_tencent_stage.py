@@ -169,6 +169,20 @@ class HistoryTencentStage:
             elif row[0] != self._sync_identity:
                 raise RuntimeError("history_tencent_stage_identity_conflict")
             self._migrate_qualified_candidates(connection)
+            self._release_qfq_conflicts(connection)
+
+    def _release_qfq_conflicts(self, connection: sqlite3.Connection) -> None:
+        """Reopen old qfq-only rejections once without discarding valid downloaded rows."""
+        marker = "existing_price_priority"
+        if connection.execute("SELECT 1 FROM phase_state WHERE name=?", (marker,)).fetchone():
+            return
+        codes = connection.execute(
+            "SELECT code FROM recovery_attempts WHERE succeeded=0 AND failure_reason='history_tail_qfq_basis_conflict'"
+        ).fetchall()
+        for (code,) in codes:
+            connection.execute("DELETE FROM legacy_recovery WHERE code=?", (code,))
+            connection.execute("DELETE FROM recovery_attempts WHERE code=?", (code,))
+        connection.execute("INSERT INTO phase_state(name) VALUES (?)", (marker,))
 
     def _migrate_qualified_candidates(self, connection: sqlite3.Connection) -> None:
         """Consume the legacy format marker once, in the initialization transaction."""
