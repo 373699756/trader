@@ -99,8 +99,11 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.tencent_summary is not None:
         summary = progress.tencent_summary
         return (
-            f"成功 {summary.succeeded_codes} 股",
+            f"完整 {summary.succeeded_codes} 股",
+            f"部分 {summary.partial_codes} 股",
             f"失败 {summary.failed_codes} 股",
+            f"其中待重试 {summary.pending_codes} 股",
+            f"其中本地复用 {summary.reused_codes} 股",
             f"重叠冲突 {summary.overlap_conflicts} 股",
             f"其它失败 {summary.other_failures} 股",
         )
@@ -118,6 +121,33 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
             f"未知排除 {st_summary.unknown}",
         )
     return _recovery_summary_parts(progress)
+
+
+def _state_label(progress: HistorySyncProgress) -> str:
+    if progress.failure_reason == "tencent_history_pending":
+        return "待重试（暂不转BaoStock）"
+    if progress.price_coverage is not None and progress.price_coverage.missing and progress.state == "completed":
+        return "部分（Tencent补取后仍缺失或未通过校验）"
+    if (
+        progress.stage == "history_st_reference"
+        and progress.state == "completed"
+        and progress.completed_units < progress.total_units
+    ):
+        return "检查中"
+    return _STATE_LABELS[progress.state]
+
+
+def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+    coverage = progress.price_coverage
+    if coverage is None:
+        return ()
+    return (
+        f"本次应有 {coverage.expected} 日",
+        f"raw {coverage.raw} 日",
+        f"qfq {coverage.qfq} 日",
+        f"完整配对 {coverage.paired} 日",
+        f"剩余缺日 {coverage.missing} 日",
+    )
 
 
 class StderrHistorySyncProgress:
@@ -206,17 +236,12 @@ class StderrHistorySyncProgress:
         parts = [
             _format_duration(max(0.0, now - self._started_at)),
             _STAGE_LABELS[progress.stage],
-            _STATE_LABELS[progress.state],
+            _state_label(progress),
         ]
-        if (
-            progress.stage == "history_st_reference"
-            and progress.state == "completed"
-            and progress.completed_units < progress.total_units
-        ):
-            parts[2] = "检查中"
         if progress.stage in _COUNT_STAGES:
             parts.append(_format_count(progress.completed_units, progress.total_units))
         parts.extend(_summary_parts(progress))
+        parts.extend(_price_coverage_parts(progress))
         if progress.current_item is not None:
             item_label = _ITEM_LABELS.get(progress.stage, "当前")
             parts.append(f"{item_label} {progress.current_item}")

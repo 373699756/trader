@@ -133,6 +133,11 @@ class HistoryDownloadIndex:
                 )
             )
 
+    def gap_codes(self) -> frozenset[str]:
+        """Read the recovery population once, without one connection per stock."""
+        with closing(self._connect()) as connection:
+            return frozenset(row[0] for row in connection.execute("SELECT DISTINCT code FROM download_gaps"))
+
     def finish(self, task: HistoryDownloadTask, missing: tuple[date, ...], failure: str | None) -> None:
         """Advance metadata only after all monthly price commits have succeeded."""
         with closing(self._connect()) as connection, connection:

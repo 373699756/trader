@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
 import requests
@@ -241,16 +243,24 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
     if not 1 <= len(args.codes) <= 3:
         raise ValueError("whole-window probe permits 1..3 securities")
     end = completed_daily_cutoff(datetime.now(ZoneInfo("Asia/Shanghai")))
-    # This is a date-range capability probe, not an exchange-calendar coverage claim.
-    dates = tuple(end - timedelta(days=3650 - i) for i in range(3651))
     results: list[dict[str, object]] = []
     with requests.Session() as session:
+        observations: list[dict[str, object]] = []
+        session.hooks["response"].append(partial(_observe_history_response, observations))
         pool = TencentSessionPool((session,))
         supplier = TencentQfqSupplier(
             TencentQfqDependencies(pool.borrow, lambda day: (), lambda: False),
             TencentQfqOptions(timeout_seconds=args.timeout_seconds, retries=0, history_host=args.tencent_history_host),
         )
+        try:
+            dates = supplier.load_calendar(end, 2000).open_dates
+        except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+            emit_report(
+                {"schema_version": "tencent-whole-window-probe", "status": "failed", "error": type(exc).__name__}
+            )
+            return 1
         for code in args.codes:
+            observations.clear()
             security = BaoStockSecurity(code, "capability probe", "main", date(1990, 1, 1), None, "diagnostic")
             started = time.monotonic()
             try:
@@ -261,22 +271,68 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
                         "raw_rows": sum(cell.unadjusted is not None for cell in window.cells),
                         "qfq_rows": sum(cell.qfq is not None for cell in window.cells),
                         "paired_rows": len(paired),
+                        "expected_sessions": len(dates),
+                        "missing_sessions": len(dates) - len(paired),
                         "first_date": paired[0].isoformat() if paired else None,
                         "last_date": paired[-1].isoformat() if paired else None,
                         "seconds": round(time.monotonic() - started, 3),
+                        "requests": list(observations),
                     }
                 )
             except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
                 results.append({"failure": type(exc).__name__, "seconds": round(time.monotonic() - started, 3)})
-    passed = all(isinstance(item.get("paired_rows"), int) and int(str(item["paired_rows"])) > 0 for item in results)
+    failed = any("failure" in item for item in results)
+    passed = all(item.get("paired_rows") == 2000 for item in results)
     emit_report(
         {
             "schema_version": "tencent-whole-window-probe",
-            "status": "passed" if passed else "failed",
-            "summary": {"requested_rows_per_side": 2000, "calendar_coverage_verified": False, "samples": results},
+            "status": "failed" if failed else "passed" if passed else "degraded",
+            "summary": {
+                "requested_rows_per_side": 2000,
+                "calendar_coverage_verified": True,
+                "security_listing_dates_verified": False,
+                "samples": results,
+            },
         }
     )
-    return 0 if passed else 1
+    return 1 if failed else 0
+
+
+def _observe_history_response(
+    observations: list[dict[str, object]], response: requests.Response, **_kwargs: object
+) -> None:
+    """Report only bounded date/count metadata, never prices or vendor payloads."""
+    if len(observations) >= 64:
+        return
+    url = urlsplit(response.url)
+    param = parse_qs(url.query).get("param", [""])[0].split(",")
+    if len(param) != 6:
+        return
+    item: dict[str, object] = {
+        "host": url.hostname,
+        "start": param[2],
+        "end": param[3],
+        "mode": param[5],
+        "http_status": response.status_code,
+    }
+    try:
+        text = response.text
+        marker = text.find("={")
+        payload = json.loads(text[marker + 1 :] if marker >= 0 else text)
+        stock = payload["data"][param[0]]
+        row_kind = "qfqday" if param[5] == "qfq" and "qfqday" in stock else "day"
+        rows = stock.get(row_kind, [])
+        if not isinstance(rows, list):
+            raise ValueError("invalid response row container")
+        item.update(
+            rows=len(rows),
+            row_kind=row_kind,
+            first=date.fromisoformat(rows[0][0]).isoformat() if rows else None,
+            last=date.fromisoformat(rows[-1][0]).isoformat() if rows else None,
+        )
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError):
+        item["response_metadata_invalid"] = True
+    observations.append(item)
 
 
 if __name__ == "__main__":

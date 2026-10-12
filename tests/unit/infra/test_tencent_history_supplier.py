@@ -95,14 +95,14 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
     assert len(sessions[0].calls) == 2
 
 
-def test_whole_history_requests_2000_once_and_keeps_real_partial_pairs():
+def test_unavailable_old_pages_keep_real_partial_pairs_after_bounded_recovery():
     http = _Http()
     days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
     http.raw = [[day.isoformat(), *ROW[1:]] for day in days]
     http.adjusted = http.raw[-640:]
     window = http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
-    assert len(http.calls) == 2
-    assert all(",2000," in param for param in http.calls)
+    assert 2 < len(http.calls) <= 12
+    assert all(",2000," in param for param in http.calls[:2])
     assert sum(cell.status == "complete" for cell in window.cells) == 640
     assert sum(cell.status == "qfq_missing" for cell in window.cells) == 1360
     assert tuple(cell.trade_date for cell in window.cells) == days
@@ -138,9 +138,9 @@ def test_rejects_invalid_rows_without_silently_dropping_them(invalid):
         http.raw[0][5] = "nan"
     else:
         http.raw[0][3] = "9"
-    with pytest.raises(ValueError):
-        http.supplier().fetch_window(SECURITY, (DAY,))
-    assert len(http.calls) == 1
+    window = http.supplier().fetch_window(SECURITY, (DAY,))
+    assert window.cells[0].unadjusted is None
+    assert len(http.calls) == 3
 
 
 def test_missing_one_side_remains_pending_and_is_not_suspended():
@@ -176,8 +176,9 @@ def test_neutral_adjustment_rejects_invalid_or_nonzero_evidence(index, invalid):
     http = _Http()
     http.adjusted = {"day": [ROW.copy()]}
     http.adjusted["day"][0][index] = invalid
-    with pytest.raises(ValueError, match="qualified_rows"):
-        http.supplier().fetch_window(SECURITY, (DAY,))
+    window = http.supplier().fetch_window(SECURITY, (DAY,))
+    assert window.cells[0].qfq is None
+    assert len(http.calls) == 3
 
 
 @pytest.mark.parametrize("invalid", ("short", "adjustment_record", "mixed_rows"))
@@ -194,20 +195,21 @@ def test_neutral_adjustment_requires_evidence_on_every_row(invalid):
         changed = row.copy()
         changed[9] = "1"
         http.adjusted["day"].append(changed)
-    with pytest.raises(ValueError, match="qualified_rows"):
-        http.supplier().fetch_window(SECURITY, (DAY,))
+    window = http.supplier().fetch_window(SECURITY, (DAY,))
+    assert window.cells[0].qfq is None
+    assert len(http.calls) == 3
 
 
 def test_retries_transport_only_and_cancellation_stops_attempts():
     http = _Http()
     http.error = requests.Timeout()
-    with pytest.raises(RuntimeError, match="request_failed"):
+    with pytest.raises(RuntimeError, match="tencent_history_pending"):
         http.supplier().fetch_window(SECURITY, (DAY,))
-    assert len(http.calls) == 3
+    assert len(http.calls) == 6
     http.cancelled = True
     with pytest.raises(RuntimeError, match="cancelled"):
         http.supplier().fetch_window(SECURITY, (DAY,))
-    assert len(http.calls) == 3
+    assert len(http.calls) == 6
 
 
 def test_rejects_unbounded_or_nonfinite_options():

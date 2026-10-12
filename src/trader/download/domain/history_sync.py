@@ -16,6 +16,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
+from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.published_history import PublishedHistoryWindow
 
@@ -123,15 +124,28 @@ class HistoryTencentSummary:
     succeeded_codes: int
     failed_codes: int
     overlap_conflicts: int
+    partial_codes: int = 0
+    pending_codes: int = 0
+    reused_codes: int = 0
 
     def __post_init__(self) -> None:
         if (
             any(
                 type(value) is not int or value < 0
-                for value in (self.processed_codes, self.succeeded_codes, self.failed_codes, self.overlap_conflicts)
+                for value in (
+                    self.processed_codes,
+                    self.succeeded_codes,
+                    self.failed_codes,
+                    self.overlap_conflicts,
+                    self.partial_codes,
+                    self.pending_codes,
+                    self.reused_codes,
+                )
             )
-            or self.succeeded_codes + self.failed_codes != self.processed_codes
+            or self.succeeded_codes + self.failed_codes + self.partial_codes != self.processed_codes
             or self.overlap_conflicts > self.failed_codes
+            or self.pending_codes > self.failed_codes
+            or self.reused_codes > self.succeeded_codes
         ):
             raise ValueError("history Tencent summary is invalid")
 
@@ -192,6 +206,7 @@ class HistorySyncProgress:
     failure_reason: str | None = None
     cache_hit: bool | None = None
     required_free_bytes: int | None = None
+    price_coverage: HistoryPriceCoverage | None = None
 
     def __post_init__(self) -> None:
         if (

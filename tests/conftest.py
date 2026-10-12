@@ -31,6 +31,9 @@ _TRAINING_COMPONENT_PATHS = frozenset(
 )
 _HISTORY_PATHS = frozenset(
     {
+        "unit/infra/test_history_tencent_coverage.py",
+        "unit/infra/test_tencent_history_recovery.py",
+        "unit/scripts/test_tencent_history_coverage.py",
         "contract/test_baostock_history_cli.py",
         "contract/test_history_archive_repack_contract.py",
         "contract/test_history_automation_contract.py",

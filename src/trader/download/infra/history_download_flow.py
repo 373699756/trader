@@ -6,10 +6,12 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.domain.history_price_coverage import HistoryPriceCoverage
+from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import (
     HistoryRecoverySummary,
     HistorySupplierContext,
@@ -58,6 +60,7 @@ class _TencentJob:
 class HistoryDownloadFlow:
     def __init__(self, resources: HistoryDownloadResources) -> None:
         self._resources = resources
+        self._reused_codes: set[str] = set()
 
     def _check(self) -> None:
         if self._resources.cancel():
@@ -98,6 +101,7 @@ class HistoryDownloadFlow:
                     supplier_source="tencent" if result.task.dates else None,
                     requested_sessions=min(2000, len(result.task.dates)) if result.task.dates else None,
                     failure_reason=result.failure,
+                    price_coverage=result.coverage,
                 )
             )
         results.clear()
@@ -106,8 +110,12 @@ class HistoryDownloadFlow:
     def tencent(self) -> None:
         resources = self._resources
         tasks = resources.index.tasks()
-        jobs = iter(task for task in tasks if not task.tencent_done)
-        completed = sum(task.tencent_done for task in tasks)
+        gap_codes = resources.index.gap_codes()
+        # Old completed requests may still have truncated history. Requalify gaps
+        # with Tencent before allowing any BaoStock attempt, including on resume.
+        jobs = iter(task for task in tasks if not task.tencent_done or task.code in gap_codes)
+        completed = sum(task.tencent_done and task.code not in gap_codes for task in tasks)
+        self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
         futures: dict[Future[PublishedHistoryWindow], _TencentJob] = {}
         buffered: list[HistoryPriceResult] = []
         exhausted = False
@@ -140,7 +148,10 @@ class HistoryDownloadFlow:
             for future in futures:
                 future.cancel()
         finished = resources.index.tasks()
+        gap_codes = resources.index.gap_codes()
         failed = sum(task.failure is not None for task in finished)
+        partial = sum(task.failure is None and task.code in gap_codes for task in finished)
+        pending = sum(task.failure == "tencent_history_pending" for task in finished)
         conflicts = sum(task.failure == "history_tail_raw_price_conflict" for task in finished)
         self._emit(
             HistorySyncProgress(
@@ -148,7 +159,15 @@ class HistoryDownloadFlow:
                 "completed",
                 len(tasks),
                 len(tasks),
-                tencent_summary=HistoryTencentSummary(len(tasks), len(tasks) - failed, failed, conflicts),
+                tencent_summary=HistoryTencentSummary(
+                    len(tasks),
+                    len(tasks) - failed - partial,
+                    failed,
+                    conflicts,
+                    partial,
+                    pending,
+                    len(self._reused_codes),
+                ),
             )
         )
 
@@ -167,7 +186,11 @@ class HistoryDownloadFlow:
                 return True
             previous = resources.prices.read(task.code, task.dates)
             if not task.dates or sum(cell.obtained for cell in previous) == len(task.dates):
-                buffered.append(HistoryPriceResult(task, (), (), None))
+                self._reused_codes.add(task.code)
+                count = len(task.dates)
+                buffered.append(
+                    HistoryPriceResult(task, (), (), None, HistoryPriceCoverage(count, count, count, count))
+                )
                 continue
             obtained = {cell.trade_date for cell in previous if cell.obtained}
             missing = set(task.dates) - obtained
@@ -193,10 +216,16 @@ class HistoryDownloadFlow:
     def _tencent_result(self, future: Future[PublishedHistoryWindow], job: _TencentJob) -> HistoryPriceResult:
         task = job.task
         try:
-            window = future.result()
+            pending = False
+            try:
+                window = future.result()
+            except HistorySupplierPendingError as exc:
+                window = exc.window
+                pending = True
             if window.code != task.code or tuple(cell.trade_date for cell in window.cells) != job.dates:
                 raise RuntimeError("history_supplier_identity_conflict")
-            return self._prepare(task, window)
+            result = self._prepare(task, window)
+            return replace(result, failure="tencent_history_pending") if pending and result.missing else result
         except HistoryMonthPartitionError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -205,14 +234,22 @@ class HistoryDownloadFlow:
                 raise
             previous = self._resources.prices.read(task.code, task.dates)
             obtained = {cell.trade_date for cell in previous if cell.obtained}
-            return HistoryPriceResult(task, (), tuple(day for day in task.dates if day not in obtained), failure)
+            count = len(obtained)
+            return HistoryPriceResult(
+                task,
+                (),
+                tuple(day for day in task.dates if day not in obtained),
+                failure,
+                HistoryPriceCoverage(len(task.dates), count, count, count),
+            )
 
     def baostock(self) -> None:
         resources = self._resources
+        gap_codes = resources.index.gap_codes()
         tasks = tuple(
             sorted(
-                (task for task in resources.index.tasks() if resources.index.gaps(task.code)),
-                key=lambda task: (task.failure is None, task.code),
+                (task for task in resources.index.tasks() if task.code in gap_codes and task.failure is None),
+                key=lambda task: task.code,
             )
         )
         succeeded = failed = 0

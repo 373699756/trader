@@ -121,7 +121,13 @@ class FakeSupplier:
         self.events.append("tencent")
         self.calls.append((security.code, dates))
         if security.code == self.fail_code:
-            raise RuntimeError("tencent_query_failed")
+            return PublishedHistoryWindow(
+                security.code,
+                tuple(
+                    project_history_cell(replace(cell, status="unknown_missing", unadjusted=None, qfq=None))
+                    for cell in _download(security.code, dates).batch.cells
+                ),
+            )
         shift = 1.0 if security.code == self.changed_qfq_code else 0.0
         return PublishedHistoryWindow(
             security.code,
@@ -382,7 +388,7 @@ def test_baostock_attempt_budget_survives_interruption_before_price_acknowledgem
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 3
     assert supplier.events.count("baostock_prices") == 3
-    assert supplier.events.count("tencent") == 2
+    assert supplier.events.count("tencent") == 5  # Recheck unresolved Tencent capability on every resume.
 
 
 def test_resume_finishes_old_cutoff_then_updates_to_current_cutoff(tmp_path, monkeypatch):

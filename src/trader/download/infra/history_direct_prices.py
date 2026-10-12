@@ -10,6 +10,7 @@ from pathlib import Path
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
+from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_price_qualification import qualify_history_pairs, qualify_price_overlap
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import PublishedHistoryWindow
@@ -24,6 +25,7 @@ class HistoryPriceResult:
     revisions: tuple[HistoryRevision, ...]
     missing: tuple[date, ...]
     failure: str | None
+    coverage: HistoryPriceCoverage | None = None
 
 
 class HistoryDirectPrices:
@@ -87,6 +89,10 @@ class HistoryDirectPrices:
         cells = qualify_history_pairs(task.code, task.dates, window, recovery)
         cells = qualify_price_overlap(cells, previous, full_window=full_window)
         obtained = {cell.trade_date for cell in previous if cell.obtained}
+        raw = obtained | {cell.trade_date for cell in window.cells if cell.unadjusted is not None}
+        qfq = obtained | {cell.trade_date for cell in window.cells if cell.qfq is not None}
+        raw.update(cell.trade_date for cell in cells if cell.obtained)
+        qfq.update(cell.trade_date for cell in cells if cell.obtained)
         return HistoryPriceResult(
             task,
             tuple(
@@ -96,6 +102,7 @@ class HistoryDirectPrices:
             ),
             tuple(cell.trade_date for cell in cells if not cell.obtained),
             None,
+            HistoryPriceCoverage(len(task.dates), len(raw), len(qfq), sum(cell.obtained for cell in cells)),
         )
 
     def commit(self, results: tuple[HistoryPriceResult, ...]) -> None:

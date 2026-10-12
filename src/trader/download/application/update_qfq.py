@@ -12,6 +12,7 @@ from typing import Protocol
 
 from trader.download.application.qfq_download_progress import QfqDownloadProgress, qfq_failure_code, qfq_message
 from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import (
@@ -318,7 +319,17 @@ class UpdateQfqWindows:
                     if isinstance(exc, QfqWindowIncompleteError)
                     else None
                 )
-                gaps.append(_GapJob(job.security, job.dates, missing))
+                if isinstance(exc, QfqWindowIncompleteError):
+                    progress.publish(
+                        "Tencent覆盖",
+                        f"{job.security.code} | 应有 {len(job.dates)} 日 "
+                        f"| raw {len(job.dates) - len(exc.raw_missing)} 日 "
+                        f"| qfq {len(job.dates) - len(exc.qfq_missing)} 日 "
+                        f"| 剩余缺日 {len(set(exc.raw_missing) | set(exc.qfq_missing))} 日",
+                    )
+                    gaps.append(_GapJob(job.security, job.dates, missing))
+                elif isinstance(exc, HistorySupplierPendingError):
+                    progress.publish("Tencent待重试", f"{job.security.code} | 暂时失败，不转BaoStock")
         return gaps, ready
 
     def _submit(self, job: _DownloadJob) -> Future[PublishedHistoryWindow]:
@@ -351,6 +362,13 @@ class UpdateQfqWindows:
                 progress.record_pending(job.security, exc)
             return ()
         progress.completed += len(downloaded)
+        for job, window in downloaded:
+            progress.publish(
+                "Tencent覆盖",
+                f"{job.security.code} | 应有 {len(job.dates)} 日 "
+                f"| raw {len(window.cells)} 日 | qfq {len(window.cells)} 日 "
+                f"| 完整配对 {len(window.cells)} 日 | 剩余缺日 0 日",
+            )
         return tuple(window.code for _job, window in downloaded)
 
     def _recover_gaps(
@@ -362,7 +380,7 @@ class UpdateQfqWindows:
         progress.publish(
             "Tencent阶段完成",
             f"合格 {progress.completed} | 待补股票 {len(gaps)} | 已知缺失股票交易日 {missing_days} "
-            f"| 缺日数未确定 {unknown} 只 | 本地检查失败 {progress.pending - len(gaps)} 只",
+            f"| 缺日数未确定 {unknown} 只 | 其它待重试或检查失败 {progress.pending - len(gaps)} 只",
         )
         if self.gap_supplier is None or not gaps:
             return

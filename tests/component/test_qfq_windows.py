@@ -29,7 +29,7 @@ from trader.download.domain.published_history import (
     PublishedHistoryWindow,
     project_history_cell,
 )
-from trader.download.domain.qfq_window import QfqUpdateResult, completed_daily_cutoff
+from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowIncompleteError, completed_daily_cutoff
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
@@ -335,7 +335,7 @@ class Supplier:
     def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         self.calls.append((security.code, dates))
         if self.fail:
-            raise RuntimeError("supplier fixture failure")
+            raise QfqWindowIncompleteError(dates, dates)
         cells = tuple(_cell(security.code, day, price=11.0 if self.conflict else 10.0) for day in dates)
         return PublishedHistoryWindow(security.code, tuple(project_history_cell(cell) for cell in cells))
 
@@ -460,7 +460,7 @@ def test_302_stock_download_recovery_publication_and_restart(tmp_path, tencent_f
     assert result.completed_codes == 1 and result.pending_codes == 0 and result.failure_reason is None
     assert len(supplier.calls) == 1
     assert recovery_calls == (["302132"] if tencent_failed else [])
-    assert any("本地检查失败 0 只" in line for line in logs)
+    assert any("其它待重试或检查失败 0 只" in line for line in logs)
     assert result.changed_files == ("v2/qfq_szse_chinext.sqlite3", "v3/qfq_szse_chinext.sqlite3")
     for cache in (updater.v2, updater.v3):
         assert cache.codes() == frozenset({"302132"})
@@ -578,7 +578,7 @@ def test_all_tencent_waves_finish_before_serial_recovery_and_recovered_checkpoin
             events.append(("tencent", security.code))
             window = super().fetch_window(security, dates)
             if security.code == "600004":
-                raise RuntimeError("supplier_failed")
+                raise QfqWindowIncompleteError(dates, dates)
             if security.code == "600001":
                 return replace(
                     window,
@@ -614,7 +614,7 @@ def test_all_tencent_waves_finish_before_serial_recovery_and_recovered_checkpoin
         result = updater.execute(observed)
         assert result.completed_codes == 4 and result.pending_codes == 0
         assert [event[0] for event in events] == ["tencent"] * 4 + ["baostock"] * 2
-        assert any("待补股票 2 | 已知缺失股票交易日 1 | 缺日数未确定 1 只" in line for line in logs)
+        assert any("待补股票 2 | 已知缺失股票交易日 252 | 缺日数未确定 0 只" in line for line in logs)
         assert any("已处理 4/4（100.00%）| 合格 4 | 待补 0" in line for line in logs)
         for cache in (updater.v2, updater.v3):
             assert cache.source_identity("600001") == "baostock:fixture"
@@ -676,7 +676,7 @@ def test_cancel_does_not_start_recovery_or_publish_late_recovery_result(tmp_path
             nonlocal cancelled
             if phase == "tencent":
                 cancelled = True
-            raise RuntimeError("supplier_failed")
+            raise QfqWindowIncompleteError(dates, dates)
 
     class Recovery:
         source_identity = "baostock:fixture"
@@ -742,7 +742,7 @@ def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_p
     class Tencent(Supplier):
         def fetch_window(self, security, dates):
             events.append("tencent")
-            raise RuntimeError("supplier_failed")
+            raise QfqWindowIncompleteError(dates, dates)
 
     class BaoStock:
         def __enter__(self):

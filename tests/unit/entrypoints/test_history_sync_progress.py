@@ -231,7 +231,8 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
     assert capsys.readouterr().err.splitlines() == [
         "00:00:00 | Tencent历史下载 | 失败 | 29/4400 (0.66%) | 股票 600001 | 来源 Tencent | 请求 2000 日 "
         "| 错误 history_tencent_overlap_conflict | 阶段耗时 00:00:00",
-        "00:00:00 | Tencent历史下载 | 完成 | 4400/4400 (100.00%) | 成功 4371 股 | 失败 29 股 "
+        "00:00:00 | Tencent历史下载 | 完成 | 4400/4400 (100.00%) | 完整 4371 股 | 部分 0 股 | 失败 29 股 "
+        "| 其中待重试 0 股 | 其中本地复用 0 股 "
         "| 重叠冲突 24 股 | 其它失败 5 股 | 阶段耗时 00:00:00",
     ]
 
