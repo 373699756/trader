@@ -3,12 +3,12 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from tests.unit.application.scoring_helpers import profile_for
+from tests.unit.training.infra.profile.v3.test_profile import _publish
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
@@ -26,17 +26,27 @@ from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_COST_POLICY = ExecutionCostPolicy(0.002, 1.0)
 
 
 def _service(predictor: object) -> ProductionModelScoringService:
-    return ProductionModelScoringService(profile_for(predictor), Strategy.TOMORROW)  # type: ignore[arg-type]
+    return ProductionModelScoringService(
+        profile_for(predictor),
+        Strategy.TOMORROW,
+        cost_policy=_COST_POLICY,
+    )  # type: ignore[arg-type]
 
 
 def _strategy_service(predictor: object, strategy: Strategy) -> ProductionModelScoringService:
-    return ProductionModelScoringService(profile_for(predictor, strategy), strategy)  # type: ignore[arg-type]
+    return ProductionModelScoringService(
+        profile_for(predictor, strategy),
+        strategy,
+        cost_policy=_COST_POLICY,
+    )  # type: ignore[arg-type]
 
 
 class _Predictor:
@@ -59,7 +69,6 @@ class _Predictor:
             ModelPrediction(
                 code=item.code,
                 predicted_excess_return=0.006 + item.alpha_features[0],
-                model_disagreement=0.001,
             )
             for item in inputs
         )
@@ -109,7 +118,7 @@ def test_non_positive_net_utility_keeps_relative_scores_for_observability(
 ) -> None:
     class _NonPositivePredictor(_Predictor):
         def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-            return tuple(ModelPrediction(item.code, 0.001 + index * 0.0004, 0.0) for index, item in enumerate(inputs))
+            return tuple(ModelPrediction(item.code, 0.001 + index * 0.0004) for index, item in enumerate(inputs))
 
     features = tuple(
         _model_feature(
@@ -135,7 +144,7 @@ def test_equal_predictions_and_cost_inputs_have_equal_scores_costs_and_utility(
 ) -> None:
     class _EqualPredictor(_Predictor):
         def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-            return tuple(ModelPrediction(item.code, 0.0025, 0.0) for item in inputs)
+            return tuple(ModelPrediction(item.code, 0.0025) for item in inputs)
 
     features = tuple(
         _model_feature(
@@ -158,7 +167,7 @@ def test_equal_predictions_and_cost_inputs_have_equal_scores_costs_and_utility(
 def test_single_prediction_uses_neutral_rank_for_score_and_cost(application_feature_factory) -> None:
     class _SinglePredictor(_Predictor):
         def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-            return tuple(ModelPrediction(item.code, 0.0025, 0.0) for item in inputs)
+            return tuple(ModelPrediction(item.code, 0.0025) for item in inputs)
 
     feature = _model_feature(application_feature_factory("600001", NOW), offset=0.0, amihud=1.0)
 
@@ -231,11 +240,13 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
     d25 = ProductionModelScoringService(
         profile_for(d25_predictor, Strategy.D25),
         Strategy.D25,
+        cost_policy=_COST_POLICY,
         shared_features=shared,
     )
     tomorrow = ProductionModelScoringService(
         profile_for(tomorrow_predictor),
         Strategy.TOMORROW,
+        cost_policy=_COST_POLICY,
         shared_features=shared,
     )
     features = tuple(
@@ -255,8 +266,17 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
     )
 
 
-def test_current_shared_training_bundles_score_all_default_v2_heads(application_feature_factory) -> None:
-    profile = load_scoring_profile("v2", training_root=PROJECT_ROOT / "data" / "train")
+def test_current_shared_training_bundles_score_all_default_v2_heads(tmp_path, application_feature_factory) -> None:
+    training_root = tmp_path / "train"
+    for contract in V2_TRAINING_PROFILE.heads:
+        _publish(
+            training_root,
+            contract,
+            f"staging-{contract.strategy.value}",
+            profile=V2_TRAINING_PROFILE,
+            profile_owned=True,
+        )
+    profile = load_scoring_profile("v2", training_root=training_root)
     industries = set.intersection(*(set(head.predictor.industry_ids) for head in profile.heads.values()))
     industry = sorted(industries)[0]
     features: list[FeatureSnapshot] = []
@@ -290,7 +310,12 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(application_
     shared = SharedModelFeatureCache()
 
     batches = {
-        strategy: ProductionModelScoringService(profile, strategy, shared_features=shared).score(tuple(features))
+        strategy: ProductionModelScoringService(
+            profile,
+            strategy,
+            cost_policy=_COST_POLICY,
+            shared_features=shared,
+        ).score(tuple(features))
         for strategy in (Strategy.TOMORROW, Strategy.D25)
     }
 

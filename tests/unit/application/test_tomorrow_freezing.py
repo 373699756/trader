@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -100,7 +101,7 @@ def _assert_formal_current_and_history(
             assert view.frozen_at == record.committed_at
             assert view.freeze_kind == record.commit_kind
             assert view.decision_version == record.decision.version
-            assert view.content_hash == record.decision.content_hash
+            assert view.content_hash is None
             assert view.input_versions == record.decision.input_versions
             assert view.draft is None
         assert current.items == history.items
@@ -147,7 +148,8 @@ def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Str
     assert result.record is not None
     assert result.record.commit_kind == "scheduled"
     assert result.record.committed_at == _at(15, 0)
-    assert result.record.decision.content_hash == current.content_hash
+    assert result.record.decision.is_formal is True
+    assert result.record.decision.content_hash != current.content_hash
     if cold_read:
         records = SQLiteDecisionRecords(tmp_path)
         index = UnifiedDecisionIndex()
@@ -222,13 +224,15 @@ def test_close_fallback_admission_and_recovered_formal_reads(
 def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_path: Path) -> None:
     strategy_path = PROJECT_ROOT / "config" / "strategy.json"
     baseline = load_strategy_settings(strategy_path)
-    raw = json.loads(strategy_path.read_text(encoding="utf-8"))
+    config_root = tmp_path / "config"
+    shutil.copytree(PROJECT_ROOT / "config", config_root)
+    scoring_path = config_root / "scoring.json"
+    raw = json.loads(scoring_path.read_text(encoding="utf-8"))
     weights = raw["local_component_weights"]["tomorrow"]["trend"]
     weights["ma20_60_position"] -= 0.01
     weights["ma_slope"] += 0.01
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
-    changed = load_strategy_settings(changed_path)
+    scoring_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed = load_strategy_settings(config_root / "strategy.json")
     current = replace(decision(), strategy_version=baseline.strategy_version)
 
     baseline_identity = DecisionRuntimeIdentity(

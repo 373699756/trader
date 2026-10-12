@@ -106,9 +106,9 @@ _MODEL_DIAGNOSTIC_FIELDS = frozenset(
         "predicted_excess_return_pct",
         "estimated_cost_pct",
         "predicted_net_excess_pct",
-        "model_disagreement_pct",
     }
 )
+_MODEL_DIAGNOSTIC_OPTIONAL_FIELDS = frozenset({"model_disagreement_pct"})
 _SELECTION_FIELDS = frozenset(
     {
         "maximum_final_score",
@@ -274,13 +274,18 @@ def _research_coverage_from_json(raw: object) -> DecisionResearchCoverage | None
 def _model_diagnostics_from_json(raw: object) -> DecisionModelDiagnostics | None:
     if raw is None:
         return None
-    value = _object(raw, "decision model diagnostics", required=_MODEL_DIAGNOSTIC_FIELDS)
+    value = _object(
+        raw,
+        "decision model diagnostics",
+        required=_MODEL_DIAGNOSTIC_FIELDS,
+        optional=_MODEL_DIAGNOSTIC_OPTIONAL_FIELDS,
+    )
     return DecisionModelDiagnostics(
         _number(value, "signal_score"),
         _number(value, "predicted_excess_return_pct"),
         _number(value, "estimated_cost_pct"),
         _number(value, "predicted_net_excess_pct"),
-        _number(value, "model_disagreement_pct"),
+        _number(value, "model_disagreement_pct") if "model_disagreement_pct" in value else None,
     )
 
 

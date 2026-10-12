@@ -1,0 +1,51 @@
+{
+  "deepseek": {
+    "enabled": true,
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-flash",
+    "challenger_model": "deepseek-v4-pro",
+    "challenger_limits": {
+      "tomorrow": 2,
+      "d25": 0
+    },
+    "challenger_daily_limit": 2,
+    "timeout_seconds": 20,
+    "batch_size": 4,
+    "max_tokens": 1800,
+    "daily_hard_limit": 168,
+    "strategy_limits": {
+      "tomorrow": 38,
+      "d25": 16,
+      "shared_preheat": 4,
+      "emergency": 5
+    },
+    "stage_targets": {
+      "shared_preheat": 2,
+      "tomorrow_morning": 6,
+      "tomorrow_afternoon": 10,
+      "tomorrow_final": 5,
+      "d25_morning": 2,
+      "d25_afternoon": 4,
+      "d25_final": 2,
+      "emergency": 0
+    },
+    "stage_limits": {
+      "shared_preheat": 4,
+      "tomorrow_morning": 10,
+      "tomorrow_afternoon": 18,
+      "tomorrow_final": 10,
+      "d25_morning": 4,
+      "d25_afternoon": 8,
+      "d25_final": 4,
+      "emergency": 5
+    },
+    "adaptive": {
+      "consecutive_failure_limit": 2,
+      "rolling_window": 5,
+      "minimum_application_ratio": 0.4,
+      "healthy_application_ratio": 0.6,
+      "healthy_batch_count": 3,
+      "cooldown_seconds": 900
+    }
+  }
+}

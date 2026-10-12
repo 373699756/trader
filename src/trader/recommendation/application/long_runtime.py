@@ -28,6 +28,7 @@ class LongRuntimeDependencies:
     index: UnifiedDecisionIndex
     now: Callable[[], datetime]
     publish_projection: Callable[[LongProjection], object] = lambda _projection: None
+    enabled: bool = True
 
 
 @dataclass(frozen=True)
@@ -68,6 +69,7 @@ class LongRuntime:
         self._publish_projection_event = dependencies.publish_projection
         self._config_version = config_version
         self._watchlist_version = watchlist_version
+        self._enabled = dependencies.enabled
         self._lock = threading.RLock()
         self._next_sequence = dependencies.next_sequence
         self._retained_trade_date: date | None = None
@@ -93,14 +95,20 @@ class LongRuntime:
         return self._codes
 
     def start(self) -> bool:
+        if not self._enabled:
+            return False
         return self._worker.start()
 
     def offer_refresh(self, request: LongRefreshRequest) -> bool:
+        if not self._enabled:
+            return True
         if not self._codes:
             return False
         return self._worker.offer(request).value in {"accepted", "replaced", "coalesced"}
 
     def wait_idle(self, timeout_seconds: float) -> bool:
+        if not self._enabled:
+            return True
         return self._worker.wait_idle(timeout_seconds)
 
     def stop(
@@ -109,6 +117,8 @@ class LongRuntime:
         wait: bool,
         deadline: ShutdownDeadline | None = None,
     ) -> ShutdownStep:
+        if not self._enabled:
+            return ShutdownStep("trader-long-disabled", True, False)
         if not wait:
             self._worker.close()
             return ShutdownStep("trader-long-close", True, False)

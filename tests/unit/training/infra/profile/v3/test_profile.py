@@ -90,6 +90,20 @@ def _documents(
     }
     training_input["content_hash"] = content_hash(training_input)
     width = len(contract.feature_manifest.names)
+    model_fields: dict[str, object]
+    dependencies: dict[str, str]
+    if profile.algorithm == "lightgbm":
+        model_fields = {
+            "lightgbm_model": _lightgbm_model(width),
+            "lightgbm_best_iteration": 1,
+        }
+        dependencies = {"lightgbm": "4.7.0", "numpy": "2.0.0"}
+    else:
+        model_fields = {
+            "ridge_intercept": 0.0,
+            "ridge_coefficients": [0.1] * width,
+        }
+        dependencies = {"numpy": "2.0.0"}
     model: dict[str, object] = {
         "schema_version": f"{profile.profile_id}_head_scoring_model",
         "profile_id": profile.profile_id,
@@ -127,22 +141,19 @@ def _documents(
         "training_rows": 20_000,
         "validation_rows": 1_000,
         "industry_count": 1,
-        "ensemble_weights": {"ridge": 0.5, "lightgbm": 0.5},
+        "algorithm": profile.algorithm,
         "industries": {
             "银行": {
                 "transformer_means": [0.0] * width,
                 "transformer_scales": [1.0] * width,
-                "ridge_intercept": 0.0,
-                "ridge_coefficients": [0.1] * width,
-                "lightgbm_model": _lightgbm_model(width),
-                "lightgbm_best_iteration": 1,
+                **model_fields,
                 "calibration_intercept": 0.0,
                 "calibration_slope": 1.0,
                 "training_rows": 20_000,
                 "validation_rows": 1_000,
             }
         },
-        "dependencies": {"lightgbm": "4.7.0", "numpy": "2.0.0"},
+        "dependencies": dependencies,
         "automatic_model_update": False,
         "production_authority": False,
     }
@@ -313,7 +324,7 @@ def test_shared_tomorrow_predictor_preserves_the_existing_numeric_contract() -> 
     predictor = profile.heads[Strategy.TOMORROW].predictor
     row = ModelInput("600000", (0.01, 0.02, 0.03, 0.01, -0.02, 0.03), "银行")
 
-    assert artifact.model_id == "industry_ridge_lightgbm"
+    assert artifact.model_id == "industry_ridge"
     assert predictor.predict((row,)) == predictor.predict((row,))
     assert predictor.industry_ids == ("银行",)  # type: ignore[attr-defined]
 

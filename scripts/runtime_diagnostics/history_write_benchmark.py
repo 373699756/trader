@@ -6,7 +6,7 @@ import argparse
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as daytime
 from pathlib import Path
@@ -24,8 +24,9 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
+from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
+from trader.download.infra.download_settings import load_history_sync_configuration
 from trader.download.infra.history_archive_sync import run_history_sync
 
 from .reporting import emit_report
@@ -88,8 +89,13 @@ def measure(size: int, sessions: int) -> dict[str, object]:
     results = []
     with TemporaryDirectory(prefix="trader-history-write-") as scratch:
         root = Path(scratch) / "history"
-        config = HistorySyncConfiguration(
-            root, sessions=sessions, reread_sessions=min(5, sessions), minimum_free_bytes=0
+        project_root = Path(__file__).resolve().parents[2]
+        config = replace(
+            load_history_sync_configuration(project_root, Path(scratch) / "reference"),
+            archive_root=root,
+            sessions=sessions,
+            reread_sessions=min(5, sessions),
+            minimum_free_bytes=0,
         )
         for name, added in (("initial", 0), ("next_day", 1), ("two_weeks", 10), ("same_day", 0)):
             if added:

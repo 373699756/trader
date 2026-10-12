@@ -9,7 +9,7 @@ from pathlib import Path
 
 from flask import Flask, Response, abort, request
 
-from trader.http_api.route_services import UnifiedWebServices
+from trader.http_api.route_services import WebServices
 from trader.http_api.routes.page_routes import register_routes
 from trader.web.static_assets import web_asset
 
@@ -23,7 +23,7 @@ class _StaticAsset:
 
 def create_app(
     *,
-    services: UnifiedWebServices | None = None,
+    services: WebServices | None = None,
 ) -> Flask:
     assets = _snapshot_static_assets()
     app = Flask(__name__, template_folder="templates", static_folder=None)

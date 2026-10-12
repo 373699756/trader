@@ -11,6 +11,8 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.entrypoints.cli import build_parser, main
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 
 def test_download_is_a_zero_argument_command() -> None:
     args = build_parser().parse_args(["download"])
@@ -60,16 +62,13 @@ def test_download_runs_the_typed_zero_argument_synchronization(
 
         assert isinstance(supplier, HistorySupplierRouter)
         assert supplier._industry_cache is not None
-        assert (
-            supplier._industry_cache.path
-            == _configuration.archive_root.parent / "filter_config/industry_queries.sqlite3"
-        )
+        assert supplier._industry_cache.path == _configuration.reference_root / "industry_queries.sqlite3"
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
     monkeypatch.setattr("trader.download.infra.history_archive_sync.run_history_sync", synchronize)
 
-    assert main(["download"]) == 0
+    assert main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download"]) == 0
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)

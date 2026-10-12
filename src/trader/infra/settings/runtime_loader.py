@@ -53,6 +53,7 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     read_json_object as _read_json_object,
 )
+from trader.infra.settings.parser import read_config_sections as _read_config_sections
 from trader.infra.settings.parser import (
     require_exact_keys as _require_exact_keys,
 )
@@ -69,12 +70,30 @@ from trader.infra.settings.parser import (
 
 def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     path = Path(config_path).expanduser().resolve()
-    raw = _read_json_object(path)
+    raw = _read_config_sections(
+        path,
+        {"runtime_dir", "freeze_dir", "reference_dir", "strategy_config", "long_watchlist"},
+        {
+            "delivery.json": {"server", "api"},
+            "scheduler.json": {"pipeline"},
+            "market_data.json": {"market_data"},
+            "performance.json": {"performance_budgets"},
+            "deepseek.json": {"deepseek"},
+        },
+        label="runtime",
+    )
+    cache_sections = _read_json_object(path.parent / "cache.json")
+    _require_exact_keys(cache_sections, {"cache_policy"}, "cache")
+    market_section = _mapping(raw, "market_data")
+    if "cache_policy" in market_section:
+        raise ConfigurationError("market_data.cache_policy belongs only in cache.json")
+    raw["market_data"] = {**market_section, "cache_policy": cache_sections["cache_policy"]}
     _require_exact_keys(
         raw,
         {
             "runtime_dir",
             "freeze_dir",
+            "reference_dir",
             "strategy_config",
             "long_watchlist",
             "server",
@@ -176,6 +195,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
     port = _environment_integer("TRADER_PORT", _integer(server_raw, "port", minimum=1, maximum=65535))
     runtime_dir = _resolve_project_path(project_root, _text(raw, "runtime_dir"))
     freeze_dir = _resolve_project_path(project_root, _text(raw, "freeze_dir"))
+    reference_dir = _resolve_project_path(project_root, _text(raw, "reference_dir"))
     strategy_config_path = _resolve_config_path(config_dir, _text(raw, "strategy_config"))
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
 
@@ -189,6 +209,7 @@ def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSetting
         project_root=project_root,
         runtime_dir=runtime_dir,
         freeze_dir=freeze_dir,
+        reference_dir=reference_dir,
         strategy_config_path=strategy_config_path,
         long_watchlist_path=long_watchlist_path,
         server=ServerSettings(

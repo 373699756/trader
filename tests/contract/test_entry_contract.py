@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import date
@@ -24,6 +25,16 @@ from trader.training.infra.research.h1_point_in_time_archive import H1PointInTim
 from trader.training.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactRepositoryError
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _runtime_config(tmp_path: Path) -> Path:
+    config_dir = tmp_path / "config"
+    shutil.copytree(ROOT / "config", config_dir, dirs_exist_ok=True)
+    path = config_dir / "runtime.json"
+    runtime = json.loads(path.read_text(encoding="utf-8"))
+    runtime["runtime_dir"] = str(tmp_path / "runtime")
+    path.write_text(json.dumps(runtime), encoding="utf-8")
+    return path
 
 
 def _research_modules_loaded_by(module_name: str) -> set[str]:
@@ -87,6 +98,7 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.application.research_runtime",
         "trader.training.application.outcome_ports",
         "trader.training.application.outcome_settlement",
+        "trader.training.application.tomorrow_training",
         "trader.training.application.baseline_replay_report",
         "trader.training.application.challenger_replay_report",
         "trader.training.application.historical_extraction_models",
@@ -165,15 +177,16 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert completed.returncode == 0
     assert "日常使用（不做离线研究）:" in completed.stdout
     assert "./run.sh                         以默认 V2 启动并加载共享双头模型" in completed.stdout
-    assert "./run.sh --profile v2|v3         显式使用 V2 或 V3 启动" in completed.stdout
+    assert "./run.sh --profile v2|v3         单独启动 V2 或 V3" in completed.stdout
+    assert "./run.sh --profile both          同一进程同时启动 V2 和 V3" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
     assert "./run.sh download                零参数历史维护" in completed.stdout
-    assert "./run.sh train-v2                按 V2 251 日特征训练独立双头" in completed.stdout
-    assert "./run.sh train-v3                按 V3 61 日特征训练独立双头" in completed.stdout
+    assert "./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" in completed.stdout
+    assert "./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
-    assert "看板和 check 可追加 --profile v2|v3；离线数据与训练命令均为零参数" in completed.stdout
+    assert "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数" in completed.stdout
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -181,7 +194,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
 def test_run_script_unknown_command_fails_before_environment_setup_with_concise_guidance(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    for name in ("python", "trader-server"):
+    for name in ("python3", "trader-server"):
         _write_fake_entrypoint(venv_bin / name, "exit 99")
 
     completed = subprocess.run(
@@ -248,7 +261,7 @@ def test_run_script_rejects_retired_automation_commands_before_environment_setup
 def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    python = venv_bin / "python"
+    python = venv_bin / "python3"
     server = venv_bin / "trader-server"
     _write_fake_entrypoint(python, "exit 99")
     _write_fake_entrypoint(server, "printf 'server:%s\\n' \"$*\"")
@@ -274,7 +287,7 @@ def test_run_script_without_arguments_still_starts_the_dashboard(tmp_path: Path)
 def test_run_script_repairs_a_moved_virtual_environment_before_starting(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    python = venv_bin / "python"
+    python = venv_bin / "python3"
     server = venv_bin / "trader-server"
     _write_fake_entrypoint(
         python,
@@ -325,7 +338,7 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
 ) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "printf 'server:%s\\n' \"$*\"")
     config = tmp_path / "runtime.json"
 
@@ -345,7 +358,7 @@ def test_run_script_accepts_an_explicit_profile_without_a_serve_alias(
 def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
@@ -372,7 +385,7 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
 def test_run_script_isolates_history_download_from_the_desktop_terminal(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
@@ -409,7 +422,7 @@ def test_run_script_isolates_history_download_from_the_desktop_terminal(tmp_path
 def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
@@ -439,7 +452,7 @@ def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: P
 def test_run_script_forwards_each_zero_argument_training_command(command: str, tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
@@ -467,7 +480,7 @@ def test_run_script_forwards_each_zero_argument_training_command(command: str, t
 def test_run_script_isolates_training_in_a_two_gib_linux_scope(command: str, tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
     _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
@@ -505,7 +518,7 @@ def test_run_script_isolates_training_in_a_two_gib_linux_scope(command: str, tmp
 def test_run_script_rejects_training_arguments_before_environment_setup(command: str, tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python", "exit 99")
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
     _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
     config = tmp_path / "runtime.json"
@@ -539,7 +552,7 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert completed.stderr == "评分档位只能是 v2 或 v3: latest\n"
+    assert completed.stderr == "评分档位只能是 v2、v3 或 both: latest\n"
     assert not missing_venv.exists()
 
 
@@ -608,12 +621,9 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     capsys,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
     runtime_dir = tmp_path / "runtime"
     history_root = tmp_path / "history"
-    runtime["runtime_dir"] = str(runtime_dir)
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
+    config = _runtime_config(tmp_path)
     monkeypatch.setattr(research_commands, "_history_data_root", lambda: history_root)
 
     assert main(["--config", str(config), "research-status"]) == 0
@@ -694,15 +704,13 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
 def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
-    runtime["runtime_dir"] = str(tmp_path / "runtime")
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
+    config = _runtime_config(tmp_path)
     history = tmp_path / "project-history"
     observed: list[tuple[Path, Path]] = []
     monkeypatch.setattr(research_commands, "_history_data_root", lambda: history)
 
-    def train(history_root: Path, train_root: Path, *, progress: object) -> SimpleNamespace:
+    def train(history_root: Path, train_root: Path, *, settings: object, progress: object) -> SimpleNamespace:
+        assert settings is not None
         assert progress is not None
         observed.append((history_root, train_root))
         heads = tuple(
@@ -742,15 +750,13 @@ def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
 def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
     tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
-    runtime["runtime_dir"] = str(tmp_path / "runtime")
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
+    config = _runtime_config(tmp_path)
     history = tmp_path / "project-history"
     observed: list[tuple[Path, Path]] = []
     monkeypatch.setattr(research_commands, "_history_data_root", lambda: history)
 
-    def train(history_root: Path, train_root: Path, *, progress: object) -> SimpleNamespace:
+    def train(history_root: Path, train_root: Path, *, settings: object, progress: object) -> SimpleNamespace:
+        assert settings is not None
         assert progress is not None
         observed.append((history_root, train_root))
         heads = tuple(
@@ -786,10 +792,7 @@ def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
 
 
 def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(tmp_path: Path, monkeypatch) -> None:
-    runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
-    runtime["runtime_dir"] = str(tmp_path / "runtime")
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
+    config = _runtime_config(tmp_path)
 
     class _ReadyPrerequisite:
         def inspect(self) -> TomorrowResearchPrerequisiteStatus:
@@ -812,10 +815,7 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
 
 
 def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Path, monkeypatch) -> None:
-    runtime = json.loads((ROOT / "config/runtime.json").read_text(encoding="utf-8"))
-    runtime["runtime_dir"] = str(tmp_path / "runtime")
-    config = tmp_path / "runtime.json"
-    config.write_text(json.dumps(runtime), encoding="utf-8")
+    config = _runtime_config(tmp_path)
 
     class _BrokenPrerequisite:
         def inspect(self) -> TomorrowResearchPrerequisiteStatus:

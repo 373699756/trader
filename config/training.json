@@ -1,0 +1,28 @@
+{
+  "profiles": [
+    {
+      "profile": "v2",
+      "fit_dates": 1000,
+      "minimum_industry_training_rows": 20000,
+      "lightgbm": {
+        "learning_rate": 0.05,
+        "max_depth": 3,
+        "num_leaves": 7,
+        "minimum_leaf_rows": 20,
+        "boosting_rounds": 200,
+        "early_stopping_rounds": 20,
+        "maximum_bins": 63,
+        "histogram_pool_mib": 64,
+        "seed": 0
+      }
+    },
+    {
+      "profile": "v3",
+      "fit_dates": 750,
+      "minimum_industry_training_rows": 20000,
+      "ridge": {
+        "penalty": 10.0
+      }
+    }
+  ]
+}

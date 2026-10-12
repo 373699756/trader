@@ -1,0 +1,17 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5000,
+    "debug": false,
+    "use_reloader": false,
+    "allow_insecure_non_loopback": false
+  },
+  "api": {
+    "default_top_n": 12,
+    "maximum_top_n": 12,
+    "sse_history_size": 256,
+    "sse_client_queue_size": 16,
+    "sse_max_clients": 32,
+    "web_snapshot_retention_seconds": 35
+  }
+}

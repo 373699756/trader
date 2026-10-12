@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 import time
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from functools import partial
 from importlib.metadata import version
@@ -16,7 +15,6 @@ from typing import TYPE_CHECKING, cast
 
 import requests
 from flask import Flask
-
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.qfq_download_progress import qfq_message
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
@@ -32,6 +30,7 @@ from trader.download.domain.history_sync import (
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
+from trader.download.infra.download_settings import load_history_sync_configuration
 from trader.download.infra.exchange_security_universe import (
     load_current_a_share_universe,
     select_st_eligible_universe,
@@ -52,11 +51,12 @@ from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqSupplier,
     TencentSessionPool,
 )
-from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
+from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.clock.utc import utc_now as _utc_now
+from trader.infra.initialization import initialize_if_available as _initialize_if_available
 from trader.infra.market_data.providers.akshare_http_contracts import AkshareGetFunction
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.market_data.providers.exchange_security_master import (
@@ -79,7 +79,8 @@ from trader.infra.settings.recommendation_policy import (
     _long_item_definitions,
     _recommendation_policy,
 )
-from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
+from trader.infra.serialization.canonical import content_hash
+from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
@@ -119,11 +120,6 @@ from trader.recommendation.application.pipeline.score_merge.score_fusion import 
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.resource_orchestration import (
-    ApplicationResources,
-    start_application_resources,
-    stop_application_resources,
-)
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
@@ -164,13 +160,20 @@ from trader.recommendation.infra.persistence.data_plane_initialization import _i
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
+from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.runtime.application_system import ApplicationSystem
+from trader.recommendation.infra.runtime.initialization import (
+    fixed_cache_ttl as _fixed_cache_ttl,
+)
+from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
 from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.application.research_audit import try_build_committed_research_audit
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.training_settings import load_profile_training_settings
 from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
 from trader.training.infra.research.research_trace_archive import ResearchTraceLimits, SQLiteResearchTraceArchive
 from trader.web import create_app
@@ -229,7 +232,7 @@ def execute_history_download(
                     prices,
                     load_current_securities,
                     HistoryStNameSource(
-                        history_st_evidence_path(configuration.archive_root),
+                        history_st_evidence_path(configuration.reference_root),
                         http_pool.borrow,
                         history_pool,
                         cancel_requested,
@@ -249,7 +252,7 @@ def execute_history_download(
                         batch_size=configuration.history_workers,
                     ),
                     industry_cache=HistoryIndustryQueryCache(
-                        history_st_evidence_path(configuration.archive_root).with_name("industry_queries.sqlite3")
+                        history_st_evidence_path(configuration.reference_root).with_name("industry_queries.sqlite3")
                     ),
                 ),
                 clock=clock,
@@ -265,10 +268,10 @@ def execute_history_download(
 def execute_qfq_download(
     project_root: Path,
     *,
+    reference_root: Path,
     cancel_requested: Callable[[], bool] = lambda: False,
     report: Callable[[str], None] = print,
     now: Callable[[], datetime] = _utc_now,
-    seed_only: bool = False,
 ) -> QfqUpdateResult:
     """Compose the zero-argument CLI/background use case without building the server."""
     root = project_root / "data" / "qfq"
@@ -282,7 +285,7 @@ def execute_qfq_download(
     try:
         with (
             BaoStockHistorySupplier(
-                HistorySyncConfiguration.for_repository(project_root),
+                load_history_sync_configuration(project_root, reference_root),
                 cancel_requested=cancel_requested,
                 price_total_seconds=180.0,
                 progress=QfqSupplierProgress(report),
@@ -293,7 +296,7 @@ def execute_qfq_download(
                 tuple(http_resources.enter_context(requests.Session()) for _index in range(8))
             )
             st_source = HistoryStNameSource(
-                history_st_evidence_path(history_root),
+                history_st_evidence_path(reference_root),
                 http_pool.borrow,
                 qfq_pool,
                 cancel_requested,
@@ -334,7 +337,7 @@ def execute_qfq_download(
                 v3,
                 root / ".maintenance.lock",
                 ShanghaiClock(now).now,
-            ).execute(seed_only=seed_only)
+            ).execute()
     finally:
         stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         if not stopped.completed:
@@ -418,55 +421,6 @@ def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvide
 
 
 @dataclass(frozen=True)
-class ApplicationSystem:
-    settings: RuntimeSettings
-    strategy: StrategySettings
-    watchlist: LongWatchlist
-    app: Flask
-    supervisor: RuntimeSupervisor
-    scheduler: SchedulerRuntime
-    records: SQLiteDecisionRecords
-    market_cache: BoundedLruCache[object]
-    research_pool: BoundedExecutor
-    source_lanes: SourceLaneScheduler
-    data_pool: BoundedExecutor
-    quote_pool: BoundedExecutor
-    long_runtime: LongRuntime
-    decision_queries: UnifiedDecisionQueries
-    decision_events: UnifiedDecisionEventStream
-    tomorrow_index: UnifiedDecisionIndex
-    tomorrow_records: SQLiteDecisionRecords
-    research_trace: SQLiteResearchTraceArchive
-    outcome_evidence: SQLiteOutcomeEvidenceRepository
-    history_observer: PublishedHistoryObserver
-    qfq_maintenance: QfqDailyMaintenance
-
-    def _application_resources(self) -> ApplicationResources:
-        return ApplicationResources(
-            self.supervisor,
-            self.source_lanes,
-            self.data_pool,
-            self.quote_pool,
-            self.research_pool,
-            (self.long_runtime, self.history_observer, self.qfq_maintenance),
-            self.market_cache,
-        )
-
-    def start(self) -> bool:
-        return start_application_resources(
-            self._application_resources(),
-            timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds,
-        )
-
-    def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
-        shared_deadline = deadline or ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
-        return stop_application_resources(
-            self._application_resources(),
-            deadline=shared_deadline,
-        )
-
-
-@dataclass(frozen=True)
 class RuntimeWorkerResources:
     """Resources assembled here; source lanes belong to recommendation."""
 
@@ -491,6 +445,8 @@ class _BuildContext:
     latency: LatencyWaterfall
     cadence_policy: CadencePolicy
     workers: RuntimeWorkerResources
+    budget_path: Path
+    owns_shared_runtime: bool
 
 
 @dataclass(frozen=True)
@@ -524,42 +480,52 @@ class _PublicationDependencies:
     additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
 
 
-@dataclass(frozen=True)
-class _RuntimeAdapters:
-    market_data: MarketFeatureService
-    calendar: ChinaTradingCalendar
-    reviewer: DeepSeekReviewer
-
-
-def _runtime_profile_inputs(profile_id: ScoringProfileId) -> tuple[int, tuple[int, ...]]:
-    """Return the history and alpha windows owned by the selected scoring profile."""
-
-    if profile_id == "v2":
-        return V2_TRAINING_PROFILE.history_sessions, V2_TRAINING_PROFILE.momentum_horizons
-    if profile_id == "v3":
-        return V3_TRAINING_PROFILE.history_sessions, V3_TRAINING_PROFILE.momentum_horizons
-    return 61, V3_TRAINING_PROFILE.momentum_horizons
-
-
 def build_system(
     config_path: str | Path,
     *,
     scoring_profile: ScoringProfileId | None = None,
-) -> ApplicationSystem:
+    runtime_scope: ScoringProfileId | None = None,
+    budget_path: Path | None = None,
+    owns_shared_runtime: bool = True,
+) -> ApplicationSystem[
+    SQLiteResearchTraceArchive,
+    SQLiteOutcomeEvidenceRepository,
+    QfqDailyMaintenance,
+    UnifiedWebServices,
+    Flask,
+]:
     settings = load_runtime_settings(config_path)
+    if runtime_scope is not None:
+        settings = replace(
+            settings,
+            runtime_dir=settings.runtime_dir / "profiles" / runtime_scope,
+            freeze_dir=settings.freeze_dir / runtime_scope,
+        )
     strategy = load_strategy_settings(
         settings.strategy_config_path,
         scoring_profile=scoring_profile,
     )
     watchlist = load_long_watchlist(settings.long_watchlist_path)
-    effective_config_version = f"{settings.config_version}+{strategy.strategy_version}"
+    cost_policy = load_execution_cost_policy(Path(config_path).expanduser().resolve().parent)
+    effective_config_version = (
+        f"{settings.config_version}+{strategy.strategy_version}+cost_{content_hash(cost_policy)[:16]}"
+    )
     now = _utc_now
     latency = LatencyWaterfall()
     cadence_policy = CadencePolicy.from_seconds(settings.pipeline.cadence_seconds)
     cadence_planner = CadencePlanner(cadence_policy, started_at=ShanghaiClock(now).now())
     workers = _build_worker_context(settings, latency)
     context = _BuildContext(
-        settings, strategy, watchlist, effective_config_version, now, latency, cadence_policy, workers
+        settings,
+        strategy,
+        watchlist,
+        effective_config_version,
+        now,
+        latency,
+        cadence_policy,
+        workers,
+        budget_path or settings.runtime_dir / "deepseek-budget.sqlite3",
+        owns_shared_runtime,
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     persistence = _build_persistence(context)
@@ -567,13 +533,15 @@ def build_system(
         strategy.scoring_profile,
         training_root=settings.project_root / "data" / "train",
     )
-    history_sessions, momentum_horizons = _runtime_profile_inputs(loaded_profile.profile_id)
+    profile_contract = V2_TRAINING_PROFILE if loaded_profile.profile_id == "v2" else V3_TRAINING_PROFILE
+    training_settings = load_profile_training_settings(settings.project_root, loaded_profile.profile_id)
+    training_settings.require_profile(profile_contract)
     market_data = _build_market_data(
         context,
         persistence.data_plane,
         calendar,
-        history_lookback_sessions=history_sessions,
-        model_momentum_horizons=momentum_horizons,
+        history_lookback_sessions=training_settings.history_sessions,
+        model_momentum_horizons=training_settings.momentum_horizons,
     )
     reviewer = _build_reviewer(context, persistence.budget)
     policy = _recommendation_policy(context.strategy)
@@ -582,7 +550,9 @@ def build_system(
         ModelScoringRouter(
             loaded_profile.profile_id,
             {
-                strategy: ProductionModelScoringService(loaded_profile, strategy, shared_features=shared_model_features)
+                strategy: ProductionModelScoringService(
+                    loaded_profile, strategy, cost_policy=cost_policy, shared_features=shared_model_features
+                )
                 for strategy in loaded_profile.heads
             },
         )
@@ -698,11 +668,14 @@ def build_system(
 
     history_observer = PublishedHistoryObserver(market_data.history)
     qfq_maintenance = QfqDailyMaintenance(
-        lambda cancel: execute_qfq_download(settings.project_root, cancel_requested=cancel, now=now),
+        lambda cancel: execute_qfq_download(
+            settings.project_root, reference_root=settings.reference_dir, cancel_requested=cancel, now=now
+        ),
         now=ShanghaiClock(now).now,
         needs_initialization=lambda: any(
             not SQLiteQfqWindowCache(settings.project_root / "data/qfq", profile).codes() for profile in ("v2", "v3")
         ),
+        enabled=owns_shared_runtime,
     )
     supervisor = RuntimeSupervisor(
         scheduler,
@@ -711,8 +684,8 @@ def build_system(
             initializers=(
                 persistence.sequence.initialize,
                 publication.tomorrow_records.initialize,
-                lambda: _initialize_research_trace(publication.research_trace),
-                lambda: _initialize_outcome_evidence(persistence.outcomes),
+                lambda: _initialize_if_available(publication.research_trace),
+                lambda: _initialize_if_available(persistence.outcomes),
                 lambda: _initialize_reference_data_plane(market_data, persistence.data_plane, now()),
                 persistence.budget.initialize,
                 lambda: publication.tomorrow_freezer.restore(now().date()),
@@ -724,22 +697,22 @@ def build_system(
             record_error=lambda _error: None,
         ),
     )
-    app = create_app(
-        services=UnifiedWebServices(
-            publication.decision_queries,
-            publication.decision_events,
-            lambda: _runtime_status(
-                scheduler,
-                reviewer,
-                market_data.health,
-                model_scoring.status(),
-            ),
-            WebApiConfig(
-                heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
-                snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
-            ),
-        )
+    web_services = UnifiedWebServices(
+        publication.decision_queries,
+        publication.decision_events,
+        lambda: _runtime_status(
+            scheduler,
+            reviewer,
+            market_data.health,
+            model_scoring.status(),
+        ),
+        WebApiConfig(
+            heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
+            snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
+        ),
+        loaded_profile.profile_id,
     )
+    app = create_app(services=web_services)
     return ApplicationSystem(
         settings=settings,
         strategy=strategy,
@@ -762,7 +735,45 @@ def build_system(
         outcome_evidence=persistence.outcomes,
         history_observer=history_observer,
         qfq_maintenance=qfq_maintenance,
+        web_services=web_services,
     )
+
+
+def build_profiled_system(config_path: str | Path) -> ProfiledApplicationSystem[Flask]:
+    """Build both production profiles with one read-only delivery surface."""
+
+    settings = load_runtime_settings(config_path)
+    shared_budget = settings.runtime_dir / "shared" / "deepseek-budget.sqlite3"
+    systems = (
+        build_system(
+            config_path,
+            scoring_profile="v2",
+            runtime_scope="v2",
+            budget_path=shared_budget,
+            owns_shared_runtime=True,
+        ),
+        build_system(
+            config_path,
+            scoring_profile="v3",
+            runtime_scope="v3",
+            budget_path=shared_budget,
+            owns_shared_runtime=False,
+        ),
+    )
+    default_profile = load_strategy_settings(settings.strategy_config_path).scoring_profile
+    profiles: dict[str, UnifiedWebServices] = {system.profile_id: system.web_services for system in systems}
+    app = create_app(
+        services=ProfiledWebServices(
+            profiles=profiles,
+            default_profile=default_profile,
+            long_profile="v2",
+            config=WebApiConfig(
+                heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
+                snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
+            ),
+        )
+    )
+    return ProfiledApplicationSystem(settings, app, systems)
 
 
 def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> RuntimeWorkerResources:
@@ -970,21 +981,18 @@ def _build_market_data(
         monotonic=time.monotonic,
     )
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
-    filter_config_root = settings.project_root / "data" / "filter_config"
-    SQLiteIssuerEligibilityIndex.migrate_legacy_database(
-        settings.runtime_dir / "issuer-eligibility.sqlite3",
-        filter_config_root,
-    )
-    eligibility = SQLiteIssuerEligibilityIndex(filter_config_root)
-    try:
-        eligibility.record_manual_blacklist(
-            strategy.hard_filters.blacklist_codes,
-            now(),
-            context.effective_config_version,
-        )
-    except RuntimeError:
-        # The typed registry retains any facts it could verify; persistence degradation stays observable.
-        pass
+    reference_root = settings.reference_dir
+    eligibility = SQLiteIssuerEligibilityIndex(reference_root, read_only=not context.owns_shared_runtime)
+    if context.owns_shared_runtime:
+        try:
+            eligibility.record_manual_blacklist(
+                strategy.hard_filters.blacklist_codes,
+                now(),
+                context.effective_config_version,
+            )
+        except RuntimeError:
+            # The typed index retains any facts it could verify; persistence degradation stays observable.
+            pass
     research = ResearchLoader(
         research_client,
         research_runner,
@@ -1052,7 +1060,7 @@ def _build_persistence(context: _BuildContext) -> _PersistenceContext:
     data_plane = SQLiteDataPlane(settings.runtime_dir)
     outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, records)
     budget = DeepSeekBudgetLedger(
-        settings.runtime_dir / "deepseek-budget.sqlite3",
+        context.budget_path,
         daily_hard_limit=settings.deepseek.daily_hard_limit,
         strategy_limits=settings.deepseek.strategy_limits,
         stage_targets=settings.deepseek.stage_targets,
@@ -1160,6 +1168,7 @@ def _build_publication(
             tomorrow_decisions,
             context.now,
             decision_events.publish_projection,
+            context.owns_shared_runtime,
             next_sequence=dependencies.sequence.allocate,
         ),
         config_version=context.effective_config_version,
@@ -1181,25 +1190,4 @@ def _build_publication(
     )
 
 
-def _initialize_research_trace(trace: SQLiteResearchTraceArchive) -> None:
-    try:
-        trace.initialize()
-    except (OSError, sqlite3.Error):
-        return
-
-
-def _initialize_outcome_evidence(evidence: SQLiteOutcomeEvidenceRepository) -> None:
-    try:
-        evidence.initialize()
-    except (OSError, sqlite3.Error):
-        return
-
-
-def _fixed_cache_ttl(settings: RuntimeSettings, dataset: str) -> float:
-    value = settings.market_data.cache_policy.datasets[dataset].refresh_ttl_seconds
-    if value is None:
-        raise ValueError(f"cache dataset {dataset} does not define a fixed TTL")
-    return value
-
-
-__all__ = ["ApplicationSystem", "build_system"]
+__all__ = ["ApplicationSystem", "ProfiledApplicationSystem", "build_profiled_system", "build_system"]

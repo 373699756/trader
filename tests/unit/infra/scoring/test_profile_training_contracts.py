@@ -10,10 +10,19 @@ from trader.download.domain.baostock_daily import BaoStockCalendar, build_baosto
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_training import TomorrowTrainingWindow
 from trader.training.infra.engine import ProfileTrainingRequest
+from trader.training.infra.model_fitting import LightGBMFittingParameters, RidgeFittingParameters
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.sample_builder import TrainingSampleBuildRequest, build_training_samples
 from trader.training.infra.sample_repository import SQLiteTrainingSampleRepository
+from trader.training.infra.training_settings import load_profile_training_settings
+from trader.recommendation.infra.scoring.cost_settings import (
+    load_evaluation_cost_scenarios,
+    load_execution_cost_policy,
+)
+from trader.training.infra.research_settings import load_research_settings
+
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_v2_and_v3_share_engine_contract_shape_but_own_their_differences() -> None:
@@ -39,6 +48,29 @@ def test_v2_and_v3_share_engine_contract_shape_but_own_their_differences() -> No
     assert "qfq_residual_momentum_120d_skip5" not in V3_TRAINING_PROFILE.heads[0].feature_manifest.names
 
 
+def test_profile_windows_algorithms_costs_and_research_arms_have_typed_configuration_owners() -> None:
+    v2 = load_profile_training_settings(PROJECT_ROOT, "v2")
+    v3 = load_profile_training_settings(PROJECT_ROOT, "v3")
+    cost = load_execution_cost_policy(PROJECT_ROOT / "config")
+    scenarios = load_evaluation_cost_scenarios(PROJECT_ROOT / "config")
+    research = load_research_settings(PROJECT_ROOT / "config")
+
+    assert (v2.fit_dates, v2.history_sessions, v2.momentum_horizons) == (1000, 251, (20, 40, 60, 120, 250))
+    assert (v3.fit_dates, v3.history_sessions, v3.momentum_horizons) == (750, 61, (20, 40, 60))
+    assert isinstance(v2.fitting, LightGBMFittingParameters)
+    assert isinstance(v3.fitting, RidgeFittingParameters)
+    assert V2_TRAINING_PROFILE.algorithm == "lightgbm"
+    assert V3_TRAINING_PROFILE.algorithm == "ridge"
+    assert cost.estimate(0.0) == pytest.approx(0.002)
+    assert cost.estimate(1.0) == pytest.approx(0.004)
+    assert tuple((item.scenario_id, item.round_trip_return) for item in scenarios) == (
+        ("cost_20bp", 0.002),
+        ("cost_50bp", 0.005),
+        ("cost_100bp", 0.01),
+    )
+    assert research.deepseek_comparison_arms == ("local_only", "structured_facts_veto", "fixed_68_32")
+
+
 def test_profile_training_modules_do_not_import_each_other() -> None:
     from pathlib import Path
 
@@ -57,6 +89,7 @@ def test_profile_training_request_rejects_a_head_owned_by_another_profile(tmp_pa
             tmp_path / "train",
             V2_TRAINING_PROFILE,
             V3_TRAINING_PROFILE.heads,
+            load_profile_training_settings(PROJECT_ROOT, "v2"),
         )
 
 

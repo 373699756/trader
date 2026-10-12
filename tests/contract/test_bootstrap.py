@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 from dataclasses import replace
@@ -12,7 +13,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.training.infra.profile.v3.test_profile import _publish
-from trader.bootstrap import _initialize_research_trace, build_system
+from trader.bootstrap import build_system
+from trader.infra.initialization import initialize_if_available
 from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
@@ -98,15 +100,19 @@ def test_pipeline_batch_continuity_requires_matching_counts() -> None:
 
 def _config(tmp_path: Path) -> Path:
     config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    strategy = json.loads((PROJECT_ROOT / "config/strategy.json").read_text(encoding="utf-8"))
+    shutil.copytree(PROJECT_ROOT / "config", config_dir, dirs_exist_ok=True)
+    strategy = json.loads((config_dir / "strategy.json").read_text(encoding="utf-8"))
     strategy["scoring_profile"] = "v2"
     strategy_path = config_dir / "strategy.json"
     strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
-    runtime = json.loads((PROJECT_ROOT / "config/runtime.json").read_text(encoding="utf-8"))
+    runtime = json.loads((config_dir / "runtime.json").read_text(encoding="utf-8"))
     runtime["runtime_dir"] = str(tmp_path / "runtime")
     runtime["strategy_config"] = str(strategy_path)
-    runtime["long_watchlist"] = str(PROJECT_ROOT / "config/long_watchlist.json")
+    runtime["long_watchlist"] = str(config_dir / "long_watchlist.json")
+    reference_dir = tmp_path / "data" / "reference"
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    (reference_dir / "historical_st.json").write_text("{}\n", encoding="utf-8")
+    sqlite3.connect(reference_dir / "industry_queries.sqlite3").close()
     for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
         for contract in profile.heads:
             _publish(
@@ -122,14 +128,11 @@ def _config(tmp_path: Path) -> Path:
 
 
 def _config_with_strategy_profile(tmp_path: Path, profile: str) -> Path:
-    strategy = json.loads((PROJECT_ROOT / "config/strategy.json").read_text(encoding="utf-8"))
-    strategy["scoring_profile"] = profile
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
     path = _config(tmp_path)
-    runtime = json.loads(path.read_text(encoding="utf-8"))
-    runtime["strategy_config"] = str(strategy_path)
-    path.write_text(json.dumps(runtime), encoding="utf-8")
+    strategy_path = path.parent / "strategy.json"
+    strategy = json.loads(strategy_path.read_text(encoding="utf-8"))
+    strategy["scoring_profile"] = profile
+    strategy_path.write_text(json.dumps(strategy), encoding="utf-8")
     return path
 
 
@@ -163,7 +166,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     tomorrow = scoring["heads"]["tomorrow"]
     assert tomorrow["active"] is True
     assert tomorrow["profile_id"] == "v2"
-    assert tomorrow["model_id"] == "v2_industry_ridge_lightgbm"
+    assert tomorrow["model_id"] == "v2_industry_lightgbm"
     assert tomorrow["activation_basis"] == "manual_user_override"
     assert tomorrow["runtime_anchor"] == "15:00"
     assert scoring["heads"]["d25"]["runtime_anchor"] == "15:00"
@@ -200,7 +203,7 @@ def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_pat
 
 
 def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None:
-    from trader.download.domain.history_sync import HistorySyncConfiguration
+    from trader.download.infra.download_settings import load_history_sync_configuration
     from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
     system = build_system(_config(tmp_path))
@@ -208,7 +211,7 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     assert isinstance(native_data, MarketInputCoordinator)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
     assert system.history_observer._history is native_data._market.history  # noqa: SLF001
-    configuration = HistorySyncConfiguration.for_repository(system.settings.project_root)
+    configuration = load_history_sync_configuration(system.settings.project_root, system.settings.reference_dir)
     assert native_data._market.history._history.publication.root == system.settings.project_root / "data/qfq/v2"  # noqa: SLF001
     assert native_data._market.history._outcome_history.publication._root == configuration.archive_root  # noqa: SLF001
 
@@ -257,7 +260,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
     assert status["profile_id"] == "v2"
     assert set(status["heads"]) == {"tomorrow", "d25"}
     assert all(head["active"] is True for head in status["heads"].values())
-    assert status["heads"]["tomorrow"]["model_id"] == "v2_industry_ridge_lightgbm"
+    assert status["heads"]["tomorrow"]["model_id"] == "v2_industry_lightgbm"
     assert status["heads"]["tomorrow"]["activation_basis"] == "manual_user_override"
     assert strategy_path.read_bytes() == original
 
@@ -329,7 +332,7 @@ def test_research_trace_initialization_is_fail_open() -> None:
     trace = Mock()
     trace.initialize.side_effect = sqlite3.OperationalError("research database unavailable")
 
-    _initialize_research_trace(trace)
+    assert initialize_if_available(trace) is False
 
     trace.initialize.assert_called_once_with()
 

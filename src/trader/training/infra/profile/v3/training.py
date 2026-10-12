@@ -11,12 +11,14 @@ from trader.training.infra.engine import (
     run_repack_profile_training,
 )
 from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT, V3_TRAINING_PROFILE
+from trader.training.infra.training_settings import ProfileTrainingSettings
 
 
 def run_tomorrow_training(
     history_root: Path,
     train_root: Path,
     *,
+    settings: ProfileTrainingSettings,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> HeadTrainingResult:
     return run_profile_training(
@@ -25,6 +27,7 @@ def run_tomorrow_training(
             train_root,
             V3_TRAINING_PROFILE,
             (TOMORROW_HEAD_CONTRACT,),
+            settings,
             progress,
         )
     ).heads[0]
@@ -34,6 +37,7 @@ def run_v3_training(
     history_root: Path,
     train_root: Path,
     *,
+    settings: ProfileTrainingSettings,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
     return run_profile_training(
@@ -42,6 +46,7 @@ def run_v3_training(
             train_root,
             V3_TRAINING_PROFILE,
             V3_TRAINING_PROFILE.heads,
+            settings,
             progress,
         )
     )
@@ -51,6 +56,7 @@ def run_repack_tomorrow_training(
     history_root: Path,
     train_root: Path,
     *,
+    settings: ProfileTrainingSettings,
     expected_history_snapshot_hash: str,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> HeadTrainingResult:
@@ -60,6 +66,7 @@ def run_repack_tomorrow_training(
             train_root,
             V3_TRAINING_PROFILE,
             (TOMORROW_HEAD_CONTRACT,),
+            settings,
             progress,
             expected_history_snapshot_hash=expected_history_snapshot_hash,
         )
@@ -70,6 +77,7 @@ def run_repack_v3_training(
     history_root: Path,
     train_root: Path,
     *,
+    settings: ProfileTrainingSettings,
     expected_history_snapshot_hash: str,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
@@ -79,6 +87,7 @@ def run_repack_v3_training(
             train_root,
             V3_TRAINING_PROFILE,
             V3_TRAINING_PROFILE.heads,
+            settings,
             progress,
             expected_history_snapshot_hash=expected_history_snapshot_hash,
         )

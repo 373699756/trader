@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,88 @@ from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
+
+_RUNTIME_FILES = {
+    "delivery.json": ("server", "api"),
+    "scheduler.json": ("pipeline",),
+    "market_data.json": ("market_data",),
+    "cache.json": ("cache_policy",),
+    "performance.json": ("performance_budgets",),
+    "deepseek.json": ("deepseek",),
+}
+_STRATEGY_FILES = {
+    "selection.json": ("selection",),
+    "filter.json": ("hard_filters",),
+    "candidate.json": ("board_candidate_weights", "candidate_component_weights"),
+    "scoring.json": (
+        "fusion",
+        "board_local_strategy_weights",
+        "local_component_weights",
+        "feature_component_weights",
+        "tomorrow_tail_signal",
+        "market_regime",
+        "dimension_weights",
+    ),
+    "risk.json": ("risk_rules",),
+    "features.json": ("model_contracts", "factor_index", "factor_contract", "news_signal"),
+    "long.json": ("long_research",),
+}
+
+
+def _merged_config(root_name: str, section_files: dict[str, tuple[str, ...]]) -> dict[str, object]:
+    config_dir = PROJECT_ROOT / "config"
+    result = json.loads((config_dir / root_name).read_text(encoding="utf-8"))
+    for filename in section_files:
+        result.update(json.loads((config_dir / filename).read_text(encoding="utf-8")))
+    return result
+
+
+def _write_split_config(
+    tmp_path: Path,
+    root_name: str,
+    raw: dict[str, object],
+    section_files: dict[str, tuple[str, ...]],
+) -> Path:
+    config_dir = tmp_path / "config"
+    if not config_dir.exists():
+        shutil.copytree(PROJECT_ROOT / "config", config_dir)
+    owned = {key for keys in section_files.values() for key in keys}
+    (config_dir / root_name).write_text(
+        json.dumps({key: value for key, value in raw.items() if key not in owned}),
+        encoding="utf-8",
+    )
+    for filename, keys in section_files.items():
+        (config_dir / filename).write_text(
+            json.dumps({key: raw[key] for key in keys if key in raw}),
+            encoding="utf-8",
+        )
+    return config_dir / root_name
+
+
+def _runtime_document() -> dict[str, object]:
+    raw = _merged_config("runtime.json", _RUNTIME_FILES)
+    market = raw["market_data"]
+    assert isinstance(market, dict)
+    market["cache_policy"] = raw.pop("cache_policy")
+    return raw
+
+
+def _write_runtime_config(tmp_path: Path, raw: dict[str, object]) -> Path:
+    market = raw.get("market_data")
+    if isinstance(market, dict) and "cache_policy" in market:
+        raw = dict(raw)
+        market = dict(market)
+        raw["market_data"] = market
+        raw["cache_policy"] = market.pop("cache_policy")
+    return _write_split_config(tmp_path, "runtime.json", raw, _RUNTIME_FILES)
+
+
+def _strategy_document() -> dict[str, object]:
+    return _merged_config("strategy.json", _STRATEGY_FILES)
+
+
+def _write_strategy_config(tmp_path: Path, raw: dict[str, object]) -> Path:
+    return _write_split_config(tmp_path, "strategy.json", raw, _STRATEGY_FILES)
 
 
 def test_configuration_contract_is_valid() -> None:
@@ -189,17 +272,18 @@ def test_configuration_contract_is_valid() -> None:
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["scoring_profile"] = profile
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     settings = load_strategy_settings(strategy_path)
 
     assert settings.scoring_profile == profile
     if profile != "v2":
-        assert settings.strategy_version != load_strategy_settings(source).strategy_version
+        assert (
+            settings.strategy_version
+            != load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json").strategy_version
+        )
 
 
 def test_scoring_profile_override_changes_the_effective_version_without_writing_config() -> None:
@@ -216,11 +300,9 @@ def test_scoring_profile_override_changes_the_effective_version_without_writing_
 
 
 def test_unknown_scoring_profile_is_rejected(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["scoring_profile"] = "latest"
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="scoring_profile"):
         load_strategy_settings(strategy_path)
@@ -228,22 +310,18 @@ def test_unknown_scoring_profile_is_rejected(tmp_path) -> None:
 
 @pytest.mark.parametrize("retired_profile", ("p1", "p2"))
 def test_retired_scoring_profile_names_are_rejected(tmp_path, retired_profile: str) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["scoring_profile"] = retired_profile
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="scoring_profile"):
         load_strategy_settings(strategy_path)
 
 
 def test_retired_tomorrow_specific_profile_key_is_rejected(tmp_path: Path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["tomorrow_scoring_profile"] = raw.pop("scoring_profile")
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="scoring_profile is required"):
         load_strategy_settings(strategy_path)
@@ -251,30 +329,27 @@ def test_retired_tomorrow_specific_profile_key_is_rejected(tmp_path: Path) -> No
 
 @pytest.mark.parametrize("controller", ("schema_version", "config_version"))
 def test_runtime_rejects_manual_version_controllers(tmp_path, controller: str) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     raw[controller] = "unsupported"
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="runtime contains unknown keys"):
         load_runtime_settings(changed_path)
 
 
 def test_runtime_schema_rejects_paid_full_market_sources(tmp_path) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     raw["market_data"]["full_market_sources"] = ["eastmoney", "paid_vendor"]
-    changed_path = tmp_path / "runtime-paid-source.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="unknown keys"):
         load_runtime_settings(changed_path)
 
 
 def test_runtime_rejects_non_positive_web_snapshot_retention(tmp_path) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     raw["api"]["web_snapshot_retention_seconds"] = 0
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="web_snapshot_retention_seconds"):
         load_runtime_settings(changed_path)
@@ -363,10 +438,9 @@ def test_long_watchlist_rejects_unknown_source_section(tmp_path) -> None:
 
 
 def test_runtime_rejects_removed_decision_execution_mode(tmp_path) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     raw["pipeline"]["decision_execution_mode"] = "unsafe_parallel"
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="unknown keys"):
         load_runtime_settings(changed_path)
@@ -374,10 +448,9 @@ def test_runtime_rejects_removed_decision_execution_mode(tmp_path) -> None:
 
 @pytest.mark.parametrize("model", ["deepseek-chat", "deepseek-reasoner", "unknown-model"])
 def test_runtime_settings_rejects_unapproved_primary_model(tmp_path, model: str) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     raw["deepseek"]["model"] = model
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="primary model"):
         load_runtime_settings(changed_path)
@@ -448,13 +521,12 @@ def test_runtime_settings_loads_tushare_token_with_environment_priority(tmp_path
 
 
 def test_runtime_settings_loads_tushare_token_from_configured_protected_file(tmp_path, monkeypatch) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     token_file = tmp_path / "tushare.token"
     token_file.write_text("configured-file-token\n", encoding="utf-8")
     token_file.chmod(0o600)
     raw["market_data"]["tushare"]["token_file"] = str(token_file)
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
     monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
     monkeypatch.delenv("TUSHARE_TOKEN_FILE", raising=False)
 
@@ -517,22 +589,19 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
 def test_current_cache_and_performance_configuration_rejects_missing_unknown_or_drift(
     tmp_path, mutate, message
 ) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     mutate(raw)
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match=message):
         load_runtime_settings(changed_path)
 
 
 def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_schema(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["factor_contract"]["feature_names"] = list(FEATURE_SCHEMA_NAMES)
     raw["factor_contract"]["feature_schema_expected"] = len(FEATURE_SCHEMA_NAMES)
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     strategy = load_strategy_settings(strategy_path)
 
@@ -541,51 +610,46 @@ def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_sc
 
 
 def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["factor_contract"]["feature_schema"] = "feature_schema_unsupported"
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="feature_schema mismatch"):
         load_strategy_settings(strategy_path)
 
 
 def test_research_timeout_cannot_exceed_point_in_time_source_limit(tmp_path) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     raw["market_data"]["research_timeout_seconds"] = 8.01
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="research_timeout_seconds must be at most 8.0"):
         load_runtime_settings(changed_path)
 
 
 def test_priority_reserve_must_leave_capacity_for_normal_events(tmp_path) -> None:
-    raw = json.loads(RUNTIME_CONFIG.read_text(encoding="utf-8"))
+    raw = _runtime_document()
     raw["pipeline"]["priority_queue_size"] = raw["pipeline"]["event_queue_size"]
-    changed_path = tmp_path / "runtime.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="priority_queue_size must be smaller"):
         load_runtime_settings(changed_path)
 
 
 def test_invalid_strategy_weight_sum_is_rejected(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    source = (PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8")
-    strategy_path.write_text(source.replace('"local_weight": 0.68', '"local_weight": 0.5'), encoding="utf-8")
+    raw = _strategy_document()
+    raw["fusion"]["local_weight"] = 0.5
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="fusion weights"):
         load_strategy_settings(strategy_path)
 
 
 def test_alternative_fusion_weights_have_one_configuration_owner(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["fusion"]["local_weight"] = 0.5
     raw["fusion"]["deepseek_weight"] = 0.5
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     settings = load_strategy_settings(strategy_path)
 
@@ -594,10 +658,9 @@ def test_alternative_fusion_weights_have_one_configuration_owner(tmp_path) -> No
 
 
 def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["selection"]["observation_margin"] = float("nan")
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="finite"):
         load_strategy_settings(strategy_path)
@@ -618,10 +681,9 @@ def test_fixed_review_and_observation_gates_cannot_drift(
     value: float,
     message: str,
 ) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw[section][field] = value
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match=message):
         load_strategy_settings(strategy_path)
@@ -629,8 +691,7 @@ def test_fixed_review_and_observation_gates_cannot_drift(
 
 @pytest.mark.parametrize("weight_family", ("dimension", "board_candidate", "board_local"))
 def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_family: str) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     if weight_family == "dimension":
         weights = raw["dimension_weights"]["tomorrow"]
         first, second = "value_quality", "financial_health"
@@ -642,7 +703,7 @@ def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_
         first, second = "trend", "stability"
     weights[first] += 0.01
     weights[second] -= 0.01
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     settings = load_strategy_settings(strategy_path)
 
@@ -657,7 +718,7 @@ def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_
 
 
 def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     settings = load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json")
 
     assert "candidate_weights" not in raw
@@ -666,7 +727,7 @@ def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
 
 
 def test_strategy_config_requires_complete_component_weight_families(tmp_path) -> None:
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
 
     assert set(raw["candidate_component_weights"]) == {"tomorrow", "d25"}
     assert set(raw["local_component_weights"]) == {"tomorrow", "d25"}
@@ -677,28 +738,25 @@ def test_strategy_config_requires_complete_component_weight_families(tmp_path) -
     }
 
     del raw["local_component_weights"]["tomorrow"]["trend"]["breakout_20d"]
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="local_component_weights.tomorrow.trend"):
         load_strategy_settings(strategy_path)
 
 
 def test_component_weight_sum_is_rejected(tmp_path) -> None:
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["candidate_component_weights"]["tomorrow"]["stability"]["low_volatility_score"] = 0.6
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="candidate_component_weights.tomorrow.stability"):
         load_strategy_settings(strategy_path)
 
 
 def test_feature_component_weight_fields_and_sum_are_rejected(tmp_path) -> None:
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["feature_component_weights"]["trend_score"] = {"ma20_60_position": 1.0}
-    strategy_path = tmp_path / "strategy.json"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="feature_component_weights.trend_score"):
         load_strategy_settings(strategy_path)
@@ -707,7 +765,7 @@ def test_feature_component_weight_fields_and_sum_are_rejected(tmp_path) -> None:
         "ma20_60_position": 0.7,
         "ma_slope": 0.4,
     }
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="feature_component_weights trend_score weights must sum"):
         load_strategy_settings(strategy_path)
@@ -716,13 +774,12 @@ def test_feature_component_weight_fields_and_sum_are_rejected(tmp_path) -> None:
 def test_feature_component_weight_configuration_is_typed_immutable_and_changes_identity(tmp_path) -> None:
     source_path = PROJECT_ROOT / "config" / "strategy.json"
     baseline = load_strategy_settings(source_path)
-    raw = json.loads(source_path.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["feature_component_weights"]["trend_score"] = {
         "ma20_60_position": 0.7,
         "ma_slope": 0.3,
     }
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     changed = load_strategy_settings(changed_path)
 
@@ -741,12 +798,11 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
 ) -> None:
     source_path = PROJECT_ROOT / "config" / "strategy.json"
     source = load_strategy_settings(source_path)
-    raw = json.loads(source_path.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     weights = raw["candidate_component_weights"]["tomorrow"]["stability"]
     weights["low_volatility_score"] -= 0.1
     weights["low_drawdown_score"] += 0.1
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
     changed = load_strategy_settings(changed_path)
     observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     feature = application_feature_factory("600001", observed_at)
@@ -794,51 +850,46 @@ def test_configured_candidate_and_local_weights_preserve_two_strategy_golden_vec
 
 
 def test_deepseek_risk_mapping_version_controller_is_rejected(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["deepseek_risk_mapping_version"] = "unsupported"
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="strategy contains unknown keys"):
         load_strategy_settings(strategy_path)
 
 
 def test_incomplete_risk_trigger_contract_is_rejected(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     del raw["risk_rules"][0]["trigger"]
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="trigger"):
         load_strategy_settings(strategy_path)
 
 
 def test_risk_rule_cannot_use_factor_outside_registered_strategy(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     near_limit = next(rule for rule in raw["risk_rules"] if rule["risk_code"] == "near_limit_crowding")
     near_limit["strategies"].append("long")
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="outside its registered strategies"):
         load_strategy_settings(strategy_path)
 
 
 def test_risk_identity_fields_reject_non_string_values(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["risk_rules"][0]["risk_fact_id_fields"] = ["stock_code", {"invalid": True}]
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="stable identity fields"):
         load_strategy_settings(strategy_path)
 
 
 def test_news_signal_rejects_overlapping_keyword_sets(tmp_path) -> None:
-    strategy_path = tmp_path / "strategy.json"
-    raw = json.loads((PROJECT_ROOT / "config" / "strategy.json").read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["news_signal"]["negative_keywords"].append(raw["news_signal"]["positive_keywords"][0])
-    strategy_path.write_text(json.dumps(raw), encoding="utf-8")
+    strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="must not overlap"):
         load_strategy_settings(strategy_path)
@@ -847,10 +898,9 @@ def test_news_signal_rejects_overlapping_keyword_sets(tmp_path) -> None:
 def test_news_signal_changes_strategy_version(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     baseline = load_strategy_settings(source)
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["news_signal"]["positive_keywords"].append("订单增长")
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     changed = load_strategy_settings(changed_path)
 
@@ -858,90 +908,76 @@ def test_news_signal_changes_strategy_version(tmp_path) -> None:
 
 
 def test_news_signal_is_required(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     del raw["news_signal"]
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="strategy.news_signal is required"):
+    with pytest.raises(ConfigurationError, match="features.news_signal is required"):
         load_strategy_settings(changed_path)
 
 
 def test_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["news_signal"]["lookback_hours"] = 48
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="fixed at 72h/1h and 75/50/25"):
         load_strategy_settings(changed_path)
 
 
 def test_tomorrow_tail_signal_is_required(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     del raw["tomorrow_tail_signal"]
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="strategy.tomorrow_tail_signal is required"):
+    with pytest.raises(ConfigurationError, match="scoring.tomorrow_tail_signal is required"):
         load_strategy_settings(changed_path)
 
 
 def test_tomorrow_tail_signal_fixed_formula_cannot_drift(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["tomorrow_tail_signal"]["lookback_minutes"] = 20
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
         load_strategy_settings(changed_path)
 
 
 def test_tomorrow_tail_signal_rejects_manual_factor_version(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 49
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
         load_strategy_settings(changed_path)
     raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 50
     raw["factor_index"]["tail_volume_ratio"]["version"] = "3"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="contains unknown keys: version"):
         load_strategy_settings(changed_path)
 
 
 def test_tomorrow_tail_factor_index_cannot_contradict_executable_formula(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["factor_index"]["tail_return_30m"]["formula"] = "clamp(50+tail_return_30m_pct*10)"
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="tail_return_30m.formula"):
         load_strategy_settings(changed_path)
 
 
 def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     del raw["market_regime"]["risk_on_breadth_min"]
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="risk_on_breadth_min"):
         load_strategy_settings(changed_path)
 
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["market_regime"]["risk_on_breadth_min"] = 61
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="market regime boundaries are fixed"):
         load_strategy_settings(changed_path)
@@ -950,39 +986,34 @@ def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None
 def test_long_research_contract_is_required_and_hashes_keyword_changes(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
     baseline = load_strategy_settings(source)
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["long_research"]["announcements"]["policy_positive_keywords"].append("设备更新")
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     changed = load_strategy_settings(changed_path)
 
     assert changed.strategy_version != baseline.strategy_version
 
     del raw["long_research"]
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ConfigurationError, match="strategy.long_research is required"):
+    changed_path = _write_strategy_config(tmp_path, raw)
+    with pytest.raises(ConfigurationError, match="long.long_research is required"):
         load_strategy_settings(changed_path)
 
 
 def test_long_research_severity_keyword_levels_cannot_overlap(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     duplicate = raw["long_research"]["announcements"]["negative_high_keywords"][0]
     raw["long_research"]["announcements"]["negative_medium_keywords"].append(duplicate)
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="severity keyword levels must not overlap"):
         load_strategy_settings(changed_path)
 
 
 def test_long_factor_index_cannot_hide_a_provider_placeholder(tmp_path) -> None:
-    source = PROJECT_ROOT / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    raw = _strategy_document()
     raw["factor_index"]["value_score"]["formula"] = "provider supplied 0-100"
-    changed_path = tmp_path / "strategy.json"
-    changed_path.write_text(json.dumps(raw), encoding="utf-8")
+    changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="value_score.formula"):
         load_strategy_settings(changed_path)

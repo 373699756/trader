@@ -121,6 +121,8 @@ class SQLiteIssuerEligibilityIndex:
             return inserted
 
     def refresh_due(self, observed_at: datetime) -> bool:
+        if self._read_only:
+            return False
         with self._lock:
             self._ensure_loaded()
             if self._next_refresh_at is None:

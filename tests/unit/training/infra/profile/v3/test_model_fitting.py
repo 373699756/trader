@@ -11,10 +11,13 @@ from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMP
 from trader.training.infra import model_fitting
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 from trader.training.infra.model_fitting import fit_industry_models
-from trader.training.infra.profile.v2.contracts import V2_HEAD_CONTRACTS
-from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS
+from trader.training.infra.profile.v2.contracts import V2_HEAD_CONTRACTS, V2_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS, V3_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_repository import TrainingSample
+from trader.training.infra.training_settings import load_profile_training_settings
+
+PROJECT_ROOT = Path(__file__).resolve().parents[6]
 
 
 @pytest.mark.parametrize("contract", (*V2_HEAD_CONTRACTS, *HEAD_CONTRACTS), ids=lambda item: item.model_id)
@@ -24,6 +27,8 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
     split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
     usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
+    profile = V2_TRAINING_PROFILE if contract in V2_HEAD_CONTRACTS else V3_TRAINING_PROFILE
+    settings = load_profile_training_settings(PROJECT_ROOT, profile.profile_id)
 
     feature_count = max(contract.feature_positions) + 1
     cache = TrainingSampleCache(tmp_path, contract.model_id, feature_count, split.content_hash)
@@ -48,20 +53,28 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, first_training_rows, first_validation_rows = fit_industry_models(repository, split, contract)
+        first, first_training_rows, first_validation_rows = fit_industry_models(
+            repository, split, contract, settings.fitting
+        )
         cache.seal(repository)
 
     with cache.open() as repository:
         assert cache.reused
-        second, second_training_rows, second_validation_rows = fit_industry_models(repository, split, contract)
+        second, second_training_rows, second_validation_rows = fit_industry_models(
+            repository, split, contract, settings.fitting
+        )
 
     assert TOMORROW_TRAINING_COMPUTE_THREADS == 2
     assert first == second
     assert first_training_rows == second_training_rows
     assert first_validation_rows == second_validation_rows
-    assert len(first["银行"]["ridge_coefficients"]) == len(contract.feature_positions)
-    assert "[num_threads: 2]" in str(first["银行"]["lightgbm_model"])
-    assert "[force_col_wise: 1]" in str(first["银行"]["lightgbm_model"])
+    if profile.algorithm == "lightgbm":
+        assert set(first["银行"]).isdisjoint({"ridge_intercept", "ridge_coefficients"})
+        assert "[num_threads: 2]" in str(first["银行"]["lightgbm_model"])
+        assert "[force_col_wise: 1]" in str(first["银行"]["lightgbm_model"])
+    else:
+        assert set(first["银行"]).isdisjoint({"lightgbm_model", "lightgbm_best_iteration"})
+        assert len(first["银行"]["ridge_coefficients"]) == len(contract.feature_positions)
 
 
 def _samples_for_day(day: date, day_position: int, feature_count: int) -> tuple[TrainingSample, ...]:

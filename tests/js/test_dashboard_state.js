@@ -34,8 +34,13 @@ const sandbox = {
     addEventListener() {},
     createElement() { return {}; },
     querySelector(selector) {
-      assert.strictEqual(selector, 'meta[name="trader-web-snapshot-retention-ms"]');
-      return { content: "35000" };
+      const content = {
+        'meta[name="trader-web-snapshot-retention-ms"]': "35000",
+        'meta[name="trader-default-scoring-profile"]': "v2",
+        'meta[name="trader-long-scoring-profile"]': "v2",
+      }[selector];
+      assert.notStrictEqual(content, undefined);
+      return { content };
     },
   },
   window: {

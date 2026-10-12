@@ -52,7 +52,7 @@ from trader.training.infra.model_bundles.bundle_repository import (
     recover_head_bundle_publication,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
-from trader.training.infra.model_fitting import MODEL_FITTING_PARAMETERS, fit_industry_models
+from trader.training.infra.model_fitting import LightGBMFittingParameters, fit_industry_models
 from trader.training.infra.sample_builder import (
     TrainingHistorySource,
     TrainingSampleBuildRequest,
@@ -65,6 +65,7 @@ from trader.training.infra.sample_repository import (
     SQLiteTrainingSampleRepository,
     TargetMetric,
 )
+from trader.training.infra.training_settings import ProfileTrainingSettings
 
 TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
 
@@ -153,15 +154,18 @@ class ProfileTrainingRequest:
     train_root: Path
     profile: TrainedProfileContract
     contracts: tuple[TrainedHeadContract, ...]
+    settings: ProfileTrainingSettings
     progress: TomorrowTrainingProgressPort | None = None
     expected_history_snapshot_hash: str | None = None
 
     def __post_init__(self) -> None:
         strategies = tuple(contract.strategy for contract in self.contracts)
+        self.settings.require_profile(self.profile)
         if (
             not self.contracts
             or len(set(strategies)) != len(strategies)
             or any(contract != self.profile.head_for_strategy(contract.strategy) for contract in self.contracts)
+            or (self.profile.algorithm == "lightgbm") != isinstance(self.settings.fitting, LightGBMFittingParameters)
         ):
             raise ValueError("profile training request contains a foreign or duplicate head contract")
 
@@ -170,6 +174,7 @@ class ProfileTrainingRequest:
 class _HeadFitRequest:
     plan: _HeadPlan
     profile: TrainedProfileContract
+    settings: ProfileTrainingSettings
     snapshot: HistoryTrainingInputSnapshot
     split: BaoStockTrainingSplit
     samples: SQLiteTrainingSampleRepository
@@ -250,7 +255,9 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
         )
         return TrainingRunResult(None, archive.snapshot.active_snapshot_hash, 0, heads)
     snapshot = archive.snapshot
-    split, preparation_failure = _prepare_locked_split(snapshot, request.train_root, request.profile, request.contracts)
+    split, preparation_failure = _prepare_locked_split(
+        snapshot, request.train_root, request.profile, request.contracts, request.settings
+    )
     if split is None:
         heads = tuple(_blocked_from_snapshot(item, snapshot, preparation_failure) for item in request.contracts)
         return TrainingRunResult(None, snapshot.active_snapshot_hash, 0, heads)
@@ -271,7 +278,13 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
     peak_bytes = 0
     cache: TrainingSampleCache | None = None
     try:
-        training_window = _require_industry_coverage(archive, split, request.profile.history_sessions)
+        training_window = _require_industry_coverage(
+            archive,
+            split,
+            request.profile.history_sessions,
+            request.profile.algorithm,
+            request.settings.fitting.minimum_industry_training_rows,
+        )
         request.train_root.mkdir(parents=True, exist_ok=True)
         _cleanup_abandoned_workspaces(request.train_root, request.contracts)
         feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
@@ -312,6 +325,7 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                         _HeadFitRequest(
                             plan,
                             request.profile,
+                            request.settings,
                             snapshot,
                             split,
                             samples,
@@ -365,13 +379,15 @@ def _require_industry_coverage(
     archive: _TrainingInputArchive,
     split: BaoStockTrainingSplit,
     history_sessions: int,
+    algorithm: Literal["lightgbm", "ridge"],
+    minimum_training_rows: int,
 ) -> TomorrowTrainingWindow:
     window = TomorrowTrainingWindow(split)
     if not archive.has_industry_window(window.readable_dates, history_sessions):
         raise ValueError("history_industry_coverage_insufficient")
     for anchors in (
         split.model_fit_dates,
-        split.early_stopping_dates,
+        *((split.early_stopping_dates,) if algorithm == "lightgbm" else ()),
         split.calibration_dates,
         split.confirmation_dates,
         split.daily_proxy_holdout_dates,
@@ -381,7 +397,7 @@ def _require_industry_coverage(
     bounds = archive.industry_sample_upper_bounds(
         window.readable_dates, history_sessions, frozenset(split.model_fit_dates)
     )
-    if not any(count >= MODEL_FITTING_PARAMETERS.minimum_industry_training_rows for _, count in bounds):
+    if not any(count >= minimum_training_rows for _, count in bounds):
         raise ValueError("history_industry_training_rows_insufficient")
     return window
 
@@ -401,6 +417,7 @@ def _prepare_locked_split(
     train_root: Path,
     profile: TrainedProfileContract,
     contracts: tuple[TrainedHeadContract, ...],
+    settings: ProfileTrainingSettings,
 ) -> tuple[BaoStockTrainingSplit | None, str]:
     try:
         _recover_incomplete_publications(train_root, profile, contracts)
@@ -410,6 +427,8 @@ def _prepare_locked_split(
         split = build_baostock_training_split(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.active_snapshot_hash,
+            fit_dates=settings.fit_dates,
+            early_stopping_sessions=20 if profile.algorithm == "lightgbm" else 0,
         )
     except ValueError:
         return None, "training_split_unavailable"
@@ -424,7 +443,7 @@ def _build_head_plans(
     completed: list[HeadTrainingResult] = []
     for contract in request.contracts:
         label_cutoff = _mature_label_cutoff(snapshot, contract)
-        contract_hash = _training_contract_hash(request.profile, contract)
+        contract_hash = _training_contract_hash(request.profile, contract, request.settings)
         if label_cutoff is None:
             completed.append(_blocked_from_snapshot(contract, snapshot, "history_training_data_incomplete"))
         else:
@@ -494,7 +513,11 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
     staging: Path | None = None
     try:
         models, training_rows, validation_rows = fit_industry_models(
-            request.samples, request.split, contract, progress=request.progress
+            request.samples,
+            request.split,
+            contract,
+            request.settings.fitting,
+            progress=request.progress,
         )
         _publish(
             request.progress,
@@ -670,9 +693,13 @@ def _model_document(
         "training_rows": context.training_rows,
         "validation_rows": context.validation_rows,
         "industry_count": len(models),
-        "ensemble_weights": {"ridge": 0.5, "lightgbm": 0.5},
+        "algorithm": context.profile.algorithm,
         "industries": models,
-        "dependencies": {"lightgbm": version("lightgbm"), "numpy": version("numpy")},
+        "dependencies": (
+            {"lightgbm": version("lightgbm"), "numpy": version("numpy")}
+            if context.profile.algorithm == "lightgbm"
+            else {"numpy": version("numpy")}
+        ),
         "automatic_model_update": False,
     }
     document["model_payload_hash"] = _model_payload_hash(document)
@@ -729,13 +756,17 @@ def _common_document(context: _ArtifactContext) -> dict[str, object]:
     }
 
 
-def _training_contract_hash(profile: TrainedProfileContract, contract: TrainedHeadContract) -> str:
-    fitting = MODEL_FITTING_PARAMETERS
+def _training_contract_hash(
+    profile: TrainedProfileContract, contract: TrainedHeadContract, settings: ProfileTrainingSettings
+) -> str:
+    fitting = settings.fitting
     return content_hash(
         {
             "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
             "history_sessions": profile.history_sessions,
+            "fit_dates": settings.fit_dates,
+            "algorithm": profile.algorithm,
             "strategy_head": contract.strategy.value,
             "compute_threads": TOMORROW_TRAINING_COMPUTE_THREADS,
             "peak_rss_mib": TOMORROW_TRAINING_PEAK_RSS_MIB,
@@ -749,8 +780,9 @@ def _training_contract_hash(profile: TrainedProfileContract, contract: TrainedHe
             "training_cost_bps": 0,
             "evaluation_cost_bps": [20, 50, 100],
             "minimum_industry_training_rows": fitting.minimum_industry_training_rows,
-            "ridge_penalty": fitting.ridge_penalty,
-            "lightgbm": {
+            "model_parameters": {"ridge_penalty": fitting.penalty}
+            if not isinstance(fitting, LightGBMFittingParameters)
+            else {
                 "objective": "regression_l2",
                 "learning_rate": fitting.learning_rate,
                 "max_depth": fitting.max_depth,
@@ -767,7 +799,6 @@ def _training_contract_hash(profile: TrainedProfileContract, contract: TrainedHe
             "sqlite_cache_mib": TRAINING_SAMPLE_CACHE_MIB,
             "sqlite_mmap_bytes": TRAINING_SAMPLE_MMAP_BYTES,
             "parallel_industries": 1,
-            "ensemble_weights": {"ridge": 0.5, "lightgbm": 0.5},
             "calibration": "independent_linear",
             "training_anchor": "15:00_close_proxy",
             "runtime_anchor": contract.runtime_anchor,

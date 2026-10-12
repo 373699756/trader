@@ -9,7 +9,11 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput, M
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
-from trader.training.infra.model_bundles.bundle_codec import TrainedHeadBundleArtifact, TrainedIndustryModelArtifact
+from trader.training.infra.model_bundles.bundle_codec import (
+    TrainedHeadBundleArtifact,
+    TrainedLightGBMModelArtifact,
+    TrainedRidgeModelArtifact,
+)
 
 
 class TrainedHeadPredictor:
@@ -24,8 +28,11 @@ class TrainedHeadPredictor:
         self._profile_id = profile_id
         self._artifact = artifact
         self._strategy = strategy
-        self._models = {
-            industry: (model, lgb.Booster(model_str=model.lightgbm_model)) for industry, model in artifact.industries
+        self._models = dict(artifact.industries)
+        self._boosters = {
+            industry: lgb.Booster(model_str=model.lightgbm_model)
+            for industry, model in artifact.industries
+            if isinstance(model, TrainedLightGBMModelArtifact)
         }
 
     @property
@@ -58,14 +65,13 @@ class TrainedHeadPredictor:
             selected = self._models.get(item.industry)
             if selected is None:
                 raise ValueError(f"{self._strategy.value} trained input industry is not covered")
-            predictions.append(self._predict_one(item, *selected))
+            predictions.append(self._predict_one(item, selected))
         return tuple(predictions)
 
     def _predict_one(
         self,
         item: ModelInput,
-        model: TrainedIndustryModelArtifact,
-        booster: lgb.Booster,
+        model: TrainedRidgeModelArtifact | TrainedLightGBMModelArtifact,
     ) -> ModelPrediction:
         matrix = np.asarray((item.alpha_features,), dtype=np.float64)
         if matrix.shape[1:] != (len(self.feature_ids),):
@@ -73,14 +79,17 @@ class TrainedHeadPredictor:
         means = np.asarray(model.transformer_means, dtype=np.float64)
         scales = np.asarray(model.transformer_scales, dtype=np.float64)
         standardized = (matrix - means) / scales
-        coefficients = np.asarray(model.ridge_coefficients, dtype=np.float64)
-        ridge = float(model.ridge_intercept + standardized[0] @ coefficients)
-        tree = float(booster.predict(standardized, num_iteration=model.lightgbm_best_iteration, num_threads=1)[0])
-        combined = self._artifact.ridge_weight * ridge + self._artifact.lightgbm_weight * tree
+        if isinstance(model, TrainedLightGBMModelArtifact):
+            booster = self._boosters[item.industry]
+            predicted = float(
+                booster.predict(standardized, num_iteration=model.lightgbm_best_iteration, num_threads=1)[0]
+            )
+        else:
+            coefficients = np.asarray(model.ridge_coefficients, dtype=np.float64)
+            predicted = float(model.ridge_intercept + standardized[0] @ coefficients)
         return ModelPrediction(
             item.code,
-            model.calibration_intercept + model.calibration_slope * combined,
-            abs(ridge - tree),
+            model.calibration_intercept + model.calibration_slope * predicted,
         )
 
 

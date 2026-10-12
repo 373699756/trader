@@ -35,6 +35,7 @@ from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.training.application.research_audit import build_committed_research_audit
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -59,7 +60,7 @@ class _ProductionPredictor:
     industry_ids: tuple[str, ...] = ()
 
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-        return tuple(ModelPrediction(item.code, 0.01 + index / 1000.0, 0.001) for index, item in enumerate(inputs))
+        return tuple(ModelPrediction(item.code, 0.01 + index / 1000.0) for index, item in enumerate(inputs))
 
 
 class _RecordingProductionPredictor(_ProductionPredictor):
@@ -73,7 +74,7 @@ class _RecordingProductionPredictor(_ProductionPredictor):
 
 class _NonPositiveProductionPredictor(_ProductionPredictor):
     def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
-        return tuple(ModelPrediction(item.code, 0.001 + index * 0.0001, 0.0) for index, item in enumerate(inputs))
+        return tuple(ModelPrediction(item.code, 0.001 + index * 0.0001) for index, item in enumerate(inputs))
 
 
 class _IndustryProductionPredictor(_ProductionPredictor):
@@ -82,7 +83,11 @@ class _IndustryProductionPredictor(_ProductionPredictor):
 
 
 def _router(predictor: object) -> ModelScoringRouter:
-    service = ProductionModelScoringService(profile_for(predictor), Strategy.TOMORROW)  # type: ignore[arg-type]
+    service = ProductionModelScoringService(
+        profile_for(predictor),
+        Strategy.TOMORROW,
+        cost_policy=ExecutionCostPolicy(0.002, 1.0),
+    )  # type: ignore[arg-type]
     return ModelScoringRouter("v2", {Strategy.TOMORROW: service})
 
 

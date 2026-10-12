@@ -19,8 +19,6 @@ from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_reference_files import (
     HistoryReferenceIndex,
-    history_filter_config_root,
-    history_industry_mapping_path,
     history_reference_path,
     history_st_evidence_path,
     read_history_reference,
@@ -213,12 +211,10 @@ def test_reference_index_requires_a_continuous_industry_window() -> None:
     assert not HistoryReferenceIndex(current_only).has_industry_window((code,), dates, 251)
 
 
-def test_history_filter_files_use_fixed_names_beside_history(tmp_path):
-    history = tmp_path / "data" / "history"
+def test_generated_st_evidence_uses_the_injected_reference_root(tmp_path):
+    reference_root = tmp_path / "data" / "reference"
 
-    assert history_filter_config_root(history) == tmp_path / "data" / "filter_config"
-    assert history_st_evidence_path(history) == tmp_path / "data" / "filter_config" / "historical_st.json"
-    assert history_industry_mapping_path(history) == tmp_path / "data" / "filter_config" / "industry_mapping.json"
+    assert history_st_evidence_path(reference_root) == reference_root / "historical_st.json"
 
 
 def test_st_checkpoints_cache_clear_and_permanently_keep_ever_st(tmp_path):

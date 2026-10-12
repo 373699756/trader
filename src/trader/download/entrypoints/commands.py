@@ -12,14 +12,15 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 from trader.download.entrypoints.history_maintenance_projection import project_history_maintenance_status
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+from trader.download.infra.download_settings import load_history_sync_configuration
 
 
-def run_download(repository_root: Path) -> int:
+def run_download(repository_root: Path, config_path: Path) -> int:
     """Run zero-argument initial or incremental archive maintenance."""
 
     from trader.bootstrap import execute_history_download
 
-    configuration = history_sync_configuration(repository_root)
+    configuration = history_sync_configuration(repository_root, config_path)
     progress = StderrHistorySyncProgress()
     status = execute_history_download(configuration, progress=progress)
     progress.publish_result(status)
@@ -27,8 +28,11 @@ def run_download(repository_root: Path) -> int:
     return 0 if status.state in {"completed", "already_current"} else 1
 
 
-def history_sync_configuration(repository_root: Path) -> HistorySyncConfiguration:
-    return HistorySyncConfiguration.for_repository(repository_root)
+def history_sync_configuration(repository_root: Path, config_path: Path) -> HistorySyncConfiguration:
+    from trader.infra.settings import load_runtime_settings
+
+    runtime = load_runtime_settings(config_path)
+    return load_history_sync_configuration(repository_root, runtime.reference_dir)
 
 
 def run_download_command(command: str, *, config_path: Path | None = None) -> int:
@@ -36,7 +40,9 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
 
     repository_root = _repository_root()
     if command == "download":
-        return run_download(repository_root)
+        if config_path is None:
+            raise ValueError("download requires a runtime configuration path")
+        return run_download(repository_root, config_path)
     if command == "history-automation-status":
         from trader.download.entrypoints.history_automation_projection import project_history_automation_status
         from trader.download.infra.history_automation_status import read_history_automation_status
@@ -63,7 +69,7 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
 
     runtime = load_runtime_settings(config_path)
     observed_at = _shanghai_now()
-    configuration = history_sync_configuration(repository_root)
+    configuration = history_sync_configuration(repository_root, config_path)
     task_log = RotatingHistoryAutomationLog(runtime.runtime_dir / "logs/history-automation.log")
 
     def synchronize(progress: HistorySyncProgressPort | None) -> HistoryMaintenanceStatus:

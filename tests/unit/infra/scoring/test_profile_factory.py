@@ -4,24 +4,30 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.training.infra.profile.v3.test_profile import _publish
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
-PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
-
-def test_tracked_v3_two_head_bundles_load_with_expected_identity() -> None:
-    profile = load_scoring_profile("v3", training_root=PROJECT_ROOT / "data" / "train")
-    expected_hashes = {
-        Strategy.TOMORROW: "a4f71a5365db7ceda1d52bbe65ef787c79b247f40add86b6d2404c8eebb0ce36",
-        Strategy.D25: "83d49d9312aad690c28d98f9703016c38370d81d624ce6ebd3157e9a5883661d",
-    }
+def test_v3_two_head_ridge_bundles_load_with_expected_identity(tmp_path: Path) -> None:
+    training_root = tmp_path / "train"
+    for contract in V3_TRAINING_PROFILE.heads:
+        _publish(
+            training_root,
+            contract,
+            f"staging-{contract.strategy.value}",
+            profile=V3_TRAINING_PROFILE,
+            profile_owned=True,
+        )
+    profile = load_scoring_profile("v3", training_root=training_root)
 
     assert tuple(profile.heads) == (Strategy.TOMORROW, Strategy.D25)
-    for strategy, expected_hash in expected_hashes.items():
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
         predictor = profile.heads[strategy].predictor
         assert predictor.profile_id == "v3"
-        assert predictor.model_hash == expected_hash
+        assert predictor.model_id == V3_TRAINING_PROFILE.head_for_strategy(strategy).model_id
+        assert len(predictor.model_hash) == 64
 
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))

@@ -38,8 +38,10 @@ from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBund
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training import run_repack_tomorrow_training, run_repack_v3_training
 from trader.training.infra.profile.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
+from trader.training.infra.training_settings import load_profile_training_settings
 
 NOW = datetime(2026, 9, 12, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+PROJECT_ROOT = Path(__file__).resolve().parents[4]
 
 
 def _write_training_memory_evidence(path: Path, training_input_hash: str) -> None:
@@ -255,6 +257,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
     result = run_repack_tomorrow_training(
         source,
         tmp_path / "data/train",
+        settings=load_profile_training_settings(PROJECT_ROOT, "v3"),
         expected_history_snapshot_hash=built.target_snapshot_hash,
     )
 
@@ -263,6 +266,7 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
     mismatch = run_repack_tomorrow_training(
         source,
         tmp_path / "data/train",
+        settings=load_profile_training_settings(PROJECT_ROOT, "v3"),
         expected_history_snapshot_hash="f" * 64,
     )
     assert mismatch.status == "blocked"
@@ -286,6 +290,7 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
     result = run_repack_v3_training(
         source,
         tmp_path / "data/train",
+        settings=load_profile_training_settings(PROJECT_ROOT, "v3"),
         expected_history_snapshot_hash=built.target_snapshot_hash,
     )
 

@@ -17,18 +17,8 @@ from trader.download.domain.history_revision import HistoryRevision
 from trader.infra.atomic_files.json import atomic_read_json, atomic_write_json
 
 
-def history_filter_config_root(history_root: Path) -> Path:
-    """Return the sole root for human-readable history filter configuration."""
-
-    return history_root.parent / "filter_config"
-
-
-def history_st_evidence_path(history_root: Path) -> Path:
-    return history_filter_config_root(history_root) / "historical_st.json"
-
-
-def history_industry_mapping_path(history_root: Path) -> Path:
-    return history_filter_config_root(history_root) / "industry_mapping.json"
+def history_st_evidence_path(reference_root: Path) -> Path:
+    return reference_root / "historical_st.json"
 
 
 def history_reference_path(history_root: Path, digest: str) -> Path:
@@ -232,8 +222,6 @@ def _decode_industry(code: str, item: object) -> BaoStockIndustryInterval:
 
 __all__ = [
     "HistoryReferenceIndex",
-    "history_filter_config_root",
-    "history_industry_mapping_path",
     "history_st_evidence_path",
     "read_bound_history_reference",
     "read_history_reference",

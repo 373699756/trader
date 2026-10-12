@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
+from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
+from trader.download.infra.download_settings import load_history_sync_configuration
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 
@@ -38,8 +39,12 @@ def _measure(root: Path, timeout: float) -> dict[str, object]:
     intervals = []
     with tempfile.TemporaryDirectory(prefix="trader-industry-preparation-") as temporary:
         cache = HistoryIndustryQueryCache(Path(temporary) / "industry_queries.sqlite3")
-        settings = HistorySyncConfiguration(
-            supplier_timeout_seconds=timeout, supplier_retries=0, progress_heartbeat_seconds=min(5, timeout)
+        project_root = Path(__file__).resolve().parents[2]
+        settings = replace(
+            load_history_sync_configuration(project_root, Path(temporary) / "reference"),
+            supplier_timeout_seconds=timeout,
+            supplier_retries=0,
+            progress_heartbeat_seconds=min(5, timeout),
         )
         for label in ("cold", "warm"):
             progress.values.clear()

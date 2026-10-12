@@ -136,14 +136,15 @@ class DecisionModelDiagnostics:
     predicted_excess_return_pct: float
     estimated_cost_pct: float
     predicted_net_excess_pct: float
-    model_disagreement_pct: float
+    model_disagreement_pct: float | None = None
 
     def __post_init__(self) -> None:
         _validate_score(self.signal_score, "model signal score")
         _validate_optional_market_value(self.predicted_excess_return_pct, "predicted excess return")
         _validate_optional_market_value(self.estimated_cost_pct, "estimated model cost", non_negative=True)
         _validate_optional_market_value(self.predicted_net_excess_pct, "predicted net excess")
-        _validate_optional_market_value(self.model_disagreement_pct, "model disagreement", non_negative=True)
+        if self.model_disagreement_pct is not None:
+            _validate_optional_market_value(self.model_disagreement_pct, "model disagreement", non_negative=True)
 
 
 @dataclass(frozen=True)

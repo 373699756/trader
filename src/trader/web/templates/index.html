@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
     <meta name="trader-web-snapshot-retention-ms" content="{{ web_snapshot_retention_ms }}" />
+    <meta name="trader-default-scoring-profile" content="{{ default_scoring_profile }}" />
+    <meta name="trader-long-scoring-profile" content="{{ long_scoring_profile }}" />
     <title>策略</title>
     <link rel="icon" href="{{ url_for('static', filename='trader-mark.svg') }}" type="image/svg+xml" />
     <link rel="stylesheet" href="{{ web_asset('dashboard_base.css') }}" />
@@ -69,6 +71,16 @@
         <div class="summary-item"><span>发布状态</span><strong id="publicationStatus">-</strong><small id="publicationMeta">等待当前策略快照</small></div>
       </section>
       <section class="control-band" aria-label="策略和日期">
+        {% if scoring_profiles %}
+        <label class="date-control profile-control">
+          <span>评分档位</span>
+          <select id="profileSelect" aria-label="评分档位">
+            {% for profile in scoring_profiles %}
+            <option value="{{ profile }}"{% if profile == default_scoring_profile %} selected{% endif %}>{{ profile|upper }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        {% endif %}
         <div class="strategy-choice">
           <nav class="strategy-tabs" role="tablist" aria-label="推荐策略" aria-describedby="strategyDescription">
             <button class="strategy-tab is-active" type="button" role="tab" aria-selected="true" data-strategy="tomorrow">明</button>

@@ -52,6 +52,7 @@ BAOSTOCK_PREPARATION_INTERVAL_SECONDS = 2.0
 @dataclass(frozen=True)
 class HistorySyncConfiguration:
     archive_root: Path = Path("data/history")
+    reference_root: Path = Path("data/reference")
     sessions: int = 2000
     reread_sessions: int = 5
     download_batch_size: int = 64
@@ -64,15 +65,9 @@ class HistorySyncConfiguration:
     progress_heartbeat_seconds: float = 5.0
     training_root: Path = Path("data/train")
 
-    @classmethod
-    def for_repository(cls, repository_root: Path) -> HistorySyncConfiguration:
-        root = repository_root.resolve()
-        return cls(
-            archive_root=root / "data" / "history",
-            training_root=root / "data" / "train",
-        )
-
     def __post_init__(self) -> None:
+        if self.training_root == Path("data/train"):
+            object.__setattr__(self, "training_root", self.archive_root.parent / "train")
         if (
             not 1 <= self.sessions <= 2000
             or not 1 <= self.reread_sessions <= self.sessions

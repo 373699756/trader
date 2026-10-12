@@ -62,6 +62,7 @@ from trader.recommendation.domain.publication.decision_identity import (
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.scoring import score_board_strategy
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
@@ -75,6 +76,7 @@ from trader.recommendation.infra.normalization.merge import (
 )
 from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
 from trader.training.application.scoring_hot_path_baseline import (
     ScoringHotPathBaseline,
     ScoringHotPathEquivalence,
@@ -126,7 +128,8 @@ def run(
             load_scoring_profile(
                 strategy_settings.scoring_profile,
                 training_root=settings.project_root / "data" / "train",
-            )
+            ),
+            load_execution_cost_policy(config_path.parent),
         ),
     )
     worst_case_plans = _worst_case_candidate_plans(budgets.workload.market_rows)
@@ -216,12 +219,14 @@ def run(
     }
 
 
-def _model_scoring_router(profile: LoadedScoringProfile) -> ModelScoringRouter:
+def _model_scoring_router(profile: LoadedScoringProfile, cost_policy: ExecutionCostPolicy) -> ModelScoringRouter:
     shared_features = SharedModelFeatureCache()
     return ModelScoringRouter(
         profile.profile_id,
         {
-            strategy: ProductionModelScoringService(profile, strategy, shared_features=shared_features)
+            strategy: ProductionModelScoringService(
+                profile, strategy, cost_policy=cost_policy, shared_features=shared_features
+            )
             for strategy in profile.heads
         },
     )

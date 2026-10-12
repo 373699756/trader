@@ -272,15 +272,17 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
 
 def test_v3_profile_keeps_only_offline_training_implementation() -> None:
     v3_root = SOURCE_ROOT / "training/infra/profile/v3"
+    shared_training_root = SOURCE_ROOT / "training/infra"
 
     assert not (SOURCE_ROOT / "infra/tomorrow_production_model.py").exists()
     offline_training_modules = {
-        "model_fitting.py",
         "sample_builder.py",
         "training.py",
         "training_sample_repository.py",
     }
     assert all((v3_root / name).is_file() for name in offline_training_modules)
+    assert (shared_training_root / "model_fitting.py").is_file()
+    assert not (v3_root / "model_fitting.py").exists()
     assert not any((v3_root / "heads").rglob("*.py"))
 
 

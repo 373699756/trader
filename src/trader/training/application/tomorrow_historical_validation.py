@@ -151,7 +151,7 @@ class TomorrowHistoricalRiskModelArtifact:
     source_spec_hash: str
     parent_model_id: str
     parent_model_hash: str
-    feature_ids: tuple[str, str, str, str, str]
+    feature_ids: tuple[str, str, str, str]
     logistic_intercept: float
     logistic_coefficients: tuple[float, ...]
     platt_intercept: float
@@ -180,7 +180,6 @@ class TomorrowHistoricalRiskModelArtifact:
             or self.feature_ids
             != (
                 "net_predicted_excess_20bp",
-                "model_disagreement",
                 "signal_score",
                 "atr20_pct",
                 "estimated_cost",
@@ -194,7 +193,7 @@ class TomorrowHistoricalRiskModelArtifact:
             raise ValueError("Historical risk model artifact is invalid")
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
-    def predict(self, rows: tuple[tuple[float, float, float, float, float], ...]) -> tuple[float, ...]:
+    def predict(self, rows: tuple[tuple[float, float, float, float], ...]) -> tuple[float, ...]:
         model = LinearModel(self.logistic_intercept, self.logistic_coefficients, logistic=True)
         calibrator = PlattCalibrator(self.platt_intercept, self.platt_slope, self.platt_constant)
         return calibrator.predict(model.predict(rows))
@@ -439,7 +438,6 @@ def build_historical_risk_probability(
         parent_model_hash=predictor.model_hash,
         feature_ids=(
             "net_predicted_excess_20bp",
-            "model_disagreement",
             "signal_score",
             "atr20_pct",
             "estimated_cost",
@@ -504,7 +502,6 @@ def _risk_features(
             row.trade_date,
             (
                 prediction.predicted_excess_return - costs[index],
-                prediction.model_disagreement,
                 scores[index] / 100.0,
                 row.atr20_pct,
                 costs[index],

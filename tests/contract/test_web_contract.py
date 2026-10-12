@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.http_api.route_services import UnifiedWebServices, WebApiConfig
+from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
@@ -107,6 +107,31 @@ def test_only_unified_product_routes_are_registered() -> None:
         assert client.get(removed).status_code == 404
 
 
+def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
+    _, queries, stream = _app()
+    status_provider = lambda: {"status": "running", "phase": "morning_main"}
+    services = ProfiledWebServices(
+        {
+            "v2": UnifiedWebServices(queries, stream, status_provider, profile_id="v2"),
+            "v3": UnifiedWebServices(queries, stream, status_provider, profile_id="v3"),
+        },
+        default_profile="v3",
+        long_profile="v2",
+    )
+    client = create_app(services=services).test_client()
+
+    assert client.get("/api/decisions/tomorrow/current").get_json()["scoring_profile"] == "v3"
+    assert client.get("/api/decisions/tomorrow/current?profile=v2").get_json()["scoring_profile"] == "v2"
+    assert client.get("/api/decisions/long/current?profile=v3").get_json()["scoring_profile"] == "v2"
+    status = client.get("/api/status?profile=v3").get_json()
+    assert status["selected_profile"] == "v3"
+    assert status["available_profiles"] == ["v2", "v3"]
+    assert client.get("/api/status?profile=v4").status_code == 400
+    page = client.get("/").get_data(as_text=True)
+    assert 'name="trader-default-scoring-profile" content="v3"' in page
+    assert 'name="trader-long-scoring-profile" content="v2"' in page
+
+
 def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_fields() -> None:
     client = _app()[0].test_client()
 
@@ -123,7 +148,12 @@ def test_long_http_projection_is_current_only_and_has_no_scoring_or_freeze_field
     assert payload["coverage"] == {"item_count": 1, "available_quote_count": 1}
     assert set(payload).isdisjoint({"frozen", "frozen_at", "freeze_kind", "top_scores", "selection_diagnostics"})
     assert set(payload["items"][0]).isdisjoint({"rank", "selection_rank", "scores", "score_status"})
-    assert dates.get_json() == {"schema_version": "decision_dates", "strategy": "long", "dates": []}
+    assert dates.get_json() == {
+        "schema_version": "decision_dates",
+        "strategy": "long",
+        "scoring_profile": "v2",
+        "dates": [],
+    }
     assert history.get_json()["status"] == "not_applicable"
     assert history.get_json()["items"] == []
 
@@ -175,7 +205,7 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
     assert [item["code"] for item in current.get_json()["draft"]["items"]] == ["600000"]
     assert [item["code"] for item in current.get_json()["draft"]["top_scores"]] == ["600000"]
     assert current.get_json()["draft"]["input_versions"]["score_scale"] == ("weighted_evidence_quality_0_100")
-    assert current.headers["ETag"] == f'"{draft.content_hash}"'
+    assert current.headers["ETag"] == f'"{draft.version}"'
     assert draft.version not in status.get_data(as_text=True)
 
 

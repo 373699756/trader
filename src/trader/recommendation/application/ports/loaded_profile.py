@@ -40,9 +40,6 @@ class HeadPrediction(Protocol):
     @property
     def predicted_excess_return(self) -> float: ...
 
-    @property
-    def model_disagreement(self) -> float: ...
-
 
 class HeadPredictorPort(Protocol):
     """A predictor owned by a profile, without loading or persistence duties."""
@@ -60,15 +57,12 @@ class HeadPredictorPort(Protocol):
 class ModelPrediction:
     code: str
     predicted_excess_return: float
-    model_disagreement: float
 
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit():
             raise ValueError("model prediction code is invalid")
         if not math.isfinite(self.predicted_excess_return):
             raise ValueError("model prediction must be finite")
-        if not math.isfinite(self.model_disagreement) or self.model_disagreement < 0.0:
-            raise ValueError("model disagreement must be finite and non-negative")
 
 
 class ModelPredictorPort(Protocol):
@@ -99,7 +93,9 @@ class ModelDiagnostics:
     predicted_excess_return_pct: float
     estimated_cost_pct: float
     predicted_net_excess_pct: float
-    model_disagreement_pct: float
+    # Legacy dual-model records may contain this value. New single-model
+    # predictions leave it absent instead of publishing a synthetic zero.
+    model_disagreement_pct: float | None = None
 
     def __post_init__(self) -> None:
         values = (
@@ -107,13 +103,15 @@ class ModelDiagnostics:
             self.predicted_excess_return_pct,
             self.estimated_cost_pct,
             self.predicted_net_excess_pct,
-            self.model_disagreement_pct,
         )
         if (
             any(not math.isfinite(value) for value in values)
             or not 0.0 <= self.signal_score <= 100.0
             or self.estimated_cost_pct < 0.0
-            or self.model_disagreement_pct < 0.0
+            or (
+                self.model_disagreement_pct is not None
+                and (not math.isfinite(self.model_disagreement_pct) or self.model_disagreement_pct < 0.0)
+            )
         ):
             raise ValueError("model diagnostics are invalid")
 

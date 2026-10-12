@@ -23,7 +23,6 @@ from trader.download.domain.published_history import project_history_cell
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.download.infra.history_reference_files import (
-    history_industry_mapping_path,
     history_reference_path,
     write_history_reference,
 )
@@ -106,7 +105,6 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         tuple(BaoStockIndustryInterval(code, date(2000, 1, 1), None, "bank", "sw") for code in codes),
         tuple(HistoryStEvidence(code, max(row.trade_date for row in rows), "clear") for code in codes),
     )
-    write_history_reference(history_industry_mapping_path(root), reference)
     write_history_reference(history_reference_path(root, reference.content_hash), reference)
     source = HistorySourceIdentity(
         "tencent",

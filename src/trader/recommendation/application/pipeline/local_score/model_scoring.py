@@ -43,10 +43,10 @@ from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import ExposureContract, residualize_exposure
 from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
+from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 
 _AMOUNT_FIELD = "qfq_average_amount_20d"
 _AMIHUD_FIELD = "qfq_amihud_20d"
-_COST_RATE = 0.002
 _DEFAULT_RETURN_HORIZONS = (1, 3, 5)
 _DEFAULT_MOMENTUM_HORIZONS = (20, 40, 60)
 _TStage = TypeVar("_TStage")
@@ -185,6 +185,7 @@ class ProductionModelScoringService:
         profile: LoadedScoringProfile,
         strategy: Strategy,
         *,
+        cost_policy: ExecutionCostPolicy,
         monotonic: Callable[[], float] = time.perf_counter,
         shared_features: SharedModelFeatureCache | None = None,
     ) -> None:
@@ -212,6 +213,7 @@ class ProductionModelScoringService:
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{strategy.value} production model identity is invalid") from exc
         self._strategy = strategy
+        self._cost_policy = cost_policy
         self._predictor = predictor
         self._required_return_horizons = frozenset(
             _feature_horizon(feature_id, "qfq_return_")
@@ -436,7 +438,7 @@ class ProductionModelScoringService:
             )
             return previous.batch
         deadline.require_time("before_score_projection")
-        batch = _score_predictions(self.model_version, predictions, cost_inputs, missing_codes)
+        batch = _score_predictions(self.model_version, predictions, cost_inputs, missing_codes, self._cost_policy)
         deadline.require_time("completed_after_score_projection_deadline")
         self._state = _ModelComputationState(
             revisions,
@@ -510,11 +512,12 @@ def _score_predictions(
     predictions: tuple[ModelPrediction, ...],
     cost_inputs: tuple[float, ...],
     missing_codes: tuple[str, ...],
+    cost_policy: ExecutionCostPolicy,
 ) -> ModelScoreBatch:
     if not predictions:
         return ModelScoreBatch(model_version, {}, (), missing_codes)
     amihud_ranks = percentile_ranks(cost_inputs)
-    costs = tuple(_COST_RATE * (1.0 + rank) for rank in amihud_ranks)
+    costs = tuple(cost_policy.estimate(rank) for rank in amihud_ranks)
     utilities = tuple(
         prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
     )
@@ -532,13 +535,12 @@ def _score_predictions(
         predicted_pct = prediction.predicted_excess_return * 100.0
         cost_pct = cost * 100.0
         net_pct = utility * 100.0
-        disagreement_pct = prediction.model_disagreement * 100.0
         diagnostics[prediction.code] = ModelDiagnostics(
             signal_score=round_score(score),
             predicted_excess_return_pct=predicted_pct,
             estimated_cost_pct=cost_pct,
             predicted_net_excess_pct=net_pct,
-            model_disagreement_pct=disagreement_pct,
+            model_disagreement_pct=None,
         )
     return ModelScoreBatch(model_version, diagnostics, predictions, missing_codes)
 

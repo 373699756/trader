@@ -34,7 +34,6 @@ class _Predictor:
             ModelPrediction(
                 item.code,
                 0.01 + item.alpha_features[0] * 0.01,
-                abs(item.alpha_features[1]) * 0.01,
             )
             for item in inputs
         )
@@ -105,7 +104,7 @@ def test_historical_risk_validation_uses_ordered_60_20_40_splits_without_future_
     assert outcome.model_artifact is not None
     assert report.model_artifact_hash == outcome.model_artifact.content_hash
     assert outcome.model_artifact.production_authority is False
-    probabilities = outcome.model_artifact.predict(((0.01, 0.1, 0.5, 0.02, 0.002),))
+    probabilities = outcome.model_artifact.predict(((0.01, 0.1, 0.5, 0.02),))
     assert len(probabilities) == 1 and 0.0 <= probabilities[0] <= 1.0
     assert 0.0 <= report.brier_score <= 1.0
     assert 0.0 <= report.expected_calibration_error <= 1.0

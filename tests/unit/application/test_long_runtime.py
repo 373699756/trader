@@ -36,10 +36,17 @@ def _runtime(
     quotes: _Quotes,
     *,
     completed_at: datetime = NOW,
+    enabled: bool = True,
 ) -> tuple[LongRuntime, UnifiedDecisionIndex]:
     index = UnifiedDecisionIndex()
     runtime = LongRuntime(
-        LongRuntimeDependencies(next_sequence=count(1).__next__, quotes=quotes, index=index, now=lambda: completed_at),
+        LongRuntimeDependencies(
+            next_sequence=count(1).__next__,
+            quotes=quotes,
+            index=index,
+            now=lambda: completed_at,
+            enabled=enabled,
+        ),
         config_version="runtime-current+strategy-fixture",
         watchlist_version="long-watchlist-fixture",
         items=(
@@ -53,6 +60,19 @@ def _runtime(
         ),
     )
     return runtime, index
+
+
+def test_disabled_long_lane_accepts_scheduler_handoffs_without_fetching_or_publishing() -> None:
+    quotes = _Quotes([])
+    runtime, index = _runtime(quotes, enabled=False)
+
+    assert runtime.start() is False
+    assert runtime.offer_refresh(LongRefreshRequest(NOW, "morning_main")) is True
+    assert runtime.wait_idle(0.01) is True
+    assert runtime.stop(wait=True, deadline=ShutdownDeadline.start(0.01)).completed is True
+    assert quotes.calls == []
+    assert index.snapshot(Strategy.LONG).current is None
+    assert runtime.status().published_count == 0
 
 
 def test_long_publishes_full_fixed_order_without_scoring(application_feature_factory) -> None:

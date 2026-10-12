@@ -8,6 +8,7 @@ import os
 import sys
 import time
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -131,6 +132,12 @@ def run_research_command(
     runtime: RuntimeSettings,
     options: ResearchCommandOptions,
 ) -> int:
+    if command.startswith("research-"):
+        from trader.recommendation.infra.scoring.cost_settings import load_evaluation_cost_scenarios
+        from trader.training.infra.research_settings import load_research_settings
+
+        load_research_settings(config_path.parent)
+        load_evaluation_cost_scenarios(config_path.parent)
     if command == "train-v2":
         return _run_v2_training_orchestrator(runtime)
     if command == "train-v3":
@@ -252,27 +259,31 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 
 
 def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
-    del runtime
     from trader.training.application.profile_training_secondary import TrainV3UseCase
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.infra.profile.v3.training import run_v3_training
+    from trader.training.infra.training_settings import load_profile_training_settings
 
     return _run_profile_training_command(
         "v3",
-        TrainV3UseCase(run_v3_training).execute,
+        TrainV3UseCase(
+            partial(run_v3_training, settings=load_profile_training_settings(runtime.project_root, "v3"))
+        ).execute,
         StderrTomorrowTrainingProgress,
     )
 
 
 def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
-    del runtime
     from trader.training.application.profile_training_primary import TrainV2UseCase
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.infra.profile.v2.training import run_v2_training
+    from trader.training.infra.training_settings import load_profile_training_settings
 
     return _run_profile_training_command(
         "v2",
-        TrainV2UseCase(run_v2_training).execute,
+        TrainV2UseCase(
+            partial(run_v2_training, settings=load_profile_training_settings(runtime.project_root, "v2"))
+        ).execute,
         StderrTomorrowTrainingProgress,
     )
 

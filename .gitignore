@@ -5,6 +5,7 @@
 .token_key
 .runtime/
 data/filter_config/
+/data/reference/
 .build-metadata/
 # Runtime history shards, training evidence, WAL files, and manifests are never committed.
 /data/history/

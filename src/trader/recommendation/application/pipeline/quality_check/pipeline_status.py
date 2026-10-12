@@ -472,7 +472,6 @@ def _completed_pipeline(
                             "predicted_net_excess_pct",
                             (item.predicted_net_excess_pct for item in model_diagnostics),
                         ),
-                        ("model_disagreement_pct", (item.model_disagreement_pct for item in model_diagnostics)),
                     )
                 ),
                 reason_counts=_reasons(

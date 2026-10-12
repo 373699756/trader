@@ -16,17 +16,18 @@ usage() {
     "" \
     "日常使用（不做离线研究）:" \
     "  ./run.sh                         以默认 V2 启动并加载共享双头模型" \
-    "  ./run.sh --profile v2|v3         显式使用 V2 或 V3 启动" \
+    "  ./run.sh --profile v2|v3         单独启动 V2 或 V3" \
+    "  ./run.sh --profile both          同一进程同时启动 V2 和 V3" \
     "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh download                零参数历史维护" \
     "  ./run.sh qfq_download            Tencent并发更新短窗口，支持断点续传" \
-    "  ./run.sh train-v2                按 V2 251 日特征训练独立双头" \
-    "  ./run.sh train-v3                按 V3 61 日特征训练独立双头" \
+    "  ./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" \
+    "  ./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" \
     "" \
-    "看板和 check 可追加 --profile v2|v3；离线数据与训练命令均为零参数。" \
+    "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -42,7 +43,7 @@ while (($#)); do
   case "$1" in
     --profile)
       if (($# < 2)); then
-        printf '%s\n' '缺少 --profile 的值（v2 或 v3）。' >&2
+        printf '%s\n' '缺少 --profile 的值（v2、v3 或 both）。' >&2
         exit 2
       fi
       SCORING_PROFILE="$2"
@@ -77,8 +78,13 @@ while (($#)); do
   esac
 done
 
-if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" ]]; then
-  printf '评分档位只能是 v2 或 v3: %s\n' "$SCORING_PROFILE" >&2
+if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE" != "v3" && "$SCORING_PROFILE" != "both" ]]; then
+  printf '评分档位只能是 v2、v3 或 both: %s\n' "$SCORING_PROFILE" >&2
+  exit 2
+fi
+
+if [[ "$MODE" == "check" && "$SCORING_PROFILE" == "both" ]]; then
+  printf '%s\n' 'check 请分别使用 --profile v2 和 --profile v3。' >&2
   exit 2
 fi
 
@@ -108,7 +114,7 @@ esac
 
 find_python() {
   local candidate
-  for candidate in python3 python; do
+  for candidate in python3; do
     if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(not ((3, 10) <= sys.version_info[:2] < (3, 15)))'; then
       command -v "$candidate"
       return 0
@@ -117,7 +123,7 @@ find_python() {
   return 1
 }
 
-if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+if [[ ! -x "$VENV_DIR/bin/python3" ]]; then
   PYTHON_BIN="$(find_python || true)"
   if [[ -z "$PYTHON_BIN" ]]; then
     printf '需要 Python 3.10-3.14。\n' >&2
@@ -142,7 +148,7 @@ fi
 if ((NEEDS_INSTALL)); then
   # Reuse the venv's build backend. Build isolation attempts to download
   # setuptools even when the environment already has a usable installation.
-  "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --no-build-isolation -e "$ROOT_DIR"
+  "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --no-build-isolation -e "$ROOT_DIR"
 fi
 
 export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"

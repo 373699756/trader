@@ -23,6 +23,7 @@ class QfqDailyMaintenance:
         now: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
         needs_initialization: Callable[[], bool] = lambda: False,
+        enabled: bool = True,
     ) -> None:
         self._update = update
         self._now = now
@@ -33,8 +34,11 @@ class QfqDailyMaintenance:
         self._completed_day: date | None = None
         self._next_retry = 0.0
         self._needs_initialization = needs_initialization
+        self._enabled = enabled
 
     def start(self) -> bool:
+        if not self._enabled:
+            return False
         with self._lock:
             if self._thread is not None:
                 return False
@@ -43,6 +47,8 @@ class QfqDailyMaintenance:
             return True
 
     def stop(self, *, wait: bool, deadline: ShutdownDeadline | None = None) -> ShutdownStep:
+        if not self._enabled:
+            return ShutdownStep("qfq_daily_maintenance", True, False, detail="disabled for secondary profile")
         self._cancel.set()
         with self._lock:
             thread = self._thread

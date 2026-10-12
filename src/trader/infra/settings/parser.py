@@ -25,6 +25,26 @@ def read_json_object(path: Path) -> dict[str, object]:
     return raw
 
 
+def read_config_sections(
+    path: Path,
+    root_keys: set[str],
+    section_files: dict[str, set[str]],
+    *,
+    label: str,
+) -> dict[str, object]:
+    """Read one fixed, non-recursive set of sibling configuration sections."""
+    root = read_json_object(path)
+    require_exact_keys(root, root_keys, label)
+    merged = dict(root)
+    for filename, section_keys in section_files.items():
+        section = read_json_object(path.parent / filename)
+        require_exact_keys(section, section_keys, filename.removesuffix(".json"))
+        if set(merged).intersection(section):
+            raise ConfigurationError(f"{label} has duplicate configuration sections in {filename}")
+        merged.update(section)
+    return merged
+
+
 def infer_project_root(config_dir: Path) -> Path:
     # The canonical runtime configuration lives directly under ``config``;
     # project-relative paths (for example ``.runtime/trader``) must therefore
@@ -50,6 +70,22 @@ def mapping(raw: Mapping[str, object], key: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise ConfigurationError(f"{key} must be an object")
     return value
+
+
+def profile_mapping(raw: object, profile_id: str, label: str) -> Mapping[str, object]:
+    if not isinstance(raw, list):
+        raise ConfigurationError(f"{label} must be a profile list")
+    profiles: dict[str, Mapping[str, object]] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ConfigurationError(f"{label} entries must be objects")
+        identity = item.get("profile")
+        if not isinstance(identity, str) or identity not in {"v2", "v3"} or identity in profiles:
+            raise ConfigurationError(f"{label} profile identities must be unique v2 and v3")
+        profiles[identity] = {key: value for key, value in item.items() if key != "profile"}
+    if set(profiles) != {"v2", "v3"}:
+        raise ConfigurationError(f"{label} must define v2 and v3")
+    return profiles[profile_id]
 
 
 def require_exact_keys(raw: Mapping[str, object], expected: set[str], label: str) -> None:

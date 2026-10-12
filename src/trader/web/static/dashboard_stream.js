@@ -40,7 +40,11 @@
         els.streamStatus.textContent = "已阻止";
         return;
       }
-      const query = state.lastEventId > 0 ? `?cursor=${state.lastEventId}` : "";
+      const parameters = new URLSearchParams();
+      if (state.lastEventId > 0) parameters.set("cursor", String(state.lastEventId));
+      const profile = state.strategy === "long" ? state.longProfile : state.profile;
+      if (profile) parameters.set("profile", profile);
+      const query = parameters.size ? `?${parameters.toString()}` : "";
       const stream = new EventSource(`/api/events${query}`);
       state.stream = stream;
       els.streamStatus.textContent = "连接中";

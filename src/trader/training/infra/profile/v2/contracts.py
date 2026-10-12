@@ -10,7 +10,7 @@ from trader.training.infra.model_bundles.contracts import TrainedHeadContract, T
 
 V2_TOMORROW_HEAD_CONTRACT = TrainedHeadContract(
     Strategy.TOMORROW,
-    "v2_industry_ridge_lightgbm",
+    "v2_industry_lightgbm",
     V2_TOMORROW_MODEL_FEATURE_MANIFEST,
     tuple(range(10)),
     "target_t1",
@@ -20,7 +20,7 @@ V2_TOMORROW_HEAD_CONTRACT = TrainedHeadContract(
 )
 V2_D25_HEAD_CONTRACT = TrainedHeadContract(
     Strategy.D25,
-    "v2_d25_industry_ridge_lightgbm",
+    "v2_d25_industry_lightgbm",
     V2_D25_MODEL_FEATURE_MANIFEST,
     tuple(range(1, 10)),
     "target_d25_aggregate",
@@ -37,6 +37,7 @@ V2_TRAINING_PROFILE = TrainedProfileContract(
     (20, 40, 60, 120, 250),
     (120, 250),
     V2_HEAD_CONTRACTS,
+    "lightgbm",
 )
 
 __all__ = [

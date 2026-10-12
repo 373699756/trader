@@ -11,7 +11,7 @@ from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
 from trader.http_api.decision_sse import decision_event_response
 from trader.http_api.response.decision_projection import serialize_decision_view, serialize_error
-from trader.http_api.route_services import UnifiedWebServices
+from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebServices
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedSubscriberLimitError
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DecisionView
 from trader.recommendation.domain.publication.models import Strategy
@@ -40,11 +40,11 @@ _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
 )
 
 
-def register_routes(app: Flask, services: UnifiedWebServices | None) -> None:
+def register_routes(app: Flask, services: WebServices | None) -> None:
     app.register_blueprint(_create_product_blueprint(services))
 
 
-def _create_product_blueprint(services: UnifiedWebServices | None) -> Blueprint:
+def _create_product_blueprint(services: WebServices | None) -> Blueprint:
     blueprint = Blueprint("product", __name__)
     blueprint.add_url_rule("/", "root", partial(_root, services))
     blueprint.add_url_rule(
@@ -67,24 +67,41 @@ def _create_product_blueprint(services: UnifiedWebServices | None) -> Blueprint:
     return blueprint
 
 
-def _root(services: UnifiedWebServices | None) -> str:
+def _root(services: WebServices | None) -> str:
     retention_seconds = services.config.snapshot_retention_seconds if services is not None else 0.0
+    profiles = tuple(services.profiles) if isinstance(services, ProfiledWebServices) else ()
+    default_profile = (
+        services.default_profile
+        if isinstance(services, ProfiledWebServices)
+        else services.profile_id
+        if isinstance(services, UnifiedWebServices)
+        else ""
+    )
+    long_profile = services.long_profile if isinstance(services, ProfiledWebServices) else default_profile
     return render_template(
         "index.html",
         web_snapshot_retention_ms=round(retention_seconds * 1000),
+        scoring_profiles=profiles,
+        default_scoring_profile=default_profile,
+        long_scoring_profile=long_profile,
     )
 
 
-def _current(services: UnifiedWebServices | None, strategy_name: str) -> RouteResponse:
+def _current(services: WebServices | None, strategy_name: str) -> RouteResponse:
     strategy = _strategy(strategy_name)
     if strategy is None:
         return _error("invalid_strategy", "strategy must be tomorrow, d25 or long", 400)
-    if services is None:
+    invalid_profile = _invalid_profile_response(services)
+    if invalid_profile is not None:
+        return invalid_profile
+    selected = _select_services(services, strategy=strategy)
+    if selected is None:
         return _not_ready()
-    return _view_response(services.queries.current(strategy))
+    profile_id, lane = selected
+    return _view_response(lane.queries.current(strategy), profile_id=profile_id)
 
 
-def _history(services: UnifiedWebServices | None, strategy_name: str) -> RouteResponse:
+def _history(services: WebServices | None, strategy_name: str) -> RouteResponse:
     strategy = _strategy(strategy_name)
     if strategy is None:
         return _error("invalid_strategy", "strategy must be tomorrow, d25 or long", 400)
@@ -92,35 +109,54 @@ def _history(services: UnifiedWebServices | None, strategy_name: str) -> RouteRe
     trade_date = _strict_date(raw_date)
     if trade_date is None:
         return _error("invalid_date", "date must use YYYY-MM-DD", 400)
-    if services is None:
+    invalid_profile = _invalid_profile_response(services)
+    if invalid_profile is not None:
+        return invalid_profile
+    selected = _select_services(services, strategy=strategy)
+    if selected is None:
         return _not_ready()
-    return _view_response(services.queries.history(strategy, trade_date))
+    profile_id, lane = selected
+    return _view_response(lane.queries.history(strategy, trade_date), profile_id=profile_id)
 
 
-def _dates(services: UnifiedWebServices | None, strategy_name: str) -> RouteResponse:
+def _dates(services: WebServices | None, strategy_name: str) -> RouteResponse:
     strategy = _strategy(strategy_name)
     if strategy is None:
         return _error("invalid_strategy", "strategy must be tomorrow, d25 or long", 400)
-    if services is None:
+    invalid_profile = _invalid_profile_response(services)
+    if invalid_profile is not None:
+        return invalid_profile
+    selected = _select_services(services, strategy=strategy)
+    if selected is None:
         return _not_ready()
+    profile_id, lane = selected
     return jsonify(
         {
             "schema_version": "decision_dates",
             "strategy": strategy.value,
-            "dates": [value.isoformat() for value in services.queries.dates(strategy)],
+            "scoring_profile": profile_id,
+            "dates": [value.isoformat() for value in lane.queries.dates(strategy)],
         }
     )
 
 
-def _status(services: UnifiedWebServices | None) -> RouteResponse:
-    if services is None:
+def _status(services: WebServices | None) -> RouteResponse:
+    invalid_profile = _invalid_profile_response(services)
+    if invalid_profile is not None:
+        return invalid_profile
+    selected = _select_services(services)
+    if selected is None:
         return _not_ready()
+    profile_id, lane = selected
     try:
-        runtime = services.status_provider()
+        runtime = lane.status_provider()
     except (OSError, RuntimeError, TypeError, ValueError):
         runtime = {"status": "degraded", "degraded_reasons": ("runtime_status_unavailable",)}
-    stream = services.events.status()
-    strategies = {strategy.value: _strategy_status(services.queries.current(strategy)) for strategy in Strategy}
+    stream = lane.events.status()
+    strategies = {
+        strategy.value: _strategy_status(_services_for_strategy(services, lane, strategy).queries.current(strategy))
+        for strategy in Strategy
+    }
     return jsonify(
         {
             "schema_version": STATUS_SCHEMA_VERSION,
@@ -135,6 +171,10 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
             "scheduler": _mapping(runtime.get("scheduler")),
             "market_data": _market_data(runtime),
             "scoring_profile": _scoring_profile(runtime),
+            "selected_profile": profile_id,
+            "available_profiles": list(services.profiles)
+            if isinstance(services, ProfiledWebServices)
+            else [profile_id],
             "last_error": runtime.get("last_error"),
             "deepseek_budget": _budget(runtime),
             "deepseek": _deepseek(runtime),
@@ -152,9 +192,14 @@ def _status(services: UnifiedWebServices | None) -> RouteResponse:
     )
 
 
-def _events(services: UnifiedWebServices | None) -> RouteResponse:
-    if services is None:
+def _events(services: WebServices | None) -> RouteResponse:
+    invalid_profile = _invalid_profile_response(services)
+    if invalid_profile is not None:
+        return invalid_profile
+    selected = _select_services(services)
+    if selected is None:
         return _not_ready()
+    _, lane = selected
     raw_cursor = request.headers.get("Last-Event-ID")
     if raw_cursor is None:
         raw_cursor = request.args.get("cursor")
@@ -162,26 +207,62 @@ def _events(services: UnifiedWebServices | None) -> RouteResponse:
     if raw_cursor is not None and cursor is None:
         return _error("invalid_cursor", "event cursor must be a non-negative integer", 400)
     try:
-        subscription = services.events.open_subscription(cursor)
+        subscription = lane.events.open_subscription(cursor)
     except UnifiedSubscriberLimitError:
         return _error("stream_capacity", "event stream connection limit reached", 503)
     return decision_event_response(
-        services.events,
+        lane.events,
         subscription,
-        heartbeat_seconds=services.config.heartbeat_seconds,
+        heartbeat_seconds=lane.config.heartbeat_seconds,
     )
 
 
-def _view_response(view: DecisionView) -> Response:
+def _view_response(view: DecisionView, *, profile_id: str | None = None) -> Response:
     if view.etag is not None and request.if_none_match.contains(view.etag):
         response = Response(status=304)
         response.set_etag(view.etag)
         return response
-    response = jsonify(serialize_decision_view(view))
+    payload = serialize_decision_view(view)
+    if profile_id is not None:
+        payload["scoring_profile"] = profile_id
+    response = jsonify(payload)
     if view.etag is not None:
         response.set_etag(view.etag)
     response.headers["Cache-Control"] = "no-cache"
     return response
+
+
+def _select_services(
+    services: WebServices | None,
+    *,
+    strategy: Strategy | None = None,
+) -> tuple[str, UnifiedWebServices] | None:
+    if services is None:
+        return None
+    if isinstance(services, ProfiledWebServices):
+        if strategy is Strategy.LONG:
+            return services.select_long()
+        return services.select(request.args.get("profile"))
+    return services.profile_id, services
+
+
+def _services_for_strategy(
+    services: WebServices | None,
+    selected: UnifiedWebServices,
+    strategy: Strategy,
+) -> UnifiedWebServices:
+    if strategy is Strategy.LONG and isinstance(services, ProfiledWebServices):
+        return services.select_long()[1]
+    return selected
+
+
+def _invalid_profile_response(services: WebServices | None) -> RouteResponse | None:
+    if not isinstance(services, ProfiledWebServices):
+        return None
+    profile = request.args.get("profile")
+    if profile is None or profile in services.profiles:
+        return None
+    return _error("invalid_profile", "profile must be v2 or v3", 400)
 
 
 def _strategy_status(view: DecisionView) -> dict[str, object]:
@@ -189,7 +270,7 @@ def _strategy_status(view: DecisionView) -> dict[str, object]:
         "status": view.status,
         "trade_date": view.trade_date.isoformat() if view.trade_date is not None else None,
         "decision_version": view.decision_version,
-        "projection_version": view.projection_version,
+        "projection_version": view.projection_version if view.decision_version is not None else None,
         "data_age_seconds": view.data_age_seconds,
         "stage": view.stage,
         "score_status": view.score_status,

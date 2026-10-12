@@ -196,7 +196,6 @@ PipelineMetricName = Literal[
     "predicted_excess_return_pct",
     "estimated_cost_pct",
     "predicted_net_excess_pct",
-    "model_disagreement_pct",
     "local_risk_penalty",
     "local_score",
     "deepseek_score",

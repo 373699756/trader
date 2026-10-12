@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import logging
-import os
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,13 +20,11 @@ from trader.download.infra.history_control_index import (
     HistoryControlIndex,
 )
 from trader.download.infra.history_reference_files import (
-    history_industry_mapping_path,
     history_reference_path,
     write_history_reference,
 )
 
 _REFERENCE_SOURCE_CONTRACT = re.compile(r"history_ref_[0-9a-f]{64}_([0-9a-f]{16})")
-_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -47,15 +42,7 @@ def publish_history_snapshot(control: HistoryControlIndex, publication: HistoryP
     write_history_reference(
         history_reference_path(publication.root, publication.reference.content_hash), publication.reference
     )
-    mapping_path = history_industry_mapping_path(publication.root)
-    rollback = mapping_path.with_name(".industry_mapping.rollback.json")
-    rollback.unlink(missing_ok=True)
-    if mapping_path.is_file():
-        rollback.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(mapping_path, rollback)
-        _fsync_file(rollback)
     try:
-        write_history_reference(mapping_path, publication.reference)
         source, calendar, universe = publication.identities
         control.save_source(source)
         control.save_calendar(calendar)
@@ -68,23 +55,8 @@ def publish_history_snapshot(control: HistoryControlIndex, publication: HistoryP
         except HistoryControlError:
             raise
         if active_hash == publication.snapshot.content_hash:
-            _cleanup_rollback(rollback)
             return
-        if rollback.is_file():
-            os.replace(rollback, mapping_path)
-            _fsync_directory(mapping_path.parent)
-        else:
-            mapping_path.unlink(missing_ok=True)
         raise
-    _cleanup_rollback(rollback)
-
-
-def _cleanup_rollback(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        # Publication is committed. Recovery can retry cleanup, never undo active prices.
-        _LOGGER.warning("history_reference_cleanup_pending")
 
 
 def is_reference_only_change(
@@ -109,24 +81,6 @@ def is_reference_only_change(
         and previous_calendar.open_dates == calendar.open_dates
         and previous_universe.securities == universe.securities
     )
-
-
-def _fsync_file(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 __all__ = ["HistoryPublication", "is_reference_only_change", "publish_history_snapshot"]

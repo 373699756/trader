@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DELIVERY_HISTORY = ROOT / "docs/changelog/archive/legacy-through-2026-09-10.md"
 
 
 def _read(relative: str) -> str:
@@ -15,7 +14,6 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
     strategy = _read("docs/01_评分逻辑.md")
     design = _read("docs/02_工程设计.md")
     work = _read("docs/03_工程实施.md")
-    changelog = DELIVERY_HISTORY.read_text(encoding="utf-8")
 
     compact_strategy = "".join(strategy.split())
     assert "资格、候选分和稳定排序只有一个领域所有者" in compact_strategy
@@ -23,12 +21,11 @@ def test_candidate_planning_contract_is_synchronized_across_authoritative_docume
     assert "最坏并集为 720 只" in design
     assert "最终 `ScoredNativeInput.requested_codes` 与候选特征按策略隔离" in design
     assert "candidate_eligibility_before_board_cap" not in work
-    assert "candidate-eligibility-before-cap-single-owner" in changelog
 
 
 def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     runtime = _read("src/trader/recommendation/application/pipeline/data_source/source_router.py")
-    config = _read("config/strategy.json")
+    config = _read("config/strategy.json") + _read("config/candidate.json")
     settings = _read("src/trader/infra/settings/models.py")
     performance = _read("src/trader/entrypoints/performance.py")
 
@@ -40,21 +37,17 @@ def test_runtime_has_no_generic_candidate_weight_owner() -> None:
     assert "_CANDIDATE_WEIGHTS" not in performance
     assert "trader.recommendation.application.pipeline.candidate_pool.candidate_builder import" in performance
     assert "build_candidate_plans" in performance
-    assert (
-        '"board_preselection": "trader.recommendation.application.pipeline.candidate_pool.candidate_builder.build_candidate_plans"'
-        in performance
-    )
-    assert (
-        '"candidate_union_projection": '
-        '"trader.recommendation.application.pipeline.candidate_pool.candidate_builder.CandidatePlanSet.physical_union + '
-        'trader.recommendation.infra.normalization.merge.overlay_canonical_snapshot"' in performance
-    )
-    assert '"candidate_rows": 1080' in _read("config/runtime.json")
+    assert '"board_preselection"' in performance
+    assert "candidate_builder.build_candidate_plans" in performance
+    assert '"candidate_union_projection"' in performance
+    assert "CandidatePlanSet.physical_union" in performance
+    assert "normalization.merge.overlay_canonical_snapshot" in performance
+    assert '"candidate_rows": 1080' in _read("config/performance.json")
 
 
 def test_candidate_quote_cache_is_sized_and_wired_for_the_physical_union() -> None:
     bootstrap = _read("src/trader/bootstrap.py")
-    runtime_config = json.loads(_read("config/runtime.json"))
+    cache_config = json.loads(_read("config/cache.json"))
 
     assert 'datasets["candidate_quotes"].capacity' in bootstrap
-    assert runtime_config["market_data"]["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] == 1080
+    assert cache_config["cache_policy"]["datasets"]["candidate_quotes"]["capacity"] == 1080

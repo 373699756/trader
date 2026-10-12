@@ -2,6 +2,8 @@
   "use strict";
 
   const state = {
+    profile: configuredScoringProfile(),
+    longProfile: configuredLongProfile(),
     strategy: "tomorrow",
     view: "current",
     date: "",
@@ -59,6 +61,26 @@
     const milliseconds = Number(meta && meta.content);
     return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : 0;
   }
+  function configuredScoringProfile() {
+    if (typeof document.querySelector !== "function") return "";
+    const meta = document.querySelector('meta[name="trader-default-scoring-profile"]');
+    return meta && ["v2", "v3"].includes(meta.content) ? meta.content : "";
+  }
+  function configuredLongProfile() {
+    if (typeof document.querySelector !== "function") return "v2";
+    const meta = document.querySelector('meta[name="trader-long-scoring-profile"]');
+    return meta && ["v2", "v3"].includes(meta.content) ? meta.content : "v2";
+  }
+  function deliveryProfile(strategy) {
+    return strategy === "long" ? state.longProfile : state.profile;
+  }
+  function profileQuery() {
+    return state.profile ? `profile=${encodeURIComponent(state.profile)}` : "";
+  }
+  function decisionProfileQuery(strategy) {
+    const profile = deliveryProfile(strategy);
+    return profile ? `profile=${encodeURIComponent(profile)}` : "";
+  }
   if (patchDependencyMissing) {
     diagnostics.browserErrors.push("dependency_missing:TraderDashboardPatches");
   }
@@ -99,12 +121,16 @@
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
       "observationDrawer", "observationErrorContent", "observationDrawerClose", "observationDrawerTitle", "observationErrorCount", "observationStageList",
     ]) els[id] = document.getElementById(id);
+    els.profileSelect = document.getElementById("profileSelect");
     Object.assign(els, { resultLayout: document.getElementById("recommendation-layout"), longSidebar: document.getElementById("long-sidebar"), longTitle: document.getElementById("long-panel-title"), longMeta: document.getElementById("long-panel-meta") });
     stateRenderer = statusView.createDashboardStateRenderer(els, state, selection, window.TraderRender);
     errorDrawer = window.TraderErrorDrawer.createErrorDrawer(els, closeDrawer, syncDrawerBackdrop);
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });
+    if (els.profileSelect) {
+      els.profileSelect.addEventListener("change", () => selectProfile(els.profileSelect.value));
+    }
     els.longScopeTabs.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-scope]");
       if (!button || state.longScope === button.dataset.scope) return;
@@ -171,6 +197,20 @@
     await selectStrategy(selection.initialStrategy(status));
   }
 
+  async function selectProfile(profile) {
+    if (!["v2", "v3"].includes(profile) || profile === state.profile) return;
+    state.profile = profile;
+    state.payload = null;
+    state.payloads.clear();
+    state.etags.clear();
+    state.lastEventId = 0;
+    state.projectionVersion = "";
+    state.selectionSequence += 1;
+    state.requestSequence += 1;
+    streamController.connect();
+    await initializeStrategy();
+  }
+
   async function selectStrategy(strategy) {
     const nextStrategy = strategy || "tomorrow";
     if (!selection.descriptions[nextStrategy] || state.strategy === nextStrategy && state.payload) return;
@@ -197,6 +237,7 @@
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
     stateRenderer.renderLoadingState();
+    if ((previousStrategy === "long") !== (nextStrategy === "long")) streamController.connect();
     const dates = await loadDates(nextStrategy, selectionId);
     if (selectionId !== state.selectionSequence) return;
     const resolved = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, dates);
@@ -216,7 +257,8 @@
   async function loadDates(strategy, selectionId) {
     if (strategy === "long") return [];
     try {
-      const response = await fetch(`/api/decisions/${encodeURIComponent(strategy)}/dates`, { cache: "no-store" });
+      const query = decisionProfileQuery(strategy);
+      const response = await fetch(`/api/decisions/${encodeURIComponent(strategy)}/dates${query ? `?${query}` : ""}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error("历史日期接口请求失败");
       if (selectionId !== state.selectionSequence || strategy !== state.strategy) return [];
@@ -318,9 +360,10 @@
     const pending = state.inflight.get(key);
     if (pending) return pending;
     const request = (async () => {
+      const query = decisionProfileQuery(strategy);
       const endpoint = selectedDate
-        ? `/api/decisions/${encodeURIComponent(strategy)}/history?date=${encodeURIComponent(selectedDate)}`
-        : `/api/decisions/${encodeURIComponent(strategy)}/current`;
+        ? `/api/decisions/${encodeURIComponent(strategy)}/history?date=${encodeURIComponent(selectedDate)}${query ? `&${query}` : ""}`
+        : `/api/decisions/${encodeURIComponent(strategy)}/current${query ? `?${query}` : ""}`;
       const headers = {};
       if (!selectedDate && state.etags.has(key)) headers["If-None-Match"] = state.etags.get(key);
       diagnostics.recommendationRequests += 1;
@@ -362,7 +405,7 @@
   }
 
   function recommendationKey(strategy, selectedDate, view) {
-    return `${strategy}:${selectedDate || view}`;
+    return `${deliveryProfile(strategy) || "single"}:${strategy}:${selectedDate || view}`;
   }
 
   function normalizeDecisionPayload(raw, strategy, selectedDate, view) {
@@ -447,6 +490,8 @@
 
   function cacheIdentityValid(payload, strategy, selectedDate, view) {
     if (!payload || payload.strategy !== strategy) return false;
+    const profile = deliveryProfile(strategy);
+    if (profile && payload.scoring_profile !== profile) return false;
     if (selectedDate) {
       return payload.historical === true
         && payload.view === "history"
@@ -644,7 +689,7 @@
 
   async function loadStatus() {
     try {
-      const response = await fetch("/api/status", { cache: "no-store" });
+      const response = await fetch(`/api/status${profileQuery() ? `?${profileQuery()}` : ""}`, { cache: "no-store" });
       const payload = await response.json();
       if (!response.ok) throw new Error("运行状态接口暂不可用");
       const compatibility = releaseContract.statusPayloadCompatibility(payload);

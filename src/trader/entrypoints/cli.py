@@ -9,16 +9,13 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, add_research_evidence_parsers
-
-if TYPE_CHECKING:
-    from trader.download.domain.history_sync import HistorySyncConfiguration
 
 _COMMAND_GROUPS = {
     "check": ("validate-config", "research-status", "history-automation-status", "performance-check"),
@@ -190,7 +187,9 @@ def _run_history_maintenance_command(
 
         runtime = load_runtime_settings(_absolute_config_path(raw_config_path))
         result = execute_qfq_download(
-            runtime.project_root, report=lambda message: print(message, file=sys.stderr, flush=True)
+            runtime.project_root,
+            reference_root=runtime.reference_dir,
+            report=lambda message: print(message, file=sys.stderr, flush=True),
         )
         print(
             json.dumps(
@@ -210,7 +209,7 @@ def _run_history_maintenance_command(
     if command == "download":
         if profile is not None:
             parser.error("download does not accept --profile")
-        return _run_history_download()
+        return _run_history_download(_absolute_config_path(raw_config_path))
     if command == "history-automation-status":
         from trader.download.entrypoints.commands import run_download_command
 
@@ -223,22 +222,16 @@ def _run_history_maintenance_command(
     return _run_scheduled_history_maintenance(config_path)
 
 
-def _run_history_download() -> int:
+def _run_history_download(config_path: Path) -> int:
     from trader.download.entrypoints.commands import run_download_command
 
-    return run_download_command("download")
+    return run_download_command("download", config_path=config_path)
 
 
 def _run_scheduled_history_maintenance(config_path: Path) -> int:
     from trader.download.entrypoints.commands import run_download_command
 
     return run_download_command("scheduled-history-maintenance", config_path=config_path)
-
-
-def _history_sync_configuration(repository_root: Path) -> HistorySyncConfiguration:
-    from trader.download.entrypoints.commands import history_sync_configuration
-
-    return history_sync_configuration(repository_root)
 
 
 def _shanghai_now() -> datetime:
@@ -254,6 +247,21 @@ def _run_config_validation(
         scoring_profile=profile_override,
     )
     watchlist = load_long_watchlist(runtime.long_watchlist_path)
+    from trader.download.infra.download_settings import load_history_sync_configuration
+    from trader.recommendation.infra.scoring.cost_settings import (
+        load_evaluation_cost_scenarios,
+        load_execution_cost_policy,
+    )
+    from trader.training.infra.research_settings import load_research_settings
+    from trader.training.infra.training_settings import load_profile_training_settings
+
+    config_dir = runtime.config_path.parent
+    download = load_history_sync_configuration(runtime.project_root, runtime.reference_dir)
+    training_v2 = load_profile_training_settings(runtime.project_root, "v2")
+    training_v3 = load_profile_training_settings(runtime.project_root, "v3")
+    research = load_research_settings(config_dir)
+    cost = load_execution_cost_policy(config_dir)
+    cost_scenarios = load_evaluation_cost_scenarios(config_dir)
     print(
         json.dumps(
             {
@@ -263,6 +271,13 @@ def _run_config_validation(
                 "scoring_profile": strategy.scoring_profile,
                 "watchlist_version": watchlist.watchlist_version,
                 "runtime_dir": str(runtime.runtime_dir),
+                "reference_dir": str(runtime.reference_dir),
+                "history_sessions": download.sessions,
+                "training_fit_dates": {"v2": training_v2.fit_dates, "v3": training_v3.fit_dates},
+                "research_arms": len(research.ablation_arms),
+                "terminal_holdout_sessions": research.terminal_holdout_sessions,
+                "online_round_trip_base_rate": cost.round_trip_base_rate,
+                "evaluation_round_trip_bps": [round(item.round_trip_return * 10_000) for item in cost_scenarios],
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -276,7 +291,7 @@ def _run_eligibility_list(runtime: RuntimeSettings, *, as_of: str | None) -> int
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise SystemExit("--as-of must include a timezone offset")
     observed_at = observed_at.astimezone(ZoneInfo("Asia/Shanghai"))
-    eligibility_index = SQLiteIssuerEligibilityIndex(runtime.project_root / "data" / "filter_config", read_only=True)
+    eligibility_index = SQLiteIssuerEligibilityIndex(runtime.reference_dir, read_only=True)
     facts = tuple(fact for fact in eligibility_index.facts() if fact.effective_at <= observed_at)
     status = eligibility_index.status()
     print(

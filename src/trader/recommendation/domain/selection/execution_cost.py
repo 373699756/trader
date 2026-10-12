@@ -9,6 +9,26 @@ from dataclasses import dataclass
 _SCENARIO_ID = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
+@dataclass(frozen=True)
+class ExecutionCostPolicy:
+    round_trip_base_rate: float
+    liquidity_rank_multiplier: float
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.round_trip_base_rate)
+            or self.round_trip_base_rate < 0.0
+            or not math.isfinite(self.liquidity_rank_multiplier)
+            or self.liquidity_rank_multiplier < 0.0
+        ):
+            raise ValueError("execution-cost policy is invalid")
+
+    def estimate(self, liquidity_rank: float) -> float:
+        if not math.isfinite(liquidity_rank) or not 0.0 <= liquidity_rank <= 1.0:
+            raise ValueError("execution-cost liquidity rank is invalid")
+        return self.round_trip_base_rate * (1.0 + self.liquidity_rank_multiplier * liquidity_rank)
+
+
 @dataclass(frozen=True, order=True)
 class ExecutionCostScenario:
     scenario_id: str
@@ -48,4 +68,4 @@ class ExecutionCost:
         object.__setattr__(self, "scenarios", scenarios)
 
 
-__all__ = ["ExecutionCost", "ExecutionCostScenario"]
+__all__ = ["ExecutionCost", "ExecutionCostPolicy", "ExecutionCostScenario"]

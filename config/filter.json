@@ -1,0 +1,17 @@
+{
+  "hard_filters": {
+    "blacklist_codes": [],
+    "structured_risk_thresholds": {
+      "major_shareholder_reduction": 0,
+      "financial_fraud_history": 0,
+      "official_investigation_history": 0,
+      "major_illegal_history": 0,
+      "fund_occupation_history": 0,
+      "illegal_guarantee_history": 0,
+      "forced_delisting_risk": 0,
+      "unlock_risk": 0,
+      "pledge_risk": 0,
+      "financial_deterioration": 0.5
+    }
+  }
+}

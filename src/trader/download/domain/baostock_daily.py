@@ -515,8 +515,8 @@ def _validate_training_split_dates(value: BaoStockTrainingSplit) -> None:
         raise ValueError("BaoStock training holdout dates are insufficient")
     if len(value.first_embargo_dates) != 5 or len(value.second_embargo_dates) != 5:
         raise ValueError("BaoStock training split requires two five-day embargoes")
-    if len(value.early_stopping_dates) != 20 or len(value.calibration_dates) != 20:
-        raise ValueError("BaoStock training split requires fixed early-stop and calibration dates")
+    if len(value.early_stopping_dates) not in {0, 20} or len(value.calibration_dates) != 20:
+        raise ValueError("BaoStock training split requires supported early-stop and calibration dates")
     if value.model_fit_dates + value.early_stopping_dates + value.calibration_dates != value.development_dates:
         raise ValueError("BaoStock training development sub-splits are invalid")
 
@@ -525,10 +525,14 @@ def build_baostock_training_split(
     dates: tuple[date, ...],
     *,
     parent_manifest_hash: str,
+    fit_dates: int | None = None,
+    early_stopping_sessions: int = 20,
 ) -> BaoStockTrainingSplit:
     ordered = tuple(dates)
     if ordered != tuple(sorted(set(ordered))) or len(ordered) < BAOSTOCK_MIN_TRAINING_DATES:
         raise ValueError("BaoStock training split requires at least 1250 unique ordered dates")
+    if early_stopping_sessions not in {0, 20} or (fit_dates is not None and fit_dates < 1):
+        raise ValueError("BaoStock training fit window is invalid")
     point_in_time = ordered[-BAOSTOCK_POINT_IN_TIME_RESERVE:]
     earlier = ordered[:-BAOSTOCK_POINT_IN_TIME_RESERVE]
     first_boundary = int(len(earlier) * 0.60)
@@ -536,13 +540,17 @@ def build_baostock_training_split(
     raw_development = earlier[:first_boundary]
     raw_confirmation = earlier[first_boundary:second_boundary]
     daily_proxy = earlier[second_boundary:]
-    development = raw_development[:-5]
+    available_development = raw_development[:-5]
     first_embargo = raw_development[-5:]
     confirmation = raw_confirmation[:-5]
     second_embargo = raw_confirmation[-5:]
-    model_fit = development[:-40]
-    early_stopping = development[-40:-20]
-    calibration = development[-20:]
+    available_fit = available_development[: -(early_stopping_sessions + 20)]
+    if fit_dates is not None and len(available_fit) < fit_dates:
+        raise ValueError("BaoStock training fit dates are insufficient")
+    model_fit = available_fit[-fit_dates:] if fit_dates is not None else available_fit
+    early_stopping = available_development[-(early_stopping_sessions + 20) : -20] if early_stopping_sessions else ()
+    calibration = available_development[-20:]
+    development = model_fit + early_stopping + calibration
     return BaoStockTrainingSplit(
         parent_manifest_hash=parent_manifest_hash,
         label_contract=BaoStockTrainingLabelContract(),

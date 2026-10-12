@@ -1,0 +1,20 @@
+{
+  "history": {
+    "requested_sessions": 2000,
+    "reread_sessions": 5,
+    "download_batch_size": 64,
+    "history_workers": 8,
+    "minimum_free_bytes": 1073741824,
+    "supplier_timeout_seconds": 45.0,
+    "supplier_retries": 2,
+    "query_interval_seconds": 1.5,
+    "cancellation_grace_seconds": 10.0,
+    "progress_heartbeat_seconds": 5.0
+  },
+  "online_qfq": {
+    "profiles": [
+      {"profile": "v2", "sessions": 251},
+      {"profile": "v3", "sessions": 61}
+    ]
+  }
+}

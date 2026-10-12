@@ -188,7 +188,7 @@ class BaoStockHistorySupplier:
 
     def __init__(  # noqa: PLR0913 - explicit clock, cancellation and independent price deadline
         self,
-        configuration: HistorySyncConfiguration | None = None,
+        configuration: HistorySyncConfiguration,
         *,
         progress: HistorySyncProgressPort | None = None,
         monotonic: Callable[[], float] = time.monotonic,
@@ -196,7 +196,7 @@ class BaoStockHistorySupplier:
         price_policy: BaoStockRequestPolicy | None = None,
         price_total_seconds: float | None = None,
     ) -> None:
-        settings = configuration or HistorySyncConfiguration()
+        settings = configuration
         self._context_policy = BaoStockRequestPolicy(settings.supplier_timeout_seconds, settings.supplier_retries)
         self._price_policy = price_policy or self._context_policy
         if price_total_seconds is not None and (not isfinite(price_total_seconds) or price_total_seconds <= 0):

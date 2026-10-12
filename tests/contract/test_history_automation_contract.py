@@ -137,11 +137,17 @@ def test_scheduled_cli_does_not_create_a_supplier_before_weekly_cadence_is_due(m
     monkeypatch.setattr("trader.download.entrypoints.commands._repository_root", lambda: tmp_path)
     monkeypatch.setattr("trader.download.entrypoints.commands._shanghai_now", lambda: now)
     monkeypatch.setattr(
-        "trader.infra.settings.load_runtime_settings", lambda _: SimpleNamespace(runtime_dir=tmp_path / "runtime")
+        "trader.infra.settings.load_runtime_settings",
+        lambda _: SimpleNamespace(
+            runtime_dir=tmp_path / "runtime",
+            reference_dir=tmp_path / "data" / "reference",
+        ),
     )
     monkeypatch.setattr(
         "trader.download.infra.history_maintenance_runner.read_history_automation_status", lambda *_: status
     )
+    (tmp_path / "config").mkdir()
+    shutil.copy2(Path(__file__).resolve().parents[2] / "config" / "download.json", tmp_path / "config/download.json")
 
     def unexpected_supplier(*_args, **_kwargs):
         pytest.fail("a no-op scheduled wakeup must not construct a supplier")

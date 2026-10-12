@@ -1,0 +1,5 @@
+{
+  "online_round_trip_base_rate": 0.002,
+  "online_liquidity_rank_multiplier": 1.0,
+  "evaluation_round_trip_bps": [20, 50, 100]
+}

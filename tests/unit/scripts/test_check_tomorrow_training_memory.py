@@ -16,10 +16,11 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
         history: Path,
         output: Path,
         *,
+        settings,
         progress,
         expected_history_snapshot_hash: str,
     ):
-        del progress
+        del progress, settings
         assert expected_history_snapshot_hash == "a" * 64
         observed.append((history, output))
         head = SimpleNamespace(

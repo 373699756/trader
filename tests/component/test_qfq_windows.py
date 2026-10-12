@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -40,6 +41,13 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DAYS = tuple(date(2025, 1, 1) + timedelta(days=offset) for offset in range(252))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _install_download_config(project_root: Path) -> None:
+    config_root = project_root / "config"
+    config_root.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(PROJECT_ROOT / "config/download.json", config_root / "download.json")
 
 
 def _cell(code: str, day: date, *, price: float = 10.0) -> BaoStockDailyCell:
@@ -749,11 +757,13 @@ def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_p
             batch = BaoStockCodeBatch(security.code, tuple(_cell(security.code, day) for day in dates))
             return BaoStockCodeDownload(batch, tuple(BaoStockDailyFact(security.code, day, False) for day in dates))
 
+    _install_download_config(tmp_path)
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
     monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
     with HistoryMaintenanceLock(tmp_path / "data/history/.maintenance.lock"):
         result = bootstrap.execute_qfq_download(
             tmp_path,
+            reference_root=tmp_path / "data/reference",
             report=lambda _message: None,
             now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
         )
@@ -800,9 +810,10 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
             pass
 
     def st_source(path, *_args, **_kwargs):
-        assert path == tmp_path / "data/filter_config/historical_st.json"
+        assert path == tmp_path / "data/reference/historical_st.json"
         return StSource()
 
+    _install_download_config(tmp_path)
     monkeypatch.setattr(bootstrap, "SQLitePublishedHistoryArchive", lambda _root: HistoryPublication())
     monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
     monkeypatch.setattr(bootstrap, "load_current_a_share_universe", lambda *_args: (eligible, excluded))
@@ -811,6 +822,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
 
     result = bootstrap.execute_qfq_download(
         tmp_path,
+        reference_root=tmp_path / "data/reference",
         report=lambda _message: None,
         now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
     )
@@ -827,10 +839,15 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
         def load_qfq_context(self, as_of, sessions):
             raise AssertionError("locked qfq must not load supplier context")
 
+    _install_download_config(tmp_path)
     supplier = Tencent()
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: supplier)
     with HistoryMaintenanceLock(tmp_path / "data/qfq/.maintenance.lock"):
-        result = bootstrap.execute_qfq_download(tmp_path, report=lambda _message: None)
+        result = bootstrap.execute_qfq_download(
+            tmp_path,
+            reference_root=tmp_path / "data/reference",
+            report=lambda _message: None,
+        )
     assert result.failure_reason == "HistoryMaintenanceAlreadyRunningError"
     assert supplier.calls == []
     assert not (tmp_path / "data/qfq/.checkpoint.json").exists()
@@ -859,11 +876,16 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
                 barrier.wait(timeout=10)
             return super().fetch_tencent_window(security, dates)
 
+    _install_download_config(tmp_path)
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent())
     root = tmp_path / "data/history"
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(
-            bootstrap.execute_qfq_download, tmp_path, report=lambda _message: None, now=lambda: observed
+            bootstrap.execute_qfq_download,
+            tmp_path,
+            reference_root=tmp_path / "data/reference",
+            report=lambda _message: None,
+            now=lambda: observed,
         )
         history_result = run_history_sync(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
         qfq_result = pending.result(timeout=15)
@@ -1362,23 +1384,29 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
 def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, capsys, pending, exit_code) -> None:
     calls = []
 
-    def execute(root, *, report):
-        calls.append(root)
+    reference_root = tmp_path / "data/reference"
+
+    def execute(root, *, reference_root, report):
+        calls.append((root, reference_root))
         report("qfq fixture progress")
         return QfqUpdateResult(DAYS[-1], pending_codes=pending)
 
-    monkeypatch.setattr(cli, "load_runtime_settings", lambda _path: SimpleNamespace(project_root=tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "load_runtime_settings",
+        lambda _path: SimpleNamespace(project_root=tmp_path, reference_dir=reference_root),
+    )
     monkeypatch.setattr("trader.bootstrap.execute_qfq_download", execute)
     assert cli.main(["--config", str(tmp_path / "runtime.json"), "qfq_download"]) == exit_code
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert captured.err == "qfq fixture progress\n"
     assert payload["pending_codes"] == pending
-    assert calls == [tmp_path]
+    assert calls == [(tmp_path, reference_root)]
     with pytest.raises(SystemExit) as rejected:
         cli.main(["--config", str(tmp_path / "runtime.json"), "qfq_download", "--profile", "v3"])
     assert rejected.value.code == 2
-    assert calls == [tmp_path]
+    assert calls == [(tmp_path, reference_root)]
 
 
 def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:

@@ -52,6 +52,7 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     read_json_object as _read_json_object,
 )
+from trader.infra.settings.parser import read_config_sections as _read_config_sections
 from trader.infra.settings.parser import require_exact_keys as _require_exact_keys
 from trader.infra.settings.parser import (
     text as _text,
@@ -87,6 +88,22 @@ _STRATEGY_KEYS = {
     "factor_index",
     "factor_contract",
 }
+_STRATEGY_SECTION_FILES = {
+    "selection.json": {"selection"},
+    "filter.json": {"hard_filters"},
+    "candidate.json": {"board_candidate_weights", "candidate_component_weights"},
+    "scoring.json": {
+        "fusion",
+        "board_local_strategy_weights",
+        "local_component_weights",
+        "feature_component_weights",
+        "tomorrow_tail_signal",
+        "market_regime",
+        "dimension_weights",
+    },
+    "risk.json": {"risk_rules"},
+    "long.json": {"long_research"},
+}
 
 
 def load_strategy_settings(
@@ -95,7 +112,14 @@ def load_strategy_settings(
     scoring_profile: ScoringProfileId | None = None,
 ) -> StrategySettings:
     path = Path(config_path).expanduser().resolve()
-    raw = _read_json_object(path)
+    raw = _read_config_sections(path, {"scoring_profile"}, _STRATEGY_SECTION_FILES, label="strategy")
+    feature_sections = _read_json_object(path.parent / "features.json")
+    _require_exact_keys(
+        feature_sections,
+        {"model_contracts", "factor_index", "factor_contract", "news_signal"},
+        "features",
+    )
+    raw.update({key: feature_sections[key] for key in ("factor_index", "factor_contract", "news_signal")})
     _require_exact_keys(raw, _STRATEGY_KEYS, "strategy")
     configured_profile = _text(raw, "scoring_profile")
     try:

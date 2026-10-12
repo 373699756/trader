@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
+from trader.infra.settings import load_runtime_settings
 from trader.recommendation.application.runtime.cadence import (
     PERIODIC_TASKS,
     CadencePlanner,
@@ -270,10 +270,10 @@ def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> Non
 
 
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
-    raw = json.loads((Path(__file__).parents[3] / "config" / "runtime.json").read_text(encoding="utf-8"))
+    runtime = load_runtime_settings(Path(__file__).parents[3] / "config" / "runtime.json")
     current = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
     planner = CadencePlanner(
-        CadencePolicy.from_seconds(raw["pipeline"]["cadence_seconds"]),
+        CadencePolicy.from_seconds(runtime.pipeline.cadence_seconds),
         started_at=current,
     )
     closing = current.replace(hour=15, minute=0, second=1)

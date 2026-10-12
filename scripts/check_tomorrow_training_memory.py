@@ -27,6 +27,7 @@ _configure_resources()
 
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
 from trader.training.infra.profile.v3.training import run_repack_v3_training  # noqa: E402
+from trader.training.infra.training_settings import load_profile_training_settings  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,10 +48,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     os.nice(10)
     before = _peak_rss_bytes()
+    settings = load_profile_training_settings(Path(__file__).resolve().parents[1], "v3")
     with StderrTomorrowTrainingProgress() as progress:
         result = run_repack_v3_training(
             args.history_root.resolve(),
             args.train_root.resolve(),
+            settings=settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,
         )
@@ -58,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         repeated = run_repack_v3_training(
             args.history_root.resolve(),
             args.train_root.resolve(),
+            settings=settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,
         )

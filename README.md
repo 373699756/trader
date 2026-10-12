@@ -44,6 +44,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh check
 ./run.sh --profile v2
 ./run.sh --profile v3
+./run.sh --profile both
 ./run.sh download
 ./run.sh train-v2
 ./run.sh train-v3
@@ -52,9 +53,9 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ```
 
 日常启动不需要参数，默认使用 V2 并加载 `data/train/v2/{tomorrow,d25}` 双头工件；
-追加 `--profile v2|v3` 可显式覆盖当前进程，该覆盖不会写回配置。启动不执行训练，所选档位任一bundle损坏时失败关闭。
+追加 `--profile v2|v3` 可单独启动一档，`--profile both` 在同一进程启动两档；这些选择不会写回配置。双档模式的 Tomorrow/D25 结果、冻结和历史按档位隔离，Long 固定由 V2 单一采集并供两档页面只读。启动不执行训练，所选档位任一bundle损坏时失败关闭。
 `check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download` 维护完整历史；
-`qfq_download` 使用 Tencent 有界并发维护在线短窗口。`train-v2`使用251日窗口和V2长期特征，`train-v3`使用61日窗口，各自一次扫描顺序训练Tomorrow/D25，不训练Today。
+`qfq_download` 使用 Tencent 有界并发维护在线短窗口。`train-v2`使用1000个有效拟合日和251日特征窗，只拟合LightGBM；`train-v3`使用750个有效拟合日和61日特征窗，只拟合Ridge。两者读取最长2000日完整历史，各自一次扫描顺序训练Tomorrow/D25，不训练Today。
 两个命令每次直接重建并覆盖`data/train/{v2,v3}/{tomorrow,d25}`，不检查到期、不比较旧历史修订、不创建额外训练快照。
 stderr显示累计/阶段耗时，索引、统计和拟合等耗时阶段每30秒有反馈；失败保留该头上一完整工件组。V2/V3共享历史事实和
 训练引擎，但不共享特征合同、模型身份或输出目录。旧 H0 历史归档、回测和筛选入口已退役，
@@ -201,7 +202,7 @@ TUSHARE_TOKEN=your-tushare-token
 ```
 
 Token 优先从 `TUSHARE_TOKEN` 读取，其次读取 `TUSHARE_TOKEN_FILE`，最后读取
-`config/runtime.json` 中 `market_data.tushare.token_file` 指向的赋值文件，默认即
+`config/market_data.json` 中 `market_data.tushare.token_file` 指向的赋值文件，默认即
 `.token_key`。POSIX 系统必须限制该文件仅属主可读写，例如：
 
 ```bash

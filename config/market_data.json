@@ -1,0 +1,27 @@
+{
+  "market_data": {
+    "eastmoney_timeout_seconds": 8,
+    "sina_timeout_seconds": 8,
+    "full_market_hedge_delay_seconds": 1,
+    "candidate_timeout_seconds": 3,
+    "research_timeout_seconds": 8,
+    "minimum_market_rows": 1000,
+    "candidate_pool_size": 120,
+    "single_flight": true,
+    "circuit_breaker_failures": 3,
+    "circuit_breaker_seconds": 30,
+    "source_contracts": {
+      "eastmoney": "eastmoney_quote_security_master",
+      "sina": "sina_quote_hedged",
+      "tencent": "tencent_quote",
+      "tushare": "tushare_sdk_120_point_daily_audit",
+      "akshare": "akshare_research_component_cache"
+    },
+    "tushare": {
+      "enabled": true,
+      "points": 120,
+      "timeout_seconds": 8,
+      "token_file": ".token_key"
+    }
+  }
+}

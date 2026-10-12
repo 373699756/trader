@@ -22,21 +22,26 @@ from trader.training.infra.sample_repository import (
 
 
 @dataclass(frozen=True)
-class ModelFittingParameters:
-    minimum_industry_training_rows: int = 20_000
-    ridge_penalty: float = 10.0
-    learning_rate: float = 0.05
-    max_depth: int = 3
-    num_leaves: int = 7
-    minimum_leaf_rows: int = 20
-    boosting_rounds: int = 200
-    early_stopping_rounds: int = 20
-    maximum_bins: int = 63
-    histogram_pool_mib: int = 64
-    seed: int = 0
+class LightGBMFittingParameters:
+    minimum_industry_training_rows: int
+    learning_rate: float
+    max_depth: int
+    num_leaves: int
+    minimum_leaf_rows: int
+    boosting_rounds: int
+    early_stopping_rounds: int
+    maximum_bins: int
+    histogram_pool_mib: int
+    seed: int
 
 
-MODEL_FITTING_PARAMETERS = ModelFittingParameters()
+@dataclass(frozen=True)
+class RidgeFittingParameters:
+    minimum_industry_training_rows: int
+    penalty: float
+
+
+ModelFittingParameters = LightGBMFittingParameters | RidgeFittingParameters
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,7 @@ def fit_industry_models(
     samples: SQLiteTrainingSampleRepository,
     split: BaoStockTrainingSplit,
     contract: TrainedHeadContract,
+    parameters: ModelFittingParameters,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> tuple[dict[str, dict[str, object]], int, int]:
@@ -62,12 +68,11 @@ def fit_industry_models(
     if progress is not None:
         progress.publish(TomorrowTrainingProgress("industry_statistics", "completed", 1, 1, strategy=contract.strategy))
     _publish(progress, contract, _FitProgress("started", 0, len(workloads)))
-    parameters = MODEL_FITTING_PARAMETERS
     for position, counts in enumerate(workloads, start=1):
         if (
             counts.training < parameters.minimum_industry_training_rows
             or counts.calibration == 0
-            or counts.early_stopping == 0
+            or (isinstance(parameters, LightGBMFittingParameters) and counts.early_stopping == 0)
             or counts.validation == 0
         ):
             _publish(progress, contract, _fit_progress(position, len(workloads), len(models)))
@@ -117,25 +122,31 @@ def _fit_industry(
     normalized = train.features
     normalized -= means
     normalized /= scales
-    coefficients = _ridge_coefficients(normalized, train.labels, parameters.ridge_penalty)
-    early_features = data.early_stopping.features
-    early_features -= means
-    early_features /= scales
-    booster = _fit_lightgbm(normalized, train.labels, early_features, data.early_stopping.labels, parameters)
     calibration_features = data.calibration.features
     calibration_features -= means
     calibration_features /= scales
-    tree = booster.predict(calibration_features, num_iteration=booster.best_iteration)
-    ridge = coefficients[0] + calibration_features @ coefficients[1:]
-    predicted = 0.5 * ridge + 0.5 * tree
+    if isinstance(parameters, LightGBMFittingParameters):
+        early_features = data.early_stopping.features
+        early_features -= means
+        early_features /= scales
+        booster = _fit_lightgbm(normalized, train.labels, early_features, data.early_stopping.labels, parameters)
+        predicted = booster.predict(calibration_features, num_iteration=booster.best_iteration)
+        model_fields: dict[str, object] = {
+            "lightgbm_model": booster.model_to_string(num_iteration=booster.best_iteration),
+            "lightgbm_best_iteration": int(booster.best_iteration),
+        }
+    else:
+        coefficients = _ridge_coefficients(normalized, train.labels, parameters.penalty)
+        predicted = coefficients[0] + calibration_features @ coefficients[1:]
+        model_fields = {
+            "ridge_intercept": float(coefficients[0]),
+            "ridge_coefficients": coefficients[1:].tolist(),
+        }
     slope, intercept = np.polyfit(predicted, data.calibration.labels, 1) if counts.calibration >= 2 else (1.0, 0.0)
     result = {
         "transformer_means": means.tolist(),
         "transformer_scales": scales.tolist(),
-        "ridge_intercept": float(coefficients[0]),
-        "ridge_coefficients": coefficients[1:].tolist(),
-        "lightgbm_model": booster.model_to_string(num_iteration=booster.best_iteration),
-        "lightgbm_best_iteration": int(booster.best_iteration),
+        **model_fields,
         "calibration_intercept": float(intercept),
         "calibration_slope": float(slope),
         "training_rows": counts.training,
@@ -165,7 +176,7 @@ def _fit_lightgbm(
     training_labels: np.ndarray,
     early_features: np.ndarray,
     early_labels: np.ndarray,
-    parameters: ModelFittingParameters,
+    parameters: LightGBMFittingParameters,
 ) -> lgb.Booster:
     booster = lgb.train(
         {
@@ -195,4 +206,9 @@ def _fit_lightgbm(
     return booster
 
 
-__all__ = ["MODEL_FITTING_PARAMETERS", "ModelFittingParameters", "fit_industry_models"]
+__all__ = [
+    "LightGBMFittingParameters",
+    "ModelFittingParameters",
+    "RidgeFittingParameters",
+    "fit_industry_models",
+]

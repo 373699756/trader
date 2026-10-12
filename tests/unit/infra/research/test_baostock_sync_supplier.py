@@ -40,7 +40,7 @@ def test_price_total_deadline_survives_page_activity_and_bounds_retries(monkeypa
     import trader.download.infra.baostock_sync_supplier as supplier_module
 
     clock = _Clock()
-    supplier = BaoStockHistorySupplier(monotonic=clock, price_total_seconds=180.0)
+    supplier = BaoStockHistorySupplier(HistorySyncConfiguration(), monotonic=clock, price_total_seconds=180.0)
     attempts = []
 
     def request(command, state, attempt, timeout):
@@ -133,7 +133,7 @@ class _Sdk:
 def test_industry_date_progress_keeps_counts_and_elapsed_across_page_activity() -> None:
     clock = _Clock()
     recorder = _ProgressRecorder()
-    supplier = BaoStockHistorySupplier(progress=recorder, monotonic=clock)
+    supplier = BaoStockHistorySupplier(HistorySyncConfiguration(), progress=recorder, monotonic=clock)
     attempt = _Attempt(2, 3)
     state = _RequestState("supplier_industry", "2020-07-01", 0)
     state = supplier._handle_industry_progress(
