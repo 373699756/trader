@@ -60,7 +60,6 @@ TOP_LEVEL_SCRIPT_MANIFEST = frozenset(
     {
         "check_refactor_quality.py",
         "check_tomorrow_training_memory.py",
-        "convert_baostock_history.py",
         "diagnose_runtime.py",
         "generate_long_watchlist_asset.py",
         "migrate_runtime_data.py",

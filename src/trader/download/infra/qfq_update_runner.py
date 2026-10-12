@@ -12,7 +12,7 @@ from trader.download.application.qfq_download_progress import qfq_failure_code
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.qfq_window import QfqUpdateResult
-from trader.download.infra.history_control_repository import HistoryMaintenanceLock
+from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_progress import qfq_local_progress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 

@@ -6,12 +6,12 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
-from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_status import (
     HistoryArchiveError,
     load_active_history_archive,
     verify_active_history_archive,
 )
+from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustryCohort,
     HistoricalIndustryDatasetReport,
@@ -36,7 +36,7 @@ def audit_archived_historical_industry_facts(
 
     archive = load_active_history_archive(history_root)
     verify_active_history_archive(archive)
-    reference = SQLiteHistoryArchiveReader(archive.root).reference_index(archive.snapshot).reference
+    reference = HistorySnapshotReader(archive.root).reference_index(archive.snapshot).reference
     facts = _industry_facts(reference, archive.snapshot.content_hash)
     windows = tuple(
         _stock_window(item.code, item.board, item.listed_on, item.delisted_on, archive.calendar.open_dates)

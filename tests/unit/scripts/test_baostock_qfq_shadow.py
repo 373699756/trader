@@ -27,12 +27,14 @@ def _fact(day: date, *, qfq: bool = True) -> tuple[str, date, bool, bool]:
     return "600001", day, True, qfq
 
 
-def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibility(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibility(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     archive = _archive()
     monkeypatch.setattr(shadow, "load_active_history_archive", lambda _root: archive)
     monkeypatch.setattr(
         shadow,
-        "SQLiteHistoryArchiveReader",
+        "HistorySnapshotReader",
         lambda _root: SimpleNamespace(
             iter_shadow_facts=lambda *_args: iter(_fact(day) for day in archive.calendar.open_dates)
         ),
@@ -52,7 +54,7 @@ def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(shadow, "load_active_history_archive", lambda _root: archive)
     monkeypatch.setattr(
         shadow,
-        "SQLiteHistoryArchiveReader",
+        "HistorySnapshotReader",
         lambda _root: SimpleNamespace(
             iter_shadow_facts=lambda *_args: iter(
                 _fact(day, qfq=day != date(2026, 1, 5)) for day in archive.calendar.open_dates

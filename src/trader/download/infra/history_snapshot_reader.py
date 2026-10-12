@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, replace
 from datetime import date
+from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -20,22 +21,22 @@ from trader.download.domain.history_revision import (
     HistoryTrainingRow,
 )
 from trader.download.domain.published_history import PublishedHistoryCell
-from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
+    HistoryMonthPrices,
     HistoryPartitionVerificationPhase,
-    SQLiteHistoryMonthPartitionRepository,
 )
 from trader.download.infra.history_reference_files import (
     HistoryReferenceIndex,
-    history_industry_mapping_path,
+    history_reference_path,
     read_bound_history_reference,
 )
 
 _CODE = re.compile(r"^[0-9]{6}$")
 
 
-class HistoryArchiveReadError(RuntimeError):
+class HistorySnapshotReadError(RuntimeError):
     """The active monthly history view is incomplete or inconsistent."""
 
 
@@ -52,15 +53,22 @@ class _PartitionFileIdentity:
 class _VerifiedPartition:
     reference: HistorySnapshotPartition
     identity: _PartitionFileIdentity
-    repository: SQLiteHistoryMonthPartitionRepository
-    level: Literal["published_bytes", "full"]
+    repository: HistoryMonthPrices
+    level: Literal["logical", "full"]
 
 
 def _partition_file_identity(path: Path) -> _PartitionFileIdentity:
     stat = path.stat()
     wal = Path(f"{path}-wal")
-    if wal.exists() and wal.stat().st_size > 0:
-        raise HistoryArchiveReadError("history snapshot partition has pending WAL")
+    if wal.exists():
+        wal_stat = wal.stat()
+        return _PartitionFileIdentity(
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_size + wal_stat.st_size,
+            max(stat.st_mtime_ns, wal_stat.st_mtime_ns),
+            max(stat.st_ctime_ns, wal_stat.st_ctime_ns),
+        )
     return _PartitionFileIdentity(stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
 
 
@@ -93,7 +101,7 @@ def _training_months(snapshot: HistoryActiveSnapshot, dates: tuple[date, ...]) -
     expected = route_history_months(dates[0], dates[-1])
     available = tuple(_reference_month(item) for item in snapshot.partitions if _reference_month(item) in expected)
     if available != expected:
-        raise HistoryArchiveReadError("history snapshot does not cover the active calendar")
+        raise HistorySnapshotReadError("history snapshot does not cover the active calendar")
     return expected
 
 
@@ -113,7 +121,7 @@ def route_history_months(start: date, end: date) -> tuple[tuple[int, int], ...]:
     return tuple(routed)
 
 
-class SQLiteHistoryArchiveReader:
+class HistorySnapshotReader:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._verified: dict[str, _VerifiedPartition] = {}
@@ -122,17 +130,15 @@ class SQLiteHistoryArchiveReader:
 
     def reference_index(self, snapshot: HistoryActiveSnapshot) -> HistoryReferenceIndex:
         try:
-            source = SQLiteHistoryControlRepository(self._root / "control.sqlite3").read_source(
-                snapshot.source_identity_hash
-            )
+            source = HistoryControlIndex(self._root / "control.sqlite3").read_source(snapshot.source_identity_hash)
         except HistoryControlError as exc:
-            raise HistoryArchiveReadError("history_reference_unavailable") from exc
+            raise HistorySnapshotReadError("history_reference_unavailable") from exc
         if not source.supplier_contract.startswith("history_ref_"):
-            raise HistoryArchiveReadError("history reference contract requires rebuilding history")
+            raise HistorySnapshotReadError("history reference contract requires rebuilding history")
         digest = source.supplier_contract[len("history_ref_") : len("history_ref_") + 64]
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-            raise HistoryArchiveReadError("history_reference_unavailable")
-        path = history_industry_mapping_path(self._root)
+            raise HistorySnapshotReadError("history_reference_unavailable")
+        path = history_reference_path(self._root, digest)
         try:
             stat = path.stat()
             identity = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
@@ -144,7 +150,7 @@ class SQLiteHistoryArchiveReader:
             self._references[digest] = (identity, index)
             return index
         except (OSError, ValueError) as exc:
-            raise HistoryArchiveReadError("history_reference_unavailable") from exc
+            raise HistorySnapshotReadError("history_reference_unavailable") from exc
 
     def verify_snapshot(
         self,
@@ -161,15 +167,14 @@ class SQLiteHistoryArchiveReader:
                 establish_level="full",
             )
             if progress is not None:
-                size = (self._root / reference.relative_path).stat().st_size
-                progress(completed, total, completed, size, size, "row_count")
+                progress(completed, total, completed, reference.row_count, reference.row_count, "logical")
 
     def verify_published_snapshot(
         self,
         snapshot: HistoryActiveSnapshot,
         progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
     ) -> None:
-        """Trust download-sealed SQLite facts after cross-process byte verification."""
+        """Verify sequence-bound content identities without a second payload decode pass."""
 
         self.reference_index(snapshot)
         total = len(snapshot.partitions)
@@ -178,11 +183,10 @@ class SQLiteHistoryArchiveReader:
                 reference,
                 None if progress is None else _partition_progress(progress, completed, total),
                 required_level=None,
-                establish_level="published_bytes",
+                establish_level="logical",
             )
             if progress is not None:
-                size = (self._root / reference.relative_path).stat().st_size
-                progress(completed, total, completed, size, size, "hash")
+                progress(completed, total, completed, reference.row_count, reference.row_count, "logical")
 
     def count_range(
         self,
@@ -202,7 +206,7 @@ class SQLiteHistoryArchiveReader:
             self._verified_repository(self._reference(snapshot, year, month)).count_range(
                 start,
                 end,
-                snapshot_sequence=snapshot.sequence,
+                snapshot_sequence=self._reference(snapshot, year, month).sequence,
                 codes=eligible_codes,
             )
             for year, month in route_history_months(start, end)
@@ -234,7 +238,7 @@ class SQLiteHistoryArchiveReader:
         index = self.reference_index(snapshot)
         return tuple(
             index.apply(row)
-            for row in repository.read_day(trade_date, snapshot_sequence=snapshot.sequence, board=board)
+            for row in repository.read_day(trade_date, snapshot_sequence=reference.sequence, board=board)
             if index.eligible(row.code)
         )
 
@@ -265,7 +269,7 @@ class SQLiteHistoryArchiveReader:
                     code,
                     dates[0],
                     dates[-1],
-                    snapshot_sequence=snapshot.sequence,
+                    snapshot_sequence=reference.sequence,
                 )
                 if row.trade_date in allowed
             )
@@ -285,7 +289,7 @@ class SQLiteHistoryArchiveReader:
                 for row in repository.iter_range(
                     date(year, month, 1),
                     date(year, month, end_day),
-                    snapshot_sequence=snapshot.sequence,
+                    snapshot_sequence=reference.sequence,
                 )
                 if reference_index.eligible(row.code)
             )
@@ -312,7 +316,9 @@ class SQLiteHistoryArchiveReader:
     ) -> Iterator[HistoryRevision]:
         for year, month in route_history_months(start, end):
             repository = self._verified_repository(self._reference(snapshot, year, month))
-            yield from repository.iter_range(start, end, snapshot_sequence=snapshot.sequence)
+            yield from repository.iter_range(
+                start, end, snapshot_sequence=self._reference(snapshot, year, month).sequence
+            )
 
     def iter_range_by_code(
         self,
@@ -328,7 +334,7 @@ class SQLiteHistoryArchiveReader:
             self._verified_repository(self._reference(snapshot, year, month)).iter_range_by_code(
                 start,
                 end,
-                snapshot_sequence=snapshot.sequence,
+                snapshot_sequence=self._reference(snapshot, year, month).sequence,
             )
             for year, month in route_history_months(start, end)
         )
@@ -365,7 +371,7 @@ class SQLiteHistoryArchiveReader:
             rows.extend(
                 row
                 for row in repository.iter_published_cells(
-                    dates[0], dates[-1], snapshot_sequence=snapshot.sequence, code=code
+                    dates[0], dates[-1], snapshot_sequence=reference.sequence, code=code
                 )
                 if row.trade_date in allowed
             )
@@ -379,7 +385,7 @@ class SQLiteHistoryArchiveReader:
             raise ValueError("published history range is invalid")
         references = tuple(self._reference(snapshot, year, month) for year, month in route_history_months(start, end))
         streams = tuple(
-            self._verified_repository(reference).iter_published_cells(start, end, snapshot_sequence=snapshot.sequence)
+            self._verified_repository(reference).iter_published_cells(start, end, snapshot_sequence=reference.sequence)
             for reference in references
         )
         index = self.reference_index(snapshot)
@@ -402,7 +408,7 @@ class SQLiteHistoryArchiveReader:
             self._shadow_repository(self._reference(snapshot, year, month)).iter_shadow_facts(
                 start,
                 end,
-                snapshot_sequence=snapshot.sequence,
+                snapshot_sequence=self._reference(snapshot, year, month).sequence,
             )
             for year, month in route_history_months(start, end)
         )
@@ -427,7 +433,7 @@ class SQLiteHistoryArchiveReader:
             )
             after = _revision_identities(repository.iter_range(start, end, snapshot_sequence=comparison.after_sequence))
         except HistoryMonthPartitionError as exc:
-            raise HistoryArchiveReadError("history partition revision comparison failed") from exc
+            raise HistorySnapshotReadError("history partition revision comparison failed") from exc
         return tuple(
             sorted(day for day, code in set(before) | set(after) if before.get((day, code)) != after.get((day, code)))
         )
@@ -450,7 +456,7 @@ class SQLiteHistoryArchiveReader:
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)
             yield from (
-                index.apply(row) for row in repository.read_code(code, start, end, snapshot_sequence=snapshot.sequence)
+                index.apply(row) for row in repository.read_code(code, start, end, snapshot_sequence=reference.sequence)
             )
 
     def iter_training_rows(
@@ -470,35 +476,28 @@ class SQLiteHistoryArchiveReader:
         allowed_dates = frozenset(dates)
         processed_rows = 0
         reference_index = self.reference_index(snapshot)
-        total = len(snapshot.partitions)
-        for completed, reference in enumerate(snapshot.partitions, start=1):
-            repository = self._repository_with_trust(
-                reference,
-                None if verification_progress is None else _partition_progress(verification_progress, completed, total),
-                required_level=None,
-                establish_level="published_bytes",
-                retain_pages=True,
-            )
+        selected = tuple(item for item in snapshot.partitions if _reference_month(item) in expected_months)
+        total = len(selected)
+        for completed, reference in enumerate(selected, start=1):
+            repository = self._shadow_repository(reference)
             try:
-                if verification_progress is not None:
-                    size = (self._root / reference.relative_path).stat().st_size
-                    verification_progress(completed, total, completed, size, size, "hash")
-                if _reference_month(reference) not in expected_months:
-                    continue
-                for row in repository.iter_training_rows(dates[0], dates[-1], snapshot_sequence=snapshot.sequence):
-                    if row.code not in allowed_codes:
+                report = partial(
+                    _training_verification_progress, verification_progress, completed, total, reference.row_count
+                )
+                report(0)
+                for row in repository.iter_verified_training_rows(reference, report):
+                    if row.code not in allowed_codes or not dates[0] <= row.trade_date <= dates[-1]:
                         continue
                     processed_rows += 1
                     if row.trade_date not in allowed_dates:
-                        raise HistoryArchiveReadError("history training row is outside the active calendar")
+                        raise HistorySnapshotReadError("history training row is outside the active calendar")
                     yield _with_training_industry(row, reference_index)
                     if progress is not None and processed_rows % 512 == 0:
                         progress(processed_rows)
-                if (
-                    _partition_file_identity(self._root / reference.relative_path)
-                    != self._verified[reference.relative_path].identity
-                ):
-                    raise HistoryArchiveReadError("history snapshot partition changed during consumption")
+                if verification_progress is not None:
+                    verification_progress(
+                        completed, total, completed, reference.row_count, reference.row_count, "logical"
+                    )
             finally:
                 repository.release_read_pages()
         if progress is not None:
@@ -512,14 +511,14 @@ class SQLiteHistoryArchiveReader:
     ) -> HistorySnapshotPartition:
         matches = tuple(item for item in snapshot.partitions if _reference_month(item) == (year, month))
         if len(matches) != 1:
-            raise HistoryArchiveReadError("history snapshot month is missing")
+            raise HistorySnapshotReadError("history snapshot month is missing")
         return matches[0]
 
     def _verified_repository(
         self,
         reference: HistorySnapshotPartition,
         progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None = None,
-    ) -> SQLiteHistoryMonthPartitionRepository:
+    ) -> HistoryMonthPrices:
         return self._repository_with_trust(
             reference,
             progress,
@@ -533,9 +532,9 @@ class SQLiteHistoryArchiveReader:
         progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None,
         *,
         required_level: Literal["full"] | None,
-        establish_level: Literal["published_bytes", "full"],
+        establish_level: Literal["logical", "full"],
         retain_pages: bool = False,
-    ) -> SQLiteHistoryMonthPartitionRepository:
+    ) -> HistoryMonthPrices:
         path = self._root / reference.relative_path
         with self._verification_lock:
             try:
@@ -550,34 +549,40 @@ class SQLiteHistoryArchiveReader:
                     return existing.repository
                 self._verified.pop(reference.relative_path, None)
                 if establish_level == "full":
-                    SQLiteHistoryMonthPartitionRepository.verify(path, reference, progress)
+                    HistoryMonthPrices.verify(path, reference, progress)
                 else:
-                    SQLiteHistoryMonthPartitionRepository.verify_published_bytes(
-                        path, reference, progress, retain_pages=retain_pages
-                    )
-                if _partition_file_identity(path) != identity:
-                    raise HistoryArchiveReadError("history snapshot partition changed during verification")
-            except (HistoryArchiveReadError, HistoryMonthPartitionError, OSError) as exc:
+                    HistoryMonthPrices.verify_logical_content(path, reference, progress, retain_pages=retain_pages)
+            except (HistorySnapshotReadError, HistoryMonthPartitionError, OSError) as exc:
                 self._verified.pop(reference.relative_path, None)
-                if isinstance(exc, HistoryArchiveReadError):
+                if isinstance(exc, HistorySnapshotReadError):
                     raise
-                raise HistoryArchiveReadError("history snapshot partition verification failed") from exc
+                raise HistorySnapshotReadError("history snapshot partition verification failed") from exc
             year, month = _reference_month(reference)
-            repository = SQLiteHistoryMonthPartitionRepository(path, year, month, immutable_read=True)
+            repository = HistoryMonthPrices(path, year, month)
             self._verified[reference.relative_path] = _VerifiedPartition(
                 reference, identity, repository, establish_level
             )
             return repository
 
-    def _shadow_repository(self, reference: HistorySnapshotPartition) -> SQLiteHistoryMonthPartitionRepository:
+    def _shadow_repository(self, reference: HistorySnapshotPartition) -> HistoryMonthPrices:
         """Open a read-only shadow reader without repeating sealed-file hashing."""
         year, month = _reference_month(reference)
-        return SQLiteHistoryMonthPartitionRepository(
+        return HistoryMonthPrices(
             self._root / reference.relative_path,
             year,
             month,
-            immutable_read=True,
         )
+
+
+def _training_verification_progress(
+    progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None,
+    current: int,
+    total: int,
+    rows: int,
+    completed: int,
+) -> None:
+    if progress is not None:
+        progress(current - 1, total, current, min(completed, rows), rows, "logical")
 
 
 def _training_codes(codes: Collection[str]) -> frozenset[str]:
@@ -597,7 +602,7 @@ def _revision_identities(revisions: Iterator[HistoryRevision]) -> dict[tuple[dat
     for revision in revisions:
         key = (revision.trade_date, revision.code)
         if key in identities:
-            raise HistoryArchiveReadError("history partition revision comparison contains duplicate rows")
+            raise HistorySnapshotReadError("history partition revision comparison contains duplicate rows")
         identities[key] = revision.revision_id
     return identities
 
@@ -621,8 +626,8 @@ def _partition_progress(
 
 
 __all__ = [
-    "HistoryArchiveReadError",
+    "HistorySnapshotReadError",
     "HistoryPartitionRevisionComparison",
-    "SQLiteHistoryArchiveReader",
+    "HistorySnapshotReader",
     "route_history_months",
 ]

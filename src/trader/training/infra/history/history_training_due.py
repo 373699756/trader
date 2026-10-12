@@ -14,15 +14,15 @@ from trader.download.domain.history_control import (
     calculate_history_training_cache_invalidation_dates,
     calculate_history_training_due,
 )
-from trader.download.infra.history_archive_reader import (
-    HistoryArchiveReadError,
-    HistoryPartitionRevisionComparison,
-    SQLiteHistoryArchiveReader,
-    route_history_months,
-)
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryControlError,
-    SQLiteHistoryControlRepository,
+    HistoryControlIndex,
+)
+from trader.download.infra.history_snapshot_reader import (
+    HistoryPartitionRevisionComparison,
+    HistorySnapshotReader,
+    HistorySnapshotReadError,
+    route_history_months,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
@@ -65,7 +65,7 @@ def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrai
     profile = query.profile
     strategy = query.strategy
     expected_training_contract_hash = query.expected_training_contract_hash
-    control = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
+    control = HistoryControlIndex(archive_root / "control.sqlite3")
     try:
         state = control.load_state()
     except HistoryControlError:
@@ -111,7 +111,7 @@ def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrai
                 calendar.open_dates,
                 bundle.label_cutoff,
             )
-        except (HistoryArchiveReadError, OSError, ValueError):
+        except (HistorySnapshotReadError, OSError, ValueError):
             data_complete = False
     input_revision = bool(revised_dates)
     snapshot_identity_rebind = (
@@ -187,11 +187,11 @@ def _revised_dates_since_bundle(
         return ()
     baseline_months = {_partition_month(item.relative_path): item for item in baseline.partitions}
     active_months = {_partition_month(item.relative_path): item for item in active.partitions}
-    archive = SQLiteHistoryArchiveReader(archive_root)
+    archive = HistorySnapshotReader(archive_root)
     revisions: set[date] = set()
     for year, month in route_history_months(start, end):
         if (year, month) not in baseline_months or (year, month) not in active_months:
-            raise HistoryArchiveReadError("history snapshot comparison month is missing")
+            raise HistorySnapshotReadError("history snapshot comparison month is missing")
         month_start = max(start, date(year, month, 1))
         month_end = min(end, date(year, month, month_calendar.monthrange(year, month)[1]))
         baseline_reference = baseline_months[(year, month)]

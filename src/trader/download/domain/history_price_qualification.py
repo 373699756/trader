@@ -8,7 +8,6 @@ from math import isclose
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 
-TENCENT_HISTORY_MAX_SESSIONS = 640
 HISTORY_TAIL_CONTRACT = ("history", "tencent-pairs-sparse-recovery")
 HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 
@@ -42,59 +41,6 @@ def qualify_price_overlap(
         else:
             result.append(BaoStockDailyCell(cell.code, cell.trade_date, "unknown_missing", None, None))
     return tuple(result)
-
-
-def _require_qfq_prices(
-    left: PublishedHistorySide | BaoStockDailySide, right: PublishedHistorySide | BaoStockDailySide
-) -> None:
-    if any(
-        a is None or b is None or not isclose(a, b, rel_tol=0.0, abs_tol=0.0051)
-        for a, b in zip(
-            (left.open_price, left.high_price, left.low_price, left.close_price),
-            (right.open_price, right.high_price, right.low_price, right.close_price),
-            strict=True,
-        )
-    ):
-        raise RuntimeError("history_tail_qfq_basis_conflict")
-
-
-def merge_tencent_windows(
-    code: str, dates: tuple[date, ...], windows: tuple[PublishedHistoryWindow, ...]
-) -> PublishedHistoryWindow:
-    cells: dict[date, PublishedHistoryCell] = {}
-    for window in windows:
-        if window.code != code:
-            raise RuntimeError("history_tencent_code_conflict")
-        for incoming in window.cells:
-            previous = cells.get(incoming.trade_date)
-            if previous is not None:
-                _require_published_overlap(previous, incoming)
-            cells[incoming.trade_date] = incoming
-    if tuple(sorted(cells)) != dates:
-        raise RuntimeError("history_tencent_coverage_incomplete")
-    return PublishedHistoryWindow(code, tuple(cells[day] for day in dates))
-
-
-def _require_published_overlap(previous: PublishedHistoryCell, incoming: PublishedHistoryCell) -> None:
-    for left, right in ((previous.unadjusted, incoming.unadjusted), (previous.qfq, incoming.qfq)):
-        if (left is None) != (right is None):
-            raise RuntimeError("history_tencent_overlap_conflict")
-        if left is not None and right is not None:
-            _require_qfq_prices(left, right)
-
-
-def repair_tencent_window(previous: PublishedHistoryWindow, retry: PublishedHistoryWindow) -> PublishedHistoryWindow:
-    if previous.code != retry.code or tuple(cell.trade_date for cell in previous.cells) != tuple(
-        cell.trade_date for cell in retry.cells
-    ):
-        raise RuntimeError("history_tencent_retry_identity_conflict")
-    cells = []
-    for before, after in zip(previous.cells, retry.cells, strict=True):
-        for left, right in ((before.unadjusted, after.unadjusted), (before.qfq, after.qfq)):
-            if left is not None and right is not None:
-                _require_qfq_prices(left, right)
-        cells.append(before if before.status == "complete" else after if after.status == "complete" else before)
-    return PublishedHistoryWindow(previous.code, tuple(cells))
 
 
 def qualify_history_pairs(

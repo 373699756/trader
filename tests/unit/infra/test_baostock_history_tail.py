@@ -10,7 +10,7 @@ from tests.component.test_candidate_history_tail import _Archive
 from trader.download.domain.history_tail import HistoryTailRequest
 from trader.download.infra.baostock_gap_supplier import BaoStockGapRecord, BaoStockGapResult
 from trader.download.infra.baostock_history_tail import BaoStockHistoryTailSupplier
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
 )

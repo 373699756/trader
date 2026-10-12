@@ -15,6 +15,22 @@ class _Clock:
         return next(self._values)
 
 
+def test_logical_snapshot_validation_reports_actual_rows(capsys) -> None:
+    output = StderrTomorrowTrainingProgress(monotonic=_Clock(100.0, 100.0), start_heartbeat=False)
+    output.publish(
+        TomorrowTrainingProgress(
+            "partition_validation",
+            "running",
+            0,
+            2,
+            partition_validation=TomorrowTrainingPartitionValidationProgress(1, 2, 512, 1000, "logical"),
+        )
+    )
+    line = capsys.readouterr().err
+    assert "逻辑内容 512/1000 行" in line
+    assert "MiB" not in line
+
+
 def test_training_progress_prints_real_rows_percent_duration_and_no_rss(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(100.0, 100.0, 854.0), start_heartbeat=False)
 

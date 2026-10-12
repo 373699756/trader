@@ -9,7 +9,7 @@ from datetime import datetime
 from trader.download.application.history_ports import HistorySupplierPort
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.infra.workers import WorkerExecutor
 
 
@@ -59,7 +59,7 @@ class HistoryArchiveGateway:
         control_path = configuration.archive_root / "control.sqlite3"
         if not control_path.exists():
             return _blocked_without_active(configuration)
-        control = SQLiteHistoryControlRepository(control_path)
+        control = HistoryControlIndex(control_path)
         try:
             control.initialize()
             if control.load_state().active_snapshot is None:

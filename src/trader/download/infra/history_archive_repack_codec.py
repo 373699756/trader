@@ -41,6 +41,9 @@ def write_history_archive_repack_build_state(path: Path, state: HistoryArchiveRe
             "target_bytes": item.target_bytes,
             "records_logical_hash": item.records_logical_hash,
             "observations_logical_hash": item.observations_logical_hash,
+            "snapshot_logical_hash": item.snapshot_logical_hash,
+            "snapshot_row_count": item.snapshot_row_count,
+            "snapshot_sequence": item.snapshot_sequence,
         }
         for item in state.partitions
     ]
@@ -238,6 +241,9 @@ def _decode_partition(raw: object) -> HistoryArchiveRepackPartitionEvidence:
             "target_bytes",
             "records_logical_hash",
             "observations_logical_hash",
+            "snapshot_logical_hash",
+            "snapshot_row_count",
+            "snapshot_sequence",
         },
     )
     return HistoryArchiveRepackPartitionEvidence(
@@ -251,6 +257,9 @@ def _decode_partition(raw: object) -> HistoryArchiveRepackPartitionEvidence:
         _integer(payload, "target_bytes"),
         _text(payload, "records_logical_hash"),
         _text(payload, "observations_logical_hash"),
+        _text(payload, "snapshot_logical_hash"),
+        _integer(payload, "snapshot_row_count"),
+        _integer(payload, "snapshot_sequence"),
     )
 
 

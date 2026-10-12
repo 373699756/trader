@@ -18,10 +18,10 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryGapSummary, HistorySyncConfiguration, HistorySyncProgress
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow, project_history_cell
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_sync import run_history_sync
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
@@ -50,7 +50,7 @@ class Prices:
         self.conflict = conflict
         self.shift = shift
 
-    def fetch_window(self, security, dates):
+    def fetch_window(self, security, dates, **kwargs):
         self.calls.append(dates)
         cells = []
         for value in _download(security.code, dates, qfq_shift=self.shift).batch.cells:
@@ -119,7 +119,7 @@ def test_history_router_forwards_the_explicit_industry_query_cache(tmp_path) -> 
 
 
 @pytest.mark.parametrize("count", (5, 639, 640, 641, 2000))
-def test_tencent_first_fetches_every_window_in_bounded_segments(count):
+def test_tencent_first_fetches_one_whole_window(count):
     dates = tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(count))
     baseline, prices = Baseline(dates), Prices()
     router = _router(baseline, prices)
@@ -127,9 +127,7 @@ def test_tencent_first_fetches_every_window_in_bounded_segments(count):
     security = context.universe[0]
     result = router.fetch_tencent_window(security, dates)
     assert tuple(cell.trade_date for cell in result.cells) == dates
-    assert prices.calls
-    assert all(1 <= len(segment) <= 640 for segment in prices.calls)
-    assert sum(len(segment) for segment in prices.calls) >= count
+    assert prices.calls == [dates]
     assert baseline.calls == []
     assert context.source_versions != baseline.load_context(dates[-1], count).source_versions
 
@@ -139,8 +137,8 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     assert run_history_sync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
-    before = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
-    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], before)
+    before = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], before)
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline = Baseline(new_dates)
     result = run_history_sync(
@@ -148,17 +146,17 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
         _router(baseline, Prices(shift=1.0, missing=incoming == "missing", conflict=incoming == "raw")),
         clock=lambda: NOW,
     )
-    state = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state()
+    state = HistoryControlIndex(tmp_path / "control.sqlite3").load_state()
     if incoming == "raw":
-        assert result.state == "failed" and result.reason == "history_tail_raw_price_conflict"
-        assert state.active_snapshot == before
+        assert result.state == "completed" and result.unresolved_price_cells == 2
+        assert HistorySnapshotReader(tmp_path).read_day(dates[-1], before) == rows
         return
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert state.active_snapshot != before
     assert not any(code == "raw" for code, _dates in baseline.calls)
     assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
-    current = SQLiteHistoryArchiveReader(tmp_path)
+    current = HistorySnapshotReader(tmp_path)
     assert current.read_day(dates[-1], state.active_snapshot)[0].cell == rows[0].cell
     tail = current.read_day(new_dates[-1], state.active_snapshot)[0].cell
     assert tail.qfq.close_price == (11.0 if incoming == "qfq_basis" else 10.0)
@@ -201,9 +199,9 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert supplier_settings["configuration"].supplier_retries == 2
     assert supplier_settings["price_policy"].timeout_seconds == 20.0
     assert supplier_settings["price_policy"].retries == 0
-    snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     assert snapshot is not None
-    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)
+    rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
     assert rows[0].is_st is False
     assert rows[0].cell.qfq.close_price == 9.5
 
@@ -218,9 +216,9 @@ def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     assert result.state == "completed"
     assert prices.calls == [new_dates, new_dates]
     assert baseline.calls == []
-    snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     assert snapshot.sequence == 2
-    assert len(SQLiteHistoryArchiveReader(tmp_path).read_day(new_dates[-1], snapshot)) == 2
+    assert len(HistorySnapshotReader(tmp_path).read_day(new_dates[-1], snapshot)) == 2
 
 
 def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None:
@@ -244,9 +242,9 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     assert tuple(window.code for window in archive.read_windows(manifest, ("600001", "600002"), sessions=61)) == (
         "600001",
     )
-    snapshot = SQLiteHistoryControlRepository(config.archive_root / "control.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(config.archive_root / "control.sqlite3").load_state().active_snapshot
     assert snapshot is not None
-    assert tuple(row.code for row in SQLiteHistoryArchiveReader(config.archive_root).read_day(dates[-1], snapshot)) == (
+    assert tuple(row.code for row in HistorySnapshotReader(config.archive_root).read_day(dates[-1], snapshot)) == (
         "600001",
     )
     training = SQLiteHistoryTrainingInputArchive.open(config.archive_root)
@@ -279,7 +277,7 @@ def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failu
     dates = tuple(date(2026, 10, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     assert run_history_sync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
-    control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    control = HistoryControlIndex(tmp_path / "control.sqlite3")
     before = control.load_state().active_snapshot
 
     def unavailable():
@@ -301,7 +299,8 @@ def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failu
 
 
 def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
-    from trader.download.infra.history_archive_sync import _CodeDownloadContext, _requested_dates
+    from trader.download.infra.history_archive_sync import _download_tasks
+    from trader.download.infra.history_download_index import HistoryDownloadIndex
 
     dates = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2000))
     baseline, prices = Baseline(dates), Prices()
@@ -309,12 +308,16 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     context = router.load_context(dates[-1], 2000)
     new_stock = replace(context.universe[1], listed_on=dates[-639])
     context = replace(context, universe=(context.universe[0], new_stock))
-    request = _CodeDownloadContext(HistorySyncConfiguration(tmp_path), context, None, frozenset(), {})
-    assert _requested_dates(request, context.universe[0]) == dates
-    assert _requested_dates(request, new_stock) == dates[-639:]
+    control = HistoryControlIndex(tmp_path / "control.sqlite3")
+    control.initialize()
+    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    index.initialize()
+    tasks = _download_tasks(context, control, None, index, 5)
+    assert tasks[0].dates == dates
+    assert tasks[1].dates == dates[-639:]
     assert router.fetch_tencent_window(context.universe[0], dates).cells
     assert router.fetch_tencent_window(new_stock, dates[-639:]).cells
-    assert tuple(map(len, prices.calls)) == (640, 640, 640, 95, 639)
+    assert tuple(map(len, prices.calls)) == (2000, 639)
 
 
 def test_gap_longer_than_reread_window_includes_published_qfq_anchor(tmp_path):
@@ -327,15 +330,6 @@ def test_gap_longer_than_reread_window_includes_published_qfq_anchor(tmp_path):
     result = run_history_sync(config, _router(Baseline(shifted), prices), clock=lambda: NOW)
     assert result.state == "completed"
     assert prices.calls == [shifted[-8:], shifted[-8:]]
-
-
-def test_changed_price_contract_does_not_resume_legacy_short_batches():
-    from trader.download.domain.history_control import HistorySyncCheckpoint
-    from trader.download.infra.history_archive_sync import _matching_checkpoints
-
-    previous = HistorySyncCheckpoint("sync-20260909-old", 1, "running", NOW, 1, 2, None)
-    assert _matching_checkpoints((previous,), "sync-20260909-new") == ()
-    assert _matching_checkpoints((previous,), previous.sync_identity) == (previous,)
 
 
 def test_only_explicit_baseline_suspension_can_qualify_missing_tencent_prices():
@@ -381,14 +375,14 @@ def test_only_explicit_baseline_suspension_can_qualify_missing_tencent_prices():
         qualify_history_pairs(security.code, (day,), Prices().fetch_window(security, (day,)), (suspended,))
 
 
-def test_first_existing_policy_does_not_relax_tencent_segment_conflicts():
-    from trader.download.domain.history_price_qualification import merge_tencent_windows
-
-    day = date(2026, 9, 9)
-    security = _current_universe("600001")[0]
-    windows = (Prices(shift=0).fetch_window(security, (day,)), Prices(shift=0.1).fetch_window(security, (day,)))
-    with pytest.raises(RuntimeError, match="history_tail_qfq_basis_conflict"):
-        merge_tencent_windows(security.code, (day,), windows)
+def test_partial_whole_window_is_returned_once_for_baostock_supplement():
+    dates = tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(2000))
+    prices = Prices(missing=True)
+    router = _router(Baseline(dates), prices)
+    context = router.load_context(dates[-1], 2000)
+    result = router.fetch_tencent_window(context.universe[0], dates)
+    assert prices.calls == [dates]
+    assert all(cell.qfq is None for cell in result.cells)
 
 
 def test_completed_stock_reports_real_route_and_requested_sessions(capsys):

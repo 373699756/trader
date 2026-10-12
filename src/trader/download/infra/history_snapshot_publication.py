@@ -18,11 +18,15 @@ from trader.download.domain.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryControlError,
-    SQLiteHistoryControlRepository,
+    HistoryControlIndex,
 )
-from trader.download.infra.history_reference_files import history_industry_mapping_path, write_history_reference
+from trader.download.infra.history_reference_files import (
+    history_industry_mapping_path,
+    history_reference_path,
+    write_history_reference,
+)
 
 _REFERENCE_SOURCE_CONTRACT = re.compile(r"history_ref_[0-9a-f]{64}_([0-9a-f]{16})")
 _LOGGER = logging.getLogger(__name__)
@@ -37,9 +41,12 @@ class HistoryPublication:
     reference: HistoryReferenceSnapshot
 
 
-def publish_history_snapshot(control: SQLiteHistoryControlRepository, publication: HistoryPublication) -> None:
+def publish_history_snapshot(control: HistoryControlIndex, publication: HistoryPublication) -> None:
     """Publish a reference file and control identity as one recoverable operation."""
 
+    write_history_reference(
+        history_reference_path(publication.root, publication.reference.content_hash), publication.reference
+    )
     mapping_path = history_industry_mapping_path(publication.root)
     rollback = mapping_path.with_name(".industry_mapping.rollback.json")
     rollback.unlink(missing_ok=True)

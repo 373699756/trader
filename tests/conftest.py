@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.infra.workers import BoundedExecutor
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy, RecommendationSelectionSettings
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
@@ -43,16 +43,15 @@ _HISTORY_PATHS = frozenset(
         "unit/infra/test_baostock_history_tail.py",
         "unit/infra/research/test_baostock_gateway.py",
         "unit/infra/research/test_baostock_sync_supplier.py",
-        "unit/infra/research/test_history_archive_reader.py",
+        "unit/infra/research/test_history_snapshot_reader.py",
         "unit/infra/research/test_history_archive_repack.py",
         "unit/infra/research/test_history_archive_status.py",
         "unit/infra/research/test_history_archive_sync.py",
         "unit/infra/research/test_history_automation_installation.py",
-        "unit/infra/research/test_history_control_repository.py",
+        "unit/infra/research/test_history_control_index.py",
         "unit/infra/research/test_history_maintenance_runner.py",
         "unit/infra/research/test_history_month_partition.py",
         "unit/infra/test_baostock_industry.py",
-        "unit/scripts/test_convert_baostock_history.py",
         "unit/scripts/test_history_daily_capability.py",
         "unit/scripts/test_history_sources.py",
         "unit/scripts/test_tushare_daily.py",
@@ -139,7 +138,7 @@ _SLOW_MARKERS_BY_PATH = {
         {
             "unit/infra/research/test_history_archive_sync.py",
             "unit/infra/research/test_history_archive_repack.py",
-            "unit/infra/research/test_history_control_repository.py",
+            "unit/infra/research/test_history_control_index.py",
             "unit/infra/research/test_history_training_input.py",
         }
     ),
@@ -147,9 +146,8 @@ _SLOW_MARKERS_BY_PATH = {
         {
             "unit/infra/research/test_history_archive_sync.py",
             "unit/infra/research/test_history_archive_repack.py",
-            "unit/infra/research/test_history_control_repository.py",
+            "unit/infra/research/test_history_control_index.py",
             "unit/infra/research/test_history_training_input.py",
-            "unit/scripts/test_convert_baostock_history.py",
         }
     ),
     "slow_runtime": frozenset(

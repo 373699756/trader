@@ -14,7 +14,7 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
-from trader.download.infra.history_control_repository import HistoryMaintenanceAlreadyRunningError
+from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow

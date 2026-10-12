@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -10,7 +11,7 @@ import sqlite3
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
@@ -19,6 +20,7 @@ from trader.download.domain.baostock_daily import BaoStockBoard
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
+from trader.download.infra.history_partition_proof import calculate_history_proof
 from trader.download.infra.history_revision_codec import (
     decode_history_revision,
     encode_history_revision,
@@ -26,12 +28,12 @@ from trader.download.infra.history_revision_codec import (
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.published_history_codec import decode_published_history_cell
 
-_SCHEMA_IDENTITY = "history_price_pairs"
+_SCHEMA_IDENTITY = "history_direct_prices"
 _CODE = re.compile(r"^[0-9]{6}$")
 _HASH_CHUNK_BYTES = 1024 * 1024
 _CACHE_RELEASE_BYTES = 16 * 1024 * 1024
 _VERIFICATION_MMAP_BYTES = 256 * 1024 * 1024
-HistoryPartitionVerificationPhase = Literal["hash", "integrity", "row_count"]
+HistoryPartitionVerificationPhase = Literal["hash", "integrity", "row_count", "logical"]
 HistoryPartitionVerificationProgress = Callable[[int, int, HistoryPartitionVerificationPhase], None]
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS metadata (
@@ -65,6 +67,7 @@ CREATE INDEX IF NOT EXISTS history_month_date_board_code_idx
 ON daily_records(trade_date, board, code, first_seen_sequence DESC, revision_id);
 CREATE INDEX IF NOT EXISTS history_month_observation_code_date_idx
 ON daily_observations(code, trade_date, sync_sequence DESC, revision_id);
+CREATE INDEX IF NOT EXISTS history_month_sequence_idx ON daily_observations(sync_sequence);
 CREATE INDEX IF NOT EXISTS history_month_price_gap_idx
 ON daily_records(code, trade_date, revision_id)
 WHERE json_extract(payload_json, '$.cell.status') IN ('unknown_missing','qfq_missing','unadjusted_missing');
@@ -223,7 +226,7 @@ class HistoryMonthPartitionConflictError(HistoryMonthPartitionError):
     """An immutable logical row conflicts with an existing revision."""
 
 
-class SQLiteHistoryMonthPartitionRepository:
+class HistoryMonthPrices:
     def __init__(  # noqa: PLR0913 - physical identity and optional diagnostic/cancellation boundaries
         self,
         path: Path,
@@ -231,7 +234,6 @@ class SQLiteHistoryMonthPartitionRepository:
         calendar_month: int,
         *,
         statement_trace: Callable[[str], None] | None = None,
-        immutable_read: bool = False,
         activity: HistorySqliteActivity | None = None,
     ) -> None:
         if calendar_year < 1990 or not 1 <= calendar_month <= 12:
@@ -240,7 +242,6 @@ class SQLiteHistoryMonthPartitionRepository:
         self._calendar_year = calendar_year
         self._calendar_month = calendar_month
         self._statement_trace = statement_trace
-        self._immutable_read = immutable_read
         self._activity = activity
 
     def initialize(self) -> None:
@@ -274,6 +275,15 @@ class SQLiteHistoryMonthPartitionRepository:
     def changed_revisions(self, revisions: tuple[HistoryRevision, ...]) -> tuple[HistoryRevision, ...]:
         """Compare bounded incoming keys with their latest visible price identity, read-only."""
         return tuple(item for batch in self.iter_changed_batches(revisions) for item in batch)
+
+    def has_observations_after(self, sequence: int) -> bool:
+        with closing(self._read_connection()) as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM daily_observations WHERE sync_sequence>? LIMIT 1", (sequence,)
+                ).fetchone()
+                is not None
+            )
 
     def iter_changed_batches(
         self, revisions: Iterable[HistoryRevision]
@@ -580,6 +590,42 @@ class SQLiteHistoryMonthPartitionRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month training query failed") from exc
 
+    def iter_verified_training_rows(
+        self, reference: HistorySnapshotPartition, progress: Callable[[int], None] | None = None
+    ) -> Iterator[HistoryTrainingRow]:
+        """Validate and consume a snapshot in one pass; reject corrupt content before training can finish."""
+        digest = hashlib.sha256(b"history-logical-prices\n")
+        count = 0
+        for value in self.iter_range(
+            date(self._calendar_year, self._calendar_month, 1),
+            date(self._calendar_year, self._calendar_month, 28).replace(day=1) + timedelta(days=31),
+            snapshot_sequence=reference.sequence,
+        ):
+            key = (
+                value.trade_date.isoformat(),
+                value.code,
+                value.revision_id,
+                value.first_seen_sequence,
+                value.board,
+                value.content_hash,
+            )
+            digest.update(json.dumps(key, ensure_ascii=True, separators=(",", ":")).encode("ascii"))
+            digest.update(b"\n")
+            count += 1
+            raw, qfq = value.cell.unadjusted, value.cell.qfq
+            point = (
+                HistoryTrainingPoint(value.trade_date, qfq.close_price, qfq.amount)
+                if (raw is not None and qfq is not None and raw.trading_status == qfq.trading_status == "trading")
+                else None
+            )
+            yield HistoryTrainingRow(value.code, value.trade_date, value.board, None, point)
+            if progress is not None and count % 512 == 0:
+                progress(count)
+        if digest.hexdigest() != reference.logical_hash or count != reference.row_count:
+            raise HistoryMonthPartitionError("history month logical hash mismatch")
+        if progress is not None:
+            progress(count)
+
     def iter_published_cells(
         self,
         start: date,
@@ -632,96 +678,36 @@ class SQLiteHistoryMonthPartitionRepository:
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month shadow query failed") from exc
 
-    def seal(self) -> HistorySnapshotPartition:
+    def seal(self, sequence: int | None = None) -> HistorySnapshotPartition:
+        """Produce a logical proof without copying, renaming or freezing the database."""
         try:
-            with closing(sqlite3.connect(self._path, timeout=5.0)) as connection:
-                if self._statement_trace is not None:
-                    connection.set_trace_callback(self._statement_trace)
-                self._require_metadata(connection)
-                self._require_schema(connection)
-                checkpoint = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if checkpoint is None or checkpoint[0] != 0:
-                    raise HistoryMonthPartitionError("history month WAL checkpoint failed")
-            database_sha256 = _sha256_file(
-                self._path,
-                lambda *_: self._activity.tick() if self._activity is not None else None,
-                release_cache=False,
-            )
             with (
-                closing(self._verification_connection()) as connection,
+                closing(self._read_connection()) as connection,
                 self._activity.watch(connection) if self._activity else nullcontext(),
             ):
+                connection.execute("BEGIN")
                 self._require_metadata(connection)
                 self._require_schema(connection)
-                check = connection.execute("PRAGMA quick_check").fetchone()
-                if check != ("ok",):
+                if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
                     raise HistoryMonthPartitionError("history month integrity check failed")
-                row_count = self._validate_all_rows(connection)
-        except HistoryMonthPartitionError:
-            raise
+                if sequence is None:
+                    sequence = connection.execute(
+                        "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_observations"
+                    ).fetchone()[0]
+                proof = calculate_history_proof(
+                    connection,
+                    sequence,
+                    validate_payloads=False,
+                    heartbeat=lambda count: self._activity.tick() if self._activity else None,
+                )
+                return HistorySnapshotPartition(
+                    f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
+                    proof.logical_hash,
+                    proof.row_count,
+                    sequence,
+                )
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month sealing failed") from exc
-        finally:
-            _release_file_cache(self._path)
-        try:
-            _fsync_file(self._path)
-            if self._path.parent.name != f"{self._calendar_year:04d}" or self._path.parent.parent.name != "partitions":
-                raise HistoryMonthPartitionError("history month partition path is outside the archive layout")
-            reference = HistorySnapshotPartition(
-                f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
-                database_sha256,
-                row_count,
-            )
-            destination = self._path.parent / f"{self._calendar_month:02d}.sqlite3"
-            if self._path != destination:
-                os.replace(self._path, destination)
-            _fsync_directory(destination.parent)
-            return reference
-        except HistoryMonthPartitionError:
-            raise
-        except (OSError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month sealing failed") from exc
-
-    def recover_completed_seal(self) -> HistorySnapshotPartition:
-        """Rebuild a reference after the caller proves a prior seal completed."""
-        try:
-            wal = Path(f"{self._path}-wal")
-            if wal.exists() and wal.stat().st_size > 0:
-                raise HistoryMonthPartitionError("history month completed seal has pending WAL")
-            before = self._path.stat()
-            with closing(self._read_connection()) as connection:
-                self._require_metadata(connection)
-                self._require_schema(connection)
-                row_count = cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
-            database_sha256 = _sha256_file(self._path)
-            after = self._path.stat()
-            before_identity = (
-                before.st_dev,
-                before.st_ino,
-                before.st_size,
-                before.st_mtime_ns,
-                before.st_ctime_ns,
-            )
-            after_identity = (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-                after.st_ctime_ns,
-            )
-            if before_identity != after_identity or (wal.exists() and wal.stat().st_size > 0):
-                raise HistoryMonthPartitionError("history month completed seal changed during recovery")
-            if self._path.parent.name != f"{self._calendar_year:04d}" or self._path.parent.parent.name != "partitions":
-                raise HistoryMonthPartitionError("history month partition path is outside the archive layout")
-            return HistorySnapshotPartition(
-                f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
-                database_sha256,
-                row_count,
-            )
-        except HistoryMonthPartitionError:
-            raise
-        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month completed seal recovery failed") from exc
+            raise HistoryMonthPartitionError("history month logical proof failed") from exc
 
     @classmethod
     def verify(
@@ -730,63 +716,36 @@ class SQLiteHistoryMonthPartitionRepository:
         reference: HistorySnapshotPartition,
         progress: HistoryPartitionVerificationProgress | None = None,
     ) -> None:
-        if not path.is_file():
-            raise HistoryMonthPartitionError("history month partition is missing")
-        try:
-            file_size = path.stat().st_size
-            if _sha256_file(path, progress, release_cache=False) != reference.sha256:
-                raise HistoryMonthPartitionError("history month partition hash mismatch")
-            wal = Path(f"{path}-wal")
-            if wal.exists() and wal.stat().st_size > 0:
-                raise HistoryMonthPartitionError("history month partition has pending WAL")
-            parts = Path(reference.relative_path).parts
-            year = int(parts[1])
-            month = int(Path(parts[2]).stem)
-            candidate = cls(path, year, month)
-            with closing(candidate._verification_connection()) as connection:
-                if progress is not None:
-                    progress(file_size, file_size, "integrity")
-                candidate._require_metadata(connection)
-                candidate._require_schema(connection)
-                if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                    raise HistoryMonthPartitionError("history month integrity check failed")
-                if progress is not None:
-                    progress(file_size, file_size, "row_count")
-                row_count = cast(int, connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0])
-        except HistoryMonthPartitionError:
-            raise
-        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month verification failed") from exc
-        finally:
-            _release_file_cache(path)
-        if row_count != reference.row_count:
-            raise HistoryMonthPartitionError("history month partition row count mismatch")
+        cls.verify_logical_content(path, reference, progress, validate_payloads=True)
 
     @classmethod
-    def verify_published_bytes(
+    def verify_logical_content(
         cls,
         path: Path,
         reference: HistorySnapshotPartition,
         progress: HistoryPartitionVerificationProgress | None = None,
         *,
         retain_pages: bool = False,
+        validate_payloads: bool = False,
     ) -> None:
-        """Re-establish byte identity for a partition fully sealed before publication."""
-
-        if not path.is_file():
-            raise HistoryMonthPartitionError("history month partition is missing")
-        wal = Path(f"{path}-wal")
+        del retain_pages
+        parts = Path(reference.relative_path).parts
+        candidate = cls(path, int(parts[1]), int(Path(parts[2]).stem))
         try:
-            if wal.exists() and wal.stat().st_size > 0:
-                raise HistoryMonthPartitionError("history month partition has pending WAL")
-            if _sha256_file(path, progress, release_cache=not retain_pages) != reference.sha256:
-                raise HistoryMonthPartitionError("history month partition hash mismatch")
-            if wal.exists() and wal.stat().st_size > 0:
-                raise HistoryMonthPartitionError("history month partition has pending WAL")
-        except HistoryMonthPartitionError:
-            raise
-        except OSError as exc:
-            raise HistoryMonthPartitionError("history month published bytes verification failed") from exc
+            with closing(candidate._read_connection()) as connection:
+                connection.execute("BEGIN")
+                candidate._require_metadata(connection)
+                candidate._require_schema(connection)
+                proof = calculate_history_proof(
+                    connection,
+                    reference.sequence,
+                    validate_payloads=validate_payloads,
+                    heartbeat=lambda count: progress(count, reference.row_count, "logical") if progress else None,
+                )
+                if proof.logical_hash != reference.logical_hash or proof.row_count != reference.row_count:
+                    raise HistoryMonthPartitionError("history month logical hash mismatch")
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistoryMonthPartitionError("history month logical verification failed") from exc
 
     def release_read_pages(self) -> None:
         """Release clean OS pages only after a sequential consumer finishes."""
@@ -964,8 +923,7 @@ class SQLiteHistoryMonthPartitionRepository:
         return connection
 
     def _read_connection(self) -> sqlite3.Connection:
-        immutable = "&immutable=1" if self._immutable_read else ""
-        connection = sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro{immutable}", uri=True, timeout=5.0)
+        connection = sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro", uri=True, timeout=5.0)
         if self._statement_trace is not None:
             connection.set_trace_callback(self._statement_trace)
         connection.execute("PRAGMA foreign_keys=ON")
@@ -977,7 +935,7 @@ class SQLiteHistoryMonthPartitionRepository:
 
     def _verification_connection(self) -> sqlite3.Connection:
         connection = sqlite3.connect(
-            f"file:{self._path.as_posix()}?mode=ro&immutable=1",
+            f"file:{self._path.as_posix()}?mode=ro",
             uri=True,
             timeout=5.0,
         )
@@ -1159,5 +1117,5 @@ __all__ = [
     "HistoryMonthPartitionConflictError",
     "HistoryMonthPartitionError",
     "HistoryPartitionVerificationPhase",
-    "SQLiteHistoryMonthPartitionRepository",
+    "HistoryMonthPrices",
 ]

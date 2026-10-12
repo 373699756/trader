@@ -30,11 +30,11 @@ from trader.download.domain.history_sync import (
     HistorySyncProgressPort,
 )
 from trader.download.infra.history_automation_status import read_history_automation_status
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryControlError,
+    HistoryControlIndex,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
-    SQLiteHistoryControlRepository,
 )
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 
@@ -246,7 +246,7 @@ def _notify_once(
 ) -> tuple[HistoryNotificationState, str | None]:
     if maintenance is not None and maintenance.state == "already_running":
         return "not_attempted", None
-    repository = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
+    repository = HistoryControlIndex(archive_root / "control.sqlite3")
     due_identity = due_status.due_identity
     if due_status.training_due and due_identity is not None:
         claim = HistoryReminderClaim(due_identity, observed_at.date(), observed_at)

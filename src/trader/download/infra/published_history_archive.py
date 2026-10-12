@@ -9,12 +9,12 @@ from pathlib import Path
 
 from trader.download.domain.history_revision import MAX_HISTORY_TRAINING_WINDOW_SESSIONS
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
-from trader.download.infra.history_archive_reader import HistoryArchiveReadError, SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_status import (
     ActiveHistoryArchive,
     HistoryArchiveError,
     load_active_history_archive,
 )
+from trader.download.infra.history_snapshot_reader import HistorySnapshotReader, HistorySnapshotReadError
 
 
 class PublishedHistoryReadError(RuntimeError):
@@ -24,7 +24,7 @@ class PublishedHistoryReadError(RuntimeError):
 class SQLitePublishedHistoryArchive:
     def __init__(self, root: Path) -> None:
         self._root = root
-        self._reader = SQLiteHistoryArchiveReader(self._root)
+        self._reader = HistorySnapshotReader(self._root)
 
     def manifest(self) -> PublishedHistoryManifest | None:
         try:
@@ -56,7 +56,7 @@ class SQLitePublishedHistoryArchive:
                 if code in allowed_codes:
                     yield PublishedHistoryWindow(code, tuple(group))
             self._matching_archive(manifest)
-        except (HistoryArchiveReadError, OSError, ValueError) as exc:
+        except (HistorySnapshotReadError, OSError, ValueError) as exc:
             raise PublishedHistoryReadError("history_snapshot_partition_invalid") from exc
 
     def read_windows(
@@ -78,7 +78,7 @@ class SQLitePublishedHistoryArchive:
                 if rows:
                     windows.append(PublishedHistoryWindow(code, rows))
             self._matching_archive(manifest)
-        except (HistoryArchiveReadError, OSError, ValueError) as exc:
+        except (HistorySnapshotReadError, OSError, ValueError) as exc:
             raise PublishedHistoryReadError("history_snapshot_partition_invalid") from exc
         return tuple(windows)
 

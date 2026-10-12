@@ -23,9 +23,9 @@ from trader.download.domain.history_control import (
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
+    HistoryControlIndex,
     HistoryMaintenanceLock,
-    SQLiteHistoryControlRepository,
 )
 from trader.download.infra.history_maintenance_runner import (
     PlatformHistoryDesktopNotifier,
@@ -48,7 +48,7 @@ class _Notifier:
 
 
 def _seed_due_control(root: Path) -> None:
-    repository = SQLiteHistoryControlRepository(root / "control.sqlite3")
+    repository = HistoryControlIndex(root / "control.sqlite3")
     repository.initialize()
     source = HistorySourceIdentity("baostock", "baostock_daily", "python-sdk", NOW)
     calendar = HistoryCalendarIdentity((date(2026, 9, 9), date(2026, 9, 10)), source.content_hash)
@@ -113,7 +113,7 @@ def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_d
     assert first.maintenance_state == "not_due"
     assert sync_calls == []
     assert sum("训练已到期" in item.body for item in notifier.notifications) == 2
-    persisted = SQLiteHistoryControlRepository(archive / "control.sqlite3").load_state()
+    persisted = HistoryControlIndex(archive / "control.sqlite3").load_state()
     assert tuple(item.reminder_date for item in persisted.reminder_claims) == (
         date(2026, 9, 10),
         date(2026, 9, 11),
@@ -134,7 +134,7 @@ def test_notification_failure_does_not_fail_a_download_or_cadence_noop(tmp_path:
     assert status.maintenance_state == state
     assert status.notification_state == "notification_degraded"
     assert status.successful is True
-    reminder = SQLiteHistoryControlRepository(archive / "control.sqlite3").load_state().reminders[0]
+    reminder = HistoryControlIndex(archive / "control.sqlite3").load_state().reminders[0]
     assert reminder.outcome == "notification_degraded"
     assert reminder.error_code == "notification_service_unavailable"
 
@@ -210,7 +210,7 @@ def test_weekly_due_failure_retries_and_successful_publication_stops_further_dow
         calls.append(due_at)
         if len(calls) == 1:
             return replace(_completed(archive), state="failed", reason="supplier_timeout")
-        repository = SQLiteHistoryControlRepository(archive / "control.sqlite3")
+        repository = HistoryControlIndex(archive / "control.sqlite3")
         active = repository.load_state().active_snapshot
         assert active is not None
         repository.publish_snapshot(replace(active, sequence=2, data_cutoff=due_at.date()))

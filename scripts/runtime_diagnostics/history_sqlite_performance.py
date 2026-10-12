@@ -21,8 +21,8 @@ from pathlib import Path
 
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
-from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
-from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
+from trader.download.infra.history_month_partition import HistoryMonthPrices
 
 from .reporting import emit_report
 
@@ -187,7 +187,7 @@ def inspect_history_space(root: Path) -> dict[str, object]:
 
 
 def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalSummary:
-    state = SQLiteHistoryControlRepository(root / "control.sqlite3").load_state()
+    state = HistoryControlIndex(root / "control.sqlite3").load_state()
     active = state.active_snapshot
     if active is None:
         raise RuntimeError("history SQLite has no active snapshot")
@@ -241,7 +241,7 @@ def inspect_history_sqlite_performance(
     query_rounds: int = 3,
     revision_write_sample_count: int = 512,
 ) -> _HistorySQLitePerformanceReport:
-    control = SQLiteHistoryControlRepository(root / "control.sqlite3").load_state()
+    control = HistoryControlIndex(root / "control.sqlite3").load_state()
     active = control.active_snapshot
     if active is None:
         raise RuntimeError("history SQLite has no active snapshot")
@@ -288,12 +288,11 @@ def _measure_queries(
         if code_dates[0] <= _partition_end(item) and _partition_start(item) <= code_dates[-1]
     )
     trace: list[str] = []
-    traced = SQLiteHistoryMonthPartitionRepository(
+    traced = HistoryMonthPrices(
         path,
         year,
         month,
         statement_trace=trace.append,
-        immutable_read=True,
     )
     workloads: tuple[tuple[str, Callable[[], int]], ...] = (
         (
@@ -396,10 +395,10 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
     statements: list[str] = []
     with tempfile.TemporaryDirectory(prefix="trader-history-write-probe-") as directory:
         path = Path(directory) / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3"
-        repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
+        repository = HistoryMonthPrices(path, year, month)
         repository.initialize()
         before = _database_bytes(path)
-        traced = SQLiteHistoryMonthPartitionRepository(path, year, month, statement_trace=statements.append)
+        traced = HistoryMonthPrices(path, year, month, statement_trace=statements.append)
         started = time.perf_counter()
         traced.save_revisions(sample)
         elapsed = time.perf_counter() - started
@@ -423,10 +422,10 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
 def _partition_repository(
     root: Path,
     reference: HistorySnapshotPartition,
-) -> tuple[Path, SQLiteHistoryMonthPartitionRepository]:
+) -> tuple[Path, HistoryMonthPrices]:
     year, month = _partition_identity(reference)
     path = root / reference.relative_path
-    return path, SQLiteHistoryMonthPartitionRepository(path, year, month, immutable_read=True)
+    return path, HistoryMonthPrices(path, year, month)
 
 
 def _partition_identity(reference: HistorySnapshotPartition) -> tuple[int, int]:

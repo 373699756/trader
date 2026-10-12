@@ -67,7 +67,7 @@ class DiskUsageResult(Protocol):
 
 DiskUsage = Callable[[Path], DiskUsageResult]
 
-_SCHEMA_IDENTITY = "history_control"
+_SCHEMA_IDENTITY = "history_control_direct"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS metadata (
@@ -145,12 +145,20 @@ class HistoryMaintenanceLock:
         self.release()
 
 
-class SQLiteHistoryControlRepository:
+class HistoryControlIndex:
     def __init__(self, path: Path, *, fault_injector: FaultInjector | None = None) -> None:
         self._path = path
         self._fault_injector = fault_injector or (lambda _stage: None)
 
     def initialize(self) -> None:
+        if self._path.exists():
+            try:
+                with closing(self._read_connection()) as connection:
+                    identity = connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
+                if identity != (_SCHEMA_IDENTITY,):
+                    raise HistoryControlError("history_format_requires_rebuild")
+            except sqlite3.Error as exc:
+                raise HistoryControlError("history_control_invalid") from exc
         if self._path.exists() and self.integrity().state == "corrupt":
             raise HistoryControlError("history control database is corrupt")
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -506,7 +514,7 @@ def _read_publication_record(connection: sqlite3.Connection, kind: ControlKind, 
 
 
 def _populate_rebuilt_control(
-    repository: SQLiteHistoryControlRepository,
+    repository: HistoryControlIndex,
     state: HistoryControlState,
 ) -> None:
     for source in state.sources:
@@ -532,7 +540,7 @@ def _populate_rebuilt_control(
 
 
 def _populate_rebuilt_reminders(
-    repository: SQLiteHistoryControlRepository,
+    repository: HistoryControlIndex,
     state: HistoryControlState,
 ) -> None:
     for reminder_claim in state.reminder_claims:
@@ -649,7 +657,12 @@ def _snapshot_payload(value: HistoryActiveSnapshot) -> dict[str, object]:
         "universe_hash": value.universe_hash,
         "source_identity_hash": value.source_identity_hash,
         "partitions": [
-            {"relative_path": item.relative_path, "sha256": item.sha256, "row_count": item.row_count}
+            {
+                "relative_path": item.relative_path,
+                "logical_hash": item.logical_hash,
+                "row_count": item.row_count,
+                "sequence": item.sequence,
+            }
             for item in value.partitions
         ],
     }
@@ -786,11 +799,12 @@ def _decode_partition(raw: object) -> HistorySnapshotPartition:
     if not isinstance(raw, dict):
         raise TypeError("history partition must be an object")
     payload = cast(dict[str, object], raw)
-    _require_keys(payload, {"relative_path", "sha256", "row_count"})
+    _require_keys(payload, {"relative_path", "logical_hash", "row_count", "sequence"})
     return HistorySnapshotPartition(
         _text(payload, "relative_path"),
-        _text(payload, "sha256"),
+        _text(payload, "logical_hash"),
         _integer(payload, "row_count"),
+        _integer(payload, "sequence"),
     )
 
 
@@ -895,7 +909,7 @@ __all__ = [
     "HistoryControlError",
     "HistoryControlIntegrityStatus",
     "HistoryControlRegressionError",
-    "SQLiteHistoryControlRepository",
+    "HistoryControlIndex",
     "HistoryDiskPreflightStatus",
     "HistoryMaintenanceAlreadyRunningError",
     "HistoryMaintenanceLock",

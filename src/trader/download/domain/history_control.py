@@ -322,13 +322,14 @@ class HistoryReminderState:
 @dataclass(frozen=True, order=True)
 class HistorySnapshotPartition:
     relative_path: str
-    sha256: str
+    logical_hash: str
     row_count: int
+    sequence: int = 1
 
     def __post_init__(self) -> None:
         path = PurePosixPath(self.relative_path)
         parts = path.parts
-        _require_hash(self.sha256, "partition")
+        _require_hash(self.logical_hash, "partition logical content")
         if (
             path.is_absolute()
             or len(parts) != 3
@@ -340,6 +341,7 @@ class HistorySnapshotPartition:
             or path.suffix != ".sqlite3"
             or not 1 <= int(path.stem) <= 12
             or self.row_count < 0
+            or self.sequence < 1
         ):
             raise ValueError("history snapshot partition is invalid")
 
@@ -370,6 +372,7 @@ class HistoryActiveSnapshot:
             or not partitions
             or len({item.relative_path for item in partitions}) != len(partitions)
             or len(set(months)) != len(months)
+            or any(item.sequence > self.sequence for item in partitions)
         ):
             raise ValueError("history active snapshot is invalid")
         object.__setattr__(self, "partitions", partitions)

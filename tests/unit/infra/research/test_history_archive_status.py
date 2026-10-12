@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -15,8 +16,8 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.history_archive_status import inspect_history_archive
 from trader.download.infra.history_archive_sync import run_history_sync
@@ -132,8 +133,8 @@ def test_partition_tamper_fails_closed_without_losing_the_snapshot_identity(tmp_
     assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
     active = inspect_history_archive(root)
     partition = next((root / "partitions").glob("*/*.sqlite3"))
-    with partition.open("ab") as handle:
-        handle.write(b"tamper")
+    with sqlite3.connect(partition) as connection:
+        connection.execute("UPDATE daily_records SET content_hash=?", ("0" * 64,))
 
     verified = inspect_history_archive(root, verify_partitions=True)
 

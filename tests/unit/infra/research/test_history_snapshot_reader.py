@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from collections import defaultdict
 from dataclasses import replace
 from datetime import date, datetime, timedelta
@@ -19,15 +20,19 @@ from trader.download.domain.history_control import (
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import project_history_cell
-from trader.download.infra.history_archive_reader import (
-    HistoryArchiveReadError,
+from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_reference_files import (
+    history_industry_mapping_path,
+    history_reference_path,
+    write_history_reference,
+)
+from trader.download.infra.history_snapshot_reader import (
     HistoryPartitionRevisionComparison,
-    SQLiteHistoryArchiveReader,
+    HistorySnapshotReader,
+    HistorySnapshotReadError,
     route_history_months,
 )
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
-from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
-from trader.download.infra.history_reference_files import history_industry_mapping_path, write_history_reference
 
 
 def _side(code: str, day: date, adjustment: str, close: float) -> BaoStockDailySide:
@@ -66,14 +71,8 @@ def test_training_stream_verifies_consumes_and_releases_each_month(tmp_path: Pat
     dates = (date(2026, 8, 31), date(2026, 9, 1))
     snapshot = _build_snapshot(tmp_path, tuple(_revision("600001", day) for day in dates))
     events = []
-    verify = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
-    consume = SQLiteHistoryMonthPartitionRepository.iter_training_rows
-    release = SQLiteHistoryMonthPartitionRepository.release_read_pages
-
-    def verifying(cls, path, reference, progress=None, **kwargs):
-        assert kwargs["retain_pages"] is True
-        events.append(("verify", path.stem))
-        return verify(cls, path, reference, progress, **kwargs)
+    consume = HistoryMonthPrices.iter_verified_training_rows
+    release = HistoryMonthPrices.release_read_pages
 
     def consuming(self, *args, **kwargs):
         events.append(("consume", self._path.stem))
@@ -83,12 +82,11 @@ def test_training_stream_verifies_consumes_and_releases_each_month(tmp_path: Pat
         events.append(("release", self._path.stem))
         release(self)
 
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify_published_bytes", classmethod(verifying))
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "iter_training_rows", consuming)
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "release_read_pages", releasing)
-    rows = tuple(SQLiteHistoryArchiveReader(tmp_path).iter_training_rows(snapshot, dates, ("600001",)))
+    monkeypatch.setattr(HistoryMonthPrices, "iter_verified_training_rows", consuming)
+    monkeypatch.setattr(HistoryMonthPrices, "release_read_pages", releasing)
+    rows = tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, ("600001",)))
     assert len(rows) == 2
-    assert events == [(phase, month) for month in ("08", "09") for phase in ("verify", "consume", "release")]
+    assert events == [(phase, month) for month in ("08", "09") for phase in ("consume", "release")]
 
 
 def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryActiveSnapshot:
@@ -98,7 +96,7 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
     references: list[HistorySnapshotPartition] = []
     for (year, month), month_rows in sorted(grouped.items()):
         path = root / f"partitions/{year:04d}/{month:02d}.sqlite3"
-        repository = SQLiteHistoryMonthPartitionRepository(path, year, month)
+        repository = HistoryMonthPrices(path, year, month)
         repository.initialize()
         repository.save_revisions(tuple(month_rows))
         references.append(repository.seal())
@@ -109,17 +107,18 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         tuple(HistoryStEvidence(code, max(row.trade_date for row in rows), "clear") for code in codes),
     )
     write_history_reference(history_industry_mapping_path(root), reference)
+    write_history_reference(history_reference_path(root, reference.content_hash), reference)
     source = HistorySourceIdentity(
         "tencent",
         "history_daily",
         f"history_ref_{reference.content_hash}_fixture",
         datetime(2026, 10, 10, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
-    control = SQLiteHistoryControlRepository(root / "control.sqlite3")
+    control = HistoryControlIndex(root / "control.sqlite3")
     control.initialize()
     control.save_source(source)
     return HistoryActiveSnapshot(
-        1,
+        max(row.first_seen_sequence for row in rows),
         max(row.trade_date for row in rows),
         max(row.trade_date for row in rows),
         "a" * 64,
@@ -134,7 +133,7 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
     dates = tuple(date(2026, 8, 1) + timedelta(days=offset) for offset in range(62))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
-    archive = SQLiteHistoryArchiveReader(root)
+    archive = HistorySnapshotReader(root)
 
     assert route_history_months(dates[0], dates[-1]) == ((2026, 8), (2026, 9), (2026, 10))
     assert tuple(row.code for row in archive.read_day(dates[31], snapshot)) == ("600001", "600002")
@@ -153,7 +152,7 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
 
     with pytest.raises(ValueError, match="cutoff"):
         archive.read_day(dates[-1] + timedelta(days=1), snapshot)
-    with pytest.raises(HistoryArchiveReadError, match="cover"):
+    with pytest.raises(HistorySnapshotReadError, match="cover"):
         tuple(
             archive.iter_training_rows(
                 replace(snapshot, partitions=snapshot.partitions[:-1]),
@@ -169,7 +168,7 @@ def test_history_reader_streams_2000_sessions_without_directory_scan_or_unbounde
     dates = tuple(date(2020, 1, 1) + timedelta(days=offset) for offset in range(2000))
     rows = tuple(_revision("600001", day) for day in dates)
     snapshot = _build_snapshot(root, rows)
-    archive = SQLiteHistoryArchiveReader(root)
+    archive = HistorySnapshotReader(root)
 
     descriptor_root = Path("/proc/self/fd")
     baseline_descriptors = len(tuple(descriptor_root.iterdir())) if descriptor_root.is_dir() else None
@@ -199,15 +198,15 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
-    archive = SQLiteHistoryArchiveReader(root)
-    original = SQLiteHistoryMonthPartitionRepository.verify.__func__
+    archive = HistorySnapshotReader(root)
+    original = HistoryMonthPrices.verify.__func__
     verified: list[Path] = []
 
     def verify(cls, path: Path, reference: HistorySnapshotPartition, progress=None) -> None:
         verified.append(path)
         original(cls, path, reference, progress)
 
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(verify))
+    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(verify))
 
     observed: list[tuple[int, int, int, int, int, str]] = []
     archive.verify_snapshot(snapshot, lambda *values: observed.append(values))
@@ -217,7 +216,9 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     assert len(tuple(archive.iter_code("600002", dates[0], dates[-1], snapshot))) == len(dates)
 
     assert observed[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
-    assert any(completed == 0 and current == 1 and phase == "hash" for completed, _, current, _, _, phase in observed)
+    assert any(
+        completed == 0 and current == 1 and phase == "logical" for completed, _, current, _, _, phase in observed
+    )
     assert len(verified) == len(snapshot.partitions)
 
 
@@ -228,7 +229,7 @@ def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
     root = tmp_path / "history"
     dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
     snapshot = _build_snapshot(root, tuple(_revision("600001", day) for day in dates))
-    published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
+    published = HistoryMonthPrices.verify_logical_content.__func__
     published_calls: list[HistorySnapshotPartition] = []
 
     def verify_published(cls, path, reference, progress=None, **kwargs):
@@ -239,12 +240,12 @@ def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
         pytest.fail("training trust must not repeat SQLite quick_check and row-count scans")
 
     monkeypatch.setattr(
-        SQLiteHistoryMonthPartitionRepository,
-        "verify_published_bytes",
+        HistoryMonthPrices,
+        "verify_logical_content",
         classmethod(verify_published),
     )
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(unexpected_full_verify))
-    reader = SQLiteHistoryArchiveReader(root)
+    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(unexpected_full_verify))
+    reader = HistorySnapshotReader(root)
     progress: list[tuple[int, int, int, int, int, str]] = []
 
     reader.verify_published_snapshot(snapshot, lambda *values: progress.append(values))
@@ -252,7 +253,7 @@ def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
     assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600001",)) == len(dates)
     assert published_calls == list(snapshot.partitions)
     assert progress[-1][:3] == (len(snapshot.partitions), len(snapshot.partitions), len(snapshot.partitions))
-    assert {item[-1] for item in progress} == {"hash"}
+    assert {item[-1] for item in progress} == {"logical"}
 
 
 def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> None:
@@ -260,12 +261,11 @@ def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> 
     day = date(2026, 9, 1)
     snapshot = _build_snapshot(root, (_revision("600001", day),))
     path = root / snapshot.partitions[0].relative_path
-    content = bytearray(path.read_bytes())
-    content[-1] ^= 1
-    path.write_bytes(content)
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE daily_records SET content_hash=?", ("0" * 64,))
 
-    with pytest.raises(HistoryArchiveReadError, match="verification failed"):
-        SQLiteHistoryArchiveReader(root).verify_published_snapshot(snapshot)
+    with pytest.raises(HistorySnapshotReadError, match="verification failed"):
+        HistorySnapshotReader(root).verify_published_snapshot(snapshot)
 
 
 def test_explicit_full_verification_upgrades_published_byte_trust(
@@ -275,12 +275,12 @@ def test_explicit_full_verification_upgrades_published_byte_trust(
     root = tmp_path / "history"
     day = date(2026, 9, 1)
     snapshot = _build_snapshot(root, (_revision("600001", day),))
-    published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
-    full = SQLiteHistoryMonthPartitionRepository.verify.__func__
+    published = HistoryMonthPrices.verify_logical_content.__func__
+    full = HistoryMonthPrices.verify.__func__
     calls: list[str] = []
 
     def verify_published(cls, path, reference, progress=None, **kwargs):
-        calls.append("published_bytes")
+        calls.append("logical")
         return published(cls, path, reference, progress, **kwargs)
 
     def verify_full(cls, path, reference, progress=None):
@@ -288,17 +288,17 @@ def test_explicit_full_verification_upgrades_published_byte_trust(
         return full(cls, path, reference, progress)
 
     monkeypatch.setattr(
-        SQLiteHistoryMonthPartitionRepository,
-        "verify_published_bytes",
+        HistoryMonthPrices,
+        "verify_logical_content",
         classmethod(verify_published),
     )
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(verify_full))
-    reader = SQLiteHistoryArchiveReader(root)
+    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(verify_full))
+    reader = HistorySnapshotReader(root)
 
     reader.verify_published_snapshot(snapshot)
     reader.verify_snapshot(snapshot)
 
-    assert calls == ["published_bytes", "full"]
+    assert calls == ["logical", "full", "logical"]
 
 
 def test_revision_comparison_uses_one_current_physical_partition_for_both_sequences(tmp_path: Path) -> None:
@@ -315,7 +315,7 @@ def test_revision_comparison_uses_one_current_physical_partition_for_both_sequen
     snapshot = _build_snapshot(root, (original, revised, unchanged))
     comparison = HistoryPartitionRevisionComparison(snapshot.partitions[0], 1, 2)
 
-    changed = SQLiteHistoryArchiveReader(root).revised_dates(first, second, comparison)
+    changed = HistorySnapshotReader(root).revised_dates(first, second, comparison)
 
     assert changed == (first,)
 
@@ -328,7 +328,7 @@ def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002")) + (changed,)
     ordered = tuple(sorted(rows, key=lambda row: (row.trade_date, row.code, row.first_seen_sequence, row.revision_id)))
     snapshot = replace(_build_snapshot(root, ordered), sequence=2)
-    reader = SQLiteHistoryArchiveReader(root)
+    reader = HistorySnapshotReader(root)
     expected = tuple(project_history_cell(row.cell) for row in reader.read_code_window("600001", dates, snapshot))
 
     def unexpected_revision_decode(_row):
@@ -341,27 +341,26 @@ def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_
     assert len(streamed) == len(dates) * 2
 
 
-@pytest.mark.parametrize("change", ("same_size_corruption", "atomic_replace", "pending_wal"))
+@pytest.mark.parametrize("change", ("same_size_corruption", "atomic_replace"))
 def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monkeypatch):
     root = tmp_path / "history"
     day = date(2026, 9, 1)
     snapshot = _build_snapshot(root, (_revision("600001", day),))
     verified = []
-    verify = SQLiteHistoryMonthPartitionRepository.verify.__func__
+    verify = HistoryMonthPrices.verify.__func__
 
     def observed(cls, path, reference, progress=None):
         verified.append(reference)
         return verify(cls, path, reference, progress)
 
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(observed))
-    reader = SQLiteHistoryArchiveReader(root)
+    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(observed))
+    reader = HistorySnapshotReader(root)
     reader.read_published_code_window("600001", (day,), snapshot)
     path = root / snapshot.partitions[0].relative_path
     previous = path.stat()
     if change == "same_size_corruption":
-        content = bytearray(path.read_bytes())
-        content[-1] ^= 1
-        path.write_bytes(content)
+        with sqlite3.connect(path) as connection:
+            connection.execute("UPDATE daily_records SET content_hash=?", ("0" * 64,))
         os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
     elif change == "atomic_replace":
         replacement = path.with_suffix(".replacement")
@@ -370,7 +369,7 @@ def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monke
         replacement.replace(path)
     else:
         Path(f"{path}-wal").write_bytes(b"pending")
-    with pytest.raises(HistoryArchiveReadError):
+    with pytest.raises(HistorySnapshotReadError):
         reader.read_published_code_window("600001", (day,), snapshot)
     if change == "pending_wal":
         assert len(verified) == 1
@@ -390,19 +389,21 @@ def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp
     )
     snapshot = _build_snapshot(root, (original, revised))
     calls = []
-    verify = SQLiteHistoryMonthPartitionRepository.verify.__func__
+    verify = HistoryMonthPrices.verify.__func__
 
     def observe(cls, path, reference, progress=None):
         calls.append(reference)
         return verify(cls, path, reference, progress)
 
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(observe))
-    reader = SQLiteHistoryArchiveReader(root)
-    assert reader.read_published_code_window("600001", (day,), snapshot) == (project_history_cell(original.cell),)
+    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(observe))
+    reader = HistorySnapshotReader(root)
+    old_reference = HistoryMonthPrices(root / snapshot.partitions[0].relative_path, 2026, 9).seal(1)
+    old_snapshot = replace(snapshot, sequence=1, partitions=(old_reference,))
+    assert reader.read_published_code_window("600001", (day,), old_snapshot) == (project_history_cell(original.cell),)
     current = replace(snapshot, sequence=2)
     assert reader.read_published_code_window("600001", (day,), current) == (project_history_cell(revised.cell),)
-    assert len(calls) == 1
-    invalid = replace(current, partitions=(replace(current.partitions[0], sha256="f" * 64),))
-    with pytest.raises(HistoryArchiveReadError):
-        reader.read_published_code_window("600001", (day,), invalid)
     assert len(calls) == 2
+    invalid = replace(current, partitions=(replace(current.partitions[0], logical_hash="f" * 64),))
+    with pytest.raises(HistorySnapshotReadError):
+        reader.read_published_code_window("600001", (day,), invalid)
+    assert len(calls) == 3

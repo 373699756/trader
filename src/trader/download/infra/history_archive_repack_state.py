@@ -45,6 +45,9 @@ class HistoryArchiveRepackPartitionEvidence:
     target_bytes: int
     records_logical_hash: str
     observations_logical_hash: str
+    snapshot_logical_hash: str
+    snapshot_row_count: int
+    snapshot_sequence: int
 
     def __post_init__(self) -> None:
         path = PurePosixPath(self.relative_path)
@@ -53,9 +56,12 @@ class HistoryArchiveRepackPartitionEvidence:
             self.target_sha256,
             self.records_logical_hash,
             self.observations_logical_hash,
+            self.snapshot_logical_hash,
         )
         if (
             path.is_absolute()
+            or self.snapshot_sequence < 1
+            or self.snapshot_row_count < 0
             or len(path.parts) != 3
             or path.parts[0] != "partitions"
             or path.suffix != ".sqlite3"

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_status import HistoryArchiveError, load_active_history_archive
+from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
 from .reporting import emit_report
 
@@ -51,7 +51,7 @@ def build_shadow_report(root: Path) -> dict[str, object]:
         }
         facts[security.code] = _CodeFacts(expected, set(), set(), set())
 
-    reader = SQLiteHistoryArchiveReader(archive.root)
+    reader = HistorySnapshotReader(archive.root)
     for code, trade_date, raw_present, qfq_present in reader.iter_shadow_facts(target_start, cutoff, archive.snapshot):
         fact = facts.get(code)
         if fact is None:
@@ -80,8 +80,7 @@ def build_shadow_report(root: Path) -> dict[str, object]:
 
     recent_sessions = sessions[-_RECENT_REFRESH_SESSIONS:]
     recent_reusable = sum(
-        all(day in item.raw_dates and day in item.qfq_dates for day in recent_sessions)
-        for item in facts.values()
+        all(day in item.raw_dates and day in item.qfq_dates for day in recent_sessions) for item in facts.values()
     )
     # One BaoStock query returns the complete requested date range. The five-day
     # refresh window therefore changes row volume, not the number of calls.
@@ -126,9 +125,7 @@ def build_shadow_report(root: Path) -> dict[str, object]:
             "recent_refresh_raw_qfq_queries": baseline_calls,
             "recent_fully_paired_securities": recent_reusable,
             "theoretical_skippable_queries": candidate_skips,
-            "theoretical_skip_rate": round(candidate_skips / baseline_calls, 6)
-            if baseline_calls
-            else 0.0,
+            "theoretical_skip_rate": round(candidate_skips / baseline_calls, 6) if baseline_calls else 0.0,
             "interpretation": "candidate_reuse_only_requires_external_action_change_evidence",
         },
     }

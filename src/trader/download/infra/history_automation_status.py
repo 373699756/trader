@@ -9,14 +9,14 @@ from trader.download.domain.history_automation import (
     HistoryAutomationStatus,
     derive_history_automation_status,
 )
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryControlError,
-    SQLiteHistoryControlRepository,
+    HistoryControlIndex,
 )
 
 
 def read_history_automation_status(archive_root: Path, observed_at: datetime) -> HistoryAutomationStatus:
-    repository = SQLiteHistoryControlRepository(archive_root / "control.sqlite3")
+    repository = HistoryControlIndex(archive_root / "control.sqlite3")
     try:
         control = repository.load_automation_state()
     except HistoryControlError:

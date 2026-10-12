@@ -13,10 +13,10 @@ from trader.download.domain.history_control import (
     HistorySourceIdentity,
     HistoryUniverseIdentity,
 )
-from trader.download.infra.history_control_repository import HistoryControlError, SQLiteHistoryControlRepository
+from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
-    SQLiteHistoryMonthPartitionRepository,
+    HistoryMonthPrices,
 )
 from trader.download.infra.history_reference_files import read_bound_history_reference
 
@@ -57,7 +57,7 @@ def load_active_history_archive(root: Path) -> ActiveHistoryArchive:
     if not control_path.is_file():
         raise HistoryArchiveError("history_snapshot_unavailable")
     try:
-        state = SQLiteHistoryControlRepository(control_path).load_published_state()
+        state = HistoryControlIndex(control_path).load_published_state()
     except HistoryControlError as exc:
         raise HistoryArchiveError("history_control_invalid") from exc
     if state is None:
@@ -78,7 +78,7 @@ def verify_active_history_archive(archive: ActiveHistoryArchive) -> None:
         raise HistoryArchiveError("history_reference_unavailable") from exc
     try:
         for reference in archive.snapshot.partitions:
-            SQLiteHistoryMonthPartitionRepository.verify(archive.root / reference.relative_path, reference)
+            HistoryMonthPrices.verify(archive.root / reference.relative_path, reference)
     except (HistoryMonthPartitionError, OSError, ValueError) as exc:
         raise HistoryArchiveError("history_snapshot_partition_invalid") from exc
 

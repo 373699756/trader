@@ -29,8 +29,8 @@ from trader.download.infra.history_archive_repack_codec import read_tomorrow_tra
 from trader.download.infra.history_archive_repack_state import (
     HistoryArchiveRepackRequirements,
 )
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
-from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
@@ -109,7 +109,7 @@ def _archive(tmp_path: Path) -> tuple[Path, Path, HistoryActiveSnapshot]:
     source = tmp_path / "data/history"
     target = tmp_path / "data/historyless/baostock"
     month = source / "partitions/2026/09.sqlite3"
-    repository = SQLiteHistoryMonthPartitionRepository(month, 2026, 9)
+    repository = HistoryMonthPrices(month, 2026, 9)
     repository.initialize()
     repository.save_revisions(
         (
@@ -140,7 +140,7 @@ def _archive(tmp_path: Path) -> tuple[Path, Path, HistoryActiveSnapshot]:
         source_identity.content_hash,
         (reference,),
     )
-    control = SQLiteHistoryControlRepository(source / "control.sqlite3")
+    control = HistoryControlIndex(source / "control.sqlite3")
     control.initialize()
     control.save_source(source_identity)
     control.save_calendar(calendar)
@@ -172,10 +172,10 @@ def test_repack_build_is_resumable_and_preserves_revision_replay(tmp_path: Path)
     with sqlite3.connect(target / "partitions/2026/09.sqlite3") as connection:
         assert connection.execute("PRAGMA page_size").fetchone() == (8192,)
         assert connection.execute("PRAGMA freelist_count").fetchone() == (0,)
-    target_state = SQLiteHistoryControlRepository(target / "control.sqlite3").load_state()
+    target_state = HistoryControlIndex(target / "control.sqlite3").load_state()
     assert target_state.active_snapshot is not None
     assert target_state.active_snapshot.sequence == original.sequence + 1
-    target_month = SQLiteHistoryMonthPartitionRepository(target / "partitions/2026/09.sqlite3", 2026, 9)
+    target_month = HistoryMonthPrices(target / "partitions/2026/09.sqlite3", 2026, 9)
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=1)[0]) == 10.0
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=2)[0]) == 11.0
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=3)[0]) == 10.0
@@ -223,7 +223,7 @@ def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp
 
     recovered = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements()).activate()
     assert recovered.state == "rolled_back"
-    assert SQLiteHistoryControlRepository(source / "control.sqlite3").load_state().active_snapshot == original
+    assert HistoryControlIndex(source / "control.sqlite3").load_state().active_snapshot == original
     assert (target / "control.sqlite3").is_file()
 
     activated = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements()).activate()
@@ -233,7 +233,7 @@ def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp
 
     rolled_back = HistoryArchiveRepackCoordinator(source, target, requirements=_requirements()).rollback()
     assert rolled_back.state == "rolled_back"
-    assert SQLiteHistoryControlRepository(source / "control.sqlite3").load_state().active_snapshot == original
+    assert HistoryControlIndex(source / "control.sqlite3").load_state().active_snapshot == original
     require_history_archive_repack_inactive(source)
 
 

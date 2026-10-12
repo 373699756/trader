@@ -54,6 +54,23 @@ class TencentQfqDependencies:
     cancel_requested: Callable[[], bool]
 
 
+@dataclass(frozen=True)
+class _DailyQuery:
+    symbol: str
+    start: date
+    end: date
+    mode: Literal["bfq", "qfq"]
+    count: int = 640
+
+
+@dataclass(frozen=True)
+class _WindowQuery:
+    symbol: str
+    dates: tuple[date, ...]
+    request_count: int
+    allow_interior_padding: bool
+
+
 class TencentSessionPool:
     """Borrow bootstrap-owned sessions exclusively so keep-alive survives stock boundaries."""
 
@@ -87,7 +104,7 @@ class TencentQfqSupplier:
         universe = self._dependencies.load_universe(as_of)
         if not universe or len({security.code for security in universe}) != len(universe):
             raise ValueError("Tencent qfq universe is empty or duplicated")
-        rows = self._request_rows("sh000001", as_of - timedelta(days=640), as_of, "bfq")
+        rows = self._request_rows(_DailyQuery("sh000001", as_of - timedelta(days=640), as_of, "bfq"))
         dates = tuple(_row_date(row) for row in rows)
         if dates != tuple(sorted(set(dates))) or any(day > as_of for day in dates) or len(dates) < sessions:
             raise ValueError("Tencent exchange calendar is incomplete or invalid")
@@ -99,13 +116,21 @@ class TencentQfqSupplier:
             ),
         )
 
-    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
-        if not dates or len(dates) > 640 or dates != tuple(sorted(set(dates))):
-            raise ValueError("Tencent window must contain 1..640 ordered unique dates")
+    def fetch_window(
+        self,
+        security: BaoStockSecurity,
+        dates: tuple[date, ...],
+        *,
+        request_count: int = 640,
+        allow_interior_padding: bool = False,
+    ) -> PublishedHistoryWindow:
+        if not dates or not 1 <= request_count <= 2000 or dates != tuple(sorted(set(dates))):
+            raise ValueError("Tencent request requires ordered unique dates and a bounded row count")
         symbol = security.source_code.replace(".", "")
+        query = _WindowQuery(symbol, dates, request_count, allow_interior_padding)
         with self._dependencies.session_factory() as session:
-            raw = self._fetch_side(session, symbol, dates, "bfq")
-            qfq = self._fetch_side(session, symbol, dates, "qfq")
+            raw = self._fetch_side(session, query, "bfq")
+            qfq = self._fetch_side(session, query, "qfq")
         self._check_cancel()
         return PublishedHistoryWindow(
             security.code,
@@ -120,11 +145,11 @@ class TencentQfqSupplier:
     def _fetch_side(
         self,
         session: requests.Session,
-        symbol: str,
-        dates: tuple[date, ...],
+        query: _WindowQuery,
         mode: Literal["bfq", "qfq"],
     ) -> dict[date, PublishedHistorySide]:
-        rows = self._request_rows(symbol, dates[0], dates[-1], mode, session=session)
+        symbol, dates = query.symbol, query.dates
+        rows = self._request_rows(_DailyQuery(symbol, dates[0], dates[-1], mode, query.request_count), session=session)
         result: dict[date, PublishedHistorySide] = {}
         expected = frozenset(dates)
         seen: set[date] = set()
@@ -138,44 +163,32 @@ class TencentQfqSupplier:
             if side.trade_date < dates[0]:
                 continue
             if side.trade_date not in expected:
+                if query.allow_interior_padding:
+                    continue
                 raise ValueError("tencent_daily_rows_outside_calendar_or_duplicated")
             result[side.trade_date] = side
         return result
 
-    def _request_rows(
-        self,
-        symbol: str,
-        start: date,
-        end: date,
-        mode: Literal["bfq", "qfq"],
-        *,
-        session: requests.Session | None = None,
-    ) -> list[object]:
+    def _request_rows(self, query: _DailyQuery, *, session: requests.Session | None = None) -> list[object]:
         for attempt in range(self._options.retries + 1):
             self._check_cancel()
             try:
                 if session is not None:
-                    return self._request_once(session, symbol, start, end, mode)
+                    return self._request_once(session, query)
                 with self._dependencies.session_factory() as owned_session:
-                    return self._request_once(owned_session, symbol, start, end, mode)
+                    return self._request_once(owned_session, query)
             except (requests.RequestException, OSError) as exc:
                 if attempt == self._options.retries:
                     raise RuntimeError("tencent_qfq_request_failed") from exc
         raise RuntimeError("tencent_qfq_request_failed")
 
-    def _request_once(
-        self,
-        session: requests.Session,
-        symbol: str,
-        start: date,
-        end: date,
-        mode: Literal["bfq", "qfq"],
-    ) -> list[object]:
+    def _request_once(self, session: requests.Session, query: _DailyQuery) -> list[object]:
+        symbol, start, end, mode, count = query.symbol, query.start, query.end, query.mode, query.count
         response = session.get(
             _ENDPOINTS[self._options.history_host],
             params={
                 "_var": f"kline_day{mode}{end.year}",
-                "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},640,{mode}",
+                "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},{count},{mode}",
             },
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
             timeout=self._options.timeout_seconds,
@@ -188,14 +201,14 @@ class TencentQfqSupplier:
         finally:
             response.close()
         self._check_cancel()
-        return _payload_rows(payload, symbol, mode)
+        return _payload_rows(payload, symbol, mode, count)
 
     def _check_cancel(self) -> None:
         if self._dependencies.cancel_requested():
             raise RuntimeError("tencent_qfq_cancelled")
 
 
-def _payload_rows(payload: object, symbol: str, mode: str) -> list[object]:
+def _payload_rows(payload: object, symbol: str, mode: str, count: int = 640) -> list[object]:
     if not isinstance(payload, Mapping) or payload.get("code", 0) != 0:
         raise ValueError("tencent_daily_response_rejected")
     data = payload.get("data")
@@ -207,7 +220,7 @@ def _payload_rows(payload: object, symbol: str, mode: str) -> list[object]:
         neutral = stock.get("day")
         if isinstance(neutral, list) and neutral and all(_neutral_adjustment(row) for row in neutral):
             rows = neutral
-    if not isinstance(rows, list) or len(rows) > 640:
+    if not isinstance(rows, list) or len(rows) > count:
         raise ValueError("tencent_daily_qualified_rows_missing")
     return rows
 

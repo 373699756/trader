@@ -169,12 +169,13 @@ class StderrTomorrowTrainingProgress:
             )
         elif progress.stage == "partition_validation" and progress.partition_validation is not None:
             detail = progress.partition_validation
-            completed_mib = detail.completed_bytes / (1024 * 1024)
-            total_mib = detail.total_bytes / (1024 * 1024)
-            parts.append(
-                f"当前分片 {detail.current_partition}/{detail.total_partitions}"
-                f" {_PARTITION_PHASE_LABELS[detail.phase]} {completed_mib:.1f}/{total_mib:.1f} MiB"
-            )
+            if detail.phase == "logical":
+                detail_text = f"逻辑内容 {detail.completed_units}/{detail.total_units} 行"
+            else:
+                completed_mib = detail.completed_units / (1024 * 1024)
+                total_mib = detail.total_units / (1024 * 1024)
+                detail_text = f"{_PARTITION_PHASE_LABELS[detail.phase]} {completed_mib:.1f}/{total_mib:.1f} MiB"
+            parts.append(f"当前分片 {detail.current_partition}/{detail.total_partitions} {detail_text}")
         elif progress.stage == "sample_cache" and progress.state == "completed":
             parts.append("复用已校验完整样本" if progress.produced_units else "需要构建样本")
         elif progress.stage == "history_conversion":

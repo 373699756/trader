@@ -31,6 +31,10 @@ def history_industry_mapping_path(history_root: Path) -> Path:
     return history_filter_config_root(history_root) / "industry_mapping.json"
 
 
+def history_reference_path(history_root: Path, digest: str) -> Path:
+    return history_root / "references" / f"{digest}.json"
+
+
 class HistoryReferenceIndex:
     def __init__(self, reference: HistoryReferenceSnapshot) -> None:
         self.reference = reference
@@ -174,7 +178,7 @@ def read_bound_history_reference(root: Path, supplier_contract: str) -> HistoryR
     digest = supplier_contract[len("history_ref_") : len("history_ref_") + 64]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise ValueError("history reference identity is invalid")
-    reference = read_history_reference(history_industry_mapping_path(root))
+    reference = read_history_reference(history_reference_path(root, digest))
     if reference.content_hash != digest:
         raise ValueError("history reference identity conflict")
     return reference

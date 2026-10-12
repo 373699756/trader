@@ -11,7 +11,7 @@ from time import monotonic
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 
 from .reporting import emit_report
@@ -26,7 +26,7 @@ class _Progress:
 
 
 def _measure(root: Path, timeout: float) -> dict[str, object]:
-    active = SQLiteHistoryControlRepository(root / "control.sqlite3").load_published_state()
+    active = HistoryControlIndex(root / "control.sqlite3").load_published_state()
     if active is None:
         raise ValueError("industry_probe_requires_published_context")
     universe = tuple(

@@ -26,7 +26,7 @@ from trader.download.domain.history_sync import HistorySupplierContext, HistoryS
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.history_archive_sync import run_history_sync
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_reference_files import read_bound_history_reference
 from trader.download.infra.history_supplier_router import fetch_tencent_history_window
 from trader.download.infra.tencent_qfq_supplier import (
@@ -60,7 +60,7 @@ class _ComparisonSupplier:
 
 
 def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) -> dict[str, object]:
-    state = SQLiteHistoryControlRepository(root / "control.sqlite3").load_published_state()
+    state = HistoryControlIndex(root / "control.sqlite3").load_published_state()
     if state is None:
         raise ValueError("comparison_requires_published_calendar")
     reference = read_bound_history_reference(root, state.source.supplier_contract)

@@ -29,7 +29,7 @@ from trader.download.domain.published_history import (
     project_history_cell,
 )
 from trader.download.domain.qfq_window import QfqUpdateResult, completed_daily_cutoff
-from trader.download.infra.history_control_repository import HistoryMaintenanceLock
+from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache

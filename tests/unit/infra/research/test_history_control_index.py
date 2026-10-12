@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import trader.download.infra.history_control_repository as control_repository_module
+import trader.download.infra.history_control_index as control_repository_module
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
@@ -24,13 +24,13 @@ from trader.download.domain.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryControlConflictError,
     HistoryControlError,
+    HistoryControlIndex,
     HistoryControlRegressionError,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
-    SQLiteHistoryControlRepository,
     inspect_history_disk,
 )
 
@@ -61,7 +61,7 @@ def _values(sequence: int = 1, cutoff: date = date(2026, 9, 10)):
     return source, calendar, universe, checkpoint, due, reminder_claim, reminder, snapshot
 
 
-def _save_all(repository: SQLiteHistoryControlRepository, values) -> HistoryControlState:
+def _save_all(repository: HistoryControlIndex, values) -> HistoryControlState:
     source, calendar, universe, checkpoint, due, reminder_claim, reminder, snapshot = values
     repository.save_source(source)
     repository.save_calendar(calendar)
@@ -75,7 +75,7 @@ def _save_all(repository: SQLiteHistoryControlRepository, values) -> HistoryCont
 
 
 def test_control_repository_round_trips_typed_state_and_replays_same_content(tmp_path: Path) -> None:
-    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository = HistoryControlIndex(tmp_path / "control.sqlite3")
     repository.initialize()
     values = _values()
 
@@ -94,7 +94,7 @@ def test_control_repository_round_trips_typed_state_and_replays_same_content(tmp
 
 
 def test_published_control_decodes_only_active_snapshot_and_three_parents(tmp_path, monkeypatch):
-    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository = HistoryControlIndex(tmp_path / "control.sqlite3")
     repository.initialize()
     old = _values()
     _save_all(repository, old)
@@ -122,7 +122,7 @@ def test_published_control_decodes_only_active_snapshot_and_three_parents(tmp_pa
 @pytest.mark.parametrize("kind", ("snapshot", "source", "calendar", "universe"))
 def test_published_control_rejects_tampered_required_record(tmp_path, kind):
     path = tmp_path / "control.sqlite3"
-    repository = SQLiteHistoryControlRepository(path)
+    repository = HistoryControlIndex(path)
     repository.initialize()
     _save_all(repository, _values())
     with sqlite3.connect(path) as connection:
@@ -132,13 +132,13 @@ def test_published_control_rejects_tampered_required_record(tmp_path, kind):
 
 
 def test_published_control_without_active_snapshot_is_unavailable(tmp_path):
-    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository = HistoryControlIndex(tmp_path / "control.sqlite3")
     repository.initialize()
     assert repository.load_published_state() is None
 
 
 def test_control_repository_round_trips_training_contract_due(tmp_path: Path) -> None:
-    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository = HistoryControlIndex(tmp_path / "control.sqlite3")
     repository.initialize()
     due = HistoryTrainingDueState(
         "due-contract",
@@ -156,7 +156,7 @@ def test_control_repository_round_trips_training_contract_due(tmp_path: Path) ->
 
 
 def test_automation_state_decodes_only_bounded_status_records(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository = HistoryControlIndex(tmp_path / "control.sqlite3")
     repository.initialize()
     _save_all(repository, _values())
     decoded_kinds: list[str] = []
@@ -174,7 +174,7 @@ def test_automation_state_decodes_only_bounded_status_records(tmp_path: Path, mo
 
 
 def test_control_repository_rejects_same_identity_with_different_content(tmp_path: Path) -> None:
-    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository = HistoryControlIndex(tmp_path / "control.sqlite3")
     repository.initialize()
     values = _values()
     repository.save_checkpoint(values[3])
@@ -186,13 +186,13 @@ def test_control_repository_rejects_same_identity_with_different_content(tmp_pat
 
 def test_snapshot_publication_recovers_after_interruption_without_pointer_regression(tmp_path: Path) -> None:
     path = tmp_path / "control.sqlite3"
-    first_repository = SQLiteHistoryControlRepository(path)
+    first_repository = HistoryControlIndex(path)
     first_repository.initialize()
     first = _values()
     _save_all(first_repository, first)
     second_values = _values(2, date(2026, 9, 11))
     second = second_values[-1]
-    interrupted = SQLiteHistoryControlRepository(path)
+    interrupted = HistoryControlIndex(path)
     interrupted.save_calendar(second_values[1])
     interrupted.save_universe(second_values[2])
 
@@ -200,13 +200,13 @@ def test_snapshot_publication_recovers_after_interruption_without_pointer_regres
         if stage == "snapshot_committed":
             raise RuntimeError("simulated power loss")
 
-    interrupted = SQLiteHistoryControlRepository(path, fault_injector=interrupt)
+    interrupted = HistoryControlIndex(path, fault_injector=interrupt)
     with pytest.raises(RuntimeError, match="power loss"):
         interrupted.publish_snapshot(second)
     assert interrupted.load_state().active_snapshot == first[-1]
     assert second not in interrupted.load_state().snapshots
 
-    recovered = SQLiteHistoryControlRepository(path)
+    recovered = HistoryControlIndex(path)
     recovered.publish_snapshot(second)
     assert recovered.load_state().active_snapshot == second
     with pytest.raises(HistoryControlRegressionError, match="regress"):
@@ -214,7 +214,7 @@ def test_snapshot_publication_recovers_after_interruption_without_pointer_regres
 
 
 def test_snapshot_publication_rejects_unsealed_parent_identities(tmp_path: Path) -> None:
-    repository = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    repository = HistoryControlIndex(tmp_path / "control.sqlite3")
     repository.initialize()
     snapshot = _values()[-1]
 
@@ -224,12 +224,12 @@ def test_snapshot_publication_rejects_unsealed_parent_identities(tmp_path: Path)
 
 def test_reminder_claim_is_atomic_across_restart_and_dates(tmp_path: Path) -> None:
     path = tmp_path / "control.sqlite3"
-    repository = SQLiteHistoryControlRepository(path)
+    repository = HistoryControlIndex(path)
     repository.initialize()
     first = HistoryReminderClaim("due-20260910", date(2026, 9, 10), NOW)
 
     assert repository.claim_reminder(first) is True
-    restarted = SQLiteHistoryControlRepository(path)
+    restarted = HistoryControlIndex(path)
     assert restarted.claim_reminder(first) is False
 
     next_day_at = NOW.replace(day=11)
@@ -240,7 +240,7 @@ def test_reminder_claim_is_atomic_across_restart_and_dates(tmp_path: Path) -> No
 
 def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: Path) -> None:
     path = tmp_path / "control.sqlite3"
-    repository = SQLiteHistoryControlRepository(path)
+    repository = HistoryControlIndex(path)
     repository.initialize()
     expected = _save_all(repository, _values())
     for candidate in (Path(f"{path}-wal"), Path(f"{path}-shm")):
@@ -255,12 +255,12 @@ def test_corrupt_control_database_rebuilds_from_verified_typed_state(tmp_path: P
             raise RuntimeError("simulated rebuild interruption")
 
     with pytest.raises(RuntimeError, match="rebuild interruption"):
-        SQLiteHistoryControlRepository.rebuild(path, expected, fault_injector=interrupt)
+        HistoryControlIndex.rebuild(path, expected, fault_injector=interrupt)
     assert path.read_bytes() == corrupt_bytes
 
-    SQLiteHistoryControlRepository.rebuild(path, expected)
+    HistoryControlIndex.rebuild(path, expected)
 
-    rebuilt = SQLiteHistoryControlRepository(path)
+    rebuilt = HistoryControlIndex(path)
     assert rebuilt.integrity().state == "healthy"
     assert rebuilt.load_state() == expected
 

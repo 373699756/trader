@@ -10,12 +10,9 @@ from trader.download.domain.baostock_daily import BaoStockCodeDownload, BaoStock
 from trader.download.domain.history_price_qualification import (
     HISTORY_TAIL_CONTRACT,
     HISTORY_UNIVERSE_CONTRACT,
-    TENCENT_HISTORY_MAX_SESSIONS,
-    merge_tencent_windows,
-    repair_tencent_window,
 )
 from trader.download.domain.history_sync import HistorySupplierContext
-from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
+from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import select_st_eligible_universe
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
@@ -72,34 +69,6 @@ def fetch_tencent_history_window(
 ) -> PublishedHistoryWindow:
     if not dates or dates != tuple(sorted(set(dates))):
         raise ValueError("Tencent history dates must be non-empty, ordered, and unique")
-    windows = []
-    positions = {day: index for index, day in enumerate(calendar)}
-    groups: list[list[date]] = []
-    for day in dates:
-        if not groups or positions[day] != positions[groups[-1][-1]] + 1:
-            groups.append([])
-        groups[-1].append(day)
-    for group in groups:
-        start = 0
-        overlap = min(5, len(group) - 1)
-        while start < len(group):
-            end = min(start + TENCENT_HISTORY_MAX_SESSIONS, len(group))
-            selected = tuple(group[start:end])
-            try:
-                window = prices.fetch_window(security, selected)
-            except (OSError, RuntimeError, ValueError):
-                window = PublishedHistoryWindow(
-                    security.code,
-                    tuple(PublishedHistoryCell(security.code, day, "unknown_missing", None, None) for day in selected),
-                )
-            if any(cell.status != "complete" for cell in window.cells):
-                try:
-                    window = repair_tencent_window(window, prices.fetch_window(security, selected))
-                except (OSError, RuntimeError, ValueError):
-                    # Keep qualified first-attempt pairs; the remaining gaps stay explicit.
-                    pass
-            windows.append(window)
-            if end == len(group):
-                break
-            start = end - overlap
-    return merge_tencent_windows(security.code, dates, tuple(windows))
+    if not calendar or any(day >= calendar[0] and day not in calendar for day in dates):
+        raise ValueError("Tencent history dates must belong to the exchange calendar")
+    return prices.fetch_window(security, dates, request_count=2000, allow_interior_padding=True)

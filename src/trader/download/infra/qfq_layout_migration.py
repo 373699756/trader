@@ -14,7 +14,7 @@ from pathlib import Path
 
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS
-from trader.download.infra.history_control_repository import HistoryMaintenanceLock
+from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_codec import decode_cell
 from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, SQLiteQfqWindowCache, qfq_shard_name
 

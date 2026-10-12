@@ -15,17 +15,18 @@ from trader.download.domain.history_reference import HistoryReferenceSnapshot, H
 from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.domain.security_eligibility import is_st_security_name
-from trader.download.infra.history_archive_reader import SQLiteHistoryArchiveReader
 from trader.download.infra.history_archive_sync import run_history_sync
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
+from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_reference_files import (
     HistoryReferenceIndex,
     history_filter_config_root,
     history_industry_mapping_path,
+    history_reference_path,
     history_st_evidence_path,
     read_history_reference,
     write_history_reference,
 )
+from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_st_source import HistoryStNameSource, parse_name_history_st
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 
@@ -92,7 +93,7 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
     )
     assert result.state == "completed"
     assert baseline.calls == []
-    published = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_published_state()
+    published = HistoryControlIndex(tmp_path / "control.sqlite3").load_published_state()
     assert tuple(item.code for item in published.universe.securities) == ("600001",)
 
 
@@ -119,9 +120,9 @@ def test_unknown_price_gap_breaks_training_window_and_resumes_with_tencent(tmp_p
     config = HistorySyncConfiguration(tmp_path, sessions=125, minimum_free_bytes=0)
     result = run_history_sync(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 1
-    control = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3")
+    control = HistoryControlIndex(tmp_path / "control.sqlite3")
     snapshot = control.load_state().active_snapshot
-    reader = SQLiteHistoryArchiveReader(tmp_path)
+    reader = HistorySnapshotReader(tmp_path)
     rows = tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
     assert next(row for row in rows if row.trade_date == gap).point is None
     assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
@@ -257,16 +258,17 @@ def test_st_checkpoints_cache_clear_and_permanently_keep_ever_st(tmp_path):
 
 
 def test_missing_reference_fails_closed_for_training(tmp_path):
-    from trader.download.infra.history_archive_reader import HistoryArchiveReadError
+    from trader.download.infra.history_snapshot_reader import HistorySnapshotReadError
 
     dates = tuple(date(2026, 7, 1) + timedelta(days=i) for i in range(65))
     config = HistorySyncConfiguration(tmp_path, sessions=65, minimum_free_bytes=0)
     assert run_history_sync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
-    snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_published_state().snapshot
-    reader = SQLiteHistoryArchiveReader(tmp_path)
+    snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_published_state().snapshot
+    reader = HistorySnapshotReader(tmp_path)
     assert tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
-    history_industry_mapping_path(tmp_path).unlink()
-    with pytest.raises(HistoryArchiveReadError, match="history_reference_unavailable"):
+    source = HistoryControlIndex(tmp_path / "control.sqlite3").read_source(snapshot.source_identity_hash)
+    history_reference_path(tmp_path, source.supplier_contract[12:76]).unlink()
+    with pytest.raises(HistorySnapshotReadError, match="history_reference_unavailable"):
         tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
 
 
@@ -291,8 +293,8 @@ def test_exhausted_stock_does_not_block_later_recovery_or_sparse_publication(tmp
     result = run_history_sync(config, supplier, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 2
     assert [code for code, _ in supplier.calls] == ["600001", "600001", "600001", "600002"]
-    snapshot = SQLiteHistoryControlRepository(tmp_path / "control.sqlite3").load_state().active_snapshot
-    rows = SQLiteHistoryArchiveReader(tmp_path).read_day(dates[-1], snapshot)
+    snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
     assert [(row.code, row.cell.obtained) for row in rows] == [("600001", False), ("600002", True)]
 
 
@@ -390,9 +392,10 @@ def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, da
     supplier = FakeSupplier(dates, industry="bank")
     config = HistorySyncConfiguration(root, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     assert run_history_sync(config, supplier, clock=lambda: NOW).state == "completed"
-    snapshot = SQLiteHistoryControlRepository(root / "control.sqlite3").load_published_state().snapshot
-    SQLiteHistoryArchiveReader(root).reference_index(snapshot)
-    path = history_industry_mapping_path(root)
+    snapshot = HistoryControlIndex(root / "control.sqlite3").load_published_state().snapshot
+    HistorySnapshotReader(root).reference_index(snapshot)
+    source = HistoryControlIndex(root / "control.sqlite3").read_source(snapshot.source_identity_hash)
+    path = history_reference_path(root, source.supplier_contract[12:76])
     if damage == "missing":
         path.unlink()
     else:
@@ -426,8 +429,8 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
             )
 
     assert run_history_sync(config, Excluding(dates, industry="bank"), clock=lambda: NOW).state == "completed"
-    snapshot = SQLiteHistoryControlRepository(config.archive_root / "control.sqlite3").load_published_state().snapshot
-    reader = SQLiteHistoryArchiveReader(config.archive_root)
+    snapshot = HistoryControlIndex(config.archive_root / "control.sqlite3").load_published_state().snapshot
+    reader = HistorySnapshotReader(config.archive_root)
     assert {item.code for item in reader.read_day(dates[0], snapshot)} == {"600001"}
     assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600001", "600002")) == len(dates)
     assert reader.count_range(dates[0], dates[-1], snapshot, codes=("600002",)) == 0

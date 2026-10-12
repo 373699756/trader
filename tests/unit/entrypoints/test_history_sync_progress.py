@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
@@ -184,7 +184,7 @@ def test_partition_sealing_prints_the_first_month_before_long_local_work(capsys)
     progress.publish(HistorySyncProgress("sealing_partitions", "started", 0, 100, current_item="2018-07"))
 
     assert (
-        capsys.readouterr().err == "00:00:01 | 封存月分片 | 开始 | 0/100 (0.00%) | 月份 2018-07 | 本月耗时 00:00:00\n"
+        capsys.readouterr().err == "00:00:01 | 发布内容校验 | 开始 | 0/100 (0.00%) | 月份 2018-07 | 本月耗时 00:00:00\n"
     )
 
 
@@ -197,9 +197,9 @@ def test_partition_persistence_reports_start_heartbeat_and_completion(capsys) ->
     progress.publish(HistorySyncProgress("persisting_partitions", "completed", 3, 3, "2026-09"))
 
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | 历史月分片写入 | 开始 | 0/3 (0.00%) | 月份 2026-07 | 本月耗时 00:00:00",
-        "00:00:06 | 历史月分片写入 | 开始 | 1/3 (33.33%) | 月份 2026-08 | 本月耗时 00:00:00",
-        "00:00:07 | 历史月分片写入 | 完成 | 3/3 (100.00%) | 月份 2026-09 | 本月耗时 00:00:00",
+        "00:00:00 | 正式月库提交 | 开始 | 0/3 (0.00%) | 月份 2026-07 | 本月耗时 00:00:00",
+        "00:00:06 | 正式月库提交 | 开始 | 1/3 (33.33%) | 月份 2026-08 | 本月耗时 00:00:00",
+        "00:00:07 | 正式月库提交 | 完成 | 3/3 (100.00%) | 月份 2026-09 | 本月耗时 00:00:00",
     ]
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell
 from trader.download.domain.history_control import HistoryActiveSnapshot
-from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 
 
@@ -30,7 +30,7 @@ def read_overlap_prices(
         relative = f"partitions/{year:04d}/{month:02d}.sqlite3"
         if relative not in references:
             raise RuntimeError("history_tail_qfq_overlap_missing")
-        rows = SQLiteHistoryMonthPartitionRepository(root / relative, year, month, activity=activity).read_price_keys(
+        rows = HistoryMonthPrices(root / relative, year, month, activity=activity).read_price_keys(
             tuple(keys), active.sequence
         )
         for row in rows:

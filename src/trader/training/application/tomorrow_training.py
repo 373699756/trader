@@ -24,7 +24,7 @@ TomorrowTrainingStage = Literal[
     "artifact_publish",
 ]
 TomorrowTrainingProgressState = Literal["started", "running", "completed"]
-TomorrowPartitionValidationPhase = Literal["hash", "integrity", "row_count"]
+TomorrowPartitionValidationPhase = Literal["hash", "integrity", "row_count", "logical"]
 TOMORROW_TRAINING_COMPUTE_THREADS = 2
 TOMORROW_TRAINING_PEAK_RSS_MIB = 2_048
 
@@ -33,16 +33,16 @@ TOMORROW_TRAINING_PEAK_RSS_MIB = 2_048
 class TomorrowTrainingPartitionValidationProgress:
     current_partition: int
     total_partitions: int
-    completed_bytes: int
-    total_bytes: int
+    completed_units: int
+    total_units: int
     phase: TomorrowPartitionValidationPhase
 
     def __post_init__(self) -> None:
         if (
             self.total_partitions < 1
             or not 1 <= self.current_partition <= self.total_partitions
-            or self.total_bytes < 1
-            or not 0 <= self.completed_bytes <= self.total_bytes
+            or self.total_units < 0
+            or not 0 <= self.completed_units <= self.total_units
         ):
             raise ValueError("Tomorrow partition validation progress is invalid")
 

@@ -28,10 +28,10 @@ from trader.download.domain.history_control import HistoryActiveSnapshot, Histor
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
-from trader.download.infra.history_archive_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_archive_sync import run_history_sync
-from trader.download.infra.history_control_repository import SQLiteHistoryControlRepository
-from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
@@ -119,12 +119,12 @@ def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(tmp_
     result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
 
     assert result.state == "completed"
-    expected_hash = SQLiteHistoryControlRepository(archive_root / "control.sqlite3").load_state().active_snapshot_hash
+    expected_hash = HistoryControlIndex(archive_root / "control.sqlite3").load_state().active_snapshot_hash
 
     def fail_full_history_read(_self):
         raise AssertionError("training input must not load historical checkpoints")
 
-    monkeypatch.setattr(SQLiteHistoryControlRepository, "load_state", fail_full_history_read)
+    monkeypatch.setattr(HistoryControlIndex, "load_state", fail_full_history_read)
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
     assert archive.snapshot.active_snapshot_hash == expected_hash
     assert archive.count_training_rows(frozenset(dates)) == len(dates)
@@ -145,27 +145,24 @@ def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
     assert progress[-1][:3] == (1, 1, 1)
 
 
-def test_training_input_reuses_download_seal_after_hash_verification(tmp_path: Path, monkeypatch) -> None:
+def test_training_cache_reuse_verifies_logical_payloads(tmp_path: Path, monkeypatch) -> None:
     archive_root = tmp_path / "history"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
-    published = SQLiteHistoryMonthPartitionRepository.verify_published_bytes.__func__
+    published = HistoryMonthPrices.verify_logical_content.__func__
     calls: list[HistorySnapshotPartition] = []
 
     def verify_published(cls, path, reference, progress=None, **kwargs):
+        assert kwargs["validate_payloads"] is True
         calls.append(reference)
         return published(cls, path, reference, progress, **kwargs)
 
-    def unexpected_full_verify(*_args, **_kwargs):
-        pytest.fail("training must reuse the download seal after matching its partition hash")
-
     monkeypatch.setattr(
-        SQLiteHistoryMonthPartitionRepository,
-        "verify_published_bytes",
+        HistoryMonthPrices,
+        "verify_logical_content",
         classmethod(verify_published),
     )
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(unexpected_full_verify))
     archive = SQLiteHistoryTrainingInputArchive.open(archive_root)
     progress: list[tuple[int, int, int, int, int, str]] = []
 
@@ -173,7 +170,7 @@ def test_training_input_reuses_download_seal_after_hash_verification(tmp_path: P
 
     assert archive.count_training_rows(frozenset(dates)) == len(dates)
     assert calls == list(archive.active_snapshot.partitions)
-    assert {item[-1] for item in progress} == {"hash"}
+    assert {item[-1] for item in progress} == {"logical"}
 
 
 def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Path) -> None:
@@ -306,13 +303,13 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
     configuration = HistorySyncConfiguration(root, sessions=61, reread_sessions=2, minimum_free_bytes=0)
     run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
     verified = []
-    verify = SQLiteHistoryMonthPartitionRepository.verify.__func__
+    verify = HistoryMonthPrices.verify.__func__
 
     def observed(cls, path, reference, progress=None):
         verified.append(reference)
         return verify(cls, path, reference, progress)
 
-    monkeypatch.setattr(SQLiteHistoryMonthPartitionRepository, "verify", classmethod(observed))
+    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(observed))
     archive = SQLitePublishedHistoryArchive(tmp_path / "history")
     manifest = archive.manifest()
     history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
@@ -458,7 +455,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     first_dates = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
     run_history_sync(configuration, _Supplier(first_dates), clock=lambda: NOW)
-    baseline = SQLiteHistoryControlRepository(archive_root / "control.sqlite3").load_state().active_snapshot
+    baseline = HistoryControlIndex(archive_root / "control.sqlite3").load_state().active_snapshot
     assert baseline is not None
     contract_hash = "9" * 64
     bundle = ActiveHeadBundle(
@@ -531,6 +528,6 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
             assert comparison.after_sequence == active.sequence
             return (dates[2],)
 
-    monkeypatch.setattr("trader.training.infra.history.history_training_due.SQLiteHistoryArchiveReader", _Archive)
+    monkeypatch.setattr("trader.training.infra.history.history_training_due.HistorySnapshotReader", _Archive)
 
     assert _revised_dates_since_bundle(tmp_path, baseline, active, dates, dates[-2]) == (dates[2],)

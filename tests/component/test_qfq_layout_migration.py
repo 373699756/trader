@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from tests.component.test_qfq_windows import _window
-from trader.download.infra.history_control_repository import HistoryMaintenanceLock
+from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_layout_migration import build_qfq_layout
 from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, SQLiteQfqWindowCache, qfq_shard_name
 from trader.infra.atomic_files.json import atomic_write_json

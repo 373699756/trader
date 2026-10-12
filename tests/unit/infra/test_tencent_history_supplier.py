@@ -10,8 +10,8 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
-    TencentSessionPool,
     TencentQfqSupplier,
+    TencentSessionPool,
 )
 
 DAY = date(2026, 10, 9)
@@ -93,6 +93,19 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
 
     assert len(sessions) == 1
     assert len(sessions[0].calls) == 2
+
+
+def test_whole_history_requests_2000_once_and_keeps_real_partial_pairs():
+    http = _Http()
+    days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
+    http.raw = [[day.isoformat(), *ROW[1:]] for day in days]
+    http.adjusted = http.raw[-640:]
+    window = http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+    assert len(http.calls) == 2
+    assert all(",2000," in param for param in http.calls)
+    assert sum(cell.status == "complete" for cell in window.cells) == 640
+    assert sum(cell.status == "qfq_missing" for cell in window.cells) == 1360
+    assert tuple(cell.trade_date for cell in window.cells) == days
 
 
 def test_session_pool_reuses_bootstrap_owned_connection_between_stocks():

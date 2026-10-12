@@ -35,12 +35,17 @@ from trader.download.infra.history_archive_repack_state import (
     HistoryArchiveRepackSourceFileIdentity,
     HistoryArchiveRepackStatus,
 )
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryControlError,
+    HistoryControlIndex,
     HistoryMaintenanceLock,
-    SQLiteHistoryControlRepository,
 )
-from trader.download.infra.history_month_partition import SQLiteHistoryMonthPartitionRepository
+from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_reference_files import (
+    history_reference_path,
+    read_bound_history_reference,
+    write_history_reference,
+)
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.infra.model_bundles.bundle_repository import inspect_active_head_bundle
@@ -302,8 +307,10 @@ class HistoryArchiveRepackCoordinator:
     def _resume_completed_partitions(self, state: HistoryArchiveRepackBuildState) -> HistoryArchiveRepackBuildState:
         for item in state.partitions:
             path = self._layout.target_root / item.relative_path
-            reference = HistorySnapshotPartition(item.relative_path, item.target_sha256, item.row_count)
-            SQLiteHistoryMonthPartitionRepository.verify(path, reference)
+            reference = HistorySnapshotPartition(
+                item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
+            )
+            HistoryMonthPrices.verify(path, reference)
             with closing(_read_connection(path)) as connection:
                 if connection.execute("PRAGMA page_size").fetchone() != (state.page_size,):
                     raise HistoryArchiveRepackError("resumed history repack partition page size is invalid")
@@ -403,7 +410,7 @@ def _load_source_context(root: Path, requirements: HistoryArchiveRepackRequireme
     if not root.is_dir() or root.is_symlink():
         raise HistoryArchiveRepackError("history repack source archive is missing or unsafe")
     _require_clean_source(root)
-    control = SQLiteHistoryControlRepository(root / _CONTROL_NAME)
+    control = HistoryControlIndex(root / _CONTROL_NAME)
     try:
         if control.integrity().state != "healthy":
             raise HistoryArchiveRepackError("history repack source control is unavailable")
@@ -558,8 +565,7 @@ def _repack_partition(
             raise HistoryArchiveRepackError("history repack pending partition is unsafe")
         pending.unlink()
     source_sha = _sha256_file(source)
-    if source_sha != reference.sha256:
-        raise HistoryArchiveRepackError("history repack source partition hash mismatch")
+    HistoryMonthPrices.verify(source, reference)
     try:
         with closing(_read_connection(source)) as connection:
             connection.execute("PRAGMA page_size=8192")
@@ -581,8 +587,8 @@ def _repack_partition(
         if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
             raise HistoryArchiveRepackError("history repack target foreign key check failed")
     target_sha = _sha256_file(pending)
-    target_reference = HistorySnapshotPartition(reference.relative_path, target_sha, target_facts.row_count)
-    SQLiteHistoryMonthPartitionRepository.verify(pending, target_reference)
+    target_reference = reference
+    HistoryMonthPrices.verify(pending, target_reference)
     os.replace(pending, destination)
     _fsync_directory(destination.parent)
     return HistoryArchiveRepackPartitionEvidence(
@@ -596,6 +602,9 @@ def _repack_partition(
         destination.stat().st_size,
         source_facts.records_hash,
         source_facts.observations_hash,
+        reference.logical_hash,
+        reference.row_count,
+        reference.sequence,
     )
 
 
@@ -653,13 +662,20 @@ def _build_target_control(
     context: _SourceContext,
     state: HistoryArchiveRepackBuildState,
 ) -> HistoryActiveSnapshot:
+    for source in context.control_state.sources:
+        if source.supplier_contract.startswith("history_ref_"):
+            reference = read_bound_history_reference(layout.source_root, source.supplier_contract)
+            write_history_reference(history_reference_path(layout.target_root, reference.content_hash), reference)
     target_control = layout.target_root / _CONTROL_NAME
     temporary = target_control.with_name(f".{_CONTROL_NAME}.repack.pending")
     _remove_sqlite_files(temporary)
     shutil.copyfile(layout.source_root / _CONTROL_NAME, temporary)
     _fsync_file(temporary)
     references = tuple(
-        HistorySnapshotPartition(item.relative_path, item.target_sha256, item.row_count) for item in state.partitions
+        HistorySnapshotPartition(
+            item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
+        )
+        for item in state.partitions
     )
     target_snapshot = HistoryActiveSnapshot(
         context.active.sequence + 1,
@@ -670,12 +686,12 @@ def _build_target_control(
         context.active.source_identity_hash,
         references,
     )
-    repository = SQLiteHistoryControlRepository(temporary)
+    repository = HistoryControlIndex(temporary)
     repository.publish_snapshot(target_snapshot)
     _checkpoint_sqlite(temporary)
     os.replace(temporary, target_control)
     _fsync_directory(target_control.parent)
-    active = SQLiteHistoryControlRepository(target_control).load_state().active_snapshot
+    active = HistoryControlIndex(target_control).load_state().active_snapshot
     if active != target_snapshot:
         raise HistoryArchiveRepackError("history repack target control publication failed")
     return target_snapshot
@@ -719,13 +735,19 @@ def _partition_evidence(
 
 def _target_references(state: HistoryArchiveRepackBuildState) -> tuple[HistorySnapshotPartition, ...]:
     return tuple(
-        HistorySnapshotPartition(item.relative_path, item.target_sha256, item.row_count) for item in state.partitions
+        HistorySnapshotPartition(
+            item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
+        )
+        for item in state.partitions
     )
 
 
 def _source_references(state: HistoryArchiveRepackBuildState) -> tuple[HistorySnapshotPartition, ...]:
     return tuple(
-        HistorySnapshotPartition(item.relative_path, item.source_sha256, item.row_count) for item in state.partitions
+        HistorySnapshotPartition(
+            item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
+        )
+        for item in state.partitions
     )
 
 
@@ -761,7 +783,7 @@ def _optional_journal(path: Path) -> HistoryArchiveRepackActivationJournal | Non
 
 def _require_stable_snapshot(root: Path, expected_hash: str) -> None:
     try:
-        active = SQLiteHistoryControlRepository(root / _CONTROL_NAME).load_state().active_snapshot
+        active = HistoryControlIndex(root / _CONTROL_NAME).load_state().active_snapshot
     except HistoryControlError as exc:
         raise HistoryArchiveRepackError("history repack stable control is unavailable") from exc
     if active is None or active.content_hash != expected_hash:
@@ -771,7 +793,7 @@ def _require_stable_snapshot(root: Path, expected_hash: str) -> None:
 
 def _stable_snapshot_hash(root: Path) -> str | None:
     try:
-        active = SQLiteHistoryControlRepository(root / _CONTROL_NAME).load_state().active_snapshot
+        active = HistoryControlIndex(root / _CONTROL_NAME).load_state().active_snapshot
     except (HistoryControlError, OSError):
         return None
     _clear_empty_control_sidecars(root / _CONTROL_NAME)
@@ -834,8 +856,8 @@ def _require_partition_set(
         raise HistoryArchiveRepackError("history repack partition path set is invalid")
     for reference in references:
         path = root.parent / reference.relative_path
-        if full_hash and _sha256_file(path) != reference.sha256:
-            raise HistoryArchiveRepackError("history repack partition hash is invalid")
+        if full_hash:
+            HistoryMonthPrices.verify(path, reference)
 
 
 def _require_exact_partition_tree(

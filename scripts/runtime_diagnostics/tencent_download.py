@@ -7,7 +7,7 @@ import sqlite3
 import time
 from collections import Counter
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,6 +17,7 @@ import requests
 
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
+from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import completed_daily_cutoff
@@ -27,8 +28,8 @@ from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
-    TencentSessionPool,
     TencentQfqSupplier,
+    TencentSessionPool,
 )
 from trader.infra.market_data.providers.exchange_security_master import fetch_sse_listings, fetch_szse_listings
 from trader.infra.shutdown import ShutdownDeadline
@@ -42,14 +43,16 @@ class _SampleSupplier:
     context: HistorySupplierContext
     supplier: TencentQfqSupplier
 
-    def load_qfq_context(self, _as_of, _sessions):
+    def load_qfq_context(self, _as_of: date, _sessions: int) -> HistorySupplierContext:
         return self.context
 
-    def fetch_window(self, security, dates):
+    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         return self.supplier.fetch_window(security, dates)
 
 
-def _benchmark(supplier, context, size, workers, observed_at):
+def _benchmark(
+    supplier: TencentQfqSupplier, context: HistorySupplierContext, size: int, workers: int, observed_at: datetime
+) -> dict[str, object]:
     eligible = tuple(item for item in context.universe if len(context.calendar.expected_dates(item)) == 251)
     if len(eligible) < size:
         raise ValueError("benchmark universe is insufficient")
@@ -63,7 +66,7 @@ def _benchmark(supplier, context, size, workers, observed_at):
             root = Path(scratch)
             failures: Counter[str] = Counter()
 
-            def feedback(message):
+            def feedback(message: str) -> None:
                 if " | qfq 待补 | " in message:
                     failures[message.rsplit("reason=", 1)[-1]] += 1
 
@@ -106,7 +109,7 @@ def _benchmark(supplier, context, size, workers, observed_at):
             raise RuntimeError("diagnostic_worker_shutdown_incomplete")
 
 
-def _prices(side: PublishedHistorySide | None):
+def _prices(side: PublishedHistorySide | None) -> tuple[float | None, ...] | None:
     if side is None:
         return None
     return side.open_price, side.high_price, side.low_price, side.close_price
@@ -132,7 +135,9 @@ def compare_windows(reference: PublishedHistoryWindow, incoming: PublishedHistor
     return {"compared_rows": comparable, "price_differences": differing, "missing_rows": missing}
 
 
-def _shadow(supplier: TencentQfqSupplier, context: HistorySupplierContext, args) -> dict[str, object]:
+def _shadow(
+    supplier: TencentQfqSupplier, context: HistorySupplierContext, args: argparse.Namespace
+) -> dict[str, object]:
     reader = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(args.history_root))
     manifest = reader.manifest()
     if manifest is None:
@@ -158,7 +163,7 @@ def _shadow(supplier: TencentQfqSupplier, context: HistorySupplierContext, args)
     return {"status": "compared", "sampled_codes": len(codes), **totals}
 
 
-def _parser():
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sizes", nargs="+", type=int, default=(10, 50, 100))
     parser.add_argument("--workers", type=int, default=8)
@@ -166,11 +171,14 @@ def _parser():
     parser.add_argument("--tencent-history-host", choices=("proxy", "direct"), default="proxy")
     parser.add_argument("--codes", nargs="+", default=("600519", "000001", "300750", "688981", "601318"))
     parser.add_argument("--history-root", type=Path, required=True)
+    parser.add_argument("--whole-window", action="store_true", help="probe 2000-row responses without active data")
     return parser
 
 
 def main() -> int:
     args = _parser().parse_args()
+    if args.whole_window:
+        return _whole_window_probe(args)
     sessions: tuple[requests.Session, ...] = ()
     try:
         if len(args.sizes) > 3 or any(not 1 <= size <= 100 for size in args.sizes) or not 1 <= args.workers <= 12:
@@ -227,6 +235,48 @@ def main() -> int:
             session.close()
     emit_report(report)
     return 1 if report["status"] == "failed" else 0
+
+
+def _whole_window_probe(args: argparse.Namespace) -> int:
+    if not 1 <= len(args.codes) <= 3:
+        raise ValueError("whole-window probe permits 1..3 securities")
+    end = completed_daily_cutoff(datetime.now(ZoneInfo("Asia/Shanghai")))
+    # This is a date-range capability probe, not an exchange-calendar coverage claim.
+    dates = tuple(end - timedelta(days=3650 - i) for i in range(3651))
+    results: list[dict[str, object]] = []
+    with requests.Session() as session:
+        pool = TencentSessionPool((session,))
+        supplier = TencentQfqSupplier(
+            TencentQfqDependencies(pool.borrow, lambda day: (), lambda: False),
+            TencentQfqOptions(timeout_seconds=args.timeout_seconds, retries=0, history_host=args.tencent_history_host),
+        )
+        for code in args.codes:
+            security = BaoStockSecurity(code, "capability probe", "main", date(1990, 1, 1), None, "diagnostic")
+            started = time.monotonic()
+            try:
+                window = supplier.fetch_window(security, dates, request_count=2000, allow_interior_padding=True)
+                paired = tuple(cell.trade_date for cell in window.cells if cell.status == "complete")
+                results.append(
+                    {
+                        "raw_rows": sum(cell.unadjusted is not None for cell in window.cells),
+                        "qfq_rows": sum(cell.qfq is not None for cell in window.cells),
+                        "paired_rows": len(paired),
+                        "first_date": paired[0].isoformat() if paired else None,
+                        "last_date": paired[-1].isoformat() if paired else None,
+                        "seconds": round(time.monotonic() - started, 3),
+                    }
+                )
+            except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+                results.append({"failure": type(exc).__name__, "seconds": round(time.monotonic() - started, 3)})
+    passed = all(isinstance(item.get("paired_rows"), int) and int(str(item["paired_rows"])) > 0 for item in results)
+    emit_report(
+        {
+            "schema_version": "tencent-whole-window-probe",
+            "status": "passed" if passed else "failed",
+            "summary": {"requested_rows_per_side": 2000, "calendar_coverage_verified": False, "samples": results},
+        }
+    )
+    return 0 if passed else 1
 
 
 if __name__ == "__main__":

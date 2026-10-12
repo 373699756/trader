@@ -12,7 +12,7 @@ from typing import Protocol
 from trader.download.domain.baostock_daily import BaoStockDailyJoinRequest, BaoStockDailySide, join_baostock_daily_sides
 from trader.download.domain.history_tail import HistoryTailRequest, HistoryTailWindow
 from trader.download.infra.baostock_gap_supplier import BaoStockGapRequest, BaoStockGapResult, BaoStockGapWorkerOptions
-from trader.download.infra.history_control_repository import HistoryMaintenanceLock
+from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.history_revision_codec import decode_history_side
 
 

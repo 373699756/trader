@@ -35,7 +35,6 @@ HistorySyncProgressStage = Literal[
     "history_gap_inventory",
     "history_gap_resume",
     "baostock_gap_fill",
-    "persisting_prices",
     "persisting_partitions",
     "preparing_partitions",
     "downloading_codes",

@@ -23,7 +23,7 @@ from trader.download.infra.history_archive_repack import (
     HistoryArchiveRepackFenceError,
     require_history_archive_repack_inactive,
 )
-from trader.download.infra.history_control_repository import (
+from trader.download.infra.history_control_index import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
 )
