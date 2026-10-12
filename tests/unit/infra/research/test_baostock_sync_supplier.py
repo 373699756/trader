@@ -320,6 +320,25 @@ def test_supplier_keeps_context_and_price_request_policies_separate(monkeypatch)
     ]
 
 
+def test_supplier_login_timeout_does_not_repeat_the_slow_start(monkeypatch) -> None:
+    from trader.download.infra import baostock_sync_supplier as supplier_module
+
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(supplier_timeout_seconds=45.0, supplier_retries=2),
+    )
+    attempts = []
+
+    def fail(_command, state, attempt, _timeout_seconds):
+        attempts.append(attempt.number)
+        return supplier_module._AttemptResult(None, state, "supplier_login_timeout")
+
+    monkeypatch.setattr(supplier, "_request_once", fail)
+    with pytest.raises(RuntimeError, match="supplier_login_timeout"):
+        supplier.load_context(date(2026, 10, 9), 2000, universe=())
+
+    assert attempts == [1]
+
+
 @pytest.mark.parametrize(("restart_session", "expected_closes"), ((False, 0), (True, 1)))
 def test_price_failure_restarts_only_an_unhealthy_supplier_session(
     monkeypatch: pytest.MonkeyPatch,
@@ -380,11 +399,6 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
         def query_stock_basic(self):
             raise AssertionError("history must not reload BaoStock's universe")
 
-        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
-            calls.append("status")
-            assert fields == "date,code,tradestatus,isST" and kwargs["adjustflag"] == "3"
-            return _Result(tuple(fields.split(",")), ((day.isoformat(), code, "0", "0") for day in dates))
-
         def query_trade_dates(self, **_kwargs):
             calls.append("calendar")
             return _Result(("calendar_date", "is_trading_day"), tuple((day.isoformat(), "1") for day in dates))
@@ -401,7 +415,6 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
             self.commands = iter(
                 (
                     supplier_module._LoadContext(dates[-1], 2, universe),
-                    supplier_module._FetchCode(universe[0], dates, states_only=True),
                     supplier_module._Stop(),
                 )
             )
@@ -435,12 +448,5 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
     assert context.calendar.open_dates == dates
     assert context.universe == universe
     assert tuple(item.code for item in context.industry_intervals) == ("302132",)
-    facts = next(
-        item.trading_facts
-        for item in connection.responses
-        if isinstance(item, supplier_module._Response) and item.trading_facts is not None
-    )
-    assert tuple(fact.trade_date for fact in facts) == dates
-    assert all(fact.status == "suspended" for fact in facts)
-    assert calls == ["login", "calendar", "industry", "industry", "status", "logout"]
+    assert calls == ["login", "calendar", "industry", "industry", "logout"]
     assert connection.closed

@@ -140,11 +140,9 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 
 def _state_label(progress: HistorySyncProgress) -> str:
     if progress.failure_reason == "tencent_history_pending":
-        return "待重试（暂不转BaoStock）"
-    if progress.failure_reason == "history_trading_status_unverified":
-        return "缺口原因待核实"
+        return "待重试（Tencent临时失败）"
     if progress.price_coverage is not None and progress.price_coverage.missing and progress.state == "completed":
-        return "部分（缺口待核实或未通过校验）"
+        return "完成（按Tencent实际返回）"
     if progress.price_coverage is not None and not progress.price_coverage.missing and progress.state == "completed":
         return "覆盖完成（已持久化）"
     if (
@@ -165,8 +163,7 @@ def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
         f"raw {coverage.raw} 日",
         f"qfq {coverage.qfq} 日",
         f"完整配对 {coverage.paired} 日",
-        f"剩余缺日 {coverage.missing} 日",
-        f"已确认停牌 {coverage.suspended} 日",
+        f"Tencent未返回 {coverage.missing} 日",
         f"窗口交易日 {coverage.calendar_sessions if coverage.calendar_sessions is not None else coverage.expected} 日",
         f"上市前/退市后不适用 {coverage.not_applicable} 日",
     )

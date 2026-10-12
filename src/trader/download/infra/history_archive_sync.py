@@ -209,7 +209,6 @@ class _HistorySync:
             )
         )
         flow.tencent()
-        flow.baostock()
         for security in inputs.context.universe:
             if gaps := self.index.gaps(security.code):
                 prices.record_missing(security, gaps)
@@ -423,7 +422,8 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
 ) -> HistoryMaintenanceStatus:
     root = configuration.archive_root
     due = None
-    if snapshot is not None:
+    reference_ready = snapshot is not None and _has_industry_reference(root, snapshot)
+    if reference_ready:
         due = evaluate_history_training_due(
             HistoryTrainingDueQuery(root, configuration.training_root / "v3", observed_at, V3_TRAINING_PROFILE)
         )
@@ -436,7 +436,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         state=state,
         reason=reason,
         archive_root=root,
-        selected_baseline_source="tencent_then_baostock_gap",
+        selected_baseline_source="tencent_with_baostock_reference",
         efficient_daily_source="tencent",
         active_snapshot_hash=snapshot.content_hash if snapshot is not None else None,
         data_cutoff=snapshot.data_cutoff if snapshot is not None else None,
@@ -447,6 +447,14 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         automatic_training=False,
         unresolved_price_cells=unresolved_price_cells,
     )
+
+
+def _has_industry_reference(root: Path, snapshot: HistoryActiveSnapshot) -> bool:
+    try:
+        source = HistoryControlIndex(root / "control.sqlite3").read_source(snapshot.source_identity_hash)
+        return bool(read_bound_history_reference(root, source.supplier_contract).industry_intervals)
+    except (HistoryControlError, OSError, ValueError):
+        return False
 
 
 __all__ = ["run_history_sync"]

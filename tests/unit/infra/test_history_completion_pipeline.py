@@ -11,7 +11,6 @@ from tests.unit.infra.research.test_history_archive_sync import NOW, FakeSupplie
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
-from trader.download.domain.history_trading_status import HistoryTradingFact
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
@@ -26,11 +25,9 @@ from trader.training.infra.sample_builder import _SampleBuildState
 DAYS = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
 
-class SuspendedSupplier(FakeSupplier):
-    def __init__(self, *, evidence=True):
+class ShortTencentSupplier(FakeSupplier):
+    def __init__(self):
         super().__init__(DAYS)
-        self.evidence = evidence
-        self.status_calls = []
 
     def fetch_tencent_window(self, security, dates):
         window = super().fetch_tencent_window(security, dates)
@@ -44,47 +41,33 @@ class SuspendedSupplier(FakeSupplier):
             ),
         )
 
-    def fetch_trading_facts(self, security, dates):
-        self.status_calls.append((security.code, dates))
-        return (
-            tuple(HistoryTradingFact(security.code, day, "suspended", False) for day in dates) if self.evidence else ()
-        )
 
-    def fetch_baostock_prices(self, security, dates):
-        raise AssertionError("suspension or unverified absence must not request prices")
-
-
-@pytest.mark.parametrize("evidence", [True, False])
-def test_status_only_evidence_closes_suspension_without_fabricating_prices(tmp_path, capsys, evidence):
-    supplier = SuspendedSupplier(evidence=evidence)
+def test_short_tencent_response_completes_without_baostock_classification(tmp_path, capsys):
+    supplier = ShortTencentSupplier()
     progress = StderrHistorySyncProgress()
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW, progress=progress)
     progress.publish_result(result)
     assert result.state == "completed", result.reason
-    assert result.unresolved_price_cells == (0 if evidence else 2)
-    assert all(dates == (DAYS[1],) for _, dates in supplier.status_calls)
+    assert result.unresolved_price_cells == 0
+    assert "baostock_prices" not in supplier.events
     active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     reader = HistorySnapshotReader(tmp_path)
     cells = reader.read_day(DAYS[1], active)
-    assert all(row.cell.status == ("supplier_marked_suspended" if evidence else "unknown_missing") for row in cells)
+    assert all(row.cell.status == "unknown_missing" for row in cells)
     assert all(row.cell.qfq is None or row.cell.qfq.close_price is None for row in cells)
     training = tuple(reader.iter_training_rows(active, DAYS, ("600001", "600002")))
     assert all(row.point is None for row in training if row.trade_date == DAYS[1])
     assert {row.trade_date for row in training} == set(DAYS)
     logs = capsys.readouterr().err
-    if evidence:
-        assert "覆盖完成（已持久化）" in logs and "已确认停牌 1 日" in logs
-        supplier.status_calls.clear()
-        supplier.calls.clear()
-        assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).unresolved_price_cells == 0
-        assert not supplier.status_calls and not supplier.calls
-    else:
-        assert "数据不完整" in logs
+    assert "完成（按Tencent实际返回）" in logs and "Tencent未返回 1 日" in logs
+    supplier.calls.clear()
+    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).unresolved_price_cells == 0
+    assert not supplier.calls
 
 
-def test_long_suspension_counts_as_coverage_but_not_price_rows():
-    coverage = HistoryPriceCoverage(2000, 1435, 1435, 1435, 565, 2000)
-    assert coverage.missing == 0
+def test_short_tencent_response_reports_actual_price_rows():
+    coverage = HistoryPriceCoverage(2000, 1435, 1435, 1435, calendar_sessions=2000)
+    assert coverage.missing == 565
     with pytest.raises(ValueError):
         HistoryPriceCoverage(2000, 1435, 1435, 1435, 566)
 

@@ -17,7 +17,7 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
 
 @pytest.mark.parametrize("mode", ("complete", "missing", "pending", "unclassified_failure"))
-def test_actual_coverage_controls_baostock_and_survives_restart(tmp_path, capsys, mode):
+def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, capsys, mode):
     days = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
 
     class PartialPrices(Prices):
@@ -40,15 +40,15 @@ def test_actual_coverage_controls_baostock_and_survives_restart(tmp_path, capsys
         config, _router(baseline, PartialPrices()), clock=lambda: NOW, progress=StderrHistorySyncProgress()
     )
     assert result.state == "completed"
-    assert len(baseline.calls) == (2 if mode == "missing" else 0)
+    assert baseline.calls == []
     expected_missing = 2 if mode == "pending" else 6 if mode == "unclassified_failure" else 0
     assert result.unresolved_price_cells == expected_missing
     logs = capsys.readouterr().err
     if mode == "pending":
-        assert "raw 3 日 | qfq 2 日 | 完整配对 2 日 | 剩余缺日 1 日" in logs
-        assert "暂不转BaoStock" in logs
+        assert "raw 3 日 | qfq 2 日 | 完整配对 2 日 | Tencent未返回 1 日" in logs
+        assert "Tencent临时失败" in logs
     elif mode == "missing":
-        assert "完整 0 股 | 部分 2 股 | 失败 0 股" in logs
+        assert "完整 2 股 | 部分 0 股 | 失败 0 股" in logs
     else:
         assert "完整 2 股" in logs if mode == "complete" else "失败 2 股" in logs
     previous = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot

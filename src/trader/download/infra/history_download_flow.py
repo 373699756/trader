@@ -16,25 +16,19 @@ from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import (
     HistoryPipelineProgress,
-    HistoryRecoverySummary,
     HistorySupplierContext,
     HistorySyncConfiguration,
     HistorySyncProgress,
     HistorySyncProgressPort,
-    HistorySyncProgressState,
     HistoryTencentSummary,
     HistoryTwoStageSupplier,
 )
-from trader.download.domain.history_trading_status import HistoryTradingFact
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_direct_prices import HistoryDirectPrices, HistoryPriceContext, HistoryPriceResult
 from trader.download.infra.history_download_index import HistoryDownloadIndex, HistoryDownloadTask
 from trader.download.infra.history_month_partition import HistoryMonthPartitionError
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
-_TERMINAL = frozenset(
-    {"history_tail_raw_price_conflict", "history_recovery_anchor_missing", "supplier_daily_window_conflict"}
-)
 _FATAL = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})
 
 
@@ -111,7 +105,11 @@ class HistoryDownloadFlow:
         self._resources.prices.commit(results)
         for result in results:
             self._check()
-            self._resources.index.finish(result.task, result.missing, result.failure)
+            self._resources.index.finish(
+                result.task,
+                result.missing if result.failure is not None else (),
+                result.failure,
+            )
         return _WriteResult(results, time.monotonic() - started)
 
     def _acknowledge(self, results: tuple[HistoryPriceResult, ...], completed: int, total: int) -> int:
@@ -146,8 +144,8 @@ class HistoryDownloadFlow:
         resources = self._resources
         tasks = resources.index.tasks()
         gap_codes = resources.index.gap_codes()
-        # Old completed requests may still have truncated history. Requalify gaps
-        # with Tencent before allowing any BaoStock attempt, including on resume.
+        # Old failed requests may still have durable gaps. Recheck them with
+        # Tencent on resume; successful short responses are accepted below.
         jobs = deque(task for task in tasks if not task.tencent_done or task.code in gap_codes)
         if any(len(task.dates) > 32768 for task in jobs):
             raise ValueError("history_download_task_too_large")
@@ -245,168 +243,6 @@ class HistoryDownloadFlow:
                 failure,
                 HistoryPriceCoverage(len(task.dates), count, count, count, suspended),
             )
-
-    def baostock(self) -> None:
-        resources = self._resources
-        gap_codes = resources.index.gap_codes()
-        tasks = tuple(
-            sorted(
-                (task for task in resources.index.tasks() if task.code in gap_codes and task.failure is None),
-                key=lambda task: task.code,
-            )
-        )
-        succeeded = failed = 0
-        try:
-            for position, task in enumerate(tasks):
-                self._check()
-                if self._recover(task, position, len(tasks)):
-                    succeeded += 1
-                else:
-                    failed += 1
-        finally:
-            remaining = len(tasks) - succeeded - failed
-            state: HistorySyncProgressState = (
-                "completed" if not remaining else "cancelled" if resources.cancel() else "failed"
-            )
-            self._emit(
-                HistorySyncProgress(
-                    "baostock_gap_fill",
-                    state,
-                    succeeded + failed,
-                    len(tasks),
-                    recovery_summary=HistoryRecoverySummary(succeeded, failed, remaining),
-                )
-            )
-
-    def _recover(self, task: HistoryDownloadTask, position: int, total: int) -> bool:
-        resources = self._resources
-        if task.failure in _FATAL:
-            raise RuntimeError(task.failure)
-        if task.failure in _TERMINAL:
-            return False
-        previous = resources.prices.read(task.code, task.dates)
-        obtained = {cell.trade_date for cell in previous if cell.obtained}
-        actual_missing = tuple(day for day in task.dates if day not in obtained)
-        resources.index.finish(task, actual_missing, task.failure if actual_missing else None)
-        if not actual_missing:
-            return True
-        for _ in range(task.attempts, 3):
-            self._check()
-            previous = resources.prices.read(task.code, task.dates)
-            obtained = {cell.trade_date for cell in previous if cell.obtained}
-            missing = tuple(day for day in task.dates if day not in obtained)
-            if not missing:
-                resources.index.finish(task, (), None)
-                return True
-            anchors = tuple(sorted(cell.trade_date for cell in previous if cell.status == "complete"))[-5:]
-            dates = tuple(sorted(set(missing[: 2000 - len(anchors)]) | set(anchors)))
-            attempt = resources.index.begin_attempt(task.code)
-            self._emit(
-                HistorySyncProgress(
-                    "baostock_gap_fill",
-                    "started",
-                    position,
-                    total,
-                    task.code,
-                    attempt=attempt,
-                    max_attempts=3,
-                    supplier_source="baostock",
-                    requested_sessions=len(dates),
-                )
-            )
-            result = self._recovery_result(task, dates, missing)
-            self._check()
-            resources.prices.commit((result,))
-            failure = result.failure or ("history_recovery_incomplete" if result.missing else None)
-            resources.index.finish(task, result.missing, failure)
-            self._emit(
-                HistorySyncProgress(
-                    "baostock_gap_fill",
-                    "failed" if failure else "completed",
-                    position + 1,
-                    total,
-                    task.code,
-                    attempt=attempt,
-                    max_attempts=3,
-                    supplier_source="baostock",
-                    requested_sessions=len(dates),
-                    failure_reason=failure,
-                    price_coverage=self._coverage(result),
-                )
-            )
-            if failure in _FATAL:
-                raise RuntimeError(failure)
-            if failure is None or failure in _TERMINAL:
-                break
-        return not resources.index.gaps(task.code)
-
-    def _recovery_result(
-        self,
-        task: HistoryDownloadTask,
-        dates: tuple[date, ...],
-        missing: tuple[date, ...],
-    ) -> HistoryPriceResult:
-        security = self._security(task.code)
-        suspended: tuple[BaoStockDailyCell, ...] = ()
-        try:
-            requested = tuple(day for day in dates if day in missing)
-            facts = self._verified_trading_facts(security, requested)
-            unverified = len(facts) != len(requested)
-            suspended = tuple(fact.suspended_cell() for fact in facts if fact.status == "suspended")
-            trading = {fact.trade_date for fact in facts if fact.status == "trading"}
-            if not trading:
-                result = self._prepare_recovery(task, suspended)
-                return replace(result, failure="history_trading_status_unverified") if unverified else result
-            price_dates = tuple(day for day in dates if day in trading or day not in missing)
-            cells = self._verified_recovery_prices(security, price_dates)
-            result = self._prepare_recovery(task, tuple(sorted((*suspended, *cells), key=lambda cell: cell.trade_date)))
-            return replace(result, failure="history_trading_status_unverified") if unverified else result
-        except HistoryMonthPartitionError:
-            raise
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            failure = download_failure(exc)
-            if failure in _FATAL:
-                raise
-            result = self._prepare_recovery(task, suspended)
-            return replace(result, failure=failure) if result.missing else result
-
-    def _verified_trading_facts(
-        self, security: BaoStockSecurity, dates: tuple[date, ...]
-    ) -> tuple[HistoryTradingFact, ...]:
-        facts = self._resources.supplier.fetch_trading_facts(security, dates)
-        if any(fact.code != security.code or fact.trade_date not in dates for fact in facts):
-            raise RuntimeError("history_supplier_identity_conflict")
-        if len({fact.trade_date for fact in facts}) != len(facts):
-            raise RuntimeError("supplier_daily_window_conflict")
-        if any(fact.is_st for fact in facts):
-            raise RuntimeError("history_st_reference_conflict")
-        return facts
-
-    def _verified_recovery_prices(
-        self, security: BaoStockSecurity, dates: tuple[date, ...]
-    ) -> tuple[BaoStockDailyCell, ...]:
-        downloaded = self._resources.supplier.fetch_baostock_prices(security, dates)
-        batch = downloaded.batch
-        if batch.code != security.code or any(fact.code != security.code for fact in downloaded.daily_facts):
-            raise RuntimeError("history_supplier_identity_conflict")
-        if any(fact.is_st for fact in downloaded.daily_facts):
-            raise RuntimeError("history_st_reference_conflict")
-        if tuple(cell.trade_date for cell in batch.cells) != dates or any(
-            (batch.duplicate_rows, batch.out_of_window_rows, batch.future_rows)
-        ):
-            raise RuntimeError("supplier_daily_window_conflict")
-        return batch.cells
-
-    def _prepare_recovery(self, task: HistoryDownloadTask, cells: tuple[BaoStockDailyCell, ...]) -> HistoryPriceResult:
-        resources = self._resources
-        security = self._security(task.code)
-        return resources.prices.prepare(
-            security,
-            task,
-            PublishedHistoryWindow(task.code, ()),
-            cells,
-            context=HistoryPriceContext(set(resources.context.calendar.expected_dates(security)).issubset(task.dates)),
-        )
 
 
 class _TencentPipeline:

@@ -120,33 +120,6 @@ class _Result:
         raise AssertionError("get_data must never be used")
 
 
-@pytest.mark.parametrize("invalid", [None, "identity", "status", "duplicate"])
-def test_history_gap_status_query_uses_only_facts_and_rejects_untrusted_rows(invalid):
-    calls = []
-
-    class StatusSdk:
-        __version__ = "fixture"
-
-        def query_history_k_data_plus(self, code, fields, start_date, end_date, **kwargs):
-            calls.append((fields, start_date, end_date, kwargs))
-            row = (start_date, "sz.000001" if invalid == "identity" else code, "" if invalid == "status" else "0", "0")
-            return _Result(tuple(fields.split(",")), (row, row) if invalid == "duplicate" else (row,))
-
-    gateway = BaoStockRowGateway(StatusSdk(), python_version="fixture", dependency_versions=())
-    security = BaoStockSecurity("600001", "fixture", "main", date(2000, 1, 1), None, "fixture")
-    dates = (date(2018, 9, 8), date(2026, 9, 10))
-    if invalid:
-        with pytest.raises((ValueError, RuntimeError)):
-            gateway.fetch_trading_facts(security, dates)
-    else:
-        facts = gateway.fetch_trading_facts(security, dates)
-        assert tuple(fact.trade_date for fact in facts) == dates
-        assert all(fact.status == "suspended" and not fact.is_st for fact in facts)
-        assert all(fact.suspended_cell().qfq.close_price is None for fact in facts)
-        assert len(calls) == 2
-    assert all(fields == "date,code,tradestatus,isST" and start == end for fields, start, end, _ in calls)
-
-
 class _Sdk:
     __version__ = "0.9.3"
 

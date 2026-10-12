@@ -118,6 +118,17 @@ class TencentQfqSupplier:
             raise ValueError("Tencent qfq context is limited to 251 sessions")
         self._check_cancel()
         universe = self._dependencies.load_universe(as_of)
+        return self.load_history_context(as_of, sessions, universe)
+
+    def load_history_context(
+        self,
+        as_of: date,
+        sessions: int,
+        universe: tuple[BaoStockSecurity, ...],
+    ) -> HistorySupplierContext:
+        """Build a price-only context when BaoStock reference login is unavailable."""
+
+        self._check_cancel()
         if not universe or len({security.code for security in universe}) != len(universe):
             raise ValueError("Tencent qfq universe is empty or duplicated")
         calendar = self.load_calendar(as_of, sessions)

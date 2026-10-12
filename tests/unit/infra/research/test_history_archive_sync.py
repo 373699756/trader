@@ -144,11 +144,6 @@ class FakeSupplier:
         self.events.append("baostock_prices")
         return self.fetch_code(security, dates)
 
-    def fetch_trading_facts(self, security, dates):
-        from trader.download.domain.history_trading_status import HistoryTradingFact
-
-        return tuple(HistoryTradingFact(security.code, day, "trading", False) for day in dates)
-
 
 def _configuration(root: Path) -> HistorySyncConfiguration:
     return HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
@@ -220,7 +215,7 @@ def test_incremental_updates_only_new_days_and_keeps_cumulative_history(tmp_path
     assert not (tmp_path / ".tencent-stage").exists()
 
 
-def test_partial_tencent_pairs_are_committed_before_baostock(tmp_path):
+def test_partial_tencent_pairs_are_committed_without_baostock(tmp_path):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
     class Partial(FakeSupplier):
@@ -234,27 +229,31 @@ def test_partial_tencent_pairs_are_committed_before_baostock(tmp_path):
                 ),
             )
 
-        def fetch_baostock_prices(self, security, dates):
-            with sqlite3.connect(tmp_path / "partitions/2026/09.sqlite3") as connection:
-                assert connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0] >= 4
-            return super().fetch_baostock_prices(security, dates)
-
     supplier = Partial(days)
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 0
-    assert supplier.events[:2] == ["tencent", "tencent"]
-    assert supplier.events[2:] == ["baostock_prices", "baostock_prices"]
-    assert len(HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))) == 2
+    assert supplier.events == ["tencent", "tencent"]
+    rows = HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))
+    assert len(rows) == 2 and all(row.cell.status == "unknown_missing" for row in rows)
 
 
-def test_three_failed_attempts_publish_explicit_gaps_and_next_run_repairs(tmp_path):
+def test_tencent_request_failure_publishes_explicit_gaps_and_next_run_repairs(tmp_path):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    supplier = FakeSupplier(days, fail_code="600001")
+
+    class FailingTencent(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            if security.code == self.fail_code:
+                self.events.append("tencent")
+                self.calls.append((security.code, dates))
+                raise RuntimeError("tencent_qfq_request_failed")
+            return super().fetch_tencent_window(security, dates)
+
+    supplier = FailingTencent(days, fail_code="600001")
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 3
-    assert supplier.events.count("baostock_prices") == 3
+    assert "baostock_prices" not in supplier.events
     supplier.fail_code = None
     supplier.calls.clear()
     repaired = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
@@ -373,27 +372,6 @@ def test_cross_month_interruption_only_requests_missing_dates_and_five_anchors(t
     assert len(supplier.calls) == 2
     assert all(dates == days[-9:] for _, dates in supplier.calls)
     assert len(HistorySnapshotReader(tmp_path).read_day(days[0], _snapshot(tmp_path))) == 2
-
-
-def test_baostock_attempt_budget_survives_interruption_before_price_acknowledgement(tmp_path):
-    from trader.download.infra.history_download_index import HistoryDownloadIndex
-
-    class Interrupted(FakeSupplier):
-        def fetch_baostock_prices(self, security, dates):
-            self.events.append("baostock_prices")
-            raise KeyboardInterrupt
-
-    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    supplier = Interrupted(days, fail_code="600001")
-    for attempt in range(1, 4):
-        result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
-        assert result.state == "cancelled", result.reason
-        assert HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks()[0].attempts == attempt
-    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
-    assert result.state == "completed", result.reason
-    assert result.unresolved_price_cells == 3
-    assert supplier.events.count("baostock_prices") == 3
-    assert supplier.events.count("tencent") == 5  # Recheck unresolved Tencent capability on every resume.
 
 
 def test_resume_finishes_old_cutoff_then_updates_to_current_cutoff(tmp_path, monkeypatch):

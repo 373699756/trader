@@ -11,14 +11,12 @@ from typing import Literal, Protocol, get_args
 
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
-    BaoStockCodeDownload,
     BaoStockIndustryInterval,
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.domain.history_trading_status import HistoryTradingFact
 from trader.download.domain.published_history import PublishedHistoryWindow
 
 HistorySyncProgressStage = Literal[
@@ -304,12 +302,6 @@ class HistoryTwoStageSupplier(Protocol):
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext: ...
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
-
-    def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload: ...
-
-    def fetch_trading_facts(
-        self, security: BaoStockSecurity, dates: tuple[date, ...]
-    ) -> tuple[HistoryTradingFact, ...]: ...
 
 
 __all__ = [

@@ -118,6 +118,45 @@ def test_history_router_forwards_the_explicit_industry_query_cache(tmp_path) -> 
     assert baseline.industry_cache is cache
 
 
+def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) -> None:
+    dates = (date(2026, 10, 8), date(2026, 10, 9))
+    universe = _current_universe("600001")
+
+    class LoginTimeout(Baseline):
+        def load_context(self, *_args, **_kwargs):
+            raise RuntimeError("supplier_login_timeout")
+
+    class TencentContext(Prices):
+        def load_history_context(self, as_of, sessions, selected):
+            context = FakeSupplier(dates).load_context(as_of, sessions, universe=selected)
+            return replace(context, industry_intervals=())
+
+    router = HistorySupplierRouter(LoginTimeout(dates), TencentContext(), lambda: universe, StSource())
+    context = router.load_context(dates[-1], len(dates))
+
+    assert context.calendar.open_dates == dates
+    assert context.universe == universe
+    assert context.industry_intervals == ()
+    result = run_history_sync(
+        HistorySyncConfiguration(tmp_path, sessions=len(dates), reread_sessions=2, minimum_free_bytes=0),
+        router,
+        clock=lambda: NOW,
+    )
+    assert result.state == "completed"
+    assert result.training_due is False and result.training_due_reason == "data_incomplete"
+
+
+def test_non_login_context_failure_does_not_hide_reference_error() -> None:
+    dates = (date(2026, 10, 8), date(2026, 10, 9))
+
+    class IndustryFailure(Baseline):
+        def load_context(self, *_args, **_kwargs):
+            raise RuntimeError("industry_query_failed")
+
+    with pytest.raises(RuntimeError, match="industry_query_failed"):
+        _router(IndustryFailure(dates), Prices()).load_context(dates[-1], len(dates))
+
+
 @pytest.mark.parametrize("count", (5, 639, 640, 641, 2000))
 def test_tencent_first_fetches_one_whole_window(count):
     dates = tuple(date(2020, 1, 1) + timedelta(days=i) for i in range(count))
@@ -159,7 +198,10 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
     current = HistorySnapshotReader(tmp_path)
     assert current.read_day(dates[-1], state.active_snapshot)[0].cell == rows[0].cell
     tail = current.read_day(new_dates[-1], state.active_snapshot)[0].cell
-    assert tail.qfq.close_price == (11.0 if incoming == "qfq_basis" else 10.0)
+    if incoming == "missing":
+        assert tail.status == "unknown_missing" and tail.qfq is None
+    else:
+        assert tail.qfq is not None and tail.qfq.close_price == 11.0
 
 
 def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypatch):

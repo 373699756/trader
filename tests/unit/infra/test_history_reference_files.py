@@ -95,7 +95,7 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
     assert tuple(item.code for item in published.universe.securities) == ("600001",)
 
 
-def test_unknown_price_gap_breaks_training_window_and_resumes_with_tencent(tmp_path):
+def test_unknown_tencent_date_breaks_training_window_without_forced_refetch(tmp_path):
     dates = tuple(date(2026, 7, 1) + timedelta(days=i) for i in range(125))
     gap = dates[61]
 
@@ -112,12 +112,9 @@ def test_unknown_price_gap_breaks_training_window_and_resumes_with_tencent(tmp_p
                 ),
             )
 
-        def fetch_baostock_prices(self, *_args):
-            raise RuntimeError("supplier_query_failed")
-
     config = HistorySyncConfiguration(tmp_path, sessions=125, minimum_free_bytes=0)
     result = run_history_sync(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
-    assert result.state == "completed" and result.unresolved_price_cells == 1
+    assert result.state == "completed" and result.unresolved_price_cells == 0
     control = HistoryControlIndex(tmp_path / "control.sqlite3")
     snapshot = control.load_state().active_snapshot
     reader = HistorySnapshotReader(tmp_path)
@@ -126,39 +123,27 @@ def test_unknown_price_gap_breaks_training_window_and_resumes_with_tencent(tmp_p
     assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
     resumed = FakeSupplier(dates, industry="bank")
     result = run_history_sync(config, resumed, clock=lambda: NOW)
-    assert result.state == "completed" and result.unresolved_price_cells == 0
-    snapshot = control.load_state().active_snapshot
-    assert next(row for row in reader.iter_training_rows(snapshot, dates, {"600001"}) if row.trade_date == gap).point
-    assert gap in resumed.calls[0][1]
-    assert "baostock_prices" not in resumed.events
-    assert run_history_sync(config, resumed, clock=lambda: NOW).state == "already_current"
+    assert result.state == "already_current" and result.unresolved_price_cells == 0
+    assert resumed.calls == []
 
 
-def test_baostock_recovers_every_gap_before_publication(tmp_path):
+def test_tencent_missing_dates_publish_without_baostock_recovery(tmp_path):
     dates = (date(2026, 9, 8), date(2026, 9, 9))
 
     class Missing(FakeSupplier):
-        recovered = []
-
         def fetch_tencent_window(self, security, requested):
             return PublishedHistoryWindow(
                 security.code,
                 tuple(PublishedHistoryCell(security.code, day, "unknown_missing", None, None) for day in requested),
             )
 
-        def fetch_baostock_prices(self, security, requested):
-            self.recovered.append(security.code)
-            return _download(security.code, requested)
-
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     supplier = Missing(dates)
     first = run_history_sync(config, supplier, clock=lambda: NOW)
     assert first.state == "completed" and first.unresolved_price_cells == 0
-    assert supplier.recovered == ["600001", "600002"]
-    supplier.recovered.clear()
+    assert "baostock_prices" not in supplier.events
     second = run_history_sync(config, supplier, clock=lambda: NOW)
     assert second.state == "already_current"
-    assert supplier.recovered == []
 
 
 def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
@@ -268,7 +253,7 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
         tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
 
 
-def test_exhausted_stock_does_not_block_later_recovery_or_sparse_publication(tmp_path):
+def test_tencent_missing_dates_publish_sparse_rows_for_every_stock(tmp_path):
     dates = (date(2026, 9, 8), date(2026, 9, 9))
 
     class Missing(FakeSupplier):
@@ -278,20 +263,14 @@ def test_exhausted_stock_does_not_block_later_recovery_or_sparse_publication(tmp
                 tuple(PublishedHistoryCell(security.code, day, "unknown_missing", None, None) for day in requested),
             )
 
-        def fetch_baostock_prices(self, security, requested):
-            self.calls.append((security.code, requested))
-            if security.code == "600001":
-                raise RuntimeError("supplier_daily_raw_timeout")
-            return _download(security.code, requested)
-
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     supplier = Missing(dates)
     result = run_history_sync(config, supplier, clock=lambda: NOW)
-    assert result.state == "completed" and result.unresolved_price_cells == 2
-    assert [code for code, _ in supplier.calls] == ["600001", "600001", "600001", "600002"]
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert supplier.calls == []
     snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
-    assert [(row.code, row.cell.obtained) for row in rows] == [("600001", False), ("600002", True)]
+    assert [(row.code, row.cell.obtained) for row in rows] == [("600001", False), ("600002", False)]
 
 
 def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
