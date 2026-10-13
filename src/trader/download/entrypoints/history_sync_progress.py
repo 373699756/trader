@@ -23,6 +23,7 @@ from trader.download.infra.terminal_progress import TerminalDownloadProgress
 
 _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "initializing": "初始化",
+    "storage_profile": "历史磁盘",
     "loading_context": "加载上下文",
     "supplier_login": "供应商登录",
     "supplier_calendar": "交易日历",
@@ -53,6 +54,7 @@ _STATE_LABELS = {
     "cancelled": "取消",
 }
 _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
+    "storage_profile": "类型",
     "supplier_calendar": "日期范围",
     "supplier_industry": "日期",
     "supplier_daily_raw": "股票",

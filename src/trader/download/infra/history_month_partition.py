@@ -325,9 +325,9 @@ class HistoryMonthPrices:
         except sqlite3.Error as exc:
             raise HistoryMonthPartitionError("history month revision write failed") from exc
 
-    def open_write_session(self) -> HistoryMonthWriteSession:
+    def open_write_session(self, *, fresh: bool = False) -> HistoryMonthWriteSession:
         """Open one thread-confined writer reused across durable batch transactions."""
-        return HistoryMonthWriteSession(self)
+        return HistoryMonthWriteSession(self, fresh=fresh)
 
     def read_price_keys(self, keys: tuple[tuple[str, date], ...], sequence: int) -> tuple[HistoryRevision, ...]:
         """Read a bounded stock batch through exact observation/record keys on one connection."""
@@ -737,6 +737,31 @@ class HistoryMonthPrices:
             previous_key = key
         return tuple(prepared)
 
+    @staticmethod
+    def _insert_fresh_batch(connection: sqlite3.Connection, prepared: tuple[_EncodedRevision, ...]) -> None:
+        """Insert disjoint first-build keys; primary keys reject any repeated identity."""
+        connection.executemany(
+            "INSERT INTO daily_records"
+            "(trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                (
+                    item.trade_date,
+                    item.value.code,
+                    item.value.revision_id,
+                    item.value.first_seen_sequence,
+                    item.value.board,
+                    item.payload_json,
+                    item.value.content_hash,
+                )
+                for item in prepared
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
+            ((*item.observation_key, item.value.revision_id) for item in prepared),
+        )
+
     def _save_batch(self, connection: sqlite3.Connection, prepared: tuple[_EncodedRevision, ...]) -> None:
         connection.execute(
             "CREATE TEMP TABLE requested_history_revisions ("
@@ -920,8 +945,9 @@ class HistoryMonthPrices:
 class HistoryMonthWriteSession:
     """Reuse one month's connection without weakening per-batch FULL durability."""
 
-    def __init__(self, prices: HistoryMonthPrices) -> None:
+    def __init__(self, prices: HistoryMonthPrices, *, fresh: bool = False) -> None:
         self._prices = prices
+        self._fresh = fresh
         self._connection = prices._write_connection()
         try:
             prices._require_metadata(self._connection)
@@ -938,8 +964,12 @@ class HistoryMonthWriteSession:
                         raise HistoryMonthPartitionError("disk_space_insufficient")
                     with self._connection:
                         self._connection.execute("BEGIN IMMEDIATE")
-                        self._prices._save_batch(self._connection, self._prices._prepare_revisions(batch))
-                        self._connection.execute("DROP TABLE requested_history_revisions")
+                        prepared = self._prices._prepare_revisions(batch)
+                        if self._fresh:
+                            self._prices._insert_fresh_batch(self._connection, prepared)
+                        else:
+                            self._prices._save_batch(self._connection, prepared)
+                            self._connection.execute("DROP TABLE requested_history_revisions")
         except sqlite3.Error as exc:
             raise HistoryMonthPartitionError("history month revision write failed") from exc
 

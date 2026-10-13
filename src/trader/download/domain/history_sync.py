@@ -21,6 +21,7 @@ from trader.download.domain.published_history import PublishedHistoryWindow
 
 HistorySyncProgressStage = Literal[
     "initializing",
+    "storage_profile",
     "loading_context",
     "supplier_login",
     "supplier_calendar",

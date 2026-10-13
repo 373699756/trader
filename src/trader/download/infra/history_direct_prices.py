@@ -174,7 +174,7 @@ class HistoryDirectPrices:
                 target = self._month(year, month)
                 if not (self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3").exists():
                     target.initialize()
-                session = target.open_write_session()
+                session = target.open_write_session(fresh=self._fresh)
                 self._write_sessions[key] = session
             session.save_revision_batches(revisions)
         self._written_codes.update(result.task.code for result in results if result.revisions)

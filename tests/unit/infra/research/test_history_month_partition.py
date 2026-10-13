@@ -56,6 +56,22 @@ def test_month_schema_initialization_commits_all_ddl_once(tmp_path: Path) -> Non
     assert sum(sql.strip().upper() == "COMMIT" for sql in statements) == 1
 
 
+def test_first_build_insert_rejects_duplicate_without_changing_durable_rows(tmp_path: Path) -> None:
+    path = tmp_path / "partitions/2026/09.sqlite3"
+    month = HistoryMonthPrices(path, 2026, 9)
+    month.initialize()
+    revision = _revision(date(2026, 9, 10), 1, 10.0)
+    session = month.open_write_session(fresh=True)
+    try:
+        session.save_revision_batches((revision,))
+        with pytest.raises(HistoryMonthPartitionError, match="write failed"):
+            session.save_revision_batches((revision,))
+    finally:
+        session.close()
+    assert month.read_day(revision.trade_date, snapshot_sequence=1) == (revision,)
+    assert month.seal(1).row_count == 1
+
+
 def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> None:
     path = tmp_path / "partitions/2026/09.sqlite3"
     repository = HistoryMonthPrices(path, 2026, 9)

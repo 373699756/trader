@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, timedelta
-from threading import Event, Lock
+from threading import Event, Lock, get_ident
 
 import pytest
 
@@ -257,23 +257,32 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
     opened_months = []
     checkpoint_sizes = []
     write_sizes = []
+    prepare_threads = set()
+    writer_threads = set()
     open_session = HistoryMonthPrices.open_write_session
     finish = HistoryDownloadIndex.finish
     commit = HistoryDirectPrices.commit_pipeline
+    prepare = HistoryDirectPrices.prepare
 
-    def tracked_open(month):
+    def tracked_prepare(prices, *args, **kwargs):
+        prepare_threads.add(get_ident())
+        return prepare(prices, *args, **kwargs)
+
+    def tracked_open(month, *, fresh=False):
         opened_months.append(1)
-        return open_session(month)
+        return open_session(month, fresh=fresh)
 
     def tracked_finish(index, completions):
         checkpoint_sizes.append(len(completions))
         return finish(index, completions)
 
     def tracked_commit(prices, results):
+        writer_threads.add(get_ident())
         outcome = commit(prices, results)
         write_sizes.append(len(results))
         return outcome
 
+    monkeypatch.setattr(HistoryDirectPrices, "prepare", tracked_prepare)
     monkeypatch.setattr(HistoryMonthPrices, "open_write_session", tracked_open)
     monkeypatch.setattr(HistoryDownloadIndex, "finish", tracked_finish)
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", tracked_commit)
@@ -290,6 +299,7 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
     assert opened_months == [1]
     assert sum(checkpoint_sizes) == 40
     assert len(checkpoint_sizes) < 40
+    assert prepare_threads and writer_threads and prepare_threads.isdisjoint(writer_threads)
     # Network completion may leave a singleton tail; each write batch still has one checkpoint.
     assert checkpoint_sizes == write_sizes
     assert all(1 <= size <= 64 for size in checkpoint_sizes)

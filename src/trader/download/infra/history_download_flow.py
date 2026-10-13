@@ -34,6 +34,7 @@ from trader.download.infra.history_download_index import (
     HistoryDownloadTask,
 )
 from trader.download.infra.history_month_partition import HistoryMonthPartitionError
+from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_failure import HistorySyncFailureError, history_failure_detail
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
@@ -55,6 +56,7 @@ class HistoryDownloadResources:
     index: HistoryDownloadIndex
     executor: WorkerExecutor
     writer: WorkerExecutor
+    tuning: HistoryWriteTuning
     cancel: Callable[[], bool]
     progress: HistorySyncProgressPort | None
 
@@ -66,7 +68,13 @@ class _TencentResult:
     previous: tuple[BaoStockDailyCell, ...]
     window: PublishedHistoryWindow
     failure: str | None = None
-    seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class _PreparedResult:
+    price: HistoryPriceResult
+    dates: tuple[date, ...]
+    seconds: float
 
 
 @dataclass(frozen=True)
@@ -107,10 +115,10 @@ class HistoryDownloadFlow:
             ),
         )
 
-    def _commit(self, batch: tuple[_TencentResult, ...]) -> _WriteResult:
+    def _commit(self, batch: tuple[_PreparedResult, ...]) -> _WriteResult:
         started = time.monotonic()
         self._check()
-        results = tuple(self._tencent_result(result) for result in batch)
+        results = tuple(item.price for item in batch)
         self._resources.prices.commit_pipeline(results)
         self._check()
         try:
@@ -172,7 +180,7 @@ class HistoryDownloadFlow:
         # Old failed requests may still have durable gaps. Recheck them with
         # Tencent on resume; successful short responses are accepted below.
         jobs = deque(task for task in tasks if not task.tencent_done or task.code in gap_codes)
-        if any(len(task.dates) > 32768 for task in jobs):
+        if any(len(task.dates) > resources.tuning.max_cells for task in jobs):
             raise ValueError("history_download_task_too_large")
         completed = sum(task.tencent_done and task.code not in gap_codes for task in tasks)
         self._reused_codes.update(task.code for task in tasks if task.tencent_done and task.code not in gap_codes)
@@ -205,14 +213,14 @@ class HistoryDownloadFlow:
     def _dispatch(
         self,
         jobs: deque[HistoryDownloadTask],
-        futures: dict[Future[_TencentResult], HistoryDownloadTask],
+        futures: dict[Future[_PreparedResult], HistoryDownloadTask],
         codes: int,
         cells: int,
     ) -> bool:
         resources = self._resources
-        while jobs and len(futures) < resources.configuration.history_workers and codes < 64:
+        while jobs and len(futures) < resources.configuration.history_workers and codes < resources.tuning.max_codes:
             self._check()
-            if cells + len(jobs[0].dates) > 32768:
+            if cells + len(jobs[0].dates) > resources.tuning.max_cells:
                 break
             task = jobs.popleft()
             futures[submit_or_reject(resources.executor, self._fetch_task, task)] = task
@@ -220,7 +228,7 @@ class HistoryDownloadFlow:
             codes += 1
         return not jobs
 
-    def _fetch_task(self, task: HistoryDownloadTask) -> _TencentResult:
+    def _fetch_task(self, task: HistoryDownloadTask) -> _PreparedResult:
         self._check()
         previous = self._resources.prices.read_for_download(task.code, task.dates)
         obtained = {cell.trade_date for cell in previous if cell.status != "unknown_missing"}
@@ -228,7 +236,7 @@ class HistoryDownloadFlow:
         dates = tuple(sorted(missing | set(sorted(obtained)[-5:]))) if missing else ()
         empty = PublishedHistoryWindow(task.code, ())
         if not dates:
-            return _TencentResult(task, (), previous, empty)
+            return _PreparedResult(self._tencent_result(_TencentResult(task, (), previous, empty)), (), 0.0)
         started = time.monotonic()
         failure = None
         try:
@@ -245,7 +253,9 @@ class HistoryDownloadFlow:
             (window.cells or failure is None) and tuple(cell.trade_date for cell in window.cells) != dates
         ):
             raise RuntimeError("history_supplier_identity_conflict")
-        return _TencentResult(task, dates, previous, window, failure, time.monotonic() - started)
+        download_seconds = time.monotonic() - started
+        price = self._tencent_result(_TencentResult(task, dates, previous, window, failure))
+        return _PreparedResult(price, dates, download_seconds)
 
     def _tencent_result(self, result: _TencentResult) -> HistoryPriceResult:
         task = result.task
@@ -297,8 +307,8 @@ class _TencentPipeline:
         self._completed = completed
         self._total = total
         self._downloaded = completed
-        self._futures: dict[Future[_TencentResult], HistoryDownloadTask] = {}
-        self._buffered: list[_TencentResult] = []
+        self._futures: dict[Future[_PreparedResult], HistoryDownloadTask] = {}
+        self._buffered: list[_PreparedResult] = []
         self._writing: Future[_WriteResult] | None = None
         self._writing_cells = self._writing_codes = 0
         self._download_seconds = self._write_seconds = self._backpressure_seconds = 0.0
@@ -369,14 +379,15 @@ class _TencentPipeline:
             self._downloaded += 1
             self._download_seconds += result.seconds
             if not result.dates:
-                self._flow._reused_codes.add(result.task.code)
+                self._flow._reused_codes.add(result.price.task.code)
 
     def _dispatch(self) -> bool:
-        reserved = self._writing_cells + sum(len(item.task.dates) for item in self._buffered)
+        reserved = self._writing_cells + sum(len(item.price.task.dates) for item in self._buffered)
         reserved += sum(len(task.dates) for task in self._futures.values())
         codes = self._writing_codes + len(self._buffered) + len(self._futures)
         next_cells = len(self._jobs[0].dates) if self._jobs else 0
-        blocked = bool(self._jobs) and (codes >= 64 or reserved + next_cells > 32768)
+        tuning = self._flow._resources.tuning
+        blocked = bool(self._jobs) and (codes >= tuning.max_codes or reserved + next_cells > tuning.max_cells)
         if not self._exhausted and not blocked:
             self._exhausted = self._flow._dispatch(self._jobs, self._futures, codes, reserved)
         return blocked
@@ -384,8 +395,14 @@ class _TencentPipeline:
     def _flush(self) -> None:
         if not self._buffered or self._writing is not None:
             return
-        cells = sum(len(item.task.dates) for item in self._buffered)
-        if len(self._buffered) < 16 and cells < 8192 and time.monotonic() - self._last_commit < 5 and self._futures:
+        cells = sum(len(item.price.task.dates) for item in self._buffered)
+        tuning = self._flow._resources.tuning
+        if (
+            len(self._buffered) < tuning.flush_codes
+            and cells < tuning.flush_cells
+            and time.monotonic() - self._last_commit < 5
+            and self._futures
+        ):
             return
         batch = tuple(self._buffered)
         self._buffered.clear()

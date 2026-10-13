@@ -47,6 +47,12 @@ from trader.download.infra.history_reference_files import (
     write_history_reference,
 )
 from trader.download.infra.history_snapshot_publication import HistoryPublication, publish_history_snapshot
+from trader.download.infra.history_storage_profile import (
+    HistoryStorageKind,
+    HistoryWriteTuning,
+    classify_history_storage,
+    history_write_tuning,
+)
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_sync_failure import (
     HistorySyncFailureError,
@@ -87,6 +93,8 @@ class _HistorySync:
     writer: WorkerExecutor
     control: HistoryControlIndex
     index: HistoryDownloadIndex
+    storage_kind: HistoryStorageKind
+    write_tuning: HistoryWriteTuning | None
 
     def execute(self) -> HistoryMaintenanceStatus:
         published = False
@@ -209,6 +217,7 @@ class _HistorySync:
                 self.index,
                 self.executor,
                 self.writer,
+                self.write_tuning or history_write_tuning(self.storage_kind, fresh=inputs.fresh),
                 self.cancel,
                 self.progress,
             )
@@ -268,6 +277,7 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
     progress: HistorySyncProgressPort | None = None,
     worker_pool: WorkerExecutor | None = None,
     writer_pool: WorkerExecutor | None = None,
+    write_tuning: HistoryWriteTuning | None = None,
 ) -> HistoryMaintenanceStatus:
     observed_at = (clock or (lambda: datetime.now(_SHANGHAI)))()
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -279,6 +289,8 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
     _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(configuration.archive_root / ".maintenance.lock"):
+            storage_kind = classify_history_storage(configuration.archive_root)
+            _publish_progress(progress, "storage_profile", "completed", current_item=storage_kind)
             if not (configuration.archive_root / "control.sqlite3").exists() and any(
                 (configuration.archive_root / "partitions").glob("*/*.sqlite3")
             ):
@@ -295,6 +307,8 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
                 writer_pool or injected_executor(None),
                 control,
                 index,
+                storage_kind,
+                write_tuning,
             ).execute()
     except KeyboardInterrupt:
         return _status("cancelled", "cancelled", configuration, _safe_active(control), observed_at)

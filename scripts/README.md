@@ -171,4 +171,4 @@ set; release acceptance also requires `make test-full`. Work status and pending
 optimizations are recorded only in `docs/3_工程实施.md`.
 
 
-完整history当前仅从空库重建，不提供旧格式转换。新增只读诊断：`--profile tencent-history-window --codes 600519`核对整窗2000条实际返回；`--profile history-write --download-sizes 8 --history-days 2000`在仓库外临时目录对合成数据测量首建、日更、隔周与同日重跑，不写活动历史。
+完整history当前仅从空库重建，不提供旧格式转换。只读诊断`--profile tencent-history-window --codes 600519`核对整窗2000条实际返回；`--profile history-write --download-sizes 8 --history-days 2000`在仓库外临时目录对合成数据测量首建、日更、隔周与同日重跑，报告目标设备类型、分阶段耗时、物理写入量与峰值RSS，不写活动历史。隔离fixture和真实供应商/全市场下载耗时分别判断。
