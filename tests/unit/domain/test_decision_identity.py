@@ -18,6 +18,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
 )
 from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.research import ResearchComponentCoverage, research_components_from_observation
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
@@ -26,6 +27,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionOverlay,
     DecisionQuote,
     DecisionResearchCoverage,
+    DecisionRiskDisclosure,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
@@ -191,6 +193,43 @@ def test_legacy_formal_record_without_pipeline_keeps_original_identity() -> None
     assert "pipeline" not in json.loads(encoded)["decision"]
     assert restored == record
     assert restored.decision.pipeline is None
+
+
+def test_formal_record_preserves_component_coverage_and_risk_origin() -> None:
+    assert research_components_from_observation(None) == ResearchComponentCoverage(
+        "unknown", "unknown", "unknown", "unknown"
+    )
+    original = decision()
+    item = replace(
+        original.items[0],
+        risk_codes=("risk_example",),
+        risk_details=(
+            DecisionRiskDisclosure("risk_example", "local", True),
+            DecisionRiskDisclosure("risk_example", "deepseek", False),
+        ),
+        research_coverage=DecisionResearchCoverage(
+            2,
+            1,
+            True,
+            ResearchComponentCoverage("known_clear", "stale", "unknown", "known_risk"),
+        ),
+    )
+    record = CommittedDecisionRecord(replace(original, items=(item,)), NOW + timedelta(minutes=10), "scheduled")
+    restored = committed_record_from_bytes(committed_record_bytes(record))
+
+    assert restored == record
+    assert restored.decision.items[0].risk_details == item.risk_details
+    assert restored.decision.items[0].research_coverage == item.research_coverage
+
+
+def test_formal_record_without_new_disclosures_keeps_original_bytes() -> None:
+    original = decision()
+    record = CommittedDecisionRecord(original, NOW + timedelta(minutes=10), "scheduled")
+    encoded = committed_record_bytes(record)
+
+    assert b'"risk_details"' not in encoded
+    assert b'"components"' not in encoded
+    assert committed_record_bytes(committed_record_from_bytes(encoded)) == encoded
 
 
 def test_scored_identity_rejects_long_and_invalid_hybrid_parent_or_local_score() -> None:

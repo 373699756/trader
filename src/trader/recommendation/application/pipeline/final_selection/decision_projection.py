@@ -58,6 +58,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionModelDiagnostics,
     DecisionQuote,
     DecisionResearchCoverage,
+    DecisionRiskDisclosure,
     ScoredDecision,
     SelectionDiagnostics,
 )
@@ -506,6 +507,10 @@ def _decision_item(
             ("deepseek_risk_penalty", entry.score.deepseek_risk_penalty),
         ),
         risk_codes=tuple(fact.risk_code for fact in (*entry.local_risk_facts, *entry.deepseek_risk_facts)),
+        risk_details=(
+            *(DecisionRiskDisclosure(fact.risk_code, "local", fact.veto) for fact in entry.local_risk_facts),
+            *(DecisionRiskDisclosure(fact.risk_code, "deepseek", fact.veto) for fact in entry.deepseek_risk_facts),
+        ),
         reason=reason,
         board=entry.features.quote.board,
         selection_rank=entry.selection_rank,
@@ -525,6 +530,7 @@ def _decision_item(
             len(entry.features.evidence),
             len(entry.features.external_risk_facts),
             review_eligible,
+            entry.features.research_components,
         ),
         model_diagnostics=(
             DecisionModelDiagnostics(

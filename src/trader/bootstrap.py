@@ -1126,7 +1126,7 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock)
+    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, market_data)
     research_trace = SQLiteResearchTraceArchive(
         settings.runtime_dir,
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),

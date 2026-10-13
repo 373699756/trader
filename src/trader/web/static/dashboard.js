@@ -473,6 +473,8 @@
       action: item.action,
       action_reason: item.action_reason || item.observation_reason,
       anchor_price: item.anchor_quote && item.anchor_quote.price,
+      anchor_daily_return_pct: item.anchor_quote && item.anchor_quote.pct_change,
+      anchor_to_now_pct: item.anchor_to_now_pct,
       anchor_source_time: item.anchor_quote && item.anchor_quote.source_time,
       setup: item.setup || null,
       downside: item.downside || null,
@@ -490,7 +492,9 @@
         predicted_net_excess_pct: scores.predicted_net_excess_pct,
         model_disagreement_pct: scores.model_disagreement_pct,
       },
-      risks: (item.risk_codes || []).map((risk_code) => ({ risk_code })),
+      risks: Array.isArray(item.risk_details) && item.risk_details.length > 0
+        ? item.risk_details
+        : (item.risk_codes || []).map((risk_code) => ({ risk_code })),
     };
   }
   function displayableCachedPayload(key, strategy, selectedDate, view) {

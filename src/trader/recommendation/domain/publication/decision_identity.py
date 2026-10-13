@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.research import ResearchComponentCoverage
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
 DecisionStage = Literal["local", "hybrid"]
@@ -78,10 +79,22 @@ class DecisionResearchCoverage:
     evidence_count: int
     structured_risk_fact_count: int
     review_eligible: bool
+    components: ResearchComponentCoverage | None = None
 
     def __post_init__(self) -> None:
         if self.evidence_count < 0 or self.structured_risk_fact_count < 0:
             raise ValueError("decision research coverage counts cannot be negative")
+
+
+@dataclass(frozen=True)
+class DecisionRiskDisclosure:
+    risk_code: str
+    origin: Literal["local", "deepseek"]
+    veto_applied: bool
+
+    def __post_init__(self) -> None:
+        if _REASON.fullmatch(self.risk_code) is None or self.origin not in {"local", "deepseek"}:
+            raise ValueError("decision risk disclosure is invalid")
 
 
 @dataclass(frozen=True)
@@ -169,6 +182,7 @@ class DecisionItem:
     review_outcome: str | None = None
     research_coverage: DecisionResearchCoverage | None = None
     model_diagnostics: DecisionModelDiagnostics | None = None
+    risk_details: tuple[DecisionRiskDisclosure, ...] = ()
 
     def __post_init__(self) -> None:
         _require_code(self.code)
@@ -184,6 +198,8 @@ class DecisionItem:
         risks = tuple(sorted(set(self.risk_codes)))
         if any(_REASON.fullmatch(value) is None for value in risks):
             raise ValueError("decision risk codes must be structured")
+        if self.risk_details and set(detail.risk_code for detail in self.risk_details) != set(risks):
+            raise ValueError("decision risk disclosure must match risk codes")
         if _ACTION_REASON.fullmatch(self.reason) is None:
             raise ValueError("decision reason must be structured")
         _validate_decision_item_selection(self)
@@ -594,6 +610,11 @@ def _decision_item_payload(item: DecisionItem) -> dict[str, _Json]:
     payload["downside"] = _downside_payload(item.downside)
     payload["review_outcome"] = item.review_outcome
     payload["research_coverage"] = _research_coverage_payload(item.research_coverage)
+    if item.risk_details:
+        payload["risk_details"] = [
+            {"risk_code": detail.risk_code, "origin": detail.origin, "veto_applied": detail.veto_applied}
+            for detail in item.risk_details
+        ]
     if item.model_diagnostics is not None:
         payload["model_diagnostics"] = _model_diagnostics_payload(item.model_diagnostics)
     return payload
@@ -614,11 +635,19 @@ def _downside_payload(value: DecisionDownside | None) -> dict[str, _Json] | None
 def _research_coverage_payload(value: DecisionResearchCoverage | None) -> dict[str, _Json] | None:
     if value is None:
         return None
-    return {
+    payload: dict[str, _Json] = {
         "evidence_count": value.evidence_count,
         "structured_risk_fact_count": value.structured_risk_fact_count,
         "review_eligible": value.review_eligible,
     }
+    if value.components is not None:
+        payload["components"] = {
+            "financial": value.components.financial,
+            "announcements": value.components.announcements,
+            "pledge": value.components.pledge,
+            "unlock": value.components.unlock,
+        }
+    return payload
 
 
 def _model_diagnostics_payload(value: DecisionModelDiagnostics) -> dict[str, _Json]:

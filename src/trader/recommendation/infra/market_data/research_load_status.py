@@ -5,11 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final, Literal
+from typing import Final
 
-from trader.recommendation.domain.market.research import CorporateRiskCategory, ResearchObservation
+from trader.recommendation.domain.market.research import (
+    CorporateRiskCategory,
+    ResearchComponentStatus,
+    ResearchObservation,
+    research_components_from_observation,
+)
 
-ResearchComponentStatus = Literal["known_clear", "known_risk", "unknown", "stale"]
 
 RESEARCH_COMPONENT_IDS: Final[tuple[str, ...]] = (
     "financial",
@@ -57,22 +61,7 @@ class ResearchLoadReport:
 
 
 def research_component_statuses(observation: ResearchObservation) -> tuple[ResearchComponentStatus, ...]:
-    financial_status: ResearchComponentStatus = "known_clear" if observation.financial is not None else "unknown"
-
-    if not observation.announcements_available:
-        announcements_status: ResearchComponentStatus = "unknown"
-    elif not observation.corporate_risk_history_complete:
-        announcements_status = "stale"
-    elif any(
-        fact.category in {CorporateRiskCategory.OFFICIAL_INVESTIGATION, CorporateRiskCategory.MAJOR_ILLEGAL}
-        for fact in observation.corporate_risk_facts
-    ):
-        announcements_status = "known_risk"
-    else:
-        announcements_status = "known_clear"
-
-    pledge_status: ResearchComponentStatus = "known_clear" if observation.pledge_ratio_pct is not None else "unknown"
-    unlock_status: ResearchComponentStatus = "known_clear" if observation.unlock_ratio_pct is not None else "unknown"
+    components = research_components_from_observation(observation)
     penalty_status: ResearchComponentStatus = (
         "known_risk" if any(fact.category is not None for fact in observation.corporate_risk_facts) else "unknown"
     )
@@ -92,10 +81,10 @@ def research_component_statuses(observation: ResearchObservation) -> tuple[Resea
     suspension_status: ResearchComponentStatus = "unknown"
 
     return (
-        financial_status,
-        announcements_status,
-        pledge_status,
-        unlock_status,
+        components.financial,
+        components.announcements,
+        components.pledge,
+        components.unlock,
         penalty_status,
         lawsuit_restructuring_status,
         delisting_status,

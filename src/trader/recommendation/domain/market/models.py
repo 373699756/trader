@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from trader.recommendation.domain.evidence.review import RiskFact
+    from trader.recommendation.domain.market.research import ResearchComponentCoverage
 
 
 class Board(str, Enum):
@@ -232,6 +233,7 @@ class FeatureSnapshot:
     parameter_status: str = "current"
     selection_skip_reason: str = ""
     model_industry: ModelIndustryReference | None = None
+    research_components: ResearchComponentCoverage | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))

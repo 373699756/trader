@@ -57,6 +57,7 @@ from trader.recommendation.domain.market.research import (
     derive_corporate_risk_features,
     derive_long_research_features,
     derive_market_regime,
+    research_components_from_observation,
 )
 from trader.recommendation.domain.market.tail import (
     MinuteBar,
@@ -451,6 +452,7 @@ class FeatureBuilder:
                         *candidate_evidence,
                     ),
                     normalization=normalization,
+                    research_components=research_components_from_observation(research_observation),
                 )
             )
         return tuple(snapshots)

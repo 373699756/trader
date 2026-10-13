@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from enum import Enum
 from types import MappingProxyType
+from typing import Literal
 
 from trader.recommendation.domain.market.factors import clamp, weighted_score
 from trader.recommendation.domain.market.models import Evidence
@@ -273,6 +274,42 @@ class ResearchObservation:
             raise ValueError("current financial report must belong to financial history")
         if self.financial_history_complete and not self.financial_history:
             raise ValueError("complete financial history requires report rows")
+
+
+ResearchComponentStatus = Literal["known_clear", "known_risk", "unknown", "stale"]
+
+
+@dataclass(frozen=True)
+class ResearchComponentCoverage:
+    financial: ResearchComponentStatus
+    announcements: ResearchComponentStatus
+    pledge: ResearchComponentStatus
+    unlock: ResearchComponentStatus
+
+    def __post_init__(self) -> None:
+        valid = {"known_clear", "known_risk", "unknown", "stale"}
+        if any(value not in valid for value in (self.financial, self.announcements, self.pledge, self.unlock)):
+            raise ValueError("research component status is invalid")
+
+
+def research_components_from_observation(observation: ResearchObservation | None) -> ResearchComponentCoverage:
+    if observation is None:
+        return ResearchComponentCoverage("unknown", "unknown", "unknown", "unknown")
+    financial: ResearchComponentStatus = "known_clear" if observation.financial is not None else "unknown"
+    if not observation.announcements_available:
+        announcements: ResearchComponentStatus = "unknown"
+    elif not observation.corporate_risk_history_complete:
+        announcements = "stale"
+    elif any(
+        fact.category in {CorporateRiskCategory.OFFICIAL_INVESTIGATION, CorporateRiskCategory.MAJOR_ILLEGAL}
+        for fact in observation.corporate_risk_facts
+    ):
+        announcements = "known_risk"
+    else:
+        announcements = "known_clear"
+    pledge: ResearchComponentStatus = "known_clear" if observation.pledge_ratio_pct is not None else "unknown"
+    unlock: ResearchComponentStatus = "known_clear" if observation.unlock_ratio_pct is not None else "unknown"
+    return ResearchComponentCoverage(financial, announcements, pledge, unlock)
 
 
 def derive_market_regime(

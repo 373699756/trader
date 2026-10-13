@@ -21,7 +21,11 @@ from trader.recommendation.domain.market.epochs import (
     ResearchEpoch,
 )
 from trader.recommendation.domain.market.models import Evidence, FeatureSnapshot, LiveQuote, MarketQuote
-from trader.recommendation.domain.market.research import ResearchObservation, derive_corporate_risk_features
+from trader.recommendation.domain.market.research import (
+    ResearchObservation,
+    derive_corporate_risk_features,
+    research_components_from_observation,
+)
 
 
 class ScoredSelectionNotReadyError(RuntimeError):
@@ -126,6 +130,7 @@ def _assemble_feature(context: _AssemblyContext, code: str) -> FeatureSnapshot:
         missing_fields=tuple(sorted(missing_fields)),
         missing_reasons=missing_reasons,
         evidence=_unique_evidence(evidence),
+        research_components=research_components_from_observation(research),
         merge_epoch=context.merge_epoch,
     )
 

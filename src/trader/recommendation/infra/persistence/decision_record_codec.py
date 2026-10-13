@@ -26,6 +26,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
 )
 from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.research import ResearchComponentCoverage, ResearchComponentStatus
 from trader.recommendation.domain.publication.decision_identity import (
     COMMITTED_RECORD_SCHEMA_VERSION,
     DECISION_IDENTITY_SCHEMA_VERSION,
@@ -36,6 +37,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionModelDiagnostics,
     DecisionQuote,
     DecisionResearchCoverage,
+    DecisionRiskDisclosure,
     DecisionStage,
     ScoredDecision,
     SelectionDiagnostics,
@@ -97,7 +99,7 @@ _ITEM_FIELDS = frozenset(
         "research_coverage",
     }
 )
-_ITEM_OPTIONAL_FIELDS = frozenset({"name", "industry", "quote", "model_diagnostics"})
+_ITEM_OPTIONAL_FIELDS = frozenset({"name", "industry", "quote", "model_diagnostics", "risk_details"})
 _DOWNSIDE_FIELDS = frozenset({"status", "reasons", "atr20_pct", "intraday_reversal_atr", "historical_drawdown_pct"})
 _RESEARCH_FIELDS = frozenset({"evidence_count", "structured_risk_fact_count", "review_eligible"})
 _MODEL_DIAGNOSTIC_FIELDS = frozenset(
@@ -230,6 +232,9 @@ def _decision_item_from_json(raw: object) -> DecisionItem:
         final_score=_number(value, "final_score"),
         score_components=_score_pairs(value.get("score_components")),
         risk_codes=tuple(_strings(value.get("risk_codes"), "risk_codes")),
+        risk_details=tuple(_risk_detail_from_json(item) for item in _list(value["risk_details"], "risk details"))
+        if "risk_details" in value
+        else (),
         reason=_text(value, "reason"),
         board=Board(_text(value, "board")),
         selection_rank=_integer(value, "selection_rank"),
@@ -263,11 +268,34 @@ def _downside_from_json(raw: object) -> DecisionDownside | None:
 def _research_coverage_from_json(raw: object) -> DecisionResearchCoverage | None:
     if raw is None:
         return None
-    value = _object(raw, "decision research coverage", required=_RESEARCH_FIELDS)
+    value = _object(raw, "decision research coverage", required=_RESEARCH_FIELDS, optional=frozenset({"components"}))
+    components = None
+    if "components" in value:
+        detail = _object(
+            value["components"],
+            "research components",
+            required=frozenset({"financial", "announcements", "pledge", "unlock"}),
+        )
+        components = ResearchComponentCoverage(
+            cast("ResearchComponentStatus", _text(detail, "financial")),
+            cast("ResearchComponentStatus", _text(detail, "announcements")),
+            cast("ResearchComponentStatus", _text(detail, "pledge")),
+            cast("ResearchComponentStatus", _text(detail, "unlock")),
+        )
     return DecisionResearchCoverage(
         _integer(value, "evidence_count"),
         _integer(value, "structured_risk_fact_count"),
         _boolean(value, "review_eligible"),
+        components,
+    )
+
+
+def _risk_detail_from_json(raw: object) -> DecisionRiskDisclosure:
+    value = _object(raw, "decision risk detail", required=frozenset({"risk_code", "origin", "veto_applied"}))
+    return DecisionRiskDisclosure(
+        _text(value, "risk_code"),
+        cast(Literal["local", "deepseek"], _text(value, "origin")),
+        _boolean(value, "veto_applied"),
     )
 
 

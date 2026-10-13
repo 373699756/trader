@@ -10,7 +10,7 @@ from trader.recommendation.application.pipeline.freeze_publish.draft_index impor
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
-from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.models import Board, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
@@ -115,15 +115,75 @@ def test_queries_read_only_formal_history_and_long_has_no_history() -> None:
     assert history.status == "ready"
     assert history.frozen is True
     assert history.freeze_kind == "scheduled"
-    assert history.items[0].price == 10.25
-    assert history.items[0].amount == 1_000_000_000.0
-    assert history.items[0].turnover_rate == 0.8
-    assert history.items[0].market_cap == 300_000_000_000.0
-    assert history.items[0].quote_status == "decision_anchor"
+    assert history.items[0].anchor_price == 10.25
+    assert history.items[0].anchor_daily_return_pct == 2.5
+    assert history.items[0].price is None
+    assert history.items[0].anchor_to_now_pct is None
+    assert history.items[0].quote_status == "missing"
     assert queries.dates(Strategy.TOMORROW) == (date(2026, 8, 8),)
     assert long_history.status == "not_applicable"
     assert long_history.degraded_reasons == ("history_not_applicable",)
     assert queries.dates(Strategy.LONG) == ()
+
+
+def test_history_uses_only_newer_today_cached_quote_and_updates_projection() -> None:
+    record = CommittedDecisionRecord(
+        _decision(trade_date=date(2026, 8, 8)),
+        datetime(2026, 8, 8, 11, 20, tzinfo=SHANGHAI),
+        "scheduled",
+    )
+
+    class CachedQuotes:
+        quote: MarketQuote | None = None
+
+        def cached_quotes(self, codes: tuple[str, ...]) -> dict[str, MarketQuote]:
+            assert codes == ("600000",)
+            return {"600000": self.quote} if self.quote is not None else {}
+
+    cached = CachedQuotes()
+    queries = UnifiedDecisionQueries(
+        UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), _Repository(record), _Clock(), cached
+    )
+    before = queries.history(Strategy.TOMORROW, record.trade_date)
+    cached.quote = MarketQuote(
+        code="600000",
+        name="浦发银行",
+        price=11.0,
+        previous_close=10.8,
+        open_price=10.8,
+        high=11.1,
+        low=10.7,
+        pct_change=1.85,
+        change_5m=None,
+        speed=None,
+        volume_ratio=None,
+        turnover_rate=1.0,
+        amount=1_000_000.0,
+        amplitude=None,
+        market_cap=300_000_000_000.0,
+        industry="银行",
+        source="fixture",
+        source_time=NOW,
+        received_time=NOW,
+        data_version="quote:new",
+    )
+    after = queries.history(Strategy.TOMORROW, record.trade_date)
+
+    assert before.items[0].price is None
+    assert after.items[0].price == 11.0
+    assert after.items[0].pct_change == 1.85
+    assert after.items[0].anchor_daily_return_pct == 2.5
+    assert after.items[0].anchor_to_now_pct == pytest.approx((11.0 / 10.25 - 1) * 100)
+    assert after.etag != before.etag
+    assert after.decision_version == before.decision_version
+    cached.quote = replace(
+        cached.quote,
+        source_time=datetime(2026, 8, 10, 14, 30, tzinfo=SHANGHAI),
+    )
+    stale = queries.history(Strategy.TOMORROW, record.trade_date)
+    assert stale.items[0].price is None
+    assert stale.items[0].anchor_to_now_pct is None
+    assert stale.etag == before.etag
 
 
 def test_current_overlay_replaces_every_quote_field_without_changing_decision_identity() -> None:

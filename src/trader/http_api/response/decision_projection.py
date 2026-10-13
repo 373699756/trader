@@ -20,6 +20,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageStatus,
     RecommendationPipelineStatus,
 )
+from trader.recommendation.domain.market.research import ResearchComponentCoverage
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, DecisionQuote
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -223,6 +224,12 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
             "model_disagreement_pct": item.model_disagreement_pct,
         },
         "risk_codes": list(item.risk_codes),
+        "risk_details": [
+            {"risk_code": detail.risk_code, "origin": detail.origin, "veto_applied": detail.veto_applied}
+            for detail in item.risk_details
+        ]
+        if item.risk_details
+        else None,
         "setup": {"type": item.setup_type} if item.setup_type is not None else None,
         "downside": (
             {
@@ -241,6 +248,7 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
                 "evidence_count": item.research_evidence_count,
                 "structured_risk_fact_count": item.research_risk_fact_count,
                 "review_eligible": item.review_eligible,
+                "components": _research_components(item.research_components),
             }
             if item.research_evidence_count is not None
             else None
@@ -249,7 +257,9 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
             "price": item.anchor_price,
             "source": item.anchor_source,
             "source_time": _time(item.anchor_time),
+            "pct_change": item.anchor_daily_return_pct,
         },
+        "anchor_to_now_pct": item.anchor_to_now_pct,
         "quote": {
             "price": item.price,
             "pct_change": item.pct_change,
@@ -399,6 +409,7 @@ def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
         "action_reason": item.reason,
         "anchor_price": quote.price if quote is not None else None,
         "anchor_source_time": _time(quote.source_time) if quote is not None else None,
+        "anchor_daily_return_pct": quote.pct_change if quote is not None else None,
         "setup": {"type": item.setup_type} if item.setup_type is not None else None,
         "downside": (
             {
@@ -417,6 +428,7 @@ def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
                 "evidence_count": coverage.evidence_count,
                 "structured_risk_fact_count": coverage.structured_risk_fact_count,
                 "review_eligible": coverage.review_eligible,
+                "components": _research_components(coverage.components),
             }
             if coverage is not None
             else None
@@ -433,7 +445,25 @@ def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
             "predicted_net_excess_pct": model.predicted_net_excess_pct if model is not None else None,
             "model_disagreement_pct": model.model_disagreement_pct if model is not None else None,
         },
-        "risks": [{"risk_code": code} for code in item.risk_codes],
+        "risks": (
+            [
+                {"risk_code": detail.risk_code, "origin": detail.origin, "veto_applied": detail.veto_applied}
+                for detail in item.risk_details
+            ]
+            if item.risk_details
+            else [{"risk_code": code} for code in item.risk_codes]
+        ),
+    }
+
+
+def _research_components(components: ResearchComponentCoverage | None) -> dict[str, str] | None:
+    if components is None:
+        return None
+    return {
+        "financial": components.financial,
+        "announcements": components.announcements,
+        "pledge": components.pledge,
+        "unlock": components.unlock,
     }
 
 

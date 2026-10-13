@@ -1495,8 +1495,10 @@ const getItem = {
   rank: 2, code: "600001", name: "证据股票", board: "main", industry: "测试行业",
   action: "executable", action_reason: "score_threshold_met", selected: true,
   setup: { type: "volume_breakout" }, review_outcome: "applied",
-  research_coverage: { evidence_count: 3, structured_risk_fact_count: 1, review_eligible: true },
+  research_coverage: { evidence_count: 3, structured_risk_fact_count: 1, review_eligible: true,
+    components: { financial: "known_clear", announcements: "stale", pledge: "unknown", unlock: "known_risk" } },
   risk_codes: ["unlock_risk"],
+  risk_details: [{ risk_code: "unlock_risk", origin: "deepseek", veto_applied: true }],
   quote: { price: 11, pct_change: 1, amount: 10000000, turnover_rate: 2, market_cap: 1000000000 },
   anchor_quote: { price: 10 },
   scores: {
@@ -1513,9 +1515,11 @@ const patchItem = {
   rank: 2, code: "600001", name: "证据股票", board: "main", industry: "测试行业",
   action: "executable", action_reason: "score_threshold_met", setup: { type: "volume_breakout" },
   review_outcome: "applied",
-  research_coverage: { evidence_count: 3, structured_risk_fact_count: 1, review_eligible: true },
+  research_coverage: { evidence_count: 3, structured_risk_fact_count: 1, review_eligible: true,
+    components: { financial: "known_clear", announcements: "stale", pledge: "unknown", unlock: "known_risk" } },
   price: 11, pct_change: 1, amount: 10000000, turnover_rate: 2, market_cap: 1000000000,
-  anchor_price: 10, quote_status: "decision_anchor", risks: [{ risk_code: "unlock_risk" }],
+  anchor_price: 10, quote_status: "decision_anchor",
+  risks: [{ risk_code: "unlock_risk", origin: "deepseek", veto_applied: true }],
   scores: {
     local_score: 80, final_score: 80, deepseek_score: null, deepseek_risk_penalty: 0,
     model_signal_score: 82.5, predicted_excess_return_pct: 1.45,
@@ -1532,7 +1536,7 @@ for (const payload of [getPayload, patchPayload]) {
   const row = state.tableRows([item], payload);
   const detail = state.drawer(item, payload);
   assert.match(row, /<td>2<\/td>/);
-  assert.match(row, /风险研究：有记录/);
+  assert.match(row, /风险研究：部分/);
   assert.match(row, /已复核/);
   assert.doesNotMatch(row, /<td>长期<\/td>|未复核/);
   assert.match(detail, /模型相对信号分<\/span><strong>82\.50/);
@@ -1540,8 +1544,12 @@ for (const payload of [getPayload, patchPayload]) {
   assert.match(detail, /预测成本后净超额<\/span><strong>\+1\.25%/);
   assert.match(detail, /研究证据<\/span><strong>3 条/);
   assert.match(detail, /结构化风险事实<\/span><strong>1 条/);
-  assert.match(detail, /财务数据<\/span><strong>逐项覆盖未提供/);
+  assert.match(detail, /财务数据<\/span><strong>已核：未见风险/);
+  assert.match(detail, /公司公告 \/ 减持<\/span><strong>已过期/);
+  assert.match(detail, /股权质押<\/span><strong>未获取/);
+  assert.match(detail, /限售解禁<\/span><strong>已核：有风险/);
   assert.match(detail, /限售股解禁风险/);
+  assert.match(detail, /DeepSeek · 已生效否决/);
   assert.doesNotMatch(detail, /未知风险|扣分 -|财务数据<\/span><strong>未获取/);
   assert.strictEqual(state.recommendationSummary(payload, [item]).modelReview, "1 / 1");
   const budgetElements = { budgetStatus: {}, budgetMeta: {} };
@@ -1562,6 +1570,10 @@ assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /本�
 const noResearchItem = { ...getPayload.items[0], research_coverage: null, review_outcome: null, risks: [] };
 assert.match(state.drawer(noResearchItem, getPayload), /风险研究：覆盖未知/);
 assert.doesNotMatch(state.drawer(noResearchItem, getPayload), /风险研究：未获取|风险扣分/);
+const legacyRiskItem = { ...getPayload.items[0], research_coverage: { evidence_count: 2 },
+  risks: [{ risk_code: "unlock_risk" }] };
+assert.match(state.drawer(legacyRiskItem, getPayload), /历史状态未知/);
+assert.match(state.drawer(legacyRiskItem, getPayload), /来源未保存/);
 const scoredItem = {
   rank: 1,
   code: "600001",

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from typing import Literal, Protocol
@@ -18,11 +22,14 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.application.ports.clock import Clock
 from trader.recommendation.application.ports.decision_records import DecisionRecordError
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
+from trader.recommendation.domain.market.models import MarketQuote
+from trader.recommendation.domain.market.research import ResearchComponentCoverage
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
     DecisionOverlay,
     DecisionQuote,
+    DecisionRiskDisclosure,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
@@ -39,6 +46,10 @@ class DecisionHistoryReader(Protocol):
     def load(self, strategy: Strategy, trade_date: date) -> CommittedDecisionRecord | None: ...
 
     def list_dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]: ...
+
+
+class CachedQuoteReader(Protocol):
+    def cached_quotes(self, codes: Sequence[str]) -> Mapping[str, MarketQuote]: ...
 
 
 @dataclass(frozen=True)
@@ -86,6 +97,10 @@ class DecisionItemView:
     estimated_cost_pct: float | None = None
     predicted_net_excess_pct: float | None = None
     model_disagreement_pct: float | None = None
+    research_components: ResearchComponentCoverage | None = None
+    risk_details: tuple[DecisionRiskDisclosure, ...] = ()
+    anchor_daily_return_pct: float | None = None
+    anchor_to_now_pct: float | None = None
 
 
 @dataclass(frozen=True)
@@ -139,11 +154,13 @@ class UnifiedDecisionQueries:
         drafts: UnifiedDecisionDraftIndex,
         history: DecisionHistoryReader,
         clock: Clock,
+        cached_quotes: CachedQuoteReader | None = None,
     ) -> None:
         self._index = index
         self._drafts = drafts
         self._history = history
         self._clock = clock
+        self._cached_quotes = cached_quotes
 
     def current(self, strategy: Strategy) -> DecisionView:
         now = self._clock.now()
@@ -170,7 +187,38 @@ class UnifiedDecisionQueries:
             return _empty_view(strategy, trade_date, "history", "scored", "history_unavailable")
         if record is None:
             return _empty_view(strategy, trade_date, "history", "scored", "formal_decision_unavailable")
-        return _scored_view(record.decision, None, now, "history", record)
+        decision = record.decision
+        selected = tuple(item for item in decision.items if item.selected)
+        top = tuple(sorted(decision.items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:3])
+        codes = tuple(sorted({item.code for item in (*selected, *top)}))
+        cached = self._cached_quotes.cached_quotes(codes) if self._cached_quotes is not None else {}
+        anchors = {item.code: item.quote for item in (*selected, *top)}
+        quotes: dict[str, DecisionQuote] = {}
+        for code, quote in cached.items():
+            anchor = anchors.get(code)
+            price = quote.price
+            if (
+                anchor is None
+                or price is None
+                or not math.isfinite(price)
+                or price <= 0
+                or quote.source_time <= anchor.source_time
+                or quote.source_time.date() != now.date()
+                or quote.source_time > now
+            ):
+                continue
+            quotes[code] = DecisionQuote(
+                code,
+                price,
+                quote.pct_change,
+                quote.amount,
+                quote.turnover_rate,
+                quote.market_cap,
+                quote.source,
+                quote.source_time,
+                quote.data_version,
+            )
+        return _scored_view(decision, None, now, "history", record, history_quotes=quotes)
 
     def dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
         if strategy is Strategy.LONG:
@@ -236,11 +284,15 @@ def _scored_view(
     now: datetime,
     view: Literal["current", "history"],
     formal: CommittedDecisionRecord | None,
+    *,
+    history_quotes: Mapping[str, DecisionQuote] | None = None,
 ) -> DecisionView:
-    overlay_quotes = _valid_overlay_quotes(decision, overlay)
+    overlay_quotes = history_quotes if history_quotes is not None else _valid_overlay_quotes(decision, overlay)
     selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
-    all_items = tuple(_scored_item(item, overlay_quotes.get(item.code)) for item in decision.items)
-    items = tuple(_scored_item(item, overlay_quotes.get(item.code)) for item in selected)
+    all_items = tuple(
+        _scored_item(item, overlay_quotes.get(item.code), historical=view == "history") for item in decision.items
+    )
+    items = tuple(_scored_item(item, overlay_quotes.get(item.code), historical=view == "history") for item in selected)
     top_scores = tuple(
         sorted(
             (item for item in all_items if item.final_score is not None),
@@ -249,6 +301,15 @@ def _scored_view(
     )
     coverage = scored_decision_coverage(decision)
     etag = _etag(decision.version, overlay.version if overlay_quotes and overlay is not None else None)
+    if view == "history":
+        quote_identity = [
+            (code, quote.price, quote.pct_change, quote.source, quote.source_time.isoformat(), quote.data_version)
+            for code, quote in sorted(overlay_quotes.items())
+        ]
+        digest = hashlib.sha256(
+            json.dumps(quote_identity, ensure_ascii=True, separators=(",", ":")).encode()
+        ).hexdigest()[:16]
+        etag = f"{decision.version}+history:{digest}"
     return DecisionView(
         "ready",
         decision.strategy,
@@ -275,10 +336,10 @@ def _scored_view(
     )
 
 
-def _scored_item(item: DecisionItem, quote: DecisionQuote | None) -> DecisionItemView:
+def _scored_item(item: DecisionItem, quote: DecisionQuote | None, *, historical: bool = False) -> DecisionItemView:
     components = dict(item.score_components)
     model = item.model_diagnostics
-    display_quote = quote or item.quote
+    display_quote = quote if historical else quote or item.quote
     return DecisionItemView(
         item.code,
         item.name,
@@ -304,10 +365,24 @@ def _scored_item(item: DecisionItem, quote: DecisionQuote | None) -> DecisionIte
         display_quote.market_cap if display_quote is not None else None,
         display_quote.source if display_quote is not None else None,
         display_quote.source_time if display_quote is not None else None,
-        "live" if quote is not None else "decision_anchor" if item.quote is not None else "missing",
+        "live"
+        if quote is not None
+        else "missing"
+        if historical
+        else "decision_anchor"
+        if item.quote is not None
+        else "missing",
         anchor_price=item.quote.price if item.quote is not None else None,
         anchor_source=item.quote.source if item.quote is not None else None,
         anchor_time=item.quote.source_time if item.quote is not None else None,
+        anchor_daily_return_pct=item.quote.pct_change if item.quote is not None else None,
+        anchor_to_now_pct=(
+            (quote.price / item.quote.price - 1.0) * 100.0
+            if historical and quote is not None and item.quote is not None
+            else None
+        ),
+        risk_details=item.risk_details,
+        research_components=(item.research_coverage.components if item.research_coverage is not None else None),
         setup_type=item.setup_type,
         downside_status=item.downside.status if item.downside is not None else None,
         downside_reasons=item.downside.reasons if item.downside is not None else (),
@@ -448,6 +523,7 @@ def _etag(decision_version: str, overlay_version: str | None) -> str:
 
 
 __all__ = [
+    "CachedQuoteReader",
     "DecisionDraftView",
     "DecisionHistoryReader",
     "DecisionItemView",

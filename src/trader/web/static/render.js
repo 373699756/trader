@@ -488,13 +488,15 @@
         ["研究证据", research ? `${number(research.evidence_count, 0)} 条` : null],
         ["结构化风险事实", research ? `${number(research.structured_risk_fact_count, 0)} 条` : null],
         ["复核证据资格", research ? (research.review_eligible === true ? "符合" : "不符合") : null],
-        ["财务数据", "逐项覆盖未提供"],
-        ["公司公告 / 减持", "逐项覆盖未提供"],
-        ["股权质押", "逐项覆盖未提供"],
-        ["限售解禁", "逐项覆盖未提供"],
+        ["财务数据", researchComponentStatus(research, "financial")],
+        ["公司公告 / 减持", researchComponentStatus(research, "announcements")],
+        ["股权质押", researchComponentStatus(research, "pledge")],
+        ["限售解禁", researchComponentStatus(research, "unlock")],
       ]),
     ];
-    researchParts.push(note("当前决策仅记录研究证据总数，不能判定四项分别已覆盖或未获取。", "muted"));
+    if (!research || !research.components) {
+      researchParts.push(note("该决策未保存逐项研究覆盖，历史状态未知。", "muted"));
+    }
     if (downside) {
       scoreParts.push(
         '<h4 class="detail-subtitle">下行保护</h4>',
@@ -535,7 +537,9 @@
   function riskList(risks) {
     return `<ul class="detail-list detail-risk-list">${risks.map((risk) => {
       const label = RISK_LABELS[risk.risk_code] || "其他风险提示";
-      return `<li><b>${escapeHtml(label)}</b></li>`;
+      const origin = risk.origin === "local" ? "本地" : risk.origin === "deepseek" ? "DeepSeek" : "来源未保存";
+      const veto = risk.veto_applied === true ? " · 已生效否决" : "";
+      return `<li><b>${escapeHtml(label)}</b><span>${escapeHtml(` · ${origin}${veto}`)}</span></li>`;
     }).join("")}</ul>`;
   }
 
@@ -566,9 +570,17 @@
   }
 
   function researchStatus(research) {
-    if (!research) return "风险研究：覆盖未知";
-    return research.evidence_count > 0 || research.structured_risk_fact_count > 0
-      ? "风险研究：有记录" : "风险研究：无已记录证据";
+    if (!research || !research.components) return "风险研究：覆盖未知";
+    const values = ["financial", "announcements", "pledge", "unlock"].map((key) => research.components[key]);
+    if (values.every((value) => value === "known_clear" || value === "known_risk")) return "风险研究：已核";
+    if (values.every((value) => value === "unknown")) return "风险研究：未获取";
+    return "风险研究：部分";
+  }
+
+  function researchComponentStatus(research, key) {
+    const status = research && research.components && research.components[key];
+    return ({ known_clear: "已核：未见风险", known_risk: "已核：有风险", stale: "已过期", unknown: "未获取" })[status]
+      || "历史状态未知";
   }
 
   function reasonLabel(value) {
