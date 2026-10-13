@@ -9,7 +9,6 @@ from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from functools import partial
-from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -29,7 +28,6 @@ from trader.download.domain.history_sync import (
     HistorySyncProgressPort,
 )
 from trader.download.domain.qfq_window import QfqUpdateResult
-from trader.download.infra.baostock_qfq_recovery import BaoStockQfqRecovery
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.download_settings import load_history_sync_configuration
 from trader.download.infra.exchange_security_universe import (
@@ -44,7 +42,6 @@ from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
-from trader.download.infra.qfq_progress import QfqSupplierProgress
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import (
@@ -289,15 +286,7 @@ def execute_qfq_download(
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
     try:
-        with (
-            BaoStockHistorySupplier(
-                load_history_sync_configuration(project_root, reference_root),
-                cancel_requested=cancel_requested,
-                price_total_seconds=180.0,
-                progress=QfqSupplierProgress(report),
-            ) as baostock,
-            ExitStack() as http_resources,
-        ):
+        with ExitStack() as http_resources:
             http_pool = TencentSessionPool(
                 tuple(http_resources.enter_context(requests.Session()) for _index in range(8))
             )
@@ -334,7 +323,6 @@ def execute_qfq_download(
                 report,
                 workers=8,
                 worker_pool=qfq_pool,
-                gap_supplier=BaoStockQfqRecovery(baostock, f"baostock:{version('baostock')}:qfq-paired-window"),
             )
             return QfqUpdateRunner(
                 history,
@@ -347,7 +335,7 @@ def execute_qfq_download(
     finally:
         stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         if not stopped.completed:
-            report("qfq shutdown incomplete: worker deadline exceeded")
+            report(qfq_message(time.monotonic() - started, "关闭失败", "worker_deadline_exceeded"))
 
 
 def _report_qfq_st_progress(

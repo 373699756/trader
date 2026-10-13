@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from trader.download.application.qfq_download_progress import qfq_failure_code
+from trader.download.application.qfq_download_progress import qfq_failure_code, qfq_message
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.qfq_window import QfqUpdateResult
@@ -27,13 +27,20 @@ class QfqUpdateRunner:
     now: Callable[[], datetime]
 
     def execute(self, *, seed_only: bool = False) -> QfqUpdateResult:
+        started = self.updater.monotonic()
         changed: set[str] = set()
         rows = 0
         try:
             with HistoryMaintenanceLock(self.lock_path):
                 recovered = (*self.v2.recover_pending_transactions(), *self.v3.recover_pending_transactions())
                 if recovered:
-                    self.updater.report(f"qfq 本地恢复 | 已恢复事务 {len(recovered)} 个分片")
+                    self.updater.report(
+                        qfq_message(
+                            self.updater.monotonic() - started,
+                            "本地恢复",
+                            f"已恢复事务 {len(recovered)} 个分片",
+                        )
+                    )
                 if not seed_only:
                     return self.updater.execute(self.now())
                 manifest = self.history.manifest()
@@ -44,7 +51,13 @@ class QfqUpdateRunner:
                         rows += deleted_rows
                     needed = frozenset(manifest.universe_codes) - (self.v2.codes() & self.v3.codes())
                     if needed:
-                        self.updater.report(f"qfq history extraction: missing={len(needed)}")
+                        self.updater.report(
+                            qfq_message(
+                                self.updater.monotonic() - started,
+                                "历史提取",
+                                f"待提取 {len(needed)} 只",
+                            )
+                        )
                         with qfq_local_progress(self.updater.report):
                             seeded = self.updater.seed(
                                 (
@@ -65,5 +78,5 @@ class QfqUpdateRunner:
                 )
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as exc:
             reason = qfq_failure_code(exc)
-            self.updater.report(f"qfq update failed: {reason}")
+            self.updater.report(qfq_message(self.updater.monotonic() - started, "更新失败", reason))
             return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)

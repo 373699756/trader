@@ -433,34 +433,22 @@ def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_pa
     assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
 
 
-@pytest.mark.parametrize("tencent_failed", (False, True))
-def test_302_stock_download_recovery_publication_and_restart(tmp_path, tencent_failed) -> None:
-    recovery_calls = []
-
+def test_302_stock_download_publication_and_restart(tmp_path) -> None:
     class Tencent(Supplier):
         def load_qfq_context(self, as_of, sessions):
             context = super().load_qfq_context(as_of, sessions)
             return replace(context, universe=tuple(replace(security, board="chinext") for security in context.universe))
 
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            assert len(supplier.calls) == 1
-            recovery_calls.append(security.code)
-            return _window(security.code, dates)
-
-    supplier = Tencent(codes=("302132",), fail=tencent_failed)
+    supplier = Tencent(codes=("302132",))
     versions = supplier.load_qfq_context(DAYS[-1], 251).source_versions
-    expected_source = Recovery.source_identity if tencent_failed else f"{versions.sdk_version}:{versions.content_hash}"
+    expected_source = f"{versions.sdk_version}:{versions.content_hash}"
     logs = []
-    updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery(), report=logs.append)
+    updater = replace(_updater(tmp_path, supplier), report=logs.append)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 0 and result.failure_reason is None
     assert len(supplier.calls) == 1
-    assert recovery_calls == (["302132"] if tencent_failed else [])
-    assert any("其它待重试或检查失败 0 只" in line for line in logs)
+    assert any("处理 Tencent下载 | 结果 合格" in line for line in logs)
     assert result.changed_files == ("v2/qfq_szse_chinext.sqlite3", "v3/qfq_szse_chinext.sqlite3")
     for cache in (updater.v2, updater.v3):
         assert cache.codes() == frozenset({"302132"})
@@ -472,7 +460,7 @@ def test_302_stock_download_recovery_publication_and_restart(tmp_path, tencent_f
         assert cache.source_identity("302132") == expected_source
     resumed = updater.execute(observed)
     assert resumed.skipped_codes == 1 and resumed.pending_codes == 0 and resumed.changed_files == ()
-    assert len(supplier.calls) == 1 and len(recovery_calls) == int(tencent_failed)
+    assert len(supplier.calls) == 1
 
 
 @pytest.mark.parametrize("sessions", (33, 251))
@@ -521,7 +509,7 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
     assert result.completed_codes == 1 and result.pending_codes == 0
     assert len(updater.v2.read_code(security.code).cells) == sessions
     assert len(updater.v3.read_code(security.code).cells) == min(sessions, 61)
-    assert any("合格 1 | 待补 0" in message for message in logs)
+    assert any("合格 1 | 待重试 0" in message for message in logs)
     assert len(calls) == 3
     resumed = updater.execute(observed)
     assert resumed.skipped_codes == 1 and resumed.pending_codes == 0
@@ -559,18 +547,17 @@ def test_incomplete_supplier_gap_reports_dates_without_qualifying_window(tmp_pat
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.completed_codes == 0 and result.pending_codes == 1
-    assert any("供应商仍未返回" in message and DAYS[-1].isoformat() in message for message in logs)
+    assert any("结果 待重试" in message and DAYS[-1].isoformat() in message for message in logs)
     assert not (tmp_path / "v2").exists() and not (tmp_path / "v3").exists()
 
 
-def test_all_tencent_waves_finish_before_serial_recovery_and_recovered_checkpoint_is_reused(tmp_path) -> None:
+def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_path) -> None:
     import threading
 
     from trader.infra.workers import BoundedExecutor
 
     events = []
     barrier = threading.Barrier(2)
-    main_thread = threading.get_ident()
 
     class Tencent(Supplier):
         def fetch_window(self, security, dates):
@@ -589,128 +576,36 @@ def test_all_tencent_waves_finish_before_serial_recovery_and_recovered_checkpoin
                 )
             return window
 
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            assert threading.get_ident() == main_thread
-            assert len([event for event in events if event[0] == "tencent"]) == 4
-            # Qualified Tencent windows were published before the recovery barrier.
-            assert updater.v2.read_code("600002").cells
-            assert updater.v2.read_code("600003").cells
-            events.append(("baostock", security.code))
-            assert len(dates) == 251
-            return _window(security.code, dates, price=20)
-
     logs = []
     supplier = Tencent(codes=("600001", "600002", "600003", "600004"))
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-recovery-test")
     pool.start()
     try:
-        updater = replace(
-            _updater(tmp_path, supplier), workers=2, worker_pool=pool, report=logs.append, gap_supplier=Recovery()
-        )
+        updater = replace(_updater(tmp_path, supplier), workers=2, worker_pool=pool, report=logs.append)
         observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
         result = updater.execute(observed)
-        assert result.completed_codes == 4 and result.pending_codes == 0
-        assert [event[0] for event in events] == ["tencent"] * 4 + ["baostock"] * 2
-        assert any("待补股票 2 | 已知缺失股票交易日 252 | 缺日数未确定 0 只" in line for line in logs)
-        assert any("已处理 4/4（100.00%）| 合格 4 | 待补 0" in line for line in logs)
+        assert result.completed_codes == result.pending_codes == 2
+        assert [event[0] for event in events] == ["tencent"] * 4
+        assert sum(" | qfq 股票进度 | " in line for line in logs) == 4
+        assert any("已处理 4/4（100.00%） | 合格 2 | 待重试 2" in line for line in logs)
         for cache in (updater.v2, updater.v3):
-            assert cache.source_identity("600001") == "baostock:fixture"
-            assert all(cell.qfq.close_price == 20 for cell in cache.read_code("600001").cells)
+            assert cache.codes() == frozenset({"600002", "600003"})
         before = (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3"))
         resumed = updater.execute(observed)
-        assert resumed.skipped_codes == 4 and resumed.changed_files == ()
+        assert resumed.skipped_codes == 2 and resumed.pending_codes == 2 and resumed.changed_files == ()
         assert len(events) == 6
         assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
     finally:
         assert pool.stop(wait=True, cancel_futures=True).completed
 
 
-@pytest.mark.parametrize("invalid", ("failure", "incomplete", "wrong_dates"))
-def test_recovery_failure_preserves_old_stock_and_continues_other_stocks(tmp_path, invalid) -> None:
-    calls = []
-
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            calls.append(security.code)
-            if security.code == "600001":
-                if invalid == "failure":
-                    raise RuntimeError("supplier_failed")
-                if invalid == "wrong_dates":
-                    return _window(security.code, dates[:-1])
-                window = _window(security.code, dates)
-                return replace(
-                    window,
-                    cells=(
-                        replace(window.cells[0], status="unknown_missing", unadjusted=None, qfq=None),
-                        *window.cells[1:],
-                    ),
-                )
-            return _window(security.code, dates)
-
-    updater = replace(_updater(tmp_path, Supplier(codes=("600001", "600002"), fail=True)), gap_supplier=Recovery())
-    updater.seed((_window("600001", price=15),), "old")
-    previous = updater.v2.read_code("600001")
-    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-    result = updater.execute(observed)
-    assert calls == ["600001", "600002"]
-    assert result.completed_codes == 1 and result.pending_codes == 1
-    assert updater.v2.read_code("600001") == previous
-    assert updater.v2.source_identity("600001") == "old"
-    source = updater.v2.source_identity("600002")
-    assert source == "baostock:fixture"
-    assert not updater.resume.completed(DAYS[-1], "600001", source)
-
-
-@pytest.mark.parametrize("phase", ("tencent", "baostock"))
-def test_cancel_does_not_start_recovery_or_publish_late_recovery_result(tmp_path, phase) -> None:
-    cancelled = False
-    calls = []
-
-    class Tencent(Supplier):
-        def fetch_window(self, security, dates):
-            nonlocal cancelled
-            if phase == "tencent":
-                cancelled = True
-            raise QfqWindowIncompleteError(dates, dates)
-
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            nonlocal cancelled
-            calls.append(security.code)
-            cancelled = True
-            return _window(security.code, dates)
-
-    updater = replace(
-        _updater(tmp_path, Tencent(codes=("600001", "600002"))),
-        cancel_requested=lambda: cancelled,
-        gap_supplier=Recovery(),
-    )
-    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-    result = updater.execute(observed)
-    assert result.failure_reason == "cancelled" and result.pending_codes == 2
-    assert result.completed_codes == 0 and result.changed_files == ()
-    assert len(calls) == (1 if phase == "baostock" else 0)
-    assert not (tmp_path / ".checkpoint.json").exists()
-
-
-def test_new_day_refetches_tencent_full_window_after_baostock_recovery(tmp_path) -> None:
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            return _window(security.code, dates, price=20)
-
+def test_new_day_retries_incomplete_stock_with_tencent(tmp_path) -> None:
     supplier = Supplier(days=DAYS[:-1], fail=True)
-    updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery())
+    updater = _updater(tmp_path, supplier)
     observed = datetime.combine(DAYS[-2], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-    assert updater.execute(observed).completed_codes == 1
+    first = updater.execute(observed)
+    assert first.completed_codes == 0 and first.pending_codes == 1
+    assert updater.v2.read_code("600001").cells == ()
     supplier.fail = False
     supplier.days = DAYS[1:]
     supplier.calls.clear()
@@ -721,21 +616,8 @@ def test_new_day_refetches_tencent_full_window_after_baostock_recovery(tmp_path)
     assert all(cell.qfq.close_price == 10 for cell in updater.v2.read_code("600001").cells)
 
 
-def test_complete_tencent_stocks_never_call_recovery(tmp_path) -> None:
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            raise AssertionError("BaoStock should not be called")
-
-    updater = replace(_updater(tmp_path, Supplier()), gap_supplier=Recovery())
-    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-    assert updater.execute(observed).completed_codes == 1
-
-
-def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_path, monkeypatch) -> None:
+def test_qfq_composition_never_constructs_baostock_for_incomplete_tencent(tmp_path, monkeypatch) -> None:
     from trader import bootstrap
-    from trader.download.domain.baostock_daily import BaoStockCodeBatch, BaoStockCodeDownload, BaoStockDailyFact
 
     events = []
 
@@ -744,22 +626,13 @@ def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_p
             events.append("tencent")
             raise QfqWindowIncompleteError(dates, dates)
 
-    class BaoStock:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            events.append("closed")
-
-        def fetch_code(self, security, dates):
-            assert events.count("tencent") == 2
-            events.append("baostock")
-            batch = BaoStockCodeBatch(security.code, tuple(_cell(security.code, day) for day in dates))
-            return BaoStockCodeDownload(batch, tuple(BaoStockDailyFact(security.code, day, False) for day in dates))
-
     _install_download_config(tmp_path)
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: Tencent(codes=("600001", "600002")))
-    monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
+    monkeypatch.setattr(
+        bootstrap,
+        "BaoStockHistorySupplier",
+        lambda *_args, **_kwargs: pytest.fail("qfq must not construct BaoStock"),
+    )
     with HistoryMaintenanceLock(tmp_path / "data/history/.maintenance.lock"):
         result = bootstrap.execute_qfq_download(
             tmp_path,
@@ -767,9 +640,9 @@ def test_qfq_composition_wires_lazy_baostock_recovery_and_closes_resources(tmp_p
             report=lambda _message: None,
             now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
         )
-    assert result.completed_codes == 2 and result.pending_codes == 0
-    assert events == ["tencent", "tencent", "baostock", "baostock", "closed"]
-    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").source_identity("600001").startswith("baostock:")
+    assert result.completed_codes == 0 and result.pending_codes == 2
+    assert events == ["tencent", "tencent"]
+    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").codes() == frozenset()
 
 
 def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_path, monkeypatch) -> None:
@@ -802,13 +675,6 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
             assert tuple(item.code for item in universe) == (eligible.code,)
             return replace(context, universe=universe)
 
-    class BaoStock:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            pass
-
     def st_source(path, *_args, **_kwargs):
         assert path == tmp_path / "data/reference/historical_st.json"
         return StSource()
@@ -818,8 +684,6 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
     monkeypatch.setattr(bootstrap, "load_current_a_share_universe", lambda *_args: (eligible, excluded))
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
-    monkeypatch.setattr(bootstrap, "BaoStockHistorySupplier", lambda *_args, **_kwargs: BaoStock())
-
     result = bootstrap.execute_qfq_download(
         tmp_path,
         reference_root=tmp_path / "data/reference",
@@ -929,16 +793,7 @@ def test_same_day_without_checkpoint_only_rechecks_three_overlap_dates(tmp_path)
 
 def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repairs(tmp_path, monkeypatch) -> None:
     supplier = Supplier()
-    recovery_calls = []
-
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            recovery_calls.append(security.code)
-            return _window(security.code, dates)
-
-    updater = replace(_updater(tmp_path, supplier), gap_supplier=Recovery())
+    updater = _updater(tmp_path, supplier)
     write = updater.v3._write_code
 
     def fail(connection, code, rows, source, *, schema="main", previous=None):
@@ -954,7 +809,6 @@ def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repa
     assert not updater.resume.completed(DAYS[-1], "600001", source)
     assert updater.v2.read_code("600001").cells == ()
     assert updater.v3.read_code("600001").cells == ()
-    assert recovery_calls == []
     monkeypatch.setattr(updater.v3, "_write_code", write)
     result = updater.execute(observed)
     assert result.pending_codes == 0 and result.completed_codes == 1
@@ -1081,13 +935,12 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         result = updater.execute(observed)
         assert result.completed_codes == 3
         assert sorted(writes) == ["600001", "600002", "600003"]
-        batches = [message for message in messages if " | qfq 批次完成 | " in message]
-        assert len(batches) == 2
-        assert "已处理 2/3（66.67%）| 合格 2 | 待补 0" in batches[0]
-        assert "已处理 3/3（100.00%）" in batches[1]
-        starts = [message for message in messages if " | qfq 下载 | " in message]
-        assert "本批 2 只 | 股票 600001 fixture、600002 fixture" in starts[0]
-        assert "本批 1 只 | 股票 600003 fixture" in starts[1]
+        stock_progress = [message for message in messages if " | qfq 股票进度 | " in message]
+        assert len(stock_progress) == 3
+        assert all("处理 Tencent下载 | 结果 合格" in message for message in stock_progress)
+        assert all(
+            "raw 251/251 | qfq 251/251 | 完整配对 251/251 | 缺日 0 | 原因 无" in message for message in stock_progress
+        )
         assert " | qfq 完成 | " in messages[-1]
         ready = next(message for message in messages if " | qfq 就绪 | " in message)
         assert "股票 3 只" in ready and "并发 2" in ready
@@ -1096,7 +949,10 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         resumed = updater.execute(observed)
         assert resumed.skipped_codes == 3 and resumed.changed_files == ()
         assert len(supplier.calls) == 3
-        assert "合格 3 | 待补 0 | 其中复用 3" in messages[-1]
+        stock_progress = [message for message in messages if " | qfq 股票进度 | " in message]
+        assert len(stock_progress) == 3
+        assert all("处理 本地复用 | 结果 复用" in message for message in stock_progress)
+        assert "合格 3 | 待重试 0 | 其中复用 3" in messages[-1]
         assert "未处理 0" in messages[-1]
     finally:
         assert pool.stop(wait=True, cancel_futures=True).completed
@@ -1116,7 +972,7 @@ class _IncompleteSupplier(Supplier):
         return window
 
 
-def test_pending_progress_groups_named_chinese_reasons_after_batch_and_preserves_old_window(tmp_path):
+def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(tmp_path):
     supplier = _IncompleteSupplier(codes=("600001", "600002"))
     messages = []
     updater = replace(_updater(tmp_path, supplier), report=messages.append)
@@ -1126,11 +982,14 @@ def test_pending_progress_groups_named_chinese_reasons_after_batch_and_preserves
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 1
     assert updater.v2.read_code("600001") == before
-    summary = next(index for index, message in enumerate(messages) if " | qfq 批次完成 | " in message)
-    assert "已处理 2/2（100.00%）| 合格 1 | 待补 1" in messages[summary]
-    assert "qfq 待补 | 600001 fixture，未复权缺 4 日、前复权缺 4 日" in messages[summary + 1]
-    assert messages[summary + 1].endswith("reason=qfq_incomplete_raw_4_qfq_4")
-    assert " | qfq 结束（仍有待补） | " in messages[-1]
+    stock_progress = [message for message in messages if " | qfq 股票进度 | " in message]
+    assert len(stock_progress) == 2
+    pending = next(message for message in stock_progress if "600001 fixture" in message)
+    assert "处理 Tencent下载 | 结果 待重试" in pending
+    assert "raw 247/251 | qfq 247/251 | 完整配对 247/251 | 缺日 4（" in pending
+    assert DAYS[1].isoformat() in pending
+    assert pending.endswith("原因 qfq_incomplete_raw_4_qfq_4")
+    assert " | qfq 结束（仍有待重试） | " in messages[-1]
 
 
 def test_tencent_diagnostic_counts_pending_with_new_batch_feedback():
@@ -1154,10 +1013,16 @@ def test_reused_codes_do_not_reduce_actual_download_wave_size(tmp_path):
     supplier.codes = tuple(f"60000{index}" for index in range(1, 9))
     messages = []
     result = replace(updater, report=messages.append).execute(observed)
-    starts = [message for message in messages if " | qfq 下载 | " in message]
-    assert len(starts) == 2
-    assert "本批 2 只 | 股票 600002 fixture、600004 fixture" in starts[0]
-    assert "本批 2 只 | 股票 600006 fixture、600008 fixture" in starts[1]
+    stock_progress = [message for message in messages if " | qfq 股票进度 | " in message]
+    downloaded = [message for message in stock_progress if "处理 Tencent下载" in message]
+    reused = [message for message in stock_progress if "处理 本地复用" in message]
+    assert len(stock_progress) == 8 and len(downloaded) == len(reused) == 4
+    assert {message.split(" | ")[3].split()[0] for message in downloaded} == {
+        "600002",
+        "600004",
+        "600006",
+        "600008",
+    }
     assert result.completed_codes == 8 and result.skipped_codes == 4
     assert len(supplier.calls) == 8
 
@@ -1179,9 +1044,10 @@ def test_preparation_pending_is_reported_without_any_download_and_hides_payload(
     result = updater.execute(observed)
     assert result.completed_codes == 0 and result.pending_codes == 1
     assert supplier.calls == []
-    assert "已处理 1/1（100.00%）| 合格 0 | 待补 1" in messages[-1]
-    details = next(message for message in messages if " | qfq 待补 | " in message)
-    assert "600001 fixture，处理失败（RuntimeError）" in details
+    assert "已处理 1/1（100.00%） | 合格 0 | 待重试 1" in messages[-1]
+    details = next(message for message in messages if " | qfq 股票进度 | " in message)
+    assert "600001 fixture | 处理 本地检查 | 结果 失败" in details
+    assert "raw -/251 | qfq -/251 | 完整配对 -/251 | 缺日 未知 | 原因 RuntimeError" in details
     assert "payload" not in "\n".join(messages) and "secret" not in "\n".join(messages)
 
 
@@ -1205,8 +1071,10 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     assert result.completed_codes == result.pending_codes == result.skipped_codes == 0
     assert supplier.calls == []
     assert messages[0].startswith("00:00:00 | qfq 准备 | ")
+    stock_progress = next(message for message in messages if " | qfq 股票进度 | " in message)
+    assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
     assert messages[-1].startswith("00:01:05 | qfq 完成 | 已处理 1/1（100.00%）")
-    assert "合格 0 | 待补 0 | 其中复用 0 | 无需下载 1 | 未处理 0" in messages[-1]
+    assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 未处理 0" in messages[-1]
 
 
 def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_processed(tmp_path):
@@ -1229,9 +1097,9 @@ def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_process
     assert result.failure_reason == "cancelled" and result.pending_codes == 3
     assert result.completed_codes == 0 and result.changed_files == ()
     assert len(supplier.calls) == 1
-    assert " | qfq 已取消 | 已处理 0/3（0.00%）| 合格 0 | 待补 0" in messages[-1]
+    assert " | qfq 已取消 | 已处理 0/3（0.00%） | 合格 0 | 待重试 0" in messages[-1]
     assert "未处理 3" in messages[-1]
-    assert not any(" | qfq 待补 | " in message for message in messages)
+    assert not any(" | qfq 股票进度 | " in message for message in messages)
 
 
 def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path):
@@ -1419,11 +1287,11 @@ def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:
 
     def report(message):
         messages.append(message)
-        if "waiting elapsed=" in message:
+        if " | qfq 历史提取 | 等待本地历史窗口" in message:
             feedback.set()
 
     with qfq_local_progress(report, interval_seconds=0.01):
-        assert messages[0] == "qfq history extraction: started"
+        assert messages[0] == "00:00:00 | qfq 历史提取 | 开始"
         assert feedback.wait(2)
-    assert "finished elapsed=" in messages[-1]
+    assert messages[-1] == "00:00:00 | qfq 历史提取 | 完成"
     assert not any(thread.name == "qfq-extraction-progress" for thread in threading.enumerate())

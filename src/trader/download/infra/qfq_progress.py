@@ -1,26 +1,11 @@
-"""Bounded supplier heartbeat and elapsed-time projection for qfq maintenance."""
+"""Elapsed-time projection for local qfq history extraction."""
 
 import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 
-from trader.download.domain.history_sync import HistorySyncProgress
-
-
-class QfqSupplierProgress:
-    def __init__(self, report: Callable[[str], None]) -> None:
-        self._report = report
-
-    def publish(self, progress: HistorySyncProgress) -> None:
-        if progress.state not in {"waiting", "retrying", "failed"}:
-            return
-        if progress.state == "waiting" and progress.call_elapsed_seconds < 5.0:
-            return
-        self._report(
-            f"qfq {progress.stage}: {progress.state} attempt={progress.attempt}/{progress.max_attempts} "
-            f"elapsed={progress.call_elapsed_seconds:.1f}s"
-        )
+from trader.download.application.qfq_download_progress import qfq_message
 
 
 @contextmanager
@@ -31,9 +16,9 @@ def qfq_local_progress(report: Callable[[str], None], *, interval_seconds: float
 
     def heartbeat() -> None:
         while not stopped.wait(interval_seconds):
-            report(f"qfq history extraction: waiting elapsed={time.monotonic() - started:.1f}s")
+            report(qfq_message(time.monotonic() - started, "历史提取", "等待本地历史窗口"))
 
-    report("qfq history extraction: started")
+    report(qfq_message(0, "历史提取", "开始"))
     thread = threading.Thread(target=heartbeat, name="qfq-extraction-progress", daemon=False)
     thread.start()
     try:
@@ -41,4 +26,4 @@ def qfq_local_progress(report: Callable[[str], None], *, interval_seconds: float
     finally:
         stopped.set()
         thread.join()
-        report(f"qfq history extraction: finished elapsed={time.monotonic() - started:.1f}s")
+        report(qfq_message(time.monotonic() - started, "历史提取", "完成"))

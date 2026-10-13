@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowIncompleteError
 
 
@@ -23,23 +25,22 @@ def qfq_failure_code(exc: Exception) -> str:
     return message if re.fullmatch(r"[a-zA-Z0-9_]{1,64}", message) else type(exc).__name__
 
 
-def _pending_reason(exc: Exception) -> tuple[str, str]:
-    reason = qfq_failure_code(exc)
-    incomplete = re.fullmatch(r"qfq_incomplete_raw_(\d+)_qfq_(\d+)", reason)
-    if incomplete:
-        details = f"未复权缺 {int(incomplete[1])} 日、前复权缺 {int(incomplete[2])} 日"
-        if isinstance(exc, QfqWindowIncompleteError):
-            details += f"，供应商仍未返回 {_format_missing_dates(exc)}"
-        return reason, details
-    return reason, f"处理失败（{reason}）"
-
-
-def _format_missing_dates(exc: QfqWindowIncompleteError) -> str:
-    days = tuple(sorted(set(exc.raw_missing) | set(exc.qfq_missing)))
+def _format_missing_dates(days: tuple[date, ...]) -> str:
     preview = ", ".join(day.isoformat() for day in days[:8])
     if len(days) > 8:
         preview += f" 等 {len(days)} 个交易日"
-    return preview or "交易日"
+    return preview
+
+
+def _window_counts(window: PublishedHistoryWindow) -> tuple[int, int, int]:
+    raw = sum(cell.unadjusted is not None for cell in window.cells)
+    qfq = sum(cell.qfq is not None for cell in window.cells)
+    paired = sum(cell.unadjusted is not None and cell.qfq is not None for cell in window.cells)
+    return raw, qfq, paired
+
+
+def _format_count(value: int | None) -> str:
+    return "-" if value is None else str(value)
 
 
 @dataclass
@@ -55,7 +56,6 @@ class QfqDownloadProgress:
     not_applicable: int = 0
     rows: int = 0
     changed: set[str] = field(default_factory=set)
-    pending_details: list[str] = field(default_factory=list)
 
     @property
     def processed(self) -> int:
@@ -64,33 +64,79 @@ class QfqDownloadProgress:
     def publish(self, stage: str, details: str) -> None:
         self.report(qfq_message(self.elapsed(), stage, details))
 
-    def begin_batch(self, securities: tuple[BaoStockSecurity, ...]) -> None:
-        names = "、".join(f"{item.code} {item.name}" for item in securities)
-        self.publish("下载", f"本批 {len(securities)} 只 | 股票 {names}")
+    def record_stock(
+        self,
+        security: BaoStockSecurity,
+        *,
+        action: str,
+        result: str,
+        target: int,
+        raw: int | None,
+        qfq: int | None,
+        paired: int | None,
+        missing_dates: tuple[date, ...] = (),
+        reason: str = "无",
+    ) -> None:
+        percent = self.processed / self.total * 100 if self.total else 100.0
+        missing = str(target - paired) if paired is not None else "未知"
+        if missing_dates:
+            missing += f"（{_format_missing_dates(missing_dates)}）"
+        self.publish(
+            "股票进度",
+            f"{self.processed}/{self.total}（{percent:.2f}%） | {security.code} {security.name} "
+            f"| 处理 {action} | 结果 {result} | raw {_format_count(raw)}/{target} "
+            f"| qfq {_format_count(qfq)}/{target} | 完整配对 {_format_count(paired)}/{target} "
+            f"| 缺日 {missing} | 原因 {reason}",
+        )
 
-    def record_pending(self, security: BaoStockSecurity, exc: Exception) -> None:
+    def record_pending(
+        self,
+        security: BaoStockSecurity,
+        exc: Exception,
+        dates: tuple[date, ...],
+        *,
+        action: str,
+    ) -> None:
         self.pending += 1
-        reason, description = _pending_reason(exc)
-        self.pending_details.append(f"{security.code} {security.name}，{description} | reason={reason}")
+        target = len(dates)
+        raw: int | None = None
+        qfq: int | None = None
+        paired: int | None = None
+        missing_dates: tuple[date, ...] = ()
+        if isinstance(exc, QfqWindowIncompleteError):
+            raw = target - len(exc.raw_missing)
+            qfq = target - len(exc.qfq_missing)
+            missing_dates = tuple(sorted(set(exc.raw_missing) | set(exc.qfq_missing)))
+            paired = target - len(missing_dates)
+        elif isinstance(exc, HistorySupplierPendingError):
+            raw, qfq, paired = _window_counts(exc.window)
+            cells = {cell.trade_date: cell for cell in exc.window.cells}
+            missing_dates = tuple(
+                day for day in dates if day not in cells or cells[day].unadjusted is None or cells[day].qfq is None
+            )
+        self.record_stock(
+            security,
+            action=action,
+            result="待重试" if action == "Tencent下载" else "失败",
+            target=target,
+            raw=raw,
+            qfq=qfq,
+            paired=paired,
+            missing_dates=missing_dates,
+            reason=qfq_failure_code(exc),
+        )
 
     def summary(self, stage: str) -> None:
         percent = self.processed / self.total * 100 if self.total else 100.0
         self.publish(
             stage,
-            f"已处理 {self.processed}/{self.total}（{percent:.2f}%）| 合格 {self.completed} | 待补 {self.pending} "
+            f"已处理 {self.processed}/{self.total}（{percent:.2f}%） | 合格 {self.completed} | 待重试 {self.pending} "
             f"| 其中复用 {self.skipped} | 无需下载 {self.not_applicable} | 未处理 {self.total - self.processed} "
-            f"| 变更文件 {len(self.changed)}",
+            f"| 变更文件 {len(self.changed)} | 变更行 {self.rows}",
         )
-        self.flush_pending()
-
-    def flush_pending(self) -> None:
-        for details in self.pending_details:
-            self.publish("待补", details)
-        self.pending_details.clear()
 
     def finish(self, cancelled: bool) -> QfqUpdateResult:
-        stage = "已取消" if cancelled else ("结束（仍有待补）" if self.pending else "完成")
-        self.flush_pending()
+        stage = "已取消" if cancelled else ("结束（仍有待重试）" if self.pending else "完成")
         self.summary(stage)
         # The existing result contract counts unfinished stocks as pending on cancellation.
         # Feedback separates them because they have not actually been processed.

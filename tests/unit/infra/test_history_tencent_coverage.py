@@ -65,18 +65,13 @@ def test_qfq_transport_failure_preserves_old_window_and_never_calls_baostock(tmp
         def fetch_window(self, security, dates):
             raise HistorySupplierPendingError(_window(security.code, dates[:-1]))
 
-    class Recovery:
-        source_identity = "baostock:fixture"
-
-        def fetch_window(self, security, dates):
-            raise AssertionError("temporary failures cannot authorize BaoStock")
-
     messages = []
-    updater = replace(_updater(tmp_path, PendingSupplier()), gap_supplier=Recovery(), report=messages.append)
+    updater = replace(_updater(tmp_path, PendingSupplier()), report=messages.append)
     updater.seed((_window("600001", price=15),), "old")
     old = updater.v2.read_code("600001")
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.pending_codes == 1 and result.completed_codes == 0
     assert updater.v2.read_code("600001") == old
-    assert any("暂时失败，不转BaoStock" in message for message in messages)
+    assert any("处理 Tencent下载 | 结果 待重试" in message for message in messages)
+    assert any("原因 tencent_history_pending" in message for message in messages)

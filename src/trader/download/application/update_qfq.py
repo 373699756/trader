@@ -12,7 +12,6 @@ from typing import Protocol
 
 from trader.download.application.qfq_download_progress import QfqDownloadProgress, qfq_failure_code, qfq_message
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import (
@@ -62,13 +61,6 @@ class QfqSupplierPort(Protocol):
     def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
 
 
-class QfqGapRecoveryPort(Protocol):
-    @property
-    def source_identity(self) -> str: ...
-
-    def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
-
-
 class QfqResumePort(Protocol):
     def completed(self, day: date, code: str, source: str) -> bool: ...
 
@@ -90,13 +82,6 @@ class _DownloadJob:
 
 
 @dataclass(frozen=True)
-class _GapJob:
-    security: BaoStockSecurity
-    dates: tuple[date, ...]
-    missing_dates: tuple[date, ...] | None
-
-
-@dataclass(frozen=True)
 class UpdateQfqWindows:
     v2: QfqWindowPort
     v3: QfqWindowPort
@@ -107,13 +92,13 @@ class UpdateQfqWindows:
     workers: int = 8
     worker_pool: WorkerExecutor | None = None
     monotonic: Callable[[], float] = monotonic
-    gap_supplier: QfqGapRecoveryPort | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.workers <= 12:
             raise ValueError("qfq workers must be within 1..12")
 
     def seed(self, windows: Iterable[PublishedHistoryWindow], identity: str) -> QfqUpdateResult:
+        started = self.monotonic()
         changed: set[str] = set()
         rows = 0
         count = 0
@@ -127,7 +112,13 @@ class UpdateQfqWindows:
                     rows += delta
             count += 1
             if count % 64 == 0:
-                self.report(f"qfq history extraction: codes={count} changed_files={len(changed)}")
+                self.report(
+                    qfq_message(
+                        self.monotonic() - started,
+                        "历史提取",
+                        f"已处理 {count} 只 | 变更文件 {len(changed)}",
+                    )
+                )
         return QfqUpdateResult(None, count, changed_files=tuple(sorted(changed)), changed_rows=rows)
 
     def execute(self, observed_at: datetime) -> QfqUpdateResult:
@@ -164,9 +155,8 @@ class UpdateQfqWindows:
         progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
         plans = iter(self._plans(context, progress, v2_snapshot, v3_snapshot))
         checkpoint_codes: list[str] = []
-        gaps = self._download_rolling(plans, progress, checkpoint_codes)
+        self._download_rolling(plans, progress, checkpoint_codes)
         if not self.cancel_requested():
-            self._recover_gaps(tuple(sorted(gaps, key=lambda gap: gap.security.code)), progress, checkpoint_codes)
             self._flush_checkpoint(checkpoint_codes, progress, threshold=1)
         return progress.finish(self.cancel_requested())
 
@@ -177,45 +167,45 @@ class UpdateQfqWindows:
         v2_snapshot: QfqWindowSnapshot,
         v3_snapshot: QfqWindowSnapshot,
     ) -> Iterable[_DownloadPlan]:
-        checked = 0
         for security in context.universe:
             if self.cancel_requested():
                 return
+            dates = context.calendar.expected_dates(security)[-251:]
             try:
-                plan = self._prepare_plan(security, context, progress, v2_snapshot, v3_snapshot)
+                plan = self._prepare_plan(security, dates, progress, v2_snapshot, v3_snapshot)
             except (RuntimeError, OSError, ValueError) as exc:
-                progress.record_pending(security, exc)
+                progress.record_pending(security, exc, dates, action="本地检查")
                 plan = None
             if plan is not None:
                 yield plan
-            else:
-                checked += 1
-                if checked % self.workers == 0:
-                    progress.summary("检查完成")
 
     def _prepare_plan(
         self,
         security: BaoStockSecurity,
-        context: HistorySupplierContext,
+        dates: tuple[date, ...],
         progress: QfqDownloadProgress,
         v2_snapshot: QfqWindowSnapshot,
         v3_snapshot: QfqWindowSnapshot,
     ) -> _DownloadPlan | None:
-        dates = context.calendar.expected_dates(security)[-251:]
         if not dates:
             progress.not_applicable += 1
+            progress.record_stock(
+                security,
+                action="无需下载",
+                result="无需下载",
+                target=0,
+                raw=0,
+                qfq=0,
+                paired=0,
+            )
             return None
         v2_state = v2_snapshot.state_for(security.code)
         v3_state = v3_snapshot.state_for(security.code)
         same_source = all(
             state is not None and state.verified and state.source == progress.source for state in (v2_state, v3_state)
         )
-        recovery_source = self.gap_supplier.source_identity if self.gap_supplier is not None else None
-        recovered_source = recovery_source is not None and all(
-            state is not None and state.verified and state.source == recovery_source for state in (v2_state, v3_state)
-        )
         if (
-            (same_source or recovered_source)
+            same_source
             and self.resume.completed(progress.day, security.code, progress.source)
             and v2_state is not None
             and v2_state.dates == dates
@@ -224,6 +214,15 @@ class UpdateQfqWindows:
         ):
             progress.completed += 1
             progress.skipped += 1
+            progress.record_stock(
+                security,
+                action="本地复用",
+                result="复用",
+                target=len(dates),
+                raw=len(dates),
+                qfq=len(dates),
+                paired=len(dates),
+            )
             return None
         return _DownloadPlan(security, dates, same_source)
 
@@ -244,11 +243,10 @@ class UpdateQfqWindows:
 
     def _download_rolling(
         self, plans: Iterable[_DownloadPlan], progress: QfqDownloadProgress, checkpoint_codes: list[str]
-    ) -> list[_GapJob]:
+    ) -> None:
         remaining = iter(plans)
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob] = {}
         downloaded: list[tuple[_DownloadJob, PublishedHistoryWindow]] = []
-        gaps: list[_GapJob] = []
         exhausted = False
         last_feedback = self.monotonic()
         try:
@@ -263,7 +261,6 @@ class UpdateQfqWindows:
                     checkpoint_codes.extend(self._commit_downloaded(downloaded[: self.workers], progress))
                     del downloaded[: self.workers]
                     self._flush_checkpoint(checkpoint_codes, progress, threshold=256)
-                    progress.summary("批次完成")
                 if not futures:
                     if exhausted and not downloaded:
                         break
@@ -274,13 +271,10 @@ class UpdateQfqWindows:
                     last_feedback = self.monotonic()
                 if self.cancel_requested():
                     break
-                failed, ready = self._collect_completed(done, futures, progress)
-                gaps.extend(failed)
-                downloaded.extend(ready)
+                downloaded.extend(self._collect_completed(done, futures, progress))
         finally:
             for future in futures:
                 future.cancel()
-        return gaps
 
     def _fill_slots(
         self,
@@ -292,9 +286,8 @@ class UpdateQfqWindows:
             jobs = self._hydrate_wave(plans)
         except (RuntimeError, OSError, ValueError) as exc:
             for plan in plans:
-                progress.record_pending(plan.security, exc)
+                progress.record_pending(plan.security, exc, plan.dates, action="本地检查")
             return
-        progress.begin_batch(tuple(job.security for job in jobs))
         for job in jobs:
             if self.cancel_requested():
                 break
@@ -305,32 +298,15 @@ class UpdateQfqWindows:
         done: set[Future[PublishedHistoryWindow]],
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob],
         progress: QfqDownloadProgress,
-    ) -> tuple[list[_GapJob], list[tuple[_DownloadJob, PublishedHistoryWindow]]]:
-        gaps: list[_GapJob] = []
+    ) -> list[tuple[_DownloadJob, PublishedHistoryWindow]]:
         ready: list[tuple[_DownloadJob, PublishedHistoryWindow]] = []
         for future in done:
             job = futures.pop(future)
             try:
                 ready.append((job, future.result()))
             except (RuntimeError, OSError, ValueError) as exc:
-                progress.record_pending(job.security, exc)
-                missing = (
-                    tuple(sorted(set(exc.raw_missing) | set(exc.qfq_missing)))
-                    if isinstance(exc, QfqWindowIncompleteError)
-                    else None
-                )
-                if isinstance(exc, QfqWindowIncompleteError):
-                    progress.publish(
-                        "Tencent覆盖",
-                        f"{job.security.code} | 应有 {len(job.dates)} 日 "
-                        f"| raw {len(job.dates) - len(exc.raw_missing)} 日 "
-                        f"| qfq {len(job.dates) - len(exc.qfq_missing)} 日 "
-                        f"| 剩余缺日 {len(set(exc.raw_missing) | set(exc.qfq_missing))} 日",
-                    )
-                    gaps.append(_GapJob(job.security, job.dates, missing))
-                elif isinstance(exc, HistorySupplierPendingError):
-                    progress.publish("Tencent待重试", f"{job.security.code} | 暂时失败，不转BaoStock")
-        return gaps, ready
+                progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
+        return ready
 
     def _submit(self, job: _DownloadJob) -> Future[PublishedHistoryWindow]:
         if self.worker_pool is not None:
@@ -352,72 +328,37 @@ class UpdateQfqWindows:
         except QfqPairPublicationError as exc:
             progress.changed.update(exc.files)
             progress.rows += exc.rows
-            progress.completed += len(exc.codes)
             for job, window in downloaded:
-                if window.code not in exc.codes:
-                    progress.record_pending(job.security, exc)
+                if window.code in exc.codes:
+                    progress.completed += 1
+                    progress.record_stock(
+                        job.security,
+                        action="Tencent下载",
+                        result="合格",
+                        target=len(job.dates),
+                        raw=len(window.cells),
+                        qfq=len(window.cells),
+                        paired=len(window.cells),
+                    )
+                else:
+                    progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
             return exc.codes
         except (RuntimeError, OSError, ValueError) as exc:
             for job, _window in downloaded:
-                progress.record_pending(job.security, exc)
+                progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
             return ()
-        progress.completed += len(downloaded)
         for job, window in downloaded:
-            progress.publish(
-                "Tencent覆盖",
-                f"{job.security.code} | 应有 {len(job.dates)} 日 "
-                f"| raw {len(window.cells)} 日 | qfq {len(window.cells)} 日 "
-                f"| 完整配对 {len(window.cells)} 日 | 剩余缺日 0 日",
+            progress.completed += 1
+            progress.record_stock(
+                job.security,
+                action="Tencent下载",
+                result="合格",
+                target=len(job.dates),
+                raw=len(window.cells),
+                qfq=len(window.cells),
+                paired=len(window.cells),
             )
         return tuple(window.code for _job, window in downloaded)
-
-    def _recover_gaps(
-        self, gaps: tuple[_GapJob, ...], progress: QfqDownloadProgress, checkpoint_codes: list[str]
-    ) -> None:
-        recovery_started = self.monotonic()
-        missing_days = sum(len(gap.missing_dates or ()) for gap in gaps)
-        unknown = sum(gap.missing_dates is None for gap in gaps)
-        progress.publish(
-            "Tencent阶段完成",
-            f"合格 {progress.completed} | 待补股票 {len(gaps)} | 已知缺失股票交易日 {missing_days} "
-            f"| 缺日数未确定 {unknown} 只 | 其它待重试或检查失败 {progress.pending - len(gaps)} 只",
-        )
-        if self.gap_supplier is None or not gaps:
-            return
-        recovered_codes: list[str] = []
-        for index, job in enumerate(gaps, 1):
-            if self.cancel_requested():
-                break
-            progress.publish(
-                "BaoStock补缺",
-                f"{index}/{len(gaps)}（{index / len(gaps):.2%}）| {job.security.code} {job.security.name} "
-                f"| 同源配对窗口 {len(job.dates)} 日",
-            )
-            try:
-                window = self.gap_supplier.fetch_window(job.security, job.dates)
-                if self.cancel_requested():
-                    break
-                self._validate_window(job.security, job.dates, window)
-                self._commit_one(window, progress, self.gap_supplier.source_identity)
-                progress.pending -= 1
-                progress.completed += 1
-            except (RuntimeError, OSError, ValueError) as exc:
-                # Replace the existing pending detail without counting the stock twice.
-                progress.pending -= 1
-                progress.record_pending(job.security, exc)
-            else:
-                recovered_codes.append(window.code)
-                checkpoint_codes.append(window.code)
-                self._flush_checkpoint(checkpoint_codes, progress, threshold=16)
-            progress.summary("补缺进度")
-        progress.publish(
-            "BaoStock补缺完成",
-            f"处理 {len(gaps)} 只 | 补齐 {len(recovered_codes)} 只 "
-            f"| 阶段耗时 {self.monotonic() - recovery_started:.2f} 秒",
-        )
-
-    def _commit_one(self, window: PublishedHistoryWindow, progress: QfqDownloadProgress, source: str) -> None:
-        self._commit_many((window,), progress, source)
 
     def _commit_many(
         self, windows: tuple[PublishedHistoryWindow, ...], progress: QfqDownloadProgress, source: str
