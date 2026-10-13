@@ -61,7 +61,7 @@ class _DailyQuery:
     start: date
     end: date
     mode: Literal["bfq", "qfq"]
-    count: int = 640
+    count: int
 
 
 @dataclass(frozen=True)
@@ -141,7 +141,7 @@ class TencentQfqSupplier:
         """Read exchange index dates; never infer sessions from weekday arithmetic."""
         if not 1 <= sessions <= 2000:
             raise ValueError("Tencent calendar sessions must be within 1..2000")
-        count = max(640, sessions)
+        count = sessions
         query = _DailyQuery("sh000001", as_of - timedelta(days=count * 2), as_of, "bfq", count)
         try:
             rows = self._request_rows(query)
@@ -159,13 +159,14 @@ class TencentQfqSupplier:
         security: BaoStockSecurity,
         dates: tuple[date, ...],
         *,
-        request_count: int = 640,
+        request_count: int | None = None,
         allow_interior_padding: bool = False,
     ) -> PublishedHistoryWindow:
-        if not 1 <= len(dates) <= 2000 or not 1 <= request_count <= 2000 or dates != tuple(sorted(set(dates))):
+        count = len(dates) if request_count is None else request_count
+        if not 1 <= len(dates) <= 2000 or not 1 <= count <= 2000 or dates != tuple(sorted(set(dates))):
             raise ValueError("Tencent request requires ordered unique dates and a bounded row count")
         symbol = security.source_code.replace(".", "")
-        query = _WindowQuery(symbol, dates, request_count, allow_interior_padding)
+        query = _WindowQuery(symbol, dates, count, allow_interior_padding)
         with self._dependencies.session_factory() as session:
             raw_download = self._download_side(session, query, "bfq")
             if raw_download.pending_dates == dates and not raw_download.sides:
@@ -317,7 +318,7 @@ class TencentQfqSupplier:
             raise RuntimeError("tencent_qfq_cancelled")
 
 
-def _payload_rows(payload: object, symbol: str, mode: str, count: int = 640) -> list[object]:
+def _payload_rows(payload: object, symbol: str, mode: str, count: int) -> list[object]:
     if not isinstance(payload, Mapping) or payload.get("code", 0) != 0:
         raise ValueError("tencent_daily_response_rejected")
     data = payload.get("data")

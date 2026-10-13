@@ -196,6 +196,7 @@ def _run_history_maintenance_command(
                     "target_date": result.target_date.isoformat() if result.target_date else None,
                     "completed_codes": result.completed_codes,
                     "pending_codes": result.pending_codes,
+                    "no_trade_data_codes": result.no_trade_data_codes,
                     "changed_files": result.changed_files,
                     "changed_rows": result.changed_rows,
                     "skipped_codes": result.skipped_codes,

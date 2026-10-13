@@ -399,6 +399,52 @@ def test_inferred_suspension_keeps_only_tencent_real_bars_without_backfill(tmp_p
     assert len(supplier.calls) == 1
 
 
+def test_all_inferred_suspension_is_reported_without_empty_window_or_retry(tmp_path):
+    class SuspendedSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            window = super().fetch_window(security, dates)
+            return replace(
+                window,
+                cells=tuple(
+                    replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+                    for cell in window.cells
+                ),
+            )
+
+    messages = []
+    supplier = SuspendedSupplier(days=DAYS)
+    updater = replace(
+        _updater(tmp_path, supplier),
+        report=lambda message: messages.append(_plain_feedback(message)),
+    )
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+
+    result = updater.execute(observed)
+
+    assert result.no_trade_data_codes == 1
+    assert result.completed_codes == result.pending_codes == 0
+    assert result.changed_files == ()
+    assert updater.v2.read_code("600001").cells == updater.v3.read_code("600001").cells == ()
+    assert any("结果 无真实日线" in message and "完整配对 0/0" in message for message in messages)
+    assert any("无真实日线 1" in message and "待重试 0" in message for message in messages)
+    assert updater.execute(observed).no_trade_data_codes == 1
+    assert len(supplier.calls) == 2
+
+
+def test_unpaired_only_window_does_not_report_no_trade_data_or_success(tmp_path):
+    class UnpairedSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            window = super().fetch_window(security, dates)
+            return replace(window, cells=tuple(replace(cell, status="qfq_missing", qfq=None) for cell in window.cells))
+
+    result = _updater(tmp_path, UnpairedSupplier(days=DAYS)).execute(
+        datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    )
+    assert result.no_trade_data_codes == result.completed_codes == 0
+    assert result.pending_codes == 1
+    assert [(item.reason, item.count) for item in result.pending_reasons] == [("qfq_no_trade_bars", 1)]
+
+
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 @pytest.mark.parametrize("field,value", (("digest", "broken"), ("dates", "[]"), ("cutoff", "2000-01-01")))
 def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, profile, field, value):
@@ -1129,7 +1175,7 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     stock_progress = next(message for message in messages if " | qfq_download 股票进度 | " in message)
     assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
     assert messages[-1].startswith("00:01:05 | qfq 完成 | 已处理 1/1（100.00%）")
-    assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 未处理 0" in messages[-1]
+    assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0 | 未处理 0" in messages[-1]
 
 
 def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_processed(tmp_path):
@@ -1310,8 +1356,10 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
     assert len(updater.v3.read_code("600001").cells) == 61
 
 
-@pytest.mark.parametrize("pending,exit_code", ((0, 0), (2, 1)))
-def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, capsys, pending, exit_code) -> None:
+@pytest.mark.parametrize("pending,no_trade_data,exit_code", ((0, 0, 0), (2, 0, 1), (0, 1, 0)))
+def test_qfq_cli_is_zero_argument_and_reports_pending(
+    tmp_path, monkeypatch, capsys, pending, no_trade_data, exit_code
+) -> None:
     calls = []
 
     reference_root = tmp_path / "data/reference"
@@ -1325,6 +1373,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, cap
             DAYS[-1],
             pending_codes=pending,
             pending_reasons=(QfqPendingReason("qfq_window_incomplete", pending),) if pending else (),
+            no_trade_data_codes=no_trade_data,
         )
 
     monkeypatch.setattr(
@@ -1338,6 +1387,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, cap
     payload = json.loads(captured.out)
     assert captured.err == "qfq fixture progress\n"
     assert payload["pending_codes"] == pending
+    assert payload["no_trade_data_codes"] == no_trade_data
     assert payload["pending_reasons"] == ([{"reason": "qfq_window_incomplete", "count": pending}] if pending else [])
     assert payload["failure_reason"] is None
     assert calls == [(tmp_path, reference_root)]

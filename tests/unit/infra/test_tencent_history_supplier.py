@@ -93,6 +93,7 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
 
     assert len(sessions) == 1
     assert len(sessions[0].calls) == 2
+    assert all(",1," in request for request in sessions[0].calls)
 
 
 def test_unavailable_old_pages_keep_real_partial_pairs_after_bounded_recovery():
@@ -120,10 +121,12 @@ def test_session_pool_reuses_bootstrap_owned_connection_between_stocks():
 
 
 def test_calendar_advances_independently_of_old_history():
-    context = _Http().supplier().load_qfq_context(DAY, 251)
+    http = _Http()
+    context = http.supplier().load_qfq_context(DAY, 251)
     assert context.calendar.open_dates[-1] == DAY
     assert len(context.calendar.open_dates) == 251
     assert context.universe == (SECURITY,)
+    assert ",251,bfq" in http.calls[0]
 
 
 def test_successful_two_sided_omission_is_inferred_but_one_sided_gap_is_not():
@@ -133,6 +136,7 @@ def test_successful_two_sided_omission_is_inferred_but_one_sided_gap_is_not():
     http.adjusted = [[days[2].isoformat(), *ROW[1:]]]
     window = http.supplier().fetch_window(SECURITY, days)
     assert tuple(cell.status for cell in window.cells) == ("qfq_missing", "tencent_inferred_suspended", "complete")
+    assert all(",3," in request for request in http.calls)
 
 
 def test_missing_raw_response_shape_cannot_be_inferred_as_suspension():

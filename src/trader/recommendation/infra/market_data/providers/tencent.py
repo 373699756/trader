@@ -190,7 +190,7 @@ class TencentClient:
                 history_endpoint,
                 params={
                     "_var": f"kline_day{adjustment_mode}{end.year}",
-                    "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},640,{adjustment_mode}",
+                    "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},{days},{adjustment_mode}",
                     "r": "0.8205512681390605",
                 },
                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},

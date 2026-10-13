@@ -292,8 +292,8 @@ def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
     assert bars[-1].turnover_rate == 0.33
     assert bars[-1].pct_change == pytest.approx((12.0 / 11.9 - 1.0) * 100.0)
     assert session.calls[0][0][0].startswith("https://proxy.finance.qq.com/")
-    assert ",2026-07-16,640,qfq" in session.calls[0][1]["params"]["param"]
-    assert session.calls[0][1]["params"]["param"].endswith(",640,qfq")
+    assert ",2026-07-16,20,qfq" in session.calls[0][1]["params"]["param"]
+    assert session.calls[0][1]["params"]["param"].endswith(",20,qfq")
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
@@ -314,6 +314,7 @@ def test_tencent_outcome_history_requests_raw_and_qfq_from_one_source() -> None:
     bars = client.fetch_outcome_history("600001", days=20)
 
     assert [call[1]["params"]["param"].rsplit(",", 1)[-1] for call in session.calls] == ["qfq", "bfq"]
+    assert all(",20," in call[1]["params"]["param"] for call in session.calls)
     assert bars[0].qfq.close == 5.0
     assert bars[0].raw.close == 10.0
     assert bars[1].trading_status is OutcomeTradingStatus.ONE_PRICE_LIMIT_DOWN

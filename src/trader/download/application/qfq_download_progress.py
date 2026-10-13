@@ -63,6 +63,7 @@ class QfqDownloadProgress:
     pending: int = 0
     skipped: int = 0
     not_applicable: int = 0
+    no_trade_data: int = 0
     rows: int = 0
     errors: int = 0
     changed: set[str] = field(default_factory=set)
@@ -70,7 +71,7 @@ class QfqDownloadProgress:
 
     @property
     def processed(self) -> int:
-        return self.completed + self.pending + self.not_applicable
+        return self.completed + self.pending + self.not_applicable + self.no_trade_data
 
     def publish(self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
         self.report(qfq_message(self.elapsed(), stage, details, level=level))
@@ -156,6 +157,19 @@ class QfqDownloadProgress:
             reason=ProgressField(qfq_failure_code(exc), failure_level),
         )
 
+    def record_no_trade_data(self, security: BaoStockSecurity, window: PublishedHistoryWindow) -> None:
+        self.no_trade_data += 1
+        self.record_stock(
+            security,
+            action="Tencent下载",
+            result="无真实日线",
+            target=0,
+            raw=0,
+            qfq=0,
+            paired=0,
+            inferred_suspended=len(window.cells),
+        )
+
     def _add_pending_reason(self, reason: str, count: int = 1) -> None:
         previous = next((item.count for item in self.pending_reasons if item.reason == reason), 0)
         self.pending_reasons = tuple(
@@ -175,6 +189,7 @@ class QfqDownloadProgress:
             f"已处理 {progress_number(self.processed)}/{progress_number(self.total)}（{percent:6.2f}%） "
             f"| 合格 {progress_number(self.completed)} | 待重试 {progress_number(self.pending)} "
             f"| 其中复用 {progress_number(self.skipped)} | 无需下载 {progress_number(self.not_applicable)} "
+            f"| 无真实日线 {progress_number(self.no_trade_data)} "
             f"| 未处理 {progress_number(self.total - self.processed)} "
             f"| 变更文件 {progress_number(len(self.changed))} | 变更行 {progress_number(self.rows)}",
             level=level,
@@ -210,4 +225,5 @@ class QfqDownloadProgress:
             self.skipped,
             "cancelled" if cancelled else None,
             self.pending_reasons,
+            self.no_trade_data,
         )

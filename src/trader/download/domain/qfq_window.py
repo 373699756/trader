@@ -63,6 +63,7 @@ class QfqUpdateResult:
     skipped_codes: int = 0
     failure_reason: str | None = None
     pending_reasons: tuple[QfqPendingReason, ...] = ()
+    no_trade_data_codes: int = 0
 
 
 def completed_daily_cutoff(observed_at: datetime) -> date:

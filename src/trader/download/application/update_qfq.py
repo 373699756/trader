@@ -311,9 +311,14 @@ class UpdateQfqWindows:
         for future in done:
             job = futures.pop(future)
             try:
-                ready.append((job, future.result()))
+                window = future.result()
             except (RuntimeError, OSError, ValueError) as exc:
                 progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
+                continue
+            if all(cell.status == "tencent_inferred_suspended" for cell in window.cells):
+                progress.record_no_trade_data(job.security, window)
+            else:
+                ready.append((job, window))
         return ready
 
     def _submit(self, job: _DownloadJob) -> Future[PublishedHistoryWindow]:
@@ -396,16 +401,20 @@ class UpdateQfqWindows:
             raise RuntimeError("qfq cancelled")
         previous_dates = {cell.trade_date for cell in job.previous.cells}
         missing = tuple(day for day in job.dates if day not in previous_dates)
+        window: PublishedHistoryWindow | None = None
         if job.previous.cells and len(missing) <= 5:
             count = max(3, len(missing) + 3)
             tail = self._fetch(job.security, job.dates[-count:])
             merged = merge_daily_tail(job.previous, tail, job.dates)
             if merged is not None and tuple(cell.trade_date for cell in merged.cells) == job.dates:
-                return merged
-        latest = self._fetch(job.security, job.dates)
-        if not any(cell.status == "complete" for cell in latest.cells):
+                window = merged
+        if window is None:
+            window = self._fetch(job.security, job.dates)
+        if not any(cell.status == "complete" for cell in window.cells) and not all(
+            cell.status == "tencent_inferred_suspended" for cell in window.cells
+        ):
             raise RuntimeError("qfq_no_trade_bars")
-        return latest
+        return window
 
     def _fetch(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         if self.cancel_requested():
