@@ -5,7 +5,8 @@ from datetime import date, datetime
 
 import pytest
 
-from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _updater, _window
+from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _plain_feedback, _updater, _window
+from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_archive_sync import NOW
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
@@ -43,10 +44,11 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     assert baseline.calls == []
     expected_missing = 2 if mode == "pending" else 6 if mode == "unclassified_failure" else 0
     assert result.unresolved_price_cells == expected_missing
-    logs = capsys.readouterr().err
+    logs = _compact_log(capsys.readouterr().err)
     if mode == "pending":
         assert "处理 Tencent下载 | 结果 待重试" in logs
-        assert "raw 3/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 | 原因 tencent_history_pending" in logs
+        assert "raw 3/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 |" in logs
+        assert " | 原因 tencent_history_pending" in logs
     elif mode == "missing":
         assert "完整 2 股 | 部分 0 股 | 失败 0 股" in logs
     else:
@@ -66,7 +68,9 @@ def test_qfq_transport_failure_preserves_old_window_and_never_calls_baostock(tmp
             raise HistorySupplierPendingError(_window(security.code, dates[:-1]))
 
     messages = []
-    updater = replace(_updater(tmp_path, PendingSupplier()), report=messages.append)
+    updater = replace(
+        _updater(tmp_path, PendingSupplier()), report=lambda message: messages.append(_plain_feedback(message))
+    )
     updater.seed((_window("600001", price=15),), "old")
     old = updater.v2.read_code("600001")
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)

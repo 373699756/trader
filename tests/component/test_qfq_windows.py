@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -14,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import QfqPairPublicationError, UpdateQfqWindows
 from trader.download.domain.baostock_daily import (
@@ -36,8 +38,16 @@ from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
+from trader.download.infra.terminal_progress import TerminalDownloadProgress, render_progress
 from trader.entrypoints import cli
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
+
+
+def _plain_feedback(message: ProgressMessage) -> str:
+    # Existing behavior assertions ignore padding; separate terminal tests check exact cell positions.
+    line = re.sub(r" +", " ", render_progress(message))
+    return re.sub(r" */ *", "/", re.sub(r"([（(]) +", r"\1", line))
+
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 DAYS = tuple(date(2025, 1, 1) + timedelta(days=offset) for offset in range(252))
@@ -283,7 +293,7 @@ def test_runner_recovers_hot_journal_before_read_only_window_checks(tmp_path) ->
     messages: list[str] = []
     runner = QfqUpdateRunner(
         UnavailableHistory(),
-        replace(updater, report=messages.append),
+        replace(updater, report=lambda message: messages.append(_plain_feedback(message))),
         updater.v2,
         updater.v3,
         tmp_path / ".lock",
@@ -443,7 +453,7 @@ def test_302_stock_download_publication_and_restart(tmp_path) -> None:
     versions = supplier.load_qfq_context(DAYS[-1], 251).source_versions
     expected_source = f"{versions.sdk_version}:{versions.content_hash}"
     logs = []
-    updater = replace(_updater(tmp_path, supplier), report=logs.append)
+    updater = replace(_updater(tmp_path, supplier), report=lambda message: logs.append(_plain_feedback(message)))
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 0 and result.failure_reason is None
@@ -502,7 +512,7 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
         supplier,
         QfqCheckpoint(tmp_path / ".checkpoint.json"),
         lambda: False,
-        logs.append,
+        lambda message: logs.append(_plain_feedback(message)),
     )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
@@ -542,7 +552,7 @@ def test_incomplete_supplier_gap_reports_dates_without_qualifying_window(tmp_pat
         supplier,
         QfqCheckpoint(tmp_path / ".checkpoint.json"),
         lambda: False,
-        logs.append,
+        lambda message: logs.append(_plain_feedback(message)),
     )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
@@ -581,7 +591,12 @@ def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_p
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-recovery-test")
     pool.start()
     try:
-        updater = replace(_updater(tmp_path, supplier), workers=2, worker_pool=pool, report=logs.append)
+        updater = replace(
+            _updater(tmp_path, supplier),
+            workers=2,
+            worker_pool=pool,
+            report=lambda message: logs.append(_plain_feedback(message)),
+        )
         observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
         result = updater.execute(observed)
         assert result.completed_codes == result.pending_codes == 2
@@ -924,6 +939,7 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
 
     def report(message):
         assert threading.get_ident() == writer_ident
+        message = _plain_feedback(message)
         messages.append(message)
 
     monkeypatch.setattr(updater.v2, "replace_paired_windows", write)
@@ -975,7 +991,7 @@ class _IncompleteSupplier(Supplier):
 def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(tmp_path):
     supplier = _IncompleteSupplier(codes=("600001", "600002"))
     messages = []
-    updater = replace(_updater(tmp_path, supplier), report=messages.append)
+    updater = replace(_updater(tmp_path, supplier), report=lambda message: messages.append(_plain_feedback(message)))
     updater.seed((_window(),), "old-source")
     before = updater.v2.read_code("600001")
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
@@ -986,9 +1002,10 @@ def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(
     assert len(stock_progress) == 2
     pending = next(message for message in stock_progress if "600001 fixture" in message)
     assert "处理 Tencent下载 | 结果 待重试" in pending
-    assert "raw 247/251 | qfq 247/251 | 完整配对 247/251 | 缺日 4（" in pending
+    assert "raw 247/251 | qfq 247/251 | 完整配对 247/251 | 缺日 4 |" in pending
+    assert " | 缺失日期 " in pending
     assert DAYS[1].isoformat() in pending
-    assert pending.endswith("原因 qfq_incomplete_raw_4_qfq_4")
+    assert " | 原因 qfq_incomplete_raw_4_qfq_4 | 缺失日期 " in pending
     assert " | qfq 结束（仍有待重试） | " in messages[-1]
 
 
@@ -1012,7 +1029,7 @@ def test_reused_codes_do_not_reduce_actual_download_wave_size(tmp_path):
     updater.execute(observed)
     supplier.codes = tuple(f"60000{index}" for index in range(1, 9))
     messages = []
-    result = replace(updater, report=messages.append).execute(observed)
+    result = replace(updater, report=lambda message: messages.append(_plain_feedback(message))).execute(observed)
     stock_progress = [message for message in messages if " | qfq_download 股票进度 | " in message]
     downloaded = [message for message in stock_progress if "处理 Tencent下载" in message]
     reused = [message for message in stock_progress if "处理 本地复用" in message]
@@ -1030,7 +1047,7 @@ def test_reused_codes_do_not_reduce_actual_download_wave_size(tmp_path):
 def test_preparation_pending_is_reported_without_any_download_and_hides_payload(tmp_path, monkeypatch):
     supplier = Supplier()
     messages = []
-    updater = replace(_updater(tmp_path, supplier), report=messages.append)
+    updater = replace(_updater(tmp_path, supplier), report=lambda message: messages.append(_plain_feedback(message)))
 
     context = supplier.load_qfq_context(DAYS[-1], 251)
     source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
@@ -1065,7 +1082,11 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
 
     supplier = FutureListingSupplier()
     messages = []
-    updater = replace(_updater(tmp_path, supplier), report=messages.append, monotonic=lambda: clock[0])
+    updater = replace(
+        _updater(tmp_path, supplier),
+        report=lambda message: messages.append(_plain_feedback(message)),
+        monotonic=lambda: clock[0],
+    )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.completed_codes == result.pending_codes == result.skipped_codes == 0
@@ -1090,7 +1111,10 @@ def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_process
     supplier = CancelSupplier(codes=("600001", "600002", "600003"))
     messages = []
     updater = replace(
-        _updater(tmp_path, supplier), report=messages.append, workers=2, cancel_requested=lambda: cancelled
+        _updater(tmp_path, supplier),
+        report=lambda message: messages.append(_plain_feedback(message)),
+        workers=2,
+        cancel_requested=lambda: cancelled,
     )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
@@ -1111,7 +1135,11 @@ def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path
             raise RuntimeError("private supplier payload")
 
     messages = []
-    updater = replace(_updater(tmp_path, BrokenContextSupplier()), report=messages.append, monotonic=lambda: clock[0])
+    updater = replace(
+        _updater(tmp_path, BrokenContextSupplier()),
+        report=lambda message: messages.append(_plain_feedback(message)),
+        monotonic=lambda: clock[0],
+    )
     with pytest.raises(RuntimeError, match="private supplier payload"):
         updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert messages[-1] == "00:00:03 | qfq 准备失败 | RuntimeError"
@@ -1254,9 +1282,11 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, cap
 
     reference_root = tmp_path / "data/reference"
 
-    def execute(root, *, reference_root, report):
+    def execute(root, *, reference_root):
         calls.append((root, reference_root))
-        report("qfq fixture progress")
+        from trader.download.application.progress_message import ProgressField
+
+        TerminalDownloadProgress()(ProgressMessage((ProgressField("qfq fixture progress"),)))
         return QfqUpdateResult(DAYS[-1], pending_codes=pending)
 
     monkeypatch.setattr(
@@ -1286,6 +1316,7 @@ def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:
     messages = []
 
     def report(message):
+        message = _plain_feedback(message)
         messages.append(message)
         if " | qfq 历史提取 | 等待本地历史窗口" in message:
             feedback.set()

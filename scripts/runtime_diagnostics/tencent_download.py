@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
@@ -68,11 +69,9 @@ def _benchmark(
             root = Path(scratch)
             failures: Counter[str] = Counter()
 
-            def feedback(message: str) -> None:
-                if " | qfq_download 股票进度 | " in message and (
-                    " | 结果 待重试 | " in message or " | 结果 失败 | " in message
-                ):
-                    failures[message.rsplit(" | 原因 ", 1)[-1]] += 1
+            def feedback(message: ProgressMessage) -> None:
+                if message.stock_failure_code is not None:
+                    failures[message.stock_failure_code] += 1
 
             updater = UpdateQfqWindows(
                 SQLiteQfqWindowCache(root, "v2"),

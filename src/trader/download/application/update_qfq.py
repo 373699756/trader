@@ -10,6 +10,7 @@ from itertools import islice
 from time import monotonic
 from typing import Protocol
 
+from trader.download.application.progress_message import ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import QfqDownloadProgress, qfq_failure_code, qfq_message
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
@@ -88,7 +89,7 @@ class UpdateQfqWindows:
     supplier: QfqSupplierPort
     resume: QfqResumePort
     cancel_requested: Callable[[], bool]
-    report: Callable[[str], None]
+    report: Callable[[ProgressMessage], None]
     workers: int = 8
     worker_pool: WorkerExecutor | None = None
     monotonic: Callable[[], float] = monotonic
@@ -127,8 +128,16 @@ class UpdateQfqWindows:
         try:
             context = self.supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
         except (RuntimeError, OSError, ValueError) as exc:
-            stage = "已取消" if self.cancel_requested() else "准备失败"
-            self.report(qfq_message(self.monotonic() - started, stage, qfq_failure_code(exc)))
+            cancelled = self.cancel_requested()
+            stage = "已取消" if cancelled else "准备失败"
+            self.report(
+                qfq_message(
+                    self.monotonic() - started,
+                    stage,
+                    qfq_failure_code(exc),
+                    level=ProgressLevel.WARNING if cancelled else ProgressLevel.ERROR,
+                )
+            )
             raise
         source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
         progress = QfqDownloadProgress(
@@ -341,11 +350,15 @@ class UpdateQfqWindows:
                         paired=len(window.cells),
                     )
                 else:
-                    progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
+                    progress.record_pending(
+                        job.security, exc, job.dates, action="Tencent下载", failure_level=ProgressLevel.ERROR
+                    )
             return exc.codes
         except (RuntimeError, OSError, ValueError) as exc:
             for job, _window in downloaded:
-                progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
+                progress.record_pending(
+                    job.security, exc, job.dates, action="Tencent下载", failure_level=ProgressLevel.ERROR
+                )
             return ()
         for job, window in downloaded:
             progress.completed += 1
@@ -369,7 +382,11 @@ class UpdateQfqWindows:
         progress.rows += delta
         elapsed = self.monotonic() - started
         if elapsed >= 5.0:
-            progress.publish("配对落库", f"完成 | 股票 {len(windows)} | 变更行 {delta} | 阶段耗时 {elapsed:.2f} 秒")
+            progress.publish(
+                "配对落库",
+                f"完成 | 股票 {len(windows)} | 变更行 {delta} | 阶段耗时 {elapsed:.2f} 秒",
+                level=ProgressLevel.SUCCESS,
+            )
 
     def _flush_checkpoint(self, checkpoint_codes: list[str], progress: QfqDownloadProgress, *, threshold: int) -> None:
         if self.cancel_requested() or len(checkpoint_codes) < threshold:

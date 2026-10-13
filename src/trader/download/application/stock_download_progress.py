@@ -7,6 +7,17 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from trader.download.application.progress_message import (
+    ProgressField,
+    ProgressLevel,
+    ProgressMessage,
+    clean_progress_text,
+    display_width,
+    progress_duration,
+    progress_field,
+    progress_number,
+)
+
 _DownloadCommand = Literal["download", "qfq_download"]
 
 
@@ -27,6 +38,7 @@ class StockDownloadProgress:
     missing_dates: tuple[date, ...] = ()
     reason: str = "无"
     extra: tuple[str, ...] = ()
+    failure_level: ProgressLevel = ProgressLevel.WARNING
 
     def __post_init__(self) -> None:
         counts = (self.raw, self.qfq, self.paired)
@@ -53,36 +65,58 @@ class StockDownloadProgress:
             raise ValueError("stock download progress is invalid")
 
 
-def format_stock_download_progress(elapsed_seconds: float, progress: StockDownloadProgress) -> str:
+def format_stock_download_progress(elapsed_seconds: float, progress: StockDownloadProgress) -> ProgressMessage:
     if not math.isfinite(elapsed_seconds):
         raise ValueError("stock download elapsed time is invalid")
     percent = progress.completed / progress.total * 100 if progress.total else 100.0
-    name = None if progress.name is None else " ".join(progress.name.replace("|", " ").split())
-    stock = progress.code if not name else f"{progress.code} {name}"
-    missing = "未知" if progress.missing is None else str(progress.missing)
-    if progress.missing_dates:
-        missing += f"（{_format_missing_dates(progress.missing_dates)}）"
+    name = clean_progress_text(progress.name or "—").strip() or "—"
+    short_name = name
+    if display_width(name) > 16:
+        short_name = ""
+        for char in name:
+            if display_width(short_name + char) > 15:
+                break
+            short_name += char
+        short_name += "…"
+    level = _result_level(progress)
+    missing = "未知".rjust(4) if progress.missing is None else progress_number(progress.missing)
     parts = [
-        _format_duration(elapsed_seconds),
-        f"{progress.command} 股票进度",
-        f"{progress.completed}/{progress.total}（{percent:.2f}%）",
-        f"股票 {stock}",
-        f"处理 {progress.action}",
-        f"结果 {progress.result}",
-        f"raw {_format_count(progress.raw, progress.target)}",
-        f"qfq {_format_count(progress.qfq, progress.target)}",
-        f"完整配对 {_format_count(progress.paired, progress.target)}",
-        f"缺日 {missing}",
-        f"原因 {progress.reason}",
-        *progress.extra,
+        progress_field(progress_duration(elapsed_seconds), 8),
+        progress_field(f"{progress.command} 股票进度", 21),
+        ProgressField(f"{progress_number(progress.completed)}/{progress_number(progress.total)}（{percent:6.2f}%）"),
+        progress_field(f"股票 {progress.code} {short_name}", 28),
+        progress_field(f"处理 {progress.action}", 16),
+        progress_field(f"结果 {progress.result}", 13, level=level),
+        progress_field(f"raw {_format_count(progress.raw, progress.target)}"),
+        progress_field(f"qfq {_format_count(progress.qfq, progress.target)}"),
+        progress_field(f"完整配对 {_format_count(progress.paired, progress.target)}"),
+        progress_field(
+            f"缺日 {missing}", 11, level=ProgressLevel.WARNING if progress.missing != 0 else ProgressLevel.NORMAL
+        ),
+        *(progress_field(item) for item in progress.extra),
+        progress_field(f"原因 {progress.reason}", level=level if progress.reason != "无" else ProgressLevel.NORMAL),
     ]
-    return " | ".join(parts)
+    if progress.missing_dates:
+        parts.append(progress_field(f"缺失日期 {_format_missing_dates(progress.missing_dates)}"))
+    if short_name != name:
+        parts.append(progress_field(f"完整名称 {name}"))
+    return ProgressMessage(tuple(parts), progress.reason if progress.result in {"失败", "待重试"} else None)
+
+
+def _result_level(progress: StockDownloadProgress) -> ProgressLevel:
+    if progress.result == "失败":
+        return ProgressLevel.ERROR
+    if progress.result == "待重试":
+        return progress.failure_level
+    if progress.result == "部分" or progress.missing != 0:
+        return ProgressLevel.WARNING
+    if progress.result == "合格":
+        return ProgressLevel.SUCCESS
+    return ProgressLevel.NORMAL
 
 
 def _format_count(value: int | None, target: int | None) -> str:
-    actual = "-" if value is None else str(value)
-    expected = "-" if target is None else str(target)
-    return f"{actual}/{expected}"
+    return f"{progress_number(value)}/{progress_number(target)}"
 
 
 def _format_missing_dates(days: tuple[date, ...]) -> str:
@@ -90,13 +124,6 @@ def _format_missing_dates(days: tuple[date, ...]) -> str:
     if len(days) > 8:
         preview += f" 等 {len(days)} 个交易日"
     return preview
-
-
-def _format_duration(seconds: float) -> str:
-    total_seconds = int(max(0.0, seconds))
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, remaining_seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{remaining_seconds:02d}"
 
 
 __all__ = ["StockDownloadProgress", "format_stock_download_progress"]

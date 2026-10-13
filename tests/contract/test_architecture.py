@@ -561,8 +561,11 @@ def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> 
     assert "def publish_result(" in projection
     assert "总进度" in projection
     assert "尝试" in projection
-    assert "file=sys.stderr" in projection
-    assert "flush=True" in projection
+    terminal = (SOURCE_ROOT / "download/infra/terminal_progress.py").read_text(encoding="utf-8")
+    assert "TerminalDownloadProgress" in projection
+    assert "sys.stderr" in terminal
+    assert "self._stream.flush()" in terminal
+    assert 'self._stream.write(line + "\\n")' in terminal
 
 
 def test_download_business_has_one_owner_and_no_legacy_history_paths() -> None:

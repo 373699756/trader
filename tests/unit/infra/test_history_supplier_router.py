@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_archive_sync import NOW, FakeSupplier, _download
 from trader.download.domain.baostock_daily import (
     BaoStockCodeBatch,
@@ -477,7 +478,7 @@ def test_completed_stock_reports_real_route_and_requested_sessions(capsys):
         )
     )
     progress.publish(HistorySyncProgress("downloading_codes", "completed", 1, 2, "600001"))
-    assert "来源 Tencent | 请求 5 日" in capsys.readouterr().err
+    assert "来源 Tencent | 请求 5 日" in _compact_log(capsys.readouterr().err)
 
 
 def test_failed_tencent_download_reports_the_bounded_reason(capsys):
@@ -496,7 +497,7 @@ def test_failed_tencent_download_reports_the_bounded_reason(capsys):
         )
     )
 
-    line = capsys.readouterr().err.strip()
+    line = _compact_log(capsys.readouterr().err).strip()
     assert "download 股票进度 | 1/2" in line
     assert "处理 Tencent下载 | 结果 失败" in line
     assert "原因 qfq_daily_query_failed" in line
@@ -508,7 +509,7 @@ def test_history_st_reference_batches_report_distinct_counts(capsys):
     progress.publish(HistorySyncProgress("history_st_reference", "completed", 8, 5224))
     progress.publish(HistorySyncProgress("history_st_reference", "completed", 16, 5224))
 
-    lines = capsys.readouterr().err.splitlines()
+    lines = _compact_log(capsys.readouterr().err).splitlines()
     assert lines == [
         "00:00:00 | 历史ST名单 | 检查中 | 8/5224 (0.15%) | 阶段耗时 00:00:00",
         "00:00:00 | 历史ST名单 | 检查中 | 16/5224 (0.31%) | 阶段耗时 00:00:00",
@@ -526,7 +527,7 @@ def test_gap_inventory_reports_missing_field_and_price_counts(capsys):
             gap_summary=HistoryGapSummary(1, 0),
         )
     )
-    assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | 本轮Tencent失败 0 股" in capsys.readouterr().err
+    assert "统计历史缺口 | 完成 | 价格对待补 1 股日 | 本轮Tencent失败 0 股" in _compact_log(capsys.readouterr().err)
 
 
 def test_active_gap_scan_prints_the_month_before_the_query_starts(capsys):
@@ -535,7 +536,7 @@ def test_active_gap_scan_prints_the_month_before_the_query_starts(capsys):
     progress.publish(HistorySyncProgress("history_active_gaps", "started", 88, 100, "2025-11"))
     progress.publish(HistorySyncProgress("history_active_gaps", "completed", 89, 100, "2025-11"))
 
-    assert capsys.readouterr().err.splitlines() == [
+    assert _compact_log(capsys.readouterr().err).splitlines() == [
         "00:00:00 | 活动历史缺口 | 开始 | 88/100 (88.00%) | 月份 2025-11 | 本月耗时 00:00:00",
         "00:00:00 | 活动历史缺口 | 完成 | 89/100 (89.00%) | 月份 2025-11 | 本月耗时 00:00:00",
     ]

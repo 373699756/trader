@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from trader.download.application.progress_message import ProgressLevel
 from trader.download.application.qfq_download_progress import qfq_failure_code, qfq_message
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
@@ -78,5 +79,7 @@ class QfqUpdateRunner:
                 )
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as exc:
             reason = qfq_failure_code(exc)
-            self.updater.report(qfq_message(self.updater.monotonic() - started, "更新失败", reason))
+            self.updater.report(
+                qfq_message(self.updater.monotonic() - started, "更新失败", reason, level=ProgressLevel.ERROR)
+            )
             return QfqUpdateResult(None, changed_files=tuple(sorted(changed)), changed_rows=rows, failure_reason=reason)

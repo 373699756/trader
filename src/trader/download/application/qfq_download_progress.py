@@ -7,6 +7,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 
+from trader.download.application.progress_message import (
+    ProgressField,
+    ProgressLevel,
+    ProgressMessage,
+    progress_duration,
+    progress_field,
+    progress_number,
+)
 from trader.download.application.stock_download_progress import (
     StockDownloadProgress,
     format_stock_download_progress,
@@ -17,11 +25,19 @@ from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowIncompleteError
 
 
-def qfq_message(elapsed: float, stage: str, details: str) -> str:
-    seconds = max(0, int(elapsed))
-    hours, remainder = divmod(seconds, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d} | qfq {stage} | {details}"
+def qfq_message(
+    elapsed: float, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL
+) -> ProgressMessage:
+    return ProgressMessage(
+        (
+            progress_field(progress_duration(elapsed), 8),
+            progress_field(f"qfq {stage}", 24, level=level),
+            *(
+                progress_field(part, level=level if level is ProgressLevel.ERROR else ProgressLevel.NORMAL)
+                for part in details.split(" | ")
+            ),
+        )
+    )
 
 
 def qfq_failure_code(exc: Exception) -> str:
@@ -41,21 +57,22 @@ class QfqDownloadProgress:
     day: date
     source: str
     total: int
-    report: Callable[[str], None]
+    report: Callable[[ProgressMessage], None]
     elapsed: Callable[[], float]
     completed: int = 0
     pending: int = 0
     skipped: int = 0
     not_applicable: int = 0
     rows: int = 0
+    errors: int = 0
     changed: set[str] = field(default_factory=set)
 
     @property
     def processed(self) -> int:
         return self.completed + self.pending + self.not_applicable
 
-    def publish(self, stage: str, details: str) -> None:
-        self.report(qfq_message(self.elapsed(), stage, details))
+    def publish(self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
+        self.report(qfq_message(self.elapsed(), stage, details, level=level))
 
     def record_stock(
         self,
@@ -68,7 +85,7 @@ class QfqDownloadProgress:
         qfq: int | None,
         paired: int | None,
         missing_dates: tuple[date, ...] = (),
-        reason: str = "无",
+        reason: ProgressField = ProgressField("无"),
     ) -> None:
         self.report(
             format_stock_download_progress(
@@ -87,7 +104,8 @@ class QfqDownloadProgress:
                     paired=paired,
                     missing=target - paired if paired is not None else None,
                     missing_dates=missing_dates,
-                    reason=reason,
+                    reason=reason.text,
+                    failure_level=ProgressLevel.ERROR if reason.level is ProgressLevel.ERROR else ProgressLevel.WARNING,
                 ),
             )
         )
@@ -99,8 +117,11 @@ class QfqDownloadProgress:
         dates: tuple[date, ...],
         *,
         action: str,
+        failure_level: ProgressLevel = ProgressLevel.WARNING,
     ) -> None:
         self.pending += 1
+        if action == "本地检查" or failure_level is ProgressLevel.ERROR:
+            self.errors += 1
         target = len(dates)
         raw: int | None = None
         qfq: int | None = None
@@ -126,21 +147,31 @@ class QfqDownloadProgress:
             qfq=qfq,
             paired=paired,
             missing_dates=missing_dates,
-            reason=qfq_failure_code(exc),
+            reason=ProgressField(qfq_failure_code(exc), failure_level),
         )
 
-    def summary(self, stage: str) -> None:
+    def summary(self, stage: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
         percent = self.processed / self.total * 100 if self.total else 100.0
         self.publish(
             stage,
-            f"已处理 {self.processed}/{self.total}（{percent:.2f}%） | 合格 {self.completed} | 待重试 {self.pending} "
-            f"| 其中复用 {self.skipped} | 无需下载 {self.not_applicable} | 未处理 {self.total - self.processed} "
-            f"| 变更文件 {len(self.changed)} | 变更行 {self.rows}",
+            f"已处理 {progress_number(self.processed)}/{progress_number(self.total)}（{percent:6.2f}%） "
+            f"| 合格 {progress_number(self.completed)} | 待重试 {progress_number(self.pending)} "
+            f"| 其中复用 {progress_number(self.skipped)} | 无需下载 {progress_number(self.not_applicable)} "
+            f"| 未处理 {progress_number(self.total - self.processed)} "
+            f"| 变更文件 {progress_number(len(self.changed))} | 变更行 {progress_number(self.rows)}",
+            level=level,
         )
 
     def finish(self, cancelled: bool) -> QfqUpdateResult:
         stage = "已取消" if cancelled else ("结束（仍有待重试）" if self.pending else "完成")
-        self.summary(stage)
+        level = (
+            ProgressLevel.ERROR
+            if self.errors
+            else ProgressLevel.WARNING
+            if cancelled or self.pending
+            else ProgressLevel.SUCCESS
+        )
+        self.summary(stage, level=level)
         # The existing result contract counts unfinished stocks as pending on cancellation.
         # Feedback separates them because they have not actually been processed.
         unfinished = self.total - self.processed if cancelled else 0

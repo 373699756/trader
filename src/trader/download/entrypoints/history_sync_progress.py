@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-import sys
 import time
 from collections.abc import Callable
 from threading import Lock
 
+from trader.download.application.progress_message import (
+    ProgressLevel,
+    ProgressMessage,
+    highest_progress_level,
+    progress_field,
+    progress_number,
+)
 from trader.download.application.stock_download_progress import (
     StockDownloadProgress,
     format_stock_download_progress,
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage
+from trader.download.infra.terminal_progress import TerminalDownloadProgress
 
 _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "initializing": "初始化",
@@ -89,9 +96,9 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.pipeline is not None:
         pipeline = progress.pipeline
         return (
-            f"网络 {pipeline.downloaded_codes}/{progress.total_units}",
-            f"落库 {progress.completed_units}/{progress.total_units}",
-            f"待写 {pipeline.queued_codes}",
+            f"网络 {progress_number(pipeline.downloaded_codes)}/{progress_number(progress.total_units)}",
+            f"落库 {progress_number(progress.completed_units)}/{progress_number(progress.total_units)}",
+            f"待写 {progress_number(pipeline.queued_codes)}",
             f"下载 {_format_duration(pipeline.download_seconds)}",
             f"落库耗时 {_format_duration(pipeline.write_seconds)}",
             f"回压 {_format_duration(pipeline.backpressure_seconds)}",
@@ -107,26 +114,26 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.tencent_summary is not None:
         summary = progress.tencent_summary
         return (
-            f"完整 {summary.succeeded_codes} 股",
-            f"部分 {summary.partial_codes} 股",
-            f"失败 {summary.failed_codes} 股",
-            f"其中待重试 {summary.pending_codes} 股",
-            f"其中本地复用 {summary.reused_codes} 股",
-            f"重叠冲突 {summary.overlap_conflicts} 股",
-            f"其它失败 {summary.other_failures} 股",
+            f"完整 {progress_number(summary.succeeded_codes)} 股",
+            f"部分 {progress_number(summary.partial_codes)} 股",
+            f"失败 {progress_number(summary.failed_codes)} 股",
+            f"其中待重试 {progress_number(summary.pending_codes)} 股",
+            f"其中本地复用 {progress_number(summary.reused_codes)} 股",
+            f"重叠冲突 {progress_number(summary.overlap_conflicts)} 股",
+            f"其它失败 {progress_number(summary.other_failures)} 股",
         )
     if progress.gap_summary is not None:
         gap_summary = progress.gap_summary
         return (
-            f"价格对待补 {gap_summary.price_pair_cells} 股日",
-            f"本轮Tencent失败 {gap_summary.failed_codes} 股",
+            f"价格对待补 {progress_number(gap_summary.price_pair_cells)} 股日",
+            f"本轮Tencent失败 {progress_number(gap_summary.failed_codes)} 股",
         )
     if progress.st_summary is not None:
         st_summary = progress.st_summary
         return (
-            f"合格 {st_summary.clear}",
-            f"曾ST排除 {st_summary.ever_st}",
-            f"未知排除 {st_summary.unknown}",
+            f"合格 {progress_number(st_summary.clear)}",
+            f"曾ST排除 {progress_number(st_summary.ever_st)}",
+            f"未知排除 {progress_number(st_summary.unknown)}",
         )
     return _reuse_summary_parts(progress)
 
@@ -148,15 +155,17 @@ def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if coverage is None:
         return ()
     return (
-        f"raw {coverage.raw}/{coverage.expected}",
-        f"qfq {coverage.qfq}/{coverage.expected}",
-        f"配对 {coverage.paired}/{coverage.expected}",
+        f"raw {progress_number(coverage.raw)}/{progress_number(coverage.expected)}",
+        f"qfq {progress_number(coverage.qfq)}/{progress_number(coverage.expected)}",
+        f"配对 {progress_number(coverage.paired)}/{progress_number(coverage.expected)}",
     )
 
 
 class StderrHistorySyncProgress:
     def __init__(self, *, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._lock = Lock()
+        self._output = TerminalDownloadProgress()
+        self._observed_level = ProgressLevel.NORMAL
         self._monotonic = monotonic
         self._started_at = monotonic()
         self._stock_counts: tuple[int, int] | None = None
@@ -185,7 +194,11 @@ class StderrHistorySyncProgress:
         if self._should_suppress(progress, now):
             return
         if progress.stage == "tencent_history" and progress.current_item is not None:
-            self._print([self._stock_download_line(progress, now)])
+            message = self._stock_download_line(progress, now)
+            self._observed_level = highest_progress_level(
+                self._observed_level, *(field.level for field in message.fields)
+            )
+            self._output(message)
             return
         parts = self._progress_parts(progress, now)
         if not progress.stage.startswith("supplier_"):
@@ -194,9 +207,25 @@ class StderrHistorySyncProgress:
             else:
                 label = "本月耗时" if monthly else "阶段耗时"
             parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
-        self._print(parts)
+        level = _progress_level(progress)
+        self._observed_level = highest_progress_level(self._observed_level, level)
+        self._output(
+            ProgressMessage(
+                tuple(
+                    progress_field(
+                        part,
+                        14 if index == 1 else 30 if index == 2 else 0,
+                        level=level
+                        if index == 2
+                        or (progress.failure_reason is not None and part == f"错误 {progress.failure_reason}")
+                        else ProgressLevel.NORMAL,
+                    )
+                    for index, part in enumerate(parts)
+                )
+            )
+        )
 
-    def _stock_download_line(self, progress: HistorySyncProgress, now: float) -> str:
+    def _stock_download_line(self, progress: HistorySyncProgress, now: float) -> ProgressMessage:
         code = progress.current_item
         if code is None:
             raise ValueError("stock download progress requires a stock code")
@@ -214,7 +243,17 @@ class StderrHistorySyncProgress:
         else:
             result = "合格"
         phase_key = (progress.stage, None)
-        extra = (*_summary_parts(progress), f"总计 {_format_duration(now - self._phase_started[phase_key])}")
+        pipeline = progress.pipeline
+        extra = (
+            f"网络 {progress_number(pipeline.downloaded_codes if pipeline else None)}/{progress_number(progress.total_units)}",
+            f"落库 {progress_number(progress.completed_units)}/{progress_number(progress.total_units)}",
+            f"待写 {progress_number(pipeline.queued_codes if pipeline else None)}",
+            f"下载 {_format_duration(pipeline.download_seconds) if pipeline else '--:--:--'}",
+            f"落库耗时 {_format_duration(pipeline.write_seconds) if pipeline else '--:--:--'}",
+            f"回压 {_format_duration(pipeline.backpressure_seconds) if pipeline else '--:--:--'}",
+            f"总计 {_format_duration(now - self._phase_started[phase_key])}",
+            *_reuse_summary_parts(progress),
+        )
         return format_stock_download_progress(
             max(0.0, now - self._started_at),
             StockDownloadProgress(
@@ -295,7 +334,7 @@ class StderrHistorySyncProgress:
         ]
         if progress.stage in _COUNT_STAGES:
             parts.append(
-                f"{progress.completed_units}/{progress.total_units}"
+                f"{progress_number(progress.completed_units)}/{progress_number(progress.total_units)}"
                 if progress.stage == "tencent_history"
                 else _format_count(progress.completed_units, progress.total_units)
             )
@@ -330,7 +369,7 @@ class StderrHistorySyncProgress:
             parts.append(f"错误 {progress.failure_reason}")
         return parts
 
-    def publish_result(self, status: HistoryMaintenanceStatus) -> None:
+    def _result_parts(self, status: HistoryMaintenanceStatus) -> list[str]:
         parts = [_format_duration(self._elapsed()), _RESULT_LABELS[status.state]]
         if status.state == "failed":
             location = self._specific_failure or self._last_progress
@@ -346,19 +385,77 @@ class StderrHistorySyncProgress:
             if status.state == "completed":
                 parts.append("数据不完整")
             parts.append(f"未修复价格缺口 {status.unresolved_price_cells} 股日")
-        self._print(parts)
+        return parts
+
+    def publish_result(self, status: HistoryMaintenanceStatus) -> None:
+        parts = self._result_parts(status)
+        level = highest_progress_level(_maintenance_result_level(status), self._observed_level)
+        if status.state in {"completed", "already_current"} and not status.unresolved_price_cells:
+            if level is ProgressLevel.ERROR:
+                parts.append("本轮有失败记录")
+            elif level is ProgressLevel.WARNING:
+                parts.append("本轮有不完整或待重试记录")
+        self._output(
+            ProgressMessage(
+                tuple(
+                    progress_field(
+                        part,
+                        level=level
+                        if index == 1
+                        or index == len(parts) - 1
+                        or part == f"错误 {status.reason}"
+                        or part == "数据不完整"
+                        or part == f"未修复价格缺口 {status.unresolved_price_cells} 股日"
+                        else ProgressLevel.NORMAL,
+                    )
+                    for index, part in enumerate(parts)
+                )
+            )
+        )
 
     def _elapsed(self) -> float:
         return max(0.0, self._monotonic() - self._started_at)
 
-    @staticmethod
-    def _print(parts: list[str]) -> None:
-        print(" | ".join(parts), file=sys.stderr, flush=True)
-
 
 def _format_count(completed: int, total: int) -> str:
     percent = 100.0 if total == 0 else completed / total * 100.0
-    return f"{completed}/{total} ({percent:.2f}%)"
+    return f"{progress_number(completed)}/{progress_number(total)} ({percent:6.2f}%)"
+
+
+def _progress_level(progress: HistorySyncProgress) -> ProgressLevel:
+    level = ProgressLevel.NORMAL
+    if (
+        progress.stage == "history_st_reference"
+        and progress.completed_units < progress.total_units
+        and progress.state == "completed"
+    ):
+        level = ProgressLevel.NORMAL
+    elif progress.failure_reason == "tencent_history_pending" or progress.state in {"retrying", "cancelled"}:
+        level = ProgressLevel.WARNING
+    elif progress.state == "failed":
+        level = ProgressLevel.WARNING if progress.attempt < progress.max_attempts else ProgressLevel.ERROR
+    elif progress.price_coverage is not None and progress.price_coverage.missing:
+        level = ProgressLevel.WARNING
+    elif progress.tencent_summary is not None:
+        summary = progress.tencent_summary
+        level = (
+            ProgressLevel.ERROR
+            if summary.failed_codes
+            else (ProgressLevel.WARNING if summary.partial_codes or summary.pending_codes else ProgressLevel.SUCCESS)
+        )
+    elif progress.state == "completed":
+        level = ProgressLevel.SUCCESS
+    return level
+
+
+def _maintenance_result_level(status: HistoryMaintenanceStatus) -> ProgressLevel:
+    if status.state in {"failed", "blocked"}:
+        return ProgressLevel.ERROR
+    if status.state == "cancelled" or status.unresolved_price_cells:
+        return ProgressLevel.WARNING
+    if status.state in {"completed", "already_current"}:
+        return ProgressLevel.SUCCESS
+    return ProgressLevel.NORMAL
 
 
 def _format_duration(seconds: float) -> str:

@@ -189,7 +189,6 @@ def _run_history_maintenance_command(
         result = execute_qfq_download(
             runtime.project_root,
             reference_root=runtime.reference_dir,
-            report=lambda message: print(message, file=sys.stderr, flush=True),
         )
         print(
             json.dumps(

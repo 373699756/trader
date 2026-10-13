@@ -16,6 +16,7 @@ import requests
 from flask import Flask
 
 from trader.download.application.download_history import DownloadHistoryUseCase
+from trader.download.application.progress_message import ProgressLevel, ProgressMessage, progress_number
 from trader.download.application.qfq_download_progress import qfq_message
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
@@ -48,6 +49,7 @@ from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqSupplier,
     TencentSessionPool,
 )
+from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
@@ -271,10 +273,12 @@ def execute_qfq_download(
     *,
     reference_root: Path,
     cancel_requested: Callable[[], bool] = lambda: False,
-    report: Callable[[str], None] = print,
+    report: Callable[[ProgressMessage], None] | None = None,
     now: Callable[[], datetime] = _utc_now,
 ) -> QfqUpdateResult:
     """Compose the zero-argument CLI/background use case without building the server."""
+    if report is None:
+        report = TerminalDownloadProgress()
     root = project_root / "data" / "qfq"
     history_root = project_root / "data/history"
     v2 = SQLiteQfqWindowCache(root, "v2")
@@ -333,11 +337,15 @@ def execute_qfq_download(
     finally:
         stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         if not stopped.completed:
-            report(qfq_message(time.monotonic() - started, "关闭失败", "worker_deadline_exceeded"))
+            report(
+                qfq_message(
+                    time.monotonic() - started, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR
+                )
+            )
 
 
 def _report_qfq_st_progress(
-    report: Callable[[str], None],
+    report: Callable[[ProgressMessage], None],
     started: float,
     completed: int,
     total: int,
@@ -345,9 +353,9 @@ def _report_qfq_st_progress(
 ) -> None:
     if summary is None and completed % 256 != 0:
         return
-    details = f"{completed}/{total}"
+    details = f"{progress_number(completed)}/{progress_number(total)}"
     if summary is not None:
-        details += f" | 合格 {summary.clear} | 曾ST排除 {summary.ever_st} | 未知排除 {summary.unknown}"
+        details += f" | 合格 {progress_number(summary.clear)} | 曾ST排除 {progress_number(summary.ever_st)} | 未知排除 {progress_number(summary.unknown)}"
     report(qfq_message(time.monotonic() - started, "ST资格", details))
 
 
