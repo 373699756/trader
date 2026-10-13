@@ -266,8 +266,15 @@ def test_configuration_contract_is_valid() -> None:
     assert strategy.long_research.pledge_thresholds == (10.0, 20.0, 35.0)
     assert "监管函" in strategy.long_research.negative_medium_keywords
     assert watchlist.watchlist_version.startswith("watchlist_sha256_")
-    assert watchlist.items == ()
-    assert watchlist.groups == ()
+    assert len(watchlist.items) == 153
+    assert len(watchlist.groups) == 50
+    assert {group.category for group in watchlist.groups} == {
+        "chokepoint",
+        "future_growth",
+        "low_price_potential",
+    }
+    assert {item.code for item in watchlist.items} == {code for group in watchlist.groups for code in group.codes}
+    assert "688502" not in {item.code for item in watchlist.items}
 
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))

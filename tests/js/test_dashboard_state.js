@@ -111,6 +111,7 @@ const state = {
   longGroupRenderBar: sandbox.window.TraderLongGroups.renderBar,
   longGroupVisibleRecommendations: sandbox.window.TraderLongGroups.visibleRecommendations,
 };
+assert.strictEqual(state.descriptions.long, "长期研究 · 名单资格待核实 · 仅展示当前数据");
 
 const historyLoadingStatus = { market_data: {
   published_history_state: "unavailable",

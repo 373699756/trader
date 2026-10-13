@@ -4,7 +4,7 @@
   const descriptions = Object.freeze({
     tomorrow: "尾盘策略 · 面向 T+1 · 15:00 冻结",
     d25: "尾盘策略 · 面向 T+2 至 T+5 · 15:00 冻结",
-    long: "长期研究 · 仅展示当前数据",
+    long: "长期研究 · 名单资格待核实 · 仅展示当前数据",
   });
 
   function initialStrategy(statusPayload) {
