@@ -22,7 +22,7 @@ from trader.download.application.stock_download_progress import (
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.published_history import PublishedHistoryWindow
-from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowIncompleteError
+from trader.download.domain.qfq_window import QfqPendingReason, QfqUpdateResult, QfqWindowIncompleteError
 
 
 def qfq_message(
@@ -66,6 +66,7 @@ class QfqDownloadProgress:
     rows: int = 0
     errors: int = 0
     changed: set[str] = field(default_factory=set)
+    pending_reasons: tuple[QfqPendingReason, ...] = ()
 
     @property
     def processed(self) -> int:
@@ -120,6 +121,8 @@ class QfqDownloadProgress:
         failure_level: ProgressLevel = ProgressLevel.WARNING,
     ) -> None:
         self.pending += 1
+        reason = "qfq_window_incomplete" if isinstance(exc, QfqWindowIncompleteError) else qfq_failure_code(exc)
+        self._add_pending_reason(reason)
         if action == "本地检查" or failure_level is ProgressLevel.ERROR:
             self.errors += 1
         target = len(dates)
@@ -150,6 +153,18 @@ class QfqDownloadProgress:
             reason=ProgressField(qfq_failure_code(exc), failure_level),
         )
 
+    def _add_pending_reason(self, reason: str, count: int = 1) -> None:
+        previous = next((item.count for item in self.pending_reasons if item.reason == reason), 0)
+        self.pending_reasons = tuple(
+            sorted(
+                (
+                    *(item for item in self.pending_reasons if item.reason != reason),
+                    QfqPendingReason(reason, previous + count),
+                ),
+                key=lambda item: item.reason,
+            )
+        )
+
     def summary(self, stage: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
         percent = self.processed / self.total * 100 if self.total else 100.0
         self.publish(
@@ -171,10 +186,18 @@ class QfqDownloadProgress:
             if cancelled or self.pending
             else ProgressLevel.SUCCESS
         )
-        self.summary(stage, level=level)
         # The existing result contract counts unfinished stocks as pending on cancellation.
         # Feedback separates them because they have not actually been processed.
         unfinished = self.total - self.processed if cancelled else 0
+        if unfinished:
+            self._add_pending_reason("cancelled_before_processing", unfinished)
+        if self.pending_reasons:
+            self.publish(
+                "待重试原因",
+                " | ".join(f"{item.reason} {progress_number(item.count)} 股" for item in self.pending_reasons),
+                level=level,
+            )
+        self.summary(stage, level=level)
         return QfqUpdateResult(
             self.day,
             self.completed,
@@ -183,4 +206,5 @@ class QfqDownloadProgress:
             self.rows,
             self.skipped,
             "cancelled" if cancelled else None,
+            self.pending_reasons,
         )

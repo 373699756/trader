@@ -153,12 +153,16 @@ def test_unreadable_sqlite_cache_has_explicit_failure_and_is_not_deleted(tmp_pat
     assert cache.path.read_bytes() == b"not a database"
 
 
-def test_missing_listed_security_requeries_cache_but_never_invents_industry(tmp_path):
+def test_missing_listed_security_reuses_full_market_query_without_inventing_industry(tmp_path):
     cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
     sdk = _IndustrySdk()
     _fetch(sdk, cache)
     sdk.calls.clear()
     missing = replace(UNIVERSE[0], code="600003", listed_on=DATES[-1])
-    result = _fetch(sdk, cache, universe=(*UNIVERSE, missing))
-    assert sdk.calls == [str(DATES[-1])]
-    assert {item.code for item in result} == {UNIVERSE[0].code}
+    for _ in range(3):
+        events = []
+        result = _fetch(sdk, cache, universe=(*UNIVERSE, missing), progress=events.append)
+        assert sdk.calls == []
+        assert {item.code for item in result} == {UNIVERSE[0].code}
+        assert events[-1].industry_missing_codes == 1
+        assert events[-1].cache_hit is True

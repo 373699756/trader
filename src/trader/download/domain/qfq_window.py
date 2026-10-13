@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -43,6 +44,16 @@ class QfqWindowSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class QfqPendingReason:
+    reason: str
+    count: int
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[a-zA-Z0-9_]{1,64}", self.reason) is None or type(self.count) is not int or self.count < 1:
+            raise ValueError("invalid qfq pending reason")
+
+
+@dataclass(frozen=True, slots=True)
 class QfqUpdateResult:
     target_date: date | None
     completed_codes: int = 0
@@ -51,6 +62,7 @@ class QfqUpdateResult:
     changed_rows: int = 0
     skipped_codes: int = 0
     failure_reason: str | None = None
+    pending_reasons: tuple[QfqPendingReason, ...] = ()
 
 
 def completed_daily_cutoff(observed_at: datetime) -> date:

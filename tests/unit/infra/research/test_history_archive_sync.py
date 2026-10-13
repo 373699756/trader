@@ -313,6 +313,56 @@ def test_database_write_failure_is_fatal_not_baostock_retry(tmp_path, monkeypatc
     assert "baostock_prices" not in supplier.events
 
 
+@pytest.mark.parametrize("boundary", ("read", "read_cleanup", "write", "checkpoint"))
+def test_failure_reports_actual_boundary_without_payload_and_preserves_snapshot(
+    tmp_path, monkeypatch, capsys, boundary
+):
+    from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+    from trader.download.infra.history_direct_prices import HistoryDirectPrices
+    from trader.download.infra.history_download_index import HistoryDownloadIndex
+
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    config = _configuration(tmp_path)
+    assert run_history_sync(config, FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    previous = _snapshot(tmp_path)
+
+    def fail(*args):
+        try:
+            raise sqlite3.OperationalError("private payload token=secret /private/data/file")
+        except sqlite3.Error as exc:
+            raise RuntimeError("private wrapper text") from exc
+
+    if boundary.startswith("read"):
+        monkeypatch.setattr(HistoryDirectPrices, "read_for_download", fail)
+        if boundary == "read_cleanup":
+
+            def fail_close(*args):
+                raise RuntimeError("cleanup_failure")
+
+            monkeypatch.setattr(HistoryDirectPrices, "close_pipeline", fail_close)
+    elif boundary == "write":
+        monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", fail)
+    else:
+        monkeypatch.setattr(HistoryDownloadIndex, "finish", fail)
+    reporter = StderrHistorySyncProgress(monotonic=lambda: 0)
+    reporter.publish(HistorySyncProgress("tencent_history", "completed", 1, 2, "600361"))
+    advanced = FakeSupplier((*days[1:], date(2026, 9, 11)))
+    result = run_history_sync(config, advanced, clock=lambda: NOW + timedelta(days=1), progress=reporter)
+    reporter.publish_result(result)
+    assert result.state == "failed" and result.reason == "history_sqlite_failed"
+    assert _snapshot(tmp_path) == previous
+    output = capsys.readouterr().err
+    assert "OperationalError" in output and "test_history_archive_sync.py:fail:" in output
+    assert "secret" not in output and "private" not in output
+    final = output.splitlines()[-1]
+    assert "600361" not in final
+    if boundary.startswith("read"):
+        assert "股票 600001" in final
+    else:
+        label = "下载断点提交" if boundary == "checkpoint" else "正式月库提交"
+        assert label in final and "股票" not in final
+
+
 def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_path):
     from trader.download.domain.history_revision import HistoryRevision
     from trader.download.infra.history_month_partition import HistoryMonthPartitionError

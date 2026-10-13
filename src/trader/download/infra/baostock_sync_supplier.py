@@ -515,8 +515,8 @@ class BaoStockHistorySupplier:
         current_item: str | None,
         call_elapsed_seconds: float,
     ) -> None:
-        if stage == "supplier_industry" and state == "completed" and self._industry_units[0] == self._industry_units[1]:
-            return  # The worker already emitted the final dated snapshot completion.
+        if stage == "supplier_industry" and state in {"started", "completed"}:
+            return  # Dated query preparation is the sole owner of these events.
         completed, total = (
             self._industry_units if stage == "supplier_industry" else (1 if state == "completed" else 0, 1)
         )

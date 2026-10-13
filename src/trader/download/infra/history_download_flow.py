@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import sqlite3
+import sys
 import time
 from collections import deque
 from collections.abc import Callable
@@ -31,9 +34,11 @@ from trader.download.infra.history_download_index import (
     HistoryDownloadTask,
 )
 from trader.download.infra.history_month_partition import HistoryMonthPartitionError
+from trader.download.infra.history_sync_failure import HistorySyncFailureError, history_failure_detail
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
 _FATAL = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})
+_LOGGER = logging.getLogger(__name__)
 
 
 def download_failure(exc: BaseException) -> str:
@@ -108,16 +113,19 @@ class HistoryDownloadFlow:
         results = tuple(self._tencent_result(result) for result in batch)
         self._resources.prices.commit_pipeline(results)
         self._check()
-        self._resources.index.finish(
-            tuple(
-                HistoryDownloadCompletion(
-                    result.task,
-                    result.missing if result.failure is not None else (),
-                    result.failure,
+        try:
+            self._resources.index.finish(
+                tuple(
+                    HistoryDownloadCompletion(
+                        result.task,
+                        result.missing if result.failure is not None else (),
+                        result.failure,
+                    )
+                    for result in results
                 )
-                for result in results
             )
-        )
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistorySyncFailureError(exc, "confirming_download") from exc
         return _WriteResult(results, time.monotonic() - started)
 
     def _acknowledge(
@@ -294,13 +302,24 @@ class _TencentPipeline:
                     self._report()
             self._close_writer()
         finally:
+            original_failure = sys.exc_info()[1]
             self._cancel_pending()
-            self._close_writer()
+            try:
+                self._close_writer()
+            except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+                if original_failure is None:
+                    raise
+                _LOGGER.error("history_writer_cleanup_failed diagnostic=%s", history_failure_detail(exc))
 
     def _acknowledge(self) -> None:
         if self._writing is None or not self._writing.done():
             return
-        saved = self._writing.result()
+        try:
+            saved = self._writing.result()
+        except HistorySyncFailureError:
+            raise
+        except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+            raise HistorySyncFailureError(exc, "persisting_partitions") from exc
         self._write_seconds += saved.seconds
         self._writing = None
         self._writing_cells = self._writing_codes = 0
@@ -324,7 +343,10 @@ class _TencentPipeline:
         for future in tuple(self._futures):
             if not future.done():
                 continue
-            result = future.result()
+            try:
+                result = future.result()
+            except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
+                raise HistorySyncFailureError(exc, "tencent_history", self._futures[future].code) from exc
             del self._futures[future]
             self._buffered.append(result)
             self._downloaded += 1

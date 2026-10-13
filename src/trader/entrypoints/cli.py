@@ -200,6 +200,9 @@ def _run_history_maintenance_command(
                     "changed_rows": result.changed_rows,
                     "skipped_codes": result.skipped_codes,
                     "failure_reason": result.failure_reason,
+                    "pending_reasons": [
+                        {"reason": item.reason, "count": item.count} for item in result.pending_reasons
+                    ],
                 },
                 ensure_ascii=False,
             )

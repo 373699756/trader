@@ -51,6 +51,42 @@ def test_warm_industry_context_does_not_start_or_query_supplier(tmp_path, monkey
         assert source.load_industry_context(calendar, UNIVERSE, industry_cache=cache) == cold
 
 
+def test_real_request_wrapper_has_one_start_and_completion_per_industry_date(tmp_path, monkeypatch, capsys):
+    from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+
+    sdk = _IndustrySdk()
+    monkeypatch.setattr(supplier_module, "load_baostock_sdk", lambda: sdk)
+    gateway = BaoStockRowGateway(sdk)
+
+    def request_once(self, command, state, attempt, timeout):
+        self._publish(state.stage, "started", attempt, state.current_item, 0)
+        state = self._handle_activity(
+            supplier_module._Activity("supplier_industry", "started", str(command.day)),
+            state,
+            attempt,
+            timeout,
+        )
+        return supplier_module._AttemptResult(
+            supplier_module._Response(industry_facts=gateway.fetch_industry_facts(command.day)),
+            state,
+            None,
+        )
+
+    monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_request_once", request_once)
+    cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
+    with supplier_module.BaoStockHistorySupplier(
+        HistorySyncConfiguration(),
+        progress=StderrHistorySyncProgress(),
+    ) as source:
+        source.load_industry_context(BaoStockCalendar(DATES), UNIVERSE, industry_cache=cache)
+    lines = capsys.readouterr().err.splitlines()
+    assert len(lines) == 2 * len(DATES)
+    for day in DATES:
+        dated = [line for line in lines if str(day) in line]
+        assert len(dated) == 2
+        assert "开始" in dated[0] and "完成" in dated[1] and "供应商查询" in dated[1]
+
+
 def test_future_observation_cannot_be_reused_at_an_earlier_cutoff(tmp_path, industry_source):
     _, requests = industry_source
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")

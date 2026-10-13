@@ -31,7 +31,12 @@ from trader.download.domain.published_history import (
     PublishedHistoryWindow,
     project_history_cell,
 )
-from trader.download.domain.qfq_window import QfqUpdateResult, QfqWindowIncompleteError, completed_daily_cutoff
+from trader.download.domain.qfq_window import (
+    QfqPendingReason,
+    QfqUpdateResult,
+    QfqWindowIncompleteError,
+    completed_daily_cutoff,
+)
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
@@ -1007,6 +1012,9 @@ def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(
     assert DAYS[1].isoformat() in pending
     assert " | 原因 qfq_incomplete_raw_4_qfq_4 | 缺失日期 " in pending
     assert " | qfq 结束（仍有待重试） | " in messages[-1]
+    assert "qfq 待重试原因 | qfq_window_incomplete 1 股" in messages[-2]
+    assert [(item.reason, item.count) for item in result.pending_reasons] == [("qfq_window_incomplete", 1)]
+    assert result.failure_reason is None
 
 
 def test_tencent_diagnostic_counts_pending_with_new_batch_feedback():
@@ -1287,7 +1295,11 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, cap
         from trader.download.application.progress_message import ProgressField
 
         TerminalDownloadProgress()(ProgressMessage((ProgressField("qfq fixture progress"),)))
-        return QfqUpdateResult(DAYS[-1], pending_codes=pending)
+        return QfqUpdateResult(
+            DAYS[-1],
+            pending_codes=pending,
+            pending_reasons=(QfqPendingReason("qfq_window_incomplete", pending),) if pending else (),
+        )
 
     monkeypatch.setattr(
         cli,
@@ -1300,6 +1312,8 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(tmp_path, monkeypatch, cap
     payload = json.loads(captured.out)
     assert captured.err == "qfq fixture progress\n"
     assert payload["pending_codes"] == pending
+    assert payload["pending_reasons"] == ([{"reason": "qfq_window_incomplete", "count": pending}] if pending else [])
+    assert payload["failure_reason"] is None
     assert calls == [(tmp_path, reference_root)]
     with pytest.raises(SystemExit) as rejected:
         cli.main(["--config", str(tmp_path / "runtime.json"), "qfq_download", "--profile", "v3"])

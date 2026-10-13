@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import re
+import logging
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -48,6 +48,11 @@ from trader.download.infra.history_reference_files import (
 )
 from trader.download.infra.history_snapshot_publication import HistoryPublication, publish_history_snapshot
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
+from trader.download.infra.history_sync_failure import (
+    HistorySyncFailureError,
+    history_failure_code,
+    history_failure_detail,
+)
 from trader.infra.workers import WorkerExecutor, injected_executor
 from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
@@ -57,7 +62,7 @@ Clock: TypeAlias = Callable[[], datetime]
 Cancellation: TypeAlias = Callable[[], bool]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _BAOSTOCK_DAILY_READY = time(15, 10)
-_ERROR_CODE = re.compile(r"[a-z0-9_]{1,64}")
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -298,7 +303,26 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
             "already_running", "history_maintenance_running", configuration, _safe_active(control), observed_at
         )
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
-        return _status("failed", _failure_code(exc), configuration, _safe_active(control), observed_at)
+        reason = history_failure_code(exc)
+        detail = history_failure_detail(exc)
+        if progress is not None:
+            try:
+                progress.publish(
+                    HistorySyncProgress(
+                        exc.stage if isinstance(exc, HistorySyncFailureError) else "synchronization",
+                        "failed",
+                        0,
+                        1,
+                        exc.item if isinstance(exc, HistorySyncFailureError) else None,
+                        failure_reason=reason,
+                        failure_detail=detail,
+                    )
+                )
+            except OSError:
+                pass
+        else:
+            _LOGGER.error("history_sync_failure reason=%s diagnostic=%s", reason, detail)
+        return _status("failed", reason, configuration, _safe_active(control), observed_at)
 
 
 def _download_tasks(
@@ -385,11 +409,6 @@ def _safe_active(control: HistoryControlIndex) -> HistoryActiveSnapshot | None:
         return control.load_state().active_snapshot
     except HistoryControlError:
         return None
-
-
-def _failure_code(exc: BaseException) -> str:
-    value = str(exc).strip()
-    return value if _ERROR_CODE.fullmatch(value) else "history_sync_failed"
 
 
 def _publish_progress(  # noqa: PLR0913 - typed progress projection, optional preparation capacity

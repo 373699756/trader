@@ -41,6 +41,8 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "downloading_codes": "股票下载",
     "sealing_partitions": "发布内容校验",
     "publishing_snapshot": "发布快照",
+    "confirming_download": "下载断点提交",
+    "synchronization": "同步流程",
 }
 _STATE_LABELS = {
     "started": "开始",
@@ -87,7 +89,12 @@ _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplie
 
 
 def _reuse_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
-    if progress.stage == "tencent_history" and progress.current_item is not None and progress.supplier_source is None:
+    if (
+        progress.stage == "tencent_history"
+        and progress.current_item is not None
+        and progress.supplier_source is None
+        and progress.state != "failed"
+    ):
         return ("无新增或缺口，复用",)
     return ()
 
@@ -110,7 +117,10 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.required_free_bytes is not None:
         return (f"保守可用空间需求 {progress.required_free_bytes / 1024**3:.2f} GiB",)
     if progress.cache_hit is not None:
-        return ("缓存复用" if progress.cache_hit else "供应商查询",)
+        parts: tuple[str, ...] = ("缓存复用" if progress.cache_hit else "供应商查询",)
+        if progress.industry_missing_codes is not None:
+            parts += (f"缺行业 {progress_number(progress.industry_missing_codes)} 股",)
+        return parts
     if progress.tencent_summary is not None:
         summary = progress.tencent_summary
         return (
@@ -190,10 +200,14 @@ class StderrHistorySyncProgress:
         if progress.stage in {"downloading_codes", "tencent_history"}:
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
-        self._record_supplier_failure(progress)
+        self._record_failure(progress)
         if self._should_suppress(progress, now):
             return
-        if progress.stage == "tencent_history" and progress.current_item is not None:
+        if (
+            progress.stage == "tencent_history"
+            and progress.current_item is not None
+            and progress.failure_detail is None
+        ):
             message = self._stock_download_line(progress, now)
             self._observed_level = highest_progress_level(
                 self._observed_level, *(field.level for field in message.fields)
@@ -274,12 +288,19 @@ class StderrHistorySyncProgress:
             ),
         )
 
-    def _record_supplier_failure(self, progress: HistorySyncProgress) -> None:
-        if not progress.stage.startswith("supplier_"):
-            return
-        if progress.state == "completed":
+    def _record_failure(self, progress: HistorySyncProgress) -> None:
+        if progress.state == "completed" and (
+            self._specific_failure == self._last_progress
+            or progress.stage.startswith("supplier_")
+            and self._specific_failure is not None
+            and self._specific_failure[0].startswith("supplier_")
+        ):
             self._specific_failure = None
-        elif progress.state == "failed":
+        elif progress.state == "failed" and (
+            self._specific_failure is None
+            or progress.stage.startswith("supplier_")
+            or progress.failure_detail is not None
+        ):
             self._specific_failure = self._last_progress
 
     def _should_suppress(self, progress: HistorySyncProgress, now: float) -> bool:
@@ -332,7 +353,7 @@ class StderrHistorySyncProgress:
             _STAGE_LABELS[progress.stage],
             _state_label(progress),
         ]
-        if progress.stage in _COUNT_STAGES:
+        if progress.stage in _COUNT_STAGES and progress.failure_detail is None:
             parts.append(
                 f"{progress_number(progress.completed_units)}/{progress_number(progress.total_units)}"
                 if progress.stage == "tencent_history"
@@ -367,17 +388,21 @@ class StderrHistorySyncProgress:
             parts.append(f"调用 {_format_duration(progress.call_elapsed_seconds)}")
         if progress.failure_reason is not None:
             parts.append(f"错误 {progress.failure_reason}")
+        if progress.failure_detail is not None:
+            parts.append(f"诊断 {progress.failure_detail}")
         return parts
 
     def _result_parts(self, status: HistoryMaintenanceStatus) -> list[str]:
         parts = [_format_duration(self._elapsed()), _RESULT_LABELS[status.state]]
         if status.state == "failed":
-            location = self._specific_failure or self._last_progress
+            location = self._specific_failure
             if location is not None:
                 stage, current_item = location
                 parts.append(_STAGE_LABELS[stage])
                 if current_item is not None:
                     parts.append(f"{_ITEM_LABELS.get(stage, '当前')} {current_item}")
+            else:
+                parts.append("故障位置未知")
         if status.state in {"failed", "blocked"}:
             if status.reason is not None:
                 parts.append(f"错误 {status.reason}")
@@ -435,6 +460,8 @@ def _progress_level(progress: HistorySyncProgress) -> ProgressLevel:
     elif progress.state == "failed":
         level = ProgressLevel.WARNING if progress.attempt < progress.max_attempts else ProgressLevel.ERROR
     elif progress.price_coverage is not None and progress.price_coverage.missing:
+        level = ProgressLevel.WARNING
+    elif progress.industry_missing_codes:
         level = ProgressLevel.WARNING
     elif progress.tencent_summary is not None:
         summary = progress.tencent_summary

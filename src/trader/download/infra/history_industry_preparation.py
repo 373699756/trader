@@ -38,8 +38,8 @@ def prepare_history_industries(
             for item in universe
             if item.listed_on <= snapshot_date and (item.delisted_on is None or snapshot_date < item.delisted_on)
         )
-        if facts is not None and not expected_codes.issubset(fact.code for fact in facts):
-            facts = None
+        # The provider query is market-wide. Missing classifications are evidence
+        # gaps, not evidence that a successfully consumed query must be repeated.
         reused = facts is not None
         if facts is None:
             facts = fetch(snapshot_date)
@@ -51,7 +51,13 @@ def prepare_history_industries(
         if progress is not None:
             progress(
                 HistorySyncProgress(
-                    "supplier_industry", "completed", index + 1, len(snapshots), str(snapshot_date), cache_hit=reused
+                    "supplier_industry",
+                    "completed",
+                    index + 1,
+                    len(snapshots),
+                    str(snapshot_date),
+                    cache_hit=reused,
+                    industry_missing_codes=len(expected_codes - {fact.code for fact in facts}),
                 )
             )
     return _industry_intervals(observations)

@@ -161,6 +161,32 @@ def test_industry_progress_reports_date_counts_and_cache_without_duplicate_start
     assert "完成 | 5/18" in lines[2] and "缓存复用" in lines[2]
 
 
+def test_unlocated_failure_does_not_blame_last_successful_stock(capsys):
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0)
+    progress.publish(HistorySyncProgress("tencent_history", "completed", 2603, 4401, "600361"))
+    progress.publish_result(_failed_status("history_runtime_failed"))
+    line = _compact_log(capsys.readouterr().err).splitlines()[-1]
+    assert "故障位置未知" in line
+    assert "600361" not in line
+
+
+def test_industry_missing_coverage_remains_visible_on_cache_hit(capsys):
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0)
+    progress.publish(
+        HistorySyncProgress(
+            "supplier_industry",
+            "completed",
+            3,
+            18,
+            "2019-07-01",
+            cache_hit=True,
+            industry_missing_codes=2,
+        )
+    )
+    line = _compact_log(capsys.readouterr().err)
+    assert "缓存复用 | 缺行业 2 股" in line
+
+
 def test_daily_download_prints_only_after_one_stock_is_complete(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 100.0, 106.0, 110.0, 120.0, 135.0))
 
@@ -521,7 +547,8 @@ def test_qfq_write_failure_is_red_but_retry_stays_yellow(monkeypatch) -> None:
     lines = stream.getvalue().splitlines()
     assert "\x1b[33m结果 待重试" in lines[0]
     assert "\x1b[31m结果 待重试" in lines[1] and "\x1b[31m原因 disk_full" in lines[1]
-    assert "\x1b[31mqfq 结束" in lines[2]
+    assert "\x1b[31mqfq 待重试原因" in lines[2]
+    assert "\x1b[31mqfq 结束" in lines[-1]
 
 
 def test_terminal_also_sanitizes_direct_message_fields() -> None:

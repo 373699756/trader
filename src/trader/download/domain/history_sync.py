@@ -39,6 +39,8 @@ HistorySyncProgressStage = Literal[
     "downloading_codes",
     "sealing_partitions",
     "publishing_snapshot",
+    "confirming_download",
+    "synchronization",
 ]
 HistorySyncProgressState = Literal["started", "waiting", "retrying", "completed", "failed", "cancelled"]
 _PROGRESS_ITEM = re.compile(r"[0-9A-Za-z_.:-]{1,64}")
@@ -204,6 +206,8 @@ class HistorySyncProgress:
     price_coverage: HistoryPriceCoverage | None = None
     pipeline: HistoryPipelineProgress | None = None
     current_name: str | None = None
+    industry_missing_codes: int | None = None
+    failure_detail: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -219,6 +223,19 @@ class HistorySyncProgress:
             or self.call_elapsed_seconds < 0.0
             or (self.current_item is not None and _PROGRESS_ITEM.fullmatch(self.current_item) is None)
             or (self.current_name is not None and (self.current_item is None or not self.current_name.strip()))
+            or (
+                self.industry_missing_codes is not None
+                and (
+                    type(self.industry_missing_codes) is not int
+                    or self.industry_missing_codes < 0
+                    or self.stage != "supplier_industry"
+                    or self.state != "completed"
+                )
+            )
+            or (
+                self.failure_detail is not None
+                and (self.state != "failed" or not re.fullmatch(r"[0-9A-Za-z_.:> -]{1,512}", self.failure_detail))
+            )
             or self.supplier_source not in (None, "baostock", "tencent")
             or (
                 self.required_free_bytes is not None
