@@ -32,8 +32,8 @@ def test_authoritative_contracts_record_fail_closed_risk_cost_and_deepseek_bound
         "OOD",
         "缺失不确定性",
         "local-only",
+        "本地最终分及可选结构化风险否决",
         "结构化 facts veto",
-        "固定 68/32",
         "自由文本不能直接扣分",
     ):
         assert required in combined

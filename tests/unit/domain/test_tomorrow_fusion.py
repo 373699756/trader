@@ -124,14 +124,14 @@ def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> Non
 
     decision = epoch.entries[0]
     assert decision.score.local_score == 80.0
-    assert decision.score.deepseek_score == 100.0
-    assert decision.score.deepseek_risk_penalty == 3.0
-    assert decision.score.final_score == 83.40
-    assert decision.score.fusion_applied is True
+    assert decision.score.deepseek_score is None
+    assert decision.score.deepseek_risk_penalty == 0.0
+    assert decision.score.final_score == 80.0
+    assert decision.score.fusion_applied is False
     assert decision.action is RecommendationAction.EXECUTABLE
 
 
-def test_downside_guard_downgrades_executable_without_changing_fixed_fusion() -> None:
+def test_downside_guard_downgrades_executable_without_changing_local_score() -> None:
     evaluation = _evaluation(
         1,
         local_score=80.0,
@@ -151,7 +151,7 @@ def test_downside_guard_downgrades_executable_without_changing_fixed_fusion() ->
     )
 
     decision = epoch.entries[0]
-    assert decision.score.final_score == 86.40
+    assert decision.score.final_score == 80.0
     assert decision.action is RecommendationAction.OBSERVE
     assert decision.action_reason == "downside_guard:trend_breakdown"
     assert decision.selected is True
@@ -440,7 +440,7 @@ def _policy() -> ScoredDecisionPolicy:
         },
         executable_threshold=78.0,
         observation_margin=5.0,
-        fusion=FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0),
+        fusion=FusionPolicy(25.0),
         review_candidate_limit=28,
         top_k=6,
         observation_limit=6,
@@ -465,7 +465,7 @@ def _request(
         sequence=10 if projection_stage == "local" else 11,
         config_version="runtime-current",
         strategy_version="tomorrow-strategy",
-        fusion_version="fusion_local68_deepseek32",
+        fusion_version="local_score_structured_review",
         market_epoch_version="market:1",
         candidate_epoch_version=None,
         research_epoch_version="research:1" if projection_stage == "hybrid" else None,

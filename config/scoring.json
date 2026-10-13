@@ -1,11 +1,8 @@
 {
   "fusion": {
-    "local_weight": 0.68,
-    "deepseek_weight": 0.32,
     "confidence_coverage_min": 0.5,
     "minimum_known_dimensions": 2,
     "local_risk_cap": 25,
-    "deepseek_risk_cap": 30,
     "score_decimals": 2,
     "rounding": "ROUND_HALF_UP"
   },

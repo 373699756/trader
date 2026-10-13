@@ -76,7 +76,7 @@ def test_online_outcomes_remain_monitoring_only_without_changing_scoring_or_free
     bootstrap = (SOURCE / "bootstrap.py").read_text(encoding="utf-8")
 
     for invariant in (
-        "local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty",
+        "final_score = ROUND_HALF_UP(clamp(base_score - local_risk_penalty, 0, 100), 2)",
         "15:00",
         "automatic_model_update=false",
     ):

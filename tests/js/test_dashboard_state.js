@@ -645,7 +645,7 @@ assert.strictEqual(
 );
 assert.strictEqual(
   state.decisionPipelineDetails(pipelineFixture),
-  "本地评分 110（39.18–65.42） ｜ DeepSeek 不适用 ｜ 融合评分 110（39.18–65.42）",
+  "本地评分 110（39.18–65.42） ｜ DeepSeek 不适用 ｜ 最终评分 110（39.18–65.42）",
 );
 const summaryElements = summaryFixture();
 state.renderSummary(

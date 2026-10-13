@@ -31,7 +31,7 @@
 ## 3. 不可破坏的业务合同
 
 - 目标生产策略只有 Tomorrow、D25 和不评分的 Long；Long 只展示当前快照，不排名、不进入 TopK、不冻结、不写推荐历史。
-- 融合固定为 `clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)`，使用 `ROUND_HALF_UP` 保留两位小数；`local_score` 已扣本地风险，禁止重复扣除。
+- Tomorrow/D25 的生产最终分固定为已扣本地风险的 `local_score`，使用 `ROUND_HALF_UP` 保留两位小数；训练模型只提供预测诊断与成本净效用门，DeepSeek 仅提供经证据核验的结构化风险 veto，不参与数值评分或扣分。旧冻结记录按原身份只读，不重新解释或改写。
 - DeepSeek 自由文本不得直接扣分；每日物理 HTTP 请求全局上限为 168，重试和失败同样计数，预热与 emergency 使用独立原子预算桶。
 - Tomorrow/D25 在 15:00 first-wins 冻结。已有同日正式记录不得被迟到结果覆盖；同日记录缺失时，15:00 后只能按权威合同创建一次合法 `close_fallback`。
 - 所有业务时间使用可注入且带时区的 `Asia/Shanghai` 时钟；deadline 和时长使用单调时钟。

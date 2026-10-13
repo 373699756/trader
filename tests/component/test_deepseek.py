@@ -266,8 +266,7 @@ def test_challenger_cannot_raise_negative_evidence_or_fused_score(verdict: str) 
     )
 
     merged = merge_challenger_review(primary, challenge, candidate)
-    weights = {name: 0.2 for name in primary.dimensions}
-    policy = FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0)
+    policy = FusionPolicy(25.0)
 
     def fused_score(review):
         return fuse_score(
@@ -275,7 +274,6 @@ def test_challenger_cannot_raise_negative_evidence_or_fused_score(verdict: str) 
                 local=LocalScoreResult({"fixture": 80.0}, 80.0),
                 local_risk_facts=(),
                 review=review,
-                dimension_weights=weights,
                 risk_rules={},
                 fusion_mode=FusionMode.HYBRID,
                 policy=policy,

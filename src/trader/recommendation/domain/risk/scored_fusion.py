@@ -512,7 +512,6 @@ def _fuse_evaluation(
             local=LocalScoreResult(components=local_components, base_score=local_base),
             local_risk_facts=evaluation.local_risk_facts,
             review=effective_review,
-            dimension_weights=policy.dimension_weights,
             risk_rules=policy.risk_rules,
             fusion_mode=fusion_mode,
             policy=policy.fusion,

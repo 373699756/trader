@@ -239,8 +239,8 @@ def test_configuration_contract_is_valid() -> None:
         "pledge_risk": 0.0,
         "financial_deterioration": 0.5,
     }
-    assert strategy.fusion.local_weight == pytest.approx(0.68)
-    assert strategy.fusion.deepseek_weight == pytest.approx(0.32)
+    assert strategy.fusion.version == "local_score_structured_review"
+    assert strategy.fusion.local_risk_cap == pytest.approx(25.0)
     regulatory_rule = next(rule for rule in strategy.risk_rules if rule.risk_code == "regulatory_risk")
     assert regulatory_rule.veto is False
     assert regulatory_rule.allowed_evidence_types == ("announcement", "regulatory_filing")
@@ -643,25 +643,22 @@ def test_priority_reserve_must_leave_capacity_for_normal_events(tmp_path) -> Non
         load_runtime_settings(changed_path)
 
 
-def test_invalid_strategy_weight_sum_is_rejected(tmp_path) -> None:
+def test_removed_fusion_weight_is_rejected(tmp_path) -> None:
     raw = _strategy_document()
     raw["fusion"]["local_weight"] = 0.5
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    with pytest.raises(ConfigurationError, match="fusion weights"):
+    with pytest.raises(ConfigurationError, match="strategy.fusion"):
         load_strategy_settings(strategy_path)
 
 
-def test_alternative_fusion_weights_have_one_configuration_owner(tmp_path) -> None:
+def test_deepseek_weight_cannot_reenter_production_configuration(tmp_path) -> None:
     raw = _strategy_document()
-    raw["fusion"]["local_weight"] = 0.5
     raw["fusion"]["deepseek_weight"] = 0.5
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    settings = load_strategy_settings(strategy_path)
-
-    assert settings.fusion.local_weight == 0.5
-    assert settings.fusion.deepseek_weight == 0.5
+    with pytest.raises(ConfigurationError, match="strategy.fusion"):
+        load_strategy_settings(strategy_path)
 
 
 def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:

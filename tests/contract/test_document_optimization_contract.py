@@ -79,7 +79,8 @@ def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() ->
     history = (DOCS / "4_下载训练.md").read_text(encoding="utf-8")
     compact = re.sub(r"\s+", "", scoring)
     assert "d25_aggregate=(net_excess_T2+net_excess_T3+net_excess_T4+net_excess_T5)/4" in compact
-    assert "local_score*0.68" in compact and "deepseek_score*0.32" in compact
+    assert "final_score=ROUND_HALF_UP(clamp(base_score-local_risk_penalty,0,100),2)" in compact
+    assert "deepseek_score*0.32" not in compact
     assert "ROUND_HALF_UP" in scoring and "168" in scoring
     assert "terminal_holdout_already_opened" in scoring
     for command in ("download", "qfq_download", "train-v2", "train-v3"):
@@ -90,7 +91,7 @@ def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() ->
         "raw",
         "qfq",
         "logical_hash",
-        "未返回日期保存为unknown空价格点",
+        "tencent_inferred_suspended",
         "unknown不能跨缺口拼训练窗口或标签",
         "1000",
         "750",

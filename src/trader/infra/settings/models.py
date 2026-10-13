@@ -154,12 +154,9 @@ class RuntimeSettings:
 @dataclass(frozen=True)
 class FusionSettings:
     version: str
-    local_weight: float
-    deepseek_weight: float
     confidence_coverage_min: float
     minimum_known_dimensions: int
     local_risk_cap: float
-    deepseek_risk_cap: float
     score_decimals: int
     rounding: str
 

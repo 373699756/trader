@@ -15,7 +15,7 @@ point-in-time population and candidate eligibility
   -> local_score after local_risk_penalty exactly once
   -> model prediction and model_prediction_rank diagnostics
   -> model_net_utility_non_positive execution gate
-  -> optional structured DeepSeek review and fixed fusion
+  -> optional structured DeepSeek risk review without numeric fusion
   -> action pools, stable ranking, TopK and concentration
   -> decision input identities
   -> freeze/persistence/current/history
@@ -33,10 +33,8 @@ an action but cannot rewrite a score. DeepSeek free text cannot directly change 
   though each holding period owns different factors and weights.
 - Keep `model_prediction_rank` separate from `base_score`, `local_score`, and `final_score`. Changing the batch population
   may change the relative model diagnostic but must not silently redefine the production score.
-- Apply `local_risk_penalty` once. Preserve
-  `clamp(local_score * 0.68 + deepseek_score * 0.32 - deepseek_risk_penalty, 0, 100)`, use `ROUND_HALF_UP` to two
-  decimals, and keep the golden `83.40` vector. Model cost, local risk, and DeepSeek risk each retain their own owner and
-  must not be double-counted.
+- Apply `local_risk_penalty` once. New decisions use `final_score=local_score`, with `ROUND_HALF_UP` to two decimals.
+  Model cost gates execution; validated DeepSeek risk can veto an action but cannot add or deduct score.
 - `model_net_utility_non_positive` prevents DeepSeek review, observation, and formal selection while preserving the
   evidence-quality score and model diagnostics for explanation. Missing required model input or a mismatched prediction
   batch fails closed; it does not fall back to a fabricated neutral prediction.
@@ -55,7 +53,7 @@ first semantic owner and the final affected consumer; add the adjacent negative 
 did not change.
 
 - Evidence-score formula, factor, or weight: test per-strategy component ownership, 0/50/100 anchors, stable ordering,
-  configuration as the single numeric source, risk once, and `83.40` when fusion is reachable.
+  configuration as the single numeric source, risk once, and unchanged final score after optional review.
 - Model/profile or cost gate: test feature eligibility, prediction batch identity, relative diagnostic isolation, positive
   and non-positive net utility, cache/deadline behavior, and the absence of a score override or silent fallback.
 - Risk, fusion, action, or ranking: test structured evidence, veto, budget/degradation behavior, both action pools,

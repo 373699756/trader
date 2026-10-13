@@ -314,7 +314,7 @@ def _completed_pipeline(
             evaluated_count,
         ),
     )
-    fusion_applied = sum(_component(item, "deepseek_score") is not None for item in decision_items)
+    fusion_applied = sum(item.review_outcome == "applied" for item in decision_items)
     review_completed = sum(item.review_outcome is not None for item in decision_items)
     deepseek_ranges = _metric_ranges(
         (

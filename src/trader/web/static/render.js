@@ -133,13 +133,13 @@
   };
 
   const FUSION_MODE_LABELS = {
-    hybrid: "本地与模型融合",
+    hybrid: "本地评分 · 已完成风险复核",
     local_degraded: "本地评分模式",
     local_only: "仅本地评分",
   };
 
   const PIPELINE_REASON_LABELS = {
-    local_only: "仅使用本地评分", hybrid: "本地评分与 DeepSeek 复核已融合",
+    local_only: "仅使用本地评分", hybrid: "本地评分与 DeepSeek 风险复核已合并",
     intraday_reversal_atr: "日内回撤超过近期正常波动幅度",
     static_baseline_loaded: "已加载证券基础资料", static_baseline_reused: "沿用已加载的证券基础资料",
     static_identity_pending: "证券基础资料待补充",
@@ -168,8 +168,8 @@
     below_score_threshold: "最终分低于观察线", filter_observe_only: "数据或风险限制，仅供观察",
     observation_phase: "当前时段仅供观察", downside_guard: "下行保护触发，仅供观察",
     not_scored: "尚未完成评分", deepseek_applied: "DeepSeek 复核已应用",
-    deepseek_abstain: "DeepSeek 未给出可用结论，保留本地评分", deepseek_failed: "DeepSeek 复核失败，保留本地评分",
-    deepseek_rejected: "DeepSeek 复核未通过校验", deepseek_late: "DeepSeek 复核迟到，未参与评分",
+    deepseek_abstain: "DeepSeek 未给出可用结论，保留本地推荐", deepseek_failed: "DeepSeek 复核失败，保留本地推荐",
+    deepseek_rejected: "DeepSeek 复核未通过校验", deepseek_late: "DeepSeek 复核迟到，未影响推荐",
     deepseek_review_unavailable: "DeepSeek 复核暂不可用", deepseek_manifest_mismatch: "复核证据与当前输入不一致",
     deepseek_manifest_validation_failed: "复核证据校验失败", deepseek_review_time_invalid: "复核时间无效",
     completed: "操作已完成", accepted: "已接纳当前结果", enqueued: "已加入待处理队列",
@@ -194,7 +194,7 @@
     filter_pass: "通过过滤", filter_observe: "仅供观察", filter_reject: "被过滤",
     board_main: "主板候选", board_chinext: "创业板候选", board_star: "科创板候选",
     candidate_features: "候选行情与特征", security_master: "证券基础资料", history: "历史行情",
-    review_completed: "已完成复核", local_only: "仅本地评分", hybrid: "融合评分",
+    review_completed: "已完成复核", local_only: "仅本地评分", hybrid: "已完成风险复核",
     executable_threshold_met: "达到执行线", observation_threshold_met: "达到观察线",
     action_executable: "可执行", action_observe: "仅观察", action_unavailable: "不可入选",
     selected_executable: "正式入选", selected_observe: "观察入选",
@@ -325,8 +325,10 @@
     const scores = item.scores || {};
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
-    const deepseek = scores.deepseek_score == null ? "未复核" : number(scores.deepseek_score, 2);
-    const deepseekPenalty = number(scores.deepseek_risk_penalty, 2);
+    const review = item.review && item.review.outcome === "applied" ? "已复核" : "未复核";
+    const legacyScore = scores.deepseek_score == null ? "" : `<span><b>${number(scores.deepseek_score, 2)}</b>旧复核分</span>`;
+    const legacyPenalty = Number(scores.deepseek_risk_penalty) > 0
+      ? `<span><b>${number(scores.deepseek_risk_penalty, 2)}</b>旧复核扣分</span>` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${escapeHtml(item.group || "长期")}</td>
       <td>${stock(item)}<span class="stock-code">${escapeHtml(researchStatus(item.research))}</span></td>
@@ -334,7 +336,7 @@
       <td class="${change.className}">${change.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${deepseek}</b>DeepSeek</span><span><b>${deepseekPenalty}</b>扣分</span><span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
+      <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${review}</b>风险复核</span>${legacyScore}${legacyPenalty}<span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
       <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
@@ -478,12 +480,11 @@
       ["估算交易成本", valuePct(scores.estimated_cost_pct)],
       ["预测成本后净超额", valuePct(scores.predicted_net_excess_pct)],
       ["模型分歧", valuePct(scores.model_disagreement_pct)],
-      ["DeepSeek评分", valueNumber(scores.deepseek_score, 2)],
-      ["DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
+      ["旧版DeepSeek评分", valueNumber(scores.deepseek_score, 2)],
+      ["旧版DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
     const scoreParts = [detailGrid(scoreValues)];
-    if (!hasValue(scores.deepseek_score)) scoreParts.push(note(reviewResult(item.review), "muted"));
-    else if (snapshot.fusion_mode !== "hybrid") scoreParts.push(note("模型评分未参与最终分，当前使用本地模式", "muted"));
+    scoreParts.push(note(reviewResult(item.review), "muted"));
     if (Array.isArray(item.risks) && item.risks.length > 0) {
       scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
     }

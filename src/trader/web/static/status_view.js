@@ -274,7 +274,7 @@
     [["quality_check"], "质量评估", false],
     [["local_score"], "评分", false],
     [["risk_review"], "风险复核（含 DeepSeek）", false],
-    [["score_merge"], "固定 68/32 融合", false],
+    [["score_merge"], "本地最终分与复核结果", false],
     [["downside_action"], "下行保护与动作门", false],
     [["final_selection"], "TopK、集中度、冻结与发布", false],
   ]);
@@ -608,7 +608,7 @@
     els.budgetStatus.textContent = available ? `${used} / ${remaining}` : "不可用";
     const items = payload && Array.isArray(payload.items) ? payload.items : [];
     const executable = items.filter((item) => item.action === "executable").length;
-    const reviewed = items.filter((item) => item.scores && item.scores.deepseek_score != null).length;
+    const reviewed = items.filter((item) => item.review && item.review.outcome === "applied").length;
     els.budgetMeta.textContent = payload && payload.score_status === "not_applicable"
       ? "长期策略不使用模型预算"
       : `已用 / 剩余 · 上限 ${limit} · 复核 ${reviewed}/${executable}`;
@@ -846,9 +846,9 @@
     if (pipelineStageHasProgress(local)) segments.push(`本地评分 ${stageAvailableCount(local)}${localScoreSuffix(local)}${pipelineReasonSuffix(local)}`);
     if (deepseek && pipelineStageHasProgress(deepseek)) {
       if (deepseek.state === "not_applicable") segments.push("DeepSeek 不适用");
-      else segments.push(`${stageTransition("DeepSeek", deepseek)}${deepseekScoreSuffix(deepseek)}${pipelineReasonSuffix(deepseek)}`);
+      else segments.push(`${stageTransition("DeepSeek 风险复核", deepseek)}${pipelineReasonSuffix(deepseek)}`);
     }
-    if (pipelineStageHasProgress(fusion)) segments.push(`融合评分 ${stageAvailableCount(fusion)}${metricSuffix(fusion, "final_score", "", 2)}${pipelineReasonSuffix(fusion)}`);
+    if (pipelineStageHasProgress(fusion)) segments.push(`最终评分 ${stageAvailableCount(fusion)}${metricSuffix(fusion, "final_score", "", 2)}${pipelineReasonSuffix(fusion)}`);
     return segments.length ? segments.join(" ｜ ") : "荐股评分链路详情见下方";
   }
 
@@ -938,15 +938,6 @@
     const values = [];
     if (score) values.push(formatRange(score, 2));
     if (risk) values.push(`风险扣分${formatRange(risk, 2)}（只扣一次）`);
-    return values.length ? `（${values.join("，")}）` : "";
-  }
-
-  function deepseekScoreSuffix(stage) {
-    const score = metricRange(stage, "deepseek_score");
-    const risk = metricRange(stage, "deepseek_risk_penalty");
-    const values = [];
-    if (score) values.push(`评分${formatRange(score, 2)}`);
-    if (risk) values.push(`风险扣分${formatRange(risk, 2)}`);
     return values.length ? `（${values.join("，")}）` : "";
   }
 

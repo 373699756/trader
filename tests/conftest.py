@@ -287,7 +287,7 @@ def recommendation_policy() -> RecommendationPolicy:
     return RecommendationPolicy(
         strategy_version="strategy-current",
         fusion_version="fusion-fixture",
-        fusion=FusionPolicy(0.68, 0.32, 0.5, 2, 25.0, 30.0),
+        fusion=FusionPolicy(25.0),
         selection=RecommendationSelectionSettings(
             default_top_k=6,
             maximum_top_k=12,

@@ -53,16 +53,14 @@ def _validate_hard_filters(settings: StrategySettings) -> None:
 
 
 def _validate_fusion(settings: StrategySettings) -> None:
-    if abs(settings.fusion.local_weight + settings.fusion.deepseek_weight - 1.0) > 1e-9:
-        raise ConfigurationError("fusion weights must sum to 1.0")
-    if settings.fusion.version != "fusion_local68_deepseek32":
+    if settings.fusion.version != "local_score_structured_review":
         raise ConfigurationError("unsupported fusion version")
     if settings.fusion.score_decimals != 2:
         raise ConfigurationError("fusion score_decimals must be 2")
     if settings.fusion.rounding != "ROUND_HALF_UP":
         raise ConfigurationError("unsupported score rounding mode")
-    if settings.fusion.local_risk_cap != 25.0 or settings.fusion.deepseek_risk_cap != 30.0:
-        raise ConfigurationError("risk caps are fixed at 25 local and 30 DeepSeek")
+    if settings.fusion.local_risk_cap != 25.0:
+        raise ConfigurationError("local risk cap must be 25")
     if settings.fusion.confidence_coverage_min != 0.5 or settings.fusion.minimum_known_dimensions != 2:
         raise ConfigurationError("fusion coverage and known-dimension gates are fixed at 0.5 and 2")
 

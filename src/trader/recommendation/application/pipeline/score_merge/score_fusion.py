@@ -1,4 +1,4 @@
-"""Fixed local and DeepSeek score fusion boundary."""
+"""Local final score and optional structured review boundary."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ class ScoreFusionPort(Protocol):
 
 @dataclass(frozen=True)
 class ScoreFusionService(ScoreFusionPort):
-    """Execute the fixed 68/32 fusion through the domain-backed projection."""
+    """Apply structured review without changing the local numeric score."""
 
     monotonic: Callable[[], float] = field(default=time.monotonic, kw_only=True)
 

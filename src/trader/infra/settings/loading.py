@@ -137,12 +137,9 @@ def load_strategy_settings(
     _require_exact_keys(
         fusion_raw,
         {
-            "local_weight",
-            "deepseek_weight",
             "confidence_coverage_min",
             "minimum_known_dimensions",
             "local_risk_cap",
-            "deepseek_risk_cap",
             "score_decimals",
             "rounding",
         },
@@ -193,9 +190,7 @@ def load_strategy_settings(
         strategy_version=_strategy_contract_identity(raw),
         scoring_profile=parse_scoring_profile(effective_profile),
         fusion=FusionSettings(
-            version="fusion_local68_deepseek32",
-            local_weight=_number(fusion_raw, "local_weight", minimum=0.0, maximum=1.0),
-            deepseek_weight=_number(fusion_raw, "deepseek_weight", minimum=0.0, maximum=1.0),
+            version="local_score_structured_review",
             confidence_coverage_min=_number(
                 fusion_raw,
                 "confidence_coverage_min",
@@ -204,7 +199,6 @@ def load_strategy_settings(
             ),
             minimum_known_dimensions=_integer(fusion_raw, "minimum_known_dimensions", minimum=1, maximum=5),
             local_risk_cap=_number(fusion_raw, "local_risk_cap", minimum=0.0, maximum=100.0),
-            deepseek_risk_cap=_number(fusion_raw, "deepseek_risk_cap", minimum=0.0, maximum=100.0),
             score_decimals=_integer(fusion_raw, "score_decimals", minimum=0, maximum=6),
             rounding=_text(fusion_raw, "rounding"),
         ),

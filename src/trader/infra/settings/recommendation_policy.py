@@ -21,12 +21,7 @@ def _recommendation_policy(settings: StrategySettings) -> RecommendationPolicy:
         strategy_version=settings.strategy_version,
         fusion_version=settings.fusion.version,
         fusion=FusionPolicy(
-            local_weight=settings.fusion.local_weight,
-            deepseek_weight=settings.fusion.deepseek_weight,
-            confidence_coverage_min=settings.fusion.confidence_coverage_min,
-            minimum_known_dimensions=settings.fusion.minimum_known_dimensions,
             local_risk_cap=settings.fusion.local_risk_cap,
-            deepseek_risk_cap=settings.fusion.deepseek_risk_cap,
         ),
         selection=RecommendationSelectionSettings(
             default_top_k=settings.selection.default_top_k,
