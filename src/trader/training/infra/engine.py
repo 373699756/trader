@@ -8,7 +8,6 @@ import os
 import shutil
 import sqlite3
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import date
 from importlib.metadata import version
@@ -289,6 +288,7 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                 split.content_hash,
                 feature_count,
                 "monthly_samples",
+                "tencent_inferred_suspended_trade_bar_windows",
                 request.profile.history_sessions,
                 request.profile.momentum_horizons,
                 request.profile.market_state_momentum_horizons,
@@ -724,6 +724,7 @@ def _training_contract_hash(
             "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
             "history_sessions": profile.history_sessions,
+            "feature_day_axis": "actual_trade_bars_skip_tencent_inferred_suspension",
             "fit_dates": settings.fit_dates,
             "algorithm": profile.algorithm,
             "strategy_head": contract.strategy.value,

@@ -235,7 +235,7 @@ def test_partial_tencent_pairs_are_committed_without_baostock(tmp_path):
     assert result.unresolved_price_cells == 0
     assert supplier.events == ["tencent", "tencent"]
     rows = HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))
-    assert len(rows) == 2 and all(row.cell.status == "unknown_missing" for row in rows)
+    assert len(rows) == 2 and all(row.cell.status == "qfq_missing" and row.cell.qfq is None for row in rows)
 
 
 def test_tencent_request_failure_publishes_explicit_gaps_and_next_run_repairs(tmp_path):

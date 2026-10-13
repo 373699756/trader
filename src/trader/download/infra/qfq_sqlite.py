@@ -261,7 +261,7 @@ class SQLiteQfqWindowCache:
     ) -> tuple[tuple[str, ...], int]:
         grouped: dict[str, list[tuple[str, tuple[tuple[str, str], ...]]]] = {}
         for window in windows:
-            cells = window.cells[-self.sessions :]
+            cells = tuple(cell for cell in window.cells[-self.sessions :] if cell.status == "complete")
             if cells:
                 grouped.setdefault(qfq_shard_name(window.code), []).append(
                     (window.code, tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in cells))
@@ -346,7 +346,8 @@ class SQLiteQfqWindowCache:
             raise ValueError("qfq_sql_schema_invalid")
         changed, count = False, 0
         for window in windows:
-            target = tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in window.cells[-self.sessions :])
+            cells = tuple(cell for cell in window.cells[-self.sessions :] if cell.status == "complete")
+            target = tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in cells)
             if not target:
                 continue
             old = tuple(

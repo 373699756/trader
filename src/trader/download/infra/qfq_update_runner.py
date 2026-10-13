@@ -63,7 +63,7 @@ class QfqUpdateRunner:
                             seeded = self.updater.seed(
                                 (
                                     window
-                                    for window in self.history.iter_windows(manifest, sessions=251)
+                                    for window in self.history.iter_windows(manifest, sessions=2000)
                                     if window.code in needed
                                 ),
                                 f"history:{manifest.snapshot_hash}",

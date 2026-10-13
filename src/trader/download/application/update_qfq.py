@@ -17,11 +17,9 @@ from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import (
     QfqUpdateResult,
-    QfqWindowIncompleteError,
     QfqWindowSnapshot,
     completed_daily_cutoff,
     merge_daily_tail,
-    paired_window,
 )
 from trader.infra.workers import WorkerExecutor, submit_or_reject
 
@@ -216,10 +214,11 @@ class UpdateQfqWindows:
         if (
             same_source
             and self.resume.completed(progress.day, security.code, progress.source)
+            and bool(dates)
             and v2_state is not None
-            and v2_state.dates == dates
+            and bool(v2_state.dates)
             and v3_state is not None
-            and v3_state.dates == dates[-61:]
+            and v3_state.dates == tuple(day for day in v2_state.dates if day >= dates[-min(61, len(dates))])
         ):
             progress.completed += 1
             progress.skipped += 1
@@ -227,10 +226,10 @@ class UpdateQfqWindows:
                 security,
                 action="本地复用",
                 result="复用",
-                target=len(dates),
-                raw=len(dates),
-                qfq=len(dates),
-                paired=len(dates),
+                target=len(v2_state.dates),
+                raw=len(v2_state.dates),
+                qfq=len(v2_state.dates),
+                paired=len(v2_state.dates),
             )
             return None
         return _DownloadPlan(security, dates, same_source)
@@ -340,15 +339,7 @@ class UpdateQfqWindows:
             for job, window in downloaded:
                 if window.code in exc.codes:
                     progress.completed += 1
-                    progress.record_stock(
-                        job.security,
-                        action="Tencent下载",
-                        result="合格",
-                        target=len(job.dates),
-                        raw=len(window.cells),
-                        qfq=len(window.cells),
-                        paired=len(window.cells),
-                    )
+                    self._record_completed(progress, job, window)
                 else:
                     progress.record_pending(
                         job.security, exc, job.dates, action="Tencent下载", failure_level=ProgressLevel.ERROR
@@ -362,16 +353,22 @@ class UpdateQfqWindows:
             return ()
         for job, window in downloaded:
             progress.completed += 1
-            progress.record_stock(
-                job.security,
-                action="Tencent下载",
-                result="合格",
-                target=len(job.dates),
-                raw=len(window.cells),
-                qfq=len(window.cells),
-                paired=len(window.cells),
-            )
+            self._record_completed(progress, job, window)
         return tuple(window.code for _job, window in downloaded)
+
+    @staticmethod
+    def _record_completed(progress: QfqDownloadProgress, job: _DownloadJob, window: PublishedHistoryWindow) -> None:
+        paired = sum(cell.status == "complete" for cell in window.cells)
+        progress.record_stock(
+            job.security,
+            action="Tencent下载",
+            result="合格",
+            target=paired,
+            raw=paired,
+            qfq=paired,
+            paired=paired,
+            inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in window.cells),
+        )
 
     def _commit_many(
         self, windows: tuple[PublishedHistoryWindow, ...], progress: QfqDownloadProgress, source: str
@@ -403,9 +400,12 @@ class UpdateQfqWindows:
             count = max(3, len(missing) + 3)
             tail = self._fetch(job.security, job.dates[-count:])
             merged = merge_daily_tail(job.previous, tail, job.dates)
-            if merged is not None and paired_window(merged, job.dates):
+            if merged is not None and tuple(cell.trade_date for cell in merged.cells) == job.dates:
                 return merged
-        return self._fetch(job.security, job.dates)
+        latest = self._fetch(job.security, job.dates)
+        if not any(cell.status == "complete" for cell in latest.cells):
+            raise RuntimeError("qfq_no_trade_bars")
+        return latest
 
     def _fetch(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         if self.cancel_requested():
@@ -418,8 +418,3 @@ class UpdateQfqWindows:
     def _validate_window(security: BaoStockSecurity, dates: tuple[date, ...], window: PublishedHistoryWindow) -> None:
         if window.code != security.code or tuple(cell.trade_date for cell in window.cells) != dates:
             raise RuntimeError("qfq_window_identity_or_calendar_invalid")
-        if not paired_window(window, dates):
-            raise QfqWindowIncompleteError(
-                tuple(cell.trade_date for cell in window.cells if cell.unadjusted is None),
-                tuple(cell.trade_date for cell in window.cells if cell.qfq is None),
-            )

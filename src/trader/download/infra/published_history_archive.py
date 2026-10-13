@@ -7,7 +7,7 @@ from datetime import date
 from itertools import groupby
 from pathlib import Path
 
-from trader.download.domain.history_revision import MAX_HISTORY_TRAINING_WINDOW_SESSIONS
+from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.infra.history_archive_status import (
     ActiveHistoryArchive,
@@ -93,7 +93,7 @@ class SQLitePublishedHistoryArchive:
 
 
 def _session_dates(manifest: PublishedHistoryManifest, sessions: int) -> tuple[date, ...]:
-    if not 1 <= sessions <= MAX_HISTORY_TRAINING_WINDOW_SESSIONS:
+    if not 1 <= sessions <= BAOSTOCK_MAX_SESSIONS:
         raise ValueError("published history session count is invalid")
     return manifest.calendar_dates[-sessions:]
 

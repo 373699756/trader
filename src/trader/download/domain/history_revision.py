@@ -8,6 +8,7 @@ from datetime import date
 
 from trader.download.domain.baostock_daily import (
     BaoStockBoard,
+    BaoStockCellStatus,
     BaoStockDailyCell,
     BaoStockTrainingRow,
 )
@@ -102,6 +103,7 @@ class HistoryTrainingRow:
     board: BaoStockBoard
     industry: str | None
     point: HistoryTrainingPoint | None
+    cell_status: BaoStockCellStatus | None = None
 
     def __post_init__(self) -> None:
         industry = self.industry.strip() if self.industry is not None else None
@@ -112,6 +114,16 @@ class HistoryTrainingRow:
             or self.board not in {"main", "chinext", "star"}
             or industry == ""
             or (self.point is not None and self.point.trade_date != self.trade_date)
+            or self.cell_status
+            not in {
+                None,
+                "complete",
+                "supplier_marked_suspended",
+                "tencent_inferred_suspended",
+                "unadjusted_missing",
+                "qfq_missing",
+                "unknown_missing",
+            }
         ):
             raise ValueError("history training row is invalid")
         object.__setattr__(self, "industry", industry)

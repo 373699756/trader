@@ -47,7 +47,14 @@ def decode_published_history_cell(row: tuple[object, ...]) -> PublishedHistoryCe
     if cell["code"] != code or cell["trade_date"] != trade_date:
         raise ValueError("published daily row identity is invalid")
     status = _text(cell["status"])
-    if status not in {"complete", "supplier_marked_suspended", "unadjusted_missing", "qfq_missing", "unknown_missing"}:
+    if status not in {
+        "complete",
+        "supplier_marked_suspended",
+        "tencent_inferred_suspended",
+        "unadjusted_missing",
+        "qfq_missing",
+        "unknown_missing",
+    }:
         raise ValueError("published daily status is invalid")
     return PublishedHistoryCell(
         code,

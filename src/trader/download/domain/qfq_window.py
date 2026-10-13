@@ -71,12 +71,6 @@ def completed_daily_cutoff(observed_at: datetime) -> date:
     return observed_at.date() if observed_at.time() >= time(15, 10) else observed_at.date() - timedelta(days=1)
 
 
-def paired_window(window: PublishedHistoryWindow, dates: tuple[date, ...]) -> bool:
-    return tuple(cell.trade_date for cell in window.cells) == dates and all(
-        cell.unadjusted is not None and cell.qfq is not None for cell in window.cells
-    )
-
-
 def merge_daily_tail(
     previous: PublishedHistoryWindow, incoming: PublishedHistoryWindow, dates: tuple[date, ...]
 ) -> PublishedHistoryWindow | None:

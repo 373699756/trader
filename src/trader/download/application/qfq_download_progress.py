@@ -86,8 +86,10 @@ class QfqDownloadProgress:
         qfq: int | None,
         paired: int | None,
         missing_dates: tuple[date, ...] = (),
-        reason: ProgressField = ProgressField("无"),
+        inferred_suspended: int = 0,
+        reason: ProgressField | None = None,
     ) -> None:
+        reason = reason if reason is not None else ProgressField("无")
         self.report(
             format_stock_download_progress(
                 self.elapsed(),
@@ -105,6 +107,7 @@ class QfqDownloadProgress:
                     paired=paired,
                     missing=target - paired if paired is not None else None,
                     missing_dates=missing_dates,
+                    inferred_suspended=inferred_suspended,
                     reason=reason.text,
                     failure_level=ProgressLevel.ERROR if reason.level is ProgressLevel.ERROR else ProgressLevel.WARNING,
                 ),

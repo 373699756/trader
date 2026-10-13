@@ -1,4 +1,4 @@
-"""Bounded Tencent raw/qfq windows with qualified paging and explicit transient failures."""
+"""Bounded Tencent raw/qfq windows with explicit transient failures."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import math
 import platform
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from queue import Queue
@@ -70,15 +70,12 @@ class _WindowQuery:
     dates: tuple[date, ...]
     request_count: int
     allow_interior_padding: bool
-    overlap_dates: tuple[date, ...] = ()
-    primary_queried: bool = False
 
 
 @dataclass(frozen=True)
 class _SideAttempt:
     sides: tuple[PublishedHistorySide, ...] = ()
     pending: bool = False
-    conflicted: bool = False
 
 
 @dataclass(frozen=True)
@@ -182,17 +179,32 @@ class TencentQfqSupplier:
         self._check_cancel()
         raw = {side.trade_date: side for side in raw_download.sides}
         qfq = {side.trade_date: side for side in qfq_download.sides}
+        if raw_download.pending_dates or qfq_download.pending_dates:
+            window = PublishedHistoryWindow(
+                security.code,
+                tuple(
+                    PublishedHistoryCell(
+                        security.code, day, daily_cell_status(raw.get(day), qfq.get(day)), raw.get(day), qfq.get(day)
+                    )
+                    for day in dates
+                ),
+            )
+            raise HistorySupplierPendingError(window)
         window = PublishedHistoryWindow(
             security.code,
             tuple(
                 PublishedHistoryCell(
-                    security.code, day, daily_cell_status(raw.get(day), qfq.get(day)), raw.get(day), qfq.get(day)
+                    security.code,
+                    day,
+                    "tencent_inferred_suspended"
+                    if day not in raw and day not in qfq
+                    else daily_cell_status(raw.get(day), qfq.get(day)),
+                    raw.get(day),
+                    qfq.get(day),
                 )
                 for day in dates
             ),
         )
-        if raw_download.pending_dates or qfq_download.pending_dates:
-            raise HistorySupplierPendingError(window)
         return window
 
     def _download_side(
@@ -205,70 +217,7 @@ class TencentQfqSupplier:
             initial = self._attempt_side(session, query, mode, alternate)
             if initial.pending:
                 return _SideDownload((), query.dates)
-        result = {side.trade_date: side for side in initial.sides}
-        if len(result) == len(query.dates):
-            return _SideDownload(tuple(result.values()), ())
-        pending: set[date] = set()
-        # Walk backwards so older pages overlap the already qualified newer page.
-        remaining = list(query.dates)
-        while remaining:
-            end = remaining[-1]
-            start = max(0, len(remaining) - 500)
-            while remaining[start] < end - timedelta(days=700):
-                start += 1
-            core = tuple(remaining[start:])
-            del remaining[start:]
-            missing = tuple(day for day in core if day not in result)
-            if not missing:
-                continue
-            anchors = tuple(sorted(day for day in result if end < day <= end + timedelta(days=30)))[:5]
-            page_dates = tuple(sorted(set(core) | set(anchors)))
-            page = replace(
-                query,
-                dates=page_dates,
-                request_count=640,
-                overlap_dates=anchors,
-                primary_queried=page_dates == query.dates,
-            )
-            recovered = self._recover_page(session, page, mode, tuple(result.values()))
-            result = {side.trade_date: side for side in recovered.sides}
-            if recovered.pending:
-                pending.update(day for day in core if day not in result)
-            if recovered.conflicted and any(day not in result for day in core):
-                # Do not attach older pages across a rejected adjustment boundary.
-                if recovered.pending:
-                    pending.update(remaining)
-                break
-        return _SideDownload(tuple(result[day] for day in sorted(result)), tuple(sorted(pending)))
-
-    def _recover_page(
-        self,
-        session: requests.Session,
-        query: _WindowQuery,
-        mode: Literal["bfq", "qfq"],
-        previous: tuple[PublishedHistorySide, ...],
-    ) -> _SideAttempt:
-        primary = self._options.history_host
-        alternate: Literal["proxy", "direct"] = "direct" if primary == "proxy" else "proxy"
-        # Small windows have already been requested on the primary host.
-        hosts = (alternate,) if query.primary_queried else (primary, alternate)
-        result = {side.trade_date: side for side in previous}
-        pending = conflicted = False
-        for host in hosts:
-            attempt = self._attempt_side(session, query, mode, host)
-            pending = attempt.pending
-            incoming = {side.trade_date: side for side in attempt.sides}
-            overlap = result.keys() & incoming.keys()
-            if any(not _same_prices(result[day], incoming[day]) for day in overlap):
-                conflicted = True
-                continue
-            if not set(query.overlap_dates).issubset(incoming):
-                continue
-            for day, side in incoming.items():
-                result.setdefault(day, side)
-            if all(day in result for day in query.dates):
-                break
-        return _SideAttempt(tuple(result.values()), pending, conflicted)
+        return _SideDownload(initial.sides, ())
 
     def _attempt_side(
         self,
@@ -284,10 +233,11 @@ class TencentQfqSupplier:
                 raise
             return _SideAttempt(pending=True)
         except ValueError as exc:
-            # Rejected/undecodable responses can be throttling, not missing capability.
-            return _SideAttempt(
-                pending=isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected"
-            )
+            if isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected":
+                return _SideAttempt(pending=True)
+            if str(exc) == "tencent_daily_qualified_rows_missing":
+                return _SideAttempt()
+            raise
 
     def _fetch_side(
         self,
@@ -379,10 +329,14 @@ def _payload_rows(payload: object, symbol: str, mode: str, count: int = 640) -> 
         neutral = stock.get("day")
         if isinstance(neutral, list) and neutral and all(_neutral_adjustment(row) for row in neutral):
             rows = neutral
+        elif neutral is not None:
+            raise ValueError("tencent_daily_qualified_rows_missing")
     # Tencent can append the current session to count historical rows.
     # Calendar/window consumers still validate dates and trim only older padding.
+    if rows is None:
+        raise ValueError("tencent_daily_response_shape_invalid")
     if not isinstance(rows, list) or len(rows) > count + 1:
-        raise ValueError("tencent_daily_qualified_rows_missing")
+        raise ValueError("tencent_daily_response_shape_invalid")
     return rows
 
 
@@ -394,20 +348,6 @@ def _neutral_adjustment(row: object) -> bool:
         and not row[6]
         and _finite_zero(row[9])
         and _finite_zero(row[10])
-    )
-
-
-def _same_prices(left: PublishedHistorySide, right: PublishedHistorySide) -> bool:
-    return all(
-        a is not None and b is not None and math.isclose(a, b, rel_tol=0.0, abs_tol=tolerance)
-        for a, b, tolerance in (
-            (left.open_price, right.open_price, 0.0051),
-            (left.close_price, right.close_price, 0.0051),
-            (left.high_price, right.high_price, 0.0051),
-            (left.low_price, right.low_price, 0.0051),
-            (left.volume, right.volume, 100.0),
-            (left.amount, right.amount, 100.0),
-        )
     )
 
 

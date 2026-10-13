@@ -8,7 +8,7 @@ from math import isclose
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 
-HISTORY_TAIL_CONTRACT = ("history", "tencent-pairs-sparse-recovery")
+HISTORY_TAIL_CONTRACT = ("history", "tencent-actual-rows-inferred-suspension")
 HISTORY_UNIVERSE_CONTRACT = ("security-universe", "exchange-current-never-st")
 
 
@@ -28,15 +28,19 @@ def qualify_price_overlap(
     anchored = full_window
     for cell in cells:
         before = prior.get(cell.trade_date)
-        if before is not None and before.obtained and cell.obtained:
+        if before is not None and before.unadjusted is not None and cell.unadjusted is not None:
             _require_raw_overlap(before, cell)
+            anchored = True
+        elif before is not None and before.status == "unadjusted_missing" and cell.status == "complete":
             anchored = True
     result = []
     for cell in cells:
         before = prior.get(cell.trade_date)
-        if before is not None and before.obtained:
+        if before is not None and before.obtained and before.status != "tencent_inferred_suspended":
             result.append(before)
-        elif anchored or not cell.obtained or cell.status == "supplier_marked_suspended":
+        elif (
+            anchored or not cell.obtained or cell.status in {"supplier_marked_suspended", "tencent_inferred_suspended"}
+        ):
             result.append(cell)
         else:
             result.append(BaoStockDailyCell(cell.code, cell.trade_date, "unknown_missing", None, None))
@@ -64,9 +68,21 @@ def qualify_history_pairs(
     result = []
     for day in dates:
         candidate = candidates.get(day)
-        if candidate is not None and candidate.status in {"complete", "supplier_marked_suspended"}:
+        if candidate is not None and candidate.status in {
+            "complete",
+            "supplier_marked_suspended",
+            "tencent_inferred_suspended",
+            "qfq_missing",
+            "unadjusted_missing",
+        }:
             result.append(
-                BaoStockDailyCell(code, day, candidate.status, _side(candidate.unadjusted), _side(candidate.qfq))
+                BaoStockDailyCell(
+                    code,
+                    day,
+                    candidate.status,
+                    _side(candidate.unadjusted) if candidate.unadjusted is not None else None,
+                    _side(candidate.qfq) if candidate.qfq is not None else None,
+                )
             )
         else:
             recovered = supplements.get(day)

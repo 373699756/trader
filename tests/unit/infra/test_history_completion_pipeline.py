@@ -43,6 +43,41 @@ class ShortTencentSupplier(FakeSupplier):
         )
 
 
+def test_inferred_suspension_is_published_without_a_price_or_retry_gap(tmp_path, capsys):
+    class InferredTencentSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            window = super().fetch_tencent_window(security, dates)
+            return replace(
+                window,
+                cells=tuple(
+                    replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+                    if cell.trade_date == DAYS[1]
+                    else cell
+                    for cell in window.cells
+                ),
+            )
+
+    supplier = InferredTencentSupplier(DAYS)
+    progress = StderrHistorySyncProgress()
+    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW, progress=progress)
+    progress.publish_result(result)
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    reader = HistorySnapshotReader(tmp_path)
+    assert all(row.cell.status == "tencent_inferred_suspended" for row in reader.read_day(DAYS[1], active))
+    training = tuple(reader.iter_training_rows(active, DAYS, ("600001", "600002")))
+    assert all(
+        row.point is None and row.cell_status == "tencent_inferred_suspended"
+        for row in training
+        if row.trade_date == DAYS[1]
+    )
+    assert all(row.point is not None for row in training if row.trade_date != DAYS[1])
+    assert "推定停牌 1" in _compact_log(capsys.readouterr().err)
+    supplier.calls.clear()
+    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).unresolved_price_cells == 0
+    assert not supplier.calls
+
+
 def test_short_tencent_response_completes_without_baostock_classification(tmp_path, capsys):
     supplier = ShortTencentSupplier()
     progress = StderrHistorySyncProgress()
@@ -107,6 +142,35 @@ def test_training_calendar_gap_resets_features_and_never_shifts_tomorrow(profile
     assert len(state.rolling_codes["600001"].points) == 1
     assert candidate.future_returns == [None] * 5
     assert not state.pending_days[-1].samples
+
+
+@pytest.mark.parametrize("profile", [V2_TRAINING_PROFILE, V3_TRAINING_PROFILE])
+def test_inferred_suspension_preserves_trade_bar_features_but_not_tomorrow_label(profile):
+    class Sink:
+        def add_final(self, samples):
+            assert not samples
+
+    days = tuple(date(2025, 1, 1) + timedelta(days=i) for i in range(profile.history_sessions + 2))
+    state = _SampleBuildState(
+        Sink(),
+        profile,
+        None,
+        len(days),
+        {day: i for i, day in enumerate(days)},
+        frozenset(days),
+        frozenset(("600001",)),
+    )
+    for day in days[:-2]:
+        state.accept(HistoryTrainingRow("600001", day, "main", "industry", HistoryTrainingPoint(day, 10.0, 1000.0)))
+    candidate = state.pending_days[-1].samples["600001"]
+    state.accept(HistoryTrainingRow("600001", days[-2], "main", "industry", None, "tencent_inferred_suspended"))
+    state.accept(
+        HistoryTrainingRow("600001", days[-1], "main", "industry", HistoryTrainingPoint(days[-1], 11.0, 1000.0))
+    )
+    assert len(state.rolling_codes["600001"].points) == profile.history_sessions
+    assert state.pending_days[-1].samples["600001"].trade_date == days[-1]
+    assert candidate.future_returns[0] is None
+    assert candidate.future_returns[1] == pytest.approx(0.1)
 
 
 @pytest.mark.parametrize("delisted", [False, True])

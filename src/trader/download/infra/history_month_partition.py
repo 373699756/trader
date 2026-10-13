@@ -155,6 +155,7 @@ _TRAINING_RANGE_SQL = """
 SELECT records.trade_date,
        records.code,
        records.board,
+       json_extract(records.payload_json, '$.cell.status'),
        json_extract(records.payload_json, '$.cell.unadjusted.trading_status'),
        json_extract(records.payload_json, '$.cell.qfq.trading_status'),
        json_extract(records.payload_json, '$.cell.qfq.close_price'),
@@ -1000,13 +1001,22 @@ def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
 
 
 def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
-    if len(row) != 7:
+    if len(row) != 8:
         raise HistoryMonthPartitionError("history month training row shape is invalid")
-    trade_date_value, code, board, raw_status, qfq_status, qfq_close, qfq_amount = row
+    trade_date_value, code, board, cell_status, raw_status, qfq_status, qfq_close, qfq_amount = row
     if (
         not isinstance(trade_date_value, str)
         or not isinstance(code, str)
         or not isinstance(board, str)
+        or cell_status
+        not in {
+            "complete",
+            "supplier_marked_suspended",
+            "tencent_inferred_suspended",
+            "unadjusted_missing",
+            "qfq_missing",
+            "unknown_missing",
+        }
         or raw_status not in {None, "trading", "suspended"}
         or qfq_status not in {None, "trading", "suspended"}
     ):
@@ -1027,6 +1037,7 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
         cast(BaoStockBoard, board),
         None,
         point,
+        cell_status,
     )
 
 

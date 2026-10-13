@@ -1,4 +1,4 @@
-"""Tencent pagination, partial transport failure and same-source overlap contracts."""
+"""Tencent bounded responses and transport failure contracts."""
 
 import json
 from datetime import date, timedelta
@@ -68,13 +68,14 @@ def _fetch(http, days=_DAYS):
     return http.supplier().fetch_window(_SECURITY, days, request_count=2000, allow_interior_padding=True)
 
 
-def test_truncated_qfq_is_completed_without_redownloading_raw():
+def test_truncated_qfq_keeps_only_returned_pairs_without_extra_requests():
     http = _Session()
     window = _fetch(http)
     assert len(window.cells) == 2000
-    assert all(cell.status == "complete" for cell in window.cells)
+    assert sum(cell.status == "complete" for cell in window.cells) == 640
+    assert sum(cell.status == "qfq_missing" for cell in window.cells) == 1360
     assert sum(call[-1] == "bfq" for call in http.calls) == 1
-    assert 4 <= len(http.calls) <= 7
+    assert len(http.calls) == 2
     assert all("proxy.finance" in call[0] for call in http.calls)
 
 
@@ -86,22 +87,20 @@ def test_invalid_older_padding_cannot_discard_valid_requested_prices():
     assert len(http.calls) == 2
 
 
-def test_sparse_old_gaps_with_recent_resume_anchors_are_fetched_from_tencent():
+def test_sparse_old_dates_keep_only_the_returned_qfq_rows():
     http = _Session()
     days = _DAYS[:2] + _DAYS[-5:]
     window = _fetch(http, days)
     assert tuple(cell.trade_date for cell in window.cells) == days
-    assert all(cell.status == "complete" for cell in window.cells)
-    assert len(http.calls) == 3
+    assert tuple(cell.status for cell in window.cells) == ("qfq_missing", "qfq_missing", *(("complete",) * 5))
+    assert len(http.calls) == 2
 
 
-def test_temporary_failure_keeps_valid_pairs_and_has_no_capability_claim():
+def test_short_success_is_not_retried_as_a_transport_failure():
     http = _Session("partial_timeout")
-    with pytest.raises(HistorySupplierPendingError) as error:
-        _fetch(http)
-    assert sum(cell.status == "complete" for cell in error.value.window.cells) == 640
-    assert sum(cell.unadjusted is not None for cell in error.value.window.cells) == 2000
-    assert len(http.calls) <= 12
+    window = _fetch(http)
+    assert sum(cell.status == "complete" for cell in window.cells) == 640
+    assert len(http.calls) == 2
 
 
 def test_primary_transport_failure_uses_alternate_before_giving_up():
@@ -112,11 +111,11 @@ def test_primary_transport_failure_uses_alternate_before_giving_up():
 
 
 @pytest.mark.parametrize("behavior, paired", (("unavailable", 0), ("conflict", 640)))
-def test_confirmed_unusable_pages_remain_missing_without_overwriting_pairs(behavior, paired):
+def test_successful_short_responses_keep_the_returned_pair_count(behavior, paired):
     http = _Session(behavior)
     window = _fetch(http)
     assert sum(cell.status == "complete" for cell in window.cells) == paired
-    assert len(http.calls) <= 12
+    assert len(http.calls) == 2
 
 
 def test_offline_stock_stops_after_two_hosts_and_cancellation_stops_before_io():

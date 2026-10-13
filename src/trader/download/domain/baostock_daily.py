@@ -22,6 +22,7 @@ BaoStockTradingStatus = Literal["trading", "suspended"]
 BaoStockCellStatus = Literal[
     "complete",
     "supplier_marked_suspended",
+    "tencent_inferred_suspended",
     "unadjusted_missing",
     "qfq_missing",
     "unknown_missing",
@@ -216,14 +217,18 @@ class BaoStockDailyCell:
                 side.code != self.code or side.trade_date != self.trade_date or side.adjustment != adjustment
             ):
                 raise ValueError("BaoStock daily side does not match its logical cell")
-        expected = daily_cell_status(self.unadjusted, self.qfq)
+        expected = (
+            "tencent_inferred_suspended"
+            if self.status == "tencent_inferred_suspended" and self.unadjusted is None and self.qfq is None
+            else daily_cell_status(self.unadjusted, self.qfq)
+        )
         if self.status != expected:
             raise ValueError("BaoStock daily cell status does not match its sides")
         object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
 
     @property
     def obtained(self) -> bool:
-        return self.status in ("complete", "supplier_marked_suspended")
+        return self.status in ("complete", "supplier_marked_suspended", "tencent_inferred_suspended")
 
 
 @dataclass(frozen=True)

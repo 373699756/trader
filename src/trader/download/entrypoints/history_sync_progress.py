@@ -283,6 +283,7 @@ class StderrHistorySyncProgress:
                 qfq=coverage.qfq if coverage is not None else None,
                 paired=coverage.paired if coverage is not None else None,
                 missing=coverage.missing if coverage is not None else None,
+                inferred_suspended=coverage.inferred_suspended if coverage is not None else 0,
                 reason=progress.failure_reason or "无",
                 extra=extra,
             ),

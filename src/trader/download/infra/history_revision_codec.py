@@ -46,6 +46,7 @@ def decode_history_revision(payload_json: str) -> HistoryRevision:
                 Literal[
                     "complete",
                     "supplier_marked_suspended",
+                    "tencent_inferred_suspended",
                     "unadjusted_missing",
                     "qfq_missing",
                     "unknown_missing",

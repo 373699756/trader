@@ -112,9 +112,12 @@ class HistoryDirectPrices:
             previous = self.read(task.code, task.dates)
         cells = qualify_history_pairs(task.code, task.dates, window, recovery)
         cells = qualify_price_overlap(cells, previous, full_window=context.full_window)
-        obtained = {cell.trade_date for cell in previous if cell.obtained}
-        observed = {cell.trade_date for cell in previous}
-        suspended = {cell.trade_date for cell in cells if cell.status == "supplier_marked_suspended"}
+        prior = {cell.trade_date: cell for cell in previous}
+        suspended = {
+            cell.trade_date
+            for cell in cells
+            if cell.status in {"supplier_marked_suspended", "tencent_inferred_suspended"}
+        }
         paired = {cell.trade_date for cell in cells if cell.status == "complete"}
         raw = paired | {
             cell.trade_date
@@ -131,12 +134,18 @@ class HistoryDirectPrices:
             tuple(
                 HistoryRevision(self._sequence, security.board, cell, None, None, None)
                 for cell in cells
-                if (cell.obtained and cell.trade_date not in obtained)
-                or (not cell.obtained and cell.trade_date not in observed)
+                if prior.get(cell.trade_date) != cell
             ),
-            tuple(cell.trade_date for cell in cells if not cell.obtained),
+            tuple(cell.trade_date for cell in cells if cell.status == "unknown_missing"),
             None,
-            HistoryPriceCoverage(len(task.dates), len(raw), len(qfq), len(paired), len(suspended)),
+            HistoryPriceCoverage(
+                len(task.dates),
+                len(raw),
+                len(qfq),
+                len(paired),
+                len(suspended),
+                inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in cells),
+            ),
         )
 
     def commit(self, results: tuple[HistoryPriceResult, ...]) -> None:

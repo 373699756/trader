@@ -56,9 +56,12 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     previous = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
     baseline.calls.clear()
-    retried = run_history_sync(config, _router(baseline, Prices()), clock=lambda: NOW)
+    retry_prices = Prices()
+    retried = run_history_sync(config, _router(baseline, retry_prices), clock=lambda: NOW)
     assert retried.unresolved_price_cells == 0
     assert baseline.calls == []
+    if mode == "missing":
+        assert retry_prices.calls == []
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous) == old_rows
 
 

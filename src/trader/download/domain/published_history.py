@@ -68,7 +68,11 @@ class PublishedHistoryCell:
                 side.code != self.code or side.trade_date != self.trade_date or side.adjustment != adjustment
             ):
                 raise ValueError("published history side identity is invalid")
-        expected = daily_cell_status(self.unadjusted, self.qfq)
+        expected = (
+            "tencent_inferred_suspended"
+            if self.status == "tencent_inferred_suspended" and self.unadjusted is None and self.qfq is None
+            else daily_cell_status(self.unadjusted, self.qfq)
+        )
         if self.status != expected:
             raise ValueError("published history cell status is invalid")
 

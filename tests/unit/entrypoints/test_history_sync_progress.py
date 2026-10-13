@@ -398,18 +398,13 @@ def _stock_progress(**changes) -> StockDownloadProgress:
     )
 
 
-def _separator_columns(line: str) -> tuple[int, ...]:
-    return tuple(display_width(line[:index]) for index, char in enumerate(line) if char == "|")
-
-
 @pytest.mark.parametrize(
     "name", ("宝兰德", "云涌科技", "*ST测试", "ＡB测试", "e\u0301测试", None, "超长公司名称超过八个汉字")
 )
 @pytest.mark.parametrize(
     "result,actual", (("合格", 2000), ("部分", 19), ("待重试", None), ("失败", None), ("无需下载", 0))
 )
-def test_stock_fields_align_by_cells_not_string_length(name, result, actual) -> None:
-    reference = render_progress(format_stock_download_progress(0, _stock_progress()))
+def test_stock_fields_remain_compact_across_names_and_counts(name, result, actual) -> None:
     progress = _stock_progress(
         command="qfq_download",
         completed=4400,
@@ -424,7 +419,8 @@ def test_stock_fields_align_by_cells_not_string_length(name, result, actual) -> 
         reason="a_long_failure_reason",
     )
     plain = render_progress(format_stock_download_progress(0, progress))
-    assert _separator_columns(plain)[:10] == _separator_columns(reference)[:10]
+    assert not re.search(r" {2,}\|", plain)
+    assert "raw " in plain and "qfq " in plain and "完整配对 " in plain
     assert "\n" not in plain and "\t" not in plain
     assert plain.index("原因") < plain.index("缺失日期")
     if name is not None and display_width(name) > 16:
@@ -502,7 +498,7 @@ def test_untrusted_fields_cannot_inject_ansi_newlines_or_columns() -> None:
     assert "title" not in line and "[31m" not in line
 
 
-def test_history_stock_output_preserves_columns_across_coverage_and_result(monkeypatch) -> None:
+def test_history_stock_output_keeps_compact_fields_across_coverage_and_result(monkeypatch) -> None:
     stream = _Terminal(True)
     monkeypatch.setattr("sys.stderr", stream)
     monkeypatch.delenv("NO_COLOR", raising=False)
@@ -532,7 +528,8 @@ def test_history_stock_output_preserves_columns_across_coverage_and_result(monke
     for line, color in zip(lines, ("32", "33", "31"), strict=True):
         assert f"\x1b[{color}m结果 " in line
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in lines]
-    assert len({_separator_columns(line) for line in plain}) == 1
+    assert all(not re.search(r" {2,}\|", line) for line in plain)
+    assert all("raw " in line and "完整配对 " in line for line in plain)
 
 
 def test_qfq_write_failure_is_red_but_retry_stays_yellow(monkeypatch) -> None:

@@ -366,6 +366,39 @@ def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
     )
 
 
+def test_inferred_suspension_keeps_only_tencent_real_bars_without_backfill(tmp_path):
+    class SuspendedSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            window = super().fetch_window(security, dates)
+            return replace(
+                window,
+                cells=tuple(
+                    replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+                    if cell.trade_date == DAYS[-2]
+                    else cell
+                    for cell in window.cells
+                ),
+            )
+
+    supplier = SuspendedSupplier(days=DAYS)
+    updater = _updater(tmp_path, supplier)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert len(supplier.calls) == 1
+    assert DAYS[-2] not in {cell.trade_date for cell in updater.v2.read_code("600001").cells}
+    assert len(updater.v2.read_code("600001").cells) == 250
+    assert len(updater.v3.read_code("600001").cells) == 60
+    projection = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(updater.v2), lookback_sessions=251, open_dates=lambda: DAYS
+    )
+    assert projection.refresh()
+    assert "600001" in projection.load(("600001",), observed_at=observed)
+    resumed = updater.execute(observed)
+    assert resumed.skipped_codes == 1 and resumed.pending_codes == 0
+    assert len(supplier.calls) == 1
+
+
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 @pytest.mark.parametrize("field,value", (("digest", "broken"), ("dates", "[]"), ("cutoff", "2000-01-01")))
 def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, profile, field, value):
@@ -532,7 +565,7 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
     assert len(calls) == 4  # Calendar refresh only; completed stock is not downloaded again.
 
 
-def test_incomplete_supplier_gap_reports_dates_without_qualifying_window(tmp_path) -> None:
+def test_incomplete_supplier_gap_preserves_only_returned_pairs(tmp_path) -> None:
     supplier = Supplier()
     original = supplier.fetch_window
 
@@ -542,9 +575,7 @@ def test_incomplete_supplier_gap_reports_dates_without_qualifying_window(tmp_pat
         return PublishedHistoryWindow(
             security.code,
             tuple(
-                replace(cell, unadjusted=None, qfq=None, status="unknown_missing")
-                if cell.trade_date in missing
-                else cell
+                replace(cell, qfq=None, status="qfq_missing") if cell.trade_date in missing else cell
                 for cell in window.cells
             ),
         )
@@ -561,9 +592,10 @@ def test_incomplete_supplier_gap_reports_dates_without_qualifying_window(tmp_pat
     )
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
-    assert result.completed_codes == 0 and result.pending_codes == 1
-    assert any("结果 待重试" in message and DAYS[-1].isoformat() in message for message in logs)
-    assert not (tmp_path / "v2").exists() and not (tmp_path / "v3").exists()
+    assert result.completed_codes == 1 and result.pending_codes == 0
+    assert len(updater.v2.read_code("600001").cells) == 249
+    assert len(updater.v3.read_code("600001").cells) == 59
+    assert not any("结果 待重试" in message for message in logs)
 
 
 def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_path) -> None:
@@ -604,16 +636,16 @@ def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_p
         )
         observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
         result = updater.execute(observed)
-        assert result.completed_codes == result.pending_codes == 2
+        assert result.completed_codes == 3 and result.pending_codes == 1
         assert [event[0] for event in events] == ["tencent"] * 4
         assert sum(" | qfq_download 股票进度 | " in line for line in logs) == 4
-        assert any("已处理 4/4（100.00%） | 合格 2 | 待重试 2" in line for line in logs)
+        assert any("已处理 4/4（100.00%） | 合格 3 | 待重试 1" in line for line in logs)
         for cache in (updater.v2, updater.v3):
-            assert cache.codes() == frozenset({"600002", "600003"})
+            assert cache.codes() == frozenset({"600001", "600002", "600003"})
         before = (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3"))
         resumed = updater.execute(observed)
-        assert resumed.skipped_codes == 2 and resumed.pending_codes == 2 and resumed.changed_files == ()
-        assert len(events) == 6
+        assert resumed.skipped_codes == 3 and resumed.pending_codes == 1 and resumed.changed_files == ()
+        assert len(events) == 4
         assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
     finally:
         assert pool.stop(wait=True, cancel_futures=True).completed
@@ -983,13 +1015,7 @@ class _IncompleteSupplier(Supplier):
     def fetch_window(self, security, dates):
         window = super().fetch_window(security, dates)
         if security.code == "600001":
-            return replace(
-                window,
-                cells=tuple(
-                    replace(cell, status="unknown_missing", unadjusted=None, qfq=None) if index < 4 else cell
-                    for index, cell in enumerate(window.cells)
-                ),
-            )
+            raise QfqWindowIncompleteError(dates[:4], dates[:4])
         return window
 
 

@@ -130,6 +130,9 @@ class _SampleBuildState:
         )
         if rolling.previous_position is not None and position != rolling.previous_position + 1:
             rolling.points.clear()
+        if row.cell_status == "tencent_inferred_suspended":
+            rolling.previous_position = position
+            return
         if row.point is None or row.industry is None:
             rolling.points.clear()
             if row.industry is None:

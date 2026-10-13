@@ -101,7 +101,7 @@ def test_unavailable_old_pages_keep_real_partial_pairs_after_bounded_recovery():
     http.raw = [[day.isoformat(), *ROW[1:]] for day in days]
     http.adjusted = http.raw[-640:]
     window = http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
-    assert 2 < len(http.calls) <= 12
+    assert len(http.calls) == 2
     assert all(",2000," in param for param in http.calls[:2])
     assert sum(cell.status == "complete" for cell in window.cells) == 640
     assert sum(cell.status == "qfq_missing" for cell in window.cells) == 1360
@@ -122,7 +122,25 @@ def test_session_pool_reuses_bootstrap_owned_connection_between_stocks():
 def test_calendar_advances_independently_of_old_history():
     context = _Http().supplier().load_qfq_context(DAY, 251)
     assert context.calendar.open_dates[-1] == DAY
+    assert len(context.calendar.open_dates) == 251
     assert context.universe == (SECURITY,)
+
+
+def test_successful_two_sided_omission_is_inferred_but_one_sided_gap_is_not():
+    http = _Http()
+    days = tuple(DAY - timedelta(days=offset) for offset in (2, 1, 0))
+    http.raw = [[day.isoformat(), *ROW[1:]] for day in (days[0], days[2])]
+    http.adjusted = [[days[2].isoformat(), *ROW[1:]]]
+    window = http.supplier().fetch_window(SECURITY, days)
+    assert tuple(cell.status for cell in window.cells) == ("qfq_missing", "tencent_inferred_suspended", "complete")
+
+
+def test_missing_raw_response_shape_cannot_be_inferred_as_suspension():
+    http = _Http()
+    http.raw = None
+    http.adjusted = []
+    with pytest.raises(ValueError, match="tencent_daily_response_shape_invalid"):
+        http.supplier().fetch_window(SECURITY, (DAY,))
 
 
 def test_full_history_calendar_accepts_one_extra_index_session():
@@ -177,9 +195,9 @@ def test_rejects_invalid_rows_without_silently_dropping_them(invalid):
         http.raw[0][5] = "nan"
     else:
         http.raw[0][3] = "9"
-    window = http.supplier().fetch_window(SECURITY, (DAY,))
-    assert window.cells[0].unadjusted is None
-    assert len(http.calls) == 3
+    with pytest.raises(ValueError):
+        http.supplier().fetch_window(SECURITY, (DAY,))
+    assert len(http.calls) == 1
 
 
 def test_missing_one_side_remains_pending_and_is_not_suspended():
@@ -217,7 +235,7 @@ def test_neutral_adjustment_rejects_invalid_or_nonzero_evidence(index, invalid):
     http.adjusted["day"][0][index] = invalid
     window = http.supplier().fetch_window(SECURITY, (DAY,))
     assert window.cells[0].qfq is None
-    assert len(http.calls) == 3
+    assert len(http.calls) == 2
 
 
 @pytest.mark.parametrize("invalid", ("short", "adjustment_record", "mixed_rows"))
@@ -236,7 +254,7 @@ def test_neutral_adjustment_requires_evidence_on_every_row(invalid):
         http.adjusted["day"].append(changed)
     window = http.supplier().fetch_window(SECURITY, (DAY,))
     assert window.cells[0].qfq is None
-    assert len(http.calls) == 3
+    assert len(http.calls) == 2
 
 
 def test_retries_transport_only_and_cancellation_stops_attempts():

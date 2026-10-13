@@ -236,7 +236,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
     assert current.read_day(dates[-1], state.active_snapshot)[0].cell == rows[0].cell
     tail = current.read_day(new_dates[-1], state.active_snapshot)[0].cell
     if incoming == "missing":
-        assert tail.status == "unknown_missing" and tail.qfq is None
+        assert tail.status == "qfq_missing" and tail.qfq is None
     else:
         assert tail.qfq is not None and tail.qfq.close_price == 11.0
 

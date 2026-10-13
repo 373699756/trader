@@ -223,7 +223,7 @@ class HistoryDownloadFlow:
     def _fetch_task(self, task: HistoryDownloadTask) -> _TencentResult:
         self._check()
         previous = self._resources.prices.read_for_download(task.code, task.dates)
-        obtained = {cell.trade_date for cell in previous if cell.obtained}
+        obtained = {cell.trade_date for cell in previous if cell.status != "unknown_missing"}
         missing = set(task.dates) - obtained
         dates = tuple(sorted(missing | set(sorted(obtained)[-5:]))) if missing else ()
         empty = PublishedHistoryWindow(task.code, ())
@@ -251,7 +251,15 @@ class HistoryDownloadFlow:
         task = result.task
         try:
             prepared = self._prepare(result)
-            return replace(prepared, failure=result.failure) if prepared.missing else prepared
+            if result.failure is None:
+                return prepared
+            resolved = {cell.trade_date for cell in result.previous if cell.status != "unknown_missing"} | {
+                cell.trade_date
+                for cell in result.window.cells
+                if cell.status in {"complete", "supplier_marked_suspended"}
+            }
+            missing = tuple(day for day in result.dates if day not in resolved)
+            return replace(prepared, missing=missing, failure=result.failure if missing else None)
         except HistoryMonthPartitionError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -261,13 +269,22 @@ class HistoryDownloadFlow:
             previous = result.previous
             obtained = {cell.trade_date for cell in previous if cell.obtained}
             count = sum(cell.status == "complete" for cell in previous)
-            suspended = sum(cell.status == "supplier_marked_suspended" for cell in previous)
+            suspended = sum(
+                cell.status in {"supplier_marked_suspended", "tencent_inferred_suspended"} for cell in previous
+            )
             return HistoryPriceResult(
                 task,
                 (),
                 tuple(day for day in task.dates if day not in obtained),
                 failure,
-                HistoryPriceCoverage(len(task.dates), count, count, count, suspended),
+                HistoryPriceCoverage(
+                    len(task.dates),
+                    count,
+                    count,
+                    count,
+                    suspended,
+                    inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in previous),
+                ),
             )
 
 
