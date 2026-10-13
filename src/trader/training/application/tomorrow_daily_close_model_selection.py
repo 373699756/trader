@@ -12,7 +12,7 @@ from typing import Protocol
 
 from trader.training.application.tomorrow_daily_close_training import (
     BaseModelKind,
-    CandidateModelArtifact,
+    CandidateModelSnapshot,
     DailyCloseFeatureRow,
     FeatureDataset,
     ModelDependencyVersion,
@@ -21,7 +21,7 @@ from trader.training.application.tomorrow_daily_close_training import (
     select_mature_fold_training_rows,
     select_mature_training_rows,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.tomorrow_daily_close import (
     DailyCloseTemporalSplit,
     ExpandingWalkForwardFold,
@@ -142,7 +142,7 @@ class DailyCloseCandidateEvaluation:
             raise ValueError("daily-close model selection candidate OOF identities must be unique")
         if self.production_authority:
             raise ValueError("daily-close model selection candidate OOF cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -167,7 +167,7 @@ class DailyCloseModelSelectionResult:
             raise ValueError("daily-close model selection development schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("daily-close model selection development cannot open holdout or production")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 class DailyCloseCandidateEvaluator:
@@ -272,7 +272,7 @@ class DailyCloseModelSelectionService:
         development: DailyCloseModelSelectionResult,
         *,
         confirmation_report_hash: str,
-    ) -> CandidateModelArtifact:
+    ) -> CandidateModelSnapshot:
         _validate_dataset_split(dataset, split)
         _hash(confirmation_report_hash, "confirmation report")
         if (
@@ -295,7 +295,7 @@ class DailyCloseModelSelectionService:
         kind: BaseModelKind = (
             "ridge" if selected == "ridge" else "lightgbm" if selected == "lightgbm" else "ridge_lightgbm_ensemble"
         )
-        return CandidateModelArtifact(
+        return CandidateModelSnapshot(
             model_id="score_tomorrow_daily_close_model_selection",
             candidate_id=selected,
             base_model_kind=kind,

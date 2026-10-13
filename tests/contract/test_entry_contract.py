@@ -21,8 +21,8 @@ from trader.infra.process_lock import ProcessLockError
 from trader.infra.settings import load_runtime_settings
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
-from trader.training.infra.research.h1_point_in_time_archive import H1PointInTimeArchiveConflictError
-from trader.training.infra.research.tomorrow_research_artifacts import TomorrowResearchArtifactRepositoryError
+from trader.training.infra.research.h1_point_in_time_snapshot import H1PointInTimeSnapshotConflictError
+from trader.training.infra.research.tomorrow_research_evidence import TomorrowResearchEvidenceIndexError
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -105,7 +105,7 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.application.json_values",
         "trader.training.application.research_ports",
         "trader.training.domain.evaluation",
-        "trader.training.domain.evaluation.artifact_identity",
+        "trader.training.domain.evaluation.research_identity",
         "trader.training.domain.evaluation.challengers",
         "trader.training.domain.evaluation.evaluation",
         "trader.training.domain.evaluation.historical",
@@ -115,9 +115,9 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.infra.research.trace_storage",
         "trader.training.infra.research.trace_codec",
         "trader.infra.serialization.research_trace_validation",
-        "trader.infra.serialization.research_trace_projection",
+        "trader.training.infra.research.trace_projection",
         "trader.training.infra.research.outcome_evidence_repository",
-        "trader.training.infra.research.research_trace_archive",
+        "trader.training.infra.research.research_trace_index",
     }
 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed
@@ -800,9 +800,9 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _ReadyPrerequisite())
     monkeypatch.setattr(
-        research_commands.TomorrowResearchArtifactRepository,
+        research_commands.TomorrowResearchEvidenceIndex,
         "load_graph",
-        lambda _repository: (_ for _ in ()).throw(TomorrowResearchArtifactRepositoryError("graph invalid")),
+        lambda _repository: (_ for _ in ()).throw(TomorrowResearchEvidenceIndexError("graph invalid")),
     )
 
     result = research_commands._read_tomorrow_research_status(load_runtime_settings(config))
@@ -819,7 +819,7 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
 
     class _BrokenPrerequisite:
         def inspect(self) -> TomorrowResearchPrerequisiteStatus:
-            raise H1PointInTimeArchiveConflictError("H1 archive invalid")
+            raise H1PointInTimeSnapshotConflictError("H1 archive invalid")
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _BrokenPrerequisite())
 

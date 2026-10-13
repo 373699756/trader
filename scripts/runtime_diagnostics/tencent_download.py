@@ -25,7 +25,7 @@ from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import completed_daily_cutoff
 from trader.download.infra.exchange_security_universe import load_current_a_share_universe
-from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_qfq_supplier import (
@@ -141,7 +141,7 @@ def compare_windows(reference: PublishedHistoryWindow, incoming: PublishedHistor
 def _shadow(
     supplier: TencentQfqSupplier, context: HistorySupplierContext, args: argparse.Namespace
 ) -> dict[str, object]:
-    reader = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(args.history_root))
+    reader = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(args.history_root))
     manifest = reader.manifest()
     if manifest is None:
         return {"status": "unavailable", "reason": "history_snapshot_unavailable"}

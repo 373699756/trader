@@ -4,7 +4,7 @@ from typing import cast
 
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
-from trader.infra.market_data.history.outcome_history import pair_outcome_history
+from trader.recommendation.infra.market_data.outcome_history import pair_outcome_history
 from trader.training.domain.evaluation.models import OutcomeBar
 
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, get_score_research_spec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -86,7 +86,7 @@ class BaselineDayMetrics:
         ):
             if value is not None and not 0.0 <= value <= 1.0:
                 raise ValueError("baseline rate metrics must be in [0, 1]")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -164,7 +164,7 @@ class HistoricalBaselineReport:
         if self.status != ("replayed" if self.extraction_status == "extracted" else "exploratory"):
             raise ValueError("Historical replay report status must match its valid-day evidence")
         object.__setattr__(self, "days", days)
-        object.__setattr__(self, "report_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "report_hash", canonical_research_hash(self))
 
     @property
     def day_count(self) -> int:

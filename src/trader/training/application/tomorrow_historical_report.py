@@ -8,8 +8,8 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_CANDIDATE_ID,
     TOMORROW_HISTORICAL_SPEC,
@@ -116,7 +116,7 @@ class TomorrowHistoricalReport:
         if self.production_authority or self.schema_version != "score_tomorrow_historical_report":
             raise ValueError("Tomorrow historical report cannot authorize production")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
     @property
     def forward_preregistration_eligible(self) -> bool:

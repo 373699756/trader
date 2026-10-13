@@ -1,7 +1,7 @@
 from datetime import date
 
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
-    DailyArchiveQualification,
+    DailyHistoryQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
     build_point_in_time_data_qualification,
@@ -9,7 +9,7 @@ from trader.training.domain.evaluation.point_in_time_data_qualification import (
 
 
 def test_three_independent_data_gates_fail_closed_without_opening_holdout() -> None:
-    daily = DailyArchiveQualification(
+    daily = DailyHistoryQualification(
         2000,
         5453,
         268,
@@ -68,7 +68,7 @@ def test_three_independent_data_gates_fail_closed_without_opening_holdout() -> N
 
 
 def test_report_qualifies_only_when_daily_industry_and_minute_gates_all_pass() -> None:
-    daily = DailyArchiveQualification(2000, 5000, 5000, 0, "coverage_ready", "a" * 64, "qualified", ())
+    daily = DailyHistoryQualification(2000, 5000, 5000, 0, "coverage_ready", "a" * 64, "qualified", ())
     industry = HistoricalIndustryQualification(
         "qualified_industry",
         500,

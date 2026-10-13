@@ -9,7 +9,7 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.data_source.source_quality import failure_code
@@ -1320,7 +1320,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
 ) -> None:
     after_close = datetime(2026, 8, 11, hour, minute, second, tzinfo=SHANGHAI)
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(tmp_path / "history")),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
         lookback_sessions=61,
     )
     history.record_maintenance("loading", stage="reading_active_snapshot")

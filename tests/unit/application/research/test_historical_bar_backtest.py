@@ -8,8 +8,8 @@ from trader.training.application.historical_backtest import (
 )
 from trader.training.application.historical_screening import (
     HistoricalPriceHistoryIdentity,
-    HistoricalScreeningArchiveManifest,
-    HistoricalScreeningArchiveStatus,
+    HistoricalScreeningSnapshotManifest,
+    HistoricalScreeningSnapshotStatus,
 )
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 
@@ -17,7 +17,7 @@ from trader.training.domain.evaluation.historical_screening import HISTORICAL_SC
 class _Evidence:
     @staticmethod
     def inspect(_identity):
-        return HistoricalScreeningArchiveStatus(
+        return HistoricalScreeningSnapshotStatus(
             initialized=True,
             research_identity="historical_screening",
             universe_count=100,
@@ -38,7 +38,7 @@ class _Evidence:
 
     @staticmethod
     def manifest(_spec):
-        return HistoricalScreeningArchiveManifest(
+        return HistoricalScreeningSnapshotManifest(
             research_identity="historical_screening",
             spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
             universe_hash="1" * 64,

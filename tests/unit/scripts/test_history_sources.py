@@ -4,7 +4,6 @@ from argparse import Namespace
 
 from scripts.runtime_diagnostics.history_sources import (
     HistoryObservation,
-    _validate,
     build_report,
 )
 

@@ -14,13 +14,13 @@ from trader.training.application.risk_cost_uncertainty import (
     RiskCostUncertaintyPrerequisite,
     RiskCostUncertaintyResearchBuilder,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.historical import ResearchBoard
 from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeDatasetReport,
     PointInTimeDatasetRow,
     PointInTimeEventFact,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.risk_cost_population import (
     RiskCostResearchPartition,
     bind_risk_cost_population,
@@ -53,7 +53,7 @@ def _sample(row: PointInTimeDatasetRow) -> RiskCostUncertaintySample:
         row.trade_date,
         cast(ResearchBoard, row.board.value),
         row.industry,
-        AlphaScore(row.code, "v3", MODEL_ID, MODEL_HASH, canonical_artifact_hash(row.feature_vector), 90, 0.01),
+        AlphaScore(row.code, "v3", MODEL_ID, MODEL_HASH, canonical_research_hash(row.feature_vector), 90, 0.01),
         RiskDecision(row.code, 0, False, (), UncertaintyAssessment(None, None, None, None, None, None)),
         ExecutionCost(
             row.code,
@@ -95,7 +95,7 @@ def _with_parent_facts(dataset: PointInTimeDatasetReport) -> PointInTimeDatasetR
                             row.anchor_at - timedelta(days=1),
                             row.anchor_at + timedelta(days=3),
                             row.anchor_at,
-                            canonical_artifact_hash((row.trade_date, row.code, "verified_fact")),
+                            canonical_research_hash((row.trade_date, row.code, "verified_fact")),
                         ),
                     ),
                 )

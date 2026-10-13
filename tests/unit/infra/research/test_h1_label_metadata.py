@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 from trader.training.application.historical_screening import HistoricalSecurity
 from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeRecord, H1PointInTimeSpec
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
-from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
 
 def _record(code: str, day: date) -> H1PointInTimeRecord:
@@ -26,7 +26,7 @@ def _record(code: str, day: date) -> H1PointInTimeRecord:
 
 
 def test_h1_label_metadata_reads_only_common_dates_and_manifest_identity(tmp_path) -> None:
-    archive = SQLiteH1PointInTimeArchive(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
     spec = H1PointInTimeSpec("tomorrow")
     securities = (
         HistoricalSecurity("600001", "main", "A", False, False),

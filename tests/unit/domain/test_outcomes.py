@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from dataclasses import replace
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest

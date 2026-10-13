@@ -10,8 +10,8 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.infra.workers import WorkerExecutor, submit_or_reject
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 ResearchBoard = Literal["main", "chinext", "star", "unsupported"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -43,7 +43,7 @@ class HistoricalDownloadResult:
 
 
 @dataclass(frozen=True)
-class HistoricalScreeningArchiveStatus:
+class HistoricalScreeningSnapshotStatus:
     initialized: bool = False
     research_identity: str = ""
     universe_count: int = 0
@@ -69,7 +69,7 @@ class HistoricalPriceHistoryIdentity:
 
 
 @dataclass(frozen=True)
-class HistoricalScreeningArchiveManifest:
+class HistoricalScreeningSnapshotManifest:
     research_identity: str
     spec_hash: str
     universe_hash: str
@@ -87,7 +87,7 @@ class HistoricalScreeningArchiveManifest:
         if self.spec_hash and _SHA256.fullmatch(self.spec_hash) is None:
             raise ValueError("historical archive spec hash is invalid")
         object.__setattr__(self, "histories", histories)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 class HistoricalUniverseProvider(Protocol):
@@ -98,7 +98,7 @@ class HistoricalPriceProvider(Protocol):
     def fetch_history(self, code: str, *, days: int) -> Sequence[HistoricalPriceBar]: ...
 
 
-class HistoricalScreeningArchivePort(Protocol):
+class HistoricalScreeningSnapshotPort(Protocol):
     def registered_universe(self, research_identity: str) -> tuple[HistoricalSecurity, ...]: ...
 
     def register_universe(
@@ -127,7 +127,7 @@ class HistoricalDownloadService:
         self,
         universe: HistoricalUniverseProvider,
         history: HistoricalPriceProvider,
-        archive: HistoricalScreeningArchivePort,
+        archive: HistoricalScreeningSnapshotPort,
         executor: WorkerExecutor,
         *,
         workers: int,
@@ -258,8 +258,8 @@ def _error_code(exc: BaseException) -> str:
 __all__ = [
     "HistoricalDownloadResult",
     "HistoricalDownloadService",
-    "HistoricalScreeningArchiveManifest",
-    "HistoricalScreeningArchiveStatus",
+    "HistoricalScreeningSnapshotManifest",
+    "HistoricalScreeningSnapshotStatus",
     "HistoricalPriceHistoryIdentity",
     "HistoricalSecurity",
 ]

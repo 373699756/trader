@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.challengers import ChallengerVariantId
 from trader.training.domain.evaluation.historical import CostSettlementBasis, ResearchBoard
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, get_score_research_spec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -46,7 +46,7 @@ class ChallengerCandidateOverride:
         if self.force_observe_only != bool(reasons):
             raise ValueError("challenger observe override must match its reasons")
         object.__setattr__(self, "observe_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -105,7 +105,7 @@ class ChallengerSameStockPair:
         _score(self.hybrid_score)
         if self.hybrid_source == "control_copy" and self.hybrid_score != self.local_score:
             raise ValueError("Challenger replay pair control copy must preserve the local score")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -135,7 +135,7 @@ class ChallengerDayReplay:
         _validate_weight_sum(tuple(item.hybrid_weight for item in pairs), "hybrid")
         object.__setattr__(self, "overrides", overrides)
         object.__setattr__(self, "pairs", pairs)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -161,7 +161,7 @@ class ChallengerVariantReplay:
         if len(days) > 40 or len({item.trade_date for item in days}) != len(days):
             raise ValueError("Challenger replay variant accepts at most 40 unique historical days")
         object.__setattr__(self, "days", days)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -222,7 +222,7 @@ class ChallengerReport:
         expected_status = "replayed" if day_counts == {40} else "exploratory"
         if self.status != expected_status:
             raise ValueError("Challenger replay status must match its historical-day evidence")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 def _validate_status(status: SelectionStatus, ranks: tuple[int | None, ...], label: str) -> None:

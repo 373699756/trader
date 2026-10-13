@@ -9,8 +9,8 @@ from datetime import date
 from typing import TYPE_CHECKING, Literal
 
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDatasetReport, PointInTimeDatasetRow
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 if TYPE_CHECKING:
     from trader.training.domain.evaluation.risk_cost_uncertainty import RiskCostUncertaintySample
@@ -105,7 +105,7 @@ def _validate_parent_row(
         sample.dataset_row_hash != row.content_hash
         or sample.board != row.board.value
         or sample.industry != row.industry
-        or sample.alpha.feature_vector_hash != canonical_artifact_hash(row.feature_vector)
+        or sample.alpha.feature_vector_hash != canonical_research_hash(row.feature_vector)
         or sample.alpha.model_hash != identity.model_artifact_hash
         or sample.alpha.model_id != identity.model_id
         or sample.alpha.profile_id != identity.profile_id

@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+import hashlib
+from dataclasses import replace
+from datetime import date
+
+import pytest
+
+from trader.training.application.tomorrow_research_evidence import (
+    TomorrowResearchEvidenceGraph,
+    TomorrowResearchEvidencePartitionRef,
+    TomorrowResearchEvidenceRef,
+    TomorrowResearchResourceProbe,
+    TomorrowResearchStageHandoff,
+    production_readiness_audit,
+)
+
+
+def _ref(
+    artifact_id: str,
+    *,
+    artifact_kind: str | None = None,
+    parents: tuple[str, ...] = (),
+) -> TomorrowResearchEvidenceRef:
+    return TomorrowResearchEvidenceRef(
+        artifact_id=artifact_id,
+        artifact_kind=artifact_kind or artifact_id,
+        content_hash=hashlib.sha256(artifact_id.encode("ascii")).hexdigest(),
+        parent_hashes=parents,
+    )
+
+
+def _probe(**overrides: object) -> TomorrowResearchResourceProbe:
+    values: dict[str, object] = {
+        "pilot_stocks": 100,
+        "pilot_trade_dates": 120,
+        "cpu_threads": 2,
+        "peak_rss_mb": 1024,
+        "available_disk_gb": 40.0,
+        "estimated_full_run_hours": 8.0,
+    }
+    values.update(overrides)
+    return TomorrowResearchResourceProbe(**values)  # type: ignore[arg-type]
+
+
+def test_graph_is_canonical_and_rejects_missing_or_conflicting_parents() -> None:
+    parent = _ref("h1_coverage_audit")
+    child = _ref("daily_close_model_selection", parents=(parent.content_hash,))
+
+    first = TomorrowResearchEvidenceGraph((child, parent))
+    second = TomorrowResearchEvidenceGraph((parent, child))
+
+    assert first == second
+    assert first.content_hash == second.content_hash
+    with pytest.raises(ValueError, match="parent"):
+        TomorrowResearchEvidenceGraph((child,))
+    with pytest.raises(ValueError, match="identity"):
+        TomorrowResearchEvidenceGraph((parent, replace(parent, content_hash="f" * 64)))
+
+    left = _ref("left", parents=("f" * 64,))
+    right = replace(_ref("right"), content_hash="f" * 64, parent_hashes=(left.content_hash,))
+    with pytest.raises(ValueError, match="cycle"):
+        TomorrowResearchEvidenceGraph((left, right))
+
+
+def test_stage_handoff_binds_exact_required_artifacts_and_resource_limits() -> None:
+    probe_ref = _ref("resource_probe_report", artifact_kind="resource_probe")
+    probe_handoff = TomorrowResearchStageHandoff(
+        stage="resource_probe",
+        parent_graph_hash=None,
+        artifacts=(probe_ref,),
+        resource_probe=_probe(),
+    )
+    artifacts = (
+        _ref("h1_coverage_audit", artifact_kind="h1_research_completion"),
+        _ref("daily_close_model_selection"),
+        _ref("filter_confirmation"),
+    )
+    handoff = TomorrowResearchStageHandoff(
+        stage="development_training",
+        parent_graph_hash=None,
+        artifacts=artifacts,
+    )
+
+    assert handoff.production_authority is False
+    assert handoff.automatic_model_update is False
+    with pytest.raises(ValueError, match="required artifacts"):
+        replace(handoff, artifacts=artifacts[:-1])
+    with pytest.raises(ValueError, match="resource"):
+        replace(probe_handoff, resource_probe=_probe(peak_rss_mb=4097))
+    with pytest.raises(ValueError, match="kind"):
+        replace(handoff, artifacts=(replace(artifacts[0], artifact_kind="filter_confirmation"), *artifacts[1:]))
+    assert not hasattr(artifacts[0], "owner")
+
+
+def test_production_readiness_requires_both_holdouts_parity_and_new_authorization() -> None:
+    empty = TomorrowResearchEvidenceGraph(())
+
+    audit = production_readiness_audit(empty, manual_authorization_hash=None)
+
+    assert audit.status == "production_adaptation_blocked"
+    assert audit.blockers == (
+        "daily_close_proxy_not_validated",
+        "manual_production_authorization_missing",
+        "point_in_time_holdout_not_validated",
+    )
+    assert audit.production_authority is False
+    assert audit.automatic_model_update is False
+
+
+def test_evidence_partition_rejects_absolute_or_traversing_paths() -> None:
+    values = {
+        "content_hash": "a" * 64,
+        "schema_hash": "b" * 64,
+        "row_count": 1,
+        "first_trade_date": date(2024, 1, 2),
+        "last_trade_date": date(2024, 1, 2),
+    }
+
+    with pytest.raises(ValueError, match="relative Parquet"):
+        TomorrowResearchEvidencePartitionRef(relative_path="../outside.parquet", **values)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="relative Parquet"):
+        TomorrowResearchEvidencePartitionRef(relative_path="/absolute.parquet", **values)  # type: ignore[arg-type]

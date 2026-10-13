@@ -6,7 +6,7 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     H1PointInTimeSpec,
     build_h1_capability_audit,
 )
-from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
 
 def _insufficient_capability():
@@ -40,7 +40,7 @@ def _insufficient_capability():
 
 
 def test_h1_research_completion_seals_all_downstream_insufficient_states_without_fake_rows(tmp_path) -> None:
-    archive = SQLiteH1PointInTimeArchive(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
 
     completion = complete_h1_research(
         capability=_insufficient_capability(),
@@ -59,7 +59,7 @@ def test_h1_research_completion_seals_all_downstream_insufficient_states_without
 
 
 def test_h1_research_completion_projects_a_terminal_development_handoff_with_parent_hashes(tmp_path) -> None:
-    archive = SQLiteH1PointInTimeArchive(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
     completion = complete_h1_research(
         capability=_insufficient_capability(),
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),

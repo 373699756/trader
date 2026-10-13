@@ -12,13 +12,13 @@ from flask import Blueprint, Flask, Response, jsonify, render_template, request
 from trader.http_api.decision_sse import decision_event_response
 from trader.http_api.response.decision_projection import serialize_decision_view, serialize_error
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebServices
+from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedSubscriberLimitError
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import DecisionView
-from trader.recommendation.domain.publication.models import Strategy
-from trader.web.static_assets import (
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
     DECISION_VIEW_SCHEMA_VERSION,
-    STATUS_SCHEMA_VERSION,
+    DecisionView,
 )
+from trader.recommendation.domain.publication.models import Strategy
 
 RouteResponse = Response | tuple[Response, int]
 _DEEPSEEK_ZERO_CALL_REASONS = frozenset(

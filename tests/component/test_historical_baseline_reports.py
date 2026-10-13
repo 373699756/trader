@@ -8,13 +8,13 @@ from tests.unit.application.research.test_historical_extraction import _Evaluato
 from tests.unit.application.research.test_historical_replay import _ReplayEvaluator
 from trader.training.application.extraction import HistoricalExtractor
 from trader.training.application.replay import HistoricalBaselineReplayer
-from trader.training.infra.research.baseline_reports import BaselineReportConflictError, JsonBaselineReportArchive
+from trader.training.infra.research.baseline_reports import BaselineReportConflictError, JsonBaselineReportIndex
 
 
 def test_r3_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
     report = HistoricalBaselineReplayer(_ReplayEvaluator()).replay(extraction)
-    archive = JsonBaselineReportArchive(tmp_path)
+    archive = JsonBaselineReportIndex(tmp_path)
 
     first = archive.write(report)
     second = archive.write(report)
@@ -32,7 +32,7 @@ def test_r3_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
 def test_r3_report_rejects_tampering_and_identity_conflicts(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
     report = HistoricalBaselineReplayer(_ReplayEvaluator()).replay(extraction)
-    archive = JsonBaselineReportArchive(tmp_path)
+    archive = JsonBaselineReportIndex(tmp_path)
     archive.write(report)
 
     path = tmp_path / "historical-baseline-report.json"

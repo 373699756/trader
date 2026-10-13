@@ -4,12 +4,9 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.application.download_history import DownloadHistoryUseCase
-from trader.download.application.history_status import HistoryStatusUseCase
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
-from trader.download.application.update_history import UpdateHistoryUseCase
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration
-from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.training.application.profile_training_primary import TrainV2UseCase
 from trader.training.application.profile_training_secondary import TrainV3UseCase
 from trader.training.application.training_due import TrainingDueUseCase
@@ -41,17 +38,6 @@ class _Archive:
         self.calls.append("download")
         return _status()
 
-    def update(self, configuration, supplier, **kwargs):
-        del configuration, supplier, kwargs
-        self.calls.append("update")
-        return _status()
-
-
-class _Status:
-    def read(self, archive_root: Path) -> HistoryMaintenanceStatus:
-        assert archive_root == Path("archive")
-        return _status()
-
 
 class _Publication:
     def manifest(self):
@@ -72,9 +58,7 @@ def test_history_use_cases_delegate_to_their_single_port() -> None:
     supplier = object()
 
     assert DownloadHistoryUseCase(archive).execute(configuration, supplier) is not None  # type: ignore[arg-type]
-    assert UpdateHistoryUseCase(archive).execute(configuration, supplier) is not None  # type: ignore[arg-type]
-    assert HistoryStatusUseCase(_Status()).execute(Path("archive")).state == "completed"
-    assert archive.calls == ["download", "update"]
+    assert archive.calls == ["download"]
     assert ReadPublishedHistoryUseCase(_Publication()).manifest() is None
 
 
@@ -106,11 +90,3 @@ def test_training_due_use_case_is_read_only_and_injected() -> None:
     query = object()
     assert TrainingDueUseCase(evaluate).execute(query) == "not_due"
     assert observed == [query]
-
-
-def test_history_update_fails_closed_without_active_snapshot(tmp_path: Path) -> None:
-    configuration = HistorySyncConfiguration(archive_root=tmp_path / "baostock")
-    status = HistoryArchiveGateway().update(configuration, object())  # type: ignore[arg-type]
-
-    assert status.state == "blocked"
-    assert status.reason == "history_archive_missing"

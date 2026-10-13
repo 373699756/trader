@@ -52,6 +52,19 @@ def _window_counts(window: PublishedHistoryWindow) -> tuple[int, int, int]:
     return raw, qfq, paired
 
 
+@dataclass(frozen=True)
+class QfqStockFeedback:
+    action: str
+    result: str
+    target: int
+    raw: int | None
+    qfq: int | None
+    paired: int | None
+    missing_dates: tuple[date, ...] = ()
+    inferred_suspended: int = 0
+    reason: ProgressField = ProgressField("无")
+
+
 @dataclass
 class QfqDownloadProgress:
     day: date
@@ -76,21 +89,7 @@ class QfqDownloadProgress:
     def publish(self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
         self.report(qfq_message(self.elapsed(), stage, details, level=level))
 
-    def record_stock(
-        self,
-        security: BaoStockSecurity,
-        *,
-        action: str,
-        result: str,
-        target: int,
-        raw: int | None,
-        qfq: int | None,
-        paired: int | None,
-        missing_dates: tuple[date, ...] = (),
-        inferred_suspended: int = 0,
-        reason: ProgressField | None = None,
-    ) -> None:
-        reason = reason if reason is not None else ProgressField("无")
+    def record_stock(self, security: BaoStockSecurity, feedback: QfqStockFeedback) -> None:
         self.report(
             format_stock_download_progress(
                 self.elapsed(),
@@ -100,17 +99,19 @@ class QfqDownloadProgress:
                     total=self.total,
                     code=security.code,
                     name=security.name,
-                    action=action,
-                    result=result,
-                    target=target,
-                    raw=raw,
-                    qfq=qfq,
-                    paired=paired,
-                    missing=target - paired if paired is not None else None,
-                    missing_dates=missing_dates,
-                    inferred_suspended=inferred_suspended,
-                    reason=reason.text,
-                    failure_level=ProgressLevel.ERROR if reason.level is ProgressLevel.ERROR else ProgressLevel.WARNING,
+                    action=feedback.action,
+                    result=feedback.result,
+                    target=feedback.target,
+                    raw=feedback.raw,
+                    qfq=feedback.qfq,
+                    paired=feedback.paired,
+                    missing=feedback.target - feedback.paired if feedback.paired is not None else None,
+                    missing_dates=feedback.missing_dates,
+                    inferred_suspended=feedback.inferred_suspended,
+                    reason=feedback.reason.text,
+                    failure_level=ProgressLevel.ERROR
+                    if feedback.reason.level is ProgressLevel.ERROR
+                    else ProgressLevel.WARNING,
                 ),
             )
         )
@@ -147,27 +148,23 @@ class QfqDownloadProgress:
             )
         self.record_stock(
             security,
-            action=action,
-            result="待重试" if action == "Tencent下载" else "失败",
-            target=target,
-            raw=raw,
-            qfq=qfq,
-            paired=paired,
-            missing_dates=missing_dates,
-            reason=ProgressField(qfq_failure_code(exc), failure_level),
+            QfqStockFeedback(
+                action,
+                "待重试" if action == "Tencent下载" else "失败",
+                target,
+                raw,
+                qfq,
+                paired,
+                missing_dates=missing_dates,
+                reason=ProgressField(qfq_failure_code(exc), failure_level),
+            ),
         )
 
     def record_no_trade_data(self, security: BaoStockSecurity, window: PublishedHistoryWindow) -> None:
         self.no_trade_data += 1
         self.record_stock(
             security,
-            action="Tencent下载",
-            result="无真实日线",
-            target=0,
-            raw=0,
-            qfq=0,
-            paired=0,
-            inferred_suspended=len(window.cells),
+            QfqStockFeedback("Tencent下载", "无真实日线", 0, 0, 0, 0, inferred_suspended=len(window.cells)),
         )
 
     def _add_pending_reason(self, reason: str, count: int = 1) -> None:

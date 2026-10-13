@@ -4,8 +4,8 @@ from datetime import date, timedelta
 
 from trader.training.application.historical_screening import (
     HistoricalPriceHistoryIdentity,
-    HistoricalScreeningArchiveManifest,
-    HistoricalScreeningArchiveStatus,
+    HistoricalScreeningSnapshotManifest,
+    HistoricalScreeningSnapshotStatus,
 )
 from trader.training.application.tomorrow_historical_screening import (
     TomorrowHistoricalModelFit,
@@ -15,7 +15,7 @@ from trader.training.application.tomorrow_historical_screening import (
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
-    TomorrowHistoricalModelArtifact,
+    TomorrowHistoricalModelSnapshot,
 )
 
 
@@ -24,8 +24,8 @@ class _Evidence:
         self._rows = rows
         self._coverage = coverage
 
-    def inspect(self, _identity: str) -> HistoricalScreeningArchiveStatus:
-        return HistoricalScreeningArchiveStatus(
+    def inspect(self, _identity: str) -> HistoricalScreeningSnapshotStatus:
+        return HistoricalScreeningSnapshotStatus(
             initialized=True,
             research_identity=HISTORICAL_SCREENING_SPEC.research_identity,
             universe_count=100,
@@ -33,8 +33,8 @@ class _Evidence:
             spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         )
 
-    def manifest(self, _spec) -> HistoricalScreeningArchiveManifest:  # noqa: ANN001
-        return HistoricalScreeningArchiveManifest(
+    def manifest(self, _spec) -> HistoricalScreeningSnapshotManifest:  # noqa: ANN001
+        return HistoricalScreeningSnapshotManifest(
             research_identity=HISTORICAL_SCREENING_SPEC.research_identity,
             spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
             universe_hash="1" * 64,
@@ -52,7 +52,7 @@ class _Trainer:
 
     def fit(self, training, validation, candidate):  # noqa: ANN001
         self.calls += 1
-        artifact = TomorrowHistoricalModelArtifact(
+        model = TomorrowHistoricalModelSnapshot(
             candidate_id=candidate.candidate_id,
             feature_ids=tuple(f"feature_{index}" for index in range(6)),
             transformer_means=(0.0,) * 6,
@@ -65,7 +65,7 @@ class _Trainer:
             internal_validation_rows=max(1, len(training) // 5),
         )
         return TomorrowHistoricalModelFit(
-            artifact=artifact,
+            model=model,
             training_predictions=tuple(row.alpha_features[0] for row in training),
             validation_predictions=tuple(row.alpha_features[0] for row in validation),
             validation_model_disagreement=(0.0,) * len(validation),
@@ -76,7 +76,7 @@ class _EmptyTrainer(_Trainer):
     def fit(self, training, validation, candidate):  # noqa: ANN001
         fitted = super().fit(training, validation, candidate)
         return TomorrowHistoricalModelFit(
-            artifact=fitted.artifact,
+            model=fitted.model,
             training_predictions=(-1.0,) * len(training),
             validation_predictions=(-1.0,) * len(validation),
             validation_model_disagreement=(0.0,) * len(validation),

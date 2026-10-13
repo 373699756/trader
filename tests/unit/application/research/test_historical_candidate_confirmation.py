@@ -13,7 +13,7 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     H1PointInTimeSpec,
     build_h1_capability_audit,
 )
-from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
 
 def _h1_research_completion(tmp_path):
@@ -24,7 +24,7 @@ def _h1_research_completion(tmp_path):
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
-    archive = SQLiteH1PointInTimeArchive(tmp_path)
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path)
     return complete_h1_research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),

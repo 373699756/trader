@@ -12,8 +12,8 @@ from trader.download.domain.baostock_daily import (
     build_baostock_training_split,
 )
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
-from trader.download.infra.history_archive_repack import HistoryArchiveRepackFenceError
 from trader.download.infra.history_control_index import HistoryMaintenanceAlreadyRunningError
+from trader.download.infra.history_partition_repack import HistoryPartitionRepackFenceError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, residualize_exposure
 from trader.training.application.tomorrow_training import TomorrowTrainingProgress, TomorrowTrainingWindow
@@ -117,7 +117,7 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
 
 def _patch_archive(monkeypatch: pytest.MonkeyPatch, archive: SimpleNamespace) -> None:
     monkeypatch.setattr(
-        "trader.training.infra.engine.SQLiteHistoryTrainingInputArchive.open",
+        "trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open",
         lambda _path: archive,
     )
 
@@ -426,7 +426,7 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
         def __exit__(self, *_args: object) -> None:
             pass
 
-    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputArchive.open", open_archive)
+    monkeypatch.setattr("trader.training.infra.engine.SQLiteHistoryTrainingInputSnapshot.open", open_archive)
     monkeypatch.setattr("trader.training.infra.engine.HistoryMaintenanceLock", BusyMaintenanceLock)
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
@@ -439,8 +439,8 @@ def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch:
     archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
-        "trader.training.infra.engine.require_history_archive_repack_inactive",
-        lambda _root: (_ for _ in ()).throw(HistoryArchiveRepackFenceError("fenced")),
+        "trader.training.infra.engine.require_history_partition_repack_inactive",
+        lambda _root: (_ for _ in ()).throw(HistoryPartitionRepackFenceError("fenced")),
     )
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")

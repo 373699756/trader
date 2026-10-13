@@ -73,7 +73,7 @@ class HistoryTrainingInputError(RuntimeError):
     """The active monthly snapshot cannot be used as a complete input."""
 
 
-class SQLiteHistoryTrainingInputArchive:
+class SQLiteHistoryTrainingInputSnapshot:
     """Expose one verified active snapshot through the V3 training row contract."""
 
     def __init__(
@@ -94,7 +94,7 @@ class SQLiteHistoryTrainingInputArchive:
         self.snapshot = _snapshot_for_training(active, calendar, self._codes, descriptor)
 
     @classmethod
-    def open(cls, root: Path) -> SQLiteHistoryTrainingInputArchive:
+    def open(cls, root: Path) -> SQLiteHistoryTrainingInputSnapshot:
         archive_root = root
         control = HistoryControlIndex(archive_root / "control.sqlite3")
         try:
@@ -224,5 +224,5 @@ def _snapshot_for_training(
 __all__ = [
     "HistoryTrainingInputError",
     "HistoryTrainingInputSnapshot",
-    "SQLiteHistoryTrainingInputArchive",
+    "SQLiteHistoryTrainingInputSnapshot",
 ]

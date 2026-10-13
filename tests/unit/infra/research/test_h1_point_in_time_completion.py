@@ -8,11 +8,11 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     H1PointInTimeSpec,
     build_h1_capability_audit,
 )
-from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
 from trader.training.infra.research.h1_point_in_time_completion import (
-    H1ResearchCompletionArtifactArchive,
-    H1ResearchCompletionArtifactConflictError,
+    H1ResearchCompletionEvidenceConflictError,
+    H1ResearchCompletionEvidenceFiles,
 )
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
 
 def _completion(tmp_path):
@@ -22,7 +22,7 @@ def _completion(tmp_path):
             H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 8000000, 500, 0.1),
         )
     )
-    archive = SQLiteH1PointInTimeArchive(tmp_path / "archive")
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive")
     return complete_h1_research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
@@ -31,7 +31,7 @@ def _completion(tmp_path):
 
 def test_completion_index_seals_every_terminal_hash_and_rejects_tampering(tmp_path) -> None:
     completion = _completion(tmp_path)
-    archive = H1ResearchCompletionArtifactArchive(tmp_path / "artifacts")
+    archive = H1ResearchCompletionEvidenceFiles(tmp_path / "artifacts")
 
     index = archive.write(completion)
 
@@ -44,5 +44,5 @@ def test_completion_index_seals_every_terminal_hash_and_rejects_tampering(tmp_pa
     assert archive.write(completion) == index
     path = tmp_path / "artifacts" / "h1_research_terminal.json"
     path.write_text(path.read_text().replace(completion.daily_close_selection.content_hash, "0" * 64), encoding="utf-8")
-    with pytest.raises(H1ResearchCompletionArtifactConflictError, match="schema or hash"):
+    with pytest.raises(H1ResearchCompletionEvidenceConflictError, match="schema or hash"):
         archive.verify()

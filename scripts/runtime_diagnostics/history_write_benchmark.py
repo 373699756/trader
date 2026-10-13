@@ -30,11 +30,11 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncProgress
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.download_settings import load_history_sync_configuration
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_storage_profile import (
     HistoryWriteTuning,
     classify_history_storage,
 )
+from trader.download.infra.history_sync_runner import run_history_sync
 
 from .reporting import emit_report
 

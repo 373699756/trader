@@ -8,19 +8,19 @@ import pytest
 
 from trader.download.domain.baostock_daily import BaoStockCalendar, build_baostock_training_split
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.scoring.cost_settings import (
+    load_evaluation_cost_scenarios,
+    load_execution_cost_policy,
+)
 from trader.training.application.tomorrow_training import TomorrowTrainingWindow
 from trader.training.infra.engine import ProfileTrainingRequest
 from trader.training.infra.model_fitting import LightGBMFittingParameters, RidgeFittingParameters
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
+from trader.training.infra.research_settings import load_research_settings
 from trader.training.infra.sample_builder import TrainingSampleBuildRequest, build_training_samples
 from trader.training.infra.sample_repository import SQLiteTrainingSampleRepository
 from trader.training.infra.training_settings import load_profile_training_settings
-from trader.recommendation.infra.scoring.cost_settings import (
-    load_evaluation_cost_scenarios,
-    load_execution_cost_policy,
-)
-from trader.training.infra.research_settings import load_research_settings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 

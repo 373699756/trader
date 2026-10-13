@@ -7,7 +7,7 @@ from datetime import date
 from typing import Literal
 
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.download.domain.history_identity import history_content_hash
 
 
 @dataclass(frozen=True)
@@ -57,4 +57,4 @@ class HistoryReferenceSnapshot:
 
     @property
     def content_hash(self) -> str:
-        return canonical_artifact_hash(self)
+        return history_content_hash(self)

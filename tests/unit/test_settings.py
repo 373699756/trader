@@ -16,7 +16,6 @@ from trader.infra.settings import (
     load_runtime_settings,
     load_strategy_settings,
 )
-from trader.infra.settings.recommendation_policy import _recommendation_policy
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
@@ -25,6 +24,7 @@ from trader.recommendation.domain.scoring.scoring import (
     score_board_strategy,
 )
 from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
+from trader.recommendation.infra.policy_settings import _recommendation_policy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME_CONFIG = PROJECT_ROOT / "config" / "runtime.json"

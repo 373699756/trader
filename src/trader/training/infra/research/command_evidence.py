@@ -8,14 +8,14 @@ from trader.training.application.h1_point_in_time_completion import H1ResearchCo
 from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityAuditReport
 from trader.training.domain.evaluation.historical_industry_facts import HistoricalIndustryDatasetReport
 from trader.training.domain.evaluation.terminal_holdout import TerminalHoldoutParentState
-from trader.training.infra.research.cross_strategy_conclusion_artifacts import CrossStrategyConclusionArtifactArchive
-from trader.training.infra.research.d25_terminal_holdout_artifacts import D25TerminalHoldoutArtifactArchive
-from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityArtifactArchive
-from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactArchive
-from trader.training.infra.research.historical_industry_archive import audit_archived_historical_industry_facts
-from trader.training.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive
-from trader.training.infra.research.tomorrow_point_in_time_holdout_artifacts import (
-    TomorrowPointInTimeHoldoutArtifactArchive,
+from trader.training.infra.research.cross_strategy_conclusion_reports import CrossStrategyConclusionReportIndex
+from trader.training.infra.research.d25_terminal_holdout_reports import D25TerminalHoldoutReportIndex
+from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityEvidenceIndex
+from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionEvidenceFiles
+from trader.training.infra.research.historical_industry_evidence import audit_published_historical_industry_facts
+from trader.training.infra.research.historical_label_evidence import HistoricalLabelEvidenceIndex
+from trader.training.infra.research.tomorrow_point_in_time_holdout_reports import (
+    TomorrowPointInTimeHoldoutReportIndex,
 )
 
 
@@ -24,7 +24,7 @@ class HistoricalIndustryEvidenceReader:
         self._root = root
 
     def audit(self, *, required_sample_codes: int, tushare_access_points: int) -> HistoricalIndustryDatasetReport:
-        return audit_archived_historical_industry_facts(
+        return audit_published_historical_industry_facts(
             self._root, required_sample_codes=required_sample_codes, tushare_access_points=tushare_access_points
         )
 
@@ -34,9 +34,9 @@ class CapabilityEvidencePublisher:
         self._root = root
 
     def publish(self, capability: H1CapabilityAuditReport, completion: H1ResearchCompletion) -> CapabilityPublication:
-        H1CapabilityArtifactArchive(self._root).write(capability)
-        HistoricalLabelArtifactArchive(self._root).write(completion.labels)
-        index = H1ResearchCompletionArtifactArchive(self._root).write(completion)
+        H1CapabilityEvidenceIndex(self._root).write(capability)
+        HistoricalLabelEvidenceIndex(self._root).write(completion.labels)
+        index = H1ResearchCompletionEvidenceFiles(self._root).write(completion)
         return CapabilityPublication(
             index.content_hash, index.residual_terminal_hashes, index.daily_close_selection_hash
         )
@@ -47,9 +47,9 @@ class TerminalHoldoutParentsReader:
         self._root = root
 
     def read(self) -> tuple[TerminalHoldoutParentState, TerminalHoldoutParentState]:
-        capability = H1CapabilityArtifactArchive(self._root).verify()
-        labels = HistoricalLabelArtifactArchive(self._root).verify()
-        index = H1ResearchCompletionArtifactArchive(self._root).verify()
+        capability = H1CapabilityEvidenceIndex(self._root).verify()
+        labels = HistoricalLabelEvidenceIndex(self._root).verify()
+        index = H1ResearchCompletionEvidenceFiles(self._root).verify()
         if index.capability_hash != capability.content_hash:
             raise ValueError("Terminal holdout parent capability hash does not match terminal index")
         if index.label_batch_hash != labels.content_hash:
@@ -78,6 +78,6 @@ class TerminalConclusionPublisher:
         self._root = root
 
     def publish(self, conclusion: CrossStrategyConclusion) -> None:
-        TomorrowPointInTimeHoldoutArtifactArchive(self._root / "tomorrow").write(conclusion.tomorrow)
-        D25TerminalHoldoutArtifactArchive(self._root / "d25").write(conclusion.d25)
-        CrossStrategyConclusionArtifactArchive(self._root / "cross_strategy").write(conclusion)
+        TomorrowPointInTimeHoldoutReportIndex(self._root / "tomorrow").write(conclusion.tomorrow)
+        D25TerminalHoldoutReportIndex(self._root / "d25").write(conclusion.d25)
+        CrossStrategyConclusionReportIndex(self._root / "cross_strategy").write(conclusion)

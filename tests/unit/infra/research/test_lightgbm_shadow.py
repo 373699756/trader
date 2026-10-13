@@ -6,9 +6,9 @@ from tests.unit.application.research.test_shadow_model_evaluation import _labele
 from trader.training.application.shadow_model_evaluation import TomorrowShadowModelEvaluator
 from trader.training.application.shadow_model_ports import ShadowFitRequest
 from trader.training.infra.research.lightgbm_shadow import LightGbmShadowTrainer
-from trader.training.infra.research.shadow_model_artifacts import (
-    ShadowModelArtifactArchive,
-    ShadowModelArtifactConflictError,
+from trader.training.infra.research.shadow_model_reports import (
+    ShadowModelReportConflictError,
+    ShadowModelReportIndex,
 )
 
 
@@ -47,7 +47,7 @@ def test_lightgbm_shadow_trainer_is_shallow_deterministic_and_hashable(objective
 def test_shadow_report_artifact_is_idempotent_and_tamper_evident(tmp_path) -> None:
     days = tuple(day for index in range(66) for day in (_labeled_day(index, "tomorrow"), _labeled_day(index, "d25")))
     report = TomorrowShadowModelEvaluator((_RecordingTrainer("linear"), _RecordingTrainer("lightgbm"))).build(days)
-    archive = ShadowModelArtifactArchive(tmp_path)
+    archive = ShadowModelReportIndex(tmp_path)
 
     assert archive.seal(report) == report.content_hash
     assert archive.seal(report) == report.content_hash
@@ -65,5 +65,5 @@ def test_shadow_report_artifact_is_idempotent_and_tamper_evident(tmp_path) -> No
         artifact.read_text(encoding="utf-8").replace('"cost_bps":20', '"cost_bps":21'), encoding="utf-8"
     )
 
-    with pytest.raises(ShadowModelArtifactConflictError, match="hash or schema"):
+    with pytest.raises(ShadowModelReportConflictError, match="hash or schema"):
         archive.seal(report)

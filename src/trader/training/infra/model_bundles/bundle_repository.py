@@ -135,17 +135,17 @@ def _validate_staging(
 ) -> dict[str, object]:
     from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
 
-    artifact = load_head_bundle(staging / "model.json", strategy, profile)
+    bundle = load_head_bundle(staging / "model.json", strategy, profile)
     if (
-        artifact.training_input_hash != identity.training_input_hash
-        or artifact.label_cutoff != identity.label_cutoff
-        or artifact.source_identity_hash != identity.source_identity_hash
+        bundle.training_input_hash != identity.training_input_hash
+        or bundle.label_cutoff != identity.label_cutoff
+        or bundle.source_identity_hash != identity.source_identity_hash
     ):
         raise ValueError("trained-head staged bundle archive identity is inconsistent")
     training_input = _read_json(staging / "training-input.json")
     report = _read_json(staging / "report.json")
     pointer: dict[str, object] = {
-        "model_hash": artifact.content_hash,
+        "model_hash": bundle.content_hash,
         "report_hash": report["content_hash"],
         "training_input_hash": training_input["content_hash"],
     }
@@ -177,11 +177,11 @@ def _inspect_active_head_bundle(
         raise FileNotFoundError(model)
     from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
 
-    artifact = load_head_bundle(model, strategy, profile)
+    bundle = load_head_bundle(model, strategy, profile)
     training_input = _read_json(output_root / "training-input.json")
     report = _read_json(output_root / "report.json")
     if (
-        artifact.content_hash != pointer["model_hash"]
+        bundle.content_hash != pointer["model_hash"]
         or training_input.get("content_hash") != pointer["training_input_hash"]
         or report.get("content_hash") != pointer["report_hash"]
     ):
@@ -189,11 +189,11 @@ def _inspect_active_head_bundle(
     return ActiveHeadBundle(
         model,
         strategy,
-        artifact.training_input_hash,
-        artifact.source_identity_hash,
-        artifact.label_cutoff,
-        artifact.training_contract_hash,
-        artifact.content_hash,
+        bundle.training_input_hash,
+        bundle.source_identity_hash,
+        bundle.label_cutoff,
+        bundle.training_contract_hash,
+        bundle.content_hash,
         cast(str, pointer["report_hash"]),
         cast(str, pointer["training_input_hash"]),
     )

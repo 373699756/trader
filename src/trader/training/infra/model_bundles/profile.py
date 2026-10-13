@@ -14,14 +14,14 @@ from trader.recommendation.application.ports.loaded_profile import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.infra.model_bundles.bundle_codec import TrainedHeadBundleArtifact
+from trader.training.infra.model_bundles.bundle_codec import TrainedHeadModelBundle
 from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
 from trader.training.infra.profile.composition import SingleHeadCombiner
 
 
 def build_trained_scoring_profile(
     profile_id: ScoringProfileId,
-    bundles: tuple[TrainedHeadBundleArtifact, ...],
+    bundles: tuple[TrainedHeadModelBundle, ...],
 ) -> LoadedScoringProfile:
     if profile_id not in {"v2", "v3"}:
         raise ValueError("shared trained heads require the V2 or V3 scoring profile")
@@ -44,14 +44,14 @@ def build_trained_scoring_profile(
     )
 
 
-def _evidence(artifact: TrainedHeadBundleArtifact) -> ProfileEvidence:
+def _evidence(bundle: TrainedHeadModelBundle) -> ProfileEvidence:
     return ProfileEvidence(
-        artifact.historical_status,
-        artifact.historical_failure_reasons,
+        bundle.historical_status,
+        bundle.historical_failure_reasons,
         "manual_user_override",
-        training_anchor=artifact.training_anchor,
-        runtime_anchor=artifact.runtime_anchor,
-        point_in_time_parity=artifact.point_in_time_parity,
+        training_anchor=bundle.training_anchor,
+        runtime_anchor=bundle.runtime_anchor,
+        point_in_time_parity=bundle.point_in_time_parity,
     )
 
 

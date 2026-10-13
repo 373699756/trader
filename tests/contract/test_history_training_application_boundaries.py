@@ -82,8 +82,6 @@ def test_history_application_package_exposes_split_use_cases_and_ports() -> None
     package = DOWNLOAD_APPLICATION
     assert {
         "download_history.py",
-        "update_history.py",
-        "history_status.py",
         "history_ports.py",
     } <= {path.name for path in package.glob("*.py")}
     violations = [

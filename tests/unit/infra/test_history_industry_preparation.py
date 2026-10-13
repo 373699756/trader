@@ -2,19 +2,19 @@ from datetime import date, timedelta
 
 import pytest
 
-from tests.unit.infra.research.test_history_archive_sync import NOW
 from tests.unit.infra.research.test_history_industry_cache import DATES, UNIVERSE, _IndustrySdk
+from tests.unit.infra.research.test_history_sync import NOW
 from tests.unit.infra.test_history_supplier_router import Prices, StSource
 from trader.download.domain.baostock_daily import BaoStockCalendar
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.infra import baostock_sync_supplier as supplier_module
 from trader.download.infra.baostock_gateway import BaoStockRowGateway
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_reference_files import history_reference_path
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
+from trader.download.infra.history_sync_runner import run_history_sync
 
 
 @pytest.fixture

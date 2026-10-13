@@ -12,16 +12,16 @@ from trader.infra.serialization.canonical import canonical_json_text
 from trader.infra.serialization.fields import is_boolean, is_sha256_text
 from trader.infra.serialization.sealing import publish_immutable
 from trader.training.application.h1_point_in_time_completion import H1ResearchCompletion
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 
-class H1ResearchCompletionArtifactConflictError(RuntimeError):
+class H1ResearchCompletionEvidenceConflictError(RuntimeError):
     """Raised when a terminal index conflicts with or no longer matches its sealed hash."""
 
 
 @dataclass(frozen=True)
-class H1ResearchCompletionArtifactIndex:
+class H1ResearchCompletionEvidenceIndex:
     completion_hash: str
     capability_hash: str
     label_batch_hash: str
@@ -54,21 +54,21 @@ class H1ResearchCompletionArtifactIndex:
         if self.schema_version != "h1_terminal_index":
             raise ValueError("H1 research terminal index schema is invalid")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
-class H1ResearchCompletionArtifactArchive:
+class H1ResearchCompletionEvidenceFiles:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._path = root / "h1_research_terminal.json"
 
-    def write(self, completion: H1ResearchCompletion) -> H1ResearchCompletionArtifactIndex:
+    def write(self, completion: H1ResearchCompletion) -> H1ResearchCompletionEvidenceIndex:
         index = _index(completion)
         self._root.mkdir(parents=True, exist_ok=True)
         if self._path.exists():
             existing = self.verify()
             if existing.content_hash != index.content_hash:
-                raise H1ResearchCompletionArtifactConflictError("H1 research terminal artifact identity conflict")
+                raise H1ResearchCompletionEvidenceConflictError("H1 research terminal artifact identity conflict")
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
@@ -76,30 +76,30 @@ class H1ResearchCompletionArtifactArchive:
             return self.verify()
         existing = self.verify()
         if existing.content_hash != index.content_hash:
-            raise H1ResearchCompletionArtifactConflictError("H1 research terminal artifact identity conflict")
+            raise H1ResearchCompletionEvidenceConflictError("H1 research terminal artifact identity conflict")
         return existing
 
-    def verify(self) -> H1ResearchCompletionArtifactIndex:
+    def verify(self) -> H1ResearchCompletionEvidenceIndex:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
                 raise TypeError("H1 research terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
             persisted_hash = payload.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_artifact_hash(payload) != persisted_hash:
+            if not isinstance(persisted_hash, str) or canonical_research_hash(payload) != persisted_hash:
                 raise ValueError("H1 research terminal artifact hash mismatch")
             index = _decode(payload)
             if index.content_hash != persisted_hash:
                 raise ValueError("H1 research terminal artifact reconstructed hash mismatch")
             return index
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise H1ResearchCompletionArtifactConflictError(
+            raise H1ResearchCompletionEvidenceConflictError(
                 "H1 research terminal artifact schema or hash is invalid"
             ) from exc
 
 
-def _index(completion: H1ResearchCompletion) -> H1ResearchCompletionArtifactIndex:
-    return H1ResearchCompletionArtifactIndex(
+def _index(completion: H1ResearchCompletion) -> H1ResearchCompletionEvidenceIndex:
+    return H1ResearchCompletionEvidenceIndex(
         completion_hash=completion.content_hash,
         capability_hash=completion.capability_hash,
         label_batch_hash=completion.labels.content_hash,
@@ -108,7 +108,7 @@ def _index(completion: H1ResearchCompletion) -> H1ResearchCompletionArtifactInde
     )
 
 
-def _encode(index: H1ResearchCompletionArtifactIndex) -> dict[str, object]:
+def _encode(index: H1ResearchCompletionEvidenceIndex) -> dict[str, object]:
     return {
         "completion_hash": index.completion_hash,
         "capability_hash": index.capability_hash,
@@ -123,7 +123,7 @@ def _encode(index: H1ResearchCompletionArtifactIndex) -> dict[str, object]:
     }
 
 
-def _decode(raw: dict[str, object]) -> H1ResearchCompletionArtifactIndex:
+def _decode(raw: dict[str, object]) -> H1ResearchCompletionEvidenceIndex:
     expected = {
         "completion_hash",
         "capability_hash",
@@ -146,7 +146,7 @@ def _decode(raw: dict[str, object]) -> H1ResearchCompletionArtifactIndex:
         if not isinstance(item, list) or len(item) != 2 or not all(isinstance(value, str) for value in item):
             raise TypeError("H1 research residual terminal reference is invalid")
         values.append((cast(ResearchStrategy, item[0]), cast(str, item[1])))
-    return H1ResearchCompletionArtifactIndex(
+    return H1ResearchCompletionEvidenceIndex(
         completion_hash=_string(raw["completion_hash"]),
         capability_hash=_string(raw["capability_hash"]),
         label_batch_hash=_string(raw["label_batch_hash"]),
@@ -178,7 +178,7 @@ def _bool(value: object) -> bool:
 
 
 __all__ = [
-    "H1ResearchCompletionArtifactConflictError",
-    "H1ResearchCompletionArtifactIndex",
-    "H1ResearchCompletionArtifactArchive",
+    "H1ResearchCompletionEvidenceConflictError",
+    "H1ResearchCompletionEvidenceIndex",
+    "H1ResearchCompletionEvidenceFiles",
 ]

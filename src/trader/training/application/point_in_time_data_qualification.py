@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date
 
-from trader.download.domain.history_archive_status import HistoryArchiveStatus
+from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.training.application.capability_completion import CapabilityProbePort
 from trader.training.application.historical_industry_audit import HistoricalIndustryEvidencePort
 from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityAuditReport, H1CapabilityProbe
@@ -14,7 +14,7 @@ from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustrySourceAudit,
 )
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
-    DailyArchiveQualification,
+    DailyHistoryQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
     PointInTimeDataQualificationReport,
@@ -25,7 +25,7 @@ from trader.training.domain.evaluation.point_in_time_data_qualification import (
 class QualifyPointInTimeData:
     def __init__(
         self,
-        history: Callable[[], HistoryArchiveStatus],
+        history: Callable[[], HistorySnapshotStatus],
         industry: HistoricalIndustryEvidencePort,
         probe: CapabilityProbePort,
     ) -> None:
@@ -41,7 +41,7 @@ class QualifyPointInTimeData:
 
 
 def assemble_point_in_time_data_qualification(
-    archive: HistoryArchiveStatus,
+    archive: HistorySnapshotStatus,
     source_capability: H1CapabilityAuditReport,
     industry_report: HistoricalIndustryDatasetReport,
 ) -> PointInTimeDataQualificationReport:
@@ -56,7 +56,7 @@ def assemble_point_in_time_data_qualification(
         daily_reasons.append("daily_archive_code_coverage_incomplete")
     completed_codes = archive.universe_count if archive.state == "active" else 0
     coverage_status = "coverage_ready" if not daily_reasons else "historical_data_insufficient"
-    daily = DailyArchiveQualification(
+    daily = DailyHistoryQualification(
         archive.calendar_sessions,
         archive.universe_count,
         completed_codes,

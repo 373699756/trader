@@ -19,11 +19,11 @@ from trader.recommendation.application.pipeline.candidate_pool.candidate_builder
     build_candidate_plans,
     refresh_candidate_reserves,
 )
-from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
     CandidatePipelineResult,
     execute_candidate_pipeline,
 )
+from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.domain.market.models import FeatureSnapshot

@@ -10,9 +10,9 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.application.baseline_identity_audit import BaselineIdentityEvidence
 from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, source_hash
-from trader.training.infra.research.tomorrow_historical_artifacts import (
-    TomorrowHistoricalArtifactArchive,
-    TomorrowHistoricalArtifactConflictError,
+from trader.training.infra.research.tomorrow_historical_evidence import (
+    TomorrowHistoricalEvidenceConflictError,
+    TomorrowHistoricalEvidenceIndex,
 )
 
 
@@ -40,12 +40,12 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
         .heads[Strategy.TOMORROW]
         .predictor
     )
-    historical_archive = TomorrowHistoricalArtifactArchive(runtime.runtime_dir / "tomorrow-historical")
+    historical_archive = TomorrowHistoricalEvidenceIndex(runtime.runtime_dir / "tomorrow-historical")
     historical_source = runtime.runtime_dir / "tomorrow-historical"
     historical_conflict = False
     try:
         historical_report = historical_archive.read_report_payload()
-    except TomorrowHistoricalArtifactConflictError:
+    except TomorrowHistoricalEvidenceConflictError:
         historical_report = None
         historical_conflict = True
     historical_report_hash = _optional_text(historical_report, "content_hash")

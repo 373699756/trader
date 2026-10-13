@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.training.application.tomorrow_research_artifacts import (
-    TomorrowResearchArtifactGraph,
-    TomorrowResearchArtifactRef,
+from trader.training.application.tomorrow_research_evidence import (
+    TomorrowResearchEvidenceGraph,
+    TomorrowResearchEvidenceRef,
     TomorrowResearchResourceProbe,
     TomorrowResearchStageHandoff,
 )
@@ -14,8 +14,8 @@ from trader.training.application.tomorrow_research_orchestrator import (
 )
 
 
-def _ref(artifact_id: str, hash_char: str, *, artifact_kind: str | None = None) -> TomorrowResearchArtifactRef:
-    return TomorrowResearchArtifactRef(
+def _ref(artifact_id: str, hash_char: str, *, artifact_kind: str | None = None) -> TomorrowResearchEvidenceRef:
+    return TomorrowResearchEvidenceRef(
         artifact_id=artifact_id,
         artifact_kind=artifact_kind or artifact_id,
         content_hash=hash_char * 64,
@@ -33,17 +33,17 @@ def _resource_handoff() -> TomorrowResearchStageHandoff:
 
 @dataclass
 class MemoryOrchestrationRepository:
-    graph: TomorrowResearchArtifactGraph = TomorrowResearchArtifactGraph(())
+    graph: TomorrowResearchEvidenceGraph = TomorrowResearchEvidenceGraph(())
     handoff: TomorrowResearchStageHandoff | None = None
 
-    def load_graph(self) -> TomorrowResearchArtifactGraph:
+    def load_graph(self) -> TomorrowResearchEvidenceGraph:
         return self.graph
 
     def load_handoff(self, stage: str) -> TomorrowResearchStageHandoff | None:
         del stage
         return self.handoff
 
-    def commit(self, expected_graph_hash: str, handoff: TomorrowResearchStageHandoff) -> TomorrowResearchArtifactGraph:
+    def commit(self, expected_graph_hash: str, handoff: TomorrowResearchStageHandoff) -> TomorrowResearchEvidenceGraph:
         assert self.graph.content_hash == expected_graph_hash
         self.graph = self.graph.extend(handoff.artifacts)
         self.handoff = None
@@ -71,7 +71,7 @@ def test_missing_upstream_artifacts_block_without_mutating_research_state() -> N
     assert result.next_stage == "resource_probe"
     assert result.blockers == ("resource_probe_handoff_missing",)
     assert result.prerequisite_hash == "f" * 64
-    assert repository.graph == TomorrowResearchArtifactGraph(())
+    assert repository.graph == TomorrowResearchEvidenceGraph(())
 
 
 def test_a_prerequisite_blocks_before_resource_handoff_without_mutating_state() -> None:
@@ -90,7 +90,7 @@ def test_a_prerequisite_blocks_before_resource_handoff_without_mutating_state() 
     assert result.next_stage == "resource_probe"
     assert result.blockers == ("tomorrow_h1_historical_data_insufficient",)
     assert result.prerequisite_hash == "e" * 64
-    assert repository.graph == TomorrowResearchArtifactGraph(())
+    assert repository.graph == TomorrowResearchEvidenceGraph(())
     assert repository.handoff == _resource_handoff()
 
 

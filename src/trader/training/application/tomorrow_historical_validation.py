@@ -13,8 +13,8 @@ from typing import Literal, Protocol
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPredictorPort
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.shadow_calibration import (
     LinearModel,
     PlattCalibrator,
@@ -54,7 +54,7 @@ class TomorrowHistoricalRiskValidationSpec:
             or self.schema_version != "tomorrow_historical_risk_validation_spec"
         ):
             raise ValueError("Tomorrow historical risk validation contract is fixed")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
     @property
     def required_trade_dates(self) -> int:
@@ -146,7 +146,7 @@ TomorrowHistoricalRiskStatus = Literal["historical_validated", "historical_rejec
 
 
 @dataclass(frozen=True)
-class TomorrowHistoricalRiskModelArtifact:
+class TomorrowHistoricalRiskModelSnapshot:
     spec_hash: str
     source_spec_hash: str
     parent_model_id: str
@@ -191,7 +191,7 @@ class TomorrowHistoricalRiskModelArtifact:
             or self.schema_version != "tomorrow_historical_risk_model"
         ):
             raise ValueError("Historical risk model artifact is invalid")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
     def predict(self, rows: tuple[tuple[float, float, float, float], ...]) -> tuple[float, ...]:
         model = LinearModel(self.logistic_intercept, self.logistic_coefficients, logistic=True)
@@ -226,7 +226,7 @@ class TomorrowHistoricalRiskValidationReport:
         _validate_risk_report_identity(self)
         _validate_risk_report_state(self)
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 def _validate_risk_report_identity(report: TomorrowHistoricalRiskValidationReport) -> None:
@@ -290,7 +290,7 @@ def _validate_risk_report_state(report: TomorrowHistoricalRiskValidationReport) 
 @dataclass(frozen=True)
 class TomorrowHistoricalRiskValidationOutcome:
     report: TomorrowHistoricalRiskValidationReport
-    model_artifact: TomorrowHistoricalRiskModelArtifact | None
+    model_artifact: TomorrowHistoricalRiskModelSnapshot | None
 
     def __post_init__(self) -> None:
         expected = self.model_artifact.content_hash if self.model_artifact is not None else None
@@ -414,10 +414,10 @@ def build_historical_risk_probability(
         )
     train_matrix = tuple(item[0][1] for item in training)
     train_targets = tuple(item[1] for item in training)
-    model = fit_logistic_model(train_matrix, train_targets, ridge=1e-3)
-    calibration_raw = model.predict(tuple(item[0][1] for item in calibration))
+    logistic_model = fit_logistic_model(train_matrix, train_targets, ridge=1e-3)
+    calibration_raw = logistic_model.predict(tuple(item[0][1] for item in calibration))
     calibrator = fit_platt_calibrator(calibration_raw, tuple(item[1] for item in calibration))
-    probabilities = calibrator.predict(model.predict(tuple(item[0][1] for item in test)))
+    probabilities = calibrator.predict(logistic_model.predict(tuple(item[0][1] for item in test)))
     test_targets = tuple(item[1] for item in test)
     brier = _brier(probabilities, test_targets)
     prevalence = (math.fsum(train_targets) + 1.0) / (len(train_targets) + 2.0)
@@ -431,7 +431,7 @@ def build_historical_risk_probability(
         )
         if failed
     )
-    artifact = TomorrowHistoricalRiskModelArtifact(
+    risk_model = TomorrowHistoricalRiskModelSnapshot(
         spec_hash=spec.content_hash,
         source_spec_hash=HISTORICAL_SCREENING_SPEC.content_hash,
         parent_model_id=predictor.model_id,
@@ -442,19 +442,19 @@ def build_historical_risk_probability(
             "atr20_pct",
             "estimated_cost",
         ),
-        logistic_intercept=model.intercept,
-        logistic_coefficients=model.coefficients,
+        logistic_intercept=logistic_model.intercept,
+        logistic_coefficients=logistic_model.coefficients,
         platt_intercept=calibrator.intercept,
         platt_slope=calibrator.slope,
         platt_constant=calibrator.constant,
-        training_evidence_hash=canonical_artifact_hash(training),
-        calibration_evidence_hash=canonical_artifact_hash(calibration),
+        training_evidence_hash=canonical_research_hash(training),
+        calibration_evidence_hash=canonical_research_hash(calibration),
     )
     report = TomorrowHistoricalRiskValidationReport(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
-        evidence_hash=canonical_artifact_hash(included),
+        evidence_hash=canonical_research_hash(included),
         training_trade_dates=len(train_dates),
         calibration_trade_dates=len(calibration_dates),
         test_trade_dates=len(test_dates),
@@ -465,11 +465,11 @@ def build_historical_risk_probability(
         brier_score=brier,
         baseline_brier_score=baseline,
         expected_calibration_error=ece,
-        model_artifact_hash=artifact.content_hash,
+        model_artifact_hash=risk_model.content_hash,
         status="historical_rejected" if reasons else "historical_validated",
         failure_reasons=reasons,
     )
-    return TomorrowHistoricalRiskValidationOutcome(report, artifact)
+    return TomorrowHistoricalRiskValidationOutcome(report, risk_model)
 
 
 def _risk_features(
@@ -523,7 +523,7 @@ def _insufficient_report(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
-        evidence_hash=canonical_artifact_hash(rows),
+        evidence_hash=canonical_research_hash(rows),
         training_trade_dates=0,
         calibration_trade_dates=0,
         test_trade_dates=0,
@@ -579,7 +579,7 @@ def _expected_calibration_error(probabilities: tuple[float, ...], targets: tuple
 __all__ = [
     "TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC",
     "TomorrowHistoricalRiskEvidence",
-    "TomorrowHistoricalRiskModelArtifact",
+    "TomorrowHistoricalRiskModelSnapshot",
     "TomorrowHistoricalRiskValidationOutcome",
     "TomorrowHistoricalRiskValidationReport",
     "TomorrowHistoricalRiskValidationSpec",

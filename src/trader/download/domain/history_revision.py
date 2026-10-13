@@ -12,7 +12,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockDailyCell,
     BaoStockTrainingRow,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.download.domain.history_identity import history_content_hash
 
 MAX_HISTORY_TRAINING_WINDOW_SESSIONS = 251
 
@@ -41,10 +41,10 @@ class HistoryRevision:
             raise ValueError("history monthly revision industry facts are invalid")
         object.__setattr__(self, "industry", industry)
         object.__setattr__(self, "industry_classification", classification)
-        revision_id = canonical_artifact_hash((self.board, self.cell))
+        revision_id = history_content_hash((self.board, self.cell))
         object.__setattr__(self, "revision_id", revision_id)
         object.__setattr__(
-            self, "content_hash", canonical_artifact_hash((self.first_seen_sequence, self.board, self.cell))
+            self, "content_hash", history_content_hash((self.first_seen_sequence, self.board, self.cell))
         )
 
     @property

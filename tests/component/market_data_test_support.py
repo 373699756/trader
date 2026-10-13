@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
+from scripts.runtime_diagnostics.history_fallback import FallbackHistoryClient
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import (
     DailyBar,
@@ -24,7 +25,6 @@ from trader.infra.market_data.history.history import (
     PriceAdjustment,
     build_history_context,
 )
-from trader.infra.market_data.history.history_seed import FallbackHistoryClient
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers import tushare_records as tushare_records_module
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.specification import get_score_research_spec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -53,7 +53,7 @@ class FactorDiagnosticDimensions:
         if len({(item.trade_date, item.code) for item in records}) != len(records):
             raise ValueError("factor dimension records must be unique")
         object.__setattr__(self, "records", records)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -305,7 +305,7 @@ class FactorDiagnosticReport:
         if self.status != expected:
             raise ValueError("factor report status must match its valid-day evidence")
         object.__setattr__(self, "factors", factors)
-        object.__setattr__(self, "report_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "report_hash", canonical_research_hash(self))
 
 
 def _counts(total: int, observed: int, coverage: float, missing_rate: float) -> None:

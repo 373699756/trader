@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 QualificationState = Literal["qualified", "historical_data_insufficient"]
 
@@ -17,7 +17,7 @@ _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 
 
 @dataclass(frozen=True)
-class DailyArchiveQualification:
+class DailyHistoryQualification:
     sessions: int
     universe_count: int
     completed_codes: int
@@ -152,7 +152,7 @@ class HistoricalMinuteQualification:
 
 @dataclass(frozen=True)
 class PointInTimeDataQualificationReport:
-    daily_archive: DailyArchiveQualification
+    daily_archive: DailyHistoryQualification
     industry_sources: tuple[HistoricalIndustryQualification, ...]
     minute_sources: tuple[HistoricalMinuteQualification, ...]
     state: QualificationState
@@ -183,11 +183,11 @@ class PointInTimeDataQualificationReport:
         object.__setattr__(self, "industry_sources", industries)
         object.__setattr__(self, "minute_sources", minutes)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 def build_point_in_time_data_qualification(
-    daily: DailyArchiveQualification,
+    daily: DailyHistoryQualification,
     industries: tuple[HistoricalIndustryQualification, ...],
     minutes: tuple[HistoricalMinuteQualification, ...],
 ) -> PointInTimeDataQualificationReport:
@@ -216,7 +216,7 @@ def _reasons(values: tuple[str, ...]) -> tuple[str, ...]:
 
 
 __all__ = [
-    "DailyArchiveQualification",
+    "DailyHistoryQualification",
     "HistoricalIndustryQualification",
     "HistoricalMinuteQualification",
     "PointInTimeDataQualificationReport",

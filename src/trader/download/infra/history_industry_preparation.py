@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date
 from itertools import groupby
 
@@ -11,16 +12,25 @@ from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 
 
-def prepare_history_industries(
-    calendar: BaoStockCalendar,
-    universe: tuple[BaoStockSecurity, ...],
-    source: str,
-    fetch: Callable[[date], tuple[BaoStockIndustryInterval, ...]],
-    *,
-    cache: HistoryIndustryQueryCache | None = None,
-    progress: Callable[[HistorySyncProgress], None] | None = None,
-    cancel_requested: Callable[[], bool] = lambda: False,
-) -> tuple[BaoStockIndustryInterval, ...]:
+@dataclass(frozen=True)
+class IndustryPreparationRequest:
+    calendar: BaoStockCalendar
+    universe: tuple[BaoStockSecurity, ...]
+    source: str
+    fetch: Callable[[date], tuple[BaoStockIndustryInterval, ...]]
+    cache: HistoryIndustryQueryCache | None = None
+    progress: Callable[[HistorySyncProgress], None] | None = None
+    cancel_requested: Callable[[], bool] = lambda: False
+
+
+def prepare_history_industries(request: IndustryPreparationRequest) -> tuple[BaoStockIndustryInterval, ...]:
+    calendar = request.calendar
+    universe = request.universe
+    source = request.source
+    fetch = request.fetch
+    cache = request.cache
+    progress = request.progress
+    cancel_requested = request.cancel_requested
     snapshots = _industry_snapshot_dates(calendar.open_dates)
     as_of = calendar.open_dates[-1]
     if cache is not None:
@@ -93,4 +103,4 @@ def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:
     return tuple(snapshots)
 
 
-__all__ = ["prepare_history_industries"]
+__all__ = ["IndustryPreparationRequest", "prepare_history_industries"]

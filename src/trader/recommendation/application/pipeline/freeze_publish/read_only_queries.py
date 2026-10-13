@@ -175,7 +175,14 @@ class UnifiedDecisionQueries:
                 return empty
             draft_view = _observation_draft(draft)
             return replace(empty, draft=draft_view, etag=draft.version)
-        return _scored_view(decision, snapshot.overlay, now, "current", formal)
+        quotes = _valid_overlay_quotes(decision, snapshot.overlay)
+        view_input = _ScoredViewInput(
+            "current",
+            quotes,
+            snapshot.overlay.version if quotes and snapshot.overlay is not None else None,
+            formal,
+        )
+        return _scored_view(decision, now, view_input)
 
     def history(self, strategy: Strategy, trade_date: date) -> DecisionView:
         now = self._clock.now()
@@ -218,7 +225,7 @@ class UnifiedDecisionQueries:
                 quote.source_time,
                 quote.data_version,
             )
-        return _scored_view(decision, None, now, "history", record, history_quotes=quotes)
+        return _scored_view(decision, now, _ScoredViewInput("history", quotes, None, record))
 
     def dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
         if strategy is Strategy.LONG:
@@ -278,16 +285,18 @@ def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
     )
 
 
-def _scored_view(
-    decision: ScoredDecision,
-    overlay: DecisionOverlay | None,
-    now: datetime,
-    view: Literal["current", "history"],
-    formal: CommittedDecisionRecord | None,
-    *,
-    history_quotes: Mapping[str, DecisionQuote] | None = None,
-) -> DecisionView:
-    overlay_quotes = history_quotes if history_quotes is not None else _valid_overlay_quotes(decision, overlay)
+@dataclass(frozen=True)
+class _ScoredViewInput:
+    view: Literal["current", "history"]
+    quotes: Mapping[str, DecisionQuote]
+    overlay_version: str | None
+    formal: CommittedDecisionRecord | None
+
+
+def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredViewInput) -> DecisionView:
+    overlay_quotes = view_input.quotes
+    view = view_input.view
+    formal = view_input.formal
     selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
     all_items = tuple(
         _scored_item(item, overlay_quotes.get(item.code), historical=view == "history") for item in decision.items
@@ -300,7 +309,7 @@ def _scored_view(
         )[:3]
     )
     coverage = scored_decision_coverage(decision)
-    etag = _etag(decision.version, overlay.version if overlay_quotes and overlay is not None else None)
+    etag = _etag(decision.version, view_input.overlay_version)
     if view == "history":
         quote_identity = [
             (code, quote.price, quote.pct_change, quote.source, quote.source_time.isoformat(), quote.data_version)

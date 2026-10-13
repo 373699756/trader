@@ -21,12 +21,12 @@ _TRAINING_COMPONENT_PATHS = frozenset(
     {
         "component/test_factor_diagnostic_reports.py",
         "component/test_historical_baseline_reports.py",
-        "component/test_historical_label_artifacts.py",
+        "component/test_historical_label_evidence.py",
         "component/test_historical_partitions.py",
-        "component/test_research_trace_archive.py",
-        "component/test_terminal_holdout_artifacts.py",
-        "component/test_tomorrow_historical_artifact_archive.py",
-        "component/test_tomorrow_historical_risk_artifacts.py",
+        "component/test_research_trace_index.py",
+        "component/test_terminal_holdout_reports.py",
+        "component/test_tomorrow_historical_evidence.py",
+        "component/test_tomorrow_historical_risk_evidence.py",
     }
 )
 _HISTORY_PATHS = frozenset(
@@ -46,7 +46,7 @@ _HISTORY_PATHS = frozenset(
         "unit/infra/research/test_history_industry_cache.py",
         "unit/scripts/test_baostock_qfq_shadow.py",
         "contract/test_baostock_history_cli.py",
-        "contract/test_history_archive_repack_contract.py",
+        "contract/test_history_partition_repack_contract.py",
         "contract/test_history_automation_contract.py",
         "unit/application/research/test_history_automation.py",
         "unit/application/research/test_history_sync.py",
@@ -54,13 +54,12 @@ _HISTORY_PATHS = frozenset(
         "unit/domain/research/test_history_revision.py",
         "unit/entrypoints/test_history_sync_progress.py",
         "unit/infra/research/test_baostock_gap_supplier.py",
-        "unit/infra/test_baostock_history_tail.py",
         "unit/infra/research/test_baostock_gateway.py",
         "unit/infra/research/test_baostock_sync_supplier.py",
         "unit/infra/research/test_history_snapshot_reader.py",
-        "unit/infra/research/test_history_archive_repack.py",
-        "unit/infra/research/test_history_archive_status.py",
-        "unit/infra/research/test_history_archive_sync.py",
+        "unit/infra/research/test_history_partition_repack.py",
+        "unit/infra/research/test_history_snapshot_status.py",
+        "unit/infra/research/test_history_sync_runner.py",
         "unit/infra/research/test_history_automation_installation.py",
         "unit/infra/research/test_history_control_index.py",
         "unit/infra/research/test_history_maintenance_runner.py",
@@ -140,7 +139,7 @@ _CROSSCUT_PATHS = frozenset(
     {
         "component/test_process_lock.py",
         "unit/application/test_history_training_boundaries.py",
-        "unit/infra/test_artifact_publication.py",
+        "unit/infra/test_evidence_publication.py",
         "unit/infra/test_exchange_security_master.py",
         "unit/test_infra_failures.py",
         "unit/test_server_entrypoint.py",
@@ -150,16 +149,16 @@ _CROSSCUT_PATHS = frozenset(
 _SLOW_MARKERS_BY_PATH = {
     "slow_history": frozenset(
         {
-            "unit/infra/research/test_history_archive_sync.py",
-            "unit/infra/research/test_history_archive_repack.py",
+            "unit/infra/research/test_history_sync_runner.py",
+            "unit/infra/research/test_history_partition_repack.py",
             "unit/infra/research/test_history_control_index.py",
             "unit/infra/research/test_history_training_input.py",
         }
     ),
     "slow_migration": frozenset(
         {
-            "unit/infra/research/test_history_archive_sync.py",
-            "unit/infra/research/test_history_archive_repack.py",
+            "unit/infra/research/test_history_sync_runner.py",
+            "unit/infra/research/test_history_partition_repack.py",
             "unit/infra/research/test_history_control_index.py",
             "unit/infra/research/test_history_training_input.py",
         }
@@ -217,7 +216,7 @@ def _business_owner(relative_path: str) -> str:
         return "train"
     if relative_path == "unit/domain/test_outcomes.py":
         return "train"
-    if relative_path == "unit/infra/test_historical_screening_archive.py":
+    if relative_path == "unit/infra/test_historical_screening_snapshot.py":
         return "train"
     if relative_path == "unit/infra/test_outcomes.py":
         return "train"

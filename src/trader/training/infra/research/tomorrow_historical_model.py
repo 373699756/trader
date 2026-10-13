@@ -15,7 +15,7 @@ from trader.training.application.tomorrow_historical_screening import (
 )
 from trader.training.domain.evaluation.tomorrow_historical import (
     TomorrowHistoricalCandidate,
-    TomorrowHistoricalModelArtifact,
+    TomorrowHistoricalModelSnapshot,
 )
 
 
@@ -96,7 +96,7 @@ class TomorrowHistoricalEnsembleTrainer:
         tree_training = _prediction(booster, training_z, iteration)
         tree_validation = _prediction(booster, validation_z, iteration)
         weight = candidate.model_weights[0]
-        artifact = TomorrowHistoricalModelArtifact(
+        model = TomorrowHistoricalModelSnapshot(
             candidate_id=candidate.candidate_id,
             feature_ids=TOMORROW_HISTORICAL_ALPHA_FEATURE_IDS,
             transformer_means=_floats(means),
@@ -109,7 +109,7 @@ class TomorrowHistoricalEnsembleTrainer:
             internal_validation_rows=len(internal),
         )
         return TomorrowHistoricalModelFit(
-            artifact=artifact,
+            model=model,
             training_predictions=tuple(
                 weight * linear + (1.0 - weight) * tree
                 for linear, tree in zip(linear_training, tree_training, strict=True)

@@ -25,8 +25,8 @@ from trader.recommendation.domain.scoring.residualization import (
     LEGACY_EXPOSURE_CONTRACT,
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))

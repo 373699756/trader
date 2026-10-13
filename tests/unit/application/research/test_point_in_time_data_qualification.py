@@ -1,6 +1,6 @@
 from datetime import date
 
-from trader.download.domain.history_archive_status import HistoryArchiveStatus
+from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.training.application.point_in_time_data_qualification import (
     assemble_point_in_time_data_qualification,
 )
@@ -33,7 +33,7 @@ def _industry_report():
 
 
 def test_current_archive_and_free_source_evidence_project_explicit_three_gate_blockers() -> None:
-    archive = HistoryArchiveStatus(
+    archive = HistorySnapshotStatus(
         state="invalid",
         active_snapshot_hash="a" * 64,
         data_cutoff=date(2026, 9, 10),
@@ -61,7 +61,7 @@ def test_current_archive_and_free_source_evidence_project_explicit_three_gate_bl
 
 
 def test_daily_archive_count_mismatch_is_reported_instead_of_becoming_an_invalid_report() -> None:
-    archive = HistoryArchiveStatus(
+    archive = HistorySnapshotStatus(
         state="active",
         active_snapshot_hash="a" * 64,
         data_cutoff=date(2026, 9, 10),

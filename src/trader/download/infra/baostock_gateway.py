@@ -27,7 +27,7 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_industry_preparation import prepare_history_industries
+from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, prepare_history_industries
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
 _DAILY_FACT_FIELDS = "date,code,tradestatus,isST"
@@ -342,7 +342,14 @@ class BaoStockRowGateway:
     ) -> tuple[BaoStockIndustryInterval, ...]:
         del spec
         return prepare_history_industries(
-            calendar, universe, self._versions.content_hash, self.fetch_industry_facts, cache=cache, progress=progress
+            IndustryPreparationRequest(
+                calendar,
+                universe,
+                self._versions.content_hash,
+                self.fetch_industry_facts,
+                cache=cache,
+                progress=progress,
+            )
         )
 
     def fetch_industry_facts(self, snapshot_date: date) -> tuple[BaoStockIndustryInterval, ...]:

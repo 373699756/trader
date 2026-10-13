@@ -7,22 +7,22 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from trader.training.application.tomorrow_research_artifacts import (
+from trader.training.application.tomorrow_research_evidence import (
     TomorrowProductionReadinessAudit,
-    TomorrowResearchArtifactGraph,
+    TomorrowResearchEvidenceGraph,
     TomorrowResearchStage,
     TomorrowResearchStageHandoff,
     derive_tomorrow_research_run_id,
     next_research_stage,
     production_readiness_audit,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 class TomorrowResearchOrchestrationRepository(Protocol):
-    def load_graph(self) -> TomorrowResearchArtifactGraph: ...
+    def load_graph(self) -> TomorrowResearchEvidenceGraph: ...
 
     def load_handoff(self, stage: TomorrowResearchStage) -> TomorrowResearchStageHandoff | None: ...
 
@@ -30,7 +30,7 @@ class TomorrowResearchOrchestrationRepository(Protocol):
         self,
         expected_graph_hash: str,
         handoff: TomorrowResearchStageHandoff,
-    ) -> TomorrowResearchArtifactGraph: ...
+    ) -> TomorrowResearchEvidenceGraph: ...
 
 
 class TomorrowResearchProgressPort(Protocol):
@@ -66,7 +66,7 @@ class TomorrowResearchPrerequisiteInspector(Protocol):
 
 @dataclass
 class _AdvanceState:
-    graph: TomorrowResearchArtifactGraph
+    graph: TomorrowResearchEvidenceGraph
     prerequisite: TomorrowResearchPrerequisiteStatus
     completed: list[TomorrowResearchStage]
 
@@ -94,7 +94,7 @@ class TomorrowResearchAdvanceResult:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow research orchestration cannot authorize production")
         object.__setattr__(self, "blockers", tuple(sorted(set(self.blockers))))
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 class TomorrowResearchOrchestrator:

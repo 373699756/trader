@@ -9,7 +9,6 @@ from datetime import date
 from typing import Literal
 
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.paired_statistics import (
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
@@ -17,6 +16,7 @@ from trader.training.domain.evaluation.paired_statistics import (
     fixed_family_holm,
     paired_moving_block_statistics,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 LimitedFactorFamilyState = Literal[
     "factor_family_confirmed",
@@ -114,7 +114,7 @@ class LimitedFactorFamilySpec:
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "development_dates", development)
         object.__setattr__(self, "confirmation_dates", confirmation)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
     @property
     def research_dates(self) -> tuple[date, ...]:
@@ -272,7 +272,7 @@ class LimitedFactorFamilyReport:
             raise ValueError("limited factor report schema is invalid")
         object.__setattr__(self, "evidence", evidence)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 def _validate_report_identity(report: LimitedFactorFamilyReport, reasons: tuple[str, ...]) -> None:

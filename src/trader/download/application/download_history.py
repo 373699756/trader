@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.download.application.history_ports import HistoryArchivePort, HistorySupplierPort
+from trader.download.application.history_ports import HistorySupplierPort, HistorySyncPort
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
 
@@ -15,7 +15,7 @@ from trader.download.domain.history_sync import HistorySyncConfiguration, Histor
 class DownloadHistoryUseCase:
     """Request a complete archive build without invoking training or recommendations."""
 
-    archive: HistoryArchivePort
+    archive: HistorySyncPort
 
     def execute(
         self,
@@ -36,7 +36,7 @@ class DownloadHistoryUseCase:
 
 
 def download_history(
-    archive: HistoryArchivePort,
+    archive: HistorySyncPort,
     configuration: HistorySyncConfiguration,
     supplier: HistorySupplierPort,
     *,

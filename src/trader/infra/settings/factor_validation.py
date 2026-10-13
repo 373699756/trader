@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, TypedDict
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 from trader.infra.settings.models import FactorDefinition, StrategySettings
 from trader.infra.settings.parser import (
     ConfigurationError,
@@ -32,6 +31,7 @@ from trader.infra.settings.parser import require_exact_keys as _require_exact_ke
 from trader.infra.settings.parser import (
     text as _text,
 )
+from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 
 
 def _validate_feature_schema_contract(settings: StrategySettings) -> None:

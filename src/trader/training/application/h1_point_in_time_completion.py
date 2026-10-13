@@ -7,11 +7,10 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from trader.training.application.tomorrow_research_artifacts import (
-    TomorrowResearchArtifactRef,
+from trader.training.application.tomorrow_research_evidence import (
+    TomorrowResearchEvidenceRef,
     TomorrowResearchStageHandoff,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.h1_point_in_time import (
     H1CapabilityAuditReport,
     ResearchStrategy,
@@ -21,6 +20,7 @@ from trader.training.domain.evaluation.historical_label import (
     HistoricalLabelPreregistrationBatch,
     preregister_historical_labels,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -52,7 +52,7 @@ class HistoricalResidualLedgerTerminal:
         if self.schema_version != "historical_prediction_residual_ledger_terminal":
             raise ValueError("historical residual terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,7 @@ class TomorrowDailyCloseModelSelectionTerminal:
         if self.schema_version != "tomorrow_daily_close_model_selection_terminal":
             raise ValueError("daily-close model selection terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,7 @@ class H1ResearchCompletion:
         if self.schema_version != "h1_research_completion":
             raise ValueError("H1 research completion schema is invalid")
         object.__setattr__(self, "residual_ledgers", ledgers)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
     def to_development_handoff(
         self,
@@ -137,7 +137,7 @@ class H1ResearchCompletion:
     ) -> TomorrowResearchStageHandoff:
         _hash(parent_graph_hash, "Tomorrow research parent graph")
         _hash(resource_probe_artifact_hash, "Tomorrow resource probe")
-        artifact = TomorrowResearchArtifactRef(
+        evidence = TomorrowResearchEvidenceRef(
             artifact_id="h1_coverage_audit",
             artifact_kind="h1_research_completion",
             content_hash=self.content_hash,
@@ -148,7 +148,7 @@ class H1ResearchCompletion:
         return TomorrowResearchStageHandoff(
             stage="development_training",
             parent_graph_hash=parent_graph_hash,
-            artifacts=(artifact,),
+            artifacts=(evidence,),
             outcome="historical_data_insufficient",
             failure_reasons=("h1_historical_data_insufficient",),
         )

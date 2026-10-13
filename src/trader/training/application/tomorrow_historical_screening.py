@@ -14,14 +14,13 @@ from typing import Literal, Protocol
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
 from trader.training.application.historical_screening import (
-    HistoricalScreeningArchiveManifest,
-    HistoricalScreeningArchiveStatus,
+    HistoricalScreeningSnapshotManifest,
+    HistoricalScreeningSnapshotStatus,
 )
 from trader.training.application.tomorrow_historical_report import (
     TomorrowHistoricalGateMetrics,
     TomorrowHistoricalReport,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_json
 from trader.training.domain.evaluation.baseline import (
     mean_rank_ic,
     population_spearman,
@@ -33,10 +32,11 @@ from trader.training.domain.evaluation.paired_statistics import (
     PreregisteredBootstrapPlan,
     paired_moving_block_statistics,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_json
 from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalCandidate,
-    TomorrowHistoricalModelArtifact,
+    TomorrowHistoricalModelSnapshot,
     TomorrowHistoricalSpec,
 )
 
@@ -89,7 +89,7 @@ class TomorrowHistoricalRow:
 
 @dataclass(frozen=True)
 class TomorrowHistoricalModelFit:
-    artifact: TomorrowHistoricalModelArtifact
+    model: TomorrowHistoricalModelSnapshot
     training_predictions: tuple[float, ...]
     validation_predictions: tuple[float, ...]
     validation_model_disagreement: tuple[float, ...]
@@ -111,7 +111,7 @@ class TomorrowHistoricalModelFit:
 @dataclass(frozen=True)
 class TomorrowHistoricalExecution:
     report: TomorrowHistoricalReport
-    model_artifact: TomorrowHistoricalModelArtifact | None
+    model_artifact: TomorrowHistoricalModelSnapshot | None
 
     def __post_init__(self) -> None:
         expected = self.model_artifact.content_hash if self.model_artifact is not None else None
@@ -120,9 +120,9 @@ class TomorrowHistoricalExecution:
 
 
 class TomorrowHistoricalEvidence(Protocol):
-    def inspect(self, research_identity: str) -> HistoricalScreeningArchiveStatus: ...
+    def inspect(self, research_identity: str) -> HistoricalScreeningSnapshotStatus: ...
 
-    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalScreeningArchiveManifest: ...
+    def manifest(self, spec: HistoricalScreeningSpec) -> HistoricalScreeningSnapshotManifest: ...
 
     def tomorrow_historical_rows(self, spec: HistoricalScreeningSpec) -> Sequence[TomorrowHistoricalRow]: ...
 
@@ -148,7 +148,7 @@ class _SelectionRow:
 @dataclass(frozen=True)
 class _ReportSource:
     spec: TomorrowHistoricalSpec
-    manifest: HistoricalScreeningArchiveManifest
+    manifest: HistoricalScreeningSnapshotManifest
     coverage: float
     training: tuple[TomorrowHistoricalRow, ...]
     validation: tuple[TomorrowHistoricalRow, ...]
@@ -210,7 +210,7 @@ class TomorrowHistoricalScreeningService:
                 failures,
                 metrics=metrics,
             ),
-            fit.artifact,
+            fit.model,
         )
 
 
@@ -251,7 +251,7 @@ def _report(
         metrics=metrics or empty,
         training_evidence_hash=_rows_hash(source.training) if source.training else None,
         validation_evidence_hash=_rows_hash(source.validation) if source.validation else None,
-        model_artifact_hash=fit.artifact.content_hash if fit is not None else None,
+        model_artifact_hash=fit.model.content_hash if fit is not None else None,
         failure_reasons=failures,
     )
 
@@ -486,7 +486,7 @@ def _gate_failures(metrics: TomorrowHistoricalGateMetrics, spec: TomorrowHistori
 def _rows_hash(rows: tuple[TomorrowHistoricalRow, ...]) -> str:
     digest = hashlib.sha256()
     for row in rows:
-        digest.update(canonical_artifact_json(row).encode())
+        digest.update(canonical_research_json(row).encode())
         digest.update(b"\n")
     return digest.hexdigest()
 

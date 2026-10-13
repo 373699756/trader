@@ -6,7 +6,7 @@ import dataclasses
 from dataclasses import dataclass
 from datetime import date
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 _EMBARGO_DAYS = 5
 _WALK_FORWARD_FOLDS = 5
@@ -47,7 +47,7 @@ class DailyCloseTemporalSplit:
         ):
             raise ValueError("daily-close split must reserve at least 200 dates for point-in-time holdout")
         _strictly_increasing(self.all_dates)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
     @property
     def all_dates(self) -> tuple[date, ...]:

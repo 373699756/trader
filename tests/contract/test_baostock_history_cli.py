@@ -67,7 +67,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
-    monkeypatch.setattr("trader.download.infra.history_archive_sync.run_history_sync", synchronize)
+    monkeypatch.setattr("trader.download.infra.history_sync_runner.run_history_sync", synchronize)
 
     assert main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download"]) == 0
 

@@ -9,7 +9,7 @@ from pathlib import PurePosixPath
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.download.domain.history_identity import history_content_hash
 
 HistorySecurityBoard = Literal["main", "chinext", "star"]
 HistorySyncState = Literal["pending", "running", "completed", "failed", "cancelled"]
@@ -61,7 +61,7 @@ class HistorySourceIdentity:
         ):
             _require_identity(value, label)
         _require_shanghai(self.observed_at, "source observation")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
 
 @dataclass(frozen=True, order=True)
@@ -94,7 +94,7 @@ class HistoryCalendarIdentity:
         if not dates or len(dates) > 2000 or dates != tuple(sorted(set(dates))):
             raise ValueError("history calendar identity is invalid")
         object.__setattr__(self, "open_dates", dates)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
 
 @dataclass(frozen=True)
@@ -109,7 +109,7 @@ class HistoryUniverseIdentity:
         if not securities or len({item.code for item in securities}) != len(securities):
             raise ValueError("history universe identity is invalid")
         object.__setattr__(self, "securities", securities)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
 
 @dataclass(frozen=True)
@@ -146,7 +146,7 @@ class HistorySyncCheckpoint:
             or not terminal_valid
         ):
             raise ValueError("history sync checkpoint is invalid")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
 
 @dataclass(frozen=True)
@@ -183,7 +183,7 @@ class HistoryTrainingDueState:
         )
         if self.matured_label_days_since_training < 0 or not valid:
             raise ValueError("history training due state is invalid")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
     @property
     def training_due(self) -> bool:
@@ -292,7 +292,7 @@ class HistoryReminderClaim:
         _require_shanghai(self.claimed_at, "reminder claim")
         if self.claimed_at.date() != self.reminder_date:
             raise ValueError("history reminder claim is invalid")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
 
 @dataclass(frozen=True)
@@ -316,7 +316,7 @@ class HistoryReminderState:
         )
         if not valid or self.attempted_at.date() != self.reminder_date:
             raise ValueError("history reminder state is invalid")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
 
 @dataclass(frozen=True, order=True)
@@ -376,7 +376,7 @@ class HistoryActiveSnapshot:
         ):
             raise ValueError("history active snapshot is invalid")
         object.__setattr__(self, "partitions", partitions)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", history_content_hash(self))
 
 
 @dataclass(frozen=True)

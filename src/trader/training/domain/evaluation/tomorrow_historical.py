@@ -108,7 +108,7 @@ _CANDIDATE_FEATURE_IDS = tuple(
 
 
 @dataclass(frozen=True)
-class TomorrowHistoricalModelArtifact:
+class TomorrowHistoricalModelSnapshot:
     candidate_id: str
     feature_ids: tuple[str, ...]
     transformer_means: tuple[float, ...]
@@ -337,6 +337,6 @@ __all__ = [
     "HistoricalFieldRole",
     "HistoricalFieldStatus",
     "TomorrowHistoricalCandidate",
-    "TomorrowHistoricalModelArtifact",
+    "TomorrowHistoricalModelSnapshot",
     "TomorrowHistoricalSpec",
 ]

@@ -8,17 +8,17 @@ from threading import Event, Lock, get_ident
 import pytest
 
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
-from tests.unit.infra.research.test_history_archive_sync import NOW, FakeSupplier, ProgressRecorder, _configuration
+from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier, ProgressRecorder, _configuration
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
+from trader.download.infra.history_sync_runner import run_history_sync
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.sample_builder import _SampleBuildState

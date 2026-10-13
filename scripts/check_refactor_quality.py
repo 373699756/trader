@@ -64,7 +64,7 @@ TOP_LEVEL_SCRIPT_MANIFEST = frozenset(
         "generate_long_watchlist_asset.py",
         "migrate_runtime_data.py",
         "rename_qfq_shards.py",
-        "repack_baostock_history_archive.py",
+        "repack_history_partitions.py",
         "verify_wheel_install.py",
     }
 )
@@ -89,13 +89,13 @@ def _check_inventory() -> None:
         raise ValueError("retained tool declarations must cover each top-level script exactly once")
 
 
-def _function_symbols(source: Path) -> dict[int, str]:
+def _declaration_symbols(source: Path) -> dict[int, str]:
     symbols: dict[int, str] = {}
 
     def visit(node: ast.AST, scope: tuple[str, ...]) -> None:
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             scope = (*scope, node.name)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             symbols[node.lineno] = ".".join(scope)
         for child in ast.iter_child_nodes(node):
             visit(child, scope)
@@ -120,9 +120,9 @@ def _read_debt(stdout: str) -> Counter[tuple[str, str, str]]:
             raise ValueError("Ruff diagnostic has an invalid row")
         source = Path(filename).resolve()
         relative = source.relative_to(SOURCE_ROOT).as_posix()
-        symbol = _function_symbols(source).get(row)
+        symbol = _declaration_symbols(source).get(row)
         if symbol is None:
-            raise ValueError("strict diagnostic must identify a function definition")
+            raise ValueError("strict diagnostic must identify a class or function definition")
         debt[(code, relative, symbol)] += 1
     return debt
 

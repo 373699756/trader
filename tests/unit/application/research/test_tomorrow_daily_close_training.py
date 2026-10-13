@@ -6,7 +6,7 @@ from datetime import date, timedelta
 import pytest
 
 from trader.training.application.tomorrow_daily_close_training import (
-    CandidateModelArtifact,
+    CandidateModelSnapshot,
     DailyCloseSourceSample,
     ModelDependencyVersion,
     StockResidualCorrection,
@@ -116,8 +116,8 @@ def test_fold_training_rows_exclude_labels_not_mature_before_validation_start() 
     assert all(row.label_maturity_date < split.confirmation_dates[0] for row in confirmation_rows)
 
 
-def _artifact() -> CandidateModelArtifact:
-    return CandidateModelArtifact(
+def _artifact() -> CandidateModelSnapshot:
+    return CandidateModelSnapshot(
         model_id="tomorrow_daily_close_candidate_v1",
         candidate_id="ridge_lightgbm_ensemble_with_shrinkage",
         base_model_kind="ridge_lightgbm_ensemble",

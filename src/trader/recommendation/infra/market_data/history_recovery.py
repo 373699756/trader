@@ -14,13 +14,13 @@ from functools import partial
 from typing import Protocol
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
-from trader.recommendation.application.runtime.schedule import SHANGHAI, shanghai_now
 from trader.infra.workers import (
     BoundedExecutor,
     WorkerResourceRejectedError,
     injected_executor,
     submit_or_reject,
 )
+from trader.recommendation.application.runtime.schedule import SHANGHAI, shanghai_now
 
 
 class HistorySource(Protocol):

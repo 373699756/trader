@@ -19,7 +19,7 @@ from trader.training.application.point_in_time_dataset import (
 )
 from trader.training.domain.evaluation.models import EntryDayPriceWindow, OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
-    DailyArchiveQualification,
+    DailyHistoryQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
     build_point_in_time_data_qualification,
@@ -31,16 +31,16 @@ from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeIndustryFact,
     PointInTimeSourceIdentity,
 )
-from trader.training.infra.research.point_in_time_dataset_artifacts import (
-    PointInTimeDatasetArtifactArchive,
-    PointInTimeDatasetArtifactConflictError,
+from trader.training.infra.research.point_in_time_dataset_evidence import (
+    PointInTimeDatasetEvidenceConflictError,
+    PointInTimeDatasetEvidenceIndex,
 )
 
 HASHES = tuple(character * 64 for character in "abcdef0123456789")
 
 
 def _qualification(*, ready: bool = True):
-    daily = DailyArchiveQualification(
+    daily = DailyHistoryQualification(
         sessions=2000 if ready else 0,
         universe_count=3,
         completed_codes=3 if ready else 0,
@@ -399,7 +399,7 @@ def test_artifact_archive_round_trips_idempotently_and_rejects_tampering(
     application_feature_factory,
 ) -> None:
     report = PointInTimeDatasetBuilder(_Source(application_feature_factory)).build(_request(_qualification()))
-    archive = PointInTimeDatasetArtifactArchive(tmp_path)
+    archive = PointInTimeDatasetEvidenceIndex(tmp_path)
 
     assert archive.write(report).content_hash == report.content_hash
     assert archive.write(report).content_hash == report.content_hash
@@ -412,12 +412,12 @@ def test_artifact_archive_round_trips_idempotently_and_rejects_tampering(
     )
     assert conflicting_request.selection_policy_hash != original_request.selection_policy_hash
     conflicting = PointInTimeDatasetBuilder(_Source(application_feature_factory)).build(conflicting_request)
-    with pytest.raises(PointInTimeDatasetArtifactConflictError, match="identity conflict"):
+    with pytest.raises(PointInTimeDatasetEvidenceConflictError, match="identity conflict"):
         archive.write(conflicting)
 
     path = tmp_path / "point-in-time-dataset.json"
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["production_authority"] = True
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(PointInTimeDatasetArtifactConflictError):
+    with pytest.raises(PointInTimeDatasetEvidenceConflictError):
         archive.verify()

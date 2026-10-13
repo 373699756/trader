@@ -1,4 +1,4 @@
-"""Shape predicates shared by persisted-artifact decoders.
+"""Shape predicates shared by published JSON decoders.
 
 Decoded JSON values must be narrowed before they may enter business state, and these
 rules are easy to get subtly wrong: ``bool`` is a subclass of ``int``, JSON numbers

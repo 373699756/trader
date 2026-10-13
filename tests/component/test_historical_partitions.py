@@ -9,13 +9,13 @@ from tests.unit.application.research.test_historical_ports import TRADE_DATE
 from trader.training.application.extraction import HistoricalExtractor
 from trader.training.infra.research.historical_partitions import (
     HistoricalPartitionConflictError,
-    PolarsHistoricalPartitionArchive,
+    PolarsHistoricalPartitionSnapshot,
 )
 
 
 def test_polars_partition_and_top_manifest_are_immutable_and_verifiable(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
-    archive = PolarsHistoricalPartitionArchive(tmp_path)
+    archive = PolarsHistoricalPartitionSnapshot(tmp_path)
 
     first = archive.write_extraction(extraction)
     second = archive.write_extraction(extraction)
@@ -44,7 +44,7 @@ def test_polars_partition_and_top_manifest_are_immutable_and_verifiable(tmp_path
 
 def test_partition_verification_rejects_tampered_file_and_top_manifest(tmp_path) -> None:
     extraction = HistoricalExtractor(_Port(), _Evaluator()).extract()
-    archive = PolarsHistoricalPartitionArchive(tmp_path)
+    archive = PolarsHistoricalPartitionSnapshot(tmp_path)
     archive.write_extraction(extraction)
 
     parquet = tmp_path / "2026-08-10" / "candidates.parquet"

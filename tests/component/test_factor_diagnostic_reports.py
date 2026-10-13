@@ -9,14 +9,14 @@ from tests.unit.application.research.test_factor_diagnostics import _evidence
 from trader.training.application.factor_diagnostics import NativeFactorDiagnosticEvaluator
 from trader.training.infra.research.factor_diagnostic_reports import (
     FactorDiagnosticReportConflictError,
-    JsonFactorDiagnosticReportArchive,
+    JsonFactorDiagnosticReportIndex,
 )
 
 
 def test_factor_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
     extraction, baseline, dimensions = _evidence()
     report = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, dimensions)
-    archive = JsonFactorDiagnosticReportArchive(tmp_path)
+    archive = JsonFactorDiagnosticReportIndex(tmp_path)
 
     assert archive.write(report) == report
     assert archive.write(report) == report
@@ -30,7 +30,7 @@ def test_factor_report_is_immutable_verifiable_and_idempotent(tmp_path) -> None:
 def test_factor_report_rejects_tampering_and_same_identity_conflicts(tmp_path) -> None:
     extraction, baseline, dimensions = _evidence()
     report = NativeFactorDiagnosticEvaluator().evaluate(extraction, baseline, dimensions)
-    archive = JsonFactorDiagnosticReportArchive(tmp_path)
+    archive = JsonFactorDiagnosticReportIndex(tmp_path)
     archive.write(report)
 
     path = tmp_path / "score-factor-diagnostic-report.json"

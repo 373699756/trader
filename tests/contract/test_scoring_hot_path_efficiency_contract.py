@@ -17,9 +17,7 @@ def test_scoring_hot_path_baseline_has_explicit_cli_and_fixed_identity() -> None
 
 
 def test_strategy_contract_requires_all_hot_path_denominators_and_equivalence_cases() -> None:
-    source = (ROOT / "src/trader/training/application/scoring_hot_path_baseline.py").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "src/trader/training/application/scoring_hot_path_baseline.py").read_text(encoding="utf-8")
 
     for token in (
         "completed_epoch_count",

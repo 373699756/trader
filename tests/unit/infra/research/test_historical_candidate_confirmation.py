@@ -12,10 +12,10 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     H1PointInTimeSpec,
     build_h1_capability_audit,
 )
-from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 from trader.training.infra.research.historical_candidate_confirmation import (
-    HistoricalConfirmationArtifactArchive,
-    HistoricalConfirmationArtifactConflictError,
+    HistoricalConfirmationReportConflictError,
+    HistoricalConfirmationReportPublication,
 )
 
 
@@ -27,7 +27,7 @@ def _batch(tmp_path, *, failure: str = "eastmoney_historical_minute_probe_failed
         ),
         probe_failures=(failure,),
     )
-    archive = SQLiteH1PointInTimeArchive(tmp_path / "archive")
+    archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive")
     completion = complete_h1_research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
@@ -37,7 +37,7 @@ def _batch(tmp_path, *, failure: str = "eastmoney_historical_minute_probe_failed
 
 def test_historical_confirmation_archive_is_idempotent_and_hash_bound(tmp_path) -> None:
     batch = _batch(tmp_path)
-    archive = HistoricalConfirmationArtifactArchive(tmp_path / "artifacts")
+    archive = HistoricalConfirmationReportPublication(tmp_path / "artifacts")
 
     index = archive.write(batch)
 
@@ -51,15 +51,15 @@ def test_historical_confirmation_archive_is_idempotent_and_hash_bound(tmp_path) 
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["daily_close_selection_hash"] = "0" * 64
     path.write_text(json.dumps(payload), encoding="utf-8")
-    with pytest.raises(HistoricalConfirmationArtifactConflictError, match="schema or hash"):
+    with pytest.raises(HistoricalConfirmationReportConflictError, match="schema or hash"):
         archive.verify()
 
 
 def test_historical_confirmation_archive_rejects_different_batch(tmp_path) -> None:
     first = _batch(tmp_path / "first")
     second = _batch(tmp_path / "second", failure="historical_minute_probe_failed_again")
-    archive = HistoricalConfirmationArtifactArchive(tmp_path / "artifacts")
+    archive = HistoricalConfirmationReportPublication(tmp_path / "artifacts")
     archive.write(first)
 
-    with pytest.raises(HistoricalConfirmationArtifactConflictError, match="identity conflict"):
+    with pytest.raises(HistoricalConfirmationReportConflictError, match="identity conflict"):
         archive.write(second)

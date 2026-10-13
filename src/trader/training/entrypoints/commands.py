@@ -12,11 +12,11 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
-from trader.download.domain.history_archive_status import HistoryArchiveStatus
-from trader.download.infra.history_archive_status import inspect_history_archive
+from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
+from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
 from trader.infra.settings import RuntimeSettings
 from trader.training.application.historical_label import HistoricalLabelPreregistrationService
-from trader.training.application.tomorrow_research_artifacts import (
+from trader.training.application.tomorrow_research_evidence import (
     TomorrowResearchStage,
     derive_tomorrow_research_run_id,
     next_research_stage,
@@ -29,24 +29,24 @@ from trader.training.application.tomorrow_research_orchestrator import (
 from trader.training.application.tomorrow_research_prerequisites import TomorrowLabelReadinessInspector
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 from trader.training.domain.evaluation.tomorrow_historical import TOMORROW_HISTORICAL_SPEC
-from trader.training.infra.research.h1_point_in_time_archive import (
-    H1PointInTimeArchiveConflictError,
-    SQLiteH1PointInTimeArchive,
+from trader.training.infra.research.h1_point_in_time_snapshot import (
+    H1PointInTimeSnapshotConflictError,
+    SQLiteH1PointInTimeSnapshot,
 )
-from trader.training.infra.research.historical_screening_archive import SQLiteHistoricalScreeningArchive
+from trader.training.infra.research.historical_screening_snapshot import SQLiteHistoricalScreeningSnapshot
 from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
-from trader.training.infra.research.research_trace_archive import SQLiteResearchTraceArchive
-from trader.training.infra.research.tomorrow_historical_artifacts import (
-    TomorrowHistoricalArtifactArchive,
-    TomorrowHistoricalArtifactConflictError,
+from trader.training.infra.research.research_trace_index import SQLiteResearchTraceIndex
+from trader.training.infra.research.tomorrow_historical_evidence import (
+    TomorrowHistoricalEvidenceConflictError,
+    TomorrowHistoricalEvidenceIndex,
 )
-from trader.training.infra.research.tomorrow_historical_risk_artifacts import (
-    TomorrowHistoricalRiskArtifactArchive,
-    TomorrowHistoricalRiskArtifactConflictError,
+from trader.training.infra.research.tomorrow_historical_risk_evidence import (
+    TomorrowHistoricalRiskEvidenceConflictError,
+    TomorrowHistoricalRiskEvidenceIndex,
 )
-from trader.training.infra.research.tomorrow_research_artifacts import (
-    TomorrowResearchArtifactRepository,
-    TomorrowResearchArtifactRepositoryError,
+from trader.training.infra.research.tomorrow_research_evidence import (
+    TomorrowResearchEvidenceIndex,
+    TomorrowResearchEvidenceIndexError,
 )
 
 if TYPE_CHECKING:
@@ -143,25 +143,25 @@ def run_research_command(
     if command == "train-v3":
         return _run_v3_training_orchestrator(runtime)
     if command == "research-status":
-        trace = SQLiteResearchTraceArchive(runtime.runtime_dir)
+        trace = SQLiteResearchTraceIndex(runtime.runtime_dir)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)
-        historical_archive = SQLiteHistoricalScreeningArchive(runtime.runtime_dir).inspect(
+        screening_snapshot = SQLiteHistoricalScreeningSnapshot(runtime.runtime_dir).inspect(
             HISTORICAL_SCREENING_SPEC.research_identity
         )
         screening_coverage = (
-            historical_archive.completed_codes / historical_archive.universe_count
-            if historical_archive.universe_count
+            screening_snapshot.completed_codes / screening_snapshot.universe_count
+            if screening_snapshot.universe_count
             else 0.0
         )
         screening_ready = (
-            historical_archive.spec_hash == HISTORICAL_SCREENING_SPEC.content_hash and screening_coverage >= 0.95
+            screening_snapshot.spec_hash == HISTORICAL_SCREENING_SPEC.content_hash and screening_coverage >= 0.95
         )
         tomorrow_historical = _read_tomorrow_historical_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
         tomorrow_research = _read_tomorrow_research_status(runtime)
-        history_status = _project_history_archive_status(inspect_history_archive(_history_data_root()))
+        history_status = _project_history_snapshot_status(inspect_history_snapshot(_history_data_root()))
         print(
             json.dumps(
                 {
@@ -188,7 +188,7 @@ def run_research_command(
                     ),
                     "archive": asdict(status),
                     "historical_screening": {
-                        **asdict(historical_archive),
+                        **asdict(screening_snapshot),
                         "coverage_ratio": round(screening_coverage, 6),
                         "research_spec_hash": HISTORICAL_SCREENING_SPEC.content_hash,
                         "training_window": {
@@ -213,7 +213,7 @@ def run_research_command(
     raise ValueError(f"unsupported research command: {command}")
 
 
-def _project_history_archive_status(status: HistoryArchiveStatus) -> dict[str, object]:
+def _project_history_snapshot_status(status: HistorySnapshotStatus) -> dict[str, object]:
     return {
         "state": status.state,
         "active_snapshot_hash": status.active_snapshot_hash,
@@ -356,10 +356,10 @@ def _history_data_root() -> Path:
 
 
 def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object]:
-    repository = TomorrowResearchArtifactRepository(_train_data_root())
+    repository = TomorrowResearchEvidenceIndex(_train_data_root())
     try:
         prerequisite = _tomorrow_research_prerequisite(runtime).inspect()
-    except H1PointInTimeArchiveConflictError:
+    except H1PointInTimeSnapshotConflictError:
         return {
             "status": "artifact_conflict",
             "run_id": None,
@@ -376,7 +376,7 @@ def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object
         }
     try:
         graph = repository.load_graph()
-    except TomorrowResearchArtifactRepositoryError:
+    except TomorrowResearchEvidenceIndexError:
         return {
             "status": "artifact_conflict",
             "run_id": None,
@@ -449,14 +449,14 @@ def _tomorrow_research_result_payload(
 
 
 def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> TomorrowLabelReadinessInspector:
-    archive = SQLiteH1PointInTimeArchive(runtime.runtime_dir)
-    return TomorrowLabelReadinessInspector(HistoricalLabelPreregistrationService(archive))
+    snapshot = SQLiteH1PointInTimeSnapshot(runtime.runtime_dir)
+    return TomorrowLabelReadinessInspector(HistoricalLabelPreregistrationService(snapshot))
 
 
 def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
-        return TomorrowHistoricalArtifactArchive(runtime.runtime_dir / "tomorrow-historical").inspect()
-    except TomorrowHistoricalArtifactConflictError:
+        return TomorrowHistoricalEvidenceIndex(runtime.runtime_dir / "tomorrow-historical").inspect()
+    except TomorrowHistoricalEvidenceConflictError:
         return {
             "report_hash": "",
             "status": "artifact_invalid",
@@ -469,8 +469,8 @@ def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, obje
 
 def _read_tomorrow_historical_risk_status(runtime: RuntimeSettings) -> dict[str, object]:
     try:
-        return TomorrowHistoricalRiskArtifactArchive(runtime.runtime_dir).inspect()
-    except TomorrowHistoricalRiskArtifactConflictError:
+        return TomorrowHistoricalRiskEvidenceIndex(runtime.runtime_dir).inspect()
+    except TomorrowHistoricalRiskEvidenceConflictError:
         return {
             "status": "artifact_invalid",
             "report_hash": "",

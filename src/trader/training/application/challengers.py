@@ -23,7 +23,6 @@ from trader.training.application.historical_extraction_models import (
     HistoricalExtraction,
 )
 from trader.training.application.research_ports import HistoricalChallengerReplayEvaluator
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.challengers import (
     ChallengerSpecification,
     ContinuousEntryInputs,
@@ -34,6 +33,7 @@ from trader.training.domain.evaluation.challengers import (
     challenger_registry,
 )
 from trader.training.domain.evaluation.historical import coverage_shrunk_score
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 _MAXIMUM_PER_BOARD = 4
 _MAXIMUM_PER_INDUSTRY = 2
@@ -51,7 +51,7 @@ class ChallengerReplayer:
         baseline: HistoricalBaselineReport,
     ) -> ChallengerReport:
         _validate_parent_reports(extraction, baseline)
-        parameter_hash = canonical_artifact_hash(challenger_parameter_manifest())
+        parameter_hash = canonical_research_hash(challenger_parameter_manifest())
         baseline_by_date = {item.trade_date: item for item in baseline.days}
         variants = tuple(
             self._replay_variant(specification, extraction.days, baseline_by_date, parameter_hash)

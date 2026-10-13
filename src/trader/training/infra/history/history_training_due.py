@@ -25,7 +25,7 @@ from trader.download.infra.history_snapshot_reader import (
     route_history_months,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.infra.model_bundles.bundle_repository import (
     ActiveHeadBundle,
     inspect_active_head_bundle,
@@ -80,7 +80,7 @@ def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrai
     bundle, bundle_invalid = _active_bundle(query.training_root, profile, strategy)
     current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, profile, strategy)
     if bundle_invalid:
-        due_identity = "due-" + canonical_artifact_hash((active.content_hash, strategy.value, "invalid_bundle"))[:32]
+        due_identity = "due-" + canonical_research_hash((active.content_hash, strategy.value, "invalid_bundle"))[:32]
         due = calculate_history_training_due(
             HistoryTrainingDueRequest(
                 due_identity=due_identity,
@@ -133,7 +133,7 @@ def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrai
     )
     due_identity = (
         "due-"
-        + canonical_artifact_hash(
+        + canonical_research_hash(
             (
                 active.content_hash,
                 bundle.training_input_hash if bundle is not None else None,

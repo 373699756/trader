@@ -9,7 +9,7 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
     strategy = " ".join((ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8").split())
     models = (ROOT / "src/trader/training/application/shadow_model_report.py").read_text(encoding="utf-8")
     scoring = (ROOT / "src/trader/training/application/shadow_model_evaluation.py").read_text(encoding="utf-8")
-    artifacts = (ROOT / "src/trader/training/infra/research/shadow_model_artifacts.py").read_text(encoding="utf-8")
+    artifacts = (ROOT / "src/trader/training/infra/research/shadow_model_reports.py").read_text(encoding="utf-8")
     combined = models + scoring + artifacts
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
@@ -27,7 +27,7 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
         assert token in combined.replace('"', "").replace(": ", "=")
     assert '(("tomorrow", 1), ("d25", 25))' in models
     assert "TomorrowShadowModelEvaluator" in combined
-    assert "ShadowModelArtifactArchive" in combined
+    assert "ShadowModelReportIndex" in combined
     assert '"lightgbm>=4.7,<5"' in pyproject
 
 

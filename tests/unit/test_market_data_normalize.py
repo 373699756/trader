@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.infra.normalization.quote import (
     MarketQuoteInput,
     build_market_quote,
@@ -13,7 +14,6 @@ from trader.recommendation.infra.normalization.quote import (
     normalize_quotes,
     to_float,
 )
-from trader.infra.market_data.observations import SourceObservation
 
 
 def test_to_float_handles_empty_and_invalid_numbers() -> None:

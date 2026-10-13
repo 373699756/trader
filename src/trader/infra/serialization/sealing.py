@@ -1,9 +1,9 @@
-"""Single implementation of immutable artifact publication.
+"""Single implementation of immutable file publication.
 
-Research artifacts are append-only files: the first writer creates a path and every
+Research reports and models are append-only files: the first writer creates a path and every
 later writer must prove the existing file carries the same identity instead of
 overwriting it. These primitives own the temporary-file, flush and hard-link mechanics,
-so each artifact family keeps only its own notion of "the same identity".
+so each file type keeps only its own notion of "the same identity".
 """
 
 from __future__ import annotations

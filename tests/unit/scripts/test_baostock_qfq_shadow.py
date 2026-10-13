@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.runtime_diagnostics import baostock_qfq_shadow as shadow
-from trader.download.infra.history_archive_status import HistoryArchiveError
+from trader.download.infra.history_snapshot_inspection import HistorySnapshotInspectionError
 
 
 def _archive(*, cutoff: date = date(2026, 1, 5)) -> SimpleNamespace:
@@ -31,7 +31,7 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive = _archive()
-    monkeypatch.setattr(shadow, "load_active_history_archive", lambda _root: archive)
+    monkeypatch.setattr(shadow, "load_active_history_snapshot", lambda _root: archive)
     monkeypatch.setattr(
         shadow,
         "HistorySnapshotReader",
@@ -51,7 +51,7 @@ def test_complete_pairing_reports_candidate_reuse_but_never_production_eligibili
 
 def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch) -> None:
     archive = _archive()
-    monkeypatch.setattr(shadow, "load_active_history_archive", lambda _root: archive)
+    monkeypatch.setattr(shadow, "load_active_history_snapshot", lambda _root: archive)
     monkeypatch.setattr(
         shadow,
         "HistorySnapshotReader",
@@ -70,9 +70,9 @@ def test_missing_qfq_is_visible_in_shadow_report(monkeypatch: pytest.MonkeyPatch
 
 def test_missing_active_snapshot_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     def unavailable(_root: object) -> None:
-        raise HistoryArchiveError("history_snapshot_unavailable")
+        raise HistorySnapshotInspectionError("history_snapshot_unavailable")
 
-    monkeypatch.setattr(shadow, "load_active_history_archive", unavailable)
+    monkeypatch.setattr(shadow, "load_active_history_snapshot", unavailable)
 
-    with pytest.raises(HistoryArchiveError):
+    with pytest.raises(HistorySnapshotInspectionError):
         shadow.build_shadow_report(None)  # type: ignore[arg-type]

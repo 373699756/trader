@@ -12,19 +12,19 @@ from zoneinfo import ZoneInfo
 import requests
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
-from trader.infra.market_data.history.outcome_history import pair_outcome_history
-from trader.recommendation.infra.normalization.quote import (
-    MarketQuoteInput,
-    build_market_quote,
-    normalize_quotes,
-    to_float,
-)
 from trader.infra.workers import (
     BoundedExecutor,
     injected_executor,
     submit_or_reject,
 )
 from trader.recommendation.domain.market.models import MarketQuote
+from trader.recommendation.infra.market_data.outcome_history import pair_outcome_history
+from trader.recommendation.infra.normalization.quote import (
+    MarketQuoteInput,
+    build_market_quote,
+    normalize_quotes,
+    to_float,
+)
 from trader.training.domain.evaluation.models import OutcomeBar
 
 SessionFactory = Callable[[], requests.Session]

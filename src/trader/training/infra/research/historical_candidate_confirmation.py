@@ -12,63 +12,63 @@ from trader.infra.serialization.sealing import publish_immutable
 from trader.training.application.historical_candidate_confirmation import (
     HistoricalConfirmationTerminalBatch,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash, canonical_artifact_json
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
+from trader.training.domain.evaluation.research_identity import canonical_research_hash, canonical_research_json
 
 _STRATEGIES: tuple[ResearchStrategy, ...] = ("tomorrow", "d25")
 
 
-class HistoricalConfirmationArtifactConflictError(RuntimeError):
+class HistoricalConfirmationReportConflictError(RuntimeError):
     """Raised when a confirmation terminal artifact is missing, changed, or conflicting."""
 
 
-class HistoricalConfirmationArtifactArchive:
+class HistoricalConfirmationReportPublication:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._path = root / "historical_confirmation_terminal.json"
 
-    def write(self, batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmationArtifactIndex:
+    def write(self, batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmationReportIndex:
         index = _index(batch)
         self._root.mkdir(parents=True, exist_ok=True)
         if self._path.exists():
             existing = self.verify()
             if existing.content_hash != index.content_hash:
-                raise HistoricalConfirmationArtifactConflictError(
+                raise HistoricalConfirmationReportConflictError(
                     "Historical confirmation terminal artifact identity conflict"
                 )
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        if publish_immutable(self._path, canonical_artifact_json(payload)):
+        if publish_immutable(self._path, canonical_research_json(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != index.content_hash:
-            raise HistoricalConfirmationArtifactConflictError(
+            raise HistoricalConfirmationReportConflictError(
                 "Historical confirmation terminal artifact identity conflict"
             )
         return existing
 
-    def verify(self) -> HistoricalConfirmationArtifactIndex:
+    def verify(self) -> HistoricalConfirmationReportIndex:
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             if not isinstance(raw, dict) or any(not isinstance(key, str) for key in raw):
                 raise TypeError("Historical confirmation terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
             persisted_hash = payload.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_artifact_hash(payload) != persisted_hash:
+            if not isinstance(persisted_hash, str) or canonical_research_hash(payload) != persisted_hash:
                 raise ValueError("Historical confirmation terminal artifact hash mismatch")
             index = _decode(payload)
             if index.content_hash != persisted_hash:
                 raise ValueError("Historical confirmation terminal artifact reconstructed hash mismatch")
             return index
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise HistoricalConfirmationArtifactConflictError(
+            raise HistoricalConfirmationReportConflictError(
                 "Historical confirmation terminal artifact schema or hash is invalid"
             ) from exc
 
 
 @dataclass(frozen=True)
-class HistoricalConfirmationArtifactIndex:
+class HistoricalConfirmationReportIndex:
     completion_hash: str
     capability_hash: str
     label_batch_hash: str
@@ -101,11 +101,11 @@ class HistoricalConfirmationArtifactIndex:
             raise ValueError("Historical confirmation terminal index cannot authorize production")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "strategy_terminal_hashes", strategies)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
-def _index(batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmationArtifactIndex:
-    return HistoricalConfirmationArtifactIndex(
+def _index(batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmationReportIndex:
+    return HistoricalConfirmationReportIndex(
         completion_hash=batch.parent_completion_hash,
         capability_hash=batch.parent_capability_hash,
         label_batch_hash=batch.parent_label_hash,
@@ -115,7 +115,7 @@ def _index(batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmation
     )
 
 
-def _encode(index: HistoricalConfirmationArtifactIndex) -> dict[str, object]:
+def _encode(index: HistoricalConfirmationReportIndex) -> dict[str, object]:
     return {
         "completion_hash": index.completion_hash,
         "capability_hash": index.capability_hash,
@@ -130,7 +130,7 @@ def _encode(index: HistoricalConfirmationArtifactIndex) -> dict[str, object]:
     }
 
 
-def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
+def _decode(raw: dict[str, object]) -> HistoricalConfirmationReportIndex:
     expected = {
         "completion_hash",
         "capability_hash",
@@ -145,7 +145,7 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationArtifactIndex:
     }
     if set(raw) != expected:
         raise ValueError("Historical confirmation terminal artifact fields are invalid")
-    return HistoricalConfirmationArtifactIndex(
+    return HistoricalConfirmationReportIndex(
         completion_hash=_string(raw["completion_hash"]),
         capability_hash=_string(raw["capability_hash"]),
         label_batch_hash=_string(raw["label_batch_hash"]),
@@ -190,7 +190,7 @@ def _boolean(value: object) -> bool:
 
 
 __all__ = [
-    "HistoricalConfirmationArtifactConflictError",
-    "HistoricalConfirmationArtifactIndex",
-    "HistoricalConfirmationArtifactArchive",
+    "HistoricalConfirmationReportConflictError",
+    "HistoricalConfirmationReportIndex",
+    "HistoricalConfirmationReportPublication",
 ]

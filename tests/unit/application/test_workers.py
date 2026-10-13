@@ -9,8 +9,8 @@ from trader.infra.workers import (
     BoundedExecutor,
     BoundedExecutorStatus,
     WorkerResourceRejectedError,
-    submit_or_reject,
     injected_executor,
+    submit_or_reject,
 )
 
 

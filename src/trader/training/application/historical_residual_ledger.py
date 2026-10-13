@@ -7,7 +7,6 @@ import re
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
@@ -16,6 +15,7 @@ from trader.training.domain.evaluation.historical_residual_ledger import (
     JoinedHistoricalResidual,
     summarize_residuals,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -61,7 +61,7 @@ class HistoricalResidualLedgerBatch:
             raise ValueError("historical residual batch schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("historical residual batch cannot open holdout or production")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 class HistoricalResidualLedgerService:

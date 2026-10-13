@@ -7,14 +7,14 @@ import pytest
 
 from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _plain_feedback, _updater, _window
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
-from tests.unit.infra.research.test_history_archive_sync import NOW
+from tests.unit.infra.research.test_history_sync import NOW
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
+from trader.download.infra.history_sync_runner import run_history_sync
 
 
 @pytest.mark.parametrize("mode", ("complete", "missing", "pending", "unclassified_failure"))

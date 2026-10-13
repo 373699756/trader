@@ -90,6 +90,14 @@ _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
 _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplier_industry"})
 
 
+def _suppress_transient(progress: HistorySyncProgress) -> bool:
+    return progress.state in {"started", "waiting"} and not (
+        progress.stage in {"history_active_gaps", "history_gap_resume", "sealing_partitions", "preparing_partitions"}
+        or progress.stage in {"tencent_history", "persisting_prices"}
+        and progress.state == "waiting"
+    )
+
+
 def _reuse_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if (
         progress.stage == "tencent_history"
@@ -315,22 +323,12 @@ class StderrHistorySyncProgress:
             return self._suppress_partition_progress(progress, now)
         if progress.stage in _PREPARATION_STAGES and progress.state in {"started", "waiting"}:
             return self._suppress_preparation(progress)
-        if progress.state in {"started", "waiting"} and not (
-            progress.stage
-            in {
-                "history_active_gaps",
-                "history_gap_resume",
-                "sealing_partitions",
-                "preparing_partitions",
-            }
-            or progress.stage in {"tencent_history", "persisting_prices"}
-            and progress.state == "waiting"
-        ):
-            return True
         if progress.stage in _DAILY_STAGES and progress.state == "completed":
             return True
-        return progress.stage == "loading_context" and (
-            progress.state == "completed" or progress.state == "failed" and self._specific_failure is not None
+        return (
+            _suppress_transient(progress)
+            or progress.stage == "loading_context"
+            and (progress.state == "completed" or progress.state == "failed" and self._specific_failure is not None)
         )
 
     def _suppress_partition_progress(self, progress: HistorySyncProgress, now: float) -> bool:

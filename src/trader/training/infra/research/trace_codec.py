@@ -36,4 +36,10 @@ def sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-__all__ = ["COMPRESSED_PAYLOAD_PREFIX", "DEFAULT_DECODED_PAYLOAD_BYTES", "decoded_payload_bytes", "persisted_payload_bytes", "sha256"]
+__all__ = [
+    "COMPRESSED_PAYLOAD_PREFIX",
+    "DEFAULT_DECODED_PAYLOAD_BYTES",
+    "decoded_payload_bytes",
+    "persisted_payload_bytes",
+    "sha256",
+]

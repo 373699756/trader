@@ -39,9 +39,9 @@ def test_p2_ensemble_is_deterministic_and_keeps_the_official_validation_out_of_f
     first = trainer.fit(training, validation, TOMORROW_HISTORICAL_SPEC.candidate)
     second = trainer.fit(training, validation, TOMORROW_HISTORICAL_SPEC.candidate)
 
-    assert first.artifact.content_hash == second.artifact.content_hash
-    assert first.artifact.training_rows == len(training)
-    assert first.artifact.internal_validation_rows == 60
+    assert first.model.content_hash == second.model.content_hash
+    assert first.model.training_rows == len(training)
+    assert first.model.internal_validation_rows == 60
     assert len(first.training_predictions) == len(training)
     assert len(first.validation_predictions) == len(validation)
     assert first.validation_predictions == second.validation_predictions

@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS committed_event_quarantine (
 
 
 @dataclass(frozen=True)
-class ArchiveSummary:
+class TraceIndexSummary:
     retained: int
     retained_bytes: int
     trade_dates: frozenset[date]
@@ -84,4 +84,4 @@ def quarantine_row(conn: sqlite3.Connection, decision_version: str, reason: str)
     conn.execute("DELETE FROM committed_events WHERE decision_version = ?", (decision_version,))
 
 
-__all__ = ["ArchiveSummary", "SCHEMA", "connection", "initialize_database", "partition_date", "quarantine_row"]
+__all__ = ["TraceIndexSummary", "SCHEMA", "connection", "initialize_database", "partition_date", "quarantine_row"]

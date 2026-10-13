@@ -19,7 +19,6 @@ from trader.recommendation.domain.selection.scored_selection import (
     ScoredSelectionRequest,
     select_scored,
 )
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest
 from trader.training.domain.evaluation.models import (
     BenchmarkConstituentReturn,
@@ -48,6 +47,7 @@ from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeRejectionBoundary,
     PointInTimeSourceIdentity,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 _HASH = re.compile(r"^[0-9a-f]{64}$")
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -257,7 +257,7 @@ class PointInTimeDatasetBuilder:
                 trade_date=source.trade_date.isoformat(),
                 phase="final_quote",
                 data_version=f"point-in-time:{source.trade_date.isoformat()}",
-                merge_epoch=f"point-in-time:{canonical_artifact_hash(tuple(item.source_identity for item in source.rows))}",
+                merge_epoch=f"point-in-time:{canonical_research_hash(tuple(item.source_identity for item in source.rows))}",
                 policy=request.selection_policy,
             )
         )
@@ -434,7 +434,7 @@ def _selection_policy_hash(policy: ScoredSelectionPolicy) -> str:
         for board, value in sorted(policy.board_policies.items(), key=lambda item: item[0].value)
     )
     risk_rules = tuple((name, _risk_rule_identity(value)) for name, value in sorted(policy.risk_rules.items()))
-    return canonical_artifact_hash(
+    return canonical_research_hash(
         (
             "point_in_time_selection_policy",
             board_policies,

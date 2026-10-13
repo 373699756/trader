@@ -58,7 +58,7 @@ def test_makefile_is_the_single_test_command_source() -> None:
     ("relative_path", "expected_owner"),
     (
         ("unit/application/research/test_baseline_identity_audit.py", "train"),
-        ("unit/infra/research/test_history_archive_sync.py", "history"),
+        ("unit/infra/research/test_history_sync_runner.py", "history"),
         ("component/test_qfq_windows.py", "history"),
         ("component/test_qfq_layout_migration.py", "history"),
         ("unit/infra/test_tencent_history_recovery.py", "history"),

@@ -7,9 +7,9 @@ import json
 from pathlib import Path
 
 from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeSpec
-from trader.training.infra.research.h1_point_in_time_archive import (
-    H1PointInTimeArchiveConflictError,
-    SQLiteH1PointInTimeArchive,
+from trader.training.infra.research.h1_point_in_time_snapshot import (
+    H1PointInTimeSnapshotConflictError,
+    SQLiteH1PointInTimeSnapshot,
 )
 
 
@@ -17,14 +17,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m trader.training.entrypoints.h1_point_in_time")
     parser.add_argument("--runtime-dir", type=Path, required=True)
     args = parser.parse_args(argv)
-    archive = SQLiteH1PointInTimeArchive(args.runtime_dir)
+    snapshot = SQLiteH1PointInTimeSnapshot(args.runtime_dir)
     audits: list[dict[str, object]] = []
     failed = False
     for strategy in ("tomorrow", "d25"):
         spec = H1PointInTimeSpec(strategy)
         try:
-            audit = archive.audit(spec)
-        except H1PointInTimeArchiveConflictError:
+            audit = snapshot.audit(spec)
+        except H1PointInTimeSnapshotConflictError:
             failed = True
             audits.append(
                 {

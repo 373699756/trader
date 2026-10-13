@@ -44,7 +44,7 @@ class HistoricalPartitionManifest:
     schema_version: str = _SCHEMA_VERSION
 
 
-class PolarsHistoricalPartitionArchive:
+class PolarsHistoricalPartitionSnapshot:
     """Write each date once; verified identical replays are idempotent."""
 
     def __init__(self, root: Path) -> None:
@@ -260,5 +260,5 @@ def _write_json(path: Path, payload: Mapping[str, object]) -> None:
 __all__ = [
     "HistoricalPartitionConflictError",
     "HistoricalPartitionManifest",
-    "PolarsHistoricalPartitionArchive",
+    "PolarsHistoricalPartitionSnapshot",
 ]

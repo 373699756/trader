@@ -14,7 +14,6 @@ from trader.recommendation.domain.market.research import (
     research_components_from_observation,
 )
 
-
 RESEARCH_COMPONENT_IDS: Final[tuple[str, ...]] = (
     "financial",
     "announcements",

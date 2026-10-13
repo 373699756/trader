@@ -6,8 +6,8 @@ from datetime import datetime
 
 import pytest
 
-from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.infra.shutdown import ShutdownDeadline
+from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisor,
     RuntimeSupervisorConfig,

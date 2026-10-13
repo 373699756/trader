@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
-from tests.unit.infra.research.test_history_archive_sync import NOW, FakeSupplier, _download
+from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier, _download
 from trader.download.domain.baostock_daily import (
     BaoStockCodeBatch,
     BaoStockCodeDownload,
@@ -19,14 +19,14 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryGapSummary, HistorySyncConfiguration, HistorySyncProgress
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow, project_history_cell
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
-from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
-from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
-from trader.training.infra.research.historical_industry_archive import audit_archived_historical_industry_facts
+from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
+from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
+from trader.training.infra.research.historical_industry_evidence import audit_published_historical_industry_facts
 
 
 class Baseline(FakeSupplier):
@@ -312,7 +312,7 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     result = run_history_sync(config, _router(Baseline(dates, industry="银行"), Prices(), current), clock=lambda: NOW)
 
     assert result.state == "completed"
-    archive = SQLitePublishedHistoryArchive(config.archive_root)
+    archive = SQLitePublishedHistorySnapshot(config.archive_root)
     manifest = archive.manifest()
     assert manifest is not None
     assert manifest.universe_codes == ("600001",)
@@ -325,12 +325,12 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     assert tuple(row.code for row in HistorySnapshotReader(config.archive_root).read_day(dates[-1], snapshot)) == (
         "600001",
     )
-    training = SQLiteHistoryTrainingInputArchive.open(config.archive_root)
+    training = SQLiteHistoryTrainingInputSnapshot.open(config.archive_root)
     assert training.snapshot.training_codes == ("600001",)
     training_rows = tuple(training.iter_training_rows(frozenset(dates)))
     assert len(training_rows) == len(dates)
     assert {row.code for row in training_rows} == {"600001"}
-    industry_report = audit_archived_historical_industry_facts(config.archive_root)
+    industry_report = audit_published_historical_industry_facts(config.archive_root)
     assert industry_report.sources[0].sampled_codes == 1
     assert len(industry_report.merged_fact_hashes) == 1
 
@@ -378,8 +378,8 @@ def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failu
 
 
 def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
-    from trader.download.infra.history_archive_sync import _download_tasks
     from trader.download.infra.history_download_index import HistoryDownloadIndex
+    from trader.download.infra.history_sync_runner import _download_tasks
 
     dates = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2000))
     baseline, prices = Baseline(dates), Prices()

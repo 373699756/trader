@@ -9,12 +9,12 @@ from datetime import date
 from typing import Literal, cast
 
 from trader.recommendation.domain.market.models import Board
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeDatasetReport,
     PointInTimeDatasetRow,
     PointInTimeDayDataset,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 CandidateRecallState = Literal["candidate_recall_attributed", "historical_data_insufficient"]
 CandidateRecallStage = Literal[
@@ -98,7 +98,7 @@ class CandidateRecallDownstreamTrace:
         if (self.first_rejection_boundary == "selected") == bool(reasons):
             raise ValueError("candidate recall boundary and reasons are inconsistent")
         object.__setattr__(self, "rejection_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ class CandidateRecallDayTrace:
             raise ValueError("candidate recall cumulative latency must be monotonic")
         object.__setattr__(self, "downstream_rows", rows)
         object.__setattr__(self, "stage_latencies", latencies)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class CandidateRecallLedgerRow:
         if not math.isfinite(self.net_excess_return_20bp):
             raise ValueError("candidate recall ledger outcome is invalid")
         object.__setattr__(self, "rejection_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -314,7 +314,7 @@ class CandidateRecallDayAttribution:
         if tuple(self.rejection_metrics) != _rejection_metrics((rows,)):
             raise ValueError("candidate recall rejection metrics do not match rows")
         object.__setattr__(self, "rejection_metrics", tuple(self.rejection_metrics))
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -409,7 +409,7 @@ class CandidateRecallReport:
         if tuple(self.rejection_metrics) != expected_rejections:
             raise ValueError("candidate recall rejection metrics do not match days")
         object.__setattr__(self, "rejection_metrics", tuple(self.rejection_metrics))
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 def attribute_candidate_recall_day(

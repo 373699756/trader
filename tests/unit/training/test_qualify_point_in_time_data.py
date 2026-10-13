@@ -4,7 +4,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from trader.download.infra.history_archive_status import inspect_history_archive
+from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
 from trader.entrypoints.cli import main as cli_main
 from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 from trader.training.domain.evaluation.historical_industry_facts import (
@@ -62,10 +62,10 @@ def _industry_report():
 
 def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
-        command_evidence, "audit_archived_historical_industry_facts", lambda _root, **_kw: _industry_report()
+        command_evidence, "audit_published_historical_industry_facts", lambda _root, **_kw: _industry_report()
     )
     report = QualifyPointInTimeData(
-        lambda: inspect_history_archive(tmp_path, verify_partitions=True),
+        lambda: inspect_history_snapshot(tmp_path, verify_partitions=True),
         HistoricalIndustryEvidenceReader(tmp_path),
         FreeSourceH1CapabilityProbe(_Session(), timeout_seconds=1.0),
     ).execute(

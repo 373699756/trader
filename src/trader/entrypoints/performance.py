@@ -22,7 +22,6 @@ from trader.infra.cache_contracts import canonical_json_bytes
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import load_runtime_settings, load_strategy_settings
 from trader.infra.settings.models import PerformanceBudgetSettings
-from trader.infra.settings.recommendation_policy import _recommendation_policy
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
     SCORED_STRATEGIES,
     CandidatePlanningContext,
@@ -75,8 +74,9 @@ from trader.recommendation.infra.normalization.merge import (
     overlay_canonical_snapshot,
 )
 from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.policy_settings import _recommendation_policy
 from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
+from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
 from trader.training.application.scoring_hot_path_baseline import (
     ScoringHotPathBaseline,
     ScoringHotPathEquivalence,

@@ -10,9 +10,9 @@ from trader.infra.market_data.history.history import (
     build_history_context,
     summarize_history_metrics,
 )
-from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.infra.settings import load_strategy_settings
 from trader.recommendation.domain.market.models import MarketQuote
+from trader.recommendation.infra.normalization.features import FeatureBuilder
 
 ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 7, 16, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))

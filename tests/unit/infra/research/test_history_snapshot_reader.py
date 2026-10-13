@@ -94,8 +94,7 @@ def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_p
     path = tmp_path / snapshot.partitions[0].relative_path
     with sqlite3.connect(path) as connection:
         connection.execute(
-            "UPDATE daily_records SET payload_json = "
-            "json_set(payload_json, '$.cell.qfq.close_price', 'invalid')"
+            "UPDATE daily_records SET payload_json = json_set(payload_json, '$.cell.qfq.close_price', 'invalid')"
         )
 
     with pytest.raises(HistorySnapshotReadError, match="history training partition read failed"):

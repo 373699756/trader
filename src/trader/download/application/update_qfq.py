@@ -11,7 +11,12 @@ from time import monotonic
 from typing import Protocol
 
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage
-from trader.download.application.qfq_download_progress import QfqDownloadProgress, qfq_failure_code, qfq_message
+from trader.download.application.qfq_download_progress import (
+    QfqDownloadProgress,
+    QfqStockFeedback,
+    qfq_failure_code,
+    qfq_message,
+)
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
@@ -198,12 +203,7 @@ class UpdateQfqWindows:
             progress.not_applicable += 1
             progress.record_stock(
                 security,
-                action="无需下载",
-                result="无需下载",
-                target=0,
-                raw=0,
-                qfq=0,
-                paired=0,
+                QfqStockFeedback("无需下载", "无需下载", 0, 0, 0, 0),
             )
             return None
         v2_state = v2_snapshot.state_for(security.code)
@@ -224,12 +224,14 @@ class UpdateQfqWindows:
             progress.skipped += 1
             progress.record_stock(
                 security,
-                action="本地复用",
-                result="复用",
-                target=len(v2_state.dates),
-                raw=len(v2_state.dates),
-                qfq=len(v2_state.dates),
-                paired=len(v2_state.dates),
+                QfqStockFeedback(
+                    "本地复用",
+                    "复用",
+                    len(v2_state.dates),
+                    len(v2_state.dates),
+                    len(v2_state.dates),
+                    len(v2_state.dates),
+                ),
             )
             return None
         return _DownloadPlan(security, dates, same_source)
@@ -366,13 +368,15 @@ class UpdateQfqWindows:
         paired = sum(cell.status == "complete" for cell in window.cells)
         progress.record_stock(
             job.security,
-            action="Tencent下载",
-            result="合格",
-            target=paired,
-            raw=paired,
-            qfq=paired,
-            paired=paired,
-            inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in window.cells),
+            QfqStockFeedback(
+                "Tencent下载",
+                "合格",
+                paired,
+                paired,
+                paired,
+                paired,
+                inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in window.cells),
+            ),
         )
 
     def _commit_many(

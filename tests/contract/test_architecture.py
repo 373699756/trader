@@ -260,7 +260,7 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
         v3_root / "heads/inference.py",
     ):
         assert not retired.exists()
-    assert "TomorrowHistoricalModelArtifact" not in model_port
+    assert "TomorrowHistoricalModelSnapshot" not in model_port
     assert "ModelPredictorPort" in model_port
     assert "build_trained_scoring_profile" in factory
     assert not (SOURCE_ROOT / "recommendation/application/ports/tomorrow_model.py").exists()
@@ -319,7 +319,7 @@ def test_active_web_surface_and_fixed_long_tabs_use_unified_routes() -> None:
     api = SOURCE_ROOT / "http_api"
     assert {"route_services.py"} <= {path.name for path in api.glob("*.py")}
     assert (api / "response" / "decision_projection.py").is_file()
-    assert (api / "handlers" / "event_handler.py").is_file()
+    assert (api / "handlers" / "product_handler.py").is_file()
     assert (api / "routes" / "page_routes.py").is_file()
     assert not any((web / "api").glob("*.py"))
     assert not any(
@@ -431,8 +431,8 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
 
 def test_tomorrow_holdout_serializer_uses_an_explicit_public_field_whitelist() -> None:
     paths = (
-        SOURCE_ROOT / "training/infra/research/point_in_time_dataset_artifacts.py",
-        SOURCE_ROOT / "training/infra/research/tomorrow_point_in_time_holdout_artifacts.py",
+        SOURCE_ROOT / "training/infra/research/point_in_time_dataset_evidence.py",
+        SOURCE_ROOT / "training/infra/research/tomorrow_point_in_time_holdout_reports.py",
     )
     violations: list[str] = []
     for path in paths:
@@ -551,7 +551,7 @@ def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_b
 def test_history_sync_progress_stays_typed_until_the_entrypoint_projection() -> None:
     contract = (SOURCE_ROOT / "download/domain/history_sync.py").read_text(encoding="utf-8")
     supplier = (SOURCE_ROOT / "download/infra/baostock_sync_supplier.py").read_text(encoding="utf-8")
-    runtime = (SOURCE_ROOT / "download/infra/history_archive_sync.py").read_text(encoding="utf-8")
+    runtime = (SOURCE_ROOT / "download/infra/history_sync_runner.py").read_text(encoding="utf-8")
     projection = (SOURCE_ROOT / "download/entrypoints/history_sync_progress.py").read_text(encoding="utf-8")
 
     assert "class HistorySyncProgress:" in contract
@@ -577,7 +577,7 @@ def test_download_business_has_one_owner_and_no_legacy_history_paths() -> None:
         "baostock_gateway.py",
         "baostock_session.py",
         "baostock_sync_supplier.py",
-        "history_archive_sync.py",
+        "history_sync_runner.py",
         "history_control_repository.py",
         "history_month_partition.py",
     )

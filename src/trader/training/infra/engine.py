@@ -18,13 +18,13 @@ from lightgbm.basic import LightGBMError
 
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit, build_baostock_training_split
 from trader.download.domain.history_control import HistoryActiveSnapshot
-from trader.download.infra.history_archive_repack import (
-    HistoryArchiveRepackFenceError,
-    require_history_archive_repack_inactive,
-)
 from trader.download.infra.history_control_index import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
+)
+from trader.download.infra.history_partition_repack import (
+    HistoryPartitionRepackFenceError,
+    require_history_partition_repack_inactive,
 )
 from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.domain.publication.models import Strategy
@@ -40,7 +40,7 @@ from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescr
 from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputError,
     HistoryTrainingInputSnapshot,
-    SQLiteHistoryTrainingInputArchive,
+    SQLiteHistoryTrainingInputSnapshot,
 )
 from trader.training.infra.model_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
@@ -67,7 +67,7 @@ from trader.training.infra.training_settings import ProfileTrainingSettings
 TrainingStatus = Literal["blocked", "rejected", "engineering_ready"]
 
 
-class _TrainingInputArchive(TrainingHistorySource, Protocol):
+class _TrainingInputSnapshot(TrainingHistorySource, Protocol):
     snapshot: HistoryTrainingInputSnapshot
 
     def industry_sample_upper_bounds(
@@ -127,7 +127,7 @@ class _HeadPlan:
 
 
 @dataclass(frozen=True)
-class _ArtifactContext:
+class _TrainingRunContext:
     profile: TrainedProfileContract
     contract: TrainedHeadContract
     snapshot: HistoryTrainingInputSnapshot
@@ -206,7 +206,7 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
     _publish(request.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
     _publish(request.progress, TomorrowTrainingProgress("input_read", "started", 0, 1))
     try:
-        archive = SQLiteHistoryTrainingInputArchive.open(request.history_root)
+        archive = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
     except (HistoryTrainingInputError, OSError, ValueError) as exc:
         heads = tuple(_unavailable_result(item, _reason(exc)) for item in request.contracts)
         return TrainingRunResult(None, "", 0, heads)
@@ -218,10 +218,10 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
         # bound even though the published snapshot itself is immutable.
         training_lock = request.train_root / ".training.lock"
         with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"), HistoryMaintenanceLock(training_lock):
-            archive = SQLiteHistoryTrainingInputArchive.open(request.history_root)
+            archive = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
             try:
-                require_history_archive_repack_inactive(archive.archive_root)
-            except HistoryArchiveRepackFenceError:
+                require_history_partition_repack_inactive(archive.archive_root)
+            except HistoryPartitionRepackFenceError:
                 if request.expected_history_snapshot_hash != archive.snapshot.active_snapshot_hash:
                     raise
             return _run_locked(archive, request)
@@ -230,7 +230,7 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
             _blocked_from_snapshot(item, archive.snapshot, "history_maintenance_running") for item in request.contracts
         )
         return TrainingRunResult(None, archive.snapshot.active_snapshot_hash, 0, heads)
-    except HistoryArchiveRepackFenceError:
+    except HistoryPartitionRepackFenceError:
         heads = tuple(
             _blocked_from_snapshot(item, archive.snapshot, "history_archive_repack_activation_pending")
             for item in request.contracts
@@ -238,8 +238,8 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
         return TrainingRunResult(None, archive.snapshot.active_snapshot_hash, 0, heads)
 
 
-def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest) -> TrainingRunResult:
-    archive, target_matches = _reopen_expected_archive(archive, request.expected_history_snapshot_hash)
+def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest) -> TrainingRunResult:
+    archive, target_matches = _reopen_expected_snapshot(archive, request.expected_history_snapshot_hash)
     if not target_matches:
         heads = tuple(
             _blocked_from_snapshot(item, archive.snapshot, "history_archive_repack_target_mismatch")
@@ -361,7 +361,7 @@ def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleC
 
 
 def _require_industry_coverage(
-    archive: _TrainingInputArchive,
+    archive: _TrainingInputSnapshot,
     split: BaoStockTrainingSplit,
     history_sessions: int,
     algorithm: Literal["lightgbm", "ridge"],
@@ -387,13 +387,13 @@ def _require_industry_coverage(
     return window
 
 
-def _reopen_expected_archive(
-    archive: _TrainingInputArchive,
+def _reopen_expected_snapshot(
+    archive: _TrainingInputSnapshot,
     expected_snapshot_hash: str | None,
-) -> tuple[_TrainingInputArchive, bool]:
+) -> tuple[_TrainingInputSnapshot, bool]:
     if expected_snapshot_hash is None:
         return archive, True
-    reopened = SQLiteHistoryTrainingInputArchive.open(archive.archive_root)
+    reopened = SQLiteHistoryTrainingInputSnapshot.open(archive.archive_root)
     return reopened, reopened.snapshot.active_snapshot_hash == expected_snapshot_hash
 
 
@@ -437,7 +437,7 @@ def _build_head_plans(
 
 
 def _preflight_failure_result(
-    archive: _TrainingInputArchive,
+    archive: _TrainingInputSnapshot,
     snapshot: HistoryTrainingInputSnapshot,
     plans: list[_HeadPlan],
     contracts: tuple[TrainedHeadContract, ...],
@@ -494,7 +494,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
             )
         )
         input_document_hash = cast(str, training_input["content_hash"])
-        context = _ArtifactContext(
+        context = _TrainingRunContext(
             request.profile,
             contract,
             snapshot,
@@ -583,7 +583,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
 
 
 def _report_document(
-    context: _ArtifactContext,
+    context: _TrainingRunContext,
     models: dict[str, dict[str, object]],
     model_payload_hash: str,
     metrics: tuple[TargetMetric, ...],
@@ -623,7 +623,7 @@ def _report_document(
 
 
 def _model_document(
-    context: _ArtifactContext,
+    context: _TrainingRunContext,
     report_hash: str,
     models: dict[str, dict[str, object]],
 ) -> dict[str, object]:
@@ -696,7 +696,7 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
     return document
 
 
-def _common_document(context: _ArtifactContext) -> dict[str, object]:
+def _common_document(context: _TrainingRunContext) -> dict[str, object]:
     snapshot = context.snapshot
     return {
         "training_input_scope": snapshot.input_scope,

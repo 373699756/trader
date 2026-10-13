@@ -118,18 +118,8 @@ class _SampleBuildState:
         if code not in self.allowed_codes:
             raise HistoryTrainingInputError("history_code_outside_active_universe")
         position = self.calendar_positions[row.trade_date]
-        if self.current_day is not None and row.trade_date != self.current_day:
-            self.flush_matured(self.current_position)
-        if row.trade_date != self.current_day:
-            self.current_day = row.trade_date
-            self.current_position = position
-            self.pending_days.append(_PendingDay(row.trade_date, position, {}))
-        rolling = self.rolling_codes.setdefault(
-            code,
-            _RollingCodeState(deque(maxlen=self.profile.history_sessions)),
-        )
-        if rolling.previous_position is not None and position != rolling.previous_position + 1:
-            rolling.points.clear()
+        self._advance_day(row.trade_date, position)
+        rolling = self._rolling_for(code, position)
         if row.cell_status == "tencent_inferred_suspended":
             rolling.previous_position = position
             return
@@ -151,6 +141,23 @@ class _SampleBuildState:
             else:
                 self.short_window += 1
         rolling.previous_position = position
+
+    def _advance_day(self, trade_date: date, position: int) -> None:
+        if self.current_day is not None and trade_date != self.current_day:
+            self.flush_matured(self.current_position)
+        if trade_date != self.current_day:
+            self.current_day = trade_date
+            self.current_position = position
+            self.pending_days.append(_PendingDay(trade_date, position, {}))
+
+    def _rolling_for(self, code: str, position: int) -> _RollingCodeState:
+        rolling = self.rolling_codes.setdefault(
+            code,
+            _RollingCodeState(deque(maxlen=self.profile.history_sessions)),
+        )
+        if rolling.previous_position is not None and position != rolling.previous_position + 1:
+            rolling.points.clear()
+        return rolling
 
     def _record_future_close(self, code: str, point: HistoryTrainingPoint, position: int) -> None:
         close = _eligible_future_close(point)

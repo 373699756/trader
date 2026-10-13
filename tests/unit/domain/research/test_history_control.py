@@ -26,6 +26,21 @@ from trader.download.domain.history_control import (
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
+def test_download_history_hashes_keep_the_published_identity() -> None:
+    source = HistorySourceIdentity(
+        "tencent", "daily", "qfq", datetime(2026, 10, 13, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
+    )
+    calendar = HistoryCalendarIdentity((date(2026, 10, 12), date(2026, 10, 13)), source.content_hash)
+    universe = HistoryUniverseIdentity(
+        (HistorySecurityIdentity("600001", "甲", "main", date(2000, 1, 1), None),),
+        source.content_hash,
+    )
+
+    assert source.content_hash == "5cff724ab4d24e73b95e8f2dc33d4b5467871e9cecf17f68505926d71dcd8d71"
+    assert calendar.content_hash == "df8c5d58d77e9111d00e1059b6d4ff9292ef65811ecbc25343173ef6573caf70"
+    assert universe.content_hash == "238fa90a06336535b17c0862950f763122f8da4730653a8ffb5a859225c6e59a"
+
+
 def _source() -> HistorySourceIdentity:
     return HistorySourceIdentity("baostock", "baostock_daily", "python-sdk", NOW)
 

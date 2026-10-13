@@ -17,8 +17,8 @@ from trader.infra.market_data.history.history import (
 )
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.domain.market.history_tail import HistoryQuality
 from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot
+from trader.recommendation.domain.market.history_tail import HistoryQuality
 from trader.recommendation.infra.market_data.history_recovery import (
     HistoryRecovery,
     HistoryRecoveryStatus,

@@ -3,13 +3,13 @@ from datetime import date, datetime
 
 import pytest
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.h1_point_in_time import (
     H1CapabilityProbe,
     H1PointInTimeRecord,
     H1PointInTimeSpec,
 )
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 
 def _record(strategy: str = "tomorrow", observed_at: str = "2026-08-31T15:00:00+08:00") -> H1PointInTimeRecord:
@@ -68,6 +68,6 @@ def test_h1_spec_hash_separates_the_retired_anchor() -> None:
     legacy_payload = {field.name: getattr(spec, field.name) for field in fields(spec) if field.init}
     legacy_payload.pop("decision_anchor")
 
-    assert spec.content_hash != canonical_artifact_hash(legacy_payload)
+    assert spec.content_hash != canonical_research_hash(legacy_payload)
     with pytest.raises(ValueError, match="anchor"):
         replace(spec, decision_anchor="14:50")

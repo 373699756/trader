@@ -40,7 +40,7 @@ from trader.download.infra.baostock_session import (
     logout_baostock,
 )
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_industry_preparation import prepare_history_industries
+from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, prepare_history_industries
 
 
 @dataclass(frozen=True)
@@ -255,13 +255,15 @@ class BaoStockHistorySupplier:
         sdk = load_baostock_sdk()
         versions = BaoStockSourceVersions(sdk.__version__, platform.python_version(), baostock_dependency_versions())
         intervals = prepare_history_industries(
-            calendar,
-            universe,
-            versions.content_hash,
-            self._fetch_industry,
-            cache=industry_cache,
-            progress=self._industry_preparation_progress,
-            cancel_requested=self._cancel_requested,
+            IndustryPreparationRequest(
+                calendar,
+                universe,
+                versions.content_hash,
+                self._fetch_industry,
+                cache=industry_cache,
+                progress=self._industry_preparation_progress,
+                cancel_requested=self._cancel_requested,
+            )
         )
         return HistorySupplierContext(calendar, universe, versions, intervals)
 

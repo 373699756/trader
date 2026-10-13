@@ -34,12 +34,12 @@ from trader.download.infra.exchange_security_universe import (
     load_current_a_share_universe,
     select_st_eligible_universe,
 )
-from trader.download.infra.history_archive_gateway import HistoryArchiveGateway
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_reference_files import history_st_evidence_path
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
-from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.download.infra.history_sync_gateway import HistorySyncGateway
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
@@ -73,11 +73,6 @@ from trader.infra.settings import (
     load_long_watchlist,
     load_runtime_settings,
     load_strategy_settings,
-)
-from trader.infra.settings.recommendation_policy import (
-    _long_group_definitions,
-    _long_item_definitions,
-    _recommendation_policy,
 )
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
@@ -159,6 +154,11 @@ from trader.recommendation.infra.persistence.data_plane_initialization import _i
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
+from trader.recommendation.infra.policy_settings import (
+    _long_group_definitions,
+    _long_item_definitions,
+    _recommendation_policy,
+)
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem
 from trader.recommendation.infra.runtime.initialization import (
     fixed_cache_ttl as _fixed_cache_ttl,
@@ -173,7 +173,7 @@ from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
-from trader.training.infra.research.research_trace_archive import ResearchTraceLimits, SQLiteResearchTraceArchive
+from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
 from trader.training.infra.training_settings import load_profile_training_settings
 from trader.web import create_app
 
@@ -224,7 +224,7 @@ def execute_history_download(
                 )
             )
             return DownloadHistoryUseCase(
-                HistoryArchiveGateway(worker_pool=history_pool, writer_pool=history_writer)
+                HistorySyncGateway(worker_pool=history_pool, writer_pool=history_writer)
             ).execute(
                 configuration,
                 HistorySupplierRouter(
@@ -283,7 +283,7 @@ def execute_qfq_download(
     history_root = project_root / "data/history"
     v2 = SQLiteQfqWindowCache(root, "v2")
     v3 = SQLiteQfqWindowCache(root, "v3")
-    history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(history_root))
+    history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
     started = time.monotonic()
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
@@ -399,21 +399,21 @@ def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvide
         probe = FreeSourceH1CapabilityProbe(transport, timeout_seconds=command.timeout_seconds)
         if isinstance(command, CapabilityCommand):
             from trader.training.application.capability_completion import CompleteCapabilityEvidence
-            from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
+            from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
             return CompleteCapabilityEvidence(
                 probe,
-                SQLiteH1PointInTimeArchive(command.runtime_dir),
+                SQLiteH1PointInTimeSnapshot(command.runtime_dir),
                 CapabilityEvidencePublisher(command.artifact_dir),
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
         if isinstance(command, QualificationCommand):
             from functools import partial
 
-            from trader.download.infra.history_archive_status import inspect_history_archive
+            from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
             from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 
             return QualifyPointInTimeData(
-                partial(inspect_history_archive, command.history_root, verify_partitions=True),
+                partial(inspect_history_snapshot, command.history_root, verify_partitions=True),
                 HistoricalIndustryEvidenceReader(command.history_root),
                 probe,
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
@@ -463,7 +463,7 @@ class _PublicationContext:
     tomorrow_records: SQLiteDecisionRecords
     tomorrow_index: UnifiedDecisionIndex
     decision_drafts: UnifiedDecisionDraftIndex
-    research_trace: SQLiteResearchTraceArchive
+    research_trace: SQLiteResearchTraceIndex
     long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
@@ -488,7 +488,7 @@ def build_system(
     budget_path: Path | None = None,
     owns_shared_runtime: bool = True,
 ) -> ApplicationSystem[
-    SQLiteResearchTraceArchive,
+    SQLiteResearchTraceIndex,
     SQLiteOutcomeEvidenceRepository,
     QfqDailyMaintenance,
     UnifiedWebServices,
@@ -953,7 +953,7 @@ def _build_market_data(
         wall_clock=now,
     )
     history_root = settings.project_root / "data" / "history"
-    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(history_root))
+    published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
     history_cache = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(
             SQLiteQfqWindowCache(settings.project_root / "data/qfq", "v2" if history_lookback_sessions > 61 else "v3")
@@ -1127,7 +1127,7 @@ def _build_publication(
     )
     clock = ShanghaiClock(context.now)
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, market_data)
-    research_trace = SQLiteResearchTraceArchive(
+    research_trace = SQLiteResearchTraceIndex(
         settings.runtime_dir,
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )

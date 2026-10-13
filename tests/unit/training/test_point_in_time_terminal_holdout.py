@@ -10,10 +10,10 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     H1PointInTimeSpec,
     build_h1_capability_audit,
 )
-from trader.training.infra.research.h1_point_in_time_archive import SQLiteH1PointInTimeArchive
-from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityArtifactArchive
-from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionArtifactArchive
-from trader.training.infra.research.historical_label_artifacts import HistoricalLabelArtifactArchive
+from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityEvidenceIndex
+from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionEvidenceFiles
+from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
+from trader.training.infra.research.historical_label_evidence import HistoricalLabelEvidenceIndex
 
 
 def main(argv):
@@ -31,14 +31,14 @@ def _seal_h1_research_parent(root):
         ),
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
-    archive = SQLiteH1PointInTimeArchive(root / "archive")
+    archive = SQLiteH1PointInTimeSnapshot(root / "archive")
     completion = complete_h1_research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")),
     )
-    H1CapabilityArtifactArchive(root).write(capability)
-    HistoricalLabelArtifactArchive(root).write(completion.labels)
-    H1ResearchCompletionArtifactArchive(root).write(completion)
+    H1CapabilityEvidenceIndex(root).write(capability)
+    HistoricalLabelEvidenceIndex(root).write(completion.labels)
+    H1ResearchCompletionEvidenceFiles(root).write(completion)
 
 
 def test_point_in_time_script_seals_two_parent_insufficient_reports_and_conclusion(tmp_path, capsys) -> None:

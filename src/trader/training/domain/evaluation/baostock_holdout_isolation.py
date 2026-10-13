@@ -9,7 +9,7 @@ from datetime import date
 from enum import Enum
 from typing import Literal
 
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 BAOSTOCK_HOLDOUT_ISOLATION_CONTRACT = "baostock_holdout_isolation_contract"
 BAOSTOCK_DAILY_IDENTITY = "baostock_daily_core"
@@ -87,7 +87,7 @@ class BaoStockHoldoutIsolationInput:
         if any(not set(values) <= complete_dates for values in consumed_groups):
             raise ValueError("BaoStock consumed and reserved dates must belong to the complete calendar")
 
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 @dataclass(frozen=True)
@@ -126,7 +126,7 @@ class BaoStockHoldoutIsolationAudit:
             raise ValueError("blocked BaoStock holdout audit requires blockers")
         if self.point_in_time_parity or self.terminal_holdout_opened or self.production_authority:
             raise ValueError("BaoStock daily-close audit cannot grant holdout or production authority")
-        object.__setattr__(self, "content_hash", canonical_artifact_hash(self))
+        object.__setattr__(self, "content_hash", canonical_research_hash(self))
 
 
 def audit_baostock_holdout_isolation(

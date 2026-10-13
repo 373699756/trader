@@ -10,9 +10,9 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.domain.scoring.residualization import ExposureContract
 from trader.training.infra.model_bundles.bundle_codec import (
-    TrainedHeadBundleArtifact,
-    TrainedLightGBMModelArtifact,
-    TrainedRidgeModelArtifact,
+    TrainedHeadModelBundle,
+    TrainedLightGBMModelSnapshot,
+    TrainedRidgeModelSnapshot,
 )
 
 
@@ -20,19 +20,19 @@ class TrainedHeadPredictor:
     def __init__(
         self,
         profile_id: ScoringProfileId,
-        artifact: TrainedHeadBundleArtifact,
+        bundle: TrainedHeadModelBundle,
         strategy: Strategy,
     ) -> None:
-        if artifact.strategy is not strategy:
+        if bundle.strategy is not strategy:
             raise ValueError("trained predictor strategy does not match its artifact")
         self._profile_id = profile_id
-        self._artifact = artifact
+        self._bundle = bundle
         self._strategy = strategy
-        self._models = dict(artifact.industries)
+        self._models = dict(bundle.industries)
         self._boosters = {
             industry: lgb.Booster(model_str=model.lightgbm_model)
-            for industry, model in artifact.industries
-            if isinstance(model, TrainedLightGBMModelArtifact)
+            for industry, model in bundle.industries
+            if isinstance(model, TrainedLightGBMModelSnapshot)
         }
 
     @property
@@ -41,19 +41,19 @@ class TrainedHeadPredictor:
 
     @property
     def model_id(self) -> str:
-        return self._artifact.model_id
+        return self._bundle.model_id
 
     @property
     def model_hash(self) -> str:
-        return self._artifact.content_hash
+        return self._bundle.content_hash
 
     @property
     def feature_ids(self) -> tuple[str, ...]:
-        return self._artifact.feature_ids
+        return self._bundle.feature_ids
 
     @property
     def exposure_contract(self) -> ExposureContract:
-        return self._artifact.exposure_contract
+        return self._bundle.exposure_contract
 
     @property
     def industry_ids(self) -> tuple[str, ...]:
@@ -71,7 +71,7 @@ class TrainedHeadPredictor:
     def _predict_one(
         self,
         item: ModelInput,
-        model: TrainedRidgeModelArtifact | TrainedLightGBMModelArtifact,
+        model: TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot,
     ) -> ModelPrediction:
         matrix = np.asarray((item.alpha_features,), dtype=np.float64)
         if matrix.shape[1:] != (len(self.feature_ids),):
@@ -79,7 +79,7 @@ class TrainedHeadPredictor:
         means = np.asarray(model.transformer_means, dtype=np.float64)
         scales = np.asarray(model.transformer_scales, dtype=np.float64)
         standardized = (matrix - means) / scales
-        if isinstance(model, TrainedLightGBMModelArtifact):
+        if isinstance(model, TrainedLightGBMModelSnapshot):
             booster = self._boosters[item.industry]
             predicted = float(
                 booster.predict(standardized, num_iteration=model.lightgbm_best_iteration, num_threads=1)[0]

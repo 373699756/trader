@@ -22,10 +22,10 @@ from trader.training.application.factor_diagnostic_report import (
     QuintileValues,
     StratumDimension,
 )
-from trader.training.domain.evaluation.artifact_identity import (
-    canonical_artifact_hash,
-    canonical_artifact_json,
-    canonical_artifact_value,
+from trader.training.domain.evaluation.research_identity import (
+    canonical_research_hash,
+    canonical_research_json,
+    canonical_research_value,
 )
 
 _REPORT_NAME = "score-factor-diagnostic-report.json"
@@ -35,7 +35,7 @@ class FactorDiagnosticReportConflictError(RuntimeError):
     pass
 
 
-class JsonFactorDiagnosticReportArchive:
+class JsonFactorDiagnosticReportIndex:
     """Write one factor report identity once and verify every subsequent read."""
 
     def __init__(self, root: Path) -> None:
@@ -49,11 +49,11 @@ class JsonFactorDiagnosticReportArchive:
             if existing.report_hash != report.report_hash:
                 raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
             return existing
-        payload = canonical_artifact_value(report)
+        payload = canonical_research_value(report)
         if not isinstance(payload, dict):
             raise TypeError("factor diagnostic report payload must be an object")
         payload["report_hash"] = report.report_hash
-        if not publish_immutable(path, canonical_artifact_json(payload)):
+        if not publish_immutable(path, canonical_research_json(payload)):
             existing = self.verify()
             if existing.report_hash != report.report_hash:
                 raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
@@ -67,7 +67,7 @@ class JsonFactorDiagnosticReportArchive:
             if not isinstance(raw, dict):
                 raise TypeError("factor report payload is not an object")
             persisted_hash = raw.pop("report_hash")
-            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
                 raise ValueError("factor report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -266,4 +266,4 @@ def _int_triple(value: object) -> tuple[int, int, int]:
     return _integer(raw[0]), _integer(raw[1]), _integer(raw[2])
 
 
-__all__ = ["FactorDiagnosticReportConflictError", "JsonFactorDiagnosticReportArchive"]
+__all__ = ["FactorDiagnosticReportConflictError", "JsonFactorDiagnosticReportIndex"]

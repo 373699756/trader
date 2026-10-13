@@ -8,11 +8,11 @@ import pytest
 from trader.recommendation.domain.candidate.filters import (
     FilterTier,
     HardFilterPolicy,
+    apply_filters,
     board_for_code,
     hard_filter,
     level_one_filter_rules,
     level_two_filter_rules,
-    apply_filters,
 )
 from trader.recommendation.domain.market.models import Board
 

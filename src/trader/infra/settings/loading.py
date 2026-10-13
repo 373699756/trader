@@ -49,10 +49,10 @@ from trader.infra.settings.parser import (
 from trader.infra.settings.parser import (
     number_mapping as _number_mapping,
 )
+from trader.infra.settings.parser import read_config_sections as _read_config_sections
 from trader.infra.settings.parser import (
     read_json_object as _read_json_object,
 )
-from trader.infra.settings.parser import read_config_sections as _read_config_sections
 from trader.infra.settings.parser import require_exact_keys as _require_exact_keys
 from trader.infra.settings.parser import (
     text as _text,

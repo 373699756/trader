@@ -8,14 +8,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.unit.infra.research.test_history_archive_sync import NOW, FakeSupplier, _download
+from tests.unit.infra.research.test_history_sync import NOW, FakeSupplier
 from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _current_universe
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.domain.security_eligibility import is_st_security_name
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_reference_files import (
     HistoryReferenceIndex,
@@ -27,6 +26,7 @@ from trader.download.infra.history_reference_files import (
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_st_source import HistoryStNameSource, parse_name_history_st
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
+from trader.download.infra.history_sync_runner import run_history_sync
 
 
 @pytest.mark.parametrize(
@@ -360,7 +360,7 @@ def test_st_checks_refill_available_worker_without_waiting_for_slowest_stock(tmp
 
 @pytest.mark.parametrize("damage", ("missing", "tampered"))
 def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, damage):
-    from trader.download.infra.history_archive_status import inspect_history_archive
+    from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
 
     root = tmp_path / "baostock"
     dates = (date(2026, 9, 8), date(2026, 9, 9))
@@ -375,16 +375,16 @@ def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, da
         path.unlink()
     else:
         path.write_text("{}")
-    assert inspect_history_archive(root, verify_partitions=True).reason == "history_reference_unavailable"
+    assert inspect_history_snapshot(root, verify_partitions=True).reason == "history_reference_unavailable"
     supplier.calls.clear()
     assert run_history_sync(config, supplier, clock=lambda: NOW).state == "already_current"
     assert supplier.calls == []
-    assert inspect_history_archive(root, verify_partitions=True).state == "active"
+    assert inspect_history_snapshot(root, verify_partitions=True).state == "active"
 
 
 def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
     from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
-    from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+    from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     config = HistorySyncConfiguration(tmp_path / "baostock", sessions=2, reread_sessions=2, minimum_free_bytes=0)
@@ -414,7 +414,7 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
     assert {item.code for item in reader.iter_range(dates[0], dates[-1], snapshot)} == {"600001"}
     assert {item.code for item in reader.iter_range_by_code(dates[0], dates[-1], snapshot)} == {"600001"}
     assert {item.code for item in reader.iter_snapshot_revisions(snapshot)} == {"600001"}
-    published = SQLitePublishedHistoryArchive(config.archive_root)
+    published = SQLitePublishedHistorySnapshot(config.archive_root)
     manifest = published.manifest()
     assert manifest.universe_codes == ("600001",)
     assert [item.code for item in published.read_windows(manifest, ("600001", "600002"), sessions=2)] == ["600001"]

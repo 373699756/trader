@@ -7,9 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_candidate_recall_ledger_is_offline_and_uses_fixed_research_boundaries() -> None:
     domain = (ROOT / "src/trader/training/domain/evaluation/candidate_recall_ledger.py").read_text(encoding="utf-8")
-    application = (ROOT / "src/trader/training/application/candidate_recall_ledger.py").read_text(
-        encoding="utf-8"
-    )
+    application = (ROOT / "src/trader/training/application/candidate_recall_ledger.py").read_text(encoding="utf-8")
 
     assert "CANDIDATE_RECALL_TOP_K = (10, 20, 50)" in domain
     for boundary in (

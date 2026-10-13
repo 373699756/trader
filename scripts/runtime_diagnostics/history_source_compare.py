@@ -26,10 +26,10 @@ from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.download_settings import load_history_sync_configuration
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_reference_files import read_bound_history_reference
 from trader.download.infra.history_supplier_router import fetch_tencent_history_window
+from trader.download.infra.history_sync_runner import run_history_sync
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,

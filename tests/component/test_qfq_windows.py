@@ -778,7 +778,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
         return StSource()
 
     _install_download_config(tmp_path)
-    monkeypatch.setattr(bootstrap, "SQLitePublishedHistoryArchive", lambda _root: HistoryPublication())
+    monkeypatch.setattr(bootstrap, "SQLitePublishedHistorySnapshot", lambda _root: HistoryPublication())
     monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
     monkeypatch.setattr(bootstrap, "load_current_a_share_universe", lambda *_args: (eligible, excluded))
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
@@ -820,9 +820,9 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    from tests.unit.infra.research.test_history_archive_sync import FakeSupplier, _configuration
+    from tests.unit.infra.research.test_history_sync import FakeSupplier, _configuration
     from trader import bootstrap
-    from trader.download.infra.history_archive_sync import run_history_sync
+    from trader.download.infra.history_sync_runner import run_history_sync
 
     barrier = threading.Barrier(2)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)

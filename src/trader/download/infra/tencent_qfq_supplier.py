@@ -75,6 +75,14 @@ class _WindowQuery:
 
 
 @dataclass(frozen=True)
+class _SideFetch:
+    session: requests.Session
+    query: _WindowQuery
+    mode: Literal["bfq", "qfq"]
+    host: Literal["proxy", "direct"]
+
+
+@dataclass(frozen=True)
 class _SideAttempt:
     sides: tuple[PublishedHistorySide, ...] = ()
     pending: bool = False
@@ -87,7 +95,7 @@ class _SideDownload:
     pending_dates: tuple[date, ...]
 
 
-class _QfqPagePending(Exception):
+class _QfqPagePendingError(Exception):
     def __init__(self, sides: tuple[PublishedHistorySide, ...], *, retry_alternate: bool = False) -> None:
         self.sides = sides
         self.retry_alternate = retry_alternate
@@ -240,7 +248,7 @@ class TencentQfqSupplier:
     ) -> _SideAttempt:
         try:
             return _SideAttempt(tuple(self._fetch_side(session, query, mode, host).values()))
-        except _QfqPagePending as exc:
+        except _QfqPagePendingError as exc:
             return _SideAttempt(exc.sides, pending=True, retry_alternate=exc.retry_alternate)
         except RuntimeError as exc:
             if str(exc) != "tencent_qfq_request_failed":
@@ -264,30 +272,39 @@ class TencentQfqSupplier:
         result, count = self._read_side_page(session, query, mode, host, dates[-1])
         if mode != "qfq":
             return result
+        fetch = _SideFetch(session, query, mode, host)
         for _ in range(_MAX_QFQ_PAGES - 1):
             if count < _QFQ_PAGE_ROWS or not result or min(result) <= dates[0]:
                 return result
             boundary = min(result)
-            try:
-                older, count = self._read_side_page(session, query, mode, host, boundary)
-            except RuntimeError as exc:
-                if str(exc) == "tencent_qfq_cancelled":
-                    raise
-                raise _QfqPagePending(tuple(result.values()), retry_alternate=True) from exc
-            except ValueError as exc:
-                retry_alternate = isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected"
-                raise _QfqPagePending(tuple(result.values()), retry_alternate=retry_alternate) from exc
+            older, count = self._read_older_qfq_page(fetch, boundary, result)
             if boundary not in older or any(result[day] != side for day, side in older.items() if day in result):
-                raise _QfqPagePending(tuple(result.values()))
+                raise _QfqPagePendingError(tuple(result.values()))
             new = {day: side for day, side in older.items() if day < boundary}
             if not new:
                 if count < _QFQ_PAGE_ROWS:
                     return result
-                raise _QfqPagePending(tuple(result.values()))
+                raise _QfqPagePendingError(tuple(result.values()))
             result.update(new)
         if count == _QFQ_PAGE_ROWS and min(result) > dates[0]:
-            raise _QfqPagePending(tuple(result.values()))
+            raise _QfqPagePendingError(tuple(result.values()))
         return result
+
+    def _read_older_qfq_page(
+        self,
+        fetch: _SideFetch,
+        boundary: date,
+        current: dict[date, PublishedHistorySide],
+    ) -> tuple[dict[date, PublishedHistorySide], int]:
+        try:
+            return self._read_side_page(fetch.session, fetch.query, fetch.mode, fetch.host, boundary)
+        except RuntimeError as exc:
+            if str(exc) == "tencent_qfq_cancelled":
+                raise
+            raise _QfqPagePendingError(tuple(current.values()), retry_alternate=True) from exc
+        except ValueError as exc:
+            retry_alternate = isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected"
+            raise _QfqPagePendingError(tuple(current.values()), retry_alternate=retry_alternate) from exc
 
     def _read_side_page(
         self,

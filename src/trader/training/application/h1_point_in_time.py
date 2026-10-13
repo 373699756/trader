@@ -27,7 +27,7 @@ class PointInTimeUniverseProvider(Protocol):
     def fetch(self) -> Sequence[HistoricalSecurity]: ...
 
 
-class H1PointInTimeArchivePort(Protocol):
+class H1PointInTimeSnapshotPort(Protocol):
     def registered_universe(self, strategy: ResearchStrategy) -> tuple[HistoricalSecurity, ...]: ...
 
     def register_universe(self, spec: H1PointInTimeSpec, universe: Sequence[HistoricalSecurity]) -> None: ...
@@ -72,7 +72,7 @@ class H1PointInTimeDownloadService:
         self,
         universe: PointInTimeUniverseProvider,
         history: H1PointInTimeProvider,
-        archive: H1PointInTimeArchivePort,
+        archive: H1PointInTimeSnapshotPort,
         executor: WorkerExecutor,
         *,
         workers: int = 5,
@@ -199,7 +199,7 @@ def _error_code(exc: BaseException) -> str:
 
 
 __all__ = [
-    "H1PointInTimeArchivePort",
+    "H1PointInTimeSnapshotPort",
     "H1CapabilityProbePort",
     "H1PointInTimeDownloadResult",
     "H1PointInTimeDownloadService",

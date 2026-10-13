@@ -109,7 +109,10 @@ def test_only_unified_product_routes_are_registered() -> None:
 
 def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
     _, queries, stream = _app()
-    status_provider = lambda: {"status": "running", "phase": "morning_main"}
+
+    def status_provider() -> dict[str, str]:
+        return {"status": "running", "phase": "morning_main"}
+
     services = ProfiledWebServices(
         {
             "v2": UnifiedWebServices(queries, stream, status_provider, profile_id="v2"),

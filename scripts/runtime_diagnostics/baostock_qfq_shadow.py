@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.download.infra.history_archive_status import HistoryArchiveError, load_active_history_archive
+from trader.download.infra.history_snapshot_inspection import (
+    HistorySnapshotInspectionError,
+    load_active_history_snapshot,
+)
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
 from .reporting import emit_report
@@ -34,11 +37,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_shadow_report(root: Path) -> dict[str, object]:
-    archive = load_active_history_archive(root)
+    archive = load_active_history_snapshot(root)
     cutoff = archive.snapshot.data_cutoff
     sessions = tuple(day for day in archive.calendar.open_dates if day <= cutoff)
     if not sessions:
-        raise HistoryArchiveError("history_snapshot_calendar_empty")
+        raise HistorySnapshotInspectionError("history_snapshot_calendar_empty")
     target_sessions = sessions[-_V2_SESSIONS:]
     target_start = target_sessions[0]
     universe = archive.universe.securities
@@ -135,7 +138,7 @@ def main() -> int:
     args = build_parser().parse_args()
     try:
         report = build_shadow_report(args.history_root.resolve())
-    except (HistoryArchiveError, OSError, RuntimeError, TypeError, ValueError):
+    except (HistorySnapshotInspectionError, OSError, RuntimeError, TypeError, ValueError):
         emit_report(
             {
                 "schema_version": "baostock-qfq-shadow",

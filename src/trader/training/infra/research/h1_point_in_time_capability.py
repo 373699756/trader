@@ -13,7 +13,6 @@ import requests
 from trader.infra.serialization.canonical import canonical_json_text
 from trader.infra.serialization.fields import is_boolean, is_integer, is_text_sequence
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.domain.evaluation.artifact_identity import canonical_artifact_hash
 from trader.training.domain.evaluation.h1_point_in_time import (
     H1_SOURCE_CUTOFF,
     H1CapabilityAuditReport,
@@ -23,6 +22,7 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     ResearchStrategy,
     build_h1_capability_audit,
 )
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 
 
 class _Response(Protocol):
@@ -38,7 +38,7 @@ class PointInTimeSourceSession(Protocol):
     def get(self, url: str, *, params: dict[str, object], timeout: float) -> _Response: ...
 
 
-class H1CapabilityArtifactConflictError(RuntimeError):
+class H1CapabilityEvidenceConflictError(RuntimeError):
     """Raised when a capability artifact is missing, tampered, or conflicting."""
 
 
@@ -131,7 +131,7 @@ class FreeSourceH1CapabilityProbe:
         )
 
 
-class H1CapabilityArtifactArchive:
+class H1CapabilityEvidenceIndex:
     def __init__(self, root: Path) -> None:
         self._root = root
         self._path = root / "h1_capability_audit.json"
@@ -141,14 +141,14 @@ class H1CapabilityArtifactArchive:
         if self._path.exists():
             existing = self.verify()
             if existing.content_hash != report.content_hash:
-                raise H1CapabilityArtifactConflictError("H1 capability artifact identity conflict")
+                raise H1CapabilityEvidenceConflictError("H1 capability artifact identity conflict")
             return existing
         payload = _encode(report)
         if publish_immutable(self._path, canonical_json_text(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != report.content_hash:
-            raise H1CapabilityArtifactConflictError("H1 capability artifact identity conflict")
+            raise H1CapabilityEvidenceConflictError("H1 capability artifact identity conflict")
         return existing
 
     def verify(self) -> H1CapabilityAuditReport:
@@ -157,14 +157,14 @@ class H1CapabilityArtifactArchive:
             if not isinstance(raw, dict):
                 raise TypeError("H1 capability artifact must be an object")
             persisted_hash = raw.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_artifact_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
                 raise ValueError("H1 capability artifact hash mismatch")
             report = _decode(cast(dict[str, object], raw))
             if report.content_hash != persisted_hash:
                 raise ValueError("H1 capability artifact reconstructed hash mismatch")
             return report
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise H1CapabilityArtifactConflictError("H1 capability artifact schema or hash is invalid") from exc
+            raise H1CapabilityEvidenceConflictError("H1 capability artifact schema or hash is invalid") from exc
 
 
 def _json_payload(response: _Response) -> object:
@@ -363,7 +363,7 @@ def _bad() -> float:
 
 __all__ = [
     "FreeSourceH1CapabilityProbe",
-    "H1CapabilityArtifactConflictError",
-    "H1CapabilityArtifactArchive",
+    "H1CapabilityEvidenceConflictError",
+    "H1CapabilityEvidenceIndex",
     "PointInTimeSourceSession",
 ]

@@ -1,9 +1,9 @@
-"""Canonical JSON rendering and content identity for persisted artifacts.
+"""Canonical JSON rendering and content identity for published values.
 
-Artifacts seal themselves with a content hash computed from a canonical JSON
+Published values carry a content hash computed from a canonical JSON
 rendering: ASCII-only, sorted keys, no insignificant whitespace and no
 non-finite numbers. Keeping that rendering in one neutral module is what lets
-the scoring and research packages share artifact identity without importing
+the scoring and research packages share content identity without importing
 each other.
 """
 

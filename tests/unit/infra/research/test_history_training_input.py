@@ -30,11 +30,11 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
-from trader.download.infra.history_archive_sync import run_history_sync
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison
-from trader.download.infra.published_history_archive import SQLitePublishedHistoryArchive
+from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
@@ -44,7 +44,7 @@ from trader.training.infra.history.history_training_due import (
     _revised_dates_since_bundle,
     evaluate_history_training_due,
 )
-from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputArchive
+from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -148,7 +148,7 @@ def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(
         raise AssertionError("training input must not load historical checkpoints")
 
     monkeypatch.setattr(HistoryControlIndex, "load_state", fail_full_history_read)
-    archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
+    archive = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history")
     assert archive.snapshot.active_snapshot_hash == expected_hash
     assert len(tuple(archive.iter_training_rows(frozenset(dates)))) == len(dates)
     assert archive.snapshot.label_cutoff == dates[-2]
@@ -158,7 +158,7 @@ def test_training_input_streams_rows_from_published_snapshot(tmp_path: Path, pre
     archive_root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(archive_root, dates)
-    archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
+    archive = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history")
     assert archive.training_row_upper_bound(frozenset(dates)) >= 3
     assert len(tuple(archive.iter_training_rows(frozenset(dates)))) == 3
 
@@ -174,7 +174,7 @@ def test_training_reader_uses_narrow_projection_without_rechecking_published_pay
         "verify_logical_content",
         classmethod(lambda *_args, **_kwargs: pytest.fail("training must trust the published payload")),
     )
-    archive = SQLiteHistoryTrainingInputArchive.open(archive_root)
+    archive = SQLiteHistoryTrainingInputSnapshot.open(archive_root)
     rows = tuple(archive.iter_training_rows(frozenset(dates)))
     assert len(rows) == len(dates)
     assert all(row.point is not None for row in rows)
@@ -184,7 +184,7 @@ def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Pa
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(62))
     prepared_history(archive_root, dates)
-    archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
+    archive = SQLiteHistoryTrainingInputSnapshot.open(tmp_path / "history")
     progress: list[int] = []
 
     rows = tuple(archive.iter_training_rows(frozenset(dates), progress.append))
@@ -199,9 +199,9 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(251))
     result = prepared_history(archive_root, dates)
-    training = SQLiteHistoryTrainingInputArchive.open(archive_root)
+    training = SQLiteHistoryTrainingInputSnapshot.open(archive_root)
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(archive_root)),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(archive_root)),
         lookback_sessions=251,
     )
 
@@ -220,7 +220,7 @@ def test_recommendation_reads_the_exact_snapshot_published_by_download(tmp_path:
 
 def test_recommendation_without_an_active_snapshot_is_pending_and_never_fabricates_history(tmp_path: Path) -> None:
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(tmp_path / "history")),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")),
         lookback_sessions=61,
     )
     restrictions: dict[str, set[str]] = {}
@@ -242,7 +242,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
     archive_root = tmp_path / "history"
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(archive_root, dates)
-    archive = SQLitePublishedHistoryArchive(archive_root)
+    archive = SQLitePublishedHistorySnapshot(archive_root)
     manifest = archive.manifest()
     assert manifest is not None
     short = SQLiteQfqWindowCache(tmp_path / "qfq", "v3")
@@ -316,7 +316,7 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
         return verify(cls, path, reference, progress)
 
     monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(observed))
-    archive = SQLitePublishedHistoryArchive(tmp_path / "history")
+    archive = SQLitePublishedHistorySnapshot(tmp_path / "history")
     manifest = archive.manifest()
     history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
     assert history.refresh()
@@ -340,7 +340,7 @@ def test_deadline_bound_history_load_never_starts_an_archive_scan(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    archive = SQLitePublishedHistoryArchive(tmp_path / "history")
+    archive = SQLitePublishedHistorySnapshot(tmp_path / "history")
     history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
 
     def unexpected_manifest():
@@ -359,7 +359,7 @@ def test_recommendation_retains_the_last_valid_projection_when_the_archive_becom
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(archive_root, dates)
     history = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLitePublishedHistoryArchive(archive_root)),
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(archive_root)),
         lookback_sessions=61,
     )
     assert history.refresh() is True

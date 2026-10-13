@@ -125,7 +125,7 @@ _INDUSTRY_COMMON_FIELDS = {
 
 
 @dataclass(frozen=True)
-class TrainedIndustryModelArtifact:
+class TrainedIndustryModelSnapshot:
     transformer_means: tuple[float, ...]
     transformer_scales: tuple[float, ...]
     calibration_intercept: float
@@ -135,19 +135,19 @@ class TrainedIndustryModelArtifact:
 
 
 @dataclass(frozen=True)
-class TrainedRidgeModelArtifact(TrainedIndustryModelArtifact):
+class TrainedRidgeModelSnapshot(TrainedIndustryModelSnapshot):
     ridge_intercept: float
     ridge_coefficients: tuple[float, ...]
 
 
 @dataclass(frozen=True)
-class TrainedLightGBMModelArtifact(TrainedIndustryModelArtifact):
+class TrainedLightGBMModelSnapshot(TrainedIndustryModelSnapshot):
     lightgbm_model: str
     lightgbm_best_iteration: int
 
 
 @dataclass(frozen=True)
-class TrainedHeadBundleArtifact:
+class TrainedHeadModelBundle:
     serialization_profile_id: ScoringProfileId
     strategy: Strategy
     model_id: str
@@ -175,7 +175,7 @@ class TrainedHeadBundleArtifact:
     point_in_time_parity: Literal[False]
     training_rows: int
     validation_rows: int
-    industries: tuple[tuple[str, TrainedRidgeModelArtifact | TrainedLightGBMModelArtifact], ...]
+    industries: tuple[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot], ...]
     dependencies: tuple[tuple[str, str], ...]
     content_hash: str
 
@@ -201,8 +201,8 @@ def load_head_bundle(
     path: Path,
     strategy: Strategy,
     profile: TrainedProfileContract,
-) -> TrainedHeadBundleArtifact:
-    artifact = decode_head_bundle(json.loads(path.read_text(encoding="utf-8")), strategy, profile)
+) -> TrainedHeadModelBundle:
+    bundle = decode_head_bundle(json.loads(path.read_text(encoding="utf-8")), strategy, profile)
     report = _decode_group_document(
         json.loads(path.with_name("report.json").read_text(encoding="utf-8")), strategy, profile, report=True
     )
@@ -210,34 +210,34 @@ def load_head_bundle(
         json.loads(path.with_name("training-input.json").read_text(encoding="utf-8")), strategy, profile, report=False
     )
     expected = (
-        artifact.strategy,
-        artifact.model_id,
-        artifact.training_input_hash,
-        artifact.label_cutoff,
-        artifact.source_identity_hash,
-        artifact.feature_manifest_hash,
-        artifact.split_hash,
-        artifact.training_contract_hash,
-        artifact.training_input_codes,
-        artifact.training_universe_codes,
+        bundle.strategy,
+        bundle.model_id,
+        bundle.training_input_hash,
+        bundle.label_cutoff,
+        bundle.source_identity_hash,
+        bundle.feature_manifest_hash,
+        bundle.split_hash,
+        bundle.training_contract_hash,
+        bundle.training_input_codes,
+        bundle.training_universe_codes,
     )
     if (
-        artifact.report_hash != report.content_hash
-        or artifact.training_input_document_hash != training_input.content_hash
+        bundle.report_hash != report.content_hash
+        or bundle.training_input_document_hash != training_input.content_hash
         or report.training_input_document_hash != training_input.content_hash
-        or report.model_payload_hash != artifact.model_payload_hash
+        or report.model_payload_hash != bundle.model_payload_hash
         or _identity_tuple(report) != expected
         or _identity_tuple(training_input) != expected
     ):
         raise ValueError("trained strategy-head bundle files have inconsistent identities")
-    return artifact
+    return bundle
 
 
 def decode_head_bundle(
     document: object,
     strategy: Strategy,
     profile: TrainedProfileContract,
-) -> TrainedHeadBundleArtifact:
+) -> TrainedHeadModelBundle:
     payload, declared_hash = _hashed_object(document, _MODEL_FIELDS, "model")
     contract = profile.head_for_strategy(strategy)
     feature_ids = tuple(_string_list(payload, "feature_ids"))
@@ -286,7 +286,7 @@ def decode_head_bundle(
     universe_codes = _integer(payload, "training_universe_codes")
     if input_codes < 1 or universe_codes != input_codes:
         raise ValueError("trained-head complete training input coverage is invalid")
-    return TrainedHeadBundleArtifact(
+    return TrainedHeadModelBundle(
         profile.profile_id,
         strategy,
         contract.model_id,
@@ -438,11 +438,11 @@ def _hashed_object(document: object, fields: set[str], label: str) -> tuple[dict
 
 def _decode_industries(
     payload: dict[str, object], width: int, algorithm: TrainedAlgorithm
-) -> tuple[tuple[str, TrainedRidgeModelArtifact | TrainedLightGBMModelArtifact], ...]:
+) -> tuple[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot], ...]:
     raw = payload.get("industries")
     if not isinstance(raw, dict) or not raw:
         raise ValueError("trained-head industry models are missing")
-    result: list[tuple[str, TrainedRidgeModelArtifact | TrainedLightGBMModelArtifact]] = []
+    result: list[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot]] = []
     model_fields = (
         {"lightgbm_model", "lightgbm_best_iteration"}
         if algorithm == "lightgbm"
@@ -471,7 +471,7 @@ def _decode_industries(
         if algorithm == "lightgbm":
             if _integer(values, "lightgbm_best_iteration") < 1:
                 raise ValueError("trained-head LightGBM iteration is invalid")
-            model: TrainedRidgeModelArtifact | TrainedLightGBMModelArtifact = TrainedLightGBMModelArtifact(
+            model: TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot = TrainedLightGBMModelSnapshot(
                 transformer_means=means,
                 transformer_scales=scales,
                 calibration_intercept=calibration_intercept,
@@ -485,7 +485,7 @@ def _decode_industries(
             coefficients = tuple(_number_list(values, "ridge_coefficients"))
             if len(coefficients) != width:
                 raise ValueError("trained-head Ridge dimensions are invalid")
-            model = TrainedRidgeModelArtifact(
+            model = TrainedRidgeModelSnapshot(
                 transformer_means=means,
                 transformer_scales=scales,
                 calibration_intercept=calibration_intercept,
@@ -613,10 +613,10 @@ def _number_list(payload: dict[str, object], name: str) -> list[float]:
 
 
 __all__ = [
-    "TrainedHeadBundleArtifact",
-    "TrainedIndustryModelArtifact",
-    "TrainedRidgeModelArtifact",
-    "TrainedLightGBMModelArtifact",
+    "TrainedHeadModelBundle",
+    "TrainedIndustryModelSnapshot",
+    "TrainedRidgeModelSnapshot",
+    "TrainedLightGBMModelSnapshot",
     "decode_head_bundle",
     "load_head_bundle",
 ]

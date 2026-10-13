@@ -1,0 +1,487 @@
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import replace
+from datetime import date, datetime, timedelta
+from hashlib import sha256
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from tests.unit.domain.test_decision_identity import decision
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
+    DecisionObservation,
+    build_decision_committed,
+)
+from trader.training.application.research_audit import (
+    LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
+    CommittedResearchAudit,
+    ResearchCandidateAudit,
+    ResearchDecisionCandidateAudit,
+    ResearchDecisionSetAudit,
+    ResearchPopulationAudit,
+    point_in_time_population_hash,
+)
+from trader.training.infra.research.research_trace_index import (
+    LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+    ResearchTraceCapacityError,
+    ResearchTraceConflictError,
+    ResearchTraceLimits,
+    SQLiteResearchTraceIndex,
+)
+from trader.training.infra.research.trace_projection import observation_bytes
+
+
+def _persistent_event(value):
+    return DecisionObservation(build_decision_committed(value), None).materialize().event
+
+
+def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_path) -> None:
+    event = _persistent_event(decision())
+    audit = _audit(event.decision_version, event.decision_hash)
+    observation = DecisionObservation(event, audit)
+    first = SQLiteResearchTraceIndex(tmp_path)
+    first.initialize()
+
+    first.record(observation)
+    first.record(observation)
+
+    reopened = SQLiteResearchTraceIndex(tmp_path)
+    reopened.initialize()
+    assert reopened.get(event.decision_version) == observation
+    assert reopened.list_trade_dates(limit=4) == (event.trade_date,)
+    assert reopened.list_by_trade_date(event.trade_date) == (observation,)
+    assert reopened.status().retained == 1
+    assert first.status().duplicate == 1
+
+
+def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tmp_path) -> None:
+    event = _persistent_event(decision())
+    legacy_audit = _legacy_audit(event.decision_version, event.decision_hash)
+    observation = DecisionObservation(event, legacy_audit)
+    archive = SQLiteResearchTraceIndex(tmp_path, use_legacy_layout=True)
+    archive.initialize()
+
+    with pytest.raises(ValueError, match="read-only"):
+        archive.record(observation)
+
+    payload = observation_bytes(
+        observation,
+        schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+        legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+        current_schema_version="research_committed_event",
+    )
+    database = tmp_path / "research" / "committed-events.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO committed_events (
+                decision_version, strategy, trade_date, observed_at,
+                decision_hash, schema_version, payload_hash, payload
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.decision_version,
+                event.strategy.value,
+                event.trade_date.isoformat(),
+                event.observed_at.isoformat(),
+                event.decision_hash,
+                LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+                sha256(payload).hexdigest(),
+                payload,
+            ),
+        )
+
+    assert SQLiteResearchTraceIndex(tmp_path).get(event.decision_version) == observation
+
+
+def test_point_in_time_population_survives_restart_and_obeys_cutoff(tmp_path) -> None:
+    before = replace(
+        decision(sequence=1),
+        observed_at=datetime(2026, 8, 11, 15, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    before_event = _persistent_event(before)
+    before_audit = _point_in_time_audit(before_event.decision_version, before_event.decision_hash, before.observed_at)
+    before_observation = DecisionObservation(before_event, before_audit)
+    late = replace(
+        before,
+        sequence=2,
+        observed_at=datetime(2026, 8, 11, 15, 0, 1, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    late_event = _persistent_event(late)
+    late_observation = DecisionObservation(
+        late_event,
+        _point_in_time_audit(late_event.decision_version, late_event.decision_hash, late.observed_at),
+    )
+    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive.record(before_observation)
+    archive.record(late_observation)
+
+    reopened = SQLiteResearchTraceIndex(tmp_path)
+
+    assert reopened.get(before_event.decision_version) == before_observation
+    assert reopened.latest_point_in_time_observation(before.trade_date, before.strategy) == before_observation
+
+
+def test_committed_event_trace_reports_first_observation_per_trade_date(tmp_path) -> None:
+    archive = SQLiteResearchTraceIndex(tmp_path)
+    base = decision()
+    late = replace(base, sequence=2, observed_at=datetime(2026, 8, 11, 15, 1, tzinfo=ZoneInfo("Asia/Shanghai")))
+    following = replace(
+        base,
+        sequence=3,
+        trade_date=base.trade_date + timedelta(days=1),
+        observed_at=datetime(2026, 8, 12, 14, 45, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    for item in (late, base, following):
+        event = _persistent_event(item)
+        archive.record(DecisionObservation(event, None))
+
+    observations = archive.inspect_first_observations(limit=4)
+
+    assert tuple(item.trade_date for item in observations) == (following.trade_date, base.trade_date)
+    assert observations[0].observed_at == following.observed_at
+    assert observations[1].observed_at == base.observed_at
+
+
+def test_committed_event_trace_rejects_same_identity_with_different_payload(tmp_path) -> None:
+    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive.initialize()
+    event = _persistent_event(decision())
+    archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
+
+    with pytest.raises(ResearchTraceConflictError):
+        archive.record(DecisionObservation(replace(event, degraded_reasons=("conflicting_trace",)), None))
+
+
+def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
+    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive.initialize()
+    event = _persistent_event(decision())
+    archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
+    database = tmp_path / "research" / "committed-events" / f"{event.trade_date.isoformat()}.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE committed_events SET payload = ? WHERE decision_version = ?",
+            (b"{}", event.decision_version),
+        )
+
+    reopened = SQLiteResearchTraceIndex(tmp_path)
+    reopened.initialize()
+
+    assert reopened.get(event.decision_version) is None
+    assert reopened.status().quarantined == 1
+
+
+def test_committed_event_trace_refuses_capacity_without_deleting_immutable_rows(tmp_path) -> None:
+    archive = SQLiteResearchTraceIndex(tmp_path, limits=ResearchTraceLimits(events_per_trade_date=1))
+    archive.initialize()
+    first = _persistent_event(decision(sequence=1))
+    archive.record(DecisionObservation(first, _audit(first.decision_version, first.decision_hash)))
+
+    with pytest.raises(RuntimeError, match="capacity"):
+        second = _persistent_event(decision(sequence=2))
+        archive.record(DecisionObservation(second, _audit(second.decision_version, second.decision_hash)))
+
+    assert archive.status().retained == 1
+
+
+def test_committed_event_trace_rejects_payload_over_byte_limit(tmp_path) -> None:
+    archive = SQLiteResearchTraceIndex(
+        tmp_path,
+        limits=ResearchTraceLimits(payload_bytes=64, trade_date_bytes=128),
+    )
+
+    with pytest.raises(RuntimeError, match="payload capacity"):
+        archive.record(DecisionObservation(_persistent_event(decision()), None))
+
+    assert archive.status().retained == 0
+
+
+def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path) -> None:
+    event = _persistent_event(decision())
+    audit = _point_in_time_audit(event.decision_version, event.decision_hash, event.observed_at)
+    template = audit.point_in_time_population[0]
+    population = tuple(
+        sorted(
+            (
+                template,
+                *(
+                    replace(template, code=f"{100000 + index:06d}", requested_for_refresh=index < 360)
+                    for index in range(5_290)
+                ),
+            ),
+            key=lambda item: item.code,
+        )
+    )
+    expanded_audit = replace(
+        audit,
+        point_in_time_population=population,
+        point_in_time_population_hash=point_in_time_population_hash(population),
+    )
+    observation = DecisionObservation(event, expanded_audit)
+    logical_payload = observation_bytes(
+        observation,
+        schema_version="research_committed_event",
+        legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
+        current_schema_version="research_committed_event",
+    )
+    assert len(logical_payload) > 4 * 1024 * 1024
+
+    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive.record(observation)
+
+    assert 0 < archive.status().retained_bytes < 4 * 1024 * 1024
+    assert SQLiteResearchTraceIndex(tmp_path).get(event.decision_version) == observation
+
+
+def test_research_trace_rejects_compressed_payload_over_decoded_limit(tmp_path) -> None:
+    archive = SQLiteResearchTraceIndex(
+        tmp_path,
+        limits=ResearchTraceLimits(
+            payload_bytes=4096,
+            decoded_payload_bytes=64,
+            trade_date_bytes=8192,
+        ),
+    )
+
+    with pytest.raises(ResearchTraceCapacityError, match="decoded payload capacity"):
+        archive.record(DecisionObservation(_persistent_event(decision()), None))
+
+
+def test_committed_event_trace_rejects_total_bytes_without_deleting_rows(tmp_path) -> None:
+    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
+    second = DecisionObservation(_persistent_event(decision(sequence=2)), None)
+    probe = SQLiteResearchTraceIndex(tmp_path / "probe")
+    probe.record(first)
+    first_bytes = probe.status().retained_bytes
+    archive = SQLiteResearchTraceIndex(
+        tmp_path / "bounded",
+        limits=ResearchTraceLimits(payload_bytes=first_bytes + 1, trade_date_bytes=first_bytes + 1),
+    )
+    archive.record(first)
+
+    with pytest.raises(RuntimeError, match="capacity"):
+        archive.record(second)
+
+    assert archive.get(first.event.decision_version) == first
+    assert archive.status().retained == 1
+
+
+def test_committed_event_trace_rotates_by_trade_date_and_preserves_full_legacy_database(tmp_path) -> None:
+    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
+    legacy = SQLiteResearchTraceIndex(tmp_path, use_legacy_layout=True)
+    legacy.record(first)
+    legacy_path = tmp_path / "research" / "committed-events.sqlite3"
+    legacy_bytes = legacy_path.read_bytes()
+
+    second_identity = decision(sequence=2)
+    second_identity = replace(
+        second_identity,
+        trade_date=second_identity.trade_date + timedelta(days=1),
+        observed_at=second_identity.observed_at + timedelta(days=1),
+    )
+    second = DecisionObservation(_persistent_event(second_identity), None)
+    partitioned = SQLiteResearchTraceIndex(tmp_path)
+    partitioned.record(second)
+
+    assert legacy_path.read_bytes() == legacy_bytes
+    assert partitioned.get(first.event.decision_version) == first
+    assert partitioned.get(second.event.decision_version) == second
+    assert partitioned.list_trade_dates(limit=4) == (second.event.trade_date, first.event.trade_date)
+    assert partitioned.status().legacy_retained == 1
+    assert partitioned.status().trade_dates == 2
+    assert partitioned.status().trade_date_capacity == 120
+
+
+def test_full_legacy_partition_does_not_block_a_new_trade_date(tmp_path) -> None:
+    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
+    probe = SQLiteResearchTraceIndex(tmp_path / "probe")
+    probe.record(first)
+    payload_bytes = probe.status().retained_bytes
+    legacy = SQLiteResearchTraceIndex(
+        tmp_path,
+        limits=ResearchTraceLimits(payload_bytes=payload_bytes, trade_date_bytes=payload_bytes),
+        use_legacy_layout=True,
+    )
+    legacy.record(first)
+
+    next_identity = decision(sequence=2)
+    next_identity = replace(
+        next_identity,
+        trade_date=next_identity.trade_date + timedelta(days=1),
+        observed_at=next_identity.observed_at + timedelta(days=1),
+    )
+    partitioned = SQLiteResearchTraceIndex(
+        tmp_path,
+        limits=ResearchTraceLimits(
+            payload_bytes=payload_bytes,
+            trade_date_bytes=payload_bytes,
+            archive_bytes=payload_bytes * 3,
+        ),
+    )
+    partitioned.record(DecisionObservation(_persistent_event(next_identity), None))
+
+    assert partitioned.status().retained == 2
+    assert partitioned.status().remaining_bytes > 0
+
+
+def test_archive_capacity_rejects_a_new_partition_without_creating_an_empty_database(tmp_path) -> None:
+    first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
+    probe = SQLiteResearchTraceIndex(tmp_path / "probe")
+    probe.record(first)
+    payload_bytes = probe.status().retained_bytes
+    archive = SQLiteResearchTraceIndex(
+        tmp_path,
+        limits=ResearchTraceLimits(
+            payload_bytes=payload_bytes + 1,
+            trade_date_bytes=payload_bytes + 1,
+            archive_bytes=payload_bytes + 1,
+        ),
+    )
+    archive.record(first)
+    next_identity = replace(
+        decision(sequence=2),
+        trade_date=first.event.trade_date + timedelta(days=1),
+        observed_at=first.event.observed_at + timedelta(days=1),
+    )
+
+    with pytest.raises(ResearchTraceCapacityError, match="archive capacity"):
+        archive.record(DecisionObservation(_persistent_event(next_identity), None))
+
+    rejected_partition = tmp_path / "research" / "committed-events" / f"{next_identity.trade_date.isoformat()}.sqlite3"
+    assert not rejected_partition.exists()
+    assert archive.status().retained == 1
+
+
+def test_formal_replay_without_audit_preserves_existing_committed_audit(tmp_path) -> None:
+    event = _persistent_event(decision())
+    audit = _audit(event.decision_version, event.decision_hash)
+    archive = SQLiteResearchTraceIndex(tmp_path)
+    archive.initialize()
+    archive.record(DecisionObservation(event, audit))
+
+    archive.record(DecisionObservation(event, None))
+
+    assert archive.get(event.decision_version) == DecisionObservation(event, audit)
+    assert archive.status().duplicate == 1
+
+
+def test_committed_research_audit_rejects_decisions_outside_passed_population() -> None:
+    event = _persistent_event(decision())
+    audit = _audit(event.decision_version, event.decision_hash)
+
+    with pytest.raises(ValueError, match="hard-filter passed population"):
+        replace(audit, passed_candidates=())
+
+
+def _audit(decision_version: str, decision_hash: str) -> CommittedResearchAudit:
+    return _point_in_time_audit(
+        decision_version,
+        decision_hash,
+        datetime(2026, 8, 11, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
+
+def _legacy_audit(decision_version: str, decision_hash: str) -> CommittedResearchAudit:
+    decision_set = ResearchDecisionSetAudit(
+        decision_version=decision_version,
+        candidates=(
+            ResearchDecisionCandidateAudit(
+                code="600001",
+                components=(("trend", 88.0),),
+                component_coverage_ratio=1.0,
+                base_score=88.0,
+                local_risk_codes=(),
+                local_risk_penalty=0.0,
+                local_score=88.0,
+                reused_deepseek_facts=False,
+                fusion_applied=False,
+                deepseek_risk_codes=(),
+                deepseek_risk_penalty=0.0,
+                final_score=88.0,
+                action="executable",
+                selected=True,
+                rank=1,
+                board_rank=1,
+                skip_reason="selected",
+            ),
+        ),
+    )
+    return CommittedResearchAudit(
+        decision_version=decision_version,
+        decision_hash=decision_hash,
+        input_version="native-input",
+        hard_filter_aggregates=(("main:st_or_delisting", 2),),
+        passed_candidates=(
+            ResearchCandidateAudit(
+                code="600001",
+                board="main",
+                industry="equipment",
+                candidate_components=(("liquidity", 80.0),),
+                missing_mask=(),
+                coverage_ratio=1.0,
+                board_reliability=1.0,
+                candidate_score=84.0,
+                candidate_rank=1,
+                production_top120=True,
+                preselection_status="selected_for_full_scoring",
+            ),
+        ),
+        production_local=decision_set,
+        research_shadow=decision_set,
+        shadow_mode="control_copy",
+        schema_version=LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
+    )
+
+
+def _point_in_time_audit(decision_version: str, decision_hash: str, observed_at: datetime) -> CommittedResearchAudit:
+    legacy = _legacy_audit(decision_version, decision_hash)
+    population = (
+        ResearchPopulationAudit(
+            code="600001",
+            board="main",
+            industry="equipment",
+            feature_observed_at=observed_at,
+            quote_source_time=observed_at,
+            quote_source="tencent",
+            data_version="market-input",
+            is_st=False,
+            listing_date=date(2010, 1, 1),
+            is_relisted_first_session=False,
+            is_delisting_period_first_session=False,
+            has_delisting_name=False,
+            structured_risk_values=tuple(
+                (name, None)
+                for name in (
+                    "major_shareholder_reduction",
+                    "financial_fraud_history",
+                    "official_investigation_history",
+                    "major_illegal_history",
+                    "fund_occupation_history",
+                    "illegal_guarantee_history",
+                    "forced_delisting_risk",
+                    "unlock_risk",
+                    "pledge_risk",
+                    "financial_deterioration",
+                )
+            ),
+            external_risk_facts=(),
+            filter_reasons=(),
+            disposition="candidate",
+            requested_for_refresh=True,
+        ),
+    )
+    return CommittedResearchAudit(
+        decision_version=legacy.decision_version,
+        decision_hash=legacy.decision_hash,
+        input_version=legacy.input_version,
+        hard_filter_aggregates=legacy.hard_filter_aggregates,
+        passed_candidates=legacy.passed_candidates,
+        production_local=legacy.production_local,
+        research_shadow=legacy.research_shadow,
+        shadow_mode=legacy.shadow_mode,
+        input_observed_at=observed_at,
+        point_in_time_population=population,
+        point_in_time_population_hash=point_in_time_population_hash(population),
+    )
