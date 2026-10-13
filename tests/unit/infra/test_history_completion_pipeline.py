@@ -60,7 +60,8 @@ def test_short_tencent_response_completes_without_baostock_classification(tmp_pa
     assert {row.trade_date for row in training} == set(DAYS)
     logs = capsys.readouterr().err
     assert "Tencent下载 | 完成" in logs
-    assert "raw 2/3 | qfq 2/3 | 配对 2/3" in logs
+    assert "股票 600001 600001" in logs
+    assert "raw 2/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 | 原因 无" in logs
     tencent_lines = [line for line in logs.splitlines() if "Tencent下载" in line]
     last_stock = max(index for index, line in enumerate(tencent_lines) if "股票" in line)
     assert all("等待" not in line for line in tencent_lines[last_stock + 1 :])
@@ -120,7 +121,7 @@ def test_listing_boundaries_are_reported_without_rows_outside_listing(tmp_path, 
     )
     assert result.state == "completed" and result.unresolved_price_cells == 0
     logs = capsys.readouterr().err
-    assert "raw 2/2 | qfq 2/2 | 配对 2/2" in logs
+    assert "raw 2/2 | qfq 2/2 | 完整配对 2/2 | 缺日 0 | 原因 无" in logs
     assert "/3" not in logs
 
 

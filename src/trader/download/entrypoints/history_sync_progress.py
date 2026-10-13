@@ -7,6 +7,10 @@ import time
 from collections.abc import Callable
 from threading import Lock
 
+from trader.download.application.stock_download_progress import (
+    StockDownloadProgress,
+    format_stock_download_progress,
+)
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage
 
@@ -191,6 +195,9 @@ class StderrHistorySyncProgress:
         self._record_supplier_failure(progress)
         if self._should_suppress(progress, now):
             return
+        if progress.stage == "tencent_history" and progress.current_item is not None:
+            self._print([self._stock_download_line(progress, now)])
+            return
         parts = self._progress_parts(progress, now)
         if not progress.stage.startswith("supplier_"):
             if progress.stage == "tencent_history":
@@ -199,6 +206,45 @@ class StderrHistorySyncProgress:
                 label = "本月耗时" if monthly else "阶段耗时"
             parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
         self._print(parts)
+
+    def _stock_download_line(self, progress: HistorySyncProgress, now: float) -> str:
+        code = progress.current_item
+        if code is None:
+            raise ValueError("stock download progress requires a stock code")
+        coverage = progress.price_coverage
+        target = coverage.expected if coverage is not None else progress.requested_sessions
+        source_download = progress.supplier_source == "tencent"
+        if progress.failure_reason == "tencent_history_pending":
+            result = "待重试"
+        elif progress.failure_reason is not None:
+            result = "失败"
+        elif not source_download:
+            result = "复用"
+        elif coverage is not None and coverage.missing:
+            result = "部分"
+        else:
+            result = "合格"
+        phase_key = (progress.stage, None)
+        extra = (*_summary_parts(progress), f"总计 {_format_duration(now - self._phase_started[phase_key])}")
+        return format_stock_download_progress(
+            max(0.0, now - self._started_at),
+            StockDownloadProgress(
+                command="download",
+                completed=progress.completed_units,
+                total=progress.total_units,
+                code=code,
+                name=progress.current_name,
+                action="Tencent下载" if source_download else "本地复用",
+                result=result,
+                target=target,
+                raw=coverage.raw if coverage is not None else None,
+                qfq=coverage.qfq if coverage is not None else None,
+                paired=coverage.paired if coverage is not None else None,
+                missing=coverage.missing if coverage is not None else None,
+                reason=progress.failure_reason or "无",
+                extra=extra,
+            ),
+        )
 
     def _record_supplier_failure(self, progress: HistorySyncProgress) -> None:
         if not progress.stage.startswith("supplier_"):

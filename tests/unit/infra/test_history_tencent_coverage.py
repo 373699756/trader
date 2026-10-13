@@ -45,8 +45,8 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     assert result.unresolved_price_cells == expected_missing
     logs = capsys.readouterr().err
     if mode == "pending":
-        assert "raw 3 日 | qfq 2 日 | 完整配对 2 日 | Tencent未返回 1 日" in logs
-        assert "Tencent临时失败" in logs
+        assert "处理 Tencent下载 | 结果 待重试" in logs
+        assert "raw 3/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 | 原因 tencent_history_pending" in logs
     elif mode == "missing":
         assert "完整 2 股 | 部分 0 股 | 失败 0 股" in logs
     else:

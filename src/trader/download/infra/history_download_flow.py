@@ -129,6 +129,7 @@ class HistoryDownloadFlow:
     ) -> int:
         for result in results:
             completed += 1
+            security = self._security(result.task.code)
             self._emit(
                 HistorySyncProgress(
                     "tencent_history",
@@ -141,6 +142,7 @@ class HistoryDownloadFlow:
                     failure_reason=result.failure,
                     price_coverage=self._coverage(result),
                     pipeline=pipeline,
+                    current_name=security.name,
                 )
             )
         return completed

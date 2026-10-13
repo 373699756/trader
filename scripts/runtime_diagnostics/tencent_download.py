@@ -69,7 +69,9 @@ def _benchmark(
             failures: Counter[str] = Counter()
 
             def feedback(message: str) -> None:
-                if " | qfq 股票进度 | " in message and (" | 结果 待重试 | " in message or " | 结果 失败 | " in message):
+                if " | qfq_download 股票进度 | " in message and (
+                    " | 结果 待重试 | " in message or " | 结果 失败 | " in message
+                ):
                     failures[message.rsplit(" | 原因 ", 1)[-1]] += 1
 
             updater = UpdateQfqWindows(

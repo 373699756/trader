@@ -239,7 +239,9 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
     )
 
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | Tencent下载 | 失败 | 29/4400 | 股票 600001 | 错误 history_tencent_overlap_conflict | 总计 00:00:00",
+        "00:00:00 | download 股票进度 | 29/4400（0.66%） | 股票 600001 | 处理 Tencent下载 | 结果 失败 "
+        "| raw -/2000 | qfq -/2000 | 完整配对 -/2000 | 缺日 未知 | 原因 history_tencent_overlap_conflict "
+        "| 总计 00:00:00",
         "00:00:00 | Tencent下载 | 完成 | 4400/4400 | 完整 4371 股 | 部分 0 股 | 失败 29 股 "
         "| 其中待重试 0 股 | 其中本地复用 0 股 "
         "| 重叠冲突 24 股 | 其它失败 5 股 | 总计 00:00:00",
@@ -264,8 +266,9 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
     )
 
     assert capsys.readouterr().err == (
-        "00:23:06 | Tencent下载 | 完成 | 388/4400 | 股票 000952 | raw 1980/2000 | qfq 1980/2000 "
-        "| 配对 1980/2000 | 网络 404/4400 | 落库 388/4400 | 待写 16 | 下载 00:14:03 "
+        "00:23:06 | download 股票进度 | 388/4400（8.82%） | 股票 000952 | 处理 Tencent下载 | 结果 部分 "
+        "| raw 1980/2000 | qfq 1980/2000 | 完整配对 1980/2000 | 缺日 20 | 原因 无 "
+        "| 网络 404/4400 | 落库 388/4400 | 待写 16 | 下载 00:14:03 "
         "| 落库耗时 00:38:20 | 回压 00:37:38 | 总计 00:23:06\n"
     )
 

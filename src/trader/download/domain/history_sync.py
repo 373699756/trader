@@ -223,6 +223,7 @@ class HistorySyncProgress:
     required_free_bytes: int | None = None
     price_coverage: HistoryPriceCoverage | None = None
     pipeline: HistoryPipelineProgress | None = None
+    current_name: str | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -237,6 +238,7 @@ class HistorySyncProgress:
             or not math.isfinite(self.call_elapsed_seconds)
             or self.call_elapsed_seconds < 0.0
             or (self.current_item is not None and _PROGRESS_ITEM.fullmatch(self.current_item) is None)
+            or (self.current_name is not None and (self.current_item is None or not self.current_name.strip()))
             or self.supplier_source not in (None, "baostock", "tencent")
             or (
                 self.required_free_bytes is not None

@@ -7,6 +7,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 
+from trader.download.application.stock_download_progress import (
+    StockDownloadProgress,
+    format_stock_download_progress,
+)
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.published_history import PublishedHistoryWindow
@@ -25,22 +29,11 @@ def qfq_failure_code(exc: Exception) -> str:
     return message if re.fullmatch(r"[a-zA-Z0-9_]{1,64}", message) else type(exc).__name__
 
 
-def _format_missing_dates(days: tuple[date, ...]) -> str:
-    preview = ", ".join(day.isoformat() for day in days[:8])
-    if len(days) > 8:
-        preview += f" 等 {len(days)} 个交易日"
-    return preview
-
-
 def _window_counts(window: PublishedHistoryWindow) -> tuple[int, int, int]:
     raw = sum(cell.unadjusted is not None for cell in window.cells)
     qfq = sum(cell.qfq is not None for cell in window.cells)
     paired = sum(cell.unadjusted is not None and cell.qfq is not None for cell in window.cells)
     return raw, qfq, paired
-
-
-def _format_count(value: int | None) -> str:
-    return "-" if value is None else str(value)
 
 
 @dataclass
@@ -77,16 +70,26 @@ class QfqDownloadProgress:
         missing_dates: tuple[date, ...] = (),
         reason: str = "无",
     ) -> None:
-        percent = self.processed / self.total * 100 if self.total else 100.0
-        missing = str(target - paired) if paired is not None else "未知"
-        if missing_dates:
-            missing += f"（{_format_missing_dates(missing_dates)}）"
-        self.publish(
-            "股票进度",
-            f"{self.processed}/{self.total}（{percent:.2f}%） | {security.code} {security.name} "
-            f"| 处理 {action} | 结果 {result} | raw {_format_count(raw)}/{target} "
-            f"| qfq {_format_count(qfq)}/{target} | 完整配对 {_format_count(paired)}/{target} "
-            f"| 缺日 {missing} | 原因 {reason}",
+        self.report(
+            format_stock_download_progress(
+                self.elapsed(),
+                StockDownloadProgress(
+                    command="qfq_download",
+                    completed=self.processed,
+                    total=self.total,
+                    code=security.code,
+                    name=security.name,
+                    action=action,
+                    result=result,
+                    target=target,
+                    raw=raw,
+                    qfq=qfq,
+                    paired=paired,
+                    missing=target - paired if paired is not None else None,
+                    missing_dates=missing_dates,
+                    reason=reason,
+                ),
+            )
         )
 
     def record_pending(
