@@ -49,6 +49,14 @@ def history_failure_detail(exc: BaseException) -> str:
     while current is not None and id(current) not in seen and len(parts) < 4:
         seen.add(id(current))
         name = type(current).__name__
+        if isinstance(current, sqlite3.Error):
+            sqlite_name = getattr(current, "sqlite_errorname", None)
+            if isinstance(sqlite_name, str) and re.fullmatch(r"SQLITE_[A-Z0-9_]{1,48}", sqlite_name):
+                name += f":{sqlite_name}"
+            else:
+                sqlite_code = getattr(current, "sqlite_errorcode", None)
+                if isinstance(sqlite_code, int) and not isinstance(sqlite_code, bool) and 0 <= sqlite_code <= 65535:
+                    name += f":SQLITE_CODE_{sqlite_code}"
         trace = current.__traceback__
         if trace is not None:
             while trace.tb_next is not None:

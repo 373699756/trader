@@ -25,6 +25,7 @@ from trader.download.infra.history_revision_codec import (
     encode_history_revision,
 )
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
+from trader.download.infra.history_sqlite_read_connection import open_history_month_reader
 from trader.download.infra.published_history_codec import decode_published_history_cell
 
 _SCHEMA_IDENTITY = "history_direct_prices"
@@ -945,30 +946,17 @@ class HistoryMonthPrices:
         return connection
 
     def _read_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro", uri=True, timeout=5.0)
-        if self._statement_trace is not None:
-            connection.set_trace_callback(self._statement_trace)
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA query_only=ON")
-        connection.execute("PRAGMA cache_size=-8192")
-        connection.execute("PRAGMA mmap_size=0")
-        connection.execute("PRAGMA temp_store=FILE")
-        return connection
+        return open_history_month_reader(
+            self._path, statement_trace=self._statement_trace, mmap_bytes=0, activity=self._activity
+        )
 
     def _verification_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            f"file:{self._path.as_posix()}?mode=ro",
-            uri=True,
-            timeout=5.0,
+        return open_history_month_reader(
+            self._path,
+            statement_trace=self._statement_trace,
+            mmap_bytes=_VERIFICATION_MMAP_BYTES,
+            activity=self._activity,
         )
-        if self._statement_trace is not None:
-            connection.set_trace_callback(self._statement_trace)
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA query_only=ON")
-        connection.execute("PRAGMA cache_size=-8192")
-        connection.execute(f"PRAGMA mmap_size={_VERIFICATION_MMAP_BYTES}")
-        connection.execute("PRAGMA temp_store=FILE")
-        return connection
 
 
 class HistoryMonthWriteSession:

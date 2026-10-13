@@ -165,6 +165,48 @@ def test_retry_without_a_new_pair_preserves_existing_partial_fact(status):
     assert qualify_price_overlap((unknown,), (previous,), full_window=False) == (previous,)
 
 
+def test_transient_month_reader_lock_allows_download_to_finish(tmp_path, monkeypatch):
+    from trader.download.infra import history_sqlite_read_connection
+
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    assert run_history_sync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    previous = _snapshot(tmp_path)
+    original_connect = sqlite3.connect
+    failed = False
+
+    class FirstReader:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, sql, *args):
+            if sql == "PRAGMA cache_size=-8192":
+                error = sqlite3.OperationalError("database is locked")
+                error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+                raise error
+            return self.connection.execute(sql, *args)
+
+        def close(self):
+            self.connection.close()
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+    def connect(*args, **kwargs):
+        nonlocal failed
+        connection = original_connect(*args, **kwargs)
+        if not failed and isinstance(args[0], str) and "/partitions/" in args[0]:
+            failed = True
+            return FirstReader(connection)
+        return connection
+
+    monkeypatch.setattr(history_sqlite_read_connection.sqlite3, "connect", connect)
+    advanced = (*days[1:], date(2026, 9, 11))
+    result = run_history_sync(_configuration(tmp_path), FakeSupplier(advanced), clock=lambda: NOW + timedelta(days=1))
+    assert failed and result.state == "completed" and result.unresolved_price_cells == 0
+    assert _snapshot(tmp_path) != previous
+    assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
+
+
 @dataclass
 class ProgressRecorder:
     values: list[HistorySyncProgress] = field(default_factory=list)
