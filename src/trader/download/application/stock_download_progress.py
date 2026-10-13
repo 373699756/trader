@@ -18,6 +18,7 @@ from trader.download.application.progress_message import (
 )
 
 _DownloadCommand = Literal["download", "qfq_download"]
+_STOCK_NAME_WIDTH = 8
 
 
 @dataclass(frozen=True)
@@ -73,10 +74,10 @@ def format_stock_download_progress(elapsed_seconds: float, progress: StockDownlo
     percent = progress.completed / progress.total * 100 if progress.total else 100.0
     name = clean_progress_text(progress.name or "—").strip() or "—"
     short_name = name
-    if display_width(name) > 16:
+    if display_width(name) > _STOCK_NAME_WIDTH:
         short_name = ""
         for char in name:
-            if display_width(short_name + char) > 15:
+            if display_width(short_name + char) > _STOCK_NAME_WIDTH - 1:
                 break
             short_name += char
         short_name += "…"
@@ -86,7 +87,9 @@ def format_stock_download_progress(elapsed_seconds: float, progress: StockDownlo
         progress_field(progress_duration(elapsed_seconds)),
         progress_field(f"{progress.command} 股票进度"),
         ProgressField(f"{progress.completed}/{progress.total}（{percent:.2f}%）"),
-        progress_field(f"股票 {progress.code} {short_name}"),
+        progress_field(
+            f"股票 {progress.code} {short_name}", width=display_width(f"股票 {progress.code} ") + _STOCK_NAME_WIDTH
+        ),
         progress_field(f"处理 {progress.action}"),
         progress_field(f"结果 {progress.result}", level=level),
         progress_field(f"raw {_format_count(progress.raw, progress.target)}"),

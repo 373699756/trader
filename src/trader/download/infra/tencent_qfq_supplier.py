@@ -30,6 +30,8 @@ _ENDPOINTS = {
     "direct": "https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get",
 }
 _PROXIES = {"http": "", "https": "", "all": ""}
+_QFQ_PAGE_ROWS = 640
+_MAX_QFQ_PAGES = 5
 
 
 @dataclass(frozen=True)
@@ -76,12 +78,19 @@ class _WindowQuery:
 class _SideAttempt:
     sides: tuple[PublishedHistorySide, ...] = ()
     pending: bool = False
+    retry_alternate: bool = False
 
 
 @dataclass(frozen=True)
 class _SideDownload:
     sides: tuple[PublishedHistorySide, ...]
     pending_dates: tuple[date, ...]
+
+
+class _QfqPagePending(Exception):
+    def __init__(self, sides: tuple[PublishedHistorySide, ...], *, retry_alternate: bool = False) -> None:
+        self.sides = sides
+        self.retry_alternate = retry_alternate
 
 
 class TencentSessionPool:
@@ -214,11 +223,13 @@ class TencentQfqSupplier:
         primary = self._options.history_host
         alternate: Literal["proxy", "direct"] = "direct" if primary == "proxy" else "proxy"
         initial = self._attempt_side(session, query, mode, primary)
-        if initial.pending:
-            initial = self._attempt_side(session, query, mode, alternate)
-            if initial.pending:
-                return _SideDownload((), query.dates)
-        return _SideDownload(initial.sides, ())
+        if initial.pending and initial.retry_alternate:
+            fallback = self._attempt_side(session, query, mode, alternate)
+            if fallback.pending:
+                best = max((initial, fallback), key=lambda attempt: len(attempt.sides))
+                return _SideDownload(best.sides, query.dates)
+            initial = fallback
+        return _SideDownload(initial.sides, query.dates if initial.pending else ())
 
     def _attempt_side(
         self,
@@ -229,13 +240,15 @@ class TencentQfqSupplier:
     ) -> _SideAttempt:
         try:
             return _SideAttempt(tuple(self._fetch_side(session, query, mode, host).values()))
+        except _QfqPagePending as exc:
+            return _SideAttempt(exc.sides, pending=True, retry_alternate=exc.retry_alternate)
         except RuntimeError as exc:
             if str(exc) != "tencent_qfq_request_failed":
                 raise
-            return _SideAttempt(pending=True)
+            return _SideAttempt(pending=True, retry_alternate=True)
         except ValueError as exc:
             if isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected":
-                return _SideAttempt(pending=True)
+                return _SideAttempt(pending=True, retry_alternate=True)
             if str(exc) == "tencent_daily_qualified_rows_missing":
                 return _SideAttempt()
             raise
@@ -247,29 +260,67 @@ class TencentQfqSupplier:
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
     ) -> dict[date, PublishedHistorySide]:
+        dates = query.dates
+        result, count = self._read_side_page(session, query, mode, host, dates[-1])
+        if mode != "qfq":
+            return result
+        for _ in range(_MAX_QFQ_PAGES - 1):
+            if count < _QFQ_PAGE_ROWS or not result or min(result) <= dates[0]:
+                return result
+            boundary = min(result)
+            try:
+                older, count = self._read_side_page(session, query, mode, host, boundary)
+            except RuntimeError as exc:
+                if str(exc) == "tencent_qfq_cancelled":
+                    raise
+                raise _QfqPagePending(tuple(result.values()), retry_alternate=True) from exc
+            except ValueError as exc:
+                retry_alternate = isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected"
+                raise _QfqPagePending(tuple(result.values()), retry_alternate=retry_alternate) from exc
+            if boundary not in older or any(result[day] != side for day, side in older.items() if day in result):
+                raise _QfqPagePending(tuple(result.values()))
+            new = {day: side for day, side in older.items() if day < boundary}
+            if not new:
+                if count < _QFQ_PAGE_ROWS:
+                    return result
+                raise _QfqPagePending(tuple(result.values()))
+            result.update(new)
+        if count == _QFQ_PAGE_ROWS and min(result) > dates[0]:
+            raise _QfqPagePending(tuple(result.values()))
+        return result
+
+    def _read_side_page(
+        self,
+        session: requests.Session,
+        query: _WindowQuery,
+        mode: Literal["bfq", "qfq"],
+        host: Literal["proxy", "direct"],
+        end: date,
+    ) -> tuple[dict[date, PublishedHistorySide], int]:
         symbol, dates = query.symbol, query.dates
         rows = self._request_rows(
-            _DailyQuery(symbol, dates[0], dates[-1], mode, query.request_count), session=session, host=host
+            _DailyQuery(symbol, dates[0], end, mode, query.request_count), session=session, host=host
         )
         result: dict[date, PublishedHistorySide] = {}
         expected = frozenset(dates)
-        seen: set[date] = set()
+        previous: date | None = None
         for row in rows:
             day = _row_date(row)
-            if day in seen or day > dates[-1]:
+            if (previous is not None and day <= previous) or day > end:
                 raise ValueError("tencent_daily_rows_outside_calendar_or_duplicated")
-            seen.add(day)
+            previous = day
             # Tencent may return older padding despite the requested start date.
             # Only that documented direction may be trimmed; future/interior anomalies fail closed.
             if day < dates[0]:
                 continue
             if day not in expected:
-                if query.allow_interior_padding:
+                if not query.allow_interior_padding:
+                    raise ValueError("tencent_daily_rows_outside_calendar_or_duplicated")
+                if mode != "qfq":
                     continue
-                raise ValueError("tencent_daily_rows_outside_calendar_or_duplicated")
             side = _parse_side(symbol[2:], row, mode)
             result[side.trade_date] = side
-        return result
+        return result, len(rows)
 
     def _request_rows(
         self,

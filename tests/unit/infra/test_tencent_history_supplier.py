@@ -7,6 +7,7 @@ import pytest
 import requests
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
@@ -69,6 +70,25 @@ class _Http:
         )
 
 
+class _PagedHttp(_Http):
+    def __init__(self, days, *, conflicting_anchor=False):
+        super().__init__()
+        self.raw = [[day.isoformat(), *ROW[1:]] for day in days]
+        self.adjusted = self.raw
+        self.conflicting_anchor = conflicting_anchor
+
+    def get(self, url, **kwargs):
+        param = kwargs["params"]["param"]
+        if not param.endswith(",qfq"):
+            return super().get(url, **kwargs)
+        self.calls.append(param)
+        end = date.fromisoformat(param.split(",")[3])
+        rows = [row.copy() for row in self.adjusted if date.fromisoformat(row[0]) <= end][-640:]
+        if self.conflicting_anchor and end < DAY and rows:
+            rows[-1][2] = "11"
+        return _Response({"code": 0, "data": {"sh600001": {"qfqday": rows}}})
+
+
 def test_pairs_preserve_units_and_leave_unavailable_facts_missing():
     window = _Http().supplier().fetch_window(SECURITY, (DAY,))
     cell = window.cells[0]
@@ -96,17 +116,37 @@ def test_raw_and_qfq_requests_reuse_one_http_session():
     assert all(",1," in request for request in sessions[0].calls)
 
 
-def test_unavailable_old_pages_keep_real_partial_pairs_after_bounded_recovery():
+def test_invalid_old_page_keeps_real_partial_pairs_without_switching_hosts():
     http = _Http()
     days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
     http.raw = [[day.isoformat(), *ROW[1:]] for day in days]
     http.adjusted = http.raw[-640:]
-    window = http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
-    assert len(http.calls) == 2
-    assert all(",2000," in param for param in http.calls[:2])
+    with pytest.raises(HistorySupplierPendingError) as pending:
+        http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+    window = pending.value.window
+    assert len(http.calls) == 3
+    assert all(",2000," in param for param in http.calls)
     assert sum(cell.status == "complete" for cell in window.cells) == 640
     assert sum(cell.status == "qfq_missing" for cell in window.cells) == 1360
     assert tuple(cell.trade_date for cell in window.cells) == days
+
+
+def test_qfq_640_row_pages_fill_full_window_with_checked_overlap():
+    days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
+    http = _PagedHttp(days)
+    window = http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+    assert len(http.calls) == 5  # one raw request and four bounded qfq pages
+    assert all(cell.status == "complete" for cell in window.cells)
+    assert tuple(cell.trade_date for cell in window.cells) == days
+
+
+def test_qfq_page_with_different_overlap_is_pending_and_keeps_verified_recent_rows():
+    days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
+    http = _PagedHttp(days, conflicting_anchor=True)
+    with pytest.raises(HistorySupplierPendingError) as pending:
+        http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+    assert sum(cell.status == "complete" for cell in pending.value.window.cells) == 640
+    assert sum(cell.status == "qfq_missing" for cell in pending.value.window.cells) == 1360
 
 
 def test_session_pool_reuses_bootstrap_owned_connection_between_stocks():

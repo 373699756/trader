@@ -308,6 +308,24 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
     )
 
 
+def test_tencent_waiting_state_does_not_reserve_a_wide_column(capsys) -> None:
+    progress = StderrHistorySyncProgress(monotonic=lambda: 0.0)
+    progress.publish(
+        HistorySyncProgress(
+            "tencent_history",
+            "waiting",
+            176,
+            4401,
+            pipeline=HistoryPipelineProgress(192, 16, 206.0, 1083.0, 1240.0),
+        )
+    )
+
+    output = capsys.readouterr().err
+    assert "Tencent下载" in output
+    assert "| 等待 |" in output
+    assert "网络" in output and "落库" in output and "回压" in output
+
+
 def test_failed_result_keeps_the_specific_supplier_stage_and_error_code(capsys) -> None:
     progress = StderrHistorySyncProgress(monotonic=_Clock(100.0, 145.0, 145.0, 1070.569))
     progress.publish(
@@ -418,12 +436,14 @@ def test_stock_fields_remain_compact_across_names_and_counts(name, result, actua
         missing_dates=(date(2026, 10, 12),),
         reason="a_long_failure_reason",
     )
-    plain = render_progress(format_stock_download_progress(0, progress))
-    assert not re.search(r" {2,}\|", plain)
+    message = format_stock_download_progress(0, progress)
+    plain = render_progress(message)
+    assert display_width(message.fields[3].text) == display_width("股票 688058 ") + 8
+    assert not re.search(r" {2,}\|", plain.replace(message.fields[3].text, "股票"))
     assert "raw " in plain and "qfq " in plain and "完整配对 " in plain
     assert "\n" not in plain and "\t" not in plain
     assert plain.index("原因") < plain.index("缺失日期")
-    if name is not None and display_width(name) > 16:
+    if name is not None and display_width(name) > 8:
         assert "…" in plain and f"完整名称 {name}" in plain
 
 
@@ -528,7 +548,7 @@ def test_history_stock_output_keeps_compact_fields_across_coverage_and_result(mo
     for line, color in zip(lines, ("32", "33", "31"), strict=True):
         assert f"\x1b[{color}m结果 " in line
     plain = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in lines]
-    assert all(not re.search(r" {2,}\|", line) for line in plain)
+    assert all(not re.search(r" {2,}\|", line.split(" | 处理 ", 1)[-1]) for line in plain)
     assert all("raw " in line and "完整配对 " in line for line in plain)
 
 

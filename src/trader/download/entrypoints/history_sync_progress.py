@@ -230,7 +230,7 @@ class StderrHistorySyncProgress:
                 tuple(
                     progress_field(
                         part,
-                        14 if index == 1 else 30 if index == 2 else 0,
+                        14 if index == 1 else 0,
                         level=level
                         if index == 2
                         or (progress.failure_reason is not None and part == f"错误 {progress.failure_reason}")
