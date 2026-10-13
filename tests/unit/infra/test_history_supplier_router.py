@@ -227,7 +227,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
         assert result.state == "completed" and result.unresolved_price_cells == 2
         assert HistorySnapshotReader(tmp_path).read_day(dates[-1], before) == rows
         return
-    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert result.state == "completed" and result.unresolved_price_cells == (2 if incoming == "missing" else 0)
     assert state.active_snapshot != before
     assert not any(code == "raw" for code, _dates in baseline.calls)
     assert rows[0].is_st is False

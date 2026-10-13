@@ -20,6 +20,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.history_price_qualification import qualify_price_overlap
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
     HistorySyncConfiguration,
@@ -150,6 +151,20 @@ def _configuration(root: Path) -> HistorySyncConfiguration:
     return HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
 
 
+@pytest.mark.parametrize("status", ("qfq_missing", "unadjusted_missing", "tencent_inferred_suspended"))
+def test_retry_without_a_new_pair_preserves_existing_partial_fact(status):
+    day = date(2026, 9, 10)
+    complete = _download("600001", (day,)).batch.cells[0]
+    previous = replace(
+        complete,
+        status=status,
+        unadjusted=complete.unadjusted if status == "qfq_missing" else None,
+        qfq=complete.qfq if status == "unadjusted_missing" else None,
+    )
+    unknown = BaoStockDailyCell("600001", day, "unknown_missing", None, None)
+    assert qualify_price_overlap((unknown,), (previous,), full_window=False) == (previous,)
+
+
 @dataclass
 class ProgressRecorder:
     values: list[HistorySyncProgress] = field(default_factory=list)
@@ -233,7 +248,7 @@ def test_partial_tencent_pairs_are_committed_without_baostock(tmp_path):
     supplier = Partial(days)
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
-    assert result.unresolved_price_cells == 0
+    assert result.unresolved_price_cells == 2
     assert supplier.events == ["tencent", "tencent"]
     rows = HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))
     assert len(rows) == 2 and all(row.cell.status == "qfq_missing" and row.cell.qfq is None for row in rows)
@@ -320,11 +335,15 @@ def test_unpublished_gap_repair_resumes_same_sequence_without_changing_complete_
     assert month.read_code("600002", days[0], days[-1], snapshot_sequence=1) == complete_before
 
 
-def test_pending_batch_replaces_unknown_day_before_first_publication(tmp_path, monkeypatch):
+@pytest.mark.parametrize("initial_status", ("unknown_missing", "qfq_missing"))
+def test_pending_batch_replaces_incomplete_day_before_first_publication(tmp_path, monkeypatch, initial_status):
     from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
     from trader.download.infra.history_download_index import HistoryDownloadIndex
 
-    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    days = tuple(date(2026, 9, 3) + timedelta(days=index) for index in range(8))
+
+    def configuration(root):
+        return HistorySyncConfiguration(root, sessions=8, reread_sessions=5, minimum_free_bytes=0)
 
     class PartialFirstRun(FakeSupplier):
         partial = True
@@ -337,7 +356,12 @@ def test_pending_batch_replaces_unknown_day_before_first_publication(tmp_path, m
                 replace(
                     window,
                     cells=tuple(
-                        replace(cell, status="unknown_missing", unadjusted=None, qfq=None)
+                        replace(
+                            cell,
+                            status=initial_status,
+                            unadjusted=None if initial_status == "unknown_missing" else cell.unadjusted,
+                            qfq=None,
+                        )
                         if cell.trade_date == days[0]
                         else cell
                         for cell in window.cells
@@ -353,20 +377,20 @@ def test_pending_batch_replaces_unknown_day_before_first_publication(tmp_path, m
         raise OSError("fixture_publication_interrupted")
 
     monkeypatch.setattr(history_sync_module, "publish_history_snapshot", interrupt_publication)
-    assert run_history_sync(_configuration(root), supplier, clock=lambda: NOW).state == "failed"
+    assert run_history_sync(configuration(root), supplier, clock=lambda: NOW).state == "failed"
     assert HistoryControlIndex(root / "control.sqlite3").load_state().active_snapshot is None
     assert len(HistoryDownloadIndex(root / "control.sqlite3").gaps("600001")) == 1
 
     monkeypatch.setattr(history_sync_module, "publish_history_snapshot", publish)
     supplier.partial = False
     supplier.calls.clear()
-    resumed = run_history_sync(_configuration(root), supplier, clock=lambda: NOW)
+    resumed = run_history_sync(configuration(root), supplier, clock=lambda: NOW)
     assert resumed.state == "completed" and resumed.unresolved_price_cells == 0
-    assert supplier.calls == [("600001", days)]
+    assert supplier.calls == [("600001", (days[0], *days[-5:]))]
     active = _snapshot(root)
     assert len(HistorySnapshotReader(root).read_day(days[0], active)) == 2
     clean = tmp_path / "clean"
-    assert run_history_sync(_configuration(clean), FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    assert run_history_sync(configuration(clean), FakeSupplier(days), clock=lambda: NOW).state == "completed"
     assert active.content_hash == _snapshot(clean).content_hash
 
 

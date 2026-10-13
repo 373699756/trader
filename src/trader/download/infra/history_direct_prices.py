@@ -136,7 +136,7 @@ class HistoryDirectPrices:
                 for cell in cells
                 if prior.get(cell.trade_date) != cell
             ),
-            tuple(cell.trade_date for cell in cells if cell.status == "unknown_missing"),
+            tuple(cell.trade_date for cell in cells if not cell.obtained),
             None,
             HistoryPriceCoverage(
                 len(task.dates),

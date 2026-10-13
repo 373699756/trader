@@ -231,7 +231,7 @@ class HistoryDownloadFlow:
     def _fetch_task(self, task: HistoryDownloadTask) -> _PreparedResult:
         self._check()
         previous = self._resources.prices.read_for_download(task.code, task.dates)
-        obtained = {cell.trade_date for cell in previous if cell.status != "unknown_missing"}
+        obtained = {cell.trade_date for cell in previous if cell.obtained}
         missing = set(task.dates) - obtained
         dates = tuple(sorted(missing | set(sorted(obtained)[-5:]))) if missing else ()
         empty = PublishedHistoryWindow(task.code, ())
@@ -261,15 +261,9 @@ class HistoryDownloadFlow:
         task = result.task
         try:
             prepared = self._prepare(result)
-            if result.failure is None:
-                return prepared
-            resolved = {cell.trade_date for cell in result.previous if cell.status != "unknown_missing"} | {
-                cell.trade_date
-                for cell in result.window.cells
-                if cell.status in {"complete", "supplier_marked_suspended"}
-            }
-            missing = tuple(day for day in result.dates if day not in resolved)
-            return replace(prepared, missing=missing, failure=result.failure if missing else None)
+            return (
+                replace(prepared, failure=result.failure or "tencent_history_pending") if prepared.missing else prepared
+            )
         except HistoryMonthPartitionError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:

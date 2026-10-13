@@ -42,15 +42,13 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     )
     assert result.state == "completed"
     assert baseline.calls == []
-    expected_missing = 2 if mode == "pending" else 6 if mode == "unclassified_failure" else 0
+    expected_missing = 2 if mode in {"missing", "pending"} else 6 if mode == "unclassified_failure" else 0
     assert result.unresolved_price_cells == expected_missing
     logs = _compact_log(capsys.readouterr().err)
-    if mode == "pending":
+    if mode in {"missing", "pending"}:
         assert "处理 Tencent下载 | 结果 待重试" in logs
         assert "raw 3/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 |" in logs
         assert " | 原因 tencent_history_pending" in logs
-    elif mode == "missing":
-        assert "完整 2 股 | 部分 0 股 | 失败 0 股" in logs
     else:
         assert "完整 2 股" in logs if mode == "complete" else "失败 2 股" in logs
     previous = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
@@ -60,8 +58,8 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     retried = run_history_sync(config, _router(baseline, retry_prices), clock=lambda: NOW)
     assert retried.unresolved_price_cells == 0
     assert baseline.calls == []
-    if mode == "missing":
-        assert retry_prices.calls == []
+    if mode in {"missing", "pending"}:
+        assert len(retry_prices.calls) == 2
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous) == old_rows
 
 

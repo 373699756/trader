@@ -95,7 +95,7 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
     assert tuple(item.code for item in published.universe.securities) == ("600001",)
 
 
-def test_unknown_tencent_date_breaks_training_window_without_forced_refetch(tmp_path):
+def test_unknown_tencent_date_breaks_training_window_and_is_refetched(tmp_path):
     dates = tuple(date(2026, 7, 1) + timedelta(days=i) for i in range(125))
     gap = dates[61]
 
@@ -114,7 +114,7 @@ def test_unknown_tencent_date_breaks_training_window_without_forced_refetch(tmp_
 
     config = HistorySyncConfiguration(tmp_path, sessions=125, minimum_free_bytes=0)
     result = run_history_sync(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
-    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert result.state == "completed" and result.unresolved_price_cells == 1
     control = HistoryControlIndex(tmp_path / "control.sqlite3")
     snapshot = control.load_state().active_snapshot
     reader = HistorySnapshotReader(tmp_path)
@@ -123,8 +123,9 @@ def test_unknown_tencent_date_breaks_training_window_without_forced_refetch(tmp_
     assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
     resumed = FakeSupplier(dates, industry="bank")
     result = run_history_sync(config, resumed, clock=lambda: NOW)
-    assert result.state == "already_current" and result.unresolved_price_cells == 0
-    assert resumed.calls == []
+    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert resumed.calls == [("600001", (gap, *dates[-5:]))]
+    assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
 
 
 def test_tencent_missing_dates_publish_without_baostock_recovery(tmp_path):
@@ -140,10 +141,10 @@ def test_tencent_missing_dates_publish_without_baostock_recovery(tmp_path):
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     supplier = Missing(dates)
     first = run_history_sync(config, supplier, clock=lambda: NOW)
-    assert first.state == "completed" and first.unresolved_price_cells == 0
+    assert first.state == "completed" and first.unresolved_price_cells == 4
     assert "baostock_prices" not in supplier.events
     second = run_history_sync(config, supplier, clock=lambda: NOW)
-    assert second.state == "already_current"
+    assert second.state == "completed" and second.unresolved_price_cells == 4
 
 
 def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
@@ -266,7 +267,7 @@ def test_tencent_missing_dates_publish_sparse_rows_for_every_stock(tmp_path):
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     supplier = Missing(dates)
     result = run_history_sync(config, supplier, clock=lambda: NOW)
-    assert result.state == "completed" and result.unresolved_price_cells == 0
+    assert result.state == "completed" and result.unresolved_price_cells == 4
     assert supplier.calls == []
     snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)

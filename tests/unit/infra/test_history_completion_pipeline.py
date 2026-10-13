@@ -78,13 +78,13 @@ def test_inferred_suspension_is_published_without_a_price_or_retry_gap(tmp_path,
     assert not supplier.calls
 
 
-def test_short_tencent_response_completes_without_baostock_classification(tmp_path, capsys):
+def test_explicit_unknown_tencent_cell_remains_retryable_without_baostock(tmp_path, capsys):
     supplier = ShortTencentSupplier()
     progress = StderrHistorySyncProgress()
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW, progress=progress)
     progress.publish_result(result)
     assert result.state == "completed", result.reason
-    assert result.unresolved_price_cells == 0
+    assert result.unresolved_price_cells == 2
     assert "baostock_prices" not in supplier.events
     active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     reader = HistorySnapshotReader(tmp_path)
@@ -98,13 +98,14 @@ def test_short_tencent_response_completes_without_baostock_classification(tmp_pa
     assert "Tencent下载 | 完成" in logs
     assert "股票 600001 600001" in logs
     assert "raw 2/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 |" in logs
-    assert " | 原因 无" in logs
+    assert " | 原因 tencent_history_pending" in logs
     tencent_lines = [line for line in logs.splitlines() if "Tencent下载" in line]
     last_stock = max(index for index, line in enumerate(tencent_lines) if "股票" in line)
     assert all("等待" not in line for line in tencent_lines[last_stock + 1 :])
-    supplier.calls.clear()
-    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).unresolved_price_cells == 0
-    assert not supplier.calls
+    repaired_supplier = FakeSupplier(DAYS)
+    assert run_history_sync(_configuration(tmp_path), repaired_supplier, clock=lambda: NOW).unresolved_price_cells == 0
+    assert len(repaired_supplier.calls) == 2
+    assert all(row.cell.status == "unknown_missing" for row in reader.read_day(DAYS[1], active))
 
 
 def test_short_tencent_response_reports_actual_price_rows():
