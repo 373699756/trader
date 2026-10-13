@@ -11,6 +11,7 @@ from trader.infra.workers import (
     WorkerResourceRejectedError,
     injected_executor,
     submit_or_reject,
+    submit_with_backpressure,
 )
 
 
@@ -36,6 +37,45 @@ def test_injected_executor_rejects_stopped_pool_and_runs_nested_call_without_new
         pool.stop()
     with pytest.raises(WorkerResourceRejectedError, match="resource_rejected"):
         submit_or_reject(injected_executor(pool), threading.get_ident).result()
+
+
+def test_backpressure_waits_for_done_callback_to_release_worker_slot(monkeypatch) -> None:
+    pool = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="callback-window")
+    task_release = threading.Event()
+    callback_entered = threading.Event()
+    callback_release = threading.Event()
+    original_complete = pool._complete
+
+    def delayed_complete(future, *, urgent):
+        callback_entered.set()
+        assert callback_release.wait(timeout=2)
+        original_complete(future, urgent=urgent)
+
+    monkeypatch.setattr(pool, "_complete", delayed_complete)
+    pool.start()
+    try:
+        first = pool.submit(lambda: task_release.wait(timeout=2))
+        assert first is not None
+        task_release.set()
+        assert first.result(timeout=2)
+        assert callback_entered.wait(timeout=2)
+        assert pool.submit(lambda: "too early") is None
+        timer = threading.Timer(0.05, callback_release.set)
+        timer.start()
+        assert submit_with_backpressure(pool, lambda: "accepted").result(timeout=2) == "accepted"
+        timer.join(timeout=2)
+    finally:
+        callback_release.set()
+        pool.stop(wait=True, cancel_futures=True)
+
+
+def test_backpressure_rejects_a_permanently_unavailable_pool(monkeypatch) -> None:
+    from trader.infra import workers
+
+    monkeypatch.setattr(workers, "_CAPACITY_WAIT_SECONDS", 0.02)
+    pool = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="unavailable")
+    with pytest.raises(WorkerResourceRejectedError, match="resource_rejected"):
+        submit_with_backpressure(pool, lambda: None).result()
 
 
 def test_bounded_executor_rejects_over_capacity_and_stops_all_workers() -> None:

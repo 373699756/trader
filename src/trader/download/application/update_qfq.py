@@ -26,7 +26,7 @@ from trader.download.domain.qfq_window import (
     completed_daily_cutoff,
     merge_daily_tail,
 )
-from trader.infra.workers import WorkerExecutor, submit_or_reject
+from trader.infra.workers import WorkerExecutor, submit_with_backpressure
 
 
 class QfqPairPublicationError(RuntimeError):
@@ -325,7 +325,7 @@ class UpdateQfqWindows:
 
     def _submit(self, job: _DownloadJob) -> Future[PublishedHistoryWindow]:
         if self.worker_pool is not None:
-            return submit_or_reject(self.worker_pool, self._download, job)
+            return submit_with_backpressure(self.worker_pool, self._download, job)
         future: Future[PublishedHistoryWindow] = Future()
         try:
             future.set_result(self._download(job))

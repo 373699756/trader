@@ -306,6 +306,61 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
     assert any(size > 1 for size in checkpoint_sizes)
 
 
+def test_transient_worker_and_writer_rejection_preserves_complete_history(tmp_path):
+    class RejectOnce:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.rejections = 0
+
+        def submit(self, function, /, *args, **kwargs):
+            if not self.rejections:
+                self.rejections += 1
+                return None
+            return self.delegate.submit(function, *args, **kwargs)
+
+    supplier = FakeSupplier(DAYS)
+    with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
+        download_pool, write_pool = RejectOnce(network), RejectOnce(writer)
+        result = run_history_sync(
+            _configuration(tmp_path),
+            supplier,
+            clock=lambda: NOW,
+            worker_pool=download_pool,
+            writer_pool=write_pool,
+        )
+    assert result.state == "completed", result.reason
+    assert download_pool.rejections == write_pool.rejections == 1
+    assert len(supplier.calls) == 2
+    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
+    active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    assert active is not None
+    assert len(HistorySnapshotReader(tmp_path).read_day(DAYS[-1], active)) == 2
+    supplier.calls.clear()
+    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "already_current"
+    assert not supplier.calls
+
+
+def test_permanent_worker_rejection_reports_capacity_failure_and_resumes(tmp_path, monkeypatch):
+    from trader.infra import workers
+
+    class RejectAll:
+        def submit(self, _function, /, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(workers, "_CAPACITY_WAIT_SECONDS", 0.02)
+    supplier = FakeSupplier(DAYS)
+    failed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=RejectAll())
+    assert failed.state == "failed" and failed.reason == "history_worker_unavailable"
+    assert not supplier.calls
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
+    assert HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot is None
+
+    resumed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    assert resumed.state == "completed", resumed.reason
+    assert len(supplier.calls) == 2
+    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
+
+
 @pytest.mark.parametrize("failure", [OSError("disk_full"), KeyboardInterrupt()])
 def test_async_write_failure_never_acknowledges_or_enters_baostock(tmp_path, monkeypatch, failure):
     supplier = FakeSupplier(DAYS)

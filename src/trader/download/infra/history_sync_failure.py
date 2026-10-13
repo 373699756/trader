@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from trader.download.domain.history_sync import HistorySyncProgressStage
+from trader.infra.workers import WorkerResourceRejectedError
 
 
 class HistorySyncFailureError(RuntimeError):
@@ -32,6 +33,8 @@ def history_failure_code(exc: BaseException) -> str:
     failure = cause or exc
     if isinstance(failure, sqlite3.Error):
         return "history_sqlite_failed"
+    if isinstance(failure, WorkerResourceRejectedError):
+        return "history_worker_unavailable"
     if isinstance(failure, OSError):
         return "history_io_failed"
     if isinstance(failure, (TypeError, ValueError)):

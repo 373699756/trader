@@ -315,6 +315,44 @@ def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
         executor.stop(wait=True, cancel_futures=True)
 
 
+def test_st_checks_wait_for_transient_worker_capacity(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    class RejectOnce:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.rejections = 0
+
+        def submit(self, function, /, *args, **kwargs):
+            if not self.rejections:
+                self.rejections += 1
+                return None
+            return self.delegate.submit(function, *args, **kwargs)
+
+    class Response:
+        content = "<td>证券简称更名历史：</td><td>正常公司</td>".encode("gb18030")
+
+        def raise_for_status(self):
+            pass
+
+        def close(self):
+            pass
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        worker = RejectOnce(pool)
+        source = HistoryStNameSource(
+            tmp_path / "st.json",
+            lambda: nullcontext(SimpleNamespace(get=lambda *_args, **_kwargs: Response())),
+            worker,
+            lambda: False,
+            report=lambda *_counts: None,
+            batch_size=2,
+        )
+        result = source.fetch(_current_universe("600001", "600002"), date(2026, 10, 9))
+    assert worker.rejections == 1
+    assert len(result) == 2 and all(item.status == "clear" for item in result)
+
+
 def test_st_checks_refill_available_worker_without_waiting_for_slowest_stock(tmp_path):
     import threading
 

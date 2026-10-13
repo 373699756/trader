@@ -19,7 +19,7 @@ from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.security_eligibility import is_st_security_name
 from trader.download.infra.history_reference_files import read_st_evidence
 from trader.download.infra.history_st_merge import merge_st_evidence
-from trader.infra.workers import WorkerExecutor, submit_or_reject
+from trader.infra.workers import WorkerExecutor, submit_with_backpressure
 
 _NAME_HISTORY = re.compile(r"证券简称更名历史[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", re.S)
 _CHECKPOINT_CODES = 64
@@ -121,7 +121,7 @@ class HistoryStNameSource:
         while len(futures) < self._batch_size and next_security < len(pending):
             security = pending[next_security]
             next_security += 1
-            future = submit_or_reject(self._executor, self._fetch_code, security.code, security.name, as_of)
+            future = submit_with_backpressure(self._executor, self._fetch_code, security.code, security.name, as_of)
             futures[future] = security.code
         return next_security
 

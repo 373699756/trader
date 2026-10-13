@@ -511,6 +511,33 @@ def test_qfq_refills_worker_before_slowest_request_finishes(tmp_path) -> None:
     assert result.completed_codes == 3 and result.pending_codes == 0
 
 
+def test_qfq_transient_worker_rejection_does_not_leave_a_stock_pending(tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    class RejectOnce:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.rejections = 0
+
+        def submit(self, function, /, *args, **kwargs):
+            if not self.rejections:
+                self.rejections += 1
+                return None
+            return self.delegate.submit(function, *args, **kwargs)
+
+    supplier = Supplier(codes=("600001", "600002"))
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        worker = RejectOnce(pool)
+        updater = replace(_updater(tmp_path, supplier), workers=2, worker_pool=worker)
+        result = updater.execute(observed)
+    assert worker.rejections == 1
+    assert result.completed_codes == 2 and result.pending_codes == 0
+    assert not result.pending_reasons
+    assert len(updater.v2.read_code("600001").cells) == 251
+    assert len(updater.v3.read_code("600002").cells) == 61
+
+
 def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_path) -> None:
     supplier = Supplier(codes=("600001", "300001"))
     updater = _updater(tmp_path, supplier)

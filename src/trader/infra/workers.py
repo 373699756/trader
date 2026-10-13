@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
 _START_TIMEOUT_SECONDS = 5.0
+_CAPACITY_WAIT_SECONDS = 5.0
 
 
 class WorkerExecutor(Protocol):
@@ -334,6 +336,27 @@ def submit_or_reject(
     return completed
 
 
+def submit_with_backpressure(
+    executor: WorkerExecutor,
+    function: Callable[_P, _T],
+    /,
+    *args: _P.args,
+    **kwargs: _P.kwargs,
+) -> Future[_T]:
+    """Wait briefly for a completed worker's capacity callback before rejecting."""
+    deadline = time.monotonic() + _CAPACITY_WAIT_SECONDS
+    while True:
+        future = executor.submit(function, *args, **kwargs)
+        if future is not None:
+            return future
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            completed: Future[_T] = Future()
+            completed.set_exception(WorkerResourceRejectedError("resource_rejected: worker capacity unavailable"))
+            return completed
+        time.sleep(min(0.01, remaining))
+
+
 class _InlineExecutor:
     def submit(
         self,
@@ -358,4 +381,5 @@ __all__ = [
     "WorkerResourceRejectedError",
     "injected_executor",
     "submit_or_reject",
+    "submit_with_backpressure",
 ]

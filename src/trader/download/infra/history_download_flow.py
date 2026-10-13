@@ -36,7 +36,7 @@ from trader.download.infra.history_download_index import (
 from trader.download.infra.history_month_partition import HistoryMonthPartitionError
 from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_failure import HistorySyncFailureError, history_failure_detail
-from trader.infra.workers import WorkerExecutor, submit_or_reject
+from trader.infra.workers import WorkerExecutor, submit_with_backpressure
 
 _FATAL = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})
 _LOGGER = logging.getLogger(__name__)
@@ -223,7 +223,7 @@ class HistoryDownloadFlow:
             if cells + len(jobs[0].dates) > resources.tuning.max_cells:
                 break
             task = jobs.popleft()
-            futures[submit_or_reject(resources.executor, self._fetch_task, task)] = task
+            futures[submit_with_backpressure(resources.executor, self._fetch_task, task)] = task
             cells += len(task.dates)
             codes += 1
         return not jobs
@@ -407,7 +407,7 @@ class _TencentPipeline:
         batch = tuple(self._buffered)
         self._buffered.clear()
         self._writing_cells, self._writing_codes = cells, len(batch)
-        self._writing = submit_or_reject(self._flow._resources.writer, self._flow._commit, batch)
+        self._writing = submit_with_backpressure(self._flow._resources.writer, self._flow._commit, batch)
         self._last_commit = time.monotonic()
 
     def _wait(self, blocked: bool) -> None:
@@ -455,7 +455,7 @@ class _TencentPipeline:
         if self._writer_closed:
             return
         started = time.monotonic()
-        future = submit_or_reject(self._flow._resources.writer, self._flow._resources.prices.close_pipeline)
+        future = submit_with_backpressure(self._flow._resources.writer, self._flow._resources.prices.close_pipeline)
         future.result()
         self._write_seconds += time.monotonic() - started
         self._writer_closed = True
