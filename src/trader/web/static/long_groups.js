@@ -57,6 +57,8 @@
         risks: [],
         review: null,
         ...live,
+        action: "observe",
+        action_reason: live.action_reason || "fixed_long_watchlist",
         name: live.name || item.name,
         industry: live.industry || item.industry,
       };

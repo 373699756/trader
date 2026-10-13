@@ -31,6 +31,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
 from trader.infra.settings import load_runtime_settings  # noqa: E402
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
+from trader.infra.workers import BoundedExecutor  # noqa: E402
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (  # noqa: E402
     AsyncDecisionObserver,
 )
@@ -51,14 +52,15 @@ from trader.recommendation.application.ports.read_only_queries import InputQuali
 from trader.recommendation.application.ports.runtime import (  # noqa: E402
     CycleRequest,
     DecisionUnavailableError,
+    PipelineTaskRequest,
     RefreshOutcome,
     ResearchIntent,
     ResearchRuntimeStatus,
     SharedDeepSeekRuntimeContract,
 )
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy  # noqa: E402
-from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies  # noqa: E402
+from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime  # noqa: E402
 from trader.recommendation.application.runtime.supervisor import (  # noqa: E402
     RuntimeSupervisor,
@@ -131,7 +133,7 @@ class _RecordingData:
                 }
             )
 
-    def refresh_task(self, request) -> RefreshOutcome:
+    def refresh_task(self, request: PipelineTaskRequest) -> RefreshOutcome:
         return RefreshOutcome(
             request.task,
             True,
@@ -298,7 +300,8 @@ def _validate(args: argparse.Namespace) -> datetime:
         raise ValueError("--simulated-start must be an ISO datetime") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("--simulated-start must include a timezone offset")
-    return shanghai_now(parsed)
+    normalized: datetime = shanghai_now(parsed)
+    return normalized
 
 
 def _seed(index: UnifiedDecisionIndex, strategy: Strategy, at: datetime, code: str) -> None:
@@ -531,6 +534,12 @@ def _run(
 
     runtime = SchedulerRuntime(
         RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="measurement-control",
+            ),
             clock=clock,
             calendar=_TradingCalendar(),
             cadence=cadence,

@@ -568,7 +568,7 @@ tr:focus-visible {
   white-space: nowrap;
 }
 
-.score-leaders-content > strong.top-scores-list {
+.score-leaders-content > .top-scores-list {
   grid-column: 2;
   grid-row: 1 / span 2;
   align-self: start;
@@ -583,6 +583,33 @@ tr:focus-visible {
   line-height: 14px;
   text-overflow: clip;
   white-space: pre-line;
+}
+
+.top-score-row {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  line-height: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.top-score-row:hover,
+.top-score-row:focus-visible {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.observation-pool-hint {
+  margin: 0 14px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .score-range-summary > small {

@@ -41,15 +41,21 @@
       els.inputQualityScoreTime.textContent = "等待本轮评分完成";
       els.publicationStatus.textContent = "未就绪";
       els.publicationMeta.textContent = "等待当前策略快照";
+      els.budgetStatus.textContent = "—";
+      els.budgetMeta.textContent = "等待当前策略预算状态";
       renderTopScores(els, null, []);
       els.recommendationTable.classList.remove("is-history", "is-anchor-table", "is-long-table");
       els.observationPool.hidden = true;
+      els.observationPoolMeta.textContent = "0 / 6";
+      els.observationPoolMeta.title = "";
+      els.observationPoolHint.textContent = `正在读取${selection.strategyLabel(state.strategy)}策略观察池`;
       setLongControls(state.strategy === "long");
       setLongLayout(false);
       const definition = render.currentTable();
       els.tableColumns.innerHTML = definition.columns;
       els.tableHead.innerHTML = definition.head;
       if (els.longSidebar) els.longSidebar.hidden = true;
+      if (els.longStockHeader) els.longStockHeader.hidden = true;
       renderTableState("正在读取推荐快照");
       setNotice("正在读取推荐快照", "idle");
     };
@@ -73,13 +79,19 @@
       els.inputQualityScoreTime.textContent = "所选历史日期不重算评分";
       els.publicationStatus.textContent = "历史只读";
       els.publicationMeta.textContent = "所选日期无正式快照";
+      els.budgetStatus.textContent = "—";
+      els.budgetMeta.textContent = "历史日期无可用预算状态";
       renderTopScores(els, null, []);
       els.recommendationTable.classList.add("is-history");
       els.recommendationTable.classList.remove("is-anchor-table", "is-long-table");
       els.observationPool.hidden = true;
+      els.observationPoolMeta.textContent = "0 / 6";
+      els.observationPoolMeta.title = "";
+      els.observationPoolHint.textContent = `${selection.strategyLabel(strategy)}策略所选日期无观察池数据`;
       setLongControls(false);
       setLongLayout(false);
       if (els.longSidebar) els.longSidebar.hidden = true;
+      if (els.longStockHeader) els.longStockHeader.hidden = true;
       const definition = render.historyTable();
       els.tableColumns.innerHTML = definition.columns;
       els.tableHead.innerHTML = definition.head;
@@ -655,6 +667,14 @@
               ? `最高统一评分 ${maximum.toFixed(2)}`
               : `最高相对信号分 ${maximum.toFixed(2)}`
             : `最高分 ${maximum.toFixed(2)}`;
+    if (scoredItems.length) {
+      els.topScoresStatus.innerHTML = scoredItems.map((item, index) =>
+        `<button class="top-score-row" type="button" data-code="${window.TraderRender.escapeHtml(item.code)}" `
+        + `title="查看${window.TraderRender.escapeHtml(item.name)}的评分与入池原因">`
+        + `${index + 1}  ${item.score.toFixed(2)} · ${window.TraderRender.escapeHtml(item.code)} `
+        + `${window.TraderRender.escapeHtml(item.name)}</button>`
+      ).join("");
+    }
     if (els.topScoresMeta) {
       els.topScoresMeta.textContent = scoreEvidenceMissing
         ? "明日冻结记录 · 已评分证据不完整"
@@ -696,11 +716,14 @@
         const score = finiteNumber(scores && (scores.final_score ?? scores.final));
         const code = item && typeof item.code === "string" ? item.code.trim() : "";
         const name = item && typeof item.name === "string" ? item.name.trim() : "";
-        return score == null || !code || !name ? null : { score, code, name, index };
+        const local = finiteNumber(scores && (scores.local_score ?? scores.local));
+        return score == null || !code || !name ? null : { score, local, code, name, index };
       })
       .filter(Boolean)
-      .sort((left, right) => right.score - left.score || left.code.localeCompare(right.code) || left.index - right.index)
-      .slice(0, 3);
+      .sort((left, right) => right.score - left.score || (right.local ?? -1) - (left.local ?? -1)
+        || left.code.localeCompare(right.code) || left.index - right.index)
+      .slice(0, 3)
+      .map(({ score, code, name, index }) => ({ score, code, name, index }));
   }
 
   function updateQuoteAge(els, payload, render, statusPayload) {

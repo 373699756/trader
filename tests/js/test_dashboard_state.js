@@ -193,6 +193,33 @@ assert.deepStrictEqual(
   ))),
   [{ score: 72.5, code: "600007", name: "草稿未入池最高分", index: 0 }],
 );
+assert.deepStrictEqual(
+  JSON.parse(JSON.stringify(state.topScoredStocks(
+    { strategy: "d25", score_status: "scored" },
+    [
+      { code: "600003", name: "较低本地分", scores: { final_score: 79.45, local_score: 76 } },
+      { code: "600002", name: "较高本地分", scores: { final_score: 79.45, local_score: 78 } },
+    ],
+  ).map((item) => item.code))),
+  ["600002", "600003"],
+);
+const unselectedLeader = {
+  code: "688199", name: "久日新材", selected: false,
+  action: "observe", action_reason: "industry_limit", scores: { final_score: 79.45 },
+};
+assert.strictEqual(
+  state.detailItem({ strategy: "tomorrow", items: [], top_scores: [unselectedLeader] }, "688199").action_reason,
+  "industry_limit",
+);
+assert.match(state.drawer(unselectedLeader, { strategy: "tomorrow" }), /未入池/);
+assert.match(state.drawer(unselectedLeader, { strategy: "tomorrow" }), /超过行业集中度上限/);
+const configuredLongDetail = state.longGroupDisplayPayload(state.longGroupStaticFallbackPayload("pending"));
+assert.strictEqual(state.detailItem(configuredLongDetail, "600001").name, "配置名称");
+assert.strictEqual(state.detailItem(configuredLongDetail, "600001").action, "observe");
+assert.strictEqual(
+  state.longGroupDisplayPayload({ strategy: "long", items: [{ code: "600001", price: 15.25 }] }).items[0].price,
+  15.25,
+);
 const unifiedDraftSummary = summaryFixture();
 state.renderSummary(
   unifiedDraftSummary,
@@ -419,6 +446,32 @@ function summaryFixture() {
     observationStageList: { innerHTML: "" },
   };
 }
+const switchingElements = {
+  ...summaryFixture(),
+  observationPool: { hidden: false },
+  observationPoolMeta: { textContent: "4 / 6", title: "旧策略门槛" },
+  observationPoolHint: { textContent: "旧策略提示" },
+  recommendationTable: { classList: { remove() {}, add() {} } },
+  tableColumns: { innerHTML: "" },
+  tableHead: { innerHTML: "" },
+  tableBody: { innerHTML: "" },
+  longStockHeader: { hidden: false },
+  longSidebar: { hidden: false },
+  longScopeTabs: { hidden: false },
+  resultLayout: { classList: { toggle() {} } },
+};
+switchingElements.budgetStatus.textContent = "旧策略预算";
+const switchState = { strategy: "d25", payload: null };
+const switchRenderer = sandbox.window.TraderStatusView.createDashboardStateRenderer(
+  switchingElements, switchState, sandbox.window.TraderSelection, sandbox.window.TraderRender,
+);
+switchRenderer.renderLoadingState();
+assert.strictEqual(switchingElements.budgetStatus.textContent, "—");
+assert.strictEqual(switchingElements.observationPoolHint.textContent, "正在读取2-5策略观察池");
+assert.strictEqual(switchingElements.observationPoolMeta.textContent, "0 / 6");
+assert.strictEqual(switchingElements.longStockHeader.hidden, true);
+switchRenderer.renderMissingHistoricalDate("d25", "2026-10-13");
+assert.strictEqual(switchingElements.observationPoolHint.textContent, "2-5策略所选日期无观察池数据");
 const pipelineFixture = {
   current_stage: "action_gate",
   stages: [
@@ -635,6 +688,8 @@ assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
   "1  82.00 · 600001 正式股票\n2  75.00 · 600002 观察股票",
 );
+assert.match(summaryElements.topScoresStatus.innerHTML, /button class="top-score-row"/);
+assert.match(summaryElements.topScoresStatus.innerHTML, /data-code="600002"/);
 const persistedPipelineElements = summaryFixture();
 pipelineFixture.stage_snapshots = Array.from({ length: 14 }, (_value, index) => ({
   stage: ["data_source", "static_market", "static_standardize", "static_filter",

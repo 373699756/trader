@@ -74,6 +74,18 @@
     return items.filter((item) => item.action === "observe");
   }
 
+  function detailItem(payload, code) {
+    if (!payload || !code) return null;
+    const draft = payload.draft || {};
+    const candidates = [payload.items, payload.top_scores, draft.items, draft.top_scores];
+    for (const items of candidates) {
+      if (!Array.isArray(items)) continue;
+      const item = items.find((candidate) => candidate && candidate.code === code);
+      if (item) return item;
+    }
+    return null;
+  }
+
   function observationDisplayState(payload, runtimePhase, statusPayload) {
     if (!payload) return "unavailable";
     if (payload.strategy === "long") return "not_applicable";
@@ -162,6 +174,7 @@
 
   window.TraderSelection = Object.freeze({
     currentViewMatches,
+    detailItem,
     descriptions,
     initialStrategy,
     isSnapshotNotFound,

@@ -423,6 +423,7 @@
       ]
       : [
         ["推荐动作", ACTION_LABELS[action] || "动作状态未知"],
+        ["入池状态", item.selected === false ? "未入池" : "已入池"],
         ["最终评分", valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
         ["入场形态", SETUP_LABELS[item.setup_type] || "形态信息暂不可用"],

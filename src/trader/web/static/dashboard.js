@@ -24,6 +24,7 @@
     statusPayload: null,
     longScope: "chokepoint",
     longGroup: "",
+    selectedCode: "",
     releaseMismatch: false,
   };
   const CACHE_MAX_AGE_MS = configuredSnapshotRetentionMs();
@@ -116,7 +117,7 @@
       "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelScoreRange", "funnelMeta",
       "inputQualityStrategy", "inputQualityScoreTime", "healthBadge", "errorDetailsButton",
       "recommendationTable", "tableColumns", "tableHead", "tableBody",
-      "observationPool", "observationPoolMeta", "observationTable", "observationColumns", "observationHead", "observationBody",
+      "observationPool", "observationPoolMeta", "observationPoolHint", "observationTable", "observationColumns", "observationHead", "observationBody",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
       "observationDrawer", "observationErrorContent", "observationDrawerClose", "observationDrawerTitle", "observationErrorCount", "observationStageList",
@@ -156,6 +157,7 @@
         if (event.key === "Enter" || event.key === " ") selectRow(event);
       });
     });
+    els.topScoresStatus.addEventListener("click", selectScoreLeader);
     els.observationStageList.addEventListener("click", toggleObservationStage);
     els.observationStageList.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -237,6 +239,11 @@
       button.setAttribute("aria-selected", active ? "true" : "false");
     });
     stateRenderer.renderLoadingState();
+    const provisionalDate = selection.resolveStrategyDate(previousStrategy, nextStrategy, selectedDate, null);
+    state.date = provisionalDate.date;
+    state.selectedDateAvailability = provisionalDate.availability;
+    selection.renderDateOptions(els.dateSelect, nextStrategy, [], provisionalDate.date, provisionalDate.availability);
+    els.dateSelect.disabled = true;
     if ((previousStrategy === "long") !== (nextStrategy === "long")) streamController.connect();
     const dates = await loadDates(nextStrategy, selectionId);
     if (selectionId !== state.selectionSequence) return;
@@ -452,6 +459,8 @@
       name: item.name || "",
       board: item.board || "",
       industry: item.industry || "",
+      group: item.group || null,
+      selected: item.selected === true,
       selection_rank: item.selection_rank || 0,
       price: quote.price,
       pct_change: quote.pct_change,
@@ -462,7 +471,7 @@
       source_time: quote.source_time,
       quote_status: quote.status,
       action: item.action,
-      action_reason: item.action_reason,
+      action_reason: item.action_reason || item.observation_reason,
       anchor_price: item.anchor_quote && item.anchor_quote.price,
       anchor_source_time: item.anchor_quote && item.anchor_quote.source_time,
       setup: item.setup || null,
@@ -541,6 +550,17 @@
     els.observationPoolMeta.title = Number.isFinite(observationFloor) && Number.isFinite(executableThreshold)
       ? `观察门槛 = 正式门槛 ${executableThreshold.toFixed(2)} - 观察余量 ${(executableThreshold - observationFloor).toFixed(2)}`
       : "";
+    const scoredLeaders = Array.isArray(payload.top_scores) && payload.top_scores.length
+      ? payload.top_scores
+      : payload.draft && Array.isArray(payload.draft.top_scores) ? payload.draft.top_scores : [];
+    const highScoreOutsidePool = Number.isFinite(observationFloor) && scoredLeaders.some((item) => {
+      const score = item && item.scores && item.scores.final_score;
+      return item && item.selected !== true && score != null && Number(score) >= observationFloor;
+    });
+    const observationLabel = selection.strategyLabel(payload.strategy);
+    els.observationPoolHint.textContent = highScoreOutsidePool
+      ? `${observationLabel}策略有高分股票未入池；点上方前三名查看原因。分数之外还须通过成本、风险、名额与集中度规则。`
+      : `${observationLabel}策略观察池仅展示通过成本、风险、名额与集中度规则的入选股票。`;
     const firstVisible = recommendations[0] || observations[0] || items[0];
     statusView.renderSummary(
       els,
@@ -552,6 +572,7 @@
       window.TraderRender,
       state.statusPayload,
     );
+    refreshSelectedDetail(payload);
     renderHealth(state.statusPayload || {});
     const definition = window.TraderRender.tableDefinition(payload);
     els.recommendationTable.classList.toggle("is-history", historical);
@@ -660,23 +681,45 @@
   function selectRow(event) {
     const row = event.target.closest("tr[data-code]");
     if (!row || !state.payload) return;
-    const draftItems = state.payload.draft && Array.isArray(state.payload.draft.items)
-      ? state.payload.draft.items
-      : [];
-    const item = [...(state.payload.items || []), ...draftItems]
-      .find((candidate) => candidate.code === row.dataset.code);
+    const payload = longGroups.displayPayload(state.payload);
+    const item = selection.detailItem(payload, row.dataset.code);
     if (!item) return;
+    showDetail(item, payload);
+  }
+
+  function selectScoreLeader(event) {
+    const button = event.target.closest("button[data-code]");
+    if (!button || !state.payload) return;
+    const item = selection.detailItem(state.payload, button.dataset.code);
+    if (item) showDetail(item, state.payload);
+  }
+
+  function showDetail(item, payload) {
     errorDrawer.close(false);
+    state.selectedCode = item.code;
     els.drawerCode.textContent = `${item.code || "-"} · ${item.industry || "未分类"}`;
     els.drawerTitle.textContent = `${item.name || "股票"} 股票详情`;
-    els.drawerContent.innerHTML = window.TraderRender.drawer(item, state.payload);
+    els.drawerContent.innerHTML = window.TraderRender.drawer(item, payload);
     els.detailDrawer.classList.add("is-open");
     els.detailDrawer.setAttribute("aria-hidden", "false");
     syncDrawerBackdrop();
     els.drawerClose.focus();
   }
 
+  function refreshSelectedDetail(payload) {
+    if (!state.selectedCode || !els.detailDrawer.classList.contains("is-open")) return;
+    const item = selection.detailItem(payload, state.selectedCode);
+    if (!item) {
+      closeDrawer();
+      return;
+    }
+    els.drawerCode.textContent = `${item.code} · ${item.industry || "未分类"}`;
+    els.drawerTitle.textContent = `${item.name || "股票"} 股票详情`;
+    els.drawerContent.innerHTML = window.TraderRender.drawer(item, payload);
+  }
+
   function closeDrawer() {
+    state.selectedCode = "";
     els.detailDrawer.classList.remove("is-open");
     els.detailDrawer.setAttribute("aria-hidden", "true");
     syncDrawerBackdrop();

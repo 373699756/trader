@@ -57,14 +57,14 @@
           <strong id="inputQualityStatus">数据状态待确认</strong>
           <small id="inputQualityMeta">数据更新时间待确认</small>
         </div>
-        <div id="scoreLeadersPanel" class="summary-item score-leaders-summary" role="group" aria-label="评分领先">
-          <span>评分领先 · 统一0–100评分</span>
+        <div id="scoreLeadersPanel" class="summary-item score-leaders-summary" role="group" aria-label="评分最高三只股票">
+          <span>评分最高三只股票</span>
           <div class="score-leaders-content">
             <div class="score-range-summary">
               <strong id="funnelScoreRange" class="funnel-score-range">—</strong>
               <small id="topScoresMeta">策略内最终评分 · 当前无可用数据</small>
             </div>
-            <strong id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</strong>
+            <div id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</div>
           </div>
         </div>
         <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 · 上限 168 · 复核 0/0</small></div>
@@ -144,6 +144,7 @@
           </div>
           <b id="observationPoolMeta">0 / 6</b>
         </header>
+        <p id="observationPoolHint" class="observation-pool-hint">仅展示通过风险、成本及入池规则的股票</p>
         <div class="table-scroll">
           <table id="observationTable">
             <colgroup id="observationColumns"></colgroup>
