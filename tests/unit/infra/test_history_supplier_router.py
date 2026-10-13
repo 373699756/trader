@@ -29,6 +29,11 @@ from trader.training.infra.research.historical_industry_archive import audit_arc
 
 
 class Baseline(FakeSupplier):
+    def load_industry_context(self, calendar, universe, *, industry_cache=None):
+        return self.load_context(
+            calendar.open_dates[-1], len(calendar.open_dates), universe=universe, industry_cache=industry_cache
+        )
+
     def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
         self.industry_cache = industry_cache
         return super().load_context(as_of, sessions, universe=universe)
@@ -49,6 +54,11 @@ class Prices:
         self.missing = missing
         self.conflict = conflict
         self.shift = shift
+        self.dates = None
+
+    def load_history_context(self, as_of, sessions, universe):
+        dates = self.dates or tuple(as_of - timedelta(days=i) for i in reversed(range(sessions)))
+        return replace(FakeSupplier(dates).load_context(as_of, sessions, universe=universe), industry_intervals=())
 
     def fetch_window(self, security, dates, **kwargs):
         self.calls.append(dates)
@@ -95,6 +105,7 @@ def _router(
     universe: tuple[BaoStockSecurity, ...] | None = None,
 ) -> HistorySupplierRouter:
     selected = universe or _current_universe("600001", "600002")
+    prices.dates = baseline.dates
     return HistorySupplierRouter(baseline, prices, lambda: selected, StSource())
 
 
@@ -106,6 +117,31 @@ def test_history_context_uses_the_current_exchange_universe() -> None:
     assert context.universe == tuple(sorted(universe, key=lambda item: item.code))
     assert context.universe[0].board == "chinext"
     assert HISTORY_UNIVERSE_CONTRACT in context.source_versions.dependency_versions
+
+
+def test_history_calendar_is_loaded_from_tencent_before_industry_only_query() -> None:
+    dates = (date(2026, 10, 8), date(2026, 10, 9))
+    universe = _current_universe("600001")
+    events = []
+
+    class TencentCalendar(Prices):
+        def load_history_context(self, as_of, sessions, selected):
+            events.append("tencent_calendar")
+            return super().load_history_context(as_of, sessions, selected)
+
+    class IndustryOnly:
+        def load_industry_context(self, calendar, selected, *, industry_cache=None):
+            events.append("industry")
+            assert calendar.open_dates == dates
+            assert selected == universe
+            return FakeSupplier(dates).load_context(dates[-1], len(dates), universe=selected)
+
+    context = HistorySupplierRouter(IndustryOnly(), TencentCalendar(), lambda: universe, StSource()).load_context(
+        dates[-1], len(dates)
+    )
+    assert events == ["tencent_calendar", "industry"]
+    assert context.calendar.open_dates == dates
+    assert any(name == "tencent_calendar" for name, _ in context.source_versions.dependency_versions)
 
 
 def test_history_router_forwards_the_explicit_industry_query_cache(tmp_path) -> None:
@@ -239,8 +275,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert baseline.calls == []
     assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
     assert supplier_settings["configuration"].supplier_retries == 2
-    assert supplier_settings["price_policy"].timeout_seconds == 20.0
-    assert supplier_settings["price_policy"].retries == 0
+    assert "price_policy" not in supplier_settings
     snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     assert snapshot is not None
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
@@ -444,27 +479,26 @@ def test_completed_stock_reports_real_route_and_requested_sessions(capsys):
     assert "来源 Tencent | 请求 5 日" in capsys.readouterr().err
 
 
-def test_failed_baostock_gap_reports_the_bounded_reason(capsys):
+def test_failed_tencent_download_reports_the_bounded_reason(capsys):
     progress = StderrHistorySyncProgress(monotonic=lambda: 0)
 
     progress.publish(
         HistorySyncProgress(
-            "baostock_gap_fill",
+            "tencent_history",
             "failed",
             1,
             2,
             "600001",
-            supplier_source="baostock",
+            supplier_source="tencent",
             requested_sessions=5,
             failure_reason="qfq_daily_query_failed",
         )
     )
 
-    assert (
-        capsys.readouterr().err.strip()
-        == "00:00:00 | BaoStock补缺 | 失败 | 1/2 (50.00%) | 股票 600001 | 来源 BaoStock | 请求 5 日 "
-        "| 错误 qfq_daily_query_failed | 阶段耗时 00:00:00"
-    )
+    line = capsys.readouterr().err.strip()
+    assert "download 股票进度 | 1/2" in line
+    assert "处理 Tencent下载 | 结果 失败" in line
+    assert "原因 qfq_daily_query_failed" in line
 
 
 def test_history_st_reference_batches_report_distinct_counts(capsys):

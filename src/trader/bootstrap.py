@@ -28,8 +28,7 @@ from trader.download.domain.history_sync import (
     HistorySyncProgressPort,
 )
 from trader.download.domain.qfq_window import QfqUpdateResult
-from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
-from trader.download.infra.download_settings import load_history_sync_configuration
+from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import (
     load_current_a_share_universe,
     select_st_eligible_universe,
@@ -209,7 +208,6 @@ def execute_history_download(
             configuration,
             progress=supplier_progress or progress,
             cancel_requested=cancel_requested,
-            price_policy=BaoStockRequestPolicy(20.0, 0),
         ) as baseline:
             http_pool = TencentSessionPool(
                 tuple(

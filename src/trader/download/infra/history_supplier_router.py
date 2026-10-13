@@ -40,17 +40,17 @@ class HistorySupplierRouter:
         universe = self._load_universe()
         evidence = self._st_source.fetch(universe, as_of)
         universe = select_st_eligible_universe(universe, evidence)
+        price_context = self._prices.load_history_context(as_of, sessions, universe)
         try:
-            context = self._baseline.load_context(
-                as_of,
-                sessions,
-                universe=universe,
+            context = self._baseline.load_industry_context(
+                price_context.calendar,
+                universe,
                 industry_cache=self._industry_cache,
             )
         except RuntimeError as exc:
             if str(exc) != "supplier_login_timeout":
                 raise
-            context = self._prices.load_history_context(as_of, sessions, universe)
+            context = price_context
         self._calendar = context.calendar.open_dates
         versions = context.source_versions
         return replace(
@@ -61,6 +61,7 @@ class HistorySupplierRouter:
                 sdk_version=f"{versions.sdk_version}+tencent-history",
                 dependency_versions=(
                     *versions.dependency_versions,
+                    ("tencent_calendar", price_context.source_versions.content_hash),
                     HISTORY_TAIL_CONTRACT,
                     HISTORY_UNIVERSE_CONTRACT,
                 ),

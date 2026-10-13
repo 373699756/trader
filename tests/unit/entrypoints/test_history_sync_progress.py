@@ -8,7 +8,6 @@ from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
 from trader.download.domain.history_sync import (
     HistoryPipelineProgress,
-    HistoryRecoverySummary,
     HistoryStEligibilitySummary,
     HistorySyncProgress,
     HistoryTencentSummary,
@@ -24,28 +23,17 @@ class _Clock:
         return next(self._values)
 
 
-def test_recovery_attempt_summary_and_incomplete_publication_are_explicit(capsys):
+def test_industry_retry_and_incomplete_publication_are_explicit(capsys):
     progress = StderrHistorySyncProgress(monotonic=lambda: 0.0)
     progress.publish(
         HistorySyncProgress(
-            "baostock_gap_fill",
+            "supplier_industry",
             "retrying",
             0,
             45,
-            "600001",
+            "2026-09-09",
             attempt=2,
             max_attempts=3,
-            supplier_source="baostock",
-            requested_sessions=2000,
-        )
-    )
-    progress.publish(
-        HistorySyncProgress(
-            "baostock_gap_fill",
-            "completed",
-            45,
-            45,
-            recovery_summary=HistoryRecoverySummary(44, 1, 0),
         )
     )
     progress.publish_result(
@@ -53,8 +41,7 @@ def test_recovery_attempt_summary_and_incomplete_publication_are_explicit(capsys
     )
     lines = capsys.readouterr().err.splitlines()
     assert "0/45" in lines[0] and "尝试 2/3" in lines[0]
-    assert "缺口股 45 | 成功 44 股 | 补缺失败 1 股 | 未处理完 0 股" in lines[1]
-    assert "同步完成 | 数据不完整 | 未修复价格缺口 2000 股日" in lines[2]
+    assert "同步完成 | 数据不完整 | 未修复价格缺口 2000 股日" in lines[1]
 
 
 def test_legacy_resume_progress_is_visible_with_counts_and_month(capsys):

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
 
-from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockSecurity
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.download_settings import load_history_sync_configuration
@@ -49,16 +49,19 @@ def _measure(root: Path, timeout: float) -> dict[str, object]:
         for label in ("cold", "warm"):
             progress.values.clear()
             started = monotonic()
-            # Include login and prove cache reuse across real supplier processes.
+            # A fresh supplier object must not log in for the warm-cache run.
             with BaoStockHistorySupplier(settings, progress=progress) as supplier:
-                context = supplier.load_context(
-                    active.calendar.open_dates[-1], 2, universe=universe, industry_cache=cache
+                context = supplier.load_industry_context(
+                    BaoStockCalendar(active.calendar.open_dates[-2:]), universe, industry_cache=cache
                 )
             completed = [value for value in progress.values if value.cache_hit is not None]
             intervals.append(context.industry_intervals)
             measurements.append(
                 {
                     "mode": label,
+                    "login_attempts": sum(
+                        value.stage == "supplier_login" and value.state == "started" for value in progress.values
+                    ),
                     "seconds": round(monotonic() - started, 3),
                     "queried_dates": sum(value.cache_hit is False for value in completed),
                     "cached_dates": sum(value.cache_hit is True for value in completed),
@@ -69,6 +72,7 @@ def _measure(root: Path, timeout: float) -> dict[str, object]:
             measurements[0]["queried_dates"] == 2
             and measurements[1]["queried_dates"] == 0
             and measurements[1]["cached_dates"] == 2
+            and measurements[1]["login_attempts"] == 0
             and bool(intervals[0])
             and intervals[0] == intervals[1]
         )
@@ -94,10 +98,23 @@ def main() -> int:
     try:
         report = _measure(args.history_root, args.timeout_seconds)
     except (OSError, RuntimeError, ValueError) as exc:
+        known_failures = {
+            "supplier_login_timeout",
+            "supplier_login_network_denied",
+            "supplier_login_network_failed",
+            "supplier_login_transport_failed",
+            "supplier_industry_timeout",
+            "industry_query_failed",
+            "industry_query_cache_unavailable",
+            "industry_probe_requires_published_context",
+        }
         report = {
             "schema_version": "history-industry-preparation",
             "status": "failed",
-            "summary": {"failure": type(exc).__name__},
+            "summary": {
+                "failure": type(exc).__name__,
+                "reason": str(exc) if str(exc) in known_failures else "industry_probe_failed",
+            },
         }
     emit_report(report)
     return 0 if report["status"] == "passed" else 1

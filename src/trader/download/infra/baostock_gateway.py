@@ -27,6 +27,7 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.download.infra.history_industry_preparation import prepare_history_industries
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
 _DAILY_FACT_FIELDS = "date,code,tradestatus,isST"
@@ -340,38 +341,12 @@ class BaoStockRowGateway:
         progress: Callable[[HistorySyncProgress], None] | None = None,
     ) -> tuple[BaoStockIndustryInterval, ...]:
         del spec
-        snapshots = _industry_snapshot_dates(calendar.open_dates)
-        source = self._versions.content_hash
-        as_of = calendar.open_dates[-1]
-        if cache is not None:
-            cache.prepare(source, snapshots)
-        observations: dict[str, list[tuple[date, str, str]]] = {item.code: [] for item in universe}
-        for index, snapshot_date in enumerate(snapshots):
-            if progress is not None:
-                progress(HistorySyncProgress("supplier_industry", "started", index, len(snapshots), str(snapshot_date)))
-            facts = cache.read(source, snapshot_date, as_of) if cache is not None else None
-            reused = facts is not None
-            if facts is None:
-                facts = self._industry_facts(snapshot_date)
-                if cache is not None:
-                    cache.save(source, snapshot_date, as_of, facts)
-            for fact in facts:
-                if fact.code in observations:
-                    observations[fact.code].append((fact.effective_from, fact.industry, fact.classification))
-            if progress is not None:
-                progress(
-                    HistorySyncProgress(
-                        "supplier_industry",
-                        "completed",
-                        index + 1,
-                        len(snapshots),
-                        str(snapshot_date),
-                        cache_hit=reused,
-                    )
-                )
-        return _industry_intervals(observations)
+        return prepare_history_industries(
+            calendar, universe, self._versions.content_hash, self.fetch_industry_facts, cache=cache, progress=progress
+        )
 
-    def _industry_facts(self, snapshot_date: date) -> tuple[BaoStockIndustryInterval, ...]:
+    def fetch_industry_facts(self, snapshot_date: date) -> tuple[BaoStockIndustryInterval, ...]:
+        """Return validated full-market facts for one historical query date."""
         rows = _result_rows(
             self._sdk.query_stock_industry(code="", date=snapshot_date.isoformat()), "industry_query_failed"
         )
@@ -573,36 +548,6 @@ def _scaled_qfq(raw: BaoStockDailySide, factor: Decimal) -> BaoStockDailySide:
         None,
         raw.trading_status,
     )
-
-
-def _industry_intervals(observations: dict[str, list[tuple[date, str, str]]]) -> tuple[BaoStockIndustryInterval, ...]:
-    intervals: list[BaoStockIndustryInterval] = []
-    for code, values in observations.items():
-        ordered = tuple(sorted(set(values)))
-        for left, right in zip(ordered, ordered[1:], strict=False):
-            if left[0] == right[0] and left[1:] != right[1:]:
-                raise ValueError("BaoStock industry facts conflict at the same effective date")
-        compressed: list[tuple[date, str, str]] = []
-        for value in ordered:
-            if not compressed or value[1:] != compressed[-1][1:]:
-                compressed.append(value)
-        for index, (effective_from, industry, classification) in enumerate(compressed):
-            effective_to = compressed[index + 1][0] if index + 1 < len(compressed) else None
-            intervals.append(BaoStockIndustryInterval(code, effective_from, effective_to, industry, classification))
-    return tuple(sorted(intervals, key=lambda item: (item.code, item.effective_from)))
-
-
-def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:
-    if not open_dates:
-        return ()
-    snapshots = [open_dates[0]]
-    for day in open_dates[1:-1]:
-        previous = snapshots[-1]
-        if (day.year, (day.month - 1) // 6) != (previous.year, (previous.month - 1) // 6):
-            snapshots.append(day)
-    if open_dates[-1] != snapshots[-1]:
-        snapshots.append(open_dates[-1])
-    return tuple(snapshots)
 
 
 def _result_rows(result: BaoStockRowResult, error_code: str) -> tuple[dict[str, str], ...]:

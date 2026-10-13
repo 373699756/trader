@@ -1,4 +1,4 @@
-"""Bounded successful supplier-query evidence, never a published industry mapping."""
+"""Persistent validated historical query evidence, never a published industry mapping."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ class HistoryIndustryQueryCache:
             raise RuntimeError("industry_query_cache_unavailable") from exc
 
     def prepare(self, source: str, dates: tuple[date, ...]) -> None:
-        if not dates or len(dates) > 64 or len(set(dates)) != len(dates):
+        if not source or not dates or len(dates) > 64 or len(set(dates)) != len(dates):
             raise ValueError("industry_cache_dates_invalid")
         if self.path.is_symlink() or self.path.parent.is_symlink():
             raise ValueError("industry_cache_path_unsafe")
@@ -46,10 +46,6 @@ class HistoryIndustryQueryCache:
                 "day TEXT PRIMARY KEY, source TEXT NOT NULL, observed_on TEXT NOT NULL, "
                 "payload TEXT NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;"
             )
-            connection.execute(
-                "DELETE FROM queries WHERE source!=? OR day NOT IN (" + ",".join("?" for _ in dates) + ")",
-                (source, *(day.isoformat() for day in dates)),
-            )
 
     def read(self, source: str, day: date, as_of: date) -> tuple[BaoStockIndustryInterval, ...] | None:
         with self._connection(read_only=True) as connection:
@@ -60,10 +56,8 @@ class HistoryIndustryQueryCache:
             return None
         try:
             observed = date.fromisoformat(row[1])
-            age = (as_of - observed).days
-            # Recent snapshots refresh each data-cutoff day; old facts refresh monthly.
-            lifetime = 30 if (as_of - day).days >= 180 else 1
-            if observed < day or not 0 <= age < lifetime:
+            # A validated historical query does not expire, but cannot travel back in time.
+            if not day <= observed <= as_of:
                 return None
             if row[3] != _digest(source, day, observed, row[2]):
                 raise ValueError("industry_cache_hash_mismatch")

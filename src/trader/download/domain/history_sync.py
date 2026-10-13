@@ -34,7 +34,6 @@ HistorySyncProgressStage = Literal[
     "history_active_gaps",
     "history_gap_inventory",
     "history_gap_resume",
-    "baostock_gap_fill",
     "persisting_partitions",
     "preparing_partitions",
     "downloading_codes",
@@ -154,24 +153,6 @@ class HistoryTencentSummary:
 
 
 @dataclass(frozen=True)
-class HistoryRecoverySummary:
-    succeeded_codes: int
-    failed_codes: int
-    unattempted_codes: int
-
-    def __post_init__(self) -> None:
-        if any(
-            type(value) is not int or value < 0
-            for value in (self.succeeded_codes, self.failed_codes, self.unattempted_codes)
-        ):
-            raise ValueError("history recovery summary is invalid")
-
-    @property
-    def total(self) -> int:
-        return self.succeeded_codes + self.failed_codes + self.unattempted_codes
-
-
-@dataclass(frozen=True)
 class HistoryStEligibilitySummary:
     clear: int
     ever_st: int
@@ -216,7 +197,6 @@ class HistorySyncProgress:
     requested_sessions: int | None = None
     gap_summary: HistoryGapSummary | None = None
     tencent_summary: HistoryTencentSummary | None = None
-    recovery_summary: HistoryRecoverySummary | None = None
     st_summary: HistoryStEligibilitySummary | None = None
     failure_reason: str | None = None
     cache_hit: bool | None = None
@@ -269,18 +249,6 @@ class HistorySyncProgress:
                 )
             )
             or (
-                self.recovery_summary is not None
-                and (
-                    self.stage != "baostock_gap_fill"
-                    or self.current_item is not None
-                    or self.supplier_source is not None
-                    or (self.state == "completed" and self.recovery_summary.unattempted_codes != 0)
-                    or self.total_units != self.recovery_summary.total
-                    or self.completed_units
-                    != self.recovery_summary.succeeded_codes + self.recovery_summary.failed_codes
-                )
-            )
-            or (
                 self.st_summary is not None
                 and (
                     self.stage != "history_st_reference"
@@ -315,7 +283,6 @@ __all__ = [
     "HistoryGapSummary",
     "HistoryStEligibilitySummary",
     "HistoryTencentSummary",
-    "HistoryRecoverySummary",
     "HistoryTwoStageSupplier",
     "HistoryPipelineProgress",
 ]

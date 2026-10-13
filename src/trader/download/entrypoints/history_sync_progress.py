@@ -29,7 +29,6 @@ _STAGE_LABELS: dict[HistorySyncProgressStage, str] = {
     "history_active_gaps": "活动历史缺口",
     "history_gap_resume": "旧断点恢复",
     "history_gap_inventory": "统计历史缺口",
-    "baostock_gap_fill": "BaoStock补缺",
     "persisting_partitions": "正式月库提交",
     "preparing_partitions": "准备月分片",
     "downloading_codes": "股票下载",
@@ -51,7 +50,6 @@ _ITEM_LABELS: dict[HistorySyncProgressStage, str] = {
     "supplier_daily_qfq": "股票",
     "downloading_codes": "股票",
     "tencent_history": "股票",
-    "baostock_gap_fill": "股票",
     "persisting_partitions": "月份",
     "sealing_partitions": "月份",
     "history_active_gaps": "月份",
@@ -72,7 +70,6 @@ _COUNT_STAGES = frozenset(
         "history_gap_resume",
         "downloading_codes",
         "tencent_history",
-        "baostock_gap_fill",
         "persisting_partitions",
         "sealing_partitions",
         "supplier_industry",
@@ -82,17 +79,9 @@ _DAILY_STAGES = frozenset({"supplier_daily_raw", "supplier_daily_qfq"})
 _PREPARATION_STAGES = frozenset({"supplier_login", "supplier_calendar", "supplier_industry"})
 
 
-def _recovery_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
+def _reuse_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.stage == "tencent_history" and progress.current_item is not None and progress.supplier_source is None:
         return ("无新增或缺口，复用",)
-    if progress.recovery_summary is not None:
-        recovery = progress.recovery_summary
-        return (
-            f"缺口股 {recovery.total}",
-            f"成功 {recovery.succeeded_codes} 股",
-            f"补缺失败 {recovery.failed_codes} 股",
-            f"未处理完 {recovery.unattempted_codes} 股",
-        )
     return ()
 
 
@@ -139,7 +128,7 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
             f"曾ST排除 {st_summary.ever_st}",
             f"未知排除 {st_summary.unknown}",
         )
-    return _recovery_summary_parts(progress)
+    return _reuse_summary_parts(progress)
 
 
 def _state_label(progress: HistorySyncProgress) -> str:
@@ -189,7 +178,7 @@ class StderrHistorySyncProgress:
         self._phase_started.setdefault(phase_key, now)
         if progress.stage == "supplier_routing":
             self._route = progress
-        if progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"}:
+        if progress.stage in {"downloading_codes", "tencent_history"}:
             self._stock_counts = (progress.completed_units, progress.total_units)
         self._last_progress = (progress.stage, progress.current_item)
         self._record_supplier_failure(progress)
@@ -270,7 +259,6 @@ class StderrHistorySyncProgress:
                 "history_gap_resume",
                 "sealing_partitions",
                 "preparing_partitions",
-                "baostock_gap_fill",
             }
             or progress.stage in {"tencent_history", "persisting_prices"}
             and progress.state == "waiting"
@@ -317,7 +305,7 @@ class StderrHistorySyncProgress:
         parts.extend(_price_coverage_parts(progress))
         parts.extend(_summary_parts(progress))
         if (
-            progress.stage in {"downloading_codes", "tencent_history", "baostock_gap_fill"}
+            progress.stage in {"downloading_codes", "tencent_history"}
             and (
                 progress.supplier_source is not None
                 or progress.stage == "downloading_codes"

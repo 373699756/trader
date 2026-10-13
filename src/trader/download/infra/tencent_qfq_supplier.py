@@ -126,7 +126,7 @@ class TencentQfqSupplier:
         sessions: int,
         universe: tuple[BaoStockSecurity, ...],
     ) -> HistorySupplierContext:
-        """Build a price-only context when BaoStock reference login is unavailable."""
+        """Build the shared Tencent calendar and official-universe price context."""
 
         self._check_cancel()
         if not universe or len({security.code for security in universe}) != len(universe):
@@ -379,7 +379,9 @@ def _payload_rows(payload: object, symbol: str, mode: str, count: int = 640) -> 
         neutral = stock.get("day")
         if isinstance(neutral, list) and neutral and all(_neutral_adjustment(row) for row in neutral):
             rows = neutral
-    if not isinstance(rows, list) or len(rows) > count:
+    # Tencent can append the current session to count historical rows.
+    # Calendar/window consumers still validate dates and trim only older padding.
+    if not isinstance(rows, list) or len(rows) > count + 1:
         raise ValueError("tencent_daily_qualified_rows_missing")
     return rows
 

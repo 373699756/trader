@@ -70,7 +70,7 @@ def test_failed_date_resumes_without_requerying_successful_dates(tmp_path):
     assert sdk.calls == [str(day) for day in DATES[2:]]
 
 
-def test_calendar_roll_keeps_fixed_halfyear_anchors_and_refreshes_recent_queries(tmp_path):
+def test_calendar_roll_keeps_historical_queries_and_only_fetches_new_dates(tmp_path):
     cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
     sdk = _IndustrySdk()
     _fetch(sdk, cache)
@@ -80,7 +80,10 @@ def test_calendar_roll_keeps_fixed_halfyear_anchors_and_refreshes_recent_queries
     assert sdk.calls == ["2020-02-04", "2026-10-12"]
     sdk.calls.clear()
     _fetch(sdk, cache, (*dates[:-1], date(2026, 11, 12)))
-    assert len(sdk.calls) == 4  # Historical supplier facts are not trusted forever.
+    assert sdk.calls == ["2026-11-12"]
+    sdk.calls.clear()
+    assert _fetch(sdk, cache)  # The old rolling-window dates remain available.
+    assert sdk.calls == []
 
 
 @pytest.mark.parametrize("kind", ("empty", "future"))
@@ -129,14 +132,14 @@ def test_pagination_failure_never_creates_a_complete_query(tmp_path):
     assert len(sdk.calls) == 4
 
 
-def test_recent_fixed_anchor_refreshes_next_day_but_not_same_day(tmp_path):
+def test_recent_fixed_anchor_is_reused_when_cutoff_advances(tmp_path):
     cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
     sdk = _IndustrySdk()
     dates = (date(2026, 7, 1), date(2026, 10, 9))
     _fetch(sdk, cache, dates)
     sdk.calls.clear()
     _fetch(sdk, cache, (dates[0], dates[-1] + timedelta(days=3)))
-    assert sdk.calls == ["2026-07-01", "2026-10-12"]
+    assert sdk.calls == ["2026-10-12"]
     sdk.calls.clear()
     _fetch(sdk, cache, (dates[0], dates[-1] + timedelta(days=3)))
     assert sdk.calls == []
@@ -148,3 +151,14 @@ def test_unreadable_sqlite_cache_has_explicit_failure_and_is_not_deleted(tmp_pat
     with pytest.raises(RuntimeError, match="industry_query_cache_unavailable"):
         _fetch(_IndustrySdk(), cache)
     assert cache.path.read_bytes() == b"not a database"
+
+
+def test_missing_listed_security_requeries_cache_but_never_invents_industry(tmp_path):
+    cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
+    sdk = _IndustrySdk()
+    _fetch(sdk, cache)
+    sdk.calls.clear()
+    missing = replace(UNIVERSE[0], code="600003", listed_on=DATES[-1])
+    result = _fetch(sdk, cache, universe=(*UNIVERSE, missing))
+    assert sdk.calls == [str(DATES[-1])]
+    assert {item.code for item in result} == {UNIVERSE[0].code}

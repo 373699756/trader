@@ -257,8 +257,25 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
         try:
             dates = supplier.load_calendar(end, 2000).open_dates
         except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+            known_reasons = {
+                "tencent_qfq_request_failed",
+                "tencent_daily_response_rejected",
+                "tencent_daily_stock_data_missing",
+                "tencent_daily_qualified_rows_missing",
+                "tencent_daily_row_invalid",
+                "Tencent exchange calendar is incomplete or invalid",
+            }
             emit_report(
-                {"schema_version": "tencent-whole-window-probe", "status": "failed", "error": type(exc).__name__}
+                {
+                    "schema_version": "tencent-whole-window-probe",
+                    "status": "failed",
+                    "summary": {
+                        "error": type(exc).__name__,
+                        "stage": "calendar",
+                        "reason": str(exc) if str(exc) in known_reasons else "calendar_probe_failed",
+                        "requests": observations,
+                    },
+                }
             )
             return 1
         for code in args.codes:

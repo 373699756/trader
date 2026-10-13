@@ -125,6 +125,45 @@ def test_calendar_advances_independently_of_old_history():
     assert context.universe == (SECURITY,)
 
 
+def test_full_history_calendar_accepts_one_extra_index_session():
+    http = _Http()
+    http.calendar = [[(DAY - timedelta(days=offset)).isoformat()] for offset in reversed(range(2001))]
+    context = http.supplier().load_history_context(DAY, 2000, (SECURITY,))
+    assert context.calendar.open_dates == tuple(date.fromisoformat(row[0]) for row in http.calendar[-2000:])
+    assert len(http.calls) == 1
+
+
+@pytest.mark.parametrize("count", (640, 2000))
+def test_stock_prices_accept_one_extra_row_and_trim_only_older_padding(count):
+    http = _Http()
+    days = tuple(DAY - timedelta(days=offset) for offset in reversed(range(count)))
+    older = days[0] - timedelta(days=1)
+    http.raw = [[day.isoformat(), *ROW[1:]] for day in (older, *days)]
+    http.adjusted = http.raw
+    window = http.supplier().fetch_window(SECURITY, days, request_count=count)
+    assert tuple(cell.trade_date for cell in window.cells) == days
+    assert all(cell.status == "complete" for cell in window.cells)
+    assert len(http.calls) == 2
+
+
+@pytest.mark.parametrize("invalid", ("duplicate", "future", "unordered", "too_many", "incomplete"))
+def test_full_history_calendar_padding_does_not_relax_date_validation(invalid):
+    http = _Http()
+    http.calendar = [[(DAY - timedelta(days=offset)).isoformat()] for offset in reversed(range(2001))]
+    if invalid == "duplicate":
+        http.calendar[0] = http.calendar[1]
+    elif invalid == "future":
+        http.calendar[-1] = [(DAY + timedelta(days=1)).isoformat()]
+    elif invalid == "unordered":
+        http.calendar[0], http.calendar[1] = http.calendar[1], http.calendar[0]
+    elif invalid == "too_many":
+        http.calendar.insert(0, [(DAY - timedelta(days=2001)).isoformat()])
+    else:
+        http.calendar = http.calendar[-1999:]
+    with pytest.raises(ValueError):
+        http.supplier().load_history_context(DAY, 2000, (SECURITY,))
+
+
 @pytest.mark.parametrize("invalid", ("duplicate", "future", "short", "nan", "range"))
 def test_rejects_invalid_rows_without_silently_dropping_them(invalid):
     http = _Http()
