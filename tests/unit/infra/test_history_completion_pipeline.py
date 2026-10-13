@@ -268,9 +268,9 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
         prepare_threads.add(get_ident())
         return prepare(prices, *args, **kwargs)
 
-    def tracked_open(month, *, fresh=False):
+    def tracked_open(month, *, fresh=False, pending_sequence=None):
         opened_months.append(1)
-        return open_session(month, fresh=fresh)
+        return open_session(month, fresh=fresh, pending_sequence=pending_sequence)
 
     def tracked_finish(index, completions):
         checkpoint_sizes.append(len(completions))

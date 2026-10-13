@@ -177,9 +177,14 @@ _ALL_REVISION_SCAN_SQL = (
     "SELECT trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash FROM daily_records"
 )
 _EXISTING_OBSERVATIONS_SQL = """
-SELECT observations.trade_date, observations.code, observations.sync_sequence, observations.revision_id
+SELECT observations.trade_date, observations.code, observations.sync_sequence, observations.revision_id,
+       json_extract(records.payload_json, '$.cell.status')
 FROM requested_history_revisions AS requested
 CROSS JOIN daily_observations AS observations
+LEFT JOIN daily_records AS records
+  ON records.trade_date=observations.trade_date
+ AND records.code=observations.code
+ AND records.revision_id=observations.revision_id
 WHERE observations.trade_date=requested.trade_date
   AND observations.code=requested.code
   AND observations.sync_sequence=requested.sync_sequence
@@ -325,9 +330,11 @@ class HistoryMonthPrices:
         except sqlite3.Error as exc:
             raise HistoryMonthPartitionError("history month revision write failed") from exc
 
-    def open_write_session(self, *, fresh: bool = False) -> HistoryMonthWriteSession:
+    def open_write_session(
+        self, *, fresh: bool = False, pending_sequence: int | None = None
+    ) -> HistoryMonthWriteSession:
         """Open one thread-confined writer reused across durable batch transactions."""
-        return HistoryMonthWriteSession(self, fresh=fresh)
+        return HistoryMonthWriteSession(self, fresh=fresh, pending_sequence=pending_sequence)
 
     def read_price_keys(self, keys: tuple[tuple[str, date], ...], sequence: int) -> tuple[HistoryRevision, ...]:
         """Read a bounded stock batch through exact observation/record keys on one connection."""
@@ -762,7 +769,13 @@ class HistoryMonthPrices:
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
 
-    def _save_batch(self, connection: sqlite3.Connection, prepared: tuple[_EncodedRevision, ...]) -> None:
+    def _save_batch(
+        self,
+        connection: sqlite3.Connection,
+        prepared: tuple[_EncodedRevision, ...],
+        *,
+        pending_sequence: int | None = None,
+    ) -> None:
         connection.execute(
             "CREATE TEMP TABLE requested_history_revisions ("
             "trade_date TEXT NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
@@ -774,7 +787,7 @@ class HistoryMonthPrices:
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
         existing_observations = {
-            (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): cast(str, row[3])
+            (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): (cast(str, row[3]), row[4])
             for row in connection.execute(_EXISTING_OBSERVATIONS_SQL)
         }
         existing_revisions = {
@@ -791,19 +804,30 @@ class HistoryMonthPrices:
         }
         new_records: list[tuple[object, ...]] = []
         new_observations: list[tuple[object, ...]] = []
+        corrected_observations: list[tuple[str, str, str, int]] = []
         for item in prepared:
             value = item.value
             observation_key = item.observation_key
             revision_key = item.revision_key
-            observed_revision = existing_observations.get(observation_key)
-            if observed_revision is not None:
-                if observed_revision != value.revision_id:
+            observed = existing_observations.get(observation_key)
+            if observed is not None:
+                observed_revision, observed_status = observed
+                if observed_revision == value.revision_id:
+                    existing = existing_revisions.get(revision_key)
+                    if existing is None:
+                        raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
+                    _require_revision_identity(existing, value)
+                    continue
+                can_complete = value.cell.status == "complete" and observed_status in {
+                    "unknown_missing",
+                    "qfq_missing",
+                    "unadjusted_missing",
+                    "tencent_inferred_suspended",
+                }
+                can_gain_fact = observed_status == "unknown_missing" and value.cell.status != "unknown_missing"
+                if value.first_seen_sequence != pending_sequence or not (can_complete or can_gain_fact):
                     raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
-                existing = existing_revisions.get(revision_key)
-                if existing is None:
-                    raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
-                _require_revision_identity(existing, value)
-                continue
+                corrected_observations.append((value.revision_id, *observation_key))
             date_code = item.trade_date, value.code
             current_sequence = latest_sequences.get(date_code)
             if current_sequence is not None and value.first_seen_sequence < current_sequence:
@@ -826,8 +850,9 @@ class HistoryMonthPrices:
             else:
                 _require_revision_identity(existing, value)
             latest_sequences[date_code] = max(value.first_seen_sequence, current_sequence or 0)
-            existing_observations[observation_key] = value.revision_id
-            new_observations.append((*observation_key, value.revision_id))
+            existing_observations[observation_key] = (value.revision_id, value.cell.status)
+            if observed is None:
+                new_observations.append((*observation_key, value.revision_id))
         connection.executemany(
             "INSERT INTO daily_records"
             "(trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash) "
@@ -837,6 +862,10 @@ class HistoryMonthPrices:
         connection.executemany(
             "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
             new_observations,
+        )
+        connection.executemany(
+            "UPDATE daily_observations SET revision_id=? WHERE trade_date=? AND code=? AND sync_sequence=?",
+            corrected_observations,
         )
 
     def _require_metadata(self, connection: sqlite3.Connection) -> None:
@@ -945,9 +974,10 @@ class HistoryMonthPrices:
 class HistoryMonthWriteSession:
     """Reuse one month's connection without weakening per-batch FULL durability."""
 
-    def __init__(self, prices: HistoryMonthPrices, *, fresh: bool = False) -> None:
+    def __init__(self, prices: HistoryMonthPrices, *, fresh: bool = False, pending_sequence: int | None = None) -> None:
         self._prices = prices
         self._fresh = fresh
+        self._pending_sequence = pending_sequence
         self._connection = prices._write_connection()
         try:
             prices._require_metadata(self._connection)
@@ -968,7 +998,9 @@ class HistoryMonthWriteSession:
                         if self._fresh:
                             self._prices._insert_fresh_batch(self._connection, prepared)
                         else:
-                            self._prices._save_batch(self._connection, prepared)
+                            self._prices._save_batch(
+                                self._connection, prepared, pending_sequence=self._pending_sequence
+                            )
                             self._connection.execute("DROP TABLE requested_history_revisions")
         except sqlite3.Error as exc:
             raise HistoryMonthPartitionError("history month revision write failed") from exc

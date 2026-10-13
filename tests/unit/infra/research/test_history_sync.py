@@ -28,6 +28,7 @@ from trader.download.domain.history_sync import (
 from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
 from trader.download.infra import history_sync_runner as history_sync_module
 from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import run_history_sync
@@ -279,6 +280,94 @@ def test_publication_failure_resumes_without_redownloading(tmp_path, monkeypatch
     result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert not supplier.calls
+
+
+def test_unpublished_gap_repair_resumes_same_sequence_without_changing_complete_rows(tmp_path, monkeypatch):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class PendingSupplier(FakeSupplier):
+        def fetch_tencent_window(self, security, dates):
+            if security.code == self.fail_code:
+                raise RuntimeError("tencent_request_failed")
+            return super().fetch_tencent_window(security, dates)
+
+    supplier = PendingSupplier(days, fail_code="600001")
+    original_publish = history_sync_module.publish_history_snapshot
+
+    def fail_publish(*args):
+        raise OSError("publication_failed")
+
+    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail_publish)
+    first = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    assert first.state == "failed"
+    assert HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot is None
+    assert HistoryDownloadIndex(tmp_path / "control.sqlite3").gaps("600001") == days
+    month = HistoryMonthPrices(tmp_path / "partitions/2026/09.sqlite3", 2026, 9)
+    assert month.read_code("600001", days[0], days[-1], snapshot_sequence=1)[0].cell.status == "unknown_missing"
+    complete_before = month.read_code("600002", days[0], days[-1], snapshot_sequence=1)
+
+    supplier.fail_code = None
+    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", original_publish)
+    resumed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+
+    assert resumed.state == "completed", resumed.reason
+    assert resumed.active_snapshot_hash is not None
+    assert _snapshot(tmp_path).sequence == 1
+    assert [code for code, _ in supplier.calls].count("600001") == 1
+    repaired = month.read_code("600001", days[0], days[-1], snapshot_sequence=1)
+    assert len(repaired) == len(days)
+    assert all(row.cell.status == "complete" for row in repaired)
+    assert month.read_code("600002", days[0], days[-1], snapshot_sequence=1) == complete_before
+
+
+def test_pending_batch_replaces_unknown_day_before_first_publication(tmp_path, monkeypatch):
+    from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+    from trader.download.infra.history_download_index import HistoryDownloadIndex
+
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class PartialFirstRun(FakeSupplier):
+        partial = True
+
+        def fetch_tencent_window(self, security, dates):
+            window = super().fetch_tencent_window(security, dates)
+            if not self.partial or security.code != "600001":
+                return window
+            raise HistorySupplierPendingError(
+                replace(
+                    window,
+                    cells=tuple(
+                        replace(cell, status="unknown_missing", unadjusted=None, qfq=None)
+                        if cell.trade_date == days[0]
+                        else cell
+                        for cell in window.cells
+                    ),
+                )
+            )
+
+    root = tmp_path / "resumed"
+    supplier = PartialFirstRun(days)
+    publish = history_sync_module.publish_history_snapshot
+
+    def interrupt_publication(*_args):
+        raise OSError("fixture_publication_interrupted")
+
+    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", interrupt_publication)
+    assert run_history_sync(_configuration(root), supplier, clock=lambda: NOW).state == "failed"
+    assert HistoryControlIndex(root / "control.sqlite3").load_state().active_snapshot is None
+    assert len(HistoryDownloadIndex(root / "control.sqlite3").gaps("600001")) == 1
+
+    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", publish)
+    supplier.partial = False
+    supplier.calls.clear()
+    resumed = run_history_sync(_configuration(root), supplier, clock=lambda: NOW)
+    assert resumed.state == "completed" and resumed.unresolved_price_cells == 0
+    assert supplier.calls == [("600001", days)]
+    active = _snapshot(root)
+    assert len(HistorySnapshotReader(root).read_day(days[0], active)) == 2
+    clean = tmp_path / "clean"
+    assert run_history_sync(_configuration(clean), FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    assert active.content_hash == _snapshot(clean).content_hash
 
 
 def test_new_process_reuses_committed_months_before_progress_update(tmp_path, monkeypatch):

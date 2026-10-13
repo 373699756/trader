@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -70,6 +71,44 @@ def test_first_build_insert_rejects_duplicate_without_changing_durable_rows(tmp_
         session.close()
     assert month.read_day(revision.trade_date, snapshot_sequence=1) == (revision,)
     assert month.seal(1).row_count == 1
+
+
+def test_only_unpublished_unknown_observation_can_gain_a_price_in_same_sequence(tmp_path: Path) -> None:
+    month = HistoryMonthPrices(tmp_path / "partitions/2026/09.sqlite3", 2026, 9)
+    month.initialize()
+    day = date(2026, 9, 10)
+    missing = HistoryRevision(
+        1, "main", BaoStockDailyCell("600001", day, "unknown_missing", None, None), None, None, None
+    )
+    complete = _revision(day, 1, 10.0)
+    with closing(month.open_write_session(fresh=True)) as session:
+        session.save_revision_batches((missing,))
+    with closing(month.open_write_session(pending_sequence=2)) as session:
+        with pytest.raises(HistoryMonthPartitionConflictError, match="sequence"):
+            session.save_revision_batches((complete,))
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        session.save_revision_batches((complete,))
+    assert month.read_day(day, snapshot_sequence=1) == (complete,)
+    assert month.seal(1).row_count == 1
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        with pytest.raises(HistoryMonthPartitionConflictError, match="sequence"):
+            session.save_revision_batches((_revision(day, 1, 11.0),))
+
+
+@pytest.mark.parametrize("status", ("qfq_missing", "unadjusted_missing", "tencent_inferred_suspended"))
+def test_pending_incomplete_observation_can_gain_a_complete_pair(tmp_path: Path, status: str) -> None:
+    month = HistoryMonthPrices(tmp_path / "partitions/2026/09.sqlite3", 2026, 9)
+    month.initialize()
+    day = date(2026, 9, 10)
+    raw = _side(day, "unadjusted", 10.0) if status == "qfq_missing" else None
+    qfq = _side(day, "qfq", 9.0) if status == "unadjusted_missing" else None
+    incomplete = HistoryRevision(1, "main", BaoStockDailyCell("600001", day, status, raw, qfq), None, None, None)
+    with closing(month.open_write_session(fresh=True)) as session:
+        session.save_revision_batches((incomplete,))
+    complete = _revision(day, 1, 10.0)
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        session.save_revision_batches((complete,))
+    assert month.read_day(day, snapshot_sequence=1) == (complete,)
 
 
 def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> None:
