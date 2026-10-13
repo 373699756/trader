@@ -18,6 +18,7 @@ from trader.download.application.stock_download_progress import (
     format_stock_download_progress,
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_supplier_failure import HISTORY_SUPPLIER_PENDING_REASONS
 from trader.download.domain.history_sync import HistorySyncProgress, HistorySyncProgressStage
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 
@@ -159,8 +160,8 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
 
 
 def _state_label(progress: HistorySyncProgress) -> str:
-    if progress.failure_reason == "tencent_history_pending":
-        return "待重试（Tencent临时失败）"
+    if progress.failure_reason in HISTORY_SUPPLIER_PENDING_REASONS:
+        return "待重试（Tencent价格待补）"
     if (
         progress.stage == "history_st_reference"
         and progress.state == "completed"
@@ -256,7 +257,7 @@ class StderrHistorySyncProgress:
         coverage = progress.price_coverage
         target = coverage.expected if coverage is not None else progress.requested_sessions
         source_download = progress.supplier_source == "tencent"
-        if progress.failure_reason == "tencent_history_pending":
+        if progress.failure_reason in HISTORY_SUPPLIER_PENDING_REASONS:
             result = "待重试"
         elif progress.failure_reason is not None:
             result = "失败"
@@ -456,7 +457,7 @@ def _progress_level(progress: HistorySyncProgress) -> ProgressLevel:
         and progress.state == "completed"
     ):
         level = ProgressLevel.NORMAL
-    elif progress.failure_reason == "tencent_history_pending" or progress.state in {"retrying", "cancelled"}:
+    elif progress.failure_reason in HISTORY_SUPPLIER_PENDING_REASONS or progress.state in {"retrying", "cancelled"}:
         level = ProgressLevel.WARNING
     elif progress.state == "failed":
         level = ProgressLevel.WARNING if progress.attempt < progress.max_attempts else ProgressLevel.ERROR

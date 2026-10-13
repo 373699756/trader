@@ -22,6 +22,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
+from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import completed_daily_cutoff
 from trader.download.infra.exchange_security_universe import load_current_a_share_universe
@@ -297,9 +298,22 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
                         "requests": list(observations),
                     }
                 )
+            except HistorySupplierPendingError as exc:
+                window = exc.window
+                results.append(
+                    {
+                        "pending_reason": exc.reason,
+                        "raw_rows": sum(cell.unadjusted is not None for cell in window.cells),
+                        "qfq_rows": sum(cell.qfq is not None for cell in window.cells),
+                        "paired_rows": sum(cell.status == "complete" for cell in window.cells),
+                        "expected_sessions": len(dates),
+                        "seconds": round(time.monotonic() - started, 3),
+                        "requests": list(observations),
+                    }
+                )
             except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
                 results.append({"failure": type(exc).__name__, "seconds": round(time.monotonic() - started, 3)})
-    failed = any("failure" in item for item in results)
+    failed = any("failure" in item or "pending_reason" in item for item in results)
     passed = all(item.get("paired_rows") == 2000 for item in results)
     emit_report(
         {

@@ -21,7 +21,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
     daily_cell_status,
 )
-from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.history_supplier_failure import HistorySupplierPendingError, HistorySupplierPendingReason
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
 
@@ -87,17 +87,30 @@ class _SideAttempt:
     sides: tuple[PublishedHistorySide, ...] = ()
     pending: bool = False
     retry_alternate: bool = False
+    reason: HistorySupplierPendingReason = "tencent_history_pending"
+    invalid_dates: frozenset[date] = frozenset()
 
 
 @dataclass(frozen=True)
 class _SideDownload:
     sides: tuple[PublishedHistorySide, ...]
     pending_dates: tuple[date, ...]
+    reason: HistorySupplierPendingReason = "tencent_history_pending"
+    invalid_dates: frozenset[date] = frozenset()
 
 
 class _QfqPagePendingError(Exception):
-    def __init__(self, sides: tuple[PublishedHistorySide, ...], *, retry_alternate: bool = False) -> None:
+    def __init__(
+        self,
+        sides: tuple[PublishedHistorySide, ...],
+        reason: HistorySupplierPendingReason,
+        invalid_dates: frozenset[date],
+        *,
+        retry_alternate: bool = False,
+    ) -> None:
         self.sides = sides
+        self.reason = reason
+        self.invalid_dates = invalid_dates
         self.retry_alternate = retry_alternate
 
 
@@ -197,17 +210,8 @@ class TencentQfqSupplier:
         self._check_cancel()
         raw = {side.trade_date: side for side in raw_download.sides}
         qfq = {side.trade_date: side for side in qfq_download.sides}
-        if raw_download.pending_dates or qfq_download.pending_dates:
-            window = PublishedHistoryWindow(
-                security.code,
-                tuple(
-                    PublishedHistoryCell(
-                        security.code, day, daily_cell_status(raw.get(day), qfq.get(day)), raw.get(day), qfq.get(day)
-                    )
-                    for day in dates
-                ),
-            )
-            raise HistorySupplierPendingError(window)
+        request_pending = bool(raw_download.pending_dates or qfq_download.pending_dates)
+        invalid_dates = raw_download.invalid_dates | qfq_download.invalid_dates
         window = PublishedHistoryWindow(
             security.code,
             tuple(
@@ -215,7 +219,7 @@ class TencentQfqSupplier:
                     security.code,
                     day,
                     "tencent_inferred_suspended"
-                    if day not in raw and day not in qfq
+                    if not request_pending and day not in invalid_dates and day not in raw and day not in qfq
                     else daily_cell_status(raw.get(day), qfq.get(day)),
                     raw.get(day),
                     qfq.get(day),
@@ -223,6 +227,15 @@ class TencentQfqSupplier:
                 for day in dates
             ),
         )
+        if request_pending or invalid_dates:
+            reason = (
+                qfq_download.reason
+                if qfq_download.pending_dates
+                else raw_download.reason
+                if raw_download.pending_dates
+                else "tencent_qfq_invalid_price"
+            )
+            raise HistorySupplierPendingError(window, reason)
         return window
 
     def _download_side(
@@ -235,9 +248,14 @@ class TencentQfqSupplier:
             fallback = self._attempt_side(session, query, mode, alternate)
             if fallback.pending:
                 best = max((initial, fallback), key=lambda attempt: len(attempt.sides))
-                return _SideDownload(best.sides, query.dates)
+                return _SideDownload(best.sides, query.dates, best.reason, best.invalid_dates)
             initial = fallback
-        return _SideDownload(initial.sides, query.dates if initial.pending else ())
+        return _SideDownload(
+            initial.sides,
+            query.dates if initial.pending else (),
+            initial.reason,
+            initial.invalid_dates,
+        )
 
     def _attempt_side(
         self,
@@ -247,16 +265,27 @@ class TencentQfqSupplier:
         host: Literal["proxy", "direct"],
     ) -> _SideAttempt:
         try:
-            return _SideAttempt(tuple(self._fetch_side(session, query, mode, host).values()))
+            sides, invalid_dates = self._fetch_side(session, query, mode, host)
+            return _SideAttempt(tuple(sides.values()), invalid_dates=invalid_dates)
         except _QfqPagePendingError as exc:
-            return _SideAttempt(exc.sides, pending=True, retry_alternate=exc.retry_alternate)
+            return _SideAttempt(
+                exc.sides,
+                pending=True,
+                retry_alternate=exc.retry_alternate,
+                reason=exc.reason,
+                invalid_dates=exc.invalid_dates,
+            )
         except RuntimeError as exc:
             if str(exc) != "tencent_qfq_request_failed":
                 raise
-            return _SideAttempt(pending=True, retry_alternate=True)
+            reason: HistorySupplierPendingReason = (
+                "tencent_qfq_page_request_failed" if mode == "qfq" else "tencent_history_pending"
+            )
+            return _SideAttempt(pending=True, retry_alternate=True, reason=reason)
         except ValueError as exc:
             if isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected":
-                return _SideAttempt(pending=True, retry_alternate=True)
+                reason = "tencent_qfq_page_request_failed" if mode == "qfq" else "tencent_history_pending"
+                return _SideAttempt(pending=True, retry_alternate=True, reason=reason)
             if str(exc) == "tencent_daily_qualified_rows_missing":
                 return _SideAttempt()
             raise
@@ -267,44 +296,61 @@ class TencentQfqSupplier:
         query: _WindowQuery,
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
-    ) -> dict[date, PublishedHistorySide]:
+    ) -> tuple[dict[date, PublishedHistorySide], frozenset[date]]:
         dates = query.dates
-        result, count = self._read_side_page(session, query, mode, host, dates[-1])
+        result, count, invalid_dates, crossed_start = self._read_side_page(session, query, mode, host, dates[-1])
         if mode != "qfq":
-            return result
+            return result, invalid_dates
         fetch = _SideFetch(session, query, mode, host)
         for _ in range(_MAX_QFQ_PAGES - 1):
-            if count < _QFQ_PAGE_ROWS or not result or min(result) <= dates[0]:
-                return result
+            if count < _QFQ_PAGE_ROWS or crossed_start or not result or min(result) <= dates[0]:
+                return result, invalid_dates
             boundary = min(result)
-            older, count = self._read_older_qfq_page(fetch, boundary, result)
+            older, count, older_invalid_dates, crossed_start = self._read_older_qfq_page(
+                fetch, boundary, result, invalid_dates
+            )
             if boundary not in older or any(result[day] != side for day, side in older.items() if day in result):
-                raise _QfqPagePendingError(tuple(result.values()))
+                raise _QfqPagePendingError(tuple(result.values()), "tencent_qfq_anchor_conflict", invalid_dates)
             new = {day: side for day, side in older.items() if day < boundary}
             if not new:
-                if count < _QFQ_PAGE_ROWS:
-                    return result
-                raise _QfqPagePendingError(tuple(result.values()))
+                if count < _QFQ_PAGE_ROWS or crossed_start:
+                    return result, invalid_dates | older_invalid_dates
+                raise _QfqPagePendingError(tuple(result.values()), "tencent_qfq_page_stalled", invalid_dates)
             result.update(new)
-        if count == _QFQ_PAGE_ROWS and min(result) > dates[0]:
-            raise _QfqPagePendingError(tuple(result.values()))
-        return result
+            invalid_dates |= older_invalid_dates
+        if count == _QFQ_PAGE_ROWS and not crossed_start and min(result) > dates[0]:
+            raise _QfqPagePendingError(tuple(result.values()), "tencent_qfq_page_limit", invalid_dates)
+        return result, invalid_dates
 
     def _read_older_qfq_page(
         self,
         fetch: _SideFetch,
         boundary: date,
         current: dict[date, PublishedHistorySide],
-    ) -> tuple[dict[date, PublishedHistorySide], int]:
+        invalid_dates: frozenset[date],
+    ) -> tuple[dict[date, PublishedHistorySide], int, frozenset[date], bool]:
         try:
             return self._read_side_page(fetch.session, fetch.query, fetch.mode, fetch.host, boundary)
         except RuntimeError as exc:
             if str(exc) == "tencent_qfq_cancelled":
                 raise
-            raise _QfqPagePendingError(tuple(current.values()), retry_alternate=True) from exc
+            raise _QfqPagePendingError(
+                tuple(current.values()),
+                "tencent_qfq_page_request_failed",
+                invalid_dates,
+                retry_alternate=True,
+            ) from exc
         except ValueError as exc:
             retry_alternate = isinstance(exc, json.JSONDecodeError) or str(exc) == "tencent_daily_response_rejected"
-            raise _QfqPagePendingError(tuple(current.values()), retry_alternate=retry_alternate) from exc
+            reason: HistorySupplierPendingReason = (
+                "tencent_qfq_page_request_failed" if retry_alternate else "tencent_qfq_page_invalid"
+            )
+            raise _QfqPagePendingError(
+                tuple(current.values()),
+                reason,
+                invalid_dates,
+                retry_alternate=retry_alternate,
+            ) from exc
 
     def _read_side_page(
         self,
@@ -313,12 +359,14 @@ class TencentQfqSupplier:
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
         end: date,
-    ) -> tuple[dict[date, PublishedHistorySide], int]:
+    ) -> tuple[dict[date, PublishedHistorySide], int, frozenset[date], bool]:
         symbol, dates = query.symbol, query.dates
         rows = self._request_rows(
             _DailyQuery(symbol, dates[0], end, mode, query.request_count), session=session, host=host
         )
         result: dict[date, PublishedHistorySide] = {}
+        invalid_dates: set[date] = set()
+        crossed_start = False
         expected = frozenset(dates)
         previous: date | None = None
         for row in rows:
@@ -329,15 +377,20 @@ class TencentQfqSupplier:
             # Tencent may return older padding despite the requested start date.
             # Only that documented direction may be trimmed; future/interior anomalies fail closed.
             if day < dates[0]:
+                crossed_start = True
                 continue
             if day not in expected:
                 if not query.allow_interior_padding:
                     raise ValueError("tencent_daily_rows_outside_calendar_or_duplicated")
                 if mode != "qfq":
                     continue
+            if mode == "qfq" and _unusable_qfq_price(row):
+                if day in expected:
+                    invalid_dates.add(day)
+                continue
             side = _parse_side(symbol[2:], row, mode)
             result[side.trade_date] = side
-        return result, len(rows)
+        return result, len(rows), frozenset(invalid_dates), crossed_start
 
     def _request_rows(
         self,
@@ -435,6 +488,18 @@ def _row_date(row: object) -> date:
     if not isinstance(row, list) or not row or not isinstance(row[0], str):
         raise ValueError("tencent_daily_row_invalid")
     return date.fromisoformat(row[0])
+
+
+def _unusable_qfq_price(row: object) -> bool:
+    if not isinstance(row, list) or len(row) < 9:
+        raise ValueError("tencent_daily_row_fields_missing")
+    prices = tuple(float(row[index]) for index in (1, 2, 3, 4))
+    open_price, close, high, low = prices
+    if not all(math.isfinite(value) for value in prices) or not (
+        low <= min(open_price, close) <= max(open_price, close) <= high
+    ):
+        raise ValueError("tencent_daily_ohlc_range_invalid")
+    return any(value <= 0 for value in prices)
 
 
 def _parse_side(code: str, row: object, mode: str) -> PublishedHistorySide:

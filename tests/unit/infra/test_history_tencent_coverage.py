@@ -17,7 +17,7 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import run_history_sync
 
 
-@pytest.mark.parametrize("mode", ("complete", "missing", "pending", "unclassified_failure"))
+@pytest.mark.parametrize("mode", ("complete", "missing", "pending", "invalid_qfq_price", "unclassified_failure"))
 def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, capsys, mode):
     days = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
 
@@ -31,8 +31,9 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
             partial = replace(
                 window, cells=(replace(window.cells[0], qfq=None, status="qfq_missing"), *window.cells[1:])
             )
-            if mode == "pending":
-                raise HistorySupplierPendingError(partial)
+            if mode in {"pending", "invalid_qfq_price"}:
+                reason = "tencent_qfq_invalid_price" if mode == "invalid_qfq_price" else "tencent_history_pending"
+                raise HistorySupplierPendingError(partial, reason)
             return partial
 
     baseline = Baseline(days)
@@ -42,13 +43,18 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     )
     assert result.state == "completed"
     assert baseline.calls == []
-    expected_missing = 2 if mode in {"missing", "pending"} else 6 if mode == "unclassified_failure" else 0
+    expected_missing = (
+        2 if mode in {"missing", "pending", "invalid_qfq_price"} else 6 if mode == "unclassified_failure" else 0
+    )
     assert result.unresolved_price_cells == expected_missing
     logs = _compact_log(capsys.readouterr().err)
-    if mode in {"missing", "pending"}:
+    if mode in {"missing", "pending", "invalid_qfq_price"}:
         assert "处理 Tencent下载 | 结果 待重试" in logs
         assert "raw 3/3 | qfq 2/3 | 完整配对 2/3 | 缺日 1 |" in logs
-        assert " | 原因 tencent_history_pending" in logs
+        expected_reason = "tencent_qfq_invalid_price" if mode == "invalid_qfq_price" else "tencent_history_pending"
+        assert f" | 原因 {expected_reason}" in logs
+        if mode == "invalid_qfq_price":
+            assert "其中待重试 2 股" in logs
     else:
         assert "完整 2 股" in logs if mode == "complete" else "失败 2 股" in logs
     previous = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
@@ -58,7 +64,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     retried = run_history_sync(config, _router(baseline, retry_prices), clock=lambda: NOW)
     assert retried.unresolved_price_cells == 0
     assert baseline.calls == []
-    if mode in {"missing", "pending"}:
+    if mode in {"missing", "pending", "invalid_qfq_price"}:
         assert len(retry_prices.calls) == 2
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous) == old_rows
 

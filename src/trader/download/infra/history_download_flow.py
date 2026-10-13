@@ -16,7 +16,10 @@ from threading import Event
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
-from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.history_supplier_failure import (
+    HISTORY_SUPPLIER_PENDING_REASONS,
+    HistorySupplierPendingError,
+)
 from trader.download.domain.history_sync import (
     HistoryPipelineProgress,
     HistorySupplierContext,
@@ -190,7 +193,7 @@ class HistoryDownloadFlow:
         gap_codes = resources.index.gap_codes()
         failed = sum(task.failure is not None for task in finished)
         partial = sum(task.failure is None and task.code in gap_codes for task in finished)
-        pending = sum(task.failure == "tencent_history_pending" for task in finished)
+        pending = sum(task.failure in HISTORY_SUPPLIER_PENDING_REASONS for task in finished)
         conflicts = sum(task.failure == "history_tail_raw_price_conflict" for task in finished)
         self._emit(
             HistorySyncProgress(
@@ -238,11 +241,11 @@ class HistoryDownloadFlow:
         if not dates:
             return _PreparedResult(self._tencent_result(_TencentResult(task, (), previous, empty)), (), 0.0)
         started = time.monotonic()
-        failure = None
+        failure: str | None = None
         try:
             window = self._resources.supplier.fetch_tencent_window(self._security(task.code), dates)
         except HistorySupplierPendingError as exc:
-            window, failure = exc.window, "tencent_history_pending"
+            window, failure = exc.window, exc.reason
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             failure = download_failure(exc)
             if failure in _FATAL:

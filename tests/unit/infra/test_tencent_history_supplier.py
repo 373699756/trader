@@ -123,6 +123,7 @@ def test_invalid_old_page_keeps_real_partial_pairs_without_switching_hosts():
     http.adjusted = http.raw[-640:]
     with pytest.raises(HistorySupplierPendingError) as pending:
         http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+    assert pending.value.reason == "tencent_qfq_page_invalid"
     window = pending.value.window
     assert len(http.calls) == 3
     assert all(",2000," in param for param in http.calls)
@@ -140,11 +141,80 @@ def test_qfq_640_row_pages_fill_full_window_with_checked_overlap():
     assert tuple(cell.trade_date for cell in window.cells) == days
 
 
+@pytest.mark.parametrize("bad_prices", (["-0.1", "-0.1", "0.1", "-0.2"], ["0", "0", "0", "0"]))
+def test_qfq_invalid_prices_leave_only_their_dates_missing_and_continue_older_pages(bad_prices):
+    days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
+    http = _PagedHttp(days)
+    http.adjusted = [row.copy() for row in http.raw]
+    invalid = frozenset(days[100:127])
+    for row in http.adjusted:
+        if date.fromisoformat(row[0]) in invalid:
+            row[1:5] = bad_prices
+
+    with pytest.raises(HistorySupplierPendingError) as pending:
+        http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+
+    window = pending.value.window
+    assert pending.value.reason == "tencent_qfq_invalid_price"
+    assert len(http.calls) == 5
+    assert sum(cell.status == "complete" for cell in window.cells) == 1973
+    assert {cell.trade_date for cell in window.cells if cell.status == "qfq_missing"} == invalid
+
+
+def test_full_last_page_with_rows_before_target_start_is_not_stalled():
+    days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
+    http = _PagedHttp(days)
+    padding = [[(days[0] - timedelta(days=offset)).isoformat(), *ROW[1:]] for offset in reversed(range(1, 701))]
+    http.adjusted = [*padding, *http.adjusted]
+
+    window = http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+
+    assert len(http.calls) == 5
+    assert all(cell.status == "complete" for cell in window.cells)
+
+
+def test_invalid_qfq_with_no_raw_price_is_not_inferred_as_suspension():
+    days = tuple(DAY - timedelta(days=offset) for offset in (2, 1, 0))
+    http = _Http()
+    http.raw = [[day.isoformat(), *ROW[1:]] for day in (days[0], days[2])]
+    http.adjusted = [[day.isoformat(), *ROW[1:]] for day in days]
+    http.adjusted[1][1:5] = ["-0.1", "-0.1", "0.1", "-0.2"]
+    with pytest.raises(HistorySupplierPendingError) as pending:
+        http.supplier().fetch_window(SECURITY, days)
+    assert pending.value.reason == "tencent_qfq_invalid_price"
+    assert pending.value.window.cells[1].status == "unknown_missing"
+
+
+def test_invalid_qfq_on_non_target_padding_date_does_not_create_a_gap():
+    days = (DAY - timedelta(days=2), DAY)
+    middle = DAY - timedelta(days=1)
+    http = _Http()
+    http.raw = [[day.isoformat(), *ROW[1:]] for day in days]
+    http.adjusted = [
+        [days[0].isoformat(), *ROW[1:]],
+        [middle.isoformat(), "0", "0", "0", "0", *ROW[5:]],
+        [days[1].isoformat(), *ROW[1:]],
+    ]
+
+    window = http.supplier().fetch_window(SECURITY, days, allow_interior_padding=True)
+
+    assert all(cell.status == "complete" for cell in window.cells)
+
+
+@pytest.mark.parametrize("bad_price", ("nan", "invalid"))
+def test_malformed_qfq_price_still_fails_closed(bad_price):
+    http = _Http()
+    http.adjusted[0][1] = bad_price
+    with pytest.raises(ValueError):
+        http.supplier().fetch_window(SECURITY, (DAY,))
+
+
 def test_qfq_page_with_different_overlap_is_pending_and_keeps_verified_recent_rows():
     days = tuple(DAY - timedelta(days=1999 - index) for index in range(2000))
     http = _PagedHttp(days, conflicting_anchor=True)
     with pytest.raises(HistorySupplierPendingError) as pending:
         http.supplier().fetch_window(SECURITY, days, request_count=2000, allow_interior_padding=True)
+    assert pending.value.reason == "tencent_qfq_anchor_conflict"
     assert sum(cell.status == "complete" for cell in pending.value.window.cells) == 640
     assert sum(cell.status == "qfq_missing" for cell in pending.value.window.cells) == 1360
 
