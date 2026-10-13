@@ -608,7 +608,7 @@
     els.budgetStatus.textContent = available ? `${used} / ${remaining}` : "不可用";
     const items = payload && Array.isArray(payload.items) ? payload.items : [];
     const executable = items.filter((item) => item.action === "executable").length;
-    const reviewed = items.filter((item) => item.review && item.review.outcome === "applied").length;
+    const reviewed = items.filter((item) => item.action === "executable" && item.review_outcome === "applied").length;
     els.budgetMeta.textContent = payload && payload.score_status === "not_applicable"
       ? "长期策略不使用模型预算"
       : `已用 / 剩余 · 上限 ${limit} · 复核 ${reviewed}/${executable}`;

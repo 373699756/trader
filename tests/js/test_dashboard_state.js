@@ -62,7 +62,7 @@ vm.runInNewContext(fs.readFileSync(errorDrawerPath, "utf8"), sandbox, { filename
 vm.runInNewContext(fs.readFileSync(statusViewPath, "utf8"), sandbox, { filename: statusViewPath });
 vm.runInNewContext(fs.readFileSync(releaseContractPath, "utf8"), sandbox, { filename: releaseContractPath });
 vm.runInNewContext(streamSource, sandbox, { filename: streamPath });
-vm.runInNewContext(source, sandbox, { filename: dashboardPath });
+vm.runInNewContext(source.replace(suffix, "\n  window.TraderDashboardTest = Object.freeze({ normalizeDecisionPayload });\n})();"), sandbox, { filename: dashboardPath });
 const missingPatchSandbox = {
   URLSearchParams,
   console,
@@ -1491,6 +1491,77 @@ assert.strictEqual(
   "<tr><th>类别</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>行情来源 / 时间</th></tr>",
 );
 assert.strictEqual(state.tableColumnCount({ strategy: "long", historical: false }), 7);
+const getItem = {
+  rank: 2, code: "600001", name: "证据股票", board: "main", industry: "测试行业",
+  action: "executable", action_reason: "score_threshold_met", selected: true,
+  setup: { type: "volume_breakout" }, review_outcome: "applied",
+  research_coverage: { evidence_count: 3, structured_risk_fact_count: 1, review_eligible: true },
+  risk_codes: ["unlock_risk"],
+  quote: { price: 11, pct_change: 1, amount: 10000000, turnover_rate: 2, market_cap: 1000000000 },
+  anchor_quote: { price: 10 },
+  scores: {
+    local: 80, final: 80, deepseek: null, deepseek_risk_penalty: 0,
+    model_signal_score: 82.5, predicted_excess_return_pct: 1.45,
+    estimated_cost_pct: 0.2, predicted_net_excess_pct: 1.25, model_disagreement_pct: 0.1,
+  },
+};
+const getPayload = sandbox.window.TraderDashboardTest.normalizeDecisionPayload(
+  { strategy: "tomorrow", status: "ready", trade_date: "2026-07-23", items: [getItem], top_scores: [getItem] },
+  "tomorrow", "", "current",
+);
+const patchItem = {
+  rank: 2, code: "600001", name: "证据股票", board: "main", industry: "测试行业",
+  action: "executable", action_reason: "score_threshold_met", setup: { type: "volume_breakout" },
+  review_outcome: "applied",
+  research_coverage: { evidence_count: 3, structured_risk_fact_count: 1, review_eligible: true },
+  price: 11, pct_change: 1, amount: 10000000, turnover_rate: 2, market_cap: 1000000000,
+  anchor_price: 10, quote_status: "decision_anchor", risks: [{ risk_code: "unlock_risk" }],
+  scores: {
+    local_score: 80, final_score: 80, deepseek_score: null, deepseek_risk_penalty: 0,
+    model_signal_score: 82.5, predicted_excess_return_pct: 1.45,
+    estimated_cost_pct: 0.2, predicted_net_excess_pct: 1.25, model_disagreement_pct: 0.1,
+  },
+};
+const patchPayload = state.replacementPayload(getPayload, {
+  publication_id: "test-publication", snapshot_id: "test-publication", projection_version: "test-projection",
+  strategy: "tomorrow", trade_date: "2026-07-23", view: "live", phase: "current",
+  coverage: {}, upserts: [patchItem], top_scores: [patchItem],
+}, [patchItem]);
+for (const payload of [getPayload, patchPayload]) {
+  const item = payload.items[0];
+  const row = state.tableRows([item], payload);
+  const detail = state.drawer(item, payload);
+  assert.match(row, /<td>2<\/td>/);
+  assert.match(row, /风险研究：有记录/);
+  assert.match(row, /已复核/);
+  assert.doesNotMatch(row, /<td>长期<\/td>|未复核/);
+  assert.match(detail, /模型相对信号分<\/span><strong>82\.50/);
+  assert.match(detail, /入场形态<\/span><strong>放量突破/);
+  assert.match(detail, /预测成本后净超额<\/span><strong>\+1\.25%/);
+  assert.match(detail, /研究证据<\/span><strong>3 条/);
+  assert.match(detail, /结构化风险事实<\/span><strong>1 条/);
+  assert.match(detail, /财务数据<\/span><strong>逐项覆盖未提供/);
+  assert.match(detail, /限售股解禁风险/);
+  assert.doesNotMatch(detail, /未知风险|扣分 -|财务数据<\/span><strong>未获取/);
+  assert.strictEqual(state.recommendationSummary(payload, [item]).modelReview, "1 / 1");
+  const budgetElements = { budgetStatus: {}, budgetMeta: {} };
+  sandbox.window.TraderStatusView.renderBudgetSummary(
+    budgetElements, { used: 1, remaining: 167, limit: 168 }, payload,
+  );
+  assert.match(budgetElements.budgetMeta.textContent, /复核 1\/1/);
+  assert.strictEqual(payload.top_scores[0].scores.model_signal_score, 82.5);
+}
+const observedReview = { ...patchItem, code: "600002", action: "observe", review_outcome: "applied" };
+const budgetWithObservation = { budgetStatus: {}, budgetMeta: {} };
+sandbox.window.TraderStatusView.renderBudgetSummary(
+  budgetWithObservation, { used: 2, remaining: 166, limit: 168 },
+  { ...patchPayload, items: [patchItem, observedReview] },
+);
+assert.match(budgetWithObservation.budgetMeta.textContent, /复核 1\/1/);
+assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /本地 \/ 风险复核 \/ 最终/);
+const noResearchItem = { ...getPayload.items[0], research_coverage: null, review_outcome: null, risks: [] };
+assert.match(state.drawer(noResearchItem, getPayload), /风险研究：覆盖未知/);
+assert.doesNotMatch(state.drawer(noResearchItem, getPayload), /风险研究：未获取|风险扣分/);
 const scoredItem = {
   rank: 1,
   code: "600001",
@@ -2079,8 +2150,8 @@ assert.deepStrictEqual(
       degraded_reasons: [],
     },
     [
-      { scores: { final_score: 83.4 }, review: { outcome: "accepted" } },
-      { scores: { final_score: 78.25 }, review: null },
+      { scores: { final_score: 83.4 }, review_outcome: "applied" },
+      { scores: { final_score: 78.25 }, review_outcome: null },
     ],
   ))),
   {

@@ -140,7 +140,7 @@
     const scores = recommendations
       .map((item) => item && item.scores ? item.scores.final_score : null)
       .filter((value) => typeof value === "number" && Number.isFinite(value));
-    const reviewed = recommendations.filter((item) => item && item.review && item.review.outcome).length;
+    const reviewed = recommendations.filter((item) => item && item.review_outcome).length;
     const degradedReasons = payload && Array.isArray(payload.degraded_reasons) ? payload.degraded_reasons : [];
     const dataQuality = payload && payload.status === "not_ready"
       ? "无数据"

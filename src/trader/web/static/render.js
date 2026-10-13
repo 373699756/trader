@@ -87,13 +87,6 @@
     corporate_risk_history_unavailable: "公司风险历史暂不可核验",
   };
 
-  const RISK_SEVERITY_LABELS = {
-    low: "低",
-    medium: "中",
-    high: "高",
-    critical: "严重",
-  };
-
   const REVIEW_ERROR_LABELS = {
     api_key_missing: "不可用：未配置 API 密钥",
     disabled: "不可用：DeepSeek 已禁用",
@@ -268,7 +261,7 @@
         '<col style="width:96px">',
         '<col style="width:190px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>本地 / 模型 / 模型扣分 / 最终</th><th>动作</th><th>原因</th></tr>",
+      head: "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>本地 / 风险复核 / 最终</th><th>动作</th><th>原因</th></tr>",
     };
   }
 
@@ -325,13 +318,13 @@
     const scores = item.scores || {};
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
-    const review = item.review && item.review.outcome === "applied" ? "已复核" : "未复核";
+    const review = reviewStatus(item.review_outcome);
     const legacyScore = scores.deepseek_score == null ? "" : `<span><b>${number(scores.deepseek_score, 2)}</b>旧复核分</span>`;
     const legacyPenalty = Number(scores.deepseek_risk_penalty) > 0
       ? `<span><b>${number(scores.deepseek_risk_penalty, 2)}</b>旧复核扣分</span>` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
-      <td>${escapeHtml(item.group || "长期")}</td>
-      <td>${stock(item)}<span class="stock-code">${escapeHtml(researchStatus(item.research))}</span></td>
+      <td>${number(item.rank, 0)}</td>
+      <td>${stock(item)}<span class="stock-code">${escapeHtml(researchStatus(item.research_coverage))}</span></td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
@@ -428,7 +421,7 @@
         ["入池状态", item.selected === false ? "未入池" : "已入池"],
         ["最终评分", valueNumber(scores.final_score, 2)],
         ["当前排名", hasValue(item.rank) ? `第 ${number(item.rank, 0)} 名` : null],
-        ["入场形态", SETUP_LABELS[item.setup_type] || "形态信息暂不可用"],
+        ["入场形态", SETUP_LABELS[item.setup && item.setup.type] || "形态信息暂不可用"],
         ["下行保护", downside ? (downside.status === "pass" ? "通过" : "转观察") : null],
       ];
     const conclusion = [
@@ -484,24 +477,24 @@
       ["旧版DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
     const scoreParts = [detailGrid(scoreValues)];
-    scoreParts.push(note(reviewResult(item.review), "muted"));
+    scoreParts.push(note(reviewResult(item.review_outcome), "muted"));
     if (Array.isArray(item.risks) && item.risks.length > 0) {
       scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
     }
-    const research = item.research || {};
-    const researchComponents = research.components || {};
+    const research = item.research_coverage;
     const researchParts = [
       detailGrid([
         ["总体状态", researchStatus(research)],
-        ["财务数据", researchComponentStatus(researchComponents.financial)],
-        ["公司公告 / 减持", researchComponentStatus(researchComponents.announcements)],
-        ["股权质押", researchComponentStatus(researchComponents.pledge)],
-        ["限售解禁", researchComponentStatus(researchComponents.unlock)],
+        ["研究证据", research ? `${number(research.evidence_count, 0)} 条` : null],
+        ["结构化风险事实", research ? `${number(research.structured_risk_fact_count, 0)} 条` : null],
+        ["复核证据资格", research ? (research.review_eligible === true ? "符合" : "不符合") : null],
+        ["财务数据", "逐项覆盖未提供"],
+        ["公司公告 / 减持", "逐项覆盖未提供"],
+        ["股权质押", "逐项覆盖未提供"],
+        ["限售解禁", "逐项覆盖未提供"],
       ]),
     ];
-    if (research.status !== "verified") {
-      researchParts.push(note("未获取的研究项不会猜测为无风险；已确认风险仍保留，动作按降级规则处理。", "warn"));
-    }
+    researchParts.push(note("当前决策仅记录研究证据总数，不能判定四项分别已覆盖或未获取。", "muted"));
     if (downside) {
       scoreParts.push(
         '<h4 class="detail-subtitle">下行保护</h4>',
@@ -542,9 +535,7 @@
   function riskList(risks) {
     return `<ul class="detail-list detail-risk-list">${risks.map((risk) => {
       const label = RISK_LABELS[risk.risk_code] || "其他风险提示";
-      const severity = RISK_SEVERITY_LABELS[risk.severity] || "未知";
-      const assessment = risk.assessment ? `<p>${escapeHtml(risk.assessment)}</p>` : "";
-      return `<li><b>${escapeHtml(label)}</b><span class="risk-meta">${escapeHtml(severity)}风险 · 扣分 ${number(risk.penalty, 2)}</span>${assessment}</li>`;
+      return `<li><b>${escapeHtml(label)}</b></li>`;
     }).join("")}</ul>`;
   }
 
@@ -561,30 +552,23 @@
     return reason ? "推荐条件暂未满足" : "暂无补充说明";
   }
 
-  function reviewResult(review) {
-    if (!review || !review.outcome) return "未复核，最终评分使用本地结果";
-    const error = String(review.error || "");
-    if (REVIEW_ERROR_LABELS[error]) return REVIEW_ERROR_LABELS[error];
-    if (review.outcome === "abstain") return "模型弃权：使用本地评分";
-    if (review.outcome === "late") return "迟到：结果未参与评分";
-    if (review.outcome !== "rejected") return "模型复核已完成";
-    if (
-      error.startsWith("http_")
-      || error.startsWith("internal_")
-      || ["timeout", "request_error", "request_failed", "empty_response", "invalid_response"].includes(error)
-    ) return "调用失败：已回退本地评分";
-    return "拒绝：响应未通过结构化校验";
+  function reviewStatus(outcome) {
+    return ({ applied: "已复核", abstain: "已弃权", late: "已迟到", rejected: "未通过" })[outcome] || "未复核";
+  }
+
+  function reviewResult(outcome) {
+    return ({
+      applied: "结构化风险复核已完成；最终评分仍为本地分",
+      abstain: "风险复核弃权；最终评分仍为本地分",
+      late: "风险复核结果迟到，未参与本次决策",
+      rejected: "风险复核未生效，保留本地决策",
+    })[outcome] || "未复核；最终评分为本地分";
   }
 
   function researchStatus(research) {
-    const status = research && research.status;
-    if (status === "verified") return "风险研究：已核";
-    if (status === "partial") return "风险研究：部分";
-    return "风险研究：未获取";
-  }
-
-  function researchComponentStatus(covered) {
-    return covered === true ? "已获取" : "未获取";
+    if (!research) return "风险研究：覆盖未知";
+    return research.evidence_count > 0 || research.structured_risk_fact_count > 0
+      ? "风险研究：有记录" : "风险研究：无已记录证据";
   }
 
   function reasonLabel(value) {

@@ -484,6 +484,11 @@
         deepseek_score: scores.deepseek,
         deepseek_risk_penalty: scores.deepseek_risk_penalty,
         final_score: scores.final,
+        model_signal_score: scores.model_signal_score,
+        predicted_excess_return_pct: scores.predicted_excess_return_pct,
+        estimated_cost_pct: scores.estimated_cost_pct,
+        predicted_net_excess_pct: scores.predicted_net_excess_pct,
+        model_disagreement_pct: scores.model_disagreement_pct,
       },
       risks: (item.risk_codes || []).map((risk_code) => ({ risk_code })),
     };

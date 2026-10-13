@@ -965,22 +965,6 @@ thead th:nth-child(2) {
   font-weight: 600;
 }
 
-.detail-risk-list li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 12px;
-}
-
-.detail-risk-list p {
-  grid-column: 1 / -1;
-  margin: 0;
-}
-
-.risk-meta {
-  color: var(--amber);
-  white-space: nowrap;
-}
-
 noscript {
   display: block;
   padding: 20px;
