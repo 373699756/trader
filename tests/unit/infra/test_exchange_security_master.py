@@ -6,10 +6,10 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
+from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 from trader.infra.market_data.providers import exchange_security_master as exchange_module
 from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
-    ExchangeSecurityMasterListing,
 )
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")

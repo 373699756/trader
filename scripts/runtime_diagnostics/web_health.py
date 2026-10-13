@@ -218,6 +218,19 @@ def _sample_findings(sample: WebSample, strategies: tuple[str, ...]) -> list[Fin
                     status.release_decision_schema,
                 )
             )
+            if decision.pipeline is not None:
+                audit = decision.pipeline.committed_audit
+                if audit.invalid_fields:
+                    findings.append(
+                        _finding(
+                            "error",
+                            "committed_pipeline_audit_invalid",
+                            sample,
+                            strategy,
+                            "committed fourteen-stage audit violates order, population or batch continuity",
+                            {"fields": ",".join(audit.invalid_fields)},
+                        )
+                    )
         quality = status.input_quality.get(strategy)
         if quality is not None:
             if quality.status is None or quality.trade_date is None or quality.primary_blocker is None:
@@ -1074,6 +1087,7 @@ def _sample_payload(sample: WebSample, strategies: tuple[str, ...]) -> dict[str,
         result[strategy] = {
             "status_projection": _projection_summary(status.strategies.get(strategy) if status is not None else None),
             "current_projection": _projection_summary(current),
+            "committed_pipeline": _pipeline_payload(current.pipeline if current is not None else None),
             "current_item_count": current.item_count if current is not None else None,
             "empty_reason": current.empty_reason if current is not None else None,
             "input_quality_status": quality.status if quality is not None else None,
@@ -1184,6 +1198,7 @@ def _projection_summary(payload: ProjectionSnapshot | None) -> dict[str, object]
         "status": payload.status if payload is not None else None,
         "trade_date": payload.trade_date if payload is not None else None,
         "projection_version": payload.projection_version if payload is not None else None,
+        "frozen": payload.frozen if payload is not None else None,
         "candidate_count": payload.coverage.candidate_count if payload is not None else None,
         "evaluated_count": payload.coverage.evaluated_count if payload is not None else None,
         "selected_count": payload.coverage.selected_count if payload is not None else None,
@@ -1221,6 +1236,21 @@ def _pipeline_payload(payload: PipelineSnapshot | None) -> dict[str, object] | N
         return None
     return {
         "current_stage": payload.current_stage,
+        "stage_audit": {
+            "observed": payload.committed_audit.observed,
+            "stage_count": payload.committed_audit.stage_count,
+            "continuous": not payload.committed_audit.invalid_fields if payload.committed_audit.observed else None,
+            "invalid_fields": list(payload.committed_audit.invalid_fields),
+            "stages": [
+                {
+                    "key": stage.key,
+                    "state": stage.state,
+                    "input_count": stage.input_count,
+                    "output_count": stage.output_count,
+                }
+                for stage in payload.committed_audit.stages
+            ],
+        },
         "stages": [
             {
                 "key": stage.key,

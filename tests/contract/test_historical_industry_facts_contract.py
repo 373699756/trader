@@ -4,7 +4,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_historical_industry_section_has_one_fail_closed_checkpoint_owner() -> None:
-    design = (ROOT / "docs/04_下载训练.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/4_下载训练.md").read_text(encoding="utf-8")
 
     for token in (
         "historical_data_insufficient",

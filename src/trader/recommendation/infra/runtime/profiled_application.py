@@ -1,4 +1,4 @@
-"""Lifecycle and read-only delivery for already composed profile systems."""
+"""Startup, shutdown and read-only delivery for already composed profile systems."""
 
 from __future__ import annotations
 

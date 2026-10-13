@@ -3,8 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "docs" / "02_工程设计.md"
-STRATEGY = ROOT / "docs" / "01_评分逻辑.md"
+DESIGN = ROOT / "docs" / "2_工程设计.md"
+STRATEGY = ROOT / "docs" / "1_评分逻辑.md"
 
 
 def test_freeze_contract_has_one_boundary_for_each_strategy() -> None:

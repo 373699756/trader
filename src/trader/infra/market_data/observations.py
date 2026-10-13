@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from types import MappingProxyType
@@ -12,6 +12,18 @@ from zoneinfo import ZoneInfo
 
 JsonScalar = str | float | bool | None
 ObservationStatus = Literal["success", "no_data", "failed", "late"]
+
+
+@dataclass(frozen=True)
+class ExchangeSecurityMasterListing:
+    code: str
+    name: str
+    listing_date: date
+    board: str
+    exchange: str
+
+
+ListingFetcher = Callable[[float], Sequence[ExchangeSecurityMasterListing]]
 
 
 @dataclass(frozen=True)
@@ -83,4 +95,4 @@ def _normalize_fields(fields: Mapping[str, JsonScalar]) -> dict[str, JsonScalar]
     return normalized
 
 
-__all__ = ["JsonScalar", "ObservationStatus", "SourceObservation"]
+__all__ = ["ExchangeSecurityMasterListing", "JsonScalar", "ListingFetcher", "ObservationStatus", "SourceObservation"]

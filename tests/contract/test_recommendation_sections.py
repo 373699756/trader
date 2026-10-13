@@ -25,13 +25,14 @@ def test_dashboard_keeps_the_fixed_long_watchlist_tabs() -> None:
 def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -> None:
     template = (ROOT / "src/trader/web/templates/index.html").read_text(encoding="utf-8")
     dashboard_css = (ROOT / "src/trader/web/static/dashboard_base.css").read_text(encoding="utf-8")
-    scoring = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    scoring = (ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
     normalized_scoring = " ".join(scoring.split())
     normalized_design = " ".join(design.split())
 
     assert "统一评分最高" not in template
-    assert "统一0–100评分" in template
+    assert 'id="funnelScoreRange"' in template
+    assert 'id="topScoresMeta"' in template
     assert 'id="scoreLeadersPanel"' in template
     assert 'id="topScoresStatus"' in template
     assert "box-shadow: inset 3px 0 0 var(--blue)" not in dashboard_css

@@ -27,7 +27,7 @@ For a defect, preserve evidence at both ends:
 3. Add a negative assertion for the adjacent behavior that must remain unchanged.
 4. Re-run the historical failure shape when a `Regression-Key` already exists.
 
-For timing-sensitive current/freeze/Web behavior, cover the applicable freeze scenarios required by `docs/02_工程设计.md`: hot run, cold start, the applicable freeze boundary, 15:00+ recovery, formal-record hit, and permitted close fallback. Record why any scenario is not applicable.
+For timing-sensitive current/freeze/Web behavior, cover the applicable freeze scenarios required by `docs/2_工程设计.md`: hot run, cold start, the applicable freeze boundary, 15:00+ recovery, formal-record hit, and permitted close fallback. Record why any scenario is not applicable.
 
 For scoring-chain changes, record the first changed semantic owner and the resulting values at each affected boundary: evidence-quality score, local risk, model diagnostics, execution gate, fused score, action/rank, decision identities, frozen/current/history record, and external projection. Use [the scoring-chain guide](scoring-chain.md); do not collapse these values into a single “score passed” claim.
 
@@ -46,5 +46,5 @@ stage counts; do not summarize every zero as “no data”.
 - Compare the complete diff with the previously pushed baseline and with the original file allowlist.
 - Inspect new files, removed paths, duplicate owners, hidden fallbacks, TODOs, generated output, and source-file size.
 - Run `git diff --check`; confirm the staged set contains only this batch.
-- Record actual changes, verification, and unfinished work only in `docs/03_工程实施.md`. For a repeated defect, connect its stable `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
+- Record actual changes, verification, and unfinished work only in `docs/3_工程实施.md`. For a repeated defect, connect its stable `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
 - Do not mark the batch complete before its single commit is pushed and confirmed present on the upstream branch.

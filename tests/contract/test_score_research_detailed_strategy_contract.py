@@ -7,7 +7,7 @@ from trader.training.application.tomorrow_historical_validation import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-STRATEGY = ROOT / "docs/01_评分逻辑.md"
+STRATEGY = ROOT / "docs/1_评分逻辑.md"
 
 
 def test_score_research_uses_ordered_historical_splits_and_bounded_terminal_states() -> None:

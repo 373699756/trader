@@ -8,7 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
-AUTHORITIES = ("01_评分逻辑.md", "02_工程设计.md", "03_工程实施.md", "04_下载训练.md")
+AUTHORITIES = ("1_评分逻辑.md", "2_工程设计.md", "3_工程实施.md", "4_下载训练.md")
 
 
 @pytest.mark.parametrize("name", AUTHORITIES)
@@ -30,16 +30,15 @@ def test_active_document_links_resolve() -> None:
         ROOT / "README.md",
         ROOT / "scripts/README.md",
         DOCS / "README.md",
-        DOCS / "V2.md",
         *(DOCS / name for name in AUTHORITIES),
         *(ROOT / ".agents/skills/trader-delivery").rglob("*.md"),
     ]
     failures = []
     for path in paths:
         content = path.read_text(encoding="utf-8")
-        if path.name == "03_工程实施.md":
+        if path.name == "3_工程实施.md":
             # Historical evidence is immutable context, not a current filesystem promise.
-            content = content.split("## 历史阶段摘要", 1)[0]
+            content = content.split("## 历史回溯索引", 1)[0]
         for target in re.findall(r"\[[^\]]*\]\(([^)]+)\)", content):
             if target.startswith(("http:", "https:", "#", "mailto:")):
                 continue
@@ -58,7 +57,7 @@ def test_active_document_links_resolve() -> None:
 
 
 def test_normative_tables_and_latest_wins_have_one_definition() -> None:
-    design = (DOCS / "02_工程设计.md").read_text(encoding="utf-8")
+    design = (DOCS / "2_工程设计.md").read_text(encoding="utf-8")
     for table in (
         "表 R：资源所有权唯一规范",
         "表 T：交易日时间线唯一规范",
@@ -76,8 +75,8 @@ def test_normative_tables_and_latest_wins_have_one_definition() -> None:
 
 
 def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() -> None:
-    scoring = (DOCS / "01_评分逻辑.md").read_text(encoding="utf-8")
-    history = (DOCS / "04_下载训练.md").read_text(encoding="utf-8")
+    scoring = (DOCS / "1_评分逻辑.md").read_text(encoding="utf-8")
+    history = (DOCS / "4_下载训练.md").read_text(encoding="utf-8")
     compact = re.sub(r"\s+", "", scoring)
     assert "d25_aggregate=(net_excess_T2+net_excess_T3+net_excess_T4+net_excess_T5)/4" in compact
     assert "local_score*0.68" in compact and "deepseek_score*0.32" in compact
@@ -91,7 +90,8 @@ def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() ->
         "raw",
         "qfq",
         "logical_hash",
-        "未知不能猜成停牌",
+        "未返回日期保存为unknown空价格点",
+        "unknown不能跨缺口拼训练窗口或标签",
         "1000",
         "750",
         "LightGBM",
@@ -106,7 +106,7 @@ def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() ->
 
 
 def test_test_entrypoints_distinguish_fast_owner_and_full_gates() -> None:
-    design = (DOCS / "02_工程设计.md").read_text(encoding="utf-8")
+    design = (DOCS / "2_工程设计.md").read_text(encoding="utf-8")
     for command in ("make test-fast", "make test-history", "make test-train", "make test-full", "PYTEST_WORKERS"):
         assert command in design
     assert "禁止共享可变SQLite连接或硬链接" in design

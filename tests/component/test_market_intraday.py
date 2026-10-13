@@ -378,13 +378,15 @@ def test_intraday_batch_deadline_does_not_wait_for_every_candidate_request(marke
     assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
 
 
-def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh(market_worker_pool) -> None:
+def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh() -> None:
+    # The injected executor owns concurrency; ensure the second request really stays queued.
+    pool = BoundedExecutor(worker_count=1, queue_capacity=2, thread_name_prefix="test-intraday-cancel")
     intraday = BlockingIntradayClient()
     service = _service(
         StaticGateway((_quote(), _quote(code="600002"))),
         StaticHistoryClient(),
         FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        worker_pool=market_worker_pool,
+        worker_pool=pool,
         intraday_client=intraday,
         intraday_workers=1,
         intraday_batch_timeout_seconds=0.1,
@@ -394,16 +396,20 @@ def test_cancelled_before_start_intraday_request_is_retried_on_next_refresh(mark
         target=service.refresh_intraday_tail,
         args=(("600001", "600002"), AFTERNOON),
     )
+    pool.start()
     try:
         first_refresh.start()
         assert intraday.started.wait(1.0)
         first_refresh.join(1.0)
         assert not first_refresh.is_alive()
+        assert intraday.calls == ["600001"]
         intraday.release.set()
         assert intraday.finished.wait(1.0)
         service.refresh_intraday_tail(("600001", "600002"), AFTERNOON)
     finally:
         intraday.release.set()
+        first_refresh.join(2.0)
+        pool.stop(cancel_futures=True)
 
     assert intraday.calls == ["600001", "600002"]
 
@@ -440,6 +446,43 @@ def test_source_lane_intraday_batch_timeout_returns_without_waiting_for_blocked_
     assert elapsed < 0.5
     assert result[0].values["tail_return_30m"] is None
     assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
+
+
+def test_intraday_lane_queue_wait_cannot_restart_request_deadline(monkeypatch) -> None:
+    pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="test-intraday-deadline")
+    lanes = SourceLaneScheduler(pool)
+    monotonic = MutableMonotonic()
+    intraday = StaticIntradayClient(_tail_minute_bars())
+    submit = lanes.submit
+
+    def submit_after_queue_wait(source, identity, observed_at, function, *args, **kwargs):
+        def delayed():
+            monotonic.value += 1.0
+            return function(*args, **kwargs)
+
+        return submit(source, identity, observed_at, delayed)
+
+    monkeypatch.setattr(lanes, "submit", submit_after_queue_wait)
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        intraday_client=intraday,
+        intraday_batch_timeout_seconds=0.01,
+        worker_pool=pool,
+        source_lanes=lanes,
+        monotonic=monotonic,
+    )
+    pool.start()
+    try:
+        service.refresh_intraday_tail(("600001",), AFTERNOON)
+    finally:
+        lanes.stop(wait=True, timeout_seconds=1.0)
+        pool.stop(wait=True, cancel_futures=True)
+
+    assert intraday.calls == []
+    assert service.health()["intraday_tail_last_error"] == "intraday_batch_deadline"
+    assert service.health()["intraday_tail_coverage_ratio"] == 0.0
 
 
 def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return() -> None:

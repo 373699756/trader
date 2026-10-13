@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_authoritative_design_requires_one_final_product_chain_without_runtime_compatibility() -> None:
-    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
 
     for statement in (
         "current-only 最终 release 边界",
@@ -25,7 +25,7 @@ def test_authoritative_design_requires_one_final_product_chain_without_runtime_c
 
 
 def test_strategy_contract_focuses_on_current_decisions_without_release_chronology() -> None:
-    strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8")
     compact = " ".join(strategy.split())
 
     for statement in (
@@ -41,7 +41,7 @@ def test_strategy_contract_focuses_on_current_decisions_without_release_chronolo
 
 def test_release_guides_expose_only_unified_api_and_desktop_gate() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    operations = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    operations = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
 
     for content in (readme, operations):
         assert "/api/status" in content

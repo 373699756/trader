@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
-from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+import shutil
 
 from tests.component.market_data_test_support import (
     AFTERNOON,
@@ -33,6 +31,9 @@ from tests.component.market_data_test_support import (
     pytest,
     replace,
 )
+from trader.recommendation.infra.market_data.history_recovery import HistoryRecovery
+from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 
 def test_current_model_industry_enriches_features_without_replacing_display_sector() -> None:
@@ -224,14 +225,16 @@ def test_strategy_factor_index_is_complete_and_required() -> None:
 
 
 def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
-    source = Path(__file__).parents[2] / "config" / "strategy.json"
-    raw = json.loads(source.read_text(encoding="utf-8"))
+    source = Path(__file__).parents[2] / "config"
+    target = tmp_path / "config"
+    shutil.copytree(source, target)
+    features = target / "features.json"
+    raw = json.loads(features.read_text(encoding="utf-8"))
     del raw["factor_index"]["atr20_pct"]
-    target = tmp_path / "strategy.json"
-    target.write_text(json.dumps(raw), encoding="utf-8")
+    features.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="factor_index mismatch"):
-        load_strategy_settings(target)
+        load_strategy_settings(target / "strategy.json")
 
 
 def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_inputs() -> None:

@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, StageState
+
 _MAX_REASON_COUNTS = 32
 
 
@@ -37,10 +39,19 @@ class WebPipelineStageSnapshot:
 
 
 @dataclass(frozen=True)
+class CommittedPipelineAudit:
+    observed: bool
+    stage_count: int
+    invalid_fields: tuple[str, ...] = ()
+    stages: tuple[WebPipelineStageSnapshot, ...] = ()
+
+
+@dataclass(frozen=True)
 class PipelineSnapshot:
     current_stage: str | None
     stages: tuple[WebPipelineStageSnapshot, ...]
     invalid_fields: tuple[str, ...] = ()
+    committed_audit: CommittedPipelineAudit = CommittedPipelineAudit(False, 0)
 
     def stage(self, key: str) -> WebPipelineStageSnapshot | None:
         return next((stage for stage in self.stages if stage.key == key), None)
@@ -503,8 +514,9 @@ def _top_score_summary(value: object) -> tuple[int | None, float | None]:
 
 def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
     raw_stages = payload.get("stages")
+    audit = _parse_committed_audit(payload.get("stage_snapshots"))
     if not isinstance(raw_stages, (list, tuple)):
-        return PipelineSnapshot(_text(payload.get("current_stage")), (), ("stages",))
+        return PipelineSnapshot(_text(payload.get("current_stage")), (), ("stages",), audit)
     stages: list[WebPipelineStageSnapshot] = []
     invalid_fields: list[str] = []
     for index, raw in enumerate(raw_stages):
@@ -525,7 +537,54 @@ def _parse_pipeline(payload: Mapping[str, object]) -> PipelineSnapshot:
         current_stage,
         tuple(stages),
         tuple(sorted(set(invalid_fields))),
+        audit,
     )
+
+
+def _parse_committed_audit(value: object) -> CommittedPipelineAudit:
+    # Old records may lack audit; never reconstruct it from the separate live input pipeline.
+    if value is None or value == [] or value == ():
+        return CommittedPipelineAudit(False, 0)
+    if not isinstance(value, (list, tuple)):
+        return CommittedPipelineAudit(True, 0, ("stage_snapshots",))
+    invalid: list[str] = []
+    if len(value) != len(PIPELINE_STAGES):
+        invalid.append("stage_snapshots.length")
+    previous: Mapping[str, object] | None = None
+    stages: list[WebPipelineStageSnapshot] = []
+    for index, raw in enumerate(value[: len(PIPELINE_STAGES)]):
+        stage = _mapping(raw)
+        prefix = f"stage_snapshots[{index}]"
+        if (
+            stage.get("stage") != PIPELINE_STAGES[index].value
+            or _nonnegative_int(stage.get("stage_order")) != index + 1
+        ):
+            invalid.append(f"{prefix}.order")
+        state = _text(stage.get("state"))
+        if state not in {item.value for item in StageState}:
+            invalid.append(f"{prefix}.state")
+            state = None
+        counts = {
+            key: _required_count(stage, key, invalid, prefix)
+            for key in ("input_count", "output_count", "rejected_count", "pending_count", "failed_count")
+        }
+        inputs = counts["input_count"]
+        outcomes = tuple(counts[key] for key in ("output_count", "rejected_count", "pending_count", "failed_count"))
+        if inputs is not None and all(count is not None for count in outcomes):
+            if sum(count for count in outcomes if count is not None) > inputs:
+                invalid.append(f"{prefix}.population")
+        for key in ("input_batch_id", "output_batch_id"):
+            identity = _text(stage.get(key))
+            if identity is None or not identity.strip():
+                invalid.append(f"{prefix}.{key}")
+        if previous is not None:
+            if previous.get("output_batch_id") != stage.get("input_batch_id"):
+                invalid.append(f"{prefix}.batch_continuity")
+            if previous.get("output_count") != stage.get("input_count"):
+                invalid.append(f"{prefix}.count_continuity")
+        previous = stage
+        stages.append(WebPipelineStageSnapshot(PIPELINE_STAGES[index].value, state, inputs, counts["output_count"], ()))
+    return CommittedPipelineAudit(True, len(value), tuple(invalid), tuple(stages))
 
 
 def _parse_pipeline_stage(payload: Mapping[str, object], index: int) -> WebPipelineStageSnapshot:

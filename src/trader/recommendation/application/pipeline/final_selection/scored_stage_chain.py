@@ -192,5 +192,9 @@ def complete_scored_stages(
         started,
         monotonic,
     )
+    # A completed action gate can legitimately leave nothing to rank. This is
+    # different from an upstream stage which never obtained usable input.
+    if not action.records and action.snapshot.state is StageState.READY:
+        final = replace(final, snapshot=replace(final.snapshot, state=StageState.READY, degraded=False))
     unavailable = tuple(item for item in actions if item.action is RecommendationAction.UNAVAILABLE)
     return ScoredStageChain(source, risk, merge, action, final, (*ranked, *unavailable))

@@ -2,8 +2,8 @@
 
 Read this guide whenever a task changes candidate eligibility, evidence-quality scoring, a scoring profile, model
 diagnostics, execution cost, risk, DeepSeek fusion, action thresholds, ranking, score identity, or offline score evidence.
-The authoritative rules remain `docs/01_评分逻辑.md`; architecture, freeze, API/SSE, Web, and acceptance remain in
-`docs/02_工程设计.md`.
+The authoritative rules remain `docs/1_评分逻辑.md`; architecture, freeze, API/SSE, Web, and acceptance remain in
+`docs/2_工程设计.md`.
 
 ## Trace semantic owners before editing
 
@@ -69,6 +69,6 @@ did not change.
   latency from a small unit fixture.
 
 Any production score formula, factor, weight, threshold, model, capacity, or ranking change that claims better investment
-results must separately satisfy the point-in-time, cost-aware research gates in `docs/01_评分逻辑.md` section 12. Record
+results must separately satisfy the point-in-time, cost-aware research gates in `docs/1_评分逻辑.md` section 12. Record
 confirmation, terminal holdout, Shadow, and explicit human authorization separately. Unit tests, a prettier distribution,
 more recommendations, or a higher average score do not prove improved return and cannot grant production authority.

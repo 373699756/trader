@@ -6,8 +6,8 @@ ROOT = Path(__file__).parents[2]
 
 
 def test_authoritative_documents_define_two_level_filter_before_h1_download() -> None:
-    strategy = (ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs" / "1_评分逻辑.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "2_工程设计.md").read_text(encoding="utf-8")
 
     required_strategy = (
         "一级永久资格过滤",
@@ -43,8 +43,8 @@ def test_authoritative_documents_define_two_level_filter_before_h1_download() ->
 
 
 def test_historical_aliases_are_retired_from_the_unfinished_plan() -> None:
-    strategy = (ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
-    work = (ROOT / "docs" / "03_工程实施.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs" / "1_评分逻辑.md").read_text(encoding="utf-8")
+    work = (ROOT / "docs" / "3_工程实施.md").read_text(encoding="utf-8")
 
     level_one = strategy.index("一级永久资格过滤")
     assert level_one >= 0

@@ -79,7 +79,7 @@ def test_legacy_diagnostic_wrappers_are_deleted_after_unified_cli_migration() ->
         for path in (
             ROOT / "Makefile",
             ROOT / "README.md",
-            ROOT / "docs" / "02_工程设计.md",
+            ROOT / "docs" / "2_工程设计.md",
             ROOT / "src" / "trader" / "entrypoints" / "performance.py",
             ROOT / ".agents" / "skills" / "trader-delivery" / "SKILL.md",
             ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "runtime-diagnostics.md",
@@ -121,10 +121,10 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
         for target in re.findall(r"\[[^]]+\]\(([^)]+\.md)(?:#[^)]+)?\)", content):
             assert (source.parent / target).is_file(), f"missing skill reference: {source.name} -> {target}"
 
-    assert "docs/01_评分逻辑.md" in active_text
-    assert "docs/02_工程设计.md" in active_text
-    assert "docs/03_工程实施.md" in active_text
-    assert "docs/04_下载训练.md" in active_text
+    assert "docs/1_评分逻辑.md" in active_text
+    assert "docs/2_工程设计.md" in active_text
+    assert "docs/3_工程实施.md" in active_text
+    assert "docs/4_下载训练.md" in active_text
     assert "src/trader/recommendation/application/runtime/" in active_text
     assert "tests/integration/test_scheduler_runtime.py" in active_text
     assert "/api/status" in active_text
@@ -132,10 +132,10 @@ def test_repository_delivery_skill_links_resolve_and_route_current_contracts() -
     assert "trader-runtime-diagnostics" in active_text
 
     for current_target in (
-        ROOT / "docs" / "01_评分逻辑.md",
-        ROOT / "docs" / "02_工程设计.md",
-        ROOT / "docs" / "03_工程实施.md",
-        ROOT / "docs" / "04_下载训练.md",
+        ROOT / "docs" / "1_评分逻辑.md",
+        ROOT / "docs" / "2_工程设计.md",
+        ROOT / "docs" / "3_工程实施.md",
+        ROOT / "docs" / "4_下载训练.md",
         ROOT / "src" / "trader" / "recommendation" / "application" / "runtime",
         ROOT / "tests" / "integration" / "test_scheduler_runtime.py",
         ROOT / "config" / "runtime.json",

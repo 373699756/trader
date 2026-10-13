@@ -11,9 +11,9 @@ def _read(relative: str) -> str:
 
 
 def test_candidate_planning_contract_is_synchronized_across_authoritative_documents() -> None:
-    strategy = _read("docs/01_评分逻辑.md")
-    design = _read("docs/02_工程设计.md")
-    work = _read("docs/03_工程实施.md")
+    strategy = _read("docs/1_评分逻辑.md")
+    design = _read("docs/2_工程设计.md")
+    work = _read("docs/3_工程实施.md")
 
     compact_strategy = "".join(strategy.split())
     assert "资格、候选分和稳定排序只有一个领域所有者" in compact_strategy

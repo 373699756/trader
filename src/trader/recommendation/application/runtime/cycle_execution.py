@@ -54,7 +54,7 @@ class CycleExecutionHooks:
 
 
 class RecommendationCycleExecutor:
-    """Execute immutable local/hybrid cycles without owning scheduler lifecycle."""
+    """Execute immutable local/hybrid cycles without owning scheduler startup or shutdown."""
 
     def __init__(
         self,

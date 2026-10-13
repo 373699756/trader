@@ -20,8 +20,8 @@ def test_risk_cost_uncertainty_components_live_in_their_authoritative_layers() -
 
 
 def test_authoritative_contracts_record_fail_closed_risk_cost_and_deepseek_boundaries() -> None:
-    strategy = (ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    strategy = (ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
     combined = strategy + design
 
     for required in (

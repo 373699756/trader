@@ -5,7 +5,7 @@ from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
-DESIGN = PROJECT_ROOT / "docs" / "02_工程设计.md"
+DESIGN = PROJECT_ROOT / "docs" / "2_工程设计.md"
 
 TARGET_PACKAGES = (
     "recommendation/domain/market",
@@ -64,9 +64,9 @@ def test_final_target_packages_exist_under_documented_business_owners() -> None:
 
 def test_scoring_profile_capability_matrix_uses_one_quality_scale_and_d25_single_head() -> None:
     design = DESIGN.read_text(encoding="utf-8")
-    strategy = (PROJECT_ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs" / "1_评分逻辑.md").read_text(encoding="utf-8")
 
-    training = (PROJECT_ROOT / "docs" / "04_下载训练.md").read_text(encoding="utf-8")
+    training = (PROJECT_ROOT / "docs" / "4_下载训练.md").read_text(encoding="utf-8")
     assert "V2只产出LightGBM字段，V3只产出Ridge字段" in training
     assert "两档各自拥有Tomorrow/D25双头" in strategy
     assert "D25 是一个完整且唯一的 2–5 日生产策略头" in strategy

@@ -1,4 +1,4 @@
-"""Lifecycle container for one fully composed recommendation profile."""
+"""Resource container for one fully composed recommendation profile."""
 
 from __future__ import annotations
 
@@ -9,22 +9,22 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
 from trader.infra.workers import BoundedExecutor
+from trader.recommendation.application.long_runtime import LongRuntime
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.runtime.resource_orchestration import (
-    AuxiliaryRuntimeResource,
     ApplicationResources,
+    AuxiliaryRuntimeResource,
     start_application_resources,
     stop_application_resources,
 )
-from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
+from trader.recommendation.application.runtime.supervisor import RuntimeSupervisor
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.recommendation.application.long_runtime import LongRuntime
-from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 
 ResearchTraceT = TypeVar("ResearchTraceT")
 OutcomeEvidenceT = TypeVar("OutcomeEvidenceT")

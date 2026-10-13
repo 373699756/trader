@@ -27,15 +27,15 @@ from trader.recommendation.application.pipeline.quality_check.pipeline_status im
 )
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPrediction
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
-from trader.recommendation.domain.evidence.pipeline import PipelineStage, validate_stage_batch_continuity
+from trader.recommendation.domain.evidence.pipeline import PipelineStage, StageState, validate_stage_batch_continuity
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import (
     LEGACY_EXPOSURE_CONTRACT,
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
-from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
+from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts
 from trader.training.application.research_audit import build_committed_research_audit
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -218,6 +218,10 @@ def test_tomorrow_non_positive_utility_keeps_scores_but_cannot_enter_recommendat
     )
     assert all(updated.stage_snapshots[index] is stage for index, stage in enumerate(input_stages))
     assert complete_status.stage_snapshots[-1].stage is PipelineStage.FINAL_SELECTION
+    assert complete_status.stage_snapshots[-1].state is StageState.READY
+    assert complete_status.stage_snapshots[-1].input_count == 0
+    assert complete_status.stage_snapshots[-1].output_count == 0
+    assert projection.stages.final_selection.snapshot.state is StageState.READY
     assert complete_status.pipeline.stage("input_readiness").state == "completed"
     assert complete_status.pipeline.stage("candidate_refresh").state == "completed"
     degraded_status = build_supply_status(projection, candidate_quote_eligible=0, input_stages=input_stages)

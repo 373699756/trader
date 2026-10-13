@@ -158,17 +158,17 @@ History SQLite performance is available through the unified read-only diagnostic
 It reads monthly SQLite headers, samples page classes, benchmarks latest-row,
 training-projection and active-gap queries, and measures bounded revision writes
 and sealing only in a disposable temporary database. It does not compact or switch the active history database. Maintenance rules
-are in [the download guide](../docs/04_下载训练.md), section 3.4;
-training performance is explained in [the training guide](../docs/04_下载训练.md),
+are in [the download guide](../docs/4_下载训练.md), section 3.4;
+training performance is explained in [the training guide](../docs/4_下载训练.md),
 section 5. The repack tool remains a separate explicit maintenance operation;
 its default paths do not authorize active-data changes. During refactoring,
 rehearse only on explicit repository-external copies as required by the
-[architecture contract](../docs/02_工程设计.md), section 14.
+[architecture contract](../docs/2_工程设计.md), section 14.
 
 Test commands and fast/full boundaries are defined by Makefile and documented
 in the architecture contract, section 13. Default `make test` runs the fast
 set; release acceptance also requires `make test-full`. Work status and pending
-optimizations are recorded only in `docs/03_工程实施.md`.
+optimizations are recorded only in `docs/3_工程实施.md`.
 
 
 完整history当前仅从空库重建，不提供旧格式转换。新增只读诊断：`--profile tencent-history-window --codes 600519`核对整窗2000条实际返回；`--profile history-write --download-sizes 8 --history-days 2000`在仓库外临时目录对合成数据测量首建、日更、隔周与同日重跑，不写活动历史。

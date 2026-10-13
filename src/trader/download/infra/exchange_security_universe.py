@@ -6,7 +6,7 @@ from typing import cast
 
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.infra.market_data.providers.exchange_security_master import ListingFetcher
+from trader.infra.market_data.observations import ListingFetcher
 
 
 def load_current_a_share_universe(

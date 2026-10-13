@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 
+import pytest
+
 from scripts.runtime_diagnostics.web_health import WebSample, analyze_samples, build_report, parse_web_sample
+from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES
 
 _STRATEGY = "tomorrow"
 _TRADE_DATE = "2026-08-25"
@@ -1009,3 +1012,55 @@ def test_json_report_contains_only_aggregated_projection_data() -> None:
     assert strategy["candidate_transient_reason_counts"] == {"history_data_degraded": 12}
     assert strategy["candidate_optional_reason_counts"] == {"research_data_degraded": 3}
     assert strategy["supply_reason_counts"] == {"local_score_unavailable": 17}
+
+
+@pytest.mark.parametrize("fault", (None, "batch", "count", "order", "length", "state", "negative", "population"))
+def test_committed_fourteen_stage_audit_is_checked_even_with_newer_live_input(fault: str | None) -> None:
+    stages = [
+        {
+            "stage": stage.value,
+            "stage_order": index + 1,
+            "state": "ready",
+            "input_batch_id": f"private-batch-{index}",
+            "output_batch_id": f"private-batch-{index + 1}",
+            "input_count": 10,
+            "output_count": 10,
+            "rejected_count": 0,
+            "pending_count": 0,
+            "failed_count": 0,
+        }
+        for index, stage in enumerate(PIPELINE_STAGES)
+    ]
+    if fault == "batch":
+        stages[9]["input_batch_id"] = "other-private-batch"
+    elif fault == "count":
+        stages[9]["input_count"] = 11
+    elif fault == "order":
+        stages[9]["stage_order"] = 1
+    elif fault == "length":
+        stages.pop()
+    elif fault == "state":
+        stages[9]["state"] = {"unexpected": "object"}
+    elif fault == "negative":
+        stages[9]["pending_count"] = -1
+    elif fault == "population":
+        stages[9]["failed_count"] = 1
+    committed = {**_funnel(), "stage_snapshots": stages}
+    sample = _sample(1, decision_pipeline=committed, frozen=True, phase="after_close")
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,))
+    assert ("committed_pipeline_audit_invalid" in {finding.code for finding in findings}) == (fault is not None)
+    report = build_report("http://127.0.0.1:5000", (sample,), (), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+    summary = report["samples"][0]["strategies"][_STRATEGY]
+    audit = summary["committed_pipeline"]["stage_audit"]
+    assert audit["observed"] and audit["continuous"] == (fault is None)
+    assert audit["stage_count"] == len(stages)
+    assert summary["current_projection"]["frozen"] is True
+    assert summary["pipeline"]["stage_audit"]["observed"] is False
+    assert "private-batch" not in str(report)
+
+
+def test_missing_committed_audit_is_not_reconstructed_from_live_input() -> None:
+    sample = _sample(1, decision_pipeline=_funnel())
+    report = build_report("http://127.0.0.1:5000", (sample,), (), strategies=(_STRATEGY,), consecutive_zero_threshold=1)
+    audit = report["samples"][0]["strategies"][_STRATEGY]["committed_pipeline"]["stage_audit"]
+    assert audit == {"observed": False, "stage_count": 0, "continuous": None, "invalid_fields": [], "stages": []}

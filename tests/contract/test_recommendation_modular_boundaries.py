@@ -76,7 +76,7 @@ def test_infrastructure_technical_capabilities_have_single_owners() -> None:
 
 
 def test_architecture_contract_documents_the_three_boundaries() -> None:
-    design = (ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "2_工程设计.md").read_text(encoding="utf-8")
     for name in (
         "static_filter/",
         "dynamic_filter/",

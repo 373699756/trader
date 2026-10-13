@@ -6,7 +6,6 @@ import threading
 import time
 import warnings
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import date, datetime
 from datetime import time as datetime_time
 from io import BytesIO
@@ -16,6 +15,7 @@ from zoneinfo import ZoneInfo
 import requests
 from typing_extensions import Unpack
 
+from trader.infra.market_data import observations
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import SecurityMasterSourceHealth
 from trader.infra.revisions import ValueRevision
@@ -27,18 +27,6 @@ _SOURCE = "exchange_security_master"
 _CONTRACT_VERSION = "exchange-security-master"
 _SUPPORTED_BOARDS = frozenset({"main", "chinext", "star"})
 _SUPPORTED_EXCHANGES = frozenset({"SSE", "SZSE"})
-
-
-@dataclass(frozen=True)
-class ExchangeSecurityMasterListing:
-    code: str
-    name: str
-    listing_date: date
-    board: str
-    exchange: str
-
-
-ListingFetcher = Callable[[float], Sequence[ExchangeSecurityMasterListing]]
 
 
 class OfficialGetFunction(Protocol):
@@ -55,8 +43,8 @@ class OfficialGetFunction(Protocol):
 class _RequiredClientOptions(TypedDict):
     timeout_seconds: float
     wall_clock: Callable[[], datetime]
-    sse_fetcher: ListingFetcher
-    szse_fetcher: ListingFetcher
+    sse_fetcher: observations.ListingFetcher
+    szse_fetcher: observations.ListingFetcher
 
 
 class _OptionalClientOptions(TypedDict, total=False):
@@ -85,7 +73,7 @@ class ExchangeSecurityMasterClient:
             raise ValueError("exchange security master timeout must be positive")
         if minimum_rows <= 0:
             raise ValueError("exchange security master minimum rows must be positive")
-        self._revisions = ValueRevision[tuple[ExchangeSecurityMasterListing, ...]](_CONTRACT_VERSION)
+        self._revisions = ValueRevision[tuple[observations.ExchangeSecurityMasterListing, ...]](_CONTRACT_VERSION)
         self._timeout_seconds = float(timeout_seconds)
         self._minimum_rows = minimum_rows
         self._sse_fetcher = options["sse_fetcher"]
@@ -180,11 +168,11 @@ class ExchangeSecurityMasterClient:
 
 
 def _validate_snapshot(
-    listings: Sequence[ExchangeSecurityMasterListing],
+    listings: Sequence[observations.ExchangeSecurityMasterListing],
     minimum_rows: int,
     observed_at: datetime,
-) -> tuple[ExchangeSecurityMasterListing, ...]:
-    by_code: dict[str, ExchangeSecurityMasterListing] = {}
+) -> tuple[observations.ExchangeSecurityMasterListing, ...]:
+    by_code: dict[str, observations.ExchangeSecurityMasterListing] = {}
     local_date = observed_at.astimezone(_SHANGHAI).date()
     invalid = False
     for listing in listings:
@@ -209,7 +197,7 @@ def _validate_snapshot(
 
 
 def _to_observation(
-    listing: ExchangeSecurityMasterListing,
+    listing: observations.ExchangeSecurityMasterListing,
     *,
     observed_at: datetime,
     received_at: datetime,
@@ -240,7 +228,7 @@ def _to_observation(
 
 def fetch_sse_listings(
     timeout_seconds: float, *, get: OfficialGetFunction
-) -> tuple[ExchangeSecurityMasterListing, ...]:
+) -> tuple[observations.ExchangeSecurityMasterListing, ...]:
     headers = {
         "Host": "query.sse.com.cn",
         "Pragma": "no-cache",
@@ -250,7 +238,7 @@ def fetch_sse_listings(
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
         ),
     }
-    listings: list[ExchangeSecurityMasterListing] = []
+    listings: list[observations.ExchangeSecurityMasterListing] = []
     for stock_type, board in (("1", "main"), ("8", "star")):
         response = _official_get(
             _SSE_URL,
@@ -283,7 +271,7 @@ def fetch_sse_listings(
             if not isinstance(raw, Mapping):
                 raise ValueError("SSE security master row shape is invalid")
             listings.append(
-                ExchangeSecurityMasterListing(
+                observations.ExchangeSecurityMasterListing(
                     code=_code(raw.get("A_STOCK_CODE")),
                     name=str(raw.get("SEC_NAME_CN") or "").strip(),
                     listing_date=_date_value(raw.get("LIST_DATE")),
@@ -296,7 +284,7 @@ def fetch_sse_listings(
 
 def fetch_szse_listings(
     timeout_seconds: float, *, get: OfficialGetFunction
-) -> tuple[ExchangeSecurityMasterListing, ...]:
+) -> tuple[observations.ExchangeSecurityMasterListing, ...]:
     response = _official_get(
         _SZSE_URL,
         get=get,
@@ -335,7 +323,7 @@ def fetch_szse_listings(
             indices = {name: headers.index(name) for name in required}
         except ValueError as exc:
             raise ValueError("SZSE security master workbook columns are invalid") from exc
-        listings: list[ExchangeSecurityMasterListing] = []
+        listings: list[observations.ExchangeSecurityMasterListing] = []
         for row in rows:
             code = _code(row[indices["A股代码"]])
             if not code:
@@ -344,7 +332,7 @@ def fetch_szse_listings(
             if board is None:
                 continue
             listings.append(
-                ExchangeSecurityMasterListing(
+                observations.ExchangeSecurityMasterListing(
                     code=code,
                     name=str(row[indices["A股简称"]] or "").strip(),
                     listing_date=_date_value(row[indices["A股上市日期"]]),
@@ -437,5 +425,4 @@ def _percentile(values: Sequence[float], quantile: float) -> float | None:
 
 __all__ = [
     "ExchangeSecurityMasterClient",
-    "ExchangeSecurityMasterListing",
 ]

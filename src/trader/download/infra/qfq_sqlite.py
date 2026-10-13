@@ -170,9 +170,9 @@ class SQLiteQfqWindowCache:
                         verified = False
                         dates: tuple[date, ...] = ()
                         try:
-                            stored_dates: object = json.loads(dates_json)
-                            if isinstance(stored_dates, list) and all(isinstance(day, str) for day in stored_dates):
-                                dates = tuple(date.fromisoformat(day) for day in stored_dates)
+                            decoded_dates: object = json.loads(dates_json)
+                            if isinstance(decoded_dates, list) and all(isinstance(day, str) for day in decoded_dates):
+                                dates = tuple(date.fromisoformat(day) for day in decoded_dates)
                                 row_dates = tuple(date.fromisoformat(day) for day, _payload in rows)
                                 verified = (
                                     bool(rows)

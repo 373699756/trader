@@ -168,7 +168,7 @@ def test_active_paths_use_stable_business_responsibilities() -> None:
 
 def test_storage_responsibility_naming_rule_is_authoritative() -> None:
     collaboration_rules = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    design = (ROOT / "docs/02_工程设计.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs/2_工程设计.md").read_text(encoding="utf-8")
 
     assert "不得使用 `store`、`stored` 或 `*Store`" in collaboration_rules
     assert "Repository" in collaboration_rules

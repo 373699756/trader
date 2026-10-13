@@ -10,7 +10,7 @@ from trader.download.infra.exchange_security_universe import (
     load_current_a_share_universe,
     select_st_eligible_universe,
 )
-from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterListing
+from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 
 
 def _listings(exchange: str) -> tuple[ExchangeSecurityMasterListing, ...]:

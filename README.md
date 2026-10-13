@@ -246,10 +246,10 @@ final_score = clamp(local_score * 0.68
 - DeepSeek 每日物理请求全局硬上限为 168。
 
 产品、架构、运行、API 与运维契约见
-[工程设计](docs/02_工程设计.md)，候选、过滤、评分、DeepSeek、融合与
-TopK 契约见[荐股策略文档](docs/01_评分逻辑.md)，协作与强制 review 流程见
+[工程设计](docs/2_工程设计.md)，候选、过滤、评分、DeepSeek、融合与
+TopK 契约见[荐股策略文档](docs/1_评分逻辑.md)，协作与强制 review 流程见
 [AGENTS.md](AGENTS.md)。历史数据下载、Tomorrow 训练和训练工件参与实时荐股的完整说明见
-[下载训练文档](docs/04_下载训练.md)。
+[下载训练文档](docs/4_下载训练.md)。
 
 ## 质量检查
 

@@ -6,11 +6,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> None:
-    strategy = " ".join((ROOT / "docs/01_评分逻辑.md").read_text(encoding="utf-8").split())
+    strategy = " ".join((ROOT / "docs/1_评分逻辑.md").read_text(encoding="utf-8").split())
     models = (ROOT / "src/trader/training/application/shadow_model_report.py").read_text(encoding="utf-8")
-    scoring = (ROOT / "src/trader/training/application/shadow_model_evaluation.py").read_text(
-        encoding="utf-8"
-    )
+    scoring = (ROOT / "src/trader/training/application/shadow_model_evaluation.py").read_text(encoding="utf-8")
     artifacts = (ROOT / "src/trader/training/infra/research/shadow_model_artifacts.py").read_text(encoding="utf-8")
     combined = models + scoring + artifacts
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -36,9 +34,7 @@ def test_batch_three_contract_freezes_walk_forward_models_and_calibration() -> N
 def test_shadow_model_modules_remain_outside_production_and_io_boundaries() -> None:
     bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8").lower()
     application = (
-        (ROOT / "src/trader/training/application/shadow_model_evaluation.py")
-        .read_text(encoding="utf-8")
-        .lower()
+        (ROOT / "src/trader/training/application/shadow_model_evaluation.py").read_text(encoding="utf-8").lower()
     )
     domain = (ROOT / "src/trader/training/domain/evaluation/shadow_calibration.py").read_text(encoding="utf-8").lower()
     lightgbm = (ROOT / "src/trader/training/infra/research/lightgbm_shadow.py").read_text(encoding="utf-8").lower()

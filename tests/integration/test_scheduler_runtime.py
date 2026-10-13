@@ -1841,8 +1841,8 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
     second_entered = threading.Event()
     release_first = threading.Event()
     release_second = threading.Event()
-    observed_at = datetime(2026, 8, 11, 14, 49, 30, tzinfo=SHANGHAI)
-    freeze_at = observed_at.replace(minute=50, second=0)
+    observed_at = datetime(2026, 8, 11, 14, 59, 30, tzinfo=SHANGHAI)
+    freeze_at = observed_at.replace(hour=15, minute=0, second=0)
 
     class BlockingBothDecisions(Decisions):
         def build_local(self, request: CycleRequest):
@@ -1913,7 +1913,7 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
             ScheduledPipelineTask(
                 PipelineTask.FREEZE,
                 freeze_at,
-                MarketPhase.FINAL_REVIEW,
+                MarketPhase.AFTER_CLOSE,
                 (Strategy.TOMORROW.value,),
                 SchedulePoint.AFTERNOON_FREEZE,
             )
@@ -2293,8 +2293,8 @@ def test_afternoon_schedule_keeps_tomorrow_d25_and_long_active() -> None:
 
 
 def test_expected_late_publish_rejection_after_freeze_is_not_a_runtime_error() -> None:
-    before_freeze = datetime(2026, 8, 11, 14, 49, 59, tzinfo=SHANGHAI)
-    after_freeze = datetime(2026, 8, 11, 14, 50, 1, tzinfo=SHANGHAI)
+    before_freeze = datetime(2026, 8, 11, 14, 59, 59, tzinfo=SHANGHAI)
+    after_freeze = datetime(2026, 8, 11, 15, 0, 1, tzinfo=SHANGHAI)
     index = UnifiedDecisionIndex()
     fixture = decision(Strategy.TOMORROW, sequence=1)
     fixture_quote = fixture.items[0].quote

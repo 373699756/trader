@@ -35,7 +35,7 @@ def _policy():
 
 
 def test_zero_input_stages_are_not_ready_instead_of_completed() -> None:
-    for stage in PIPELINE_STAGES[:9]:
+    for stage in PIPELINE_STAGES:
         output = stage_output(
             stage,
             (),

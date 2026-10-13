@@ -55,7 +55,9 @@ def test_local_risk_is_config_driven_auditable_and_stable(application_feature_fa
     second = derive_local_risk_facts(refreshed, later, {rule.risk_code: rule}, strategy=Strategy.TOMORROW)
 
     assert first[0].risk_fact_id == second[0].risk_fact_id
-    assert first[0].risk_fact_id.startswith("risk_")
+    changed = replace(feature, values={**feature.values, "custom_risk": 0.9})
+    changed_facts = derive_local_risk_facts(changed, now, {rule.risk_code: rule}, strategy=Strategy.TOMORROW)
+    assert first[0].risk_fact_id != changed_facts[0].risk_fact_id
     assert first[0].actual == 0.75
     assert first[0].threshold == ">= 0.75"
     assert first[0].source == feature.quote.source

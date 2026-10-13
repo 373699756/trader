@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-DESIGN = ROOT / "docs" / "02_工程设计.md"
+DESIGN = ROOT / "docs" / "2_工程设计.md"
 DECISION_EVENTS = (
     ROOT / "src" / "trader" / "recommendation" / "application" / "pipeline" / "freeze_publish" / "decision_events.py"
 )
@@ -31,6 +31,5 @@ def test_committed_event_is_application_owned_and_research_free() -> None:
 
     assert "DecisionCommitted" in classes
     assert all(
-        not name.startswith(("trader.training.domain.evaluation", "trader.training.application"))
-        for name in imports
+        not name.startswith(("trader.training.domain.evaluation", "trader.training.application")) for name in imports
     )

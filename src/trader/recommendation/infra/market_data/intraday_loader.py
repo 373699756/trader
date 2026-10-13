@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
 
@@ -14,14 +14,6 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import CacheIdentity
-from trader.recommendation.infra.market_data.market_cache_identity import (
-    _add_action_restriction,
-    _minute_version,
-    _source_batch_identity,
-)
-from trader.recommendation.infra.market_data.provider_ports import IntradaySource
-from trader.recommendation.infra.market_data.market_feature_cache_entries import _IntradayEntry
-from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.infra.workers import (
     WorkerExecutor,
     injected_executor,
@@ -29,6 +21,14 @@ from trader.infra.workers import (
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
+from trader.recommendation.infra.market_data.market_cache_identity import (
+    _add_action_restriction,
+    _minute_version,
+    _source_batch_identity,
+)
+from trader.recommendation.infra.market_data.market_feature_cache_entries import _IntradayEntry
+from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.provider_ports import IntradaySource
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -53,6 +53,7 @@ class _IntradayLoadRequest:
     codes: tuple[str, ...]
     observed_at: datetime
     action_restrictions: dict[str, set[str]] | None
+    deadline: float
 
 
 @dataclass
@@ -103,7 +104,9 @@ class IntradayLoader:
         *,
         action_restrictions: dict[str, set[str]] | None = None,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
-        request = _IntradayLoadRequest(tuple(codes), observed_at, action_restrictions)
+        request = _IntradayLoadRequest(
+            tuple(codes), observed_at, action_restrictions, self._monotonic() + self._batch_timeout_seconds
+        )
         source_lanes = self._runner.source_lanes
         if source_lanes is not None and not source_lanes.owns_current_thread("eastmoney_intraday"):
             return self._load_via_source_lane(request)
@@ -121,13 +124,11 @@ class IntradayLoader:
             "eastmoney_intraday",
             identity,
             request.observed_at,
-            self.load,
-            request.codes,
-            request.observed_at,
-            action_restrictions=lane_restrictions,
+            self._load_local,
+            replace(request, action_restrictions=lane_restrictions),
         )
         try:
-            lane_result = lane_future.result(timeout=self._batch_timeout_seconds)
+            lane_result = lane_future.result(timeout=max(0.0, request.deadline - self._monotonic()))
         except FutureTimeoutError:
             lane_future.cancel()
             return self._intraday_timeout_fallback(request)
@@ -165,6 +166,8 @@ class IntradayLoader:
         self,
         request: _IntradayLoadRequest,
     ) -> Mapping[str, tuple[MinuteBar, ...]]:
+        if self._monotonic() >= request.deadline:
+            return self._intraday_timeout_fallback(request)
         now = self._monotonic()
         result = self._shared_cached_intraday(request)
         state = _IntradayLoadState(request, result, {})
@@ -210,7 +213,7 @@ class IntradayLoader:
         missing: Sequence[str],
     ) -> None:
         source_lanes = self._runner.source_lanes
-        batch_deadline = self._monotonic() + self._batch_timeout_seconds
+        batch_deadline = state.request.deadline
         nested_inline = source_lanes is not None and source_lanes.owns_current_thread("eastmoney_intraday")
         pool = injected_executor(self._runner.worker_pool, inline=nested_inline)
         futures, timed_out, deferred = self._submit_intraday(

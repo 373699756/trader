@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-STRATEGY = ROOT / "docs/01_评分逻辑.md"
+STRATEGY = ROOT / "docs/1_评分逻辑.md"
 ACTIVE_CODE_ROOTS = (ROOT / "src" / "trader", ROOT / "scripts")
 
 

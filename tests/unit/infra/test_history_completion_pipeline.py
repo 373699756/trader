@@ -189,8 +189,10 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
 
     opened_months = []
     checkpoint_sizes = []
+    write_sizes = []
     open_session = HistoryMonthPrices.open_write_session
     finish = HistoryDownloadIndex.finish
+    commit = HistoryDirectPrices.commit_pipeline
 
     def tracked_open(month):
         opened_months.append(1)
@@ -200,8 +202,14 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
         checkpoint_sizes.append(len(completions))
         return finish(index, completions)
 
+    def tracked_commit(prices, results):
+        outcome = commit(prices, results)
+        write_sizes.append(len(results))
+        return outcome
+
     monkeypatch.setattr(HistoryMonthPrices, "open_write_session", tracked_open)
     monkeypatch.setattr(HistoryDownloadIndex, "finish", tracked_finish)
+    monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", tracked_commit)
     with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
         result = run_history_sync(
             _configuration(tmp_path),
@@ -215,7 +223,10 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
     assert opened_months == [1]
     assert sum(checkpoint_sizes) == 40
     assert len(checkpoint_sizes) < 40
-    assert all(size > 1 for size in checkpoint_sizes)
+    # Network completion may leave a singleton tail; each write batch still has one checkpoint.
+    assert checkpoint_sizes == write_sizes
+    assert all(1 <= size <= 64 for size in checkpoint_sizes)
+    assert any(size > 1 for size in checkpoint_sizes)
 
 
 @pytest.mark.parametrize("failure", [OSError("disk_full"), KeyboardInterrupt()])

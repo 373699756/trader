@@ -6,10 +6,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_research() -> None:
-    design = (PROJECT_ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
-    strategy = (PROJECT_ROOT / "docs" / "01_评分逻辑.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "2_工程设计.md").read_text(encoding="utf-8")
+    strategy = (PROJECT_ROOT / "docs" / "1_评分逻辑.md").read_text(encoding="utf-8")
 
-    assert "交付状态只由 `03_工程实施.md` 维护" in design
+    assert "交付状态只由 `3_工程实施.md` 维护" in design
     assert "当前交付状态：current-only 工程与发布门禁验收已闭合" not in design
     assert "已实施实时与降级基线" not in design
     assert "当前唯一桌面界面" in design
@@ -24,7 +24,7 @@ def test_authorities_separate_implemented_realtime_work_from_inactive_strategy_r
 
 
 def test_authority_fixes_real_production_and_browser_budgets() -> None:
-    authority = (PROJECT_ROOT / "docs" / "02_工程设计.md").read_text(encoding="utf-8")
+    authority = (PROJECT_ROOT / "docs" / "2_工程设计.md").read_text(encoding="utf-8")
 
     assert "5500 行标准化 250ms、两源合并 600ms、统一快照可读 900ms" in authority
     assert "720 行最坏候选并集 报价投影 100ms" in " ".join(authority.split())

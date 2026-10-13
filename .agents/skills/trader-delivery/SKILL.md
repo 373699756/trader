@@ -11,7 +11,7 @@ Deliver one repository change without reopening a known failure or regressing an
 
 1. Follow the repository `AGENTS.md`; this skill adds routing and evidence requirements but does not duplicate or override it.
 2. Record the current branch, its upstream relationship, staged and unstaged files, and the exact task file scope before editing. Preserve unrelated user changes.
-3. Read the applicable authority before planning: `docs/01_评分逻辑.md` owns scoring and profit-validation rules; `docs/02_工程设计.md` owns product, architecture, timeline, runtime, API/Web, operations and acceptance; `docs/04_下载训练.md` owns download, historical data, training artifacts and replay engineering. `docs/03_工程实施.md` is the only active progress and evidence ledger. Follow `docs/README.md` for navigation; do not recreate retired blueprint or Changelog owners.
+3. Read the applicable authority before planning: `docs/1_评分逻辑.md` owns scoring and profit-validation rules; `docs/2_工程设计.md` owns product, architecture, timeline, runtime, API/Web, operations and acceptance; `docs/4_下载训练.md` owns download, historical data, training artifacts and replay engineering. `docs/3_工程实施.md` is the only active progress and evidence ledger. Follow `docs/README.md` for navigation; do not recreate retired blueprint or Changelog owners.
 4. Read [the change-impact matrix](references/change-impact-matrix.md), select every affected row, and include its downstream consumers and proportionate evidence. A cross-boundary plan that names only the edited module is incomplete.
 
 ## Plan and implement

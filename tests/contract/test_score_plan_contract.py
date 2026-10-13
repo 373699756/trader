@@ -11,8 +11,8 @@ def _compact(path: Path) -> str:
 
 
 def test_historical_only_score_validation_is_the_authoritative_route() -> None:
-    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
-    design = _compact(ROOT / "docs/02_工程设计.md")
+    strategy = _compact(ROOT / "docs/1_评分逻辑.md")
+    design = _compact(ROOT / "docs/2_工程设计.md")
 
     for token in (
         "所有评分策略验证只使用历史 point-in-time 数据",
@@ -60,7 +60,7 @@ def test_forward_score_validation_owners_and_commands_are_retired() -> None:
 
 
 def test_remaining_offline_research_is_historical_and_production_isolated() -> None:
-    design = _compact(ROOT / "docs/02_工程设计.md")
+    design = _compact(ROOT / "docs/2_工程设计.md")
     research_sources = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (
@@ -75,12 +75,12 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
     assert "download" in design
     assert "train-v3" in design
-    training = _compact(ROOT / "docs/04_下载训练.md")
+    training = _compact(ROOT / "docs/4_下载训练.md")
     assert "不接入HTTP、SSE、生产调度或活动数据库" in training
 
 
 def test_p2_historical_rejection_and_manual_production_override_remain_explicit() -> None:
-    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
+    strategy = _compact(ROOT / "docs/1_评分逻辑.md")
 
     for token in (
         "historical_rejected",
@@ -104,8 +104,8 @@ def test_p2_historical_rejection_and_manual_production_override_remain_explicit(
 
 
 def test_historical_evidence_does_not_create_a_running_collection_gate() -> None:
-    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
-    design = _compact(ROOT / "docs/02_工程设计.md")
+    strategy = _compact(ROOT / "docs/1_评分逻辑.md")
+    design = _compact(ROOT / "docs/2_工程设计.md")
     holdout = _compact(SOURCE / "training/application/tomorrow_point_in_time_holdout.py")
 
     for token in (
@@ -120,8 +120,8 @@ def test_historical_evidence_does_not_create_a_running_collection_gate() -> None
 
 
 def test_tomorrow_score_is_separate_from_the_cost_aware_execution_gate() -> None:
-    strategy = _compact(ROOT / "docs/01_评分逻辑.md")
-    design = _compact(ROOT / "docs/02_工程设计.md")
+    strategy = _compact(ROOT / "docs/1_评分逻辑.md")
+    design = _compact(ROOT / "docs/2_工程设计.md")
 
     for token in (
         "`no_positive_net_utility`",
