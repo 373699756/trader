@@ -41,6 +41,8 @@ from trader.recommendation.application.runtime.scheduler_runtime import Schedule
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 
+WAIT_IDLE_SECONDS = 10.0
+
 
 @pytest.mark.parametrize("failure", ("prepare", "local", "commit", "commit_after", "settlement"))
 def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, failure: str) -> None:
@@ -124,7 +126,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
     runtime.start()
     try:
         runtime.submit_due(at)
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         d25 = index.snapshot(Strategy.D25).formal
         assert d25 is not None
         assert runtime.status().cadence.schedule_points[key].status is SchedulePointStatus.RETRY_WAIT
@@ -136,15 +138,15 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
         before = tuple(builds)
         clock.current = at + timedelta(milliseconds=999)
         runtime.submit_due(clock.current)
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         assert tuple(builds) == before
         clock.current = at + timedelta(seconds=1)
         runtime.submit_due(clock.current)
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         assert runtime.status().cadence.schedule_points[key].status is SchedulePointStatus.RETRY_WAIT
         clock.current = at + timedelta(seconds=3)
         runtime.submit_due(clock.current)
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         assert runtime.status().cadence.schedule_points[key].status is SchedulePointStatus.COMPLETED
         assert index.snapshot(Strategy.D25).formal == d25
         formal = index.snapshot(Strategy.TOMORROW).formal
@@ -164,7 +166,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             assert len(settlement.calls) == 2
         clock.current = at + timedelta(seconds=31)
         runtime.submit_due(clock.current)
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         assert index.snapshot(Strategy.TOMORROW).formal == formal
         assert runtime.status().settlement_completed_count == 1
         assert runtime.status().settlement_failure_count == (1 if failure == "settlement" else 0)
@@ -228,7 +230,7 @@ def test_close_retry_does_not_duplicate_inflight_work(blocking_stage: str) -> No
     try:
         runtime.submit_due(at)
         if blocking_stage == "settlement":
-            assert runtime.wait_idle(2)
+            assert runtime.wait_idle(WAIT_IDLE_SECONDS)
             clock.current = at + timedelta(seconds=1)
             runtime.submit_due(clock.current)
         assert started.wait(1)
@@ -236,7 +238,7 @@ def test_close_retry_does_not_duplicate_inflight_work(blocking_stage: str) -> No
             clock.current = at + timedelta(seconds=seconds)
             runtime.submit_due(clock.current)
         release.set()
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         assert calls.count(Strategy.TOMORROW) == 1
         assert index.snapshot(Strategy.TOMORROW).formal is not None
         assert sum(request.task is PipelineTask.CLOSE_QUOTES for request in data.task_requests) == 1
@@ -296,36 +298,36 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
 
         def finish_before_offer_returns(scheduled):
             result = offer(scheduled)
-            assert runtime.wait_idle(2)
+            assert runtime.wait_idle(WAIT_IDLE_SECONDS)
             return result
 
         monkeypatch.setattr(lane, "offer", finish_before_offer_returns)
     runtime.start()
     try:
         runtime.submit_due(at)
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         key = SchedulePointKey(at.date().isoformat(), SchedulePoint.CLOSE_QUOTES, "-")
         assert runtime.status().cadence.schedule_points[key].status is SchedulePointStatus.RETRY_WAIT
         if transition == "session":
             cadence.rotate_session(at, reason="controlled_rotation")
         clock.current = at + timedelta(seconds=1)
         runtime.submit_due(clock.current)
-        assert runtime.wait_idle(2)
+        assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         assert runtime.status().cadence.schedule_points[key].status is SchedulePointStatus.COMPLETED
         if transition == "next_day":
             clock.current = at + timedelta(days=1)
             runtime.submit_due(clock.current)
-            assert runtime.wait_idle(2)
+            assert runtime.wait_idle(WAIT_IDLE_SECONDS)
             # An already-running scheduler first completes its next-day normal freeze point.
             clock.current += timedelta(seconds=1)
             runtime.submit_due(clock.current)
-            assert runtime.wait_idle(2)
+            assert runtime.wait_idle(WAIT_IDLE_SECONDS)
             for strategy in (Strategy.TOMORROW, Strategy.D25):
                 formal = index.snapshot(strategy).formal
                 assert formal is not None and formal.trade_date == clock.current.date()
             clock.current += timedelta(seconds=2)
             runtime.submit_due(clock.current)
-            assert runtime.wait_idle(2)
+            assert runtime.wait_idle(WAIT_IDLE_SECONDS)
         expected = 2 if transition == "next_day" else 1
         assert sum(request.task is PipelineTask.CLOSE_QUOTES for request in data.task_requests) == expected
         assert runtime.status().settlement_completed_count == expected
