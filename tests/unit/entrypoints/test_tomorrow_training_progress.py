@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-from trader.training.application.tomorrow_training import (
-    TomorrowTrainingPartitionValidationProgress,
-    TomorrowTrainingProgress,
-)
+from trader.training.application.tomorrow_training import TomorrowTrainingProgress
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
 
 
@@ -15,22 +12,6 @@ class _Clock:
         return next(self._values)
 
 
-def test_logical_snapshot_validation_reports_actual_rows(capsys) -> None:
-    output = StderrTomorrowTrainingProgress(monotonic=_Clock(100.0, 100.0), start_heartbeat=False)
-    output.publish(
-        TomorrowTrainingProgress(
-            "partition_validation",
-            "running",
-            0,
-            2,
-            partition_validation=TomorrowTrainingPartitionValidationProgress(1, 2, 512, 1000, "logical"),
-        )
-    )
-    line = capsys.readouterr().err
-    assert "逻辑内容 512/1000 行" in line
-    assert "MiB" not in line
-
-
 def test_training_progress_prints_real_rows_percent_duration_and_no_rss(capsys) -> None:
     output = StderrTomorrowTrainingProgress(monotonic=_Clock(100.0, 100.0, 854.0), start_heartbeat=False)
 
@@ -40,7 +21,7 @@ def test_training_progress_prints_real_rows_percent_duration_and_no_rss(capsys) 
     lines = capsys.readouterr().err.splitlines()
     assert lines == [
         "00:00:00 | 资源预检 | 1/1 (100.00%) | 完成 | 阶段耗时 00:00:00 | 计算线程 2 | 峰值 RSS 上限 2048 MiB",
-        "00:12:34 | 历史行转换 | 850/5453 (15.59%) | 运行中 | 阶段耗时 00:00:00 | 已生成样本 612",
+        "00:12:34 | 历史读取与训练样本生成 | 850/5453 (15.59%) | 运行中 | 阶段耗时 00:00:00 | 已生成样本 612",
     ]
 
 
@@ -50,38 +31,18 @@ def test_training_progress_throttles_advances_but_emits_stage_boundaries(capsys)
         start_heartbeat=False,
     )
 
-    output.publish(TomorrowTrainingProgress("partition_validation", "started", 0, 100))
-    output.publish(TomorrowTrainingProgress("partition_validation", "running", 1, 100))
-    output.publish(TomorrowTrainingProgress("partition_validation", "running", 25, 100))
-    output.publish(TomorrowTrainingProgress("partition_validation", "completed", 100, 100))
+    output.publish(TomorrowTrainingProgress("history_conversion", "started", 0, 100))
+    output.publish(TomorrowTrainingProgress("history_conversion", "running", 1, 100))
+    output.publish(TomorrowTrainingProgress("history_conversion", "running", 25, 100))
+    output.publish(TomorrowTrainingProgress("history_conversion", "completed", 100, 100))
 
     assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | 输入分片校验 | 0/100 (0.00%) | 开始 | 阶段耗时 00:00:00",
-        "00:00:10 | 输入分片校验 | 1/100 (1.00%) | 运行中 | 阶段耗时 00:00:10",
-        "00:00:31 | 输入分片校验 | 25/100 (25.00%) | 运行中 | 阶段耗时 00:00:31",
-        "00:00:32 | 输入分片校验 | 100/100 (100.00%) | 完成 | 阶段耗时 00:00:32",
+        "00:00:00 | 历史读取与训练样本生成 | 0/100 (0.00%) | 开始 | 阶段耗时 00:00:00 | 已生成样本 0",
+        "00:00:10 | 历史读取与训练样本生成 | 1/100 (1.00%) | 运行中 | 阶段耗时 00:00:10 | 已生成样本 0",
+        "00:00:31 | 历史读取与训练样本生成 | 25/100 (25.00%) | 运行中 | 阶段耗时 00:00:31 | 已生成样本 0",
+        "00:00:32 | 历史读取与训练样本生成 | 100/100 (100.00%) | 完成 | 阶段耗时 00:00:32 | 已生成样本 0",
     ]
-    assert output.stage_durations == (("partition_validation", 32.0),)
-
-
-def test_training_progress_shows_current_partition_hash_bytes(capsys) -> None:
-    output = StderrTomorrowTrainingProgress(monotonic=_Clock(100.0, 100.0), start_heartbeat=False)
-
-    output.publish(
-        TomorrowTrainingProgress(
-            "partition_validation",
-            "running",
-            0,
-            100,
-            partition_validation=TomorrowTrainingPartitionValidationProgress(
-                1, 100, 128 * 1024**2, 512 * 1024**2, "hash"
-            ),
-        )
-    )
-
-    assert capsys.readouterr().err.splitlines() == [
-        "00:00:00 | 输入分片校验 | 0/100 (0.00%) | 运行中 | 阶段耗时 00:00:00 | 当前分片 1/100 SHA-256 128.0/512.0 MiB"
-    ]
+    assert output.stage_durations == (("history_conversion", 32.0),)
 
 
 def test_training_progress_prints_compact_blocked_and_cancelled_results(capsys) -> None:

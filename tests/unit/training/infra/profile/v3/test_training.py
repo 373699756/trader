@@ -23,7 +23,7 @@ from trader.training.infra.engine import (
     _mature_label_cutoff,
     _training_contract_hash,
 )
-from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
+from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.model_fitting import RidgeFittingParameters, fit_industry_models
 from trader.training.infra.profile.v2.training import run_v2_training as _run_v2_training
 from trader.training.infra.profile.v3.contracts import (
@@ -109,7 +109,6 @@ def _cadence_archive(archive_root: Path) -> SimpleNamespace:
         archive_root=archive_root,
         active_snapshot=SimpleNamespace(partitions=(object(), object())),
         describe_frozen_daily_input=lambda: descriptor,
-        verify_partitions=lambda _progress=None: None,
         training_row_upper_bound=lambda _dates: 0,
         has_industry_window=lambda _dates, _sessions, **_kwargs: True,
         industry_sample_upper_bounds=lambda *_args: (("fixture", 100_000),),
@@ -180,10 +179,9 @@ def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, m
     assert all(head.failure_reasons == ("profile_training_rows_empty",) for head in retry.heads)
 
 
-def test_missing_industry_in_fit_split_blocks_before_price_validation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_missing_industry_in_fit_split_blocks_before_history_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     archive = _cadence_archive(tmp_path / "history")
     archive.has_industry_window = lambda _dates, _sessions, **kwargs: kwargs.get("anchor_dates") is None
-    archive.verify_partitions = lambda *_args: pytest.fail("preflight must run before expensive price validation")
     _patch_archive(monkeypatch, archive)
     result = run_tomorrow_training(tmp_path / "history", tmp_path / "train")
     assert result.status == "blocked"
@@ -227,28 +225,17 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     if failure is sqlite3.OperationalError:
         assert all(head.failure_reasons == ("training_database_failed",) for head in first.heads)
 
-    def reject_changed_input(_progress):
-        raise HistoryTrainingInputError("history_training_data_incomplete")
-
-    archive.verify_partitions = reject_changed_input
-    monkeypatch.setattr(
-        "trader.training.infra.engine.fit_industry_models",
-        lambda *_args, **_kwargs: pytest.fail("cached samples cannot bypass input verification"),
-    )
-    invalid = run_training(tmp_path / "history", tmp_path / "train")
-    assert all(head.failure_reasons == ("history_training_data_incomplete",) for head in invalid.heads)
-    assert builds == 1
-
     def fit(_samples, _split, contract, algorithm, *_args, **_kwargs):
         return ({"银行": _industry_model(len(contract.feature_positions), algorithm)}, 1, 1)
 
     monkeypatch.setattr("trader.training.infra.engine.fit_industry_models", fit)
     monkeypatch.setattr("trader.training.infra.engine.publish_head_bundle", lambda *_args: None)
-    verified = []
-    archive.verify_partitions = lambda _progress: verified.append(True)
+    monkeypatch.setattr(
+        "trader.training.infra.engine.build_training_samples",
+        lambda _request: pytest.fail("complete sample cache must skip the history scan"),
+    )
     second = run_training(tmp_path / "history", tmp_path / "train")
     assert second.status == "engineering_ready" and builds == 1
-    assert verified == [True]
     assert not (tmp_path / "train" / profile / ".sample-cache/samples.sqlite3").exists()
 
 
@@ -264,12 +251,11 @@ def test_provably_insufficient_industry_rows_fail_before_build(tmp_path: Path, m
     assert result.failure_reasons == ("history_industry_training_rows_insufficient",)
 
 
-def test_training_rejects_insufficient_industry_history_before_partition_scan(
+def test_training_rejects_insufficient_industry_history_before_sample_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _cadence_archive(tmp_path / "history")
     archive.has_industry_window = lambda _dates, _sessions: False
-    archive.verify_partitions = lambda _progress=None: pytest.fail("industry preflight must precede partition hashes")
     _patch_archive(monkeypatch, archive)
     monkeypatch.setattr(
         "trader.training.infra.engine.build_training_samples",
@@ -283,19 +269,10 @@ def test_training_rejects_insufficient_industry_history_before_partition_scan(
     assert result.model_hash == result.report_hash == ""
 
 
-def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequentially(
+def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive = _cadence_archive(tmp_path / "history")
-    verify_calls = 0
-
-    def verify(progress=None) -> None:
-        nonlocal verify_calls
-        verify_calls += 1
-        if progress is not None:
-            progress(2, 2, 1, 100, 100, "row_count")
-
-    archive.verify_partitions = verify
     _patch_archive(monkeypatch, archive)
     scan_calls = 0
 
@@ -339,9 +316,7 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
     assert result.status == "engineering_ready"
-    # The real streaming reader now verifies each month immediately before
-    # consumption. This synthetic builder must not trigger an eager full scan.
-    assert verify_calls == 0 and scan_calls == 1
+    assert scan_calls == 1
     assert fitted == [Strategy.TOMORROW, Strategy.D25]
     assert published == [
         (Strategy.TOMORROW, tmp_path / "train" / "v3" / "tomorrow"),
@@ -353,7 +328,7 @@ def test_v3_training_validates_and_scans_history_once_then_fits_heads_sequential
     repeated = run_v3_training(tmp_path / "history", tmp_path / "train")
 
     assert repeated.status == "engineering_ready"
-    assert verify_calls == 0 and scan_calls == 2
+    assert scan_calls == 2
     assert fitted == [Strategy.TOMORROW, Strategy.D25] * 2
     assert published[2:] == published[:2]
     assert repeated.heads == result.heads

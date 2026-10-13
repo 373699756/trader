@@ -150,50 +150,34 @@ def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(
     monkeypatch.setattr(HistoryControlIndex, "load_state", fail_full_history_read)
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
     assert archive.snapshot.active_snapshot_hash == expected_hash
-    assert archive.count_training_rows(frozenset(dates)) == len(dates)
+    assert len(tuple(archive.iter_training_rows(frozenset(dates)))) == len(dates)
     assert archive.snapshot.label_cutoff == dates[-2]
 
 
-def test_training_input_reports_exact_inspected_rows_from_one_verified_snapshot(
-    tmp_path: Path, prepared_history
-) -> None:
+def test_training_input_streams_rows_from_published_snapshot(tmp_path: Path, prepared_history) -> None:
     archive_root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(archive_root, dates)
     archive = SQLiteHistoryTrainingInputArchive.open(tmp_path / "history")
-    progress: list[tuple[int, int, int, int, int, str]] = []
-
-    archive.verify_partitions(lambda *values: progress.append(values))
-    assert archive.count_training_rows(frozenset(dates)) == 3
     assert archive.training_row_upper_bound(frozenset(dates)) >= 3
-    assert progress[-1][:3] == (1, 1, 1)
+    assert len(tuple(archive.iter_training_rows(frozenset(dates)))) == 3
 
 
-def test_training_cache_reuse_verifies_logical_payloads(tmp_path: Path, monkeypatch, prepared_history) -> None:
+def test_training_reader_uses_narrow_projection_without_rechecking_published_payloads(
+    tmp_path: Path, monkeypatch, prepared_history
+) -> None:
     archive_root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(archive_root, dates)
-    published = HistoryMonthPrices.verify_logical_content.__func__
-    calls: list[HistorySnapshotPartition] = []
-
-    def verify_published(cls, path, reference, progress=None, **kwargs):
-        assert kwargs["validate_payloads"] is True
-        calls.append(reference)
-        return published(cls, path, reference, progress, **kwargs)
-
     monkeypatch.setattr(
         HistoryMonthPrices,
         "verify_logical_content",
-        classmethod(verify_published),
+        classmethod(lambda *_args, **_kwargs: pytest.fail("training must trust the published payload")),
     )
     archive = SQLiteHistoryTrainingInputArchive.open(archive_root)
-    progress: list[tuple[int, int, int, int, int, str]] = []
-
-    archive.verify_partitions(lambda *values: progress.append(values))
-
-    assert archive.count_training_rows(frozenset(dates)) == len(dates)
-    assert calls == list(archive.active_snapshot.partitions)
-    assert {item[-1] for item in progress} == {"logical"}
+    rows = tuple(archive.iter_training_rows(frozenset(dates)))
+    assert len(rows) == len(dates)
+    assert all(row.point is not None for row in rows)
 
 
 def test_training_input_streams_typed_rows_without_per_code_queries(tmp_path: Path, prepared_history) -> None:

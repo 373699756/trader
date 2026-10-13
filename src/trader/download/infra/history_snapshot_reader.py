@@ -9,7 +9,6 @@ import threading
 from collections.abc import Callable, Collection, Iterator
 from dataclasses import dataclass, replace
 from datetime import date
-from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -465,10 +464,8 @@ class HistorySnapshotReader:
         calendar_dates: tuple[date, ...],
         codes: Collection[str],
         progress: Callable[[int], None] | None = None,
-        verification_progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None]
-        | None = None,
     ) -> Iterator[HistoryTrainingRow]:
-        """Stream only the typed fields consumed by training-owned rolling state."""
+        """Trust the published snapshot and stream its narrow training projection."""
 
         dates = tuple(calendar_dates)
         allowed_codes = _training_codes(codes)
@@ -477,15 +474,10 @@ class HistorySnapshotReader:
         processed_rows = 0
         reference_index = self.reference_index(snapshot)
         selected = tuple(item for item in snapshot.partitions if _reference_month(item) in expected_months)
-        total = len(selected)
-        for completed, reference in enumerate(selected, start=1):
+        for reference in selected:
             repository = self._shadow_repository(reference)
             try:
-                report = partial(
-                    _training_verification_progress, verification_progress, completed, total, reference.row_count
-                )
-                report(0)
-                for row in repository.iter_verified_training_rows(reference, report):
+                for row in repository.iter_training_rows(dates[0], dates[-1], snapshot_sequence=reference.sequence):
                     if row.code not in allowed_codes or not dates[0] <= row.trade_date <= dates[-1]:
                         continue
                     processed_rows += 1
@@ -494,10 +486,8 @@ class HistorySnapshotReader:
                     yield _with_training_industry(row, reference_index)
                     if progress is not None and processed_rows % 512 == 0:
                         progress(processed_rows)
-                if verification_progress is not None:
-                    verification_progress(
-                        completed, total, completed, reference.row_count, reference.row_count, "logical"
-                    )
+            except (HistoryMonthPartitionError, OSError, ValueError) as exc:
+                raise HistorySnapshotReadError("history training partition read failed") from exc
             finally:
                 repository.release_read_pages()
         if progress is not None:
@@ -572,17 +562,6 @@ class HistorySnapshotReader:
             year,
             month,
         )
-
-
-def _training_verification_progress(
-    progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None,
-    current: int,
-    total: int,
-    rows: int,
-    completed: int,
-) -> None:
-    if progress is not None:
-        progress(current - 1, total, current, min(completed, rows), rows, "logical")
 
 
 def _training_codes(codes: Collection[str]) -> frozenset[str]:

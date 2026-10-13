@@ -66,11 +66,11 @@ def _revision(code: str, day: date, sequence: int = 1) -> HistoryRevision:
     )
 
 
-def test_training_stream_verifies_consumes_and_releases_each_month(tmp_path: Path, monkeypatch) -> None:
+def test_training_stream_consumes_narrow_rows_and_releases_each_month(tmp_path: Path, monkeypatch) -> None:
     dates = (date(2026, 8, 31), date(2026, 9, 1))
     snapshot = _build_snapshot(tmp_path, tuple(_revision("600001", day) for day in dates))
     events = []
-    consume = HistoryMonthPrices.iter_verified_training_rows
+    consume = HistoryMonthPrices.iter_training_rows
     release = HistoryMonthPrices.release_read_pages
 
     def consuming(self, *args, **kwargs):
@@ -81,11 +81,25 @@ def test_training_stream_verifies_consumes_and_releases_each_month(tmp_path: Pat
         events.append(("release", self._path.stem))
         release(self)
 
-    monkeypatch.setattr(HistoryMonthPrices, "iter_verified_training_rows", consuming)
+    monkeypatch.setattr(HistoryMonthPrices, "iter_training_rows", consuming)
     monkeypatch.setattr(HistoryMonthPrices, "release_read_pages", releasing)
     rows = tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, ("600001",)))
     assert len(rows) == 2
     assert events == [(phase, month) for month in ("08", "09") for phase in ("consume", "release")]
+
+
+def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_path: Path) -> None:
+    day = date(2026, 9, 1)
+    snapshot = _build_snapshot(tmp_path, (_revision("600001", day),))
+    path = tmp_path / snapshot.partitions[0].relative_path
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE daily_records SET payload_json = "
+            "json_set(payload_json, '$.cell.qfq.close_price', 'invalid')"
+        )
+
+    with pytest.raises(HistorySnapshotReadError, match="history training partition read failed"):
+        tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, (day,), ("600001",)))
 
 
 def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryActiveSnapshot:

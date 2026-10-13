@@ -22,7 +22,6 @@ from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
 )
-from trader.download.infra.history_month_partition import HistoryPartitionVerificationPhase
 from trader.download.infra.history_snapshot_reader import (
     HistorySnapshotReader,
     HistorySnapshotReadError,
@@ -134,28 +133,6 @@ class SQLiteHistoryTrainingInputArchive:
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor:
         return self._descriptor
 
-    def verify_partitions(
-        self,
-        progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
-    ) -> None:
-        try:
-            self._archive.verify_snapshot(self._active, progress)
-        except (HistorySnapshotReadError, OSError, ValueError) as exc:
-            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
-
-    def count_training_rows(self, allowed_dates: frozenset[date]) -> int:
-        if not allowed_dates:
-            return 0
-        try:
-            return self._archive.count_range(
-                min(allowed_dates),
-                max(allowed_dates),
-                self._active,
-                codes=self._codes,
-            )
-        except (HistorySnapshotReadError, OSError, ValueError) as exc:
-            raise HistoryTrainingInputError("history_snapshot_unavailable") from exc
-
     def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int:
         if not allowed_dates:
             return 0
@@ -199,8 +176,6 @@ class SQLiteHistoryTrainingInputArchive:
         self,
         allowed_dates: frozenset[date],
         progress: Callable[[int], None] | None = None,
-        verification_progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None]
-        | None = None,
     ) -> Iterator[HistoryTrainingRow]:
         dates = tuple(day for day in self._calendar.open_dates if day in allowed_dates)
         if not dates or frozenset(dates) != allowed_dates:
@@ -211,7 +186,6 @@ class SQLiteHistoryTrainingInputArchive:
                 dates,
                 self._codes,
                 progress,
-                verification_progress,
             )
         except (HistorySnapshotReadError, OSError, ValueError) as exc:
             raise HistoryTrainingInputError("history_snapshot_unavailable") from exc

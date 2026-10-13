@@ -396,5 +396,3 @@ def test_month_partition_rejects_invalid_payload_and_changed_observation(tmp_pat
         connection.execute("UPDATE daily_records SET payload_json='{}'")
     with pytest.raises(HistoryMonthPartitionError):
         HistoryMonthPrices.verify(path, reference)
-    with pytest.raises(HistoryMonthPartitionError):
-        tuple(repository.iter_verified_training_rows(reference))

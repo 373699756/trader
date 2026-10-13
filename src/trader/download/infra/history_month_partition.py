@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import re
 import shutil
@@ -11,7 +10,7 @@ import sqlite3
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
@@ -593,42 +592,6 @@ class HistoryMonthPrices:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("history month training query failed") from exc
-
-    def iter_verified_training_rows(
-        self, reference: HistorySnapshotPartition, progress: Callable[[int], None] | None = None
-    ) -> Iterator[HistoryTrainingRow]:
-        """Validate and consume a snapshot in one pass; reject corrupt content before training can finish."""
-        digest = hashlib.sha256(b"history-logical-prices\n")
-        count = 0
-        for value in self.iter_range(
-            date(self._calendar_year, self._calendar_month, 1),
-            date(self._calendar_year, self._calendar_month, 28).replace(day=1) + timedelta(days=31),
-            snapshot_sequence=reference.sequence,
-        ):
-            key = (
-                value.trade_date.isoformat(),
-                value.code,
-                value.revision_id,
-                value.first_seen_sequence,
-                value.board,
-                value.content_hash,
-            )
-            digest.update(json.dumps(key, ensure_ascii=True, separators=(",", ":")).encode("ascii"))
-            digest.update(b"\n")
-            count += 1
-            raw, qfq = value.cell.unadjusted, value.cell.qfq
-            point = (
-                HistoryTrainingPoint(value.trade_date, qfq.close_price, qfq.amount)
-                if (raw is not None and qfq is not None and raw.trading_status == qfq.trading_status == "trading")
-                else None
-            )
-            yield HistoryTrainingRow(value.code, value.trade_date, value.board, None, point)
-            if progress is not None and count % 512 == 0:
-                progress(count)
-        if digest.hexdigest() != reference.logical_hash or count != reference.row_count:
-            raise HistoryMonthPartitionError("history month logical hash mismatch")
-        if progress is not None:
-            progress(count)
 
     def iter_published_cells(
         self,

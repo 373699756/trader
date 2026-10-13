@@ -326,8 +326,9 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     )
     training = SQLiteHistoryTrainingInputArchive.open(config.archive_root)
     assert training.snapshot.training_codes == ("600001",)
-    assert training.count_training_rows(frozenset(dates)) == len(dates)
-    assert {row.code for row in training.iter_training_rows(frozenset(dates))} == {"600001"}
+    training_rows = tuple(training.iter_training_rows(frozenset(dates)))
+    assert len(training_rows) == len(dates)
+    assert {row.code for row in training_rows} == {"600001"}
     industry_report = audit_archived_historical_industry_facts(config.archive_root)
     assert industry_report.sources[0].sampled_codes == 1
     assert len(industry_report.merged_fact_hashes) == 1

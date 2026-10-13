@@ -57,7 +57,7 @@ def _write_training_memory_evidence(path: Path, training_input_hash: str) -> Non
         "starting_peak_rss_bytes": 512,
         "max_rss_bytes": 2048 * 1024 * 1024,
         "sample_database_peak_bytes": 4096,
-        "stage_durations_ms": {"partition_validation": 12.5, "model_fit": 7.0},
+        "stage_durations_ms": {"history_conversion": 12.5, "model_fit": 7.0},
         "failure_reasons": [],
     }
     payload["content_hash"] = content_hash(payload)
@@ -370,8 +370,8 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
 
     assert decoded.sample_database_peak_bytes == 4096
     assert tuple((item.stage, item.duration_ms) for item in decoded.stage_durations) == (
+        ("history_conversion", 12.5),
         ("model_fit", 7.0),
-        ("partition_validation", 12.5),
     )
 
     finalized = coordinator.finalize(tmp_path / "data/train", memory_evidence)

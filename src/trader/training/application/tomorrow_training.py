@@ -13,7 +13,6 @@ TomorrowTrainingStage = Literal[
     "resource_preflight",
     "input_read",
     "training_preparation",
-    "partition_validation",
     "history_conversion",
     "cross_section_conversion",
     "sample_index",
@@ -24,27 +23,8 @@ TomorrowTrainingStage = Literal[
     "artifact_publish",
 ]
 TomorrowTrainingProgressState = Literal["started", "running", "completed"]
-TomorrowPartitionValidationPhase = Literal["hash", "integrity", "row_count", "logical"]
 TOMORROW_TRAINING_COMPUTE_THREADS = 2
 TOMORROW_TRAINING_PEAK_RSS_MIB = 2_048
-
-
-@dataclass(frozen=True)
-class TomorrowTrainingPartitionValidationProgress:
-    current_partition: int
-    total_partitions: int
-    completed_units: int
-    total_units: int
-    phase: TomorrowPartitionValidationPhase
-
-    def __post_init__(self) -> None:
-        if (
-            self.total_partitions < 1
-            or not 1 <= self.current_partition <= self.total_partitions
-            or self.total_units < 0
-            or not 0 <= self.completed_units <= self.total_units
-        ):
-            raise ValueError("Tomorrow partition validation progress is invalid")
 
 
 @dataclass(frozen=True)
@@ -63,7 +43,6 @@ class TomorrowTrainingProgress:
     completed_units: int
     total_units: int
     produced_units: int = 0
-    partition_validation: TomorrowTrainingPartitionValidationProgress | None = None
     strategy: Strategy | None = None
     sample_diagnostics: TrainingSampleDiagnostics | None = None
 
@@ -110,7 +89,6 @@ class TomorrowTrainingWindow:
 __all__ = [
     "TOMORROW_TRAINING_COMPUTE_THREADS",
     "TOMORROW_TRAINING_PEAK_RSS_MIB",
-    "TomorrowTrainingPartitionValidationProgress",
     "TomorrowTrainingProgress",
     "TomorrowTrainingProgressPort",
     "TomorrowTrainingProgressState",

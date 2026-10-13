@@ -326,7 +326,9 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
         (HistoryRevision(2, "main", _download("600001", (date(2026, 9, 11),)).batch.cells[0], None, None, None),)
     )
     HistoryMonthPrices.verify(path, snapshot.partitions[0])
-    assert len(tuple(month.iter_verified_training_rows(snapshot.partitions[0]))) == 6
+    assert (
+        len(tuple(month.iter_training_rows(days[0], days[-1], snapshot_sequence=snapshot.partitions[0].sequence))) == 6
+    )
     with sqlite3.connect(path) as connection:
         connection.execute(
             "UPDATE daily_records SET content_hash=? WHERE code='600001' AND trade_date=?",

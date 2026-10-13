@@ -21,8 +21,7 @@ _STAGE_LABELS: dict[TomorrowTrainingStage, str] = {
     "resource_preflight": "资源预检",
     "input_read": "读取训练输入",
     "training_preparation": "训练准备",
-    "partition_validation": "输入分片校验",
-    "history_conversion": "历史行转换",
+    "history_conversion": "历史读取与训练样本生成",
     "cross_section_conversion": "横截面转换",
     "sample_index": "样本索引",
     "sample_cache": "完整样本缓存",
@@ -40,7 +39,6 @@ _RESULT_LABELS: dict[TomorrowTrainingCommandStatus, str] = {
     "rejected": "拒绝",
     "engineering_ready": "完成",
 }
-_PARTITION_PHASE_LABELS = {"hash": "SHA-256", "integrity": "完整性", "row_count": "行数"}
 
 
 class StderrTomorrowTrainingProgress:
@@ -167,15 +165,6 @@ class StderrTomorrowTrainingProgress:
                     f"峰值 RSS 上限 {TOMORROW_TRAINING_PEAK_RSS_MIB} MiB",
                 )
             )
-        elif progress.stage == "partition_validation" and progress.partition_validation is not None:
-            detail = progress.partition_validation
-            if detail.phase == "logical":
-                detail_text = f"逻辑内容 {detail.completed_units}/{detail.total_units} 行"
-            else:
-                completed_mib = detail.completed_units / (1024 * 1024)
-                total_mib = detail.total_units / (1024 * 1024)
-                detail_text = f"{_PARTITION_PHASE_LABELS[detail.phase]} {completed_mib:.1f}/{total_mib:.1f} MiB"
-            parts.append(f"当前分片 {detail.current_partition}/{detail.total_partitions} {detail_text}")
         elif progress.stage == "sample_cache" and progress.state == "completed":
             parts.append("复用已校验完整样本" if progress.produced_units else "需要构建样本")
         elif progress.stage == "history_conversion":

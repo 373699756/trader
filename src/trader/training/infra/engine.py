@@ -27,14 +27,12 @@ from trader.download.infra.history_control_index import (
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
 )
-from trader.download.infra.history_month_partition import HistoryPartitionVerificationPhase
 from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
-    TomorrowTrainingPartitionValidationProgress,
     TomorrowTrainingProgress,
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
@@ -84,11 +82,6 @@ class _TrainingInputArchive(TrainingHistorySource, Protocol):
     def active_snapshot(self) -> HistoryActiveSnapshot: ...
 
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
-
-    def verify_partitions(
-        self,
-        progress: Callable[[int, int, int, int, int, HistoryPartitionVerificationPhase], None] | None = None,
-    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -310,7 +303,6 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
         cache = TrainingSampleCache(request.train_root, cache_identity, feature_count, split.content_hash)
         _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
         with cache.open() as samples:
-            _verify_cached_sample_input(cache, archive, request.progress)
             _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
             metrics = _prepare_samples(
                 TrainingSampleBuildRequest(
@@ -353,13 +345,6 @@ def _run_locked(archive: _TrainingInputArchive, request: ProfileTrainingRequest)
                 )
     ordered = _ordered_results(request.contracts, completed)
     return TrainingRunResult(run_id, snapshot.active_snapshot_hash, peak_bytes, ordered)
-
-
-def _verify_cached_sample_input(
-    cache: TrainingSampleCache, archive: _TrainingInputArchive, progress: TomorrowTrainingProgressPort | None
-) -> None:
-    if cache.reused:
-        _verify_partitions_once(archive, progress)
 
 
 def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleCache) -> tuple[TargetMetric, ...]:
@@ -477,32 +462,6 @@ def _preflight_failure_result(
         snapshot.active_snapshot_hash,
         0,
         _ordered_results(contracts, completed),
-    )
-
-
-def _verify_partitions_once(
-    archive: _TrainingInputArchive,
-    progress: TomorrowTrainingProgressPort | None,
-) -> None:
-    total = len(archive.active_snapshot.partitions)
-    _publish(progress, TomorrowTrainingProgress("partition_validation", "started", 0, total))
-    archive.verify_partitions(
-        lambda completed, partitions, current, completed_bytes, total_bytes, phase: _publish(
-            progress,
-            TomorrowTrainingProgress(
-                "partition_validation",
-                "completed" if completed == partitions else "running",
-                completed,
-                partitions,
-                partition_validation=TomorrowTrainingPartitionValidationProgress(
-                    current,
-                    partitions,
-                    completed_bytes,
-                    total_bytes,
-                    phase,
-                ),
-            ),
-        )
     )
 
 

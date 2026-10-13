@@ -13,7 +13,6 @@ _TRAINING_STAGES: frozenset[str] = frozenset(
         "resource_preflight",
         "input_read",
         "training_preparation",
-        "partition_validation",
         "history_conversion",
         "cross_section_conversion",
         "sample_index",
