@@ -1,5 +1,6 @@
 """Coverage evidence and durable asynchronous writes share one completion boundary."""
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import date, timedelta
@@ -341,17 +342,22 @@ def test_transient_worker_and_writer_rejection_preserves_complete_history(tmp_pa
     assert not supplier.calls
 
 
-def test_permanent_worker_rejection_reports_capacity_failure_and_resumes(tmp_path, monkeypatch):
-    from trader.infra import workers
-
+def test_permanent_worker_rejection_reports_capacity_failure_and_resumes(tmp_path):
     class RejectAll:
-        def submit(self, _function, /, *_args, **_kwargs):
+        def __init__(self):
+            self.codes: set[str] = set()
+
+        def submit(self, _function, /, *args, **_kwargs):
+            self.codes.add(args[0].code)
             return None
 
-    monkeypatch.setattr(workers, "_CAPACITY_WAIT_SECONDS", 0.02)
+    pool = RejectAll()
     supplier = FakeSupplier(DAYS)
-    failed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=RejectAll())
+    started = time.monotonic()
+    failed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=pool)
+    elapsed = time.monotonic() - started
     assert failed.state == "failed" and failed.reason == "history_worker_unavailable"
+    assert len(pool.codes) == 1 and 4.5 <= elapsed < 9
     assert not supplier.calls
     assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
     assert HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot is None

@@ -39,7 +39,7 @@ from trader.download.infra.history_download_index import (
 from trader.download.infra.history_month_partition import HistoryMonthPartitionError
 from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_failure import HistorySyncFailureError, history_failure_detail
-from trader.infra.workers import WorkerExecutor, submit_with_backpressure
+from trader.infra.workers import WorkerExecutor, WorkerResourceRejectedError, submit_with_backpressure
 
 _FATAL = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})
 _LOGGER = logging.getLogger(__name__)
@@ -228,9 +228,12 @@ class HistoryDownloadFlow:
             if cells + len(jobs[0].dates) > resources.tuning.max_cells:
                 break
             task = jobs.popleft()
-            futures[submit_with_backpressure(resources.executor, self._fetch_task, task)] = task
+            future = submit_with_backpressure(resources.executor, self._fetch_task, task)
+            futures[future] = task
             cells += len(task.dates)
             codes += 1
+            if future.done() and not future.cancelled() and isinstance(future.exception(), WorkerResourceRejectedError):
+                break
         return not jobs
 
     def _fetch_task(self, task: HistoryDownloadTask) -> _PreparedResult:
