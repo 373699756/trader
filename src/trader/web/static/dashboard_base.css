@@ -526,7 +526,6 @@ tr:focus-visible {
 }
 
 .score-leaders-summary > span {
-  color: color-mix(in srgb, var(--blue) 78%, var(--text));
   font-weight: 650;
 }
 
