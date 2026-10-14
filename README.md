@@ -62,7 +62,8 @@ stderr显示累计/阶段耗时，索引、统计和拟合等耗时阶段每30�
 不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
 `trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
 禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
-BaoStock 下载是独立研究命令，必须先安装 `trader-research-dashboard[research]`。路径、滚动 2000 日和资源
+BaoStock 行业数据适配器所需依赖由 `run.sh` / `run.ps1` 按 `pyproject.toml` 自动安装，无需手动补装。
+完整历史下载仍须显式运行 `./run.sh download`。路径、滚动 2000 日和资源
 参数不对用户开放；`--runtime-dir`、`--sessions`、`--mode`、`--profile` 等参数都会在环境创建前拒绝。零参数
 重构控制库、稳定年月月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
 回读或返回`already_current`，失败与取消不改变上一active snapshot；启动、`check`、Web和训练入口
