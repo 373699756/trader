@@ -110,6 +110,7 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
     ProductionModelScoringService,
     SharedModelFeatureCache,
 )
+from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
@@ -164,8 +165,9 @@ from trader.recommendation.infra.runtime.initialization import (
     fixed_cache_ttl as _fixed_cache_ttl,
 )
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
+from trader.recommendation.infra.runtime.startup_readiness import warn_missing_local_data
 from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import ScoringArtifactsMissingError, load_scoring_profile
 from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.application.research_audit import try_build_committed_research_audit
@@ -529,12 +531,14 @@ def build_system(
     )
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     persistence = _build_persistence(context)
-    loaded_profile = load_scoring_profile(
-        strategy.scoring_profile,
-        training_root=settings.project_root / "data" / "train",
-    )
-    profile_contract = V2_TRAINING_PROFILE if loaded_profile.profile_id == "v2" else V3_TRAINING_PROFILE
-    training_settings = load_profile_training_settings(settings.project_root, loaded_profile.profile_id)
+    profile_id = strategy.scoring_profile
+    try:
+        loaded_profile = load_scoring_profile(profile_id, training_root=settings.project_root / "data" / "train")
+    except ScoringArtifactsMissingError:
+        loaded_profile = None
+    warn_missing_local_data(settings.project_root, profile_id, model_missing=loaded_profile is None)
+    profile_contract = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
+    training_settings = load_profile_training_settings(settings.project_root, profile_id)
     training_settings.require_profile(profile_contract)
     market_data = _build_market_data(
         context,
@@ -548,12 +552,14 @@ def build_system(
     shared_model_features = SharedModelFeatureCache()
     model_scoring = PublishedModelScoringService(
         ModelScoringRouter(
-            loaded_profile.profile_id,
+            profile_id,
             {
                 strategy: ProductionModelScoringService(
                     loaded_profile, strategy, cost_policy=cost_policy, shared_features=shared_model_features
                 )
-                for strategy in loaded_profile.heads
+                if loaded_profile is not None
+                else UnavailableModelCapability(profile_id, training_settings.history_sessions)
+                for strategy in (Strategy.TOMORROW, Strategy.D25)
             },
         )
     )
@@ -710,7 +716,7 @@ def build_system(
             heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
             snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
         ),
-        loaded_profile.profile_id,
+        profile_id,
     )
     app = create_app(services=web_services)
     return ApplicationSystem(

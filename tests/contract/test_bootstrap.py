@@ -270,11 +270,12 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
 
     observed: list[Path] = []
     config_path = _config_with_strategy_profile(tmp_path, "v3")
-    v2_profile = load_scoring_profile("v2", training_root=tmp_path / "data" / "train")
+    v3_profile = load_scoring_profile("v3", training_root=tmp_path / "data" / "train")
 
     def load(profile: str, *, training_root: Path | None = None):
+        assert profile == "v3"
         observed.append(training_root or Path())
-        return v2_profile
+        return v3_profile
 
     monkeypatch.setattr("trader.bootstrap.load_scoring_profile", load)
 

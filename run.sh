@@ -146,9 +146,9 @@ elif ! "$ENTRYPOINT" --help >/dev/null 2>&1; then
 fi
 
 if ((NEEDS_INSTALL)); then
-  # Reuse the venv's build backend. Build isolation attempts to download
-  # setuptools even when the environment already has a usable installation.
-  "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check --no-build-isolation -e "$ROOT_DIR"
+  # Let pip provision the build requirements declared in pyproject.toml;
+  # a fresh virtual environment may contain pip without setuptools.
+  "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR"
 fi
 
 export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"

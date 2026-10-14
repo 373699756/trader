@@ -291,7 +291,10 @@ def test_run_script_repairs_a_moved_virtual_environment_before_starting(tmp_path
     server = venv_bin / "trader-server"
     _write_fake_entrypoint(
         python,
-        """if [[ "$*" == *"-m pip install"* ]]; then
+        """if [[ "$*" == *"--no-build-isolation"* ]]; then
+  exit 98
+fi
+if [[ "$*" == *"-m pip install"* ]]; then
   printf '#!/usr/bin/env bash\\nprintf "server:%%s\\\\n" "$*"\\n' > "$REPAIR_ENTRYPOINT"
   chmod +x "$REPAIR_ENTRYPOINT"
   exit 0

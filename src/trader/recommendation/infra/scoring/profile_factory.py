@@ -13,6 +13,10 @@ from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 
+class ScoringArtifactsMissingError(RuntimeError):
+    """The selected profile has no complete published pair of strategy heads."""
+
+
 def load_scoring_profile(
     profile_id: ScoringProfileId,
     *,
@@ -27,10 +31,10 @@ def load_scoring_profile(
             bundles = tuple(load_head_bundle(path, strategy, profile) for strategy, path in bundle_paths)
             return build_trained_scoring_profile(profile_id, bundles)
         except FileNotFoundError as exc:
-            raise RuntimeError("shared strategy-head training models are unavailable") from exc
+            raise ScoringArtifactsMissingError("shared strategy-head training models are unavailable") from exc
         except (OSError, TypeError, ValueError) as exc:
             raise RuntimeError("shared strategy-head training models are invalid") from exc
     raise ValueError("unknown scoring profile")
 
 
-__all__ = ["load_scoring_profile"]
+__all__ = ["ScoringArtifactsMissingError", "load_scoring_profile"]
