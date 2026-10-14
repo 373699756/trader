@@ -111,6 +111,52 @@ def test_pending_incomplete_observation_can_gain_a_complete_pair(tmp_path: Path,
     assert month.read_day(day, snapshot_sequence=1) == (complete,)
 
 
+@pytest.mark.parametrize("status", ("qfq_missing", "unadjusted_missing"))
+def test_pending_completion_preserves_the_existing_price_side(tmp_path: Path, status: str) -> None:
+    month = HistoryMonthPrices(tmp_path / "partitions/2026/09.sqlite3", 2026, 9)
+    month.initialize()
+    day = date(2026, 9, 10)
+    complete = _revision(day, 1, 10.0)
+    initial = HistoryRevision(
+        1,
+        "main",
+        BaoStockDailyCell(
+            "600001",
+            day,
+            status,  # type: ignore[arg-type]
+            complete.cell.unadjusted if status == "qfq_missing" else None,
+            complete.cell.qfq if status == "unadjusted_missing" else None,
+        ),
+        None,
+        None,
+        None,
+    )
+    changed = _revision(day, 1, 11.0)
+    candidate = HistoryRevision(
+        1,
+        "main",
+        BaoStockDailyCell(
+            "600001",
+            day,
+            "complete",
+            changed.cell.unadjusted if status == "qfq_missing" else complete.cell.unadjusted,
+            changed.cell.qfq if status == "unadjusted_missing" else complete.cell.qfq,
+        ),
+        None,
+        None,
+        None,
+    )
+    with closing(month.open_write_session(fresh=True)) as session:
+        session.save_revision_batches((initial,))
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        with pytest.raises(HistoryMonthPartitionConflictError, match="retained price"):
+            session.save_revision_batches((candidate,))
+    assert month.read_day(day, snapshot_sequence=1) == (initial,)
+    with closing(month.open_write_session(pending_sequence=1)) as session:
+        session.save_revision_batches((complete,))
+    assert month.read_day(day, snapshot_sequence=1) == (complete,)
+
+
 def test_month_partition_schema_revision_replay_and_indexes(tmp_path: Path) -> None:
     path = tmp_path / "partitions/2026/09.sqlite3"
     repository = HistoryMonthPrices(path, 2026, 9)

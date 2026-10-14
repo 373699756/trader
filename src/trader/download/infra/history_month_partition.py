@@ -828,6 +828,22 @@ class HistoryMonthPrices:
                 can_gain_fact = observed_status == "unknown_missing" and value.cell.status != "unknown_missing"
                 if value.first_seen_sequence != pending_sequence or not (can_complete or can_gain_fact):
                     raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
+                if observed_status in {"qfq_missing", "unadjusted_missing"}:
+                    previous_row = connection.execute(
+                        f"SELECT {_REVISION_COLUMNS} FROM daily_records AS records "
+                        "WHERE records.trade_date=? AND records.code=? AND records.revision_id=?",
+                        (item.trade_date, value.code, observed_revision),
+                    ).fetchone()
+                    if previous_row is None:
+                        raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
+                    previous_cell = _decode_row(previous_row).cell
+                    retained_price_changed = (
+                        previous_cell.unadjusted != value.cell.unadjusted
+                        if observed_status == "qfq_missing"
+                        else previous_cell.qfq != value.cell.qfq
+                    )
+                    if previous_cell.status != observed_status or retained_price_changed:
+                        raise HistoryMonthPartitionConflictError("history monthly retained price conflicts")
                 corrected_observations.append((value.revision_id, *observation_key))
             date_code = item.trade_date, value.code
             current_sequence = latest_sequences.get(date_code)
