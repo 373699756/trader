@@ -5,7 +5,6 @@ from typing import Literal
 
 from trader.download.domain.published_history import PublishedHistoryWindow
 
-
 HistorySupplierPendingReason = Literal[
     "tencent_history_pending",
     "tencent_qfq_invalid_price",

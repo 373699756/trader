@@ -22,8 +22,8 @@ from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
-from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import completed_daily_cutoff
 from trader.download.infra.exchange_security_universe import load_current_a_share_universe
