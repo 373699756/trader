@@ -55,6 +55,23 @@ class HistoryRevision:
     def trade_date(self) -> date:
         return self.cell.trade_date
 
+    def can_upgrade_observation(self, previous_status: BaoStockCellStatus, pending_sequence: int | None) -> bool:
+        """Only an unpublished sequence may gain facts or complete a partial price pair."""
+        can_complete = self.cell.status == "complete" and previous_status in {
+            "unknown_missing",
+            "qfq_missing",
+            "unadjusted_missing",
+            "tencent_inferred_suspended",
+        }
+        can_gain_fact = previous_status == "unknown_missing" and self.cell.status != "unknown_missing"
+        return self.first_seen_sequence == pending_sequence and (can_complete or can_gain_fact)
+
+    def retains_partial_prices(self, previous: BaoStockDailyCell) -> bool:
+        """Completing a partial observation must preserve every already verified side."""
+        return (previous.unadjusted is None or previous.unadjusted == self.cell.unadjusted) and (
+            previous.qfq is None or previous.qfq == self.cell.qfq
+        )
+
     @property
     def training_row(self) -> BaoStockTrainingRow | None:
         if (

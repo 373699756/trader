@@ -9,7 +9,13 @@ ROOT = Path(__file__).resolve().parents[2]
 DOWNLOAD_APPLICATION = ROOT / "src" / "trader" / "download" / "application"
 TRAINING_APPLICATION = ROOT / "src" / "trader" / "training" / "application"
 _SHARED_CAPABILITIES = {
-    "trader.infra.workers": {"WorkerExecutor", "ManagedWorkerExecutor", "submit_or_reject"},
+    "trader.infra.workers": {
+        "WorkerExecutor",
+        "ManagedWorkerExecutor",
+        "WorkerResourceRejectedError",
+        "submit_or_reject",
+        "submit_with_backpressure",
+    },
     "trader.infra.shutdown": {"ShutdownDeadline", "ShutdownStep"},
 }
 
@@ -55,6 +61,7 @@ def application_import_violations(source: str, business: str) -> list[str]:
     ("source", "rejected"),
     (
         ("from trader.infra.workers import WorkerExecutor, ManagedWorkerExecutor, submit_or_reject", False),
+        ("from trader.infra.workers import submit_with_backpressure, WorkerResourceRejectedError", False),
         ("from trader.infra.shutdown import ShutdownDeadline, ShutdownStep", False),
         ("from trader.infra.workers import BoundedExecutor", True),
         ("from trader.infra.workers import *", True),

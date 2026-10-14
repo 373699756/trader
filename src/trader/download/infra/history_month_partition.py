@@ -15,7 +15,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.download.domain.baostock_daily import BaoStockBoard
+from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellStatus
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
@@ -788,7 +788,7 @@ class HistoryMonthPrices:
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
         existing_observations = {
-            (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): (cast(str, row[3]), row[4])
+            (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): cast(tuple[str, BaoStockCellStatus], row[3:])
             for row in connection.execute(_EXISTING_OBSERVATIONS_SQL)
         }
         existing_revisions = {
@@ -812,38 +812,14 @@ class HistoryMonthPrices:
             revision_key = item.revision_key
             observed = existing_observations.get(observation_key)
             if observed is not None:
-                observed_revision, observed_status = observed
+                observed_revision, _observed_status = observed
                 if observed_revision == value.revision_id:
                     existing = existing_revisions.get(revision_key)
                     if existing is None:
                         raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
                     _require_revision_identity(existing, value)
                     continue
-                can_complete = value.cell.status == "complete" and observed_status in {
-                    "unknown_missing",
-                    "qfq_missing",
-                    "unadjusted_missing",
-                    "tencent_inferred_suspended",
-                }
-                can_gain_fact = observed_status == "unknown_missing" and value.cell.status != "unknown_missing"
-                if value.first_seen_sequence != pending_sequence or not (can_complete or can_gain_fact):
-                    raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
-                if observed_status in {"qfq_missing", "unadjusted_missing"}:
-                    previous_row = connection.execute(
-                        f"SELECT {_REVISION_COLUMNS} FROM daily_records AS records "
-                        "WHERE records.trade_date=? AND records.code=? AND records.revision_id=?",
-                        (item.trade_date, value.code, observed_revision),
-                    ).fetchone()
-                    if previous_row is None:
-                        raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
-                    previous_cell = _decode_row(previous_row).cell
-                    retained_price_changed = (
-                        previous_cell.unadjusted != value.cell.unadjusted
-                        if observed_status == "qfq_missing"
-                        else previous_cell.qfq != value.cell.qfq
-                    )
-                    if previous_cell.status != observed_status or retained_price_changed:
-                        raise HistoryMonthPartitionConflictError("history monthly retained price conflicts")
+                self._require_observation_upgrade(connection, item, observed, pending_sequence)
                 corrected_observations.append((value.revision_id, *observation_key))
             date_code = item.trade_date, value.code
             current_sequence = latest_sequences.get(date_code)
@@ -884,6 +860,30 @@ class HistoryMonthPrices:
             "UPDATE daily_observations SET revision_id=? WHERE trade_date=? AND code=? AND sync_sequence=?",
             corrected_observations,
         )
+
+    @staticmethod
+    def _require_observation_upgrade(
+        connection: sqlite3.Connection,
+        item: _EncodedRevision,
+        observed: tuple[str, BaoStockCellStatus],
+        pending_sequence: int | None,
+    ) -> None:
+        value = item.value
+        observed_revision, observed_status = observed
+        if not value.can_upgrade_observation(observed_status, pending_sequence):
+            raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
+        if observed_status not in {"qfq_missing", "unadjusted_missing"}:
+            return
+        previous_row = connection.execute(
+            f"SELECT {_REVISION_COLUMNS} FROM daily_records AS records "
+            "WHERE records.trade_date=? AND records.code=? AND records.revision_id=?",
+            (item.trade_date, value.code, observed_revision),
+        ).fetchone()
+        if previous_row is None:
+            raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
+        previous_cell = _decode_row(previous_row).cell
+        if previous_cell.status != observed_status or not value.retains_partial_prices(previous_cell):
+            raise HistoryMonthPartitionConflictError("history monthly retained price conflicts")
 
     def _require_metadata(self, connection: sqlite3.Connection) -> None:
         metadata = connection.execute(

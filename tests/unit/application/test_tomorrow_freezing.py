@@ -104,8 +104,26 @@ def _assert_formal_current_and_history(
             assert view.content_hash is None
             assert view.input_versions == record.decision.input_versions
             assert view.draft is None
-        assert current.items == history.items
-        assert current.top_scores == history.top_scores
+        for current_items, history_items in ((current.items, history.items), (current.top_scores, history.top_scores)):
+            assert history_items == tuple(
+                replace(
+                    item,
+                    price=None,
+                    pct_change=None,
+                    amount=None,
+                    turnover_rate=None,
+                    market_cap=None,
+                    quote_source=None,
+                    quote_time=None,
+                    quote_status="missing",
+                )
+                for item in current_items
+            )
+            for item in current_items:
+                assert item.quote_status == "decision_anchor"
+                assert item.price == item.anchor_price
+                assert item.quote_time == item.anchor_time
+                assert item.anchor_to_now_pct is None
         assert records.load(record.strategy, record.trade_date) == record
 
 

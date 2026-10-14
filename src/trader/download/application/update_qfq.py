@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from itertools import islice
 from time import monotonic
-from typing import Protocol
+from typing import Literal, Protocol
 
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import (
@@ -26,7 +26,7 @@ from trader.download.domain.qfq_window import (
     completed_daily_cutoff,
     merge_daily_tail,
 )
-from trader.infra.workers import WorkerExecutor, submit_with_backpressure
+from trader.infra.workers import WorkerExecutor, WorkerResourceRejectedError, submit_with_backpressure
 
 
 class QfqPairPublicationError(RuntimeError):
@@ -167,10 +167,10 @@ class UpdateQfqWindows:
         progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
         plans = iter(self._plans(context, progress, v2_snapshot, v3_snapshot))
         checkpoint_codes: list[str] = []
-        self._download_rolling(plans, progress, checkpoint_codes)
+        failure_reason = self._download_rolling(plans, progress, checkpoint_codes)
         if not self.cancel_requested():
             self._flush_checkpoint(checkpoint_codes, progress, threshold=1)
-        return progress.finish(self.cancel_requested())
+        return progress.finish(self.cancel_requested(), failure_reason=failure_reason)
 
     def _plans(
         self,
@@ -253,11 +253,12 @@ class UpdateQfqWindows:
 
     def _download_rolling(
         self, plans: Iterable[_DownloadPlan], progress: QfqDownloadProgress, checkpoint_codes: list[str]
-    ) -> None:
+    ) -> Literal["qfq_worker_unavailable"] | None:
         remaining = iter(plans)
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob] = {}
         downloaded: list[tuple[_DownloadJob, PublishedHistoryWindow]] = []
         exhausted = False
+        failure_reason: Literal["qfq_worker_unavailable"] | None = None
         last_feedback = self.monotonic()
         try:
             while not self.cancel_requested():
@@ -266,7 +267,8 @@ class UpdateQfqWindows:
                 if len(plan_batch) < capacity:
                     exhausted = True
                 if plan_batch:
-                    self._fill_slots(plan_batch, futures, progress)
+                    failure_reason = self._fill_slots(plan_batch, futures, progress)
+                    exhausted = exhausted or failure_reason is not None
                 if downloaded and (len(downloaded) >= self.workers or not futures):
                     checkpoint_codes.extend(self._commit_downloaded(downloaded[: self.workers], progress))
                     del downloaded[: self.workers]
@@ -285,23 +287,28 @@ class UpdateQfqWindows:
         finally:
             for future in futures:
                 future.cancel()
+        return failure_reason
 
     def _fill_slots(
         self,
         plans: tuple[_DownloadPlan, ...],
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob],
         progress: QfqDownloadProgress,
-    ) -> None:
+    ) -> Literal["qfq_worker_unavailable"] | None:
         try:
             jobs = self._hydrate_wave(plans)
         except (RuntimeError, OSError, ValueError) as exc:
             for plan in plans:
                 progress.record_pending(plan.security, exc, plan.dates, action="本地检查")
-            return
+            return None
         for job in jobs:
             if self.cancel_requested():
                 break
-            futures[self._submit(job)] = job
+            future = self._submit(job)
+            futures[future] = job
+            if future.done() and not future.cancelled() and isinstance(future.exception(), WorkerResourceRejectedError):
+                return "qfq_worker_unavailable"
+        return None
 
     def _collect_completed(
         self,
@@ -314,6 +321,11 @@ class UpdateQfqWindows:
             job = futures.pop(future)
             try:
                 window = future.result()
+            except WorkerResourceRejectedError:
+                progress.record_pending(
+                    job.security, RuntimeError("qfq_worker_unavailable"), job.dates, action="任务派发"
+                )
+                continue
             except (RuntimeError, OSError, ValueError) as exc:
                 progress.record_pending(job.security, exc, job.dates, action="Tencent下载")
                 continue

@@ -121,6 +121,10 @@ def test_supervisor_does_not_wait_without_bound_after_blocked_scheduler() -> Non
     finally:
         pipeline.allow_tick.set()
         supervisor.stop(ShutdownDeadline.start(1.0))
+        # Repeated stop returns the cached timeout report; the fixture must reap its thread.
+        assert pipeline.tick_thread is not None
+        pipeline.tick_thread.join(timeout=1.0)
+        assert not pipeline.tick_thread.is_alive()
 
     assert pipeline.stopped == 1
 
@@ -189,8 +193,10 @@ class BlockingTickPipeline(FakePipeline):
         super().__init__()
         self.tick_started = threading.Event()
         self.allow_tick = threading.Event()
+        self.tick_thread: threading.Thread | None = None
 
     def submit_due(self, at: datetime | None = None) -> float:
+        self.tick_thread = threading.current_thread()
         self.tick_started.set()
         self.allow_tick.wait()
         return super().submit_due(at)

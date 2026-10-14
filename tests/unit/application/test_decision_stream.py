@@ -116,6 +116,7 @@ def test_scored_decision_event_serializes_complete_replace_patch_without_snapsho
             "action_reason": "threshold_met",
             "anchor_price": None,
             "anchor_source_time": None,
+            "anchor_daily_return_pct": None,
             "board": "main",
             "code": "600000",
             "downside": None,

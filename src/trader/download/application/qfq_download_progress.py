@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from typing import Literal
 
 from trader.download.application.progress_message import (
     ProgressField,
@@ -192,20 +193,23 @@ class QfqDownloadProgress:
             level=level,
         )
 
-    def finish(self, cancelled: bool) -> QfqUpdateResult:
-        stage = "已取消" if cancelled else ("结束（仍有待重试）" if self.pending else "完成")
+    def finish(
+        self, cancelled: bool, *, failure_reason: Literal["qfq_worker_unavailable"] | None = None
+    ) -> QfqUpdateResult:
+        stage = "已取消" if cancelled else ("结束（仍有待重试）" if self.pending or failure_reason else "完成")
         level = (
             ProgressLevel.ERROR
-            if self.errors
+            if self.errors or failure_reason
             else ProgressLevel.WARNING
             if cancelled or self.pending
             else ProgressLevel.SUCCESS
         )
-        # The existing result contract counts unfinished stocks as pending on cancellation.
-        # Feedback separates them because they have not actually been processed.
-        unfinished = self.total - self.processed if cancelled else 0
+        # Unsubmitted stocks remain retryable, distinct from an attempted supplier failure.
+        unfinished = self.total - self.processed if cancelled or failure_reason else 0
         if unfinished:
-            self._add_pending_reason("cancelled_before_processing", unfinished)
+            self._add_pending_reason(
+                "cancelled_before_processing" if cancelled else "worker_unavailable_before_processing", unfinished
+            )
         if self.pending_reasons:
             self.publish(
                 "待重试原因",
@@ -220,7 +224,7 @@ class QfqDownloadProgress:
             tuple(sorted(self.changed)),
             self.rows,
             self.skipped,
-            "cancelled" if cancelled else None,
+            "cancelled" if cancelled else failure_reason,
             self.pending_reasons,
             self.no_trade_data,
         )

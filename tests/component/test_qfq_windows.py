@@ -538,6 +538,73 @@ def test_qfq_transient_worker_rejection_does_not_leave_a_stock_pending(tmp_path)
     assert len(updater.v3.read_code("600002").cells) == 61
 
 
+def test_permanent_worker_rejection_stops_after_one_capacity_deadline(tmp_path) -> None:
+    import time
+
+    class RejectAll:
+        def __init__(self):
+            self.codes = set()
+
+        def submit(self, function, /, *args, **kwargs):
+            self.codes.add(args[0].security.code)
+            return None
+
+    supplier = Supplier(codes=("600001", "600002", "600003"))
+    worker = RejectAll()
+    updater = replace(_updater(tmp_path, supplier), workers=3, worker_pool=worker)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    started = time.monotonic()
+    result = updater.execute(observed)
+    assert time.monotonic() - started >= 4.5
+    assert worker.codes == {"600001"}
+    assert not supplier.calls
+    assert result.completed_codes == 0 and result.pending_codes == 3
+    assert result.failure_reason == "qfq_worker_unavailable"
+    assert {item.reason: item.count for item in result.pending_reasons} == {
+        "qfq_worker_unavailable": 1,
+        "worker_unavailable_before_processing": 2,
+    }
+    assert not result.changed_files
+    assert not (tmp_path / ".checkpoint.json").exists()
+
+
+def test_worker_rejection_preserves_accepted_results_and_retry_checkpoint(tmp_path, monkeypatch) -> None:
+    from concurrent.futures import Future
+
+    monkeypatch.setattr("trader.infra.workers._CAPACITY_WAIT_SECONDS", 0)
+
+    class AcceptFirst:
+        def __init__(self):
+            self.codes = []
+
+        def submit(self, function, /, *args, **kwargs):
+            self.codes.append(args[0].security.code)
+            if len(self.codes) != 1:
+                return None
+            future = Future()
+            future.set_result(function(*args, **kwargs))
+            return future
+
+    supplier = Supplier(codes=("600001", "600002", "600003"))
+    worker = AcceptFirst()
+    updater = replace(_updater(tmp_path, supplier), workers=3, worker_pool=worker)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    result = updater.execute(observed)
+    assert worker.codes == ["600001", "600002"]
+    assert result.completed_codes == 1 and result.pending_codes == 2
+    assert result.failure_reason == "qfq_worker_unavailable"
+    assert len(updater.v2.read_code("600001").cells) == 251
+    assert len(updater.v3.read_code("600001").cells) == 61
+    assert {item.reason: item.count for item in result.pending_reasons} == {
+        "qfq_worker_unavailable": 1,
+        "worker_unavailable_before_processing": 1,
+    }
+    retry = _updater(tmp_path, supplier).execute(observed)
+    assert retry.completed_codes == 3 and retry.skipped_codes == 1
+    assert retry.pending_codes == 0 and retry.failure_reason is None
+    assert len(supplier.calls) == 3
+
+
 def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_path) -> None:
     supplier = Supplier(codes=("600001", "300001"))
     updater = _updater(tmp_path, supplier)
