@@ -156,6 +156,7 @@ def test_qfq_invalid_prices_leave_only_their_dates_missing_and_continue_older_pa
 
     window = pending.value.window
     assert pending.value.reason == "tencent_qfq_invalid_price"
+    assert pending.value.unusable_qfq_dates == tuple(sorted(invalid))
     assert len(http.calls) == 5
     assert sum(cell.status == "complete" for cell in window.cells) == 1973
     assert {cell.trade_date for cell in window.cells if cell.status == "qfq_missing"} == invalid
@@ -182,6 +183,7 @@ def test_invalid_qfq_with_no_raw_price_is_not_inferred_as_suspension():
     with pytest.raises(HistorySupplierPendingError) as pending:
         http.supplier().fetch_window(SECURITY, days)
     assert pending.value.reason == "tencent_qfq_invalid_price"
+    assert pending.value.unusable_qfq_dates == (days[1],)
     assert pending.value.window.cells[1].status == "unknown_missing"
 
 

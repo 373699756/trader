@@ -71,6 +71,7 @@ class _TencentResult:
     previous: tuple[BaoStockDailyCell, ...]
     window: PublishedHistoryWindow
     failure: str | None = None
+    unusable_qfq_dates: tuple[date, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,6 +132,7 @@ class HistoryDownloadFlow:
                         result.task,
                         result.missing if result.failure is not None else (),
                         result.failure,
+                        result.unusable_qfq_dates,
                     )
                     for result in results
                 )
@@ -242,10 +244,12 @@ class HistoryDownloadFlow:
             return _PreparedResult(self._tencent_result(_TencentResult(task, (), previous, empty)), (), 0.0)
         started = time.monotonic()
         failure: str | None = None
+        unusable_qfq_dates: tuple[date, ...] = ()
         try:
             window = self._resources.supplier.fetch_tencent_window(self._security(task.code), dates)
         except HistorySupplierPendingError as exc:
             window, failure = exc.window, exc.reason
+            unusable_qfq_dates = exc.unusable_qfq_dates
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             failure = download_failure(exc)
             if failure in _FATAL:
@@ -257,13 +261,15 @@ class HistoryDownloadFlow:
         ):
             raise RuntimeError("history_supplier_identity_conflict")
         download_seconds = time.monotonic() - started
-        price = self._tencent_result(_TencentResult(task, dates, previous, window, failure))
+        price = self._tencent_result(_TencentResult(task, dates, previous, window, failure, unusable_qfq_dates))
         return _PreparedResult(price, dates, download_seconds)
 
     def _tencent_result(self, result: _TencentResult) -> HistoryPriceResult:
         task = result.task
         try:
             prepared = self._prepare(result)
+            unusable = tuple(day for day in result.unusable_qfq_dates if day in prepared.missing)
+            prepared = replace(prepared, unusable_qfq_dates=unusable)
             return (
                 replace(prepared, failure=result.failure or "tencent_history_pending") if prepared.missing else prepared
             )

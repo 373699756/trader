@@ -33,6 +33,7 @@ class HistoryPriceResult:
     missing: tuple[date, ...]
     failure: str | None
     coverage: HistoryPriceCoverage | None = None
+    unusable_qfq_dates: tuple[date, ...] = ()
 
 
 class HistoryDirectPrices:

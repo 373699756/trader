@@ -33,7 +33,8 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
             )
             if mode in {"pending", "invalid_qfq_price"}:
                 reason = "tencent_qfq_invalid_price" if mode == "invalid_qfq_price" else "tencent_history_pending"
-                raise HistorySupplierPendingError(partial, reason)
+                unusable = (days[0],) if mode == "invalid_qfq_price" else ()
+                raise HistorySupplierPendingError(partial, reason, unusable)
             return partial
 
     baseline = Baseline(days)
@@ -62,10 +63,14 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     baseline.calls.clear()
     retry_prices = Prices()
     retried = run_history_sync(config, _router(baseline, retry_prices), clock=lambda: NOW)
-    assert retried.unresolved_price_cells == 0
+    assert retried.unresolved_price_cells == (2 if mode == "invalid_qfq_price" else 0)
     assert baseline.calls == []
-    if mode in {"missing", "pending", "invalid_qfq_price"}:
+    if mode in {"missing", "pending"}:
         assert len(retry_prices.calls) == 2
+    elif mode == "invalid_qfq_price":
+        assert retried.state == "already_current"
+        assert retried.reason == "history_price_gaps_remaining"
+        assert retry_prices.calls == []
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous) == old_rows
 
 

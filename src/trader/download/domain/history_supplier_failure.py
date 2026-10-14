@@ -1,5 +1,6 @@
-"""A temporary supplier failure carries validated partial data, never fallback permission."""
+"""Pending supplier observations carry validated partial data, never fallback permission."""
 
+from datetime import date
 from typing import Literal
 
 from trader.download.domain.published_history import PublishedHistoryWindow
@@ -30,11 +31,20 @@ HISTORY_SUPPLIER_PENDING_REASONS = frozenset(
 
 class HistorySupplierPendingError(RuntimeError):
     def __init__(
-        self, window: PublishedHistoryWindow, reason: HistorySupplierPendingReason = "tencent_history_pending"
+        self,
+        window: PublishedHistoryWindow,
+        reason: HistorySupplierPendingReason = "tencent_history_pending",
+        unusable_qfq_dates: tuple[date, ...] = (),
     ) -> None:
+        cells = {cell.trade_date: cell for cell in window.cells}
+        if unusable_qfq_dates != tuple(sorted(set(unusable_qfq_dates))) or any(
+            day not in cells or cells[day].qfq is not None for day in unusable_qfq_dates
+        ):
+            raise ValueError("history_supplier_unusable_qfq_dates_invalid")
         super().__init__(reason)
         self.window = window
         self.reason = reason
+        self.unusable_qfq_dates = unusable_qfq_dates
 
 
 __all__ = ["HISTORY_SUPPLIER_PENDING_REASONS", "HistorySupplierPendingError", "HistorySupplierPendingReason"]

@@ -235,7 +235,7 @@ class TencentQfqSupplier:
                 if raw_download.pending_dates
                 else "tencent_qfq_invalid_price"
             )
-            raise HistorySupplierPendingError(window, reason)
+            raise HistorySupplierPendingError(window, reason, tuple(sorted(invalid_dates)))
         return window
 
     def _download_side(
@@ -309,7 +309,12 @@ class TencentQfqSupplier:
             older, count, older_invalid_dates, crossed_start = self._read_older_qfq_page(
                 fetch, boundary, result, invalid_dates
             )
-            if boundary not in older or any(result[day] != side for day, side in older.items() if day in result):
+            if (
+                boundary not in older
+                or any(result[day] != side for day, side in older.items() if day in result)
+                or invalid_dates.intersection(older)
+                or older_invalid_dates.intersection(result)
+            ):
                 raise _QfqPagePendingError(tuple(result.values()), "tencent_qfq_anchor_conflict", invalid_dates)
             new = {day: side for day, side in older.items() if day < boundary}
             if not new:

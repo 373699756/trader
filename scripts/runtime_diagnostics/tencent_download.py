@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sqlite3
 import time
 from collections import Counter
@@ -362,6 +363,20 @@ def _observe_history_response(
             first=date.fromisoformat(rows[0][0]).isoformat() if rows else None,
             last=date.fromisoformat(rows[-1][0]).isoformat() if rows else None,
         )
+        if row_kind == "qfqday":
+            invalid_dates = [
+                date.fromisoformat(row[0])
+                for row in rows
+                if isinstance(row, list)
+                and len(row) >= 5
+                and all(math.isfinite(float(row[index])) for index in (1, 2, 3, 4))
+                and any(float(row[index]) <= 0 for index in (1, 2, 3, 4))
+            ]
+            item.update(
+                nonpositive_ohlc_rows=len(invalid_dates),
+                first_nonpositive=invalid_dates[0].isoformat() if invalid_dates else None,
+                last_nonpositive=invalid_dates[-1].isoformat() if invalid_dates else None,
+            )
     except (ValueError, KeyError, TypeError, IndexError, AttributeError):
         item["response_metadata_invalid"] = True
     observations.append(item)

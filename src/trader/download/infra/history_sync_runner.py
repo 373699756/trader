@@ -106,8 +106,16 @@ class _HistorySync:
             target = pending.cutoff if pending else _latest_completed_daily_date(self.observed_at)
             inputs = self._prepare(active, pending, target)
             if inputs is None:
+                unresolved = (
+                    self.index.unresolved(tuple(_active_universe(self.control, active))) if active is not None else 0
+                )
                 return _status(
-                    "completed" if published else "already_current", None, self.configuration, active, self.observed_at
+                    "completed" if published else "already_current",
+                    "history_price_gaps_remaining" if unresolved else None,
+                    self.configuration,
+                    active,
+                    self.observed_at,
+                    unresolved_price_cells=unresolved,
                 )
             snapshot = self._download(inputs, active)
             published = True
@@ -353,7 +361,11 @@ def _download_tasks(
         if active is None or security.code not in previous:
             dates = expected
         else:
-            missing = {day for day in index.gaps(security.code) if day <= context.calendar.open_dates[-1]}
+            missing = {
+                day
+                for day in index.retryable_gaps(security.code, context.calendar.open_dates)
+                if day <= context.calendar.open_dates[-1]
+            }
             new = {day for day in expected if day > active.data_cutoff}
             anchors = tuple(day for day in expected if day <= active.data_cutoff)[-reread:] if new or missing else ()
             dates = tuple(sorted(missing | new | set(anchors)))

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+_QFQ_UNUSABLE_RECHECK_SESSIONS = 20
+
 
 @dataclass(frozen=True)
 class HistoryDownloadTask:
@@ -37,12 +39,15 @@ class HistoryDownloadCompletion:
     task: HistoryDownloadTask
     missing: tuple[date, ...]
     failure: str | None
+    unusable_qfq_dates: tuple[date, ...] = ()
 
     def __post_init__(self) -> None:
         if (
             self.missing != tuple(sorted(set(self.missing)))
             or not set(self.missing).issubset(self.task.dates)
             or (self.failure is not None and re.fullmatch(r"[a-z0-9_]{1,64}", self.failure) is None)
+            or self.unusable_qfq_dates != tuple(sorted(set(self.unusable_qfq_dates)))
+            or not set(self.unusable_qfq_dates).issubset(self.missing)
         ):
             raise ValueError("history_download_completion_invalid")
 
@@ -80,6 +85,10 @@ CREATE TABLE IF NOT EXISTS download_tasks (
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS download_gaps (
     code TEXT NOT NULL, trade_date TEXT NOT NULL, PRIMARY KEY(code,trade_date)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS download_qfq_unusable (
+    code TEXT NOT NULL, trade_date TEXT NOT NULL, checked_cutoff TEXT NOT NULL,
+    PRIMARY KEY(code,trade_date)
 ) WITHOUT ROWID;
 """
 
@@ -148,6 +157,35 @@ class HistoryDownloadIndex:
                 )
             )
 
+    def retryable_gaps(self, code: str, calendar_dates: tuple[date, ...]) -> tuple[date, ...]:
+        """Defer confirmed nonpositive qfq dates for a bounded market-session interval."""
+        if not calendar_dates:
+            raise ValueError("history_retry_calendar_invalid")
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """SELECT gap.trade_date, unusable.checked_cutoff
+                   FROM download_gaps AS gap
+                   LEFT JOIN download_qfq_unusable AS unusable
+                     ON unusable.code=gap.code AND unusable.trade_date=gap.trade_date
+                   WHERE gap.code=? ORDER BY gap.trade_date""",
+                (code,),
+            ).fetchall()
+        if not any(checked_cutoff is not None for _, checked_cutoff in rows):
+            return tuple(date.fromisoformat(trade_date) for trade_date, _ in rows)
+        if calendar_dates != tuple(sorted(set(calendar_dates))):
+            raise ValueError("history_retry_calendar_invalid")
+        positions = {day: index for index, day in enumerate(calendar_dates)}
+        cutoff_position = len(calendar_dates) - 1
+        retryable: list[date] = []
+        for trade_date, checked_cutoff in rows:
+            day = date.fromisoformat(trade_date)
+            if checked_cutoff is None or (
+                cutoff_position - positions.get(date.fromisoformat(checked_cutoff), -_QFQ_UNUSABLE_RECHECK_SESSIONS)
+                >= _QFQ_UNUSABLE_RECHECK_SESSIONS
+            ):
+                retryable.append(day)
+        return tuple(retryable)
+
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""
         with closing(self._connect()) as connection:
@@ -159,6 +197,10 @@ class HistoryDownloadIndex:
             raise ValueError("history_download_completions_invalid")
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            cutoff_row = connection.execute("SELECT cutoff FROM download_batch WHERE singleton=1").fetchone()
+            if cutoff_row is None:
+                raise ValueError("history_download_batch_missing")
+            checked_cutoff = cutoff_row[0]
             codes = tuple(item.task.code for item in completions)
             placeholders = ",".join("?" for _ in codes)
             gap_codes = {
@@ -170,6 +212,14 @@ class HistoryDownloadIndex:
             }
             for completion in completions:
                 task = completion.task
+                connection.executemany(
+                    "DELETE FROM download_qfq_unusable WHERE code=? AND trade_date=?",
+                    ((task.code, day.isoformat()) for day in task.dates),
+                )
+                connection.executemany(
+                    "INSERT INTO download_qfq_unusable VALUES(?,?,?)",
+                    ((task.code, day.isoformat(), checked_cutoff) for day in completion.unusable_qfq_dates),
+                )
                 if task.code in gap_codes:
                     connection.executemany(
                         "DELETE FROM download_gaps WHERE code=? AND trade_date=?",
@@ -191,7 +241,15 @@ class HistoryDownloadIndex:
             return int(connection.execute("SELECT attempts FROM download_tasks WHERE code=?", (code,)).fetchone()[0])
 
     def unresolved(self, codes: tuple[str, ...]) -> int:
-        return sum(len(self.gaps(code)) for code in codes)
+        selected = frozenset(codes)
+        if not selected:
+            return 0
+        with closing(self._connect()) as connection:
+            return sum(
+                count
+                for code, count in connection.execute("SELECT code,COUNT(*) FROM download_gaps GROUP BY code")
+                if code in selected
+            )
 
 
 __all__ = ["HistoryDownloadBatch", "HistoryDownloadCompletion", "HistoryDownloadIndex", "HistoryDownloadTask"]

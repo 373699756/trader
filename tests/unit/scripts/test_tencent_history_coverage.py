@@ -1,3 +1,4 @@
+import json
 from argparse import Namespace
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -38,3 +39,22 @@ def test_real_calendar_probe_does_not_call_a_short_response_passed(monkeypatch, 
     assert result == 0
     assert reports[0]["status"] == status
     assert reports[0]["summary"]["samples"][0]["missing_sessions"] == 2000 - returned
+
+
+def test_response_metadata_counts_nonpositive_qfq_without_exposing_prices():
+    rows = [
+        ["2026-01-01", "-1", "-1", "0", "-2"],
+        ["2026-01-02", "1", "1", "1", "1"],
+    ]
+    response = SimpleNamespace(
+        url="https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=sz000937,day,2026-01-01,2026-01-02,2,qfq",
+        status_code=200,
+        text="v=" + json.dumps({"data": {"sz000937": {"qfqday": rows}}}),
+    )
+    observations = []
+
+    tencent_download._observe_history_response(observations, response)
+
+    assert observations[0]["nonpositive_ohlc_rows"] == 1
+    assert observations[0]["first_nonpositive"] == "2026-01-01"
+    assert "-1" not in str(observations[0])
