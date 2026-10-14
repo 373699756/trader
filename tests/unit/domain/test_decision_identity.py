@@ -402,7 +402,7 @@ def test_selection_diagnostics_rejects_inconsistent_evaluated_aggregates() -> No
         SelectionDiagnostics(97.44, 78.0, 73.0, 6, 6, 0, 0, 2, evaluated_count=1)
 
 
-def test_formal_projection_preserves_evaluated_count_without_retaining_non_official_items() -> None:
+def test_formal_projection_retains_scored_leader_even_when_it_is_avoided() -> None:
     current = replace(
         decision(),
         items=(
@@ -433,8 +433,9 @@ def test_formal_projection_preserves_evaluated_count_without_retaining_non_offic
         committed_record_bytes(CommittedDecisionRecord(formal, NOW + timedelta(minutes=10), "scheduled"))
     )
 
-    assert formal.items == ()
-    assert restored.decision.items == ()
+    assert len(formal.items) == 1
+    assert formal.items[0].selected is False
+    assert restored.decision.items == formal.items
     assert restored.decision.selection_diagnostics is not None
     assert restored.decision.selection_diagnostics.evaluated_count == 239
 

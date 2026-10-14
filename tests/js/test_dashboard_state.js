@@ -97,7 +97,6 @@ const state = {
   renderPublicationStatus: sandbox.window.TraderStatusView.renderPublicationStatus,
   renderObservationStages: sandbox.window.TraderStatusView.renderObservationStages,
   renderSummary: sandbox.window.TraderStatusView.renderSummary,
-  topScoredStocks: sandbox.window.TraderStatusView.topScoredStocks,
   runtimeErrorRows: sandbox.window.TraderStatusView.runtimeErrorRows,
   updateQuoteAge: sandbox.window.TraderStatusView.updateQuoteAge,
   decisionPayloadCompatibility: sandbox.window.TraderReleaseContract.decisionPayloadCompatibility,
@@ -143,67 +142,6 @@ assert.notStrictEqual(
   "history_projection_loading",
 );
 assert(state, "dashboard state helpers were not exported into the test sandbox");
-assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.topScoredStocks(
-    { status: "ready", strategy: "tomorrow", score_status: "scored" },
-    [
-      { code: "600004", name: "第四股票", scores: { final_score: 80 } },
-      { code: "600002", name: "第二股票", scores: { final_score: 95 } },
-      { code: "600003", name: "第三股票", scores: { final_score: 85 } },
-      { code: "600001", name: "第一股票", scores: { final_score: 90 } },
-    ],
-  ))),
-  [
-    { score: 95, code: "600002", name: "第二股票", index: 1 },
-    { score: 90, code: "600001", name: "第一股票", index: 3 },
-    { score: 85, code: "600003", name: "第三股票", index: 2 },
-  ],
-);
-assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.topScoredStocks(
-    {
-      status: "ready",
-      strategy: "d25",
-      score_status: "scored",
-      top_scores: [
-        { code: "600009", name: "未入池最高分", scores: { final_score: 99 } },
-        { code: "600010", name: "未入池第二名", scores: { final_score: 98 } },
-        { code: "600011", name: "未入池第三名", scores: { final_score: 97 } },
-      ],
-    },
-    [{ code: "600001", name: "正式推荐", scores: { final_score: 80 } }],
-  ))),
-  [
-    { score: 99, code: "600009", name: "未入池最高分", index: 0 },
-    { score: 98, code: "600010", name: "未入池第二名", index: 1 },
-    { score: 97, code: "600011", name: "未入池第三名", index: 2 },
-  ],
-);
-assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.topScoredStocks(
-    {
-      status: "not_ready",
-      strategy: "tomorrow",
-      score_status: "scored",
-      draft: {
-        items: [{ code: "600005", name: "草稿观察股票", scores: { final_score: 71.5 } }],
-        top_scores: [{ code: "600007", name: "草稿未入池最高分", scores: { final_score: 72.5 } }],
-      },
-    },
-    [],
-  ))),
-  [{ score: 72.5, code: "600007", name: "草稿未入池最高分", index: 0 }],
-);
-assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.topScoredStocks(
-    { strategy: "d25", score_status: "scored" },
-    [
-      { code: "600003", name: "较低本地分", scores: { final_score: 79.45, local_score: 76 } },
-      { code: "600002", name: "较高本地分", scores: { final_score: 79.45, local_score: 78 } },
-    ],
-  ).map((item) => item.code))),
-  ["600002", "600003"],
-);
 const unselectedLeader = {
   code: "688199", name: "久日新材", selected: false,
   action: "observe", action_reason: "industry_limit", scores: { final_score: 79.45 },
@@ -220,36 +158,6 @@ assert.strictEqual(state.detailItem(configuredLongDetail, "600001").action, "obs
 assert.strictEqual(
   state.longGroupDisplayPayload({ strategy: "long", items: [{ code: "600001", price: 15.25 }] }).items[0].price,
   15.25,
-);
-const unifiedDraftSummary = summaryFixture();
-state.renderSummary(
-  unifiedDraftSummary,
-  {
-    status: "not_ready",
-    strategy: "tomorrow",
-    score_status: "scored",
-    coverage: { candidate_count: 360, evaluated_count: 0, rejected_count: 0 },
-    items: [],
-    draft: {
-      input_versions: { score_scale: "weighted_evidence_quality_0_100" },
-      top_scores: [{ code: "600007", name: "草稿未入池最高分", scores: { final_score: 72.5 } }],
-      items: [],
-    },
-  },
-  [],
-  "open",
-  null,
-  sandbox.window.TraderSelection,
-  sandbox.window.TraderRender,
-  {},
-);
-assert.strictEqual(unifiedDraftSummary.topScoresMeta.textContent, "统一最终评分 · 1 只");
-assert.deepStrictEqual(
-  JSON.parse(JSON.stringify(state.topScoredStocks(
-    { status: "ready", strategy: "tomorrow", historical: true, score_status: "scored" },
-    [{ code: "600006", name: "历史股票", scores: { final_score: 68 } }],
-  ))),
-  [{ score: 68, code: "600006", name: "历史股票", index: 0 }],
 );
 const scoreOnlySummary = summaryFixture();
 state.renderSummary(
@@ -278,72 +186,7 @@ state.renderSummary(
   sandbox.window.TraderRender,
   {},
 );
-assert.strictEqual(scoreOnlySummary.topScoresStatus.textContent, "最高分 55.00");
-assert.strictEqual(scoreOnlySummary.topScoresMeta.textContent, "统一最高最终分 · 当前无达到观察门槛的股票");
 assert.strictEqual(scoreOnlySummary.inputQualityScoreTime.textContent, "评分于 19:53:30 完成");
-const tomorrowCostGateSummary = summaryFixture();
-state.renderSummary(
-  tomorrowCostGateSummary,
-  {
-    status: "ready",
-    strategy: "tomorrow",
-    trade_date: "2026-08-14",
-    observed_at: "2026-08-14T14:49:30+08:00",
-    frozen: true,
-    score_status: "scored",
-    input_versions: { score_scale: "weighted_evidence_quality_0_100" },
-    coverage: { candidate_count: 5323, evaluated_count: 239, rejected_count: 5084 },
-    items: [],
-    selection_diagnostics: {
-      maximum_final_score: 70.25,
-      executable_threshold: 78,
-      observation_floor: 73,
-      empty_reason: "no_positive_net_utility",
-    },
-  },
-  [],
-  "closed",
-  null,
-  sandbox.window.TraderSelection,
-  sandbox.window.TraderRender,
-  {},
-);
-assert.strictEqual(tomorrowCostGateSummary.topScoresStatus.textContent, "最高统一评分 70.25");
-assert.strictEqual(
-  tomorrowCostGateSummary.topScoresMeta.textContent,
-  "统一 0–100 质量分 · 未通过成本门",
-);
-const tomorrowLegacyFrozenSummary = summaryFixture();
-state.renderSummary(
-  tomorrowLegacyFrozenSummary,
-  {
-    status: "ready",
-    strategy: "tomorrow",
-    trade_date: "2026-08-14",
-    observed_at: "2026-08-14T14:49:30+08:00",
-    frozen: true,
-    score_status: "scored",
-    coverage: { candidate_count: 5323, evaluated_count: 0, rejected_count: 5084 },
-    items: [],
-    selection_diagnostics: {
-      maximum_final_score: 97.44,
-      executable_threshold: 78,
-      observation_floor: 73,
-      empty_reason: "no_positive_net_utility",
-    },
-  },
-  [],
-  "closed",
-  null,
-  sandbox.window.TraderSelection,
-  sandbox.window.TraderRender,
-  {},
-);
-assert.strictEqual(tomorrowLegacyFrozenSummary.topScoresStatus.textContent, "暂无可核验评分");
-assert.strictEqual(
-  tomorrowLegacyFrozenSummary.topScoresMeta.textContent,
-  "明日冻结记录 · 已评分证据不完整",
-);
 assert.strictEqual(
   sandbox.window.TraderDashboardDiagnostics.snapshot().webSnapshotRetentionMs,
   35000,
@@ -430,8 +273,9 @@ function summaryFixture() {
     inputQualityStages: { textContent: "" },
     funnelStatus: { textContent: "" },
     funnelStages: { textContent: "" },
-    funnelScoreRange: { textContent: "" },
     funnelMeta: { textContent: "" },
+    sixSeatStatus: { textContent: "" },
+    sixSeatMeta: { textContent: "" },
     quoteSource: { textContent: "" },
     quoteAge: { textContent: "" },
     quoteTime: { textContent: "" },
@@ -442,16 +286,11 @@ function summaryFixture() {
     inputQualityScoreTime: { textContent: "" },
     publicationStatus: { textContent: "" },
     publicationMeta: { textContent: "" },
-    topScoresStatus: { textContent: "" },
-    topScoresMeta: { textContent: "" },
     observationStageList: { innerHTML: "" },
   };
 }
 const switchingElements = {
   ...summaryFixture(),
-  observationPool: { hidden: false },
-  observationPoolMeta: { textContent: "4 / 6", title: "旧策略门槛" },
-  observationPoolHint: { textContent: "旧策略提示" },
   recommendationTable: { classList: { remove() {}, add() {} } },
   tableColumns: { innerHTML: "" },
   tableHead: { innerHTML: "" },
@@ -468,11 +307,10 @@ const switchRenderer = sandbox.window.TraderStatusView.createDashboardStateRende
 );
 switchRenderer.renderLoadingState();
 assert.strictEqual(switchingElements.budgetStatus.textContent, "—");
-assert.strictEqual(switchingElements.observationPoolHint.textContent, "正在读取2-5策略观察池");
-assert.strictEqual(switchingElements.observationPoolMeta.textContent, "0 / 6");
+assert.ok(switchingElements.tableHead.innerHTML.includes("<th>排名</th><th>状态</th><th>股票</th>"));
 assert.strictEqual(switchingElements.longStockHeader.hidden, true);
 switchRenderer.renderMissingHistoricalDate("d25", "2026-10-13");
-assert.strictEqual(switchingElements.observationPoolHint.textContent, "2-5策略所选日期无观察池数据");
+assert.ok(switchingElements.tableHead.innerHTML.includes("<th>排名</th><th>状态</th><th>股票</th>"));
 const pipelineFixture = {
   current_stage: "action_gate",
   stages: [
@@ -681,16 +519,10 @@ assert.strictEqual(summaryElements.inputQualityStatus.textContent, "已评分 80
 assert.strictEqual(summaryElements.inputQualityMeta.textContent, "最高 82.00 · 阶段范围与门槛未保存");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "阶段观测不可用");
 assert.strictEqual(summaryElements.funnelStages.textContent, "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗");
-assert.strictEqual(summaryElements.funnelScoreRange.textContent, "82.00 · 最低未保存");
 assert.strictEqual(summaryElements.inputQualityStrategy.textContent, "明");
 assert.strictEqual(summaryElements.inputQualityScoreTime.textContent, "评分时间不可用");
 assert.strictEqual(summaryElements.publicationStatus.textContent, "实时滚动");
 assert.strictEqual(summaryElements.publicationMeta.textContent, "明 15:00 固化");
-assert.strictEqual(
-  summaryElements.topScoresStatus.textContent,
-  "1  82.00 · 600001 正式股票\n2  75.00 · 600002 观察股票",
-);
-assert.strictEqual(summaryElements.topScoresStatus.innerHTML, undefined);
 const persistedPipelineElements = summaryFixture();
 pipelineFixture.stage_snapshots = Array.from({ length: 14 }, (_value, index) => ({
   stage: ["data_source", "static_market", "static_standardize", "static_filter",
@@ -726,7 +558,6 @@ assert.ok(persistedPipelineElements.inputQualityStages.textContent.includes("完
 assert.strictEqual(persistedPipelineElements.funnelStatus.textContent, "评分链路已完成");
 assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("模型成本门"));
 assert.ok(!persistedPipelineElements.funnelStages.textContent.includes("最终入池"));
-assert.strictEqual(persistedPipelineElements.funnelScoreRange.textContent, "39.18–65.42");
 state.renderSummary(
   summaryElements,
   {
@@ -848,7 +679,6 @@ assert.strictEqual(
 assert.strictEqual(summaryElements.inputQualityBlockers.textContent, "本轮阻断：历史不足 282 只 · 必要资料缺失 240 只");
 assert.strictEqual(summaryElements.inputQualityDegradations.textContent, "仅降级，不代表股票存在风险：板块资料可靠度不足 240 只");
 assert.strictEqual(summaryElements.funnelStatus.textContent, "评分链路已完成");
-assert.strictEqual(summaryElements.funnelScoreRange.textContent, "41.25–74.25");
 assert.strictEqual(
   summaryElements.funnelMeta.textContent,
   "荐股链路计数待就绪 · 正式 2 · 观察 2",
@@ -1859,8 +1689,8 @@ assert.deepStrictEqual(
     new Set(),
   ))),
   [
-    { code: "600011", rank: 2, action: "executable" },
     { code: "600010", rank: 1, action: "observe" },
+    { code: "600011", rank: 2, action: "executable" },
   ],
 );
 assert.strictEqual(state.topKValid(merged), true);
@@ -1873,7 +1703,7 @@ assert.strictEqual(
   false,
 );
 assert.strictEqual(
-  state.topKValid(Array.from({ length: 12 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "tomorrow"),
+  state.topKValid(Array.from({ length: 6 }, (_value, index) => ({ code: String(600000 + index), rank: index + 1 })), "tomorrow"),
   true,
 );
 const splitPoolItems = [
@@ -1888,7 +1718,12 @@ const splitPoolItems = [
     action: "observe",
   })),
 ];
-assert.strictEqual(state.topKValid(splitPoolItems, "tomorrow"), true);
+assert.strictEqual(state.topKValid(splitPoolItems, "tomorrow"), false);
+assert.strictEqual(state.topKValid([
+  { code: "600100", rank: 1, action: "executable" },
+  { code: "600101", rank: 2, action: "observe" },
+  { code: "600102", rank: 3, action: "unavailable" },
+], "tomorrow"), true);
 assert.strictEqual(
   state.topKValid([
     ...splitPoolItems,
@@ -1945,7 +1780,7 @@ const mixedItems = [
 ];
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "tomorrow", historical: false, items: mixedItems }))),
-  [{ code: "600001", action: "executable" }],
+  mixedItems,
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "long", historical: false, items: mixedItems }))),
@@ -1953,7 +1788,7 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(state.visibleRecommendations({ strategy: "tomorrow", historical: true, items: mixedItems }))),
-  [{ code: "600001", action: "executable" }],
+  mixedItems,
 );
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(

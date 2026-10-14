@@ -12,7 +12,7 @@
 
   function createDashboardStateRenderer(els, state, selection, render) {
     const renderTableState = (message, columns, body) => {
-      (body || els.tableBody).innerHTML = `<tr><td class="table-state" colspan="${columns || 9}">${render.escapeHtml(message)}</td></tr>`;
+      (body || els.tableBody).innerHTML = `<tr><td class="table-state" colspan="${columns || 10}">${render.escapeHtml(message)}</td></tr>`;
     };
     const setLongLayout = (enabled) => {
       if (els.resultLayout) els.resultLayout.classList.toggle("is-long", Boolean(enabled));
@@ -24,6 +24,9 @@
       // Recommendation conclusions are rendered with the list and funnel, not as runtime errors.
     };
     const renderLoadingState = () => {
+      if (els.outcomeSummary) els.outcomeSummary.hidden = true;
+      els.sixSeatStatus.textContent = "待评分";
+      els.sixSeatMeta.textContent = "推荐 — · 关注 — · 回避 —";
       els.inputQualityStatus.textContent = "-";
       els.inputQualityMeta.textContent = "正在读取评分输入质量";
       els.inputQualityBlockers.textContent = "本轮阻断：待计算";
@@ -31,7 +34,6 @@
       els.inputQualityStages.textContent = "正在读取评分输入链路";
       els.funnelStatus.textContent = "等待评分输入";
       els.funnelStages.textContent = "输入、过滤、评分与发布按顺序执行";
-      els.funnelScoreRange.textContent = "—";
       els.funnelMeta.textContent = emptyFunnelSummary();
       if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">正在读取荐股评分链路</div>';
       els.quoteTime.textContent = "-";
@@ -43,12 +45,7 @@
       els.publicationMeta.textContent = "等待当前策略快照";
       els.budgetStatus.textContent = "—";
       els.budgetMeta.textContent = "等待当前策略预算状态";
-      renderTopScores(els, null, []);
       els.recommendationTable.classList.remove("is-history", "is-anchor-table", "is-long-table");
-      els.observationPool.hidden = true;
-      els.observationPoolMeta.textContent = "0 / 6";
-      els.observationPoolMeta.title = "";
-      els.observationPoolHint.textContent = `正在读取${selection.strategyLabel(state.strategy)}策略观察池`;
       setLongControls(state.strategy === "long");
       setLongLayout(false);
       const definition = render.currentTable();
@@ -60,6 +57,9 @@
       setNotice("正在读取推荐快照", "idle");
     };
     const renderMissingHistoricalDate = (strategy, selectedDate) => {
+      if (els.outcomeSummary) els.outcomeSummary.hidden = true;
+      els.sixSeatStatus.textContent = "无历史榜单";
+      els.sixSeatMeta.textContent = "推荐 0 · 关注 0 · 回避 0";
       state.payload = null;
       state.projectionVersion = "";
       els.inputQualityStatus.textContent = "—";
@@ -69,7 +69,6 @@
       els.inputQualityStages.textContent = "历史快照不重算评分输入链路";
       els.funnelStatus.textContent = "历史只读";
       els.funnelStages.textContent = "历史快照不重算逐层推荐漏斗";
-      els.funnelScoreRange.textContent = "—";
       els.funnelMeta.textContent = funnelSummary(null, null, null, 0, "不保存");
       if (els.observationStageList) els.observationStageList.innerHTML = '<div class="observation-stage-empty">历史快照不重算评分链路</div>';
       els.quoteTime.textContent = "-";
@@ -81,13 +80,8 @@
       els.publicationMeta.textContent = "所选日期无正式快照";
       els.budgetStatus.textContent = "—";
       els.budgetMeta.textContent = "历史日期无可用预算状态";
-      renderTopScores(els, null, []);
       els.recommendationTable.classList.add("is-history");
       els.recommendationTable.classList.remove("is-anchor-table", "is-long-table");
-      els.observationPool.hidden = true;
-      els.observationPoolMeta.textContent = "0 / 6";
-      els.observationPoolMeta.title = "";
-      els.observationPoolHint.textContent = `${selection.strategyLabel(strategy)}策略所选日期无观察池数据`;
       setLongControls(false);
       setLongLayout(false);
       if (els.longSidebar) els.longSidebar.hidden = true;
@@ -95,7 +89,7 @@
       const definition = render.historyTable();
       els.tableColumns.innerHTML = definition.columns;
       els.tableHead.innerHTML = definition.head;
-      renderTableState(`${selection.strategyLabel(strategy)}策略在 ${selectedDate} 没有荐股数据`, 6);
+      renderTableState(`${selection.strategyLabel(strategy)}策略在 ${selectedDate} 没有荐股数据`, 7);
       setNotice("已保留所选历史日期", "idle");
     };
     return { renderLoadingState, renderMissingHistoricalDate, renderTableState, setLongControls, setLongLayout, setNotice };
@@ -148,7 +142,6 @@
     if (payload.strategy === "long") {
       els.funnelStatus.textContent = "不适用";
       els.funnelStages.textContent = "长期固定观察池不经过短线过滤、评分与正式推荐链路";
-      els.funnelScoreRange.textContent = "不适用";
       els.funnelMeta.textContent = "长期固定观察池不评分、不产生推荐";
       renderObservationStages(els, null, null, true, []);
     } else if (pipeline) {
@@ -162,11 +155,9 @@
       if (!hasFunnelProgress) {
         els.funnelStatus.textContent = "等待评分输入";
         els.funnelStages.textContent = "评分链路尚未开始";
-        els.funnelScoreRange.textContent = "—";
       } else {
         els.funnelStatus.textContent = "评分链路已完成";
         els.funnelStages.textContent = decisionPipelineDetails(pipeline);
-        els.funnelScoreRange.textContent = finalScoreRange(pipeline);
       }
       els.funnelMeta.textContent = pipelineFunnelSummary(
         stageSnapshots,
@@ -186,7 +177,6 @@
       const legacy = legacyDecisionSummary(payload, evaluated, executableCount, observed, topScore);
       els.funnelStatus.textContent = "阶段观测不可用";
       els.funnelStages.textContent = "旧快照未保存逐阶段运行观测；不以聚合计数拼接漏斗";
-      els.funnelScoreRange.textContent = topScore === "—" ? "—" : `${topScore} · 最低未保存`;
       els.funnelMeta.textContent = `旧快照 · ${legacy.counts} · 正式 ${executableCount} · 观察 ${observed}`;
       renderObservationStages(els, null, null, false, runtimeIssues(statusPayload, payload.strategy), publicationIo(statusPayload, payload));
     }
@@ -200,7 +190,6 @@
           ? render.sourceLabel(strategySummary.latest_quote_source)
           : "来源不可用";
     renderBudgetSummary(els, statusPayload && statusPayload.deepseek_budget, payload);
-    renderTopScores(els, payload, items);
     els.inputQualityStrategy.textContent = selection.strategyLabel(payload.strategy);
     els.inputQualityScoreTime.textContent = payload.strategy === "long"
       ? "长期策略不评分"
@@ -642,82 +631,6 @@
     els.publicationMeta.textContent = `${strategy} ${cutoff} 固化`;
   }
 
-  function renderTopScores(els, payload, items) {
-    if (!els.topScoresStatus) return;
-    const scoredItems = topScoredStocks(payload, items);
-    const diagnostics = payload && payload.selection_diagnostics || {};
-    const tomorrowCostBlocked = payload && payload.strategy === "tomorrow"
-      && diagnostics.empty_reason === "no_positive_net_utility";
-    const scoreIdentity = payload && payload.input_versions && payload.input_versions.score_scale
-      ? payload.input_versions
-      : payload && payload.draft && payload.draft.input_versions;
-    const unifiedScale = scoreIdentity
-      && scoreIdentity.score_scale === "weighted_evidence_quality_0_100";
-    const evaluated = Number(payload && payload.coverage && payload.coverage.evaluated_count);
-    const scoreEvidenceMissing = tomorrowCostBlocked && Number.isInteger(evaluated) && evaluated === 0;
-    const maximum = scoreEvidenceMissing ? null : finiteNumber(diagnostics.maximum_final_score);
-    els.topScoresStatus.textContent = scoredItems.length
-      ? scoredItems.map((item, index) => `${index + 1}  ${item.score.toFixed(2)} · ${item.code} ${item.name}`).join("\n")
-      : scoreEvidenceMissing
-        ? "暂无可核验评分"
-        : maximum == null
-          ? "暂无评分数据"
-          : tomorrowCostBlocked
-            ? unifiedScale
-              ? `最高统一评分 ${maximum.toFixed(2)}`
-              : `最高相对信号分 ${maximum.toFixed(2)}`
-            : `最高分 ${maximum.toFixed(2)}`;
-    if (els.topScoresMeta) {
-      els.topScoresMeta.textContent = scoreEvidenceMissing
-        ? "明日冻结记录 · 已评分证据不完整"
-        : tomorrowCostBlocked
-          ? unifiedScale
-            ? "统一 0–100 质量分 · 未通过成本门"
-            : "旧明日相对排名 · 未通过成本门"
-          : scoredItems.length
-            ? unifiedScale
-              ? `统一最终评分 · ${scoredItems.length} 只`
-              : `策略内最终评分 · ${scoredItems.length} 只`
-            : maximum == null
-              ? unifiedScale
-                ? "统一最终评分 · 当前无可用数据"
-                : "策略内最终评分 · 当前无可用数据"
-              : unifiedScale
-                ? "统一最高最终分 · 当前无达到观察门槛的股票"
-                : "策略内最高最终分 · 当前无达到观察门槛的股票";
-    }
-  }
-
-  function topScoredStocks(payload, items) {
-    if (!payload || payload.strategy === "long" || payload.score_status === "not_applicable") {
-      return [];
-    }
-    const source = Array.isArray(payload.top_scores) && payload.top_scores.length
-      ? payload.top_scores
-      : Array.isArray(items) && items.length
-        ? items
-        : payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.top_scores)
-          && payload.draft.top_scores.length
-          ? payload.draft.top_scores
-          : payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.items)
-            ? payload.draft.items
-            : [];
-    return source
-      .map((item, index) => {
-        const scores = item && item.scores;
-        const score = finiteNumber(scores && (scores.final_score ?? scores.final));
-        const code = item && typeof item.code === "string" ? item.code.trim() : "";
-        const name = item && typeof item.name === "string" ? item.name.trim() : "";
-        const local = finiteNumber(scores && (scores.local_score ?? scores.local));
-        return score == null || !code || !name ? null : { score, local, code, name, index };
-      })
-      .filter(Boolean)
-      .sort((left, right) => right.score - left.score || (right.local ?? -1) - (left.local ?? -1)
-        || left.code.localeCompare(right.code) || left.index - right.index)
-      .slice(0, 3)
-      .map(({ score, code, name, index }) => ({ score, code, name, index }));
-  }
-
   function updateQuoteAge(els, payload, render, statusPayload) {
     const freshness = currentMarketFreshness(payload, statusPayload, null, null);
     const sourceTime = freshness.sourceTime;
@@ -852,13 +765,6 @@
       || (Array.isArray(stage.facets) && stage.facets.length > 0)
       || (Array.isArray(stage.reason_counts) && stage.reason_counts.length > 0)
     );
-  }
-
-  function finalScoreRange(pipeline) {
-    const fusion = pipelineStage(pipeline, "fusion");
-    if (!fusion || !["completed", "degraded"].includes(fusion.state)) return "—";
-    const range = metricRange(fusion, "final_score");
-    return range ? formatRange(range, 2) : "无样本";
   }
 
   function pipelineStage(pipeline, key) {
@@ -1097,11 +1003,9 @@
     renderHealth,
     renderInputQuality,
     renderPublicationStatus,
-    renderTopScores,
     renderSummary,
     renderObservationStages,
     setObservationTriggerAvailability,
-    topScoredStocks,
     runtimeErrorRows,
     updateQuoteAge,
   });

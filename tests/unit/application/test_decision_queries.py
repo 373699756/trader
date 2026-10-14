@@ -7,7 +7,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
+    DecisionQuerySources,
+    UnifiedDecisionQueries,
+)
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board, MarketQuote
@@ -142,7 +145,7 @@ def test_history_uses_only_newer_today_cached_quote_and_updates_projection() -> 
 
     cached = CachedQuotes()
     queries = UnifiedDecisionQueries(
-        UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), _Repository(record), _Clock(), cached
+        UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), _Repository(record), _Clock(), DecisionQuerySources(cached)
     )
     before = queries.history(Strategy.TOMORROW, record.trade_date)
     cached.quote = MarketQuote(
@@ -236,7 +239,7 @@ def test_scored_coverage_uses_distinct_evaluation_counts_not_overlapping_reasons
     assert dict(view.filter_reason_counts) == {"hard_filter": 10}
 
 
-def test_frozen_empty_decision_keeps_aggregate_evaluated_count_without_stock_items() -> None:
+def test_frozen_empty_recommendations_keep_scored_leader_for_research() -> None:
     trade_date = date(2026, 8, 8)
     item = replace(
         _decision(trade_date=trade_date).items[0],
@@ -274,7 +277,7 @@ def test_frozen_empty_decision_keeps_aggregate_evaluated_count_without_stock_ite
 
     history = queries.history(Strategy.TOMORROW, trade_date)
 
-    assert history.items == ()
+    assert [(item.code, item.rank, item.selected) for item in history.items] == [("600000", 1, False)]
     assert history.coverage.evaluated_count == 239
     assert history.selection_diagnostics is not None
     assert history.selection_diagnostics.maximum_final_score == 97.44
@@ -342,6 +345,7 @@ def test_scored_query_restores_rank_order_from_code_sorted_identity() -> None:
         ("600002", 86.0),
         ("600004", 81.0),
         ("600001", 75.0),
+        ("600003", 73.0),
     ]
 
 
@@ -387,9 +391,9 @@ def test_not_ready_current_exposes_observation_draft_without_formal_items() -> N
     assert view.decision_version is None
     assert view.draft is not None
     assert view.draft.decision_version == draft.version
-    assert [item.code for item in view.draft.items] == ["600001"]
+    assert [item.code for item in view.draft.items] == ["600002", "600001"]
     assert [item.code for item in view.draft.top_scores] == ["600002", "600001"]
-    assert view.draft.items[0].action == "observe"
+    assert view.draft.items[1].action == "observe"
     assert view.etag == draft.version
 
 

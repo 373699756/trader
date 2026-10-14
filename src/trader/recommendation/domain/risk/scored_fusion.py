@@ -603,6 +603,7 @@ def select_scored_action_pools(
     policy: ScoredDecisionPolicy,
 ) -> tuple[ScoredDecisionEntry, ...]:
     by_code = {item.code: item for item in entries}
+    leader_codes = {item.code for item in sorted(entries, key=_decision_order)[:6]}
     executable = _select_pool(
         tuple(item for item in entries if item.action is RecommendationAction.EXECUTABLE),
         limit=policy.top_k,
@@ -615,6 +616,9 @@ def select_scored_action_pools(
     )
     rank = 0
     for item, skip_reason in (*executable, *observations):
+        if item.code not in leader_codes:
+            by_code[item.code] = replace(item, decision_skip_reason="outside_score_top_six")
+            continue
         if skip_reason:
             by_code[item.code] = replace(item, decision_skip_reason=skip_reason)
             continue

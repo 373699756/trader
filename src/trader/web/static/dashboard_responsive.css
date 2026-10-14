@@ -31,11 +31,6 @@
     grid-column: 1 / -1;
   }
 
-  .observation-pool {
-    margin-right: 12px;
-    margin-left: 12px;
-  }
-
 }
 
 @media (max-width: 620px) {
@@ -93,6 +88,11 @@
 
   .date-control {
     grid-column: 1;
+  }
+
+  .profile-control {
+    grid-column: 1;
+    justify-content: space-between;
   }
 
   .strategy-tabs {

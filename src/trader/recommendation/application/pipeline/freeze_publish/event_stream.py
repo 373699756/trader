@@ -21,6 +21,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionQuote,
     LongProjection,
     SelectionDiagnostics,
+    scored_top_six,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -129,8 +130,8 @@ class UnifiedDecisionEventStream:
         decision = event.projection
         replacement = None
         if decision is not None:
-            selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
-            top_scores = tuple(sorted(decision.items, key=lambda item: (-item.final_score, item.code))[:3])
+            top_scores = scored_top_six(decision.items)
+            selected = top_scores
             replacement = DecisionReplacementPatch(
                 event.projection_version or event.decision_version,
                 decision.observed_at,

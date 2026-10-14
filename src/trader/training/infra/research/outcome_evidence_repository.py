@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
@@ -11,9 +12,11 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import OutcomeTierSummary
 from trader.recommendation.application.ports.decision_records import DecisionRecordPort
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.evaluation.models import (
     BenchmarkReturn,
     OutcomeTarget,
@@ -68,6 +71,26 @@ class SQLiteOutcomeEvidenceRepository:
             int(outcomes[1]),
             str(benchmark[1]) if benchmark[1] is not None else None,
             "",
+        )
+
+    def summaries(self, strategy: Strategy, *, limit: int = 31) -> tuple[OutcomeTierSummary, ...]:
+        """Read a bounded, tier-separated forward outcome summary without writing state."""
+
+        if limit < 1:
+            raise ValueError("summary limit must be positive")
+        identities, sample_counts = _summary_samples(self._decisions, strategy, limit)
+        completed = _summary_returns(self._database, strategy, identities)
+        return tuple(
+            OutcomeTierSummary(
+                tier,
+                horizon,
+                sample_counts.get((tier, horizon), 0),
+                len(values := completed.get((tier, horizon), [])),
+                sum(value > 0 for value in values),
+                sum(values) / len(values) if values else None,
+            )
+            for tier in ("recommend", "watch")
+            for horizon in outcome_horizons(strategy)
         )
 
     def initialize(self) -> None:
@@ -201,6 +224,77 @@ class SQLiteOutcomeEvidenceRepository:
                 yield connection
         finally:
             connection.close()
+
+
+_SummaryTier = Literal["recommend", "watch"]
+
+
+def _summary_samples(
+    decisions: DecisionRecordPort, strategy: Strategy, limit: int
+) -> tuple[dict[tuple[str, str], _SummaryTier], dict[tuple[_SummaryTier, int], int]]:
+    identities: dict[tuple[str, str], _SummaryTier] = {}
+    sample_counts: dict[tuple[_SummaryTier, int], int] = {}
+    for trade_date in decisions.list_dates(strategy, limit=limit):
+        record = decisions.load(strategy, trade_date)
+        if record is None:
+            continue
+        for item in record.decision.items:
+            if not item.selected or item.quote is None:
+                continue
+            tier: _SummaryTier = "recommend" if item.action is RecommendationAction.EXECUTABLE else "watch"
+            identities[(record.version, item.code)] = tier
+            for horizon in outcome_horizons(strategy):
+                key = (tier, horizon)
+                sample_counts[key] = sample_counts.get(key, 0) + 1
+    return identities, sample_counts
+
+
+def _summary_returns(
+    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier]
+) -> dict[tuple[_SummaryTier, int], list[float]]:
+    completed: dict[tuple[_SummaryTier, int], list[float]] = {}
+    if not database.is_file() or not identities:
+        return completed
+    for snapshot_id, stock_code, horizon, payload_hash, payload in _summary_rows(database, strategy, identities):
+        tier = identities.get((str(snapshot_id), str(stock_code)))
+        if tier is None:
+            continue
+        value = _summary_net_return(bytes(payload), str(payload_hash))
+        if value is not None:
+            completed.setdefault((tier, int(horizon)), []).append(value)
+    return completed
+
+
+def _summary_rows(
+    database: Path, strategy: Strategy, identities: dict[tuple[str, str], _SummaryTier]
+) -> list[tuple[str, str, int, str, bytes]]:
+    snapshot_ids = tuple(sorted({snapshot_id for snapshot_id, _code in identities}))
+    placeholders = ",".join("?" for _snapshot_id in snapshot_ids)
+    try:
+        target = f"file:{database.resolve()}?mode=ro"
+        with sqlite3.connect(target, timeout=5.0, uri=True) as connection:
+            return connection.execute(
+                "SELECT snapshot_id, stock_code, horizon, payload_hash, payload "
+                f"FROM recommendation_outcomes WHERE strategy = ? AND snapshot_id IN ({placeholders})",
+                (strategy.value, *snapshot_ids),
+            ).fetchall()
+    except sqlite3.Error as exc:
+        raise OutcomeEvidenceConflictError("outcome summary read failed") from exc
+
+
+def _summary_net_return(payload: bytes, payload_hash: str) -> float | None:
+    if _sha256(payload) != payload_hash:
+        raise OutcomeEvidenceConflictError("outcome summary payload hash mismatch")
+    try:
+        value = json.loads(payload)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OutcomeEvidenceConflictError("outcome summary payload is invalid") from exc
+    net = value.get("net_excess_return_pct")
+    if value.get("status") != "complete" or not isinstance(net, (int, float)):
+        return None
+    if not math.isfinite(net):
+        raise OutcomeEvidenceConflictError("outcome summary net excess is invalid")
+    return float(net)
 
 
 def _outcome_bytes(outcome: RecommendationOutcome) -> bytes:

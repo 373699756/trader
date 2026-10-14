@@ -57,29 +57,15 @@
           <strong id="inputQualityStatus">数据状态待确认</strong>
           <small id="inputQualityMeta">数据更新时间待确认</small>
         </div>
-        <div id="scoreRangePanel" class="summary-item" role="group" aria-labelledby="scoreRangeTitle">
-          <span id="scoreRangeTitle">评分范围</span>
-          <strong id="funnelScoreRange" class="funnel-score-range">—</strong>
-          <small id="topScoresMeta">策略内最终评分 · 当前无可用数据</small>
-        </div>
-        <div id="scoreLeadersPanel" class="summary-item score-leaders-summary" role="group" aria-labelledby="scoreLeadersTitle">
-          <span id="scoreLeadersTitle">评分最高的三只股票</span>
-          <div id="topScoresStatus" class="top-scores-list" role="status" aria-live="polite">暂无评分数据</div>
+        <div id="sixSeatPanel" class="summary-item" role="group" aria-labelledby="sixSeatTitle">
+          <span id="sixSeatTitle">六席状态</span>
+          <strong id="sixSeatStatus">待评分</strong>
+          <small id="sixSeatMeta">推荐 — · 关注 — · 回避 —</small>
         </div>
         <div class="summary-item"><span>模型预算</span><strong id="budgetStatus">-</strong><small id="budgetMeta">已用 / 剩余 · 上限 168 · 复核 0/0</small></div>
         <div class="summary-item"><span>发布状态</span><strong id="publicationStatus">-</strong><small id="publicationMeta">等待当前策略快照</small></div>
       </section>
       <section class="control-band" aria-label="策略和日期">
-        {% if scoring_profiles %}
-        <label class="date-control profile-control">
-          <span>评分档位</span>
-          <select id="profileSelect" aria-label="评分档位">
-            {% for profile in scoring_profiles %}
-            <option value="{{ profile }}"{% if profile == default_scoring_profile %} selected{% endif %}>{{ profile|upper }}</option>
-            {% endfor %}
-          </select>
-        </label>
-        {% endif %}
         <div class="strategy-choice">
           <nav class="strategy-tabs" role="tablist" aria-label="推荐策略" aria-describedby="strategyDescription">
             <button class="strategy-tab is-active" type="button" role="tab" aria-selected="true" data-strategy="tomorrow">明</button>
@@ -95,6 +81,16 @@
             <button class="long-scope-tab" type="button" role="tab" aria-selected="false" data-scope="low_price_potential">低价潜力股</button>
           </nav>
         </div>
+        {% if scoring_profiles %}
+        <div class="profile-control">
+          <span>评分档位</span>
+          <div class="profile-tabs" role="tablist" aria-label="评分档位">
+            {% for profile in scoring_profiles %}
+            <button class="profile-tab{% if profile == default_scoring_profile %} is-active{% endif %}" type="button" role="tab" data-profile="{{ profile }}" aria-selected="{% if profile == default_scoring_profile %}true{% else %}false{% endif %}">{{ profile|upper }}</button>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
         <label class="date-control">
           <span>推荐日期</span>
           <select id="dateSelect" aria-label="推荐日期">
@@ -128,32 +124,14 @@
               <colgroup id="tableColumns"></colgroup>
               <thead id="tableHead"></thead>
               <tbody id="tableBody">
-                <tr><td class="table-state" colspan="9">加载中</td></tr>
+                <tr><td class="table-state" colspan="10">加载中</td></tr>
               </tbody>
             </table>
           </div>
         </section>
       </section>
 
-      <section id="observationPool" class="observation-pool" aria-label="观察池" hidden>
-        <header class="observation-heading">
-          <div>
-            <span>观察池</span>
-            <h2>不可执行，仅供观察</h2>
-          </div>
-          <b id="observationPoolMeta">0 / 6</b>
-        </header>
-        <p id="observationPoolHint" class="observation-pool-hint">仅展示通过风险、成本及入池规则的股票</p>
-        <div class="table-scroll">
-          <table id="observationTable">
-            <colgroup id="observationColumns"></colgroup>
-            <thead id="observationHead"></thead>
-            <tbody id="observationBody">
-              <tr><td class="table-state" colspan="9">加载中</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
+      <section id="outcomeSummary" class="outcome-summary" aria-label="推荐与关注后续统计" hidden></section>
 
     </main>
 

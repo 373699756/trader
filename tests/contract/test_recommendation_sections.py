@@ -31,10 +31,11 @@ def test_dashboard_and_explanation_use_the_unified_short_horizon_score_scale() -
     normalized_design = " ".join(design.split())
 
     assert "统一评分最高" not in template
-    assert 'id="funnelScoreRange"' in template
-    assert 'id="topScoresMeta"' in template
-    assert 'id="scoreLeadersPanel"' in template
-    assert 'id="topScoresStatus"' in template
+    assert 'id="sixSeatStatus"' in template
+    assert 'id="sixSeatMeta"' in template
+    assert 'id="scoreRangePanel"' not in template
+    assert 'id="scoreLeadersPanel"' not in template
+    assert 'id="outcomeSummary"' in template
     assert "box-shadow: inset 3px 0 0 var(--blue)" not in dashboard_css
     assert template.index('id="funnelMeta"') < template.index('class="summary-band"')
     assert "Tomorrow、D25 的最终分共享同一 0–100 质量标尺" in normalized_scoring

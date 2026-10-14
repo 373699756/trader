@@ -440,17 +440,21 @@ def identity_codes(identity: DecisionIdentity) -> frozenset[str]:
     return frozenset(item.code for item in identity.items)
 
 
+def scored_top_six(items: tuple[DecisionItem, ...]) -> tuple[DecisionItem, ...]:
+    """Return the stable, score-ranked research six from one decision."""
+
+    return tuple(sorted(items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:6])
+
+
 def formal_scored_decision(
     decision: ScoredDecision,
     *,
     degraded_reasons: tuple[str, ...] = (),
     input_versions: tuple[tuple[str, str], ...] = (),
 ) -> ScoredDecision:
-    """Project an accepted scored identity to its immutable official-only form."""
+    """Project an accepted scored identity to its immutable six-row close form."""
 
-    official_items = tuple(
-        item for item in decision.items if item.selected and item.action is RecommendationAction.EXECUTABLE
-    )
+    official_items = scored_top_six(decision.items)
     return ScoredDecision(
         strategy=decision.strategy,
         trade_date=decision.trade_date,
@@ -839,4 +843,5 @@ __all__ = [
     "committed_record_identity_payload",
     "formal_scored_decision",
     "identity_codes",
+    "scored_top_six",
 ]

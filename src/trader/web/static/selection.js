@@ -61,9 +61,10 @@
   }
 
   function visibleRecommendations(payload) {
-    const items = payload && Array.isArray(payload.items) ? payload.items : [];
-    if (payload && payload.strategy === "long") return items;
-    return items.filter((item) => item.action === "executable");
+    const items = payload && payload.status === "not_ready" && payload.draft && Array.isArray(payload.draft.items)
+      ? payload.draft.items
+      : payload && Array.isArray(payload.items) ? payload.items : [];
+    return items;
   }
 
   function observationRecommendations(payload, runtimePhase, statusPayload) {

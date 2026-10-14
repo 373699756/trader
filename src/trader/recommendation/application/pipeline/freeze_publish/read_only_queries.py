@@ -34,8 +34,9 @@ from trader.recommendation.domain.publication.decision_identity import (
     LongProjectionItem,
     ScoredDecision,
     SelectionDiagnostics,
+    scored_top_six,
 )
-from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
+from trader.recommendation.domain.publication.models import Strategy
 
 DecisionViewStatus = Literal["ready", "not_ready", "not_applicable"]
 ScoreStatus = Literal["scored", "not_applicable"]
@@ -50,6 +51,26 @@ class DecisionHistoryReader(Protocol):
 
 class CachedQuoteReader(Protocol):
     def cached_quotes(self, codes: Sequence[str]) -> Mapping[str, MarketQuote]: ...
+
+
+@dataclass(frozen=True)
+class OutcomeTierSummary:
+    tier: Literal["recommend", "watch"]
+    horizon: int
+    sample_count: int
+    complete_count: int
+    positive_count: int
+    average_net_excess_pct: float | None
+
+
+class OutcomeSummaryReader(Protocol):
+    def summaries(self, strategy: Strategy, *, limit: int = 31) -> tuple[OutcomeTierSummary, ...]: ...
+
+
+@dataclass(frozen=True)
+class DecisionQuerySources:
+    cached_quotes: CachedQuoteReader | None = None
+    outcome_summaries: OutcomeSummaryReader | None = None
 
 
 @dataclass(frozen=True)
@@ -138,6 +159,7 @@ class DecisionView:
     selection_diagnostics: SelectionDiagnostics | None = None
     top_scores: tuple[DecisionItemView, ...] = ()
     pipeline: RecommendationPipelineStatus | None = None
+    outcome_summaries: tuple[OutcomeTierSummary, ...] = ()
     schema_version: str = DECISION_VIEW_SCHEMA_VERSION
 
     @property
@@ -154,13 +176,14 @@ class UnifiedDecisionQueries:
         drafts: UnifiedDecisionDraftIndex,
         history: DecisionHistoryReader,
         clock: Clock,
-        cached_quotes: CachedQuoteReader | None = None,
+        sources: DecisionQuerySources | None = None,
     ) -> None:
         self._index = index
         self._drafts = drafts
         self._history = history
         self._clock = clock
-        self._cached_quotes = cached_quotes
+        self._cached_quotes = sources.cached_quotes if sources is not None else None
+        self._outcome_summaries = sources.outcome_summaries if sources is not None else None
 
     def current(self, strategy: Strategy) -> DecisionView:
         now = self._clock.now()
@@ -196,7 +219,7 @@ class UnifiedDecisionQueries:
             return _empty_view(strategy, trade_date, "history", "scored", "formal_decision_unavailable")
         decision = record.decision
         selected = tuple(item for item in decision.items if item.selected)
-        top = tuple(sorted(decision.items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:3])
+        top = scored_top_six(decision.items)
         codes = tuple(sorted({item.code for item in (*selected, *top)}))
         cached = self._cached_quotes.cached_quotes(codes) if self._cached_quotes is not None else {}
         anchors = {item.code: item.quote for item in (*selected, *top)}
@@ -225,7 +248,13 @@ class UnifiedDecisionQueries:
                 quote.source_time,
                 quote.data_version,
             )
-        return _scored_view(decision, now, _ScoredViewInput("history", quotes, None, record))
+        view = _scored_view(decision, now, _ScoredViewInput("history", quotes, None, record))
+        if self._outcome_summaries is None:
+            return view
+        try:
+            return replace(view, outcome_summaries=self._outcome_summaries.summaries(strategy))
+        except (OSError, RuntimeError, ValueError):
+            return replace(view, degraded_reasons=(*view.degraded_reasons, "outcome_summary_unavailable"))
 
     def dates(self, strategy: Strategy, *, limit: int = 31) -> tuple[date, ...]:
         if strategy is Strategy.LONG:
@@ -269,18 +298,16 @@ def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: dat
 
 
 def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
-    selected = sorted(
-        (item for item in decision.items if item.selected and item.action is RecommendationAction.OBSERVE),
-        key=lambda item: item.rank,
+    top_scores = tuple(
+        replace(_scored_item(item, None), rank=rank)
+        for rank, item in enumerate(scored_top_six(decision.items), start=1)
     )
-    all_items = tuple(_scored_item(item, None) for item in decision.items)
-    top_scores = tuple(sorted(all_items, key=_top_score_order)[:3])
     return DecisionDraftView(
         decision.version,
         None,
         decision.observed_at,
         decision.input_versions,
-        tuple(_scored_item(item, None) for item in selected),
+        top_scores,
         top_scores,
     )
 
@@ -297,17 +324,14 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
     overlay_quotes = view_input.quotes
     view = view_input.view
     formal = view_input.formal
-    selected = tuple(sorted((item for item in decision.items if item.selected), key=lambda item: item.rank))
-    all_items = tuple(
-        _scored_item(item, overlay_quotes.get(item.code), historical=view == "history") for item in decision.items
-    )
-    items = tuple(_scored_item(item, overlay_quotes.get(item.code), historical=view == "history") for item in selected)
     top_scores = tuple(
-        sorted(
-            (item for item in all_items if item.final_score is not None),
-            key=_top_score_order,
-        )[:3]
+        replace(
+            _scored_item(item, overlay_quotes.get(item.code), historical=view == "history"),
+            rank=rank,
+        )
+        for rank, item in enumerate(scored_top_six(decision.items), start=1)
     )
+    items = top_scores
     coverage = scored_decision_coverage(decision)
     etag = _etag(decision.version, view_input.overlay_version)
     if view == "history":
@@ -533,6 +557,7 @@ def _etag(decision_version: str, overlay_version: str | None) -> str:
 
 __all__ = [
     "CachedQuoteReader",
+    "DecisionQuerySources",
     "DecisionDraftView",
     "DecisionHistoryReader",
     "DecisionItemView",

@@ -96,7 +96,10 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
     ScoredFreezeCoordinator,
 )
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
-from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
+from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (
+    DecisionQuerySources,
+    UnifiedDecisionQueries,
+)
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter, FreezeAdapter
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.local_score.base_scoring import LocalScoringService
@@ -479,6 +482,7 @@ class _PublicationDependencies:
     sequence: PublicationSequence
     records: SQLiteDecisionRecords
     market_data: MarketFeatureService
+    outcomes: SQLiteOutcomeEvidenceRepository
     additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
 
 
@@ -577,11 +581,7 @@ def build_system(
     publication = _build_publication(
         context,
         calendar,
-        _PublicationDependencies(
-            persistence.sequence,
-            persistence.records,
-            market_data,
-        ),
+        _PublicationDependencies(persistence.sequence, persistence.records, market_data, persistence.outcomes),
         publication_io=publication_io,
     )
     native_data = MarketInputCoordinator(
@@ -1132,7 +1132,8 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, market_data)
+    query_sources = DecisionQuerySources(market_data, dependencies.outcomes)
+    decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, query_sources)
     research_trace = SQLiteResearchTraceIndex(
         settings.runtime_dir,
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),

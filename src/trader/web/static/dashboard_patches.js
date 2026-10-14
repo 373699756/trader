@@ -12,7 +12,7 @@
   function recommendationPatchDecision(patch, payload, currentVersion, strategy, view) {
     if (!patchVersionValid(patch) || !Array.isArray(patch.upserts)
       || !Array.isArray(patch.removed_codes) || !Array.isArray(patch.removals || [])) return "schema_mismatch";
-    if (!patchCoverageValid(patch.coverage) || patch.coverage.selected_count !== patch.upserts.length) {
+    if (!patchCoverageValid(patch.coverage) || patch.coverage.selected_count > patch.upserts.length) {
       return "schema_mismatch";
     }
     if (!patch.projection_version || !patch.snapshot_id
@@ -385,8 +385,6 @@
       if (item && item.code) byCode.set(item.code, item);
     }
     return Array.from(byCode.values()).sort((left, right) => {
-      const actionDifference = actionOrder(left && left.action) - actionOrder(right && right.action);
-      if (actionDifference !== 0) return actionDifference;
       const leftRank = Number(left.rank);
       const rightRank = Number(right.rank);
       if (Number.isFinite(leftRank) && Number.isFinite(rightRank) && leftRank !== rightRank) return leftRank - rightRank;
@@ -446,20 +444,16 @@
   }
 
   function topKValid(items, strategy) {
-    if (!Array.isArray(items) || (strategy !== "long" && items.length > 12)) return false;
+    if (!Array.isArray(items) || (strategy !== "long" && items.length > 6)) return false;
     const codes = items.map((item) => item && item.code);
     const ranks = items.map((item) => Number(item && item.rank));
-    const executableCount = items.filter((item) => item && item.action === "executable").length;
-    const observationCount = items.filter((item) => item && item.action === "observe").length;
     const unsupportedAction = items.some(
-      (item) => item && item.action && !["executable", "observe"].includes(item.action),
+      (item) => item && item.action && !["executable", "observe", "unavailable"].includes(item.action),
     );
-    const poolRanks = items.map((item, index) => `${actionOrder(item && item.action)}:${ranks[index]}`);
     return codes.every((code) => typeof code === "string" && code)
       && new Set(codes).size === codes.length
-      && ranks.every((rank) => Number.isInteger(rank) && rank > 0)
-      && (strategy === "long" ? new Set(ranks).size === ranks.length : new Set(poolRanks).size === poolRanks.length)
-      && (strategy === "long" || executableCount <= 6 && observationCount <= 6 && !unsupportedAction);
+      && ranks.every((rank, index) => Number.isInteger(rank) && rank === index + 1)
+      && (strategy === "long" || !unsupportedAction);
   }
 
   window.TraderDashboardPatches = Object.freeze({

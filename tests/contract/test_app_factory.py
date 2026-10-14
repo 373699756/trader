@@ -39,7 +39,7 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="long-panel-title">卡脖子行业<' in page
     assert 'data-scope="future_growth"' in page
     assert 'data-scope="low_price_potential"' in page
-    assert page.count("summary-item") == 5
+    assert page.count("summary-item") == 4
     assert 'id="healthPanel"' not in page
     assert 'id="healthBadge"' in page
     assert 'id="errorDetailsButton"' in page
@@ -61,23 +61,23 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="quoteCoverageStatus"' not in page
     assert 'id="quoteCoverageMeta"' not in page
     assert 'id="funnelStatus"' in page
-    assert 'id="funnelScoreRange"' in page
+    assert 'id="funnelScoreRange"' not in page
     runtime_start = page.index('class="runtime-strip"')
     assert runtime_start < page.index('id="inputQualityStrategy"') < page.index('id="runtimeStatus"')
     assert runtime_start < page.index('id="funnelMeta"') < page.index('id="runtimeStatus"')
     data_status_start = page.index('id="inputQualityPanel"')
-    score_range_start = page.index('id="scoreRangePanel"')
-    score_leaders_start = page.index('id="scoreLeadersPanel"')
+    six_seat_start = page.index('id="sixSeatPanel"')
     model_budget_start = page.index('id="budgetStatus"')
     observation_start = page.index('id="observationDrawer"')
-    assert data_status_start < page.index('id="inputQualityStatus"') < score_leaders_start
-    assert data_status_start < page.index('id="inputQualityMeta"') < score_leaders_start
-    assert score_range_start < page.index('id="funnelScoreRange"') < score_leaders_start
-    assert score_range_start < page.index('id="topScoresMeta"') < score_leaders_start
-    assert 'id="scoreRangeTitle">评分范围</span>' in page
-    assert 'id="scoreLeadersTitle">评分最高的三只股票</span>' in page
-    assert score_leaders_start < page.index('id="topScoresStatus"') < model_budget_start
-    assert page.index('id="topScoresStatus"') < observation_start
+    assert data_status_start < page.index('id="inputQualityStatus"') < model_budget_start
+    assert data_status_start < page.index('id="inputQualityMeta"') < model_budget_start
+    assert six_seat_start < page.index('id="sixSeatStatus"') < model_budget_start
+    assert six_seat_start < page.index('id="sixSeatMeta"') < model_budget_start
+    assert 'id="sixSeatTitle">六席状态</span>' in page
+    assert 'id="scoreRangePanel"' not in page
+    assert 'id="scoreLeadersPanel"' not in page
+    assert 'id="outcomeSummary"' in page
+    assert model_budget_start < observation_start
     assert 'id="snapshotDate"' not in page
     assert 'id="snapshotStrategy"' not in page
     assert 'id="snapshotMeta"' not in page
@@ -85,7 +85,7 @@ def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
     assert 'id="noticeText"' not in page
     assert 'id="publicationStatus"' in page
     assert 'id="publicationMeta"' in page
-    assert 'id="topScoresStatus"' in page
+    assert 'id="topScoresStatus"' not in page
     assert "<title>策略</title>" in page
     assert 'aria-label="策略"' in page
     assert "<h1>策略</h1>" in page

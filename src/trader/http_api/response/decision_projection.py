@@ -74,6 +74,17 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
         "degraded_reasons": list(view.degraded_reasons),
         "items": [serialize_decision_item(item) for item in view.items],
         "top_scores": [serialize_decision_item(item) for item in view.top_scores],
+        "outcome_summaries": [
+            {
+                "tier": item.tier,
+                "horizon": item.horizon,
+                "sample_count": item.sample_count,
+                "complete_count": item.complete_count,
+                "positive_count": item.positive_count,
+                "average_net_excess_pct": item.average_net_excess_pct,
+            }
+            for item in view.outcome_summaries
+        ],
         "draft": (
             {
                 "decision_version": view.draft.decision_version,
@@ -207,6 +218,7 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
         "group": item.group,
         "selected": item.selected,
         "rank": item.rank,
+        "tier": _decision_tier(item.selected, item.action),
         "selection_rank": item.selection_rank,
         "action": item.action,
         "action_reason": item.action_reason,
@@ -345,8 +357,12 @@ def _serialize_decision_replacement(
         "base_projection_version": "",
         "removed_codes": [],
         "removals": [],
-        "upserts": [_serialize_decision_patch_item(item) for item in replacement.items],
-        "top_scores": [_serialize_decision_patch_item(item) for item in replacement.top_scores],
+        "upserts": [
+            _serialize_decision_patch_item(item, rank=rank) for rank, item in enumerate(replacement.items, start=1)
+        ],
+        "top_scores": [
+            _serialize_decision_patch_item(item, rank=rank) for rank, item in enumerate(replacement.top_scores, start=1)
+        ],
         "view": "live",
         "current_trade_date": payload.trade_date,
         "phase": payload.stage,
@@ -384,14 +400,16 @@ def _serialize_decision_replacement(
     }
 
 
-def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
+def _serialize_decision_patch_item(item: DecisionItem, *, rank: int) -> dict[str, object]:
     quote = item.quote
     components = dict(item.score_components)
     downside = item.downside
     coverage = item.research_coverage
     model = item.model_diagnostics
     return {
-        "rank": item.rank,
+        "rank": rank,
+        "selected": item.selected,
+        "tier": _decision_tier(item.selected, item.action.value),
         "selection_rank": item.selection_rank,
         "code": item.code,
         "name": item.name,
@@ -454,6 +472,14 @@ def _serialize_decision_patch_item(item: DecisionItem) -> dict[str, object]:
             else [{"risk_code": code} for code in item.risk_codes]
         ),
     }
+
+
+def _decision_tier(selected: bool, action: str) -> str:
+    if selected and action == "executable":
+        return "recommend"
+    if selected and action == "observe":
+        return "watch"
+    return "avoid"
 
 
 def _research_components(components: ResearchComponentCoverage | None) -> dict[str, str] | None:

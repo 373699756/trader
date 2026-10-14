@@ -301,7 +301,10 @@ def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
         4,
         "industry_limit",
     )
-    assert (by_code["600006"].selection_rank, by_code["600006"].decision_skip_reason) == (7, "top_k_limit")
+    assert (by_code["600006"].selection_rank, by_code["600006"].decision_skip_reason) == (
+        7,
+        "outside_score_top_six",
+    )
     assert tuple(item.code for item in executable) == tuple(
         item.code
         for item in sorted(

@@ -113,25 +113,23 @@
   function init() {
     for (const id of [
       "marketPhase", "runtimeDot", "runtimeStatus", "quoteSource", "quoteTime", "quoteAge", "quoteFreshness", "streamStatus",
-      "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta", "topScoresStatus", "topScoresMeta",
-      "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelScoreRange", "funnelMeta",
+      "budgetStatus", "budgetMeta", "publicationStatus", "publicationMeta",
+      "refreshButton", "dateSelect", "strategyDescription", "inputQualityPanel", "inputQualityStatus", "inputQualityMeta", "inputQualityBlockers", "inputQualityDegradations", "inputQualityStages", "funnelStatus", "funnelStages", "funnelMeta",
       "inputQualityStrategy", "inputQualityScoreTime", "healthBadge", "errorDetailsButton",
-      "recommendationTable", "tableColumns", "tableHead", "tableBody",
-      "observationPool", "observationPoolMeta", "observationPoolHint", "observationTable", "observationColumns", "observationHead", "observationBody",
+      "recommendationTable", "tableColumns", "tableHead", "tableBody", "outcomeSummary", "sixSeatStatus", "sixSeatMeta",
       "longScopeTabs", "longIndustryTabs", "longStockHeader", "longStockContext",
       "detailDrawer", "drawerBackdrop", "drawerCode", "drawerTitle", "drawerContent", "drawerClose",
       "observationDrawer", "observationErrorContent", "observationDrawerClose", "observationDrawerTitle", "observationErrorCount", "observationStageList",
     ]) els[id] = document.getElementById(id);
-    els.profileSelect = document.getElementById("profileSelect");
     Object.assign(els, { resultLayout: document.getElementById("recommendation-layout"), longSidebar: document.getElementById("long-sidebar"), longTitle: document.getElementById("long-panel-title"), longMeta: document.getElementById("long-panel-meta") });
     stateRenderer = statusView.createDashboardStateRenderer(els, state, selection, window.TraderRender);
     errorDrawer = window.TraderErrorDrawer.createErrorDrawer(els, closeDrawer, syncDrawerBackdrop);
     document.querySelectorAll(".strategy-tab").forEach((button) => {
       button.addEventListener("click", () => selectStrategy(button.dataset.strategy));
     });
-    if (els.profileSelect) {
-      els.profileSelect.addEventListener("change", () => selectProfile(els.profileSelect.value));
-    }
+    document.querySelectorAll(".profile-tab").forEach((button) => {
+      button.addEventListener("click", () => selectProfile(button.dataset.profile));
+    });
     els.longScopeTabs.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-scope]");
       if (!button || state.longScope === button.dataset.scope) return;
@@ -151,7 +149,7 @@
       loadRecommendations("date");
     });
     els.refreshButton.addEventListener("click", () => loadRecommendations("manual"));
-    [els.tableBody, els.observationBody].forEach((body) => {
+    [els.tableBody].forEach((body) => {
       body.addEventListener("click", selectRow);
       body.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === " ") selectRow(event);
@@ -200,16 +198,25 @@
 
   async function selectProfile(profile) {
     if (!["v2", "v3"].includes(profile) || profile === state.profile) return;
+    const strategy = state.strategy;
     state.profile = profile;
+    document.querySelectorAll(".profile-tab").forEach((button) => {
+      const active = button.dataset.profile === profile;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+    });
     state.payload = null;
     state.payloads.clear();
     state.etags.clear();
+    state.inflight.clear();
     state.lastEventId = 0;
     state.projectionVersion = "";
     state.selectionSequence += 1;
     state.requestSequence += 1;
+    stateRenderer.renderLoadingState();
     streamController.connect();
-    await initializeStrategy();
+    await loadStatus();
+    if (state.profile === profile) await selectStrategy(strategy);
   }
 
   async function selectStrategy(strategy) {
@@ -317,6 +324,7 @@
         state.payload = payload;
         state.projectionVersion = patches.projectionVersion(payload);
         if (["overlay", "history_overlay"].includes(reason) && patchLiveRows(previous, payload)) {
+          renderOutcomeSummary(payload);
           statusView.renderSummary(
             els,
             payload,
@@ -460,6 +468,7 @@
       industry: item.industry || "",
       group: item.group || null,
       selected: item.selected === true,
+      tier: item.tier || "avoid",
       selection_rank: item.selection_rank || 0,
       price: quote.price,
       pct_change: quote.pct_change,
@@ -543,33 +552,7 @@
       state.longGroup,
     );
     const observationState = selection.observationDisplayState(payload, state.runtimePhase, state.statusPayload);
-    const observations = selection.observationRecommendations(payload, state.runtimePhase, state.statusPayload);
-    const showObservationPool = ["open", "empty", "warming", "unavailable"].includes(observationState);
-    els.observationPool.hidden = !showObservationPool;
-    const observationLimit = Number(payload.selection_diagnostics && payload.selection_diagnostics.observation_limit);
-    const observationFloorValue = payload.selection_diagnostics && payload.selection_diagnostics.observation_floor;
-    const executableThresholdValue = payload.selection_diagnostics && payload.selection_diagnostics.executable_threshold;
-    const observationFloor = observationFloorValue == null ? Number.NaN : Number(observationFloorValue);
-    const executableThreshold = executableThresholdValue == null ? Number.NaN : Number(executableThresholdValue);
-    const limitText = `${observations.length} / ${Number.isInteger(observationLimit) && observationLimit > 0 ? observationLimit : 6}`;
-    els.observationPoolMeta.textContent = Number.isFinite(observationFloor)
-      ? `${limitText} · 门槛 ${observationFloor.toFixed(2)}`
-      : limitText;
-    els.observationPoolMeta.title = Number.isFinite(observationFloor) && Number.isFinite(executableThreshold)
-      ? `观察门槛 = 正式门槛 ${executableThreshold.toFixed(2)} - 观察余量 ${(executableThreshold - observationFloor).toFixed(2)}`
-      : "";
-    const scoredLeaders = Array.isArray(payload.top_scores) && payload.top_scores.length
-      ? payload.top_scores
-      : payload.draft && Array.isArray(payload.draft.top_scores) ? payload.draft.top_scores : [];
-    const highScoreOutsidePool = Number.isFinite(observationFloor) && scoredLeaders.some((item) => {
-      const score = item && item.scores && item.scores.final_score;
-      return item && item.selected !== true && score != null && Number(score) >= observationFloor;
-    });
-    const observationLabel = selection.strategyLabel(payload.strategy);
-    els.observationPoolHint.textContent = highScoreOutsidePool
-      ? `${observationLabel}策略有高分股票未入池；分数之外还须通过成本、风险、名额与集中度规则。`
-      : `${observationLabel}策略观察池仅展示通过成本、风险、名额与集中度规则的入选股票。`;
-    const firstVisible = recommendations[0] || observations[0] || items[0];
+    const firstVisible = recommendations[0] || items[0];
     statusView.renderSummary(
       els,
       payload,
@@ -580,6 +563,8 @@
       window.TraderRender,
       state.statusPayload,
     );
+    renderSixSeatSummary(payload, recommendations);
+    renderOutcomeSummary(payload);
     refreshSelectedDetail(payload);
     renderHealth(state.statusPayload || {});
     const definition = window.TraderRender.tableDefinition(payload);
@@ -588,29 +573,7 @@
     els.recommendationTable.classList.toggle("is-long-table", payload.strategy === "long" && !historical);
     els.tableColumns.innerHTML = definition.columns;
     els.tableHead.innerHTML = definition.head;
-    if (showObservationPool) {
-      const observationDefinition = window.TraderRender.observationTableDefinition(payload);
-      els.observationTable.classList.remove("is-anchor-table");
-      els.observationColumns.innerHTML = observationDefinition.columns;
-      els.observationHead.innerHTML = observationDefinition.head;
-    } else {
-      els.observationTable.classList.remove("is-anchor-table");
-      els.observationColumns.innerHTML = "";
-      els.observationHead.innerHTML = "";
-      els.observationBody.innerHTML = "";
-    }
-    if (payload.status === "not_ready") {
-      if (showObservationPool) {
-        if (observations.length) {
-          els.observationBody.innerHTML = window.TraderRender.observationTableRows(observations, payload);
-        } else {
-          stateRenderer.renderTableState(
-            selection.observationEmptyMessage(observationState),
-            window.TraderRender.observationTableColumnCount(payload),
-            els.observationBody,
-          );
-        }
-      }
+    if (payload.status === "not_ready" && recommendations.length === 0) {
       const readinessStatus = statusView.recommendationReadinessStatus(payload, state.statusPayload);
       const notReady = patches.notReadyMessage(payload, readinessStatus);
       stateRenderer.renderTableState(notReady.message, window.TraderRender.tableColumnCount(payload));
@@ -620,33 +583,19 @@
     }
     if (recommendations.length === 0) {
       const emptyMessage = historical
-        ? "当前门槛下没有历史推荐结果"
+        ? "所选日期没有评分榜单"
         : payload.strategy === "long"
           ? longGroups.emptyMessage(payload, state.longScope)
           : payload.frozen
             ? patches.frozenEmptyMessage(payload)
             : patches.emptyRecommendationMessage(
               payload,
-              observations.length,
+              0,
               statusView.recommendationReadinessStatus(payload, state.statusPayload),
             );
       stateRenderer.renderTableState(emptyMessage, window.TraderRender.tableColumnCount(payload));
     } else {
       els.tableBody.innerHTML = window.TraderRender.tableRows(recommendations, payload);
-    }
-    if (showObservationPool) {
-      if (observations.length) {
-        els.observationBody.innerHTML = window.TraderRender.observationTableRows(observations, payload);
-      } else {
-        const message = recommendations.length
-          ? "本轮无观察项；入选股票均为正式推荐"
-          : patches.emptyRecommendationMessage(
-            payload,
-            0,
-            statusView.recommendationReadinessStatus(payload, state.statusPayload),
-          );
-        stateRenderer.renderTableState(message, window.TraderRender.observationTableColumnCount(payload), els.observationBody);
-      }
     }
     const notice = patches.snapshotNotice(
       payload,
@@ -655,6 +604,43 @@
     stateRenderer.setNotice(notice.message, notice.level);
     stampRowIdentities(payload);
     updateQuoteAge();
+  }
+  function renderSixSeatSummary(payload, recommendations) {
+    if (payload.strategy === "long") {
+      els.sixSeatStatus.textContent = "不适用";
+      els.sixSeatMeta.textContent = "长期观察名单不评分";
+      return;
+    }
+    const counts = { recommend: 0, watch: 0, avoid: 0 };
+    for (const item of recommendations) {
+      if (Object.hasOwn(counts, item.tier)) counts[item.tier] += 1;
+    }
+    els.sixSeatStatus.textContent = payload.status === "not_ready" && recommendations.length === 0
+      ? "待评分" : recommendations.length ? `${recommendations.length} / 6 只` : "合法空榜";
+    els.sixSeatMeta.textContent = `推荐 ${counts.recommend} · 关注 ${counts.watch} · 回避 ${counts.avoid}`;
+  }
+  function renderOutcomeSummary(payload) {
+    if (!els.outcomeSummary) return;
+    const historical = payload && payload.historical === true && payload.strategy !== "long";
+    els.outcomeSummary.hidden = !historical;
+    if (!historical) return;
+    const summaries = Array.isArray(payload.outcome_summaries) ? payload.outcome_summaries : [];
+    const lines = summaries.map((item) => {
+      const label = item.tier === "recommend" ? "推荐" : "关注";
+      const complete = Number(item.complete_count) || 0;
+      const total = Number(item.sample_count) || 0;
+      const positive = Number(item.positive_count) || 0;
+      const average = item.average_net_excess_pct;
+      const mean = average == null || !Number.isFinite(Number(average))
+        ? "—" : `${Number(average).toFixed(2)}%`;
+      const winRate = complete ? `${(positive / complete * 100).toFixed(1)}%` : "—";
+      return `${label} T+${item.horizon}：已结算 ${complete}/${total} · 平均净超额 ${mean} · 胜率 ${winRate}`;
+    });
+    const unavailable = Array.isArray(payload.degraded_reasons)
+      && payload.degraded_reasons.includes("outcome_summary_unavailable");
+    els.outcomeSummary.textContent = unavailable
+      ? "推荐与关注的后续统计暂不可用"
+      : `近 31 个冻结交易日 · 推荐与关注分别统计\n${lines.join("\n") || "暂无可统计样本"}`;
   }
   function patchLiveRows(previous, payload) {
     if (!previous || !payload || previous.snapshot_id !== payload.snapshot_id) return false;
@@ -732,9 +718,11 @@
   }
 
   async function loadStatus() {
+    const requestedProfile = state.profile;
     try {
       const response = await fetch(`/api/status${profileQuery() ? `?${profileQuery()}` : ""}`, { cache: "no-store" });
       const payload = await response.json();
+      if (requestedProfile !== state.profile) return null;
       if (!response.ok) throw new Error("运行状态接口暂不可用");
       const compatibility = releaseContract.statusPayloadCompatibility(payload);
       if (!compatibility.compatible) throw releaseContract.mismatchError(compatibility.reason);
@@ -769,6 +757,7 @@
       }
       return payload;
     } catch (error) {
+      if (requestedProfile !== state.profile) return null;
       if (releaseContract.isMismatchError(error)) {
         renderReleaseMismatch(error.reason);
         return null;
@@ -792,6 +781,9 @@
   }
 
   function renderReleaseMismatch(reason) {
+    if (els.outcomeSummary) els.outcomeSummary.hidden = true;
+    els.sixSeatStatus.textContent = "版本不一致";
+    els.sixSeatMeta.textContent = "请重启服务";
     state.releaseMismatch = true;
     state.statusPayload = null;
     state.runtimePhase = "";
@@ -804,7 +796,6 @@
     els.streamStatus.textContent = "已阻止";
     if (state.stream) state.stream.close();
     state.stream = null;
-    els.observationPool.hidden = true;
     stateRenderer.renderTableState("服务版本不一致，请重启");
     stateRenderer.setNotice("页面资源已更新，但后台仍是旧版本；正常停止旧服务后重新执行 ./run.sh serve", "error");
   }
@@ -914,19 +905,14 @@
     const recommendationRows = new Map(
       Array.from(els.tableBody.querySelectorAll("tr[data-code]")).map((row) => [row.dataset.code, row]),
     );
-    const observationRows = new Map(
-      Array.from(els.observationBody.querySelectorAll("tr[data-code]")).map((row) => [row.dataset.code, row]),
-    );
     for (const item of after) {
       const prior = beforeByCode.get(item.code);
       if (!prior || prior.action !== item.action || prior.selected !== item.selected || prior.rank !== item.rank) return false;
       if (!changedCodes.has(item.code)) continue;
-      const currentRow = recommendationRows.get(item.code) || observationRows.get(item.code);
+      const currentRow = recommendationRows.get(item.code);
       if (!currentRow) continue;
       const holder = document.createElement("tbody");
-      holder.innerHTML = recommendationRows.has(item.code)
-        ? window.TraderRender.tableRows([item], payload)
-        : window.TraderRender.observationTableRows([item], payload);
+      holder.innerHTML = window.TraderRender.tableRows([item], payload);
       if (!holder.firstElementChild) return false;
       holder.firstElementChild.dataset.rowIdentity = rowIdentity(payload, item.code);
       currentRow.replaceWith(holder.firstElementChild);
@@ -1012,9 +998,6 @@
   function stampRowIdentities(payload) {
     if (!payload || !Array.isArray(payload.items)) return;
     els.tableBody.querySelectorAll("tr[data-code]").forEach((row) => {
-      row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
-    });
-    els.observationBody.querySelectorAll("tr[data-code]").forEach((row) => {
       row.dataset.rowIdentity = rowIdentity(payload, row.dataset.code);
     });
   }

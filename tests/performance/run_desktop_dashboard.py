@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-import re
 import shutil
 import socket
 import subprocess
@@ -17,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import websocket
@@ -26,7 +25,7 @@ from werkzeug.serving import make_server
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.http_api.route_services import UnifiedWebServices  # noqa: E402
+from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices  # noqa: E402
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import (  # noqa: E402
     UnifiedDecisionDraftIndex,
 )
@@ -73,30 +72,13 @@ class _BrowserHistory:
         return ()
 
 
-class _ObservationResult(TypedDict):
-    strategy: str
-    visible: bool
-    rows: int
-    count: str
-    quote_complete: bool
-    quote_fields: list[str]
-    codes: list[str]
-    final_scores: list[float]
-    ranked_high_first: bool
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument(
-        "--score-cards-only", action="store_true", help="check score cards and table detail interaction"
-    )
     parser.add_argument("--filter-counts-only", action="store_true", help="check filter disposition counts")
     args = parser.parse_args()
     try:
-        report = _run(
-            args.output.parent, score_cards_only=args.score_cards_only, filter_counts_only=args.filter_counts_only
-        )
+        report = _run(args.output.parent, filter_counts_only=args.filter_counts_only)
     except Exception as exc:
         report = {
             "schema_version": REPORT_SCHEMA,
@@ -109,7 +91,7 @@ def main() -> int:
     return 0 if report["passed"] else 1
 
 
-def _run(output_dir: Path, *, score_cards_only: bool = False, filter_counts_only: bool = False) -> dict[str, object]:
+def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, object]:
     driver_binary = shutil.which("geckodriver")
     app_port = _free_port()
     services, publish_empty_draft = _browser_services()
@@ -155,364 +137,113 @@ def _run(output_dir: Path, *, score_cards_only: bool = False, filter_counts_only
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
         if filter_counts_only:
             return _filter_counts(base, browser_name)
-        if score_cards_only:
-            return _score_cards(base, output_dir, browser_name)
-        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
-        _wait(
-            lambda: (
-                _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "等待评分输入"
-                and _execute(base, 'return document.querySelector("#publicationStatus").textContent;') == "采集中"
-                and _execute(base, 'return document.querySelector("#quoteSource").textContent;') == "腾讯行情"
-            ),
-            "collecting funnel",
-        )
-        not_ready_summary = _execute(
-            base,
-            """
-            return {
-              age: document.querySelector('#quoteAge').textContent,
-              source: document.querySelector('#quoteSource').textContent,
-              inputQuality: document.querySelector('#inputQualityStatus').textContent,
-              inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
-              inputStages: document.querySelector('#inputQualityStages').textContent,
-              funnel: document.querySelector('#funnelStatus').textContent,
-              funnelStages: document.querySelector('#funnelStages').textContent,
-              funnelMeta: document.querySelector('#funnelMeta').textContent,
-              budgetMeta: document.querySelector('#budgetMeta').textContent,
-              publicationStatus: document.querySelector('#publicationStatus').textContent,
-              publicationMeta: document.querySelector('#publicationMeta').textContent,
-            };
-            """,
-        )
-        _wait(
-            lambda: (
-                _integer(_execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;'))
-                == 2
-            ),
-            "tomorrow observation draft",
-        )
-        _wait(
-            lambda: _execute(base, 'return document.querySelector("#funnelStatus").textContent;') == "评分链路已完成",
-            "quality funnel",
-        )
-        _wait(
-            lambda: "600009" in str(_execute(base, 'return document.querySelector("#topScoresStatus").textContent;')),
-            "data status top scores",
-        )
-        quality_summary = _execute(
-            base,
-            """
-            return {
-              inputQuality: document.querySelector('#inputQualityStatus').textContent,
-              inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
-              inputStages: document.querySelector('#inputQualityStages').textContent,
-              funnel: document.querySelector('#funnelStatus').textContent,
-              funnelStages: document.querySelector('#funnelStages').textContent,
-              scoreRange: document.querySelector('#funnelScoreRange').textContent,
-              funnelMeta: document.querySelector('#funnelMeta').textContent,
-              topScores: document.querySelector('#topScoresStatus').textContent,
-              topScoresMeta: document.querySelector('#topScoresMeta').textContent,
-              topScoresHeight: document.querySelector('#topScoresStatus').getBoundingClientRect().height,
-              topScoresBelowTitle: document.querySelector('#topScoresStatus').getBoundingClientRect().top
-                >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom,
-              topScoresLineHeight: parseFloat(getComputedStyle(document.querySelector('#topScoresStatus')).lineHeight),
-              source: document.querySelector('#quoteSource').textContent,
-            };
-            """,
-        )
         output_dir.mkdir(parents=True, exist_ok=True)
-        _set_viewport(base, 1440, 900)
-        quality_screenshot = _screenshot(base)
-        (output_dir / "desktop-data-status-1440x900.png").write_bytes(base64.b64decode(str(quality_screenshot)))
-        observations: list[_ObservationResult] = []
-        expected_top_codes = {"tomorrow": "600009", "d25": "600010"}
+        snapshots: list[dict[str, object]] = []
         for strategy in ("tomorrow", "d25"):
             _execute(base, f'document.querySelector(".strategy-tab[data-strategy={strategy}]").click(); return true;')
             _wait(
                 lambda: (
-                    bool(_execute(base, 'return !document.querySelector("#observationPool").hidden;'))
-                    and _integer(
-                        _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
-                    )
-                    > 0
+                    _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;'))
+                    == 2
                 ),
-                f"{strategy} observation rows",
+                f"{strategy} scored rows",
             )
-            ranking = _execute(
-                base,
-                """
-                const rows = Array.from(document.querySelectorAll('#observationBody tr[data-code]'));
-                return {
-                  codes: rows.map((row) => row.dataset.code),
-                  finalScores: rows.map((row) => Number(row.querySelectorAll('.score-stack b')[3].textContent)),
-                };
-                """,
-            )
-            if not isinstance(ranking, dict):
-                raise RuntimeError("browser observation ranking must be an object")
-            codes = [str(code) for code in ranking.get("codes", [])]
-            final_scores = [float(score) for score in ranking.get("finalScores", [])]
-            raw_quote_fields = _execute(
-                base,
-                """
-                return Array.from(document.querySelector('#observationBody tr[data-code]').cells)
-                  .slice(2, 6).map((cell) => cell.textContent.trim());
-                """,
-            )
-            if not isinstance(raw_quote_fields, list):
-                raise RuntimeError("browser observation quote fields must be a list")
-            observations.append(
-                {
-                    "strategy": strategy,
-                    "visible": not bool(_execute(base, 'return document.querySelector("#observationPool").hidden;')),
-                    "rows": _integer(
-                        _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
-                    ),
-                    "count": str(_execute(base, 'return document.querySelector("#funnelMeta").textContent;')),
-                    "quote_complete": bool(
-                        _execute(
-                            base,
-                            """
-                            const cells = Array.from(document.querySelector('#observationBody tr[data-code]').cells)
-                              .slice(2, 6).map((cell) => cell.textContent.trim());
-                            return cells.length === 4
-                              && cells[0] !== '-'
-                              && cells[1] !== '-'
-                              && !cells[2].includes('换手 -')
-                              && cells[3] !== '-';
-                            """,
-                        )
-                    ),
-                    "quote_fields": [str(value) for value in raw_quote_fields],
-                    "codes": codes,
-                    "final_scores": final_scores,
-                    "ranked_high_first": (
-                        codes[:1] == [expected_top_codes[strategy]]
-                        and len(final_scores) == 2
-                        and final_scores[0] > final_scores[1]
-                    ),
-                }
-            )
+            snapshot = _six_seat_snapshot(base)
+            snapshots.append({"strategy": strategy, **snapshot})
+        _execute(base, 'document.querySelector(".profile-tab[data-profile=v3]").click(); return true;')
+        _wait(
+            lambda: bool(
+                _execute(
+                    base,
+                    """
+                return ['status', 'decisions/d25/dates', 'decisions/d25/current'].every((path) =>
+                  performance.getEntriesByType('resource').some((entry) =>
+                    entry.name.includes('/api/' + path) && entry.name.includes('profile=v3')));
+            """,
+                )
+            ),
+            "v3 profile requests",
+        )
+        profile_switch = _execute(
+            base,
+            """
+            return {selected: document.querySelector('.profile-tab[aria-selected=true]')?.dataset.profile,
+              before_date: document.querySelector('.profile-control').getBoundingClientRect().right
+                <= document.querySelector('.date-control').getBoundingClientRect().left,
+              rows: document.querySelectorAll('#tableBody tr[data-code]').length};
+        """,
+        )
+        _execute(base, 'document.querySelector(".profile-tab[data-profile=v2]").click(); return true;')
+        _wait(
+            lambda: bool(
+                _execute(
+                    base, "return Boolean(document.querySelector('.profile-tab[data-profile=v2][aria-selected=true]'));"
+                )
+            ),
+            "v2 profile selection",
+        )
         publish_empty_draft()
+        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=d25]").click(); return true;')
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
         _wait(
-            lambda: str(_execute(base, 'return document.querySelector("#tableBody").textContent.trim();')).startswith(
-                "评分已完成｜最高分 74.25"
-            ),
-            "scored-empty recommendation explanation",
+            lambda: _execute(base, 'return document.querySelector("#tableBody .tier-tag")?.textContent;') == "回避",
+            "avoided scored rows",
         )
-        empty_observation = {
-            "visible": not bool(_execute(base, 'return document.querySelector("#observationPool").hidden;')),
-            "rows": _integer(
-                _execute(base, 'return document.querySelectorAll("#observationBody tr[data-code]").length;')
-            ),
-            "message": str(_execute(base, 'return document.querySelector("#observationBody").textContent.trim();')),
-            "summary": str(_execute(base, 'return document.querySelector("#funnelMeta").textContent;')),
-            "recommendation_message": str(
-                _execute(base, 'return document.querySelector("#tableBody").textContent.trim();')
-            ),
-            "top_scores": str(_execute(base, 'return document.querySelector("#topScoresStatus").textContent;')),
-            "top_scores_below_title": bool(
-                _execute(
-                    base,
-                    """
-                    return document.querySelector('#topScoresStatus').getBoundingClientRect().top
-                      >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom;
-                    """,
-                )
-            ),
-        }
-        highest_score_layout = _execute(
-            base,
-            """
-            const score = document.querySelector('#topScoresStatus');
-            window.TraderStatusView.renderTopScores({
-              topScoresStatus: score, topScoresMeta: document.querySelector('#topScoresMeta')
-            }, {strategy: 'd25', selection_diagnostics: {maximum_final_score: 70.78}}, []);
-            return {
-              text: score.textContent,
-              belowTitle: score.getBoundingClientRect().top
-                >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom
-            };
-            """,
-        )
-        (output_dir / "desktop-highest-score-1440x900.png").write_bytes(base64.b64decode(str(_screenshot(base))))
-        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
-        _wait(
-            lambda: (
-                _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
-            ),
-            "long table rows",
-        )
-        _wait(
-            lambda: bool(
-                _execute(
-                    base,
-                    """
-                    const row = document.querySelector('#tableBody tr[data-code="688127"]');
-                    const values = row ? Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent.trim()) : [];
-                    return values.length > 0 && !values.includes('-');
-                    """,
-                )
-            ),
-            "long quote fields",
-        )
-        long_quote_fields = _execute(
-            base,
-            """
-            const row = document.querySelector('#tableBody tr[data-code="688127"]');
-            const values = row ? Array.from(row.querySelectorAll('td')).map((cell) => cell.textContent.trim()) : [];
-            return { code: row && row.dataset.code, values, complete: values.length > 0 && !values.includes('-') };
-            """,
-        )
-        long_observation_guard = _execute(
-            base,
-            """
-            const button = document.querySelector('#errorDetailsButton');
-            const drawer = document.querySelector('#observationDrawer');
-            const result = {
-              disabled: button.disabled,
-              label: document.querySelector('#healthBadge').textContent,
-              drawerOpenBefore: drawer.classList.contains('is-open'),
-            };
-            button.click();
-            result.drawerOpenAfter = drawer.classList.contains('is-open');
-            return result;
-            """,
-        )
-        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
-        _wait(
-            lambda: not bool(_execute(base, 'return document.querySelector("#errorDetailsButton").disabled;')),
-            "tomorrow observation trigger enabled",
-        )
-        _set_viewport(base, 1440, 900)
-        _execute(base, 'document.querySelector("#errorDetailsButton").click(); return true;')
-        _wait(
-            lambda: bool(
-                _execute(base, 'return document.querySelector("#observationDrawer").classList.contains("is-open");')
-            ),
-            "error drawer open",
-        )
-        error_details = {
-            "visible": bool(
-                _execute(base, 'return document.querySelector("#observationDrawer").classList.contains("is-open");')
-            ),
-            "raw_code_hidden_from_header": not bool(
-                _execute(base, 'return document.querySelector("#healthBadge").textContent.includes("refresh:");')
-            ),
-            "scores_absent": bool(
-                _execute(
-                    base,
-                    """
-                    const drawer = document.querySelector('#observationDrawer');
-                    return !drawer.contains(document.querySelector('#funnelScoreRange'))
-                      && !drawer.contains(document.querySelector('#topScoresStatus'));
-                    """,
-                )
-            ),
-        }
-        detail_screenshot = _screenshot(base)
-        (output_dir / "desktop-error-details-1440x900.png").write_bytes(base64.b64decode(str(detail_screenshot)))
-        _execute(base, 'document.querySelector("#observationDrawerClose").click(); return true;')
-        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
-        _wait(
-            lambda: (
-                _integer(_execute(base, 'return document.querySelectorAll("#tableBody tr[data-code]").length;')) > 0
-            ),
-            "long table rows after observation guard",
-        )
+        avoided = _six_seat_snapshot(base)
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
-        scripts = _execute(base, "return Array.from(document.scripts).map((item) => item.src);")
-        expected = "/static/dashboard.js"
+        _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
+        _wait(
+            lambda: bool(_execute(base, 'return Boolean(document.querySelector("#tableBody tr[data-code]"));')),
+            "long rows",
+        )
+        long_state = _execute(
+            base,
+            """
+            const row = document.querySelector('#tableBody tr[data-code]');
+            row.click();
+            const drawer = document.querySelector('#detailDrawer');
+            const opened = drawer.classList.contains('is-open');
+            document.querySelector('#drawerClose').click();
+            return {rows: document.querySelectorAll('#tableBody tr[data-code]').length,
+              status: document.querySelector('#sixSeatStatus').textContent,
+              opened, closed: !drawer.classList.contains('is-open')};
+            """,
+        )
         passed = (
-            isinstance(scripts, list)
-            and any(expected in str(script) for script in scripts)
-            and all(
-                item["visible"]
-                and item["rows"] == 2
-                and "观察 2" in item["count"]
-                and item["quote_complete"]
-                and item["ranked_high_first"]
-                for item in observations
+            all(
+                item.get("headers", [])[:3] == ["排名", "状态", "股票"]
+                and item.get("codes") == expected_codes
+                and item.get("ranks") == [1, 2]
+                and item.get("tiers") == ["关注", "关注"]
+                and item.get("tier_colors_distinct") is True
+                and item.get("cards") == 4
+                and item.get("six_seat") == "2 / 6 只"
+                and item.get("browser_errors") == []
+                for item, (_, expected_codes) in zip(
+                    snapshots, (("tomorrow", ["600009", "600001"]), ("d25", ["600010", "600002"])), strict=True
+                )
             )
-            and empty_observation
-            == {
-                "visible": True,
-                "rows": 0,
-                "message": (
-                    "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
-                    "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
-                    "公司风险历史暂不可核验（1只）"
-                ),
-                "summary": ("旧快照 · 总体 218 · 已评分 2 · 拒绝 216 · 正式 0 · 观察 0"),
-                "recommendation_message": (
-                    "评分已完成｜最高分 74.25，距离正式线 3.75；达到观察线 2只、正式线 0只；"
-                    "主要原因：评分未达到执行门槛（54只）、风险事实触发限制（2只）、"
-                    "公司风险历史暂不可核验（1只）"
-                ),
-                "top_scores": "1  74.25 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁",
-                "top_scores_below_title": True,
-            }
-            and highest_score_layout == {"text": "最高分 70.78", "belowTitle": True}
-            and error_details["visible"] is True
-            and error_details["raw_code_hidden_from_header"] is True
-            and error_details["scores_absent"] is True
-            and isinstance(long_quote_fields, dict)
-            and long_quote_fields.get("complete") is True
-            and long_observation_guard
-            == {
-                "disabled": True,
-                "label": "观察不适用",
-                "drawerOpenBefore": False,
-                "drawerOpenAfter": False,
-            }
-            and isinstance(not_ready_summary, dict)
-            and bool(re.fullmatch(r"(?:\d+时 )?(?:\d+分 )?\d+秒", str(not_ready_summary.get("age"))))
-            and not_ready_summary.get("source") == "腾讯行情"
-            and not_ready_summary.get("inputQuality") == "数据待就绪"
-            and not_ready_summary.get("inputQualityMeta") == "行情 360 / 360 · 基础资料与历史待就绪"
-            and "动态过滤 待开始" in str(not_ready_summary.get("inputStages"))
-            and "定向行情 360→360" in str(not_ready_summary.get("inputStages"))
-            and not_ready_summary.get("funnel") == "等待评分输入"
-            and not_ready_summary.get("funnelMeta") == "荐股链路待启动 · 正式 0 · 观察 已关闭"
-            and "上限 168" in str(not_ready_summary.get("budgetMeta"))
-            and not_ready_summary.get("publicationStatus") == "采集中"
-            and not_ready_summary.get("publicationMeta") == "等待本轮正式结果"
-            and isinstance(quality_summary, dict)
-            and quality_summary.get("inputQuality") == "可评分 56 / 候选 360"
-            and str(quality_summary.get("inputQualityMeta", "")).startswith(
-                "历史 78 / 360 · 21.7% · 证券资料 120 / 360"
-            )
-            and "动态过滤 1000→500" in str(quality_summary.get("inputStages"))
-            and "输入完整性 行情360/360 · 证券资料120/360 · 历史78/360" in str(quality_summary.get("inputStages"))
-            and quality_summary.get("funnel") == "评分链路已完成"
-            and "模型成本门" not in str(quality_summary.get("funnelStages"))
-            and "动作门 达观察线" not in str(quality_summary.get("funnelStages"))
-            and quality_summary.get("scoreRange") == "40.00–74.25"
-            and quality_summary.get("funnelMeta")
-            == "荐股链路 5291→5291→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
-            and quality_summary.get("topScores") == "1  74.00 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁"
-            and quality_summary.get("topScoresBelowTitle") is True
-            and float(quality_summary.get("topScoresHeight", 0))
-            >= 2 * float(quality_summary.get("topScoresLineHeight", 0))
-            and quality_summary.get("topScoresMeta") == "策略内最终评分 · 2 只"
-            and quality_summary.get("source") == "腾讯行情"
+            and avoided.get("codes") == ["600009", "600001"]
+            and avoided.get("ranks") == [1, 2]
+            and avoided.get("tiers") == ["回避", "回避"]
+            and avoided.get("six_seat_meta") == "推荐 0 · 关注 0 · 回避 2"
+            and profile_switch == {"selected": "v3", "before_date": True, "rows": 2}
             and all(_viewport_passed(viewport) for viewport in viewports)
+            and isinstance(long_state, dict)
+            and long_state.get("rows", 0) > 0
+            and long_state.get("status") == "不适用"
+            and long_state.get("opened") is True
+            and long_state.get("closed") is True
         )
         return {
             "schema_version": REPORT_SCHEMA,
             "passed": passed,
             "browser": browser_name,
-            "observations": observations,
-            "empty_observation": empty_observation,
-            "not_ready_summary": not_ready_summary,
-            "quality_summary": quality_summary,
-            "error_details": error_details,
-            "long_quote_fields": long_quote_fields,
-            "long_observation_guard": long_observation_guard,
+            "snapshots": snapshots,
+            "avoided": avoided,
+            "profile_switch": profile_switch,
+            "long": long_state,
             "viewports": viewports,
-            "highest_score_layout": highest_score_layout,
-            "scripts": scripts,
             "external_network_calls": 0,
         }
     finally:
@@ -571,101 +302,39 @@ def _filter_counts(base: str | _ChromeSession, browser_name: str) -> dict[str, o
     }
 
 
-def _score_cards(base: str | _ChromeSession, output_dir: Path, browser_name: str) -> dict[str, object]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
-    _wait(
-        lambda: bool(_execute(base, 'return document.querySelector("#tableBody tr[data-code]");')),
-        "long table for detail regression",
-    )
-    table_detail = _execute(
+def _six_seat_snapshot(base: str | _ChromeSession) -> dict[str, object]:
+    result = _execute(
         base,
         """
-        const row = document.querySelector('#tableBody tr[data-code]');
-        row.click();
-        const drawer = document.querySelector('#detailDrawer');
-        const opened = drawer.classList.contains('is-open');
-        document.querySelector('#drawerClose').click();
-        return opened && !drawer.classList.contains('is-open');
+        const rows = Array.from(document.querySelectorAll('#tableBody tr[data-code]'));
+        const tierColors = ['recommend', 'watch', 'avoid'].map((tier) => {
+          const tag = document.createElement('span');
+          tag.className = 'tier-tag';
+          tag.dataset.tier = tier;
+          document.body.appendChild(tag);
+          const color = getComputedStyle(tag).color;
+          tag.remove();
+          return color;
+        });
+        return {
+          headers: Array.from(document.querySelectorAll('#tableHead th')).map((cell) => cell.textContent.trim()),
+          codes: rows.map((row) => row.dataset.code),
+          ranks: rows.map((row) => Number(row.cells[0].textContent)),
+          tiers: rows.map((row) => row.cells[1].textContent.trim()),
+          cards: document.querySelectorAll('.summary-band > .summary-item').length,
+          six_seat: document.querySelector('#sixSeatStatus').textContent,
+          six_seat_meta: document.querySelector('#sixSeatMeta').textContent,
+          tier_colors_distinct: new Set(tierColors).size === 3,
+          browser_errors: window.TraderDashboardDiagnostics.snapshot().browserErrors,
+        };
         """,
     )
-    results: list[dict[str, object]] = []
-    for width, height in VIEWPORTS:
-        _set_viewport(base, width, height)
-        result = _execute(
-            base,
-            r"""
-            const panel = document.querySelector('#scoreLeadersPanel');
-            const title = document.querySelector('#scoreLeadersTitle');
-            const range = document.querySelector('#scoreRangePanel');
-            const scores = document.querySelector('#topScoresStatus');
-            const meta = document.querySelector('#topScoresMeta');
-            const drawer = document.querySelector('#detailDrawer');
-            const items = [
-              {code: '600001', name: '示例股票甲', scores: {final_score: 69.09}},
-              {code: '600002', name: '示例股票乙', scores: {final_score: 66.18}},
-              {code: '600003', name: '示例股票丙', scores: {final_score: 61.18}},
-            ];
-            const cases = [];
-            for (const strategy of ['tomorrow', 'd25', 'long']) {
-              for (const count of [0, 1, 2, 3, 0, 3]) {
-                const payload = {strategy, top_scores: items.slice(0, count), input_versions: {
-                  score_scale: 'weighted_evidence_quality_0_100'
-                }};
-                window.TraderStatusView.renderTopScores({topScoresStatus: scores, topScoresMeta: meta}, payload, []);
-                scores.click();
-                const cardBox = panel.getBoundingClientRect();
-                const titleBox = title.getBoundingClientRect();
-                const listBox = scores.getBoundingClientRect();
-                const visibleCount = strategy === 'long' ? 0 : count;
-                const expected = visibleCount ? items.slice(0, visibleCount).map((item, index) =>
-                  `${index + 1}  ${item.scores.final_score.toFixed(2)} · ${item.code} ${item.name}`).join('\n')
-                  : '暂无评分数据';
-                cases.push({strategy, count,
-                  listHeight: scores.clientHeight, contentHeight: scores.scrollHeight,
-                  passed:
-                  scores.textContent === expected && scores.childElementCount === 0
-                  && !drawer.classList.contains('is-open')
-                  && title.textContent === '评分最高的三只股票' && titleBox.height > 0
-                  && titleBox.top >= cardBox.top && titleBox.bottom <= listBox.top
-                  && listBox.bottom <= cardBox.bottom
-                  && listBox.top + scores.scrollHeight <= cardBox.bottom
-                  && scores.scrollWidth <= scores.clientWidth
-                  && !document.documentElement.querySelector('#scoreLeadersPanel button, #scoreLeadersPanel a')
-                  && range.querySelector('#scoreRangeTitle').textContent === '评分范围'
-                  && range.contains(meta) && !panel.contains(meta)
-                  && range.getBoundingClientRect().right < cardBox.left
-                  && document.querySelectorAll('.summary-band > .summary-item').length === 5
-                  && document.documentElement.scrollWidth <= document.documentElement.clientWidth
-                  && new Set(Array.from(document.querySelectorAll('.summary-item')).map(
-                    card => card.getBoundingClientRect().height)).size === 1
-                });
-              }
-            }
-            window.TraderStatusView.renderTopScores({topScoresStatus: scores, topScoresMeta: meta},
-              {strategy: 'tomorrow', top_scores: items,
-                input_versions: {score_scale: 'weighted_evidence_quality_0_100'}}, []);
-            document.querySelector('#funnelScoreRange').textContent = '1.18–69.09';
-            return {viewport: [window.innerWidth, window.innerHeight], cases,
-              passed: cases.every(item => item.passed)};
-            """,
-        )
-        if not isinstance(result, dict):
-            raise RuntimeError("score card browser result must be an object")
-        screenshot = f"score-cards-{width}x{height}.png"
-        (output_dir / screenshot).write_bytes(base64.b64decode(str(_screenshot(base))))
-        results.append({**result, "screenshot": screenshot})
-    return {
-        "schema_version": REPORT_SCHEMA,
-        "browser": browser_name,
-        "passed": table_detail is True and all(result.get("passed") is True for result in results),
-        "table_detail_preserved": table_detail,
-        "score_cards": results,
-        "external_network_calls": 0,
-    }
+    if not isinstance(result, dict):
+        raise RuntimeError("browser six-seat snapshot must be an object")
+    return result
 
 
-def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
+def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
     index = UnifiedDecisionIndex()
     drafts = UnifiedDecisionDraftIndex()
     decisions: dict[Strategy, ScoredDecision] = {}
@@ -830,10 +499,17 @@ def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
         empty_draft_published = True
 
     return (
-        UnifiedWebServices(
-            UnifiedDecisionQueries(index, drafts, _BrowserHistory(), _BrowserClock()),
-            UnifiedDecisionEventStream(),
-            status_provider,
+        ProfiledWebServices(
+            {
+                profile: UnifiedWebServices(
+                    UnifiedDecisionQueries(index, drafts, _BrowserHistory(), _BrowserClock()),
+                    UnifiedDecisionEventStream(),
+                    status_provider,
+                    profile_id=profile,
+                )
+                for profile in ("v2", "v3")
+            },
+            "v2",
         ),
         publish_empty_draft,
     )
@@ -977,62 +653,30 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
     time.sleep(0.2)
     result = _execute(
         base,
-        r"""
+        """
         const header = document.querySelector('.app-header').getBoundingClientRect();
         const summary = document.querySelector('.summary-band').getBoundingClientRect();
         const controls = document.querySelector('.control-band').getBoundingClientRect();
         const layout = document.querySelector('#recommendation-layout').getBoundingClientRect();
-        const sidebar = document.querySelector('#long-sidebar').getBoundingClientRect();
-        const table = document.querySelector('.table-region').getBoundingClientRect();
-        const marketStatus = document.querySelector('.header-market-status');
-        const runtimeStatus = document.querySelector('#runtimeStatus');
-        const dataStatus = document.querySelector('#inputQualityPanel');
-        const scoreLeaders = document.querySelector('#scoreLeadersPanel');
-        const observationDrawer = document.querySelector('#observationDrawer');
-        const scoreRange = document.querySelector('#funnelScoreRange');
-        const topScores = document.querySelector('#topScoresStatus');
+        const rows = Array.from(document.querySelectorAll('#tableBody tr[data-code]'));
         return {
           actual: [window.innerWidth, window.innerHeight],
-          body: Boolean(document.body && document.body.getBoundingClientRect().height > 0),
           overflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
           ordered: header.bottom <= summary.top && summary.bottom <= controls.top && controls.bottom <= layout.top,
-          longVisible: !document.querySelector('#long-sidebar').hidden && !document.querySelector('#longScopeTabs').hidden,
-          noLongOverlap: sidebar.right <= table.left,
-          summaryItems: document.querySelectorAll('.summary-band > .summary-item').length,
-          marketStatusInHeader: marketStatus.parentElement.matches('.runtime-strip')
-            && Boolean(marketStatus.compareDocumentPosition(runtimeStatus) & Node.DOCUMENT_POSITION_FOLLOWING),
-          quoteTimeVisible: document.querySelector('#quoteTime').getClientRects().length > 0,
-          dataStatusOwnsReadiness: dataStatus.contains(document.querySelector('#inputQualityStatus'))
-            && dataStatus.contains(document.querySelector('#inputQualityMeta')),
-          separateScoreCards: document.querySelector('#scoreRangePanel').contains(scoreRange)
-            && !scoreLeaders.contains(scoreRange) && scoreLeaders.contains(topScores),
-          topScoresBelowTitle: topScores.getBoundingClientRect().top
-            >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom,
-          funnelInHeader: marketStatus.contains(document.querySelector('#funnelMeta')),
-          equalSummaryHeights: new Set(
+          equal_summary_heights: new Set(
             Array.from(document.querySelectorAll('.summary-band > .summary-item'))
               .map((item) => item.getBoundingClientRect().height),
           ).size === 1,
-          scoresAbsentFromObservation: !observationDrawer.contains(scoreRange) && !observationDrawer.contains(topScores),
-          quoteAge: document.querySelector('#quoteAge').textContent,
-          quoteAgeHms: /^\d+(?:时 \d+分 )?\d+秒$/.test(document.querySelector('#quoteAge').textContent),
-          inputQuality: document.querySelector('#inputQualityStatus').textContent,
-          inputQualityMeta: document.querySelector('#inputQualityMeta').textContent,
-          longWatchlistSize: window.TraderLongWatchlistData.items.length,
-          publicationStatus: document.querySelector('#publicationStatus').textContent,
-          publicationMeta: document.querySelector('#publicationMeta').textContent,
-          topScoresStatus: document.querySelector('#topScoresStatus').textContent,
-          healthBadge: document.querySelector('#healthBadge').textContent,
-          observationDisabled: document.querySelector('#errorDetailsButton').disabled,
-          rows: document.querySelectorAll('#tableBody tr[data-code]').length,
-          scopes: document.querySelectorAll('#longScopeTabs button[data-scope]').length,
-          browserErrors: window.TraderDashboardDiagnostics.snapshot().browserErrors,
+          cards: document.querySelectorAll('.summary-band > .summary-item').length,
+          rows: rows.length,
+          ranks: rows.map((row) => Number(row.cells[0].textContent)),
+          tiers: rows.map((row) => row.cells[1].textContent.trim()),
+          browser_errors: window.TraderDashboardDiagnostics.snapshot().browserErrors,
         };
         """,
     )
-    screenshot = _screenshot(base)
     screenshot_name = f"desktop-{width}x{height}.png"
-    (output_dir / screenshot_name).write_bytes(base64.b64decode(str(screenshot)))
+    (output_dir / screenshot_name).write_bytes(base64.b64decode(str(_screenshot(base))))
     if not isinstance(result, dict):
         raise RuntimeError("browser viewport result must be an object")
     return {"requested": [width, height], "screenshot": screenshot_name, **result}
@@ -1064,32 +708,15 @@ def _set_viewport(base: str | _ChromeSession, width: int, height: int) -> None:
 
 def _viewport_passed(result: dict[str, object]) -> bool:
     return bool(
-        result.get("body")
-        and result.get("actual") == result.get("requested")
-        and not result.get("overflow")
-        and result.get("ordered")
-        and result.get("longVisible")
-        and result.get("noLongOverlap")
-        and result.get("summaryItems") == 5
-        and result.get("marketStatusInHeader")
-        and result.get("quoteTimeVisible")
-        and result.get("dataStatusOwnsReadiness")
-        and result.get("separateScoreCards")
-        and result.get("topScoresBelowTitle") is True
-        and result.get("funnelInHeader")
-        and result.get("equalSummaryHeights")
-        and result.get("scoresAbsentFromObservation")
-        and result.get("quoteAgeHms")
-        and result.get("inputQuality") == "不适用"
-        and result.get("inputQualityMeta") == "长期固定观察池不评分"
-        and result.get("publicationStatus") == "不适用"
-        and result.get("publicationMeta") == "长期固定观察池，不评分、不冻结"
-        and result.get("topScoresStatus") == "暂无评分数据"
-        and result.get("healthBadge") == "观察不适用"
-        and result.get("observationDisabled") is True
-        and result.get("rows")
-        and result.get("scopes") == 3
-        and result.get("browserErrors") == []
+        result.get("actual") == result.get("requested")
+        and result.get("overflow") is False
+        and result.get("ordered") is True
+        and result.get("equal_summary_heights") is True
+        and result.get("cards") == 4
+        and result.get("rows") == 2
+        and result.get("ranks") == [1, 2]
+        and result.get("tiers") == ["回避", "回避"]
+        and result.get("browser_errors") == []
     )
 
 

@@ -9,8 +9,12 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord, DecisionDownside
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.decision_identity import (
+    CommittedDecisionRecord,
+    DecisionDownside,
+    formal_scored_decision,
+)
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.evaluation.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
 from trader.training.infra.research.outcome_evidence_repository import (
     OutcomeEvidenceConflictError,
@@ -96,6 +100,62 @@ def test_pending_targets_are_derived_only_from_selected_formal_decisions(tmp_pat
     assert targets[0].snapshot_id == formal.version
     assert targets[0].anchor_raw_price == item.quote.price
     assert targets[0].atr20_pct == 2.5
+
+
+def test_recommend_and_watch_outcomes_are_counted_separately_from_avoided_leader(tmp_path: Path) -> None:
+    original = decision(Strategy.TOMORROW)
+    base = original.items[0]
+    assert base.quote is not None
+    current = replace(
+        original,
+        items=(
+            replace(
+                base,
+                code="600002",
+                quote=replace(base.quote, code="600002"),
+                selected=True,
+                rank=1,
+                action=RecommendationAction.EXECUTABLE,
+            ),
+            replace(
+                base,
+                code="600003",
+                quote=replace(base.quote, code="600003"),
+                selected=True,
+                rank=2,
+                action=RecommendationAction.OBSERVE,
+            ),
+            replace(
+                base,
+                code="600004",
+                quote=replace(base.quote, code="600004"),
+                selected=False,
+                rank=0,
+                selection_rank=0,
+                action=RecommendationAction.UNAVAILABLE,
+            ),
+        ),
+        selection_diagnostics=None,
+    )
+    formal = CommittedDecisionRecord(formal_scored_decision(current), NOW, "scheduled")
+    repository = _repository(tmp_path, formal)
+
+    assert {target.stock_code for target in repository.pending_outcome_targets(limit=10)} == {
+        "600002",
+        "600003",
+    }
+    repository.save_recommendation_outcomes(
+        (
+            _outcome(snapshot_id=formal.version, stock_code="600002", net_excess_return_pct=1.2),
+            _outcome(snapshot_id=formal.version, stock_code="600003", net_excess_return_pct=-0.4),
+        )
+    )
+    summaries = repository.summaries(Strategy.TOMORROW)
+    assert [(item.tier, item.sample_count, item.complete_count, item.positive_count) for item in summaries] == [
+        ("recommend", 1, 1, 1),
+        ("watch", 1, 1, 0),
+    ]
+    assert [item.average_net_excess_pct for item in summaries] == [1.2, -0.4]
 
 
 def test_benchmark_and_outcome_retries_ignore_observation_time_but_reject_business_conflicts(tmp_path: Path) -> None:

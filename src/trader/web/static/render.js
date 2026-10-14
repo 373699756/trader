@@ -252,6 +252,7 @@
     return {
       columns: [
         '<col style="width:56px">',
+        '<col style="width:86px">',
         '<col style="width:168px">',
         '<col style="width:92px">',
         '<col style="width:92px">',
@@ -261,7 +262,7 @@
         '<col style="width:96px">',
         '<col style="width:190px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>本地 / 风险复核 / 最终</th><th>动作</th><th>原因</th></tr>",
+      head: "<tr><th>排名</th><th>状态</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>本地 / 风险复核 / 最终</th><th>动作</th><th>原因</th></tr>",
     };
   }
 
@@ -284,13 +285,14 @@
     return {
       columns: [
         '<col style="width:56px">',
+        '<col style="width:86px">',
         '<col style="width:168px">',
         '<col style="width:118px">',
         '<col style="width:118px">',
         '<col style="width:118px">',
         '<col style="width:150px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>股票</th><th>锚点价格</th><th>锚点涨跌</th><th>今日涨跌</th><th>锚点至今</th></tr>",
+      head: "<tr><th>排名</th><th>状态</th><th>股票</th><th>锚点价格</th><th>锚点涨跌</th><th>今日涨跌</th><th>锚点至今</th></tr>",
     };
   }
 
@@ -313,6 +315,12 @@
     return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml(item.code || "-")} · ${escapeHtml(context)}</span>`;
   }
 
+  function tierTag(item) {
+    const tier = ["recommend", "watch", "avoid"].includes(item.tier) ? item.tier : "avoid";
+    const label = ({ recommend: "推荐", watch: "关注", avoid: "回避" })[tier];
+    return `<span class="tier-tag" data-tier="${tier}">${label}</span>`;
+  }
+
   function currentRow(item) {
     const change = pct(item.pct_change);
     const scores = item.scores || {};
@@ -324,6 +332,7 @@
       ? `<span><b>${number(scores.deepseek_risk_penalty, 2)}</b>旧复核扣分</span>` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
+      <td>${tierTag(item)}</td>
       <td>${stock(item)}<span class="stock-code">${escapeHtml(researchStatus(item.research_coverage))}</span></td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
@@ -373,22 +382,9 @@
   }
 
   function tableColumnCount(snapshot) {
-    if (snapshot && snapshot.historical === true) return 6;
+    if (snapshot && snapshot.historical === true) return 7;
     if (snapshot && snapshot.strategy === "long") return 7;
-    return 9;
-  }
-
-  function observationTableDefinition(_snapshot) {
-    return currentTable();
-  }
-
-  function observationTableRows(items, _snapshot) {
-    if (!Array.isArray(items) || items.length === 0) return "";
-    return items.map(currentRow).join("");
-  }
-
-  function observationTableColumnCount() {
-    return 9;
+    return 10;
   }
 
   function historyRow(item) {
@@ -397,6 +393,7 @@
     const anchorToNow = pct(item.anchor_to_now_pct);
     return `<tr tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
+      <td>${tierTag(item)}</td>
       <td>${stock(item)}</td>
       <td>${number(item.anchor_price, 2)}</td>
       <td class="${anchorChange.className}">${anchorChange.text}</td>
@@ -676,9 +673,6 @@
     fusionModeLabel,
     rememberDiagnostic,
     number,
-    observationTableColumnCount,
-    observationTableDefinition,
-    observationTableRows,
     pct,
     pipelineReasonLabel,
     pipelineFacetLabel,

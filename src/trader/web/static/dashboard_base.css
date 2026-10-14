@@ -16,6 +16,7 @@
   --info-bg: #17263b;
   --radius: 6px;
   --rank-width: 56px;
+  --tier-width: 86px;
   --stock-width: 168px;
   --runtime-message-height: 168px;
   color-scheme: dark;
@@ -347,7 +348,7 @@ tr:focus-visible {
 .control-band {
   min-height: 54px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -430,6 +431,39 @@ tr:focus-visible {
   font-size: 12px;
 }
 
+.profile-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.profile-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.profile-tab {
+  min-width: 46px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.profile-tab:hover { color: var(--text); background: var(--surface-hover); }
+.profile-tab.is-active { color: #fff; background: #2c5fae; }
+.profile-tab:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
 .date-control select {
   height: 34px;
   min-width: 130px;
@@ -443,8 +477,8 @@ tr:focus-visible {
 .summary-band {
   display: grid;
   grid-template-columns:
-    minmax(190px, 0.95fr) minmax(150px, 0.7fr) minmax(260px, 1.2fr)
-    minmax(180px, 0.75fr) minmax(210px, 0.9fr);
+    minmax(220px, 1.1fr) minmax(180px, 0.9fr)
+    minmax(210px, 1fr) minmax(220px, 1fr);
   gap: 8px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
@@ -550,13 +584,6 @@ tr:focus-visible {
   line-height: 14px;
   white-space: pre-line;
   overflow-wrap: anywhere;
-}
-
-.observation-pool-hint {
-  margin: 0 14px 8px;
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 16px;
 }
 
 .input-quality-live {
