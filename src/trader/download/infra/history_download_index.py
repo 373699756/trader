@@ -147,6 +147,32 @@ class HistoryDownloadIndex:
             for code, dates, done, attempts, failure in rows
         )
 
+    def rebind_context(self, previous: HistoryDownloadBatch, current: HistoryDownloadBatch) -> None:
+        """Replace only an unpublished batch's parents, preserving all durable progress."""
+        if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
+            raise ValueError("history_download_identity_conflict")
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            updated = connection.execute(
+                """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?
+                   WHERE singleton=1 AND sequence=? AND cutoff=?
+                     AND source_hash=? AND calendar_hash=? AND universe_hash=?
+                     AND NOT EXISTS (SELECT 1 FROM active_snapshot WHERE sequence>=?)""",
+                (
+                    current.source_hash,
+                    current.calendar_hash,
+                    current.universe_hash,
+                    previous.sequence,
+                    previous.cutoff.isoformat(),
+                    previous.source_hash,
+                    previous.calendar_hash,
+                    previous.universe_hash,
+                    previous.sequence,
+                ),
+            )
+            if updated.rowcount != 1:
+                raise RuntimeError("history_download_identity_conflict")
+
     def gaps(self, code: str) -> tuple[date, ...]:
         with closing(self._connect()) as connection:
             return tuple(
