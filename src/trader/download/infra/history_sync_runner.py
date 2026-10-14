@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal, TypeAlias
@@ -32,6 +32,7 @@ from trader.download.domain.history_sync import (
     HistorySyncProgressStage,
     HistoryTwoStageSupplier,
 )
+from trader.download.domain.security_eligibility import is_st_security_name
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
@@ -192,16 +193,25 @@ class _HistorySync:
         ):
             raise RuntimeError("history_download_identity_conflict")
         current_source, current_calendar, current_universe = _control_identities(context)
-        if (
-            calendar.open_dates != context.calendar.open_dates
-            or pending.cutoff != calendar.open_dates[-1]
-            or universe.securities != current_universe.securities
-            or (source.source, source.dataset) != (current_source.source, current_source.dataset)
-        ):
-            raise RuntimeError("history_resume_context_changed")
+        if calendar.open_dates != context.calendar.open_dates:
+            raise RuntimeError("history_resume_calendar_changed")
+        if pending.cutoff != calendar.open_dates[-1]:
+            raise RuntimeError("history_resume_cutoff_changed")
+        if tuple(item.code for item in universe.securities) != tuple(item.code for item in current_universe.securities):
+            raise RuntimeError("history_resume_codes_changed")
+        for previous_security, current_security in zip(universe.securities, current_universe.securities, strict=True):
+            if is_st_security_name(current_security.name) or is_st_security_name(previous_security.name):
+                raise RuntimeError("history_resume_st_conflict")
+            if replace(previous_security, name=current_security.name) != current_security:
+                raise RuntimeError("history_resume_security_changed")
+        if (source.source, source.dataset) != (current_source.source, current_source.dataset):
+            raise RuntimeError("history_resume_source_changed")
         reference = read_bound_history_reference(self.configuration.archive_root, source.supplier_contract)
-        if source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]:
-            # Execution versions describe the current supplier environment, not price identity.
+        if (
+            source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
+            or universe.securities != current_universe.securities
+        ):
+            # Execution versions and display names do not change the verified price identity.
             # Persist the new parents before switching the unpublished batch; never reset tasks.
             reference = HistoryReferenceSnapshot(
                 tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence

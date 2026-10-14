@@ -637,14 +637,16 @@ def test_changed_reference_keeps_old_snapshot_readable_without_price_requests(tm
 
 
 @pytest.mark.parametrize(
-    "versions",
+    ("versions", "renamed"),
     (
-        BaoStockSourceVersions("different", "3.12", ()),
-        BaoStockSourceVersions("test", "3.14", ()),
-        BaoStockSourceVersions("test", "3.12", (("pandas", "new"),)),
+        (BaoStockSourceVersions("different", "3.12", ()), False),
+        (BaoStockSourceVersions("test", "3.14", ()), False),
+        (BaoStockSourceVersions("test", "3.12", (("pandas", "new"),)), False),
+        (BaoStockSourceVersions("test", "3.12", ()), True),
+        (BaoStockSourceVersions("test", "3.14", (("pandas", "new"),)), True),
     ),
 )
-def test_pending_batch_rebinds_execution_versions_without_redownloading(tmp_path, monkeypatch, versions):
+def test_pending_batch_rebinds_versions_and_names_without_redownloading(tmp_path, monkeypatch, versions, renamed):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(days)
     config = _configuration(tmp_path)
@@ -668,7 +670,8 @@ def test_pending_batch_rebinds_execution_versions_without_redownloading(tmp_path
     class Changed(FakeSupplier):
         def load_context(self, as_of, sessions):
             context = super().load_context(as_of, sessions)
-            return replace(context, source_versions=versions)
+            universe = tuple(replace(item, name="新简称") for item in context.universe) if renamed else context.universe
+            return replace(context, source_versions=versions, universe=universe)
 
     changed = Changed(supplier.dates)
     # A second interruption after rebinding must leave the active snapshot and tasks intact.
@@ -676,7 +679,7 @@ def test_pending_batch_rebinds_execution_versions_without_redownloading(tmp_path
     rebound = index.pending(old.sequence)
     assert pending is not None and rebound is not None
     assert rebound.sequence == pending.sequence and rebound.cutoff == pending.cutoff
-    assert rebound.source_hash != pending.source_hash
+    assert rebound != pending
     assert index.tasks() == tasks
     assert _snapshot(tmp_path) == old
     assert reader.read_day(days[-1], old) == old_rows
@@ -688,6 +691,10 @@ def test_pending_batch_rebinds_execution_versions_without_redownloading(tmp_path
     assert not changed.calls
     current = _snapshot(tmp_path)
     assert current.source_identity_hash == rebound.source_hash
+    state = HistoryControlIndex(tmp_path / "control.sqlite3").load_state()
+    latest_universe = next(item for item in state.universes if item.content_hash == current.universe_hash)
+    if renamed:
+        assert all(item.name == "新简称" for item in latest_universe.securities)
     assert len(reader.read_day(supplier.dates[-1], current)) == 2
     assert reader.read_day(days[-1], old) == old_rows
     with pytest.raises(RuntimeError, match="history_download_identity_conflict"):
@@ -716,7 +723,11 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
     class Changed(FakeSupplier):
         def load_context(self, as_of, sessions):
             context = super().load_context(as_of, sessions)
-            return replace(context, source_versions=BaoStockSourceVersions("test", "3.14", ()))
+            return replace(
+                context,
+                source_versions=BaoStockSourceVersions("test", "3.14", ()),
+                universe=tuple(replace(item, name="新简称") for item in context.universe),
+            )
 
     supplier = Changed(days)
     original_rebind = HistoryDownloadIndex.rebind_context
@@ -735,8 +746,18 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
     assert len(HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))) == 2
 
 
-@pytest.mark.parametrize("change", ("calendar", "name", "board", "listed_on", "codes"))
-def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    (
+        ("calendar", "history_resume_calendar_changed"),
+        ("board", "history_resume_security_changed"),
+        ("listed_on", "history_resume_security_changed"),
+        ("delisted_on", "history_resume_security_changed"),
+        ("codes", "history_resume_codes_changed"),
+        ("name", "history_resume_st_conflict"),
+    ),
+)
+def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monkeypatch, change, reason):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
 
     def fail(*args):
@@ -756,11 +777,16 @@ def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monke
                 return replace(context, calendar=BaoStockCalendar((date(2026, 9, 7), *days[1:])))
             if change == "codes":
                 return replace(context, universe=(first,))
-            replacements = {"name": "changed", "board": "star", "listed_on": date(2001, 1, 1)}
+            replacements = {
+                "name": "*ST风险",
+                "board": "star",
+                "listed_on": date(2001, 1, 1),
+                "delisted_on": date(2026, 9, 9),
+            }
             return replace(context, universe=(replace(first, **{change: replacements[change]}), second))
 
     changed = Changed(days)
     result = run_history_sync(_configuration(tmp_path), changed, clock=lambda: NOW)
-    assert result.reason == "history_resume_context_changed"
+    assert result.reason == reason
     assert not changed.calls
     assert index.pending(0) == pending and index.tasks() == tasks
