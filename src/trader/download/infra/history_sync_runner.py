@@ -191,14 +191,36 @@ class _HistorySync:
             or pending.sequence != (active.sequence + 1 if active else 1)
         ):
             raise RuntimeError("history_download_identity_conflict")
-        current_source, _, current_universe = _control_identities(context)
+        current_source, current_calendar, current_universe = _control_identities(context)
         if (
             calendar.open_dates != context.calendar.open_dates
+            or pending.cutoff != calendar.open_dates[-1]
             or universe.securities != current_universe.securities
-            or source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
+            or (source.source, source.dataset) != (current_source.source, current_source.dataset)
         ):
             raise RuntimeError("history_resume_context_changed")
         reference = read_bound_history_reference(self.configuration.archive_root, source.supplier_contract)
+        if source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]:
+            # Execution versions describe the current supplier environment, not price identity.
+            # Persist the new parents before switching the unpublished batch; never reset tasks.
+            reference = HistoryReferenceSnapshot(
+                tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
+            )
+            self.control.save_source(current_source)
+            self.control.save_calendar(current_calendar)
+            self.control.save_universe(current_universe)
+            write_history_reference(
+                history_reference_path(self.configuration.archive_root, reference.content_hash), reference
+            )
+            current = HistoryDownloadBatch(
+                pending.sequence,
+                current_source.content_hash,
+                current_calendar.content_hash,
+                current_universe.content_hash,
+                pending.cutoff,
+            )
+            self.index.rebind_context(pending, current)
+            return _BatchInput(context, current_source, current_calendar, current_universe, reference, current, False)
         return _BatchInput(context, source, calendar, universe, reference, pending, False)
 
     def _repair_reference(self, source: HistorySourceIdentity, reference: HistoryReferenceSnapshot) -> None:

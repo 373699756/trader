@@ -19,8 +19,8 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_price_qualification import qualify_price_overlap
+from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
     HistorySyncConfiguration,
@@ -32,6 +32,7 @@ from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
+from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_runner import run_history_sync
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -635,22 +636,131 @@ def test_changed_reference_keeps_old_snapshot_readable_without_price_requests(tm
     assert reader.read_day(days[-1], current) != previous
 
 
-def test_pending_batch_rejects_supplier_contract_change(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "versions",
+    (
+        BaoStockSourceVersions("different", "3.12", ()),
+        BaoStockSourceVersions("test", "3.14", ()),
+        BaoStockSourceVersions("test", "3.12", (("pandas", "new"),)),
+    ),
+)
+def test_pending_batch_rebinds_execution_versions_without_redownloading(tmp_path, monkeypatch, versions):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(days)
+    config = _configuration(tmp_path)
+    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "completed"
+    old = _snapshot(tmp_path)
+    reader = HistorySnapshotReader(tmp_path)
+    old_rows = reader.read_day(days[-1], old)
+    supplier.dates = (*days[1:], date(2026, 9, 11))
+    original = history_sync_module.publish_history_snapshot
 
     def fail(*args):
         raise OSError("interrupted_publication")
 
     monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail)
-    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "failed"
+    now = NOW + timedelta(days=1)
+    assert run_history_sync(config, supplier, clock=lambda: now).state == "failed"
+    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    pending = index.pending(old.sequence)
+    tasks = index.tasks()
 
     class Changed(FakeSupplier):
         def load_context(self, as_of, sessions):
             context = super().load_context(as_of, sessions)
-            return replace(context, source_versions=BaoStockSourceVersions("different", "3.12", ()))
+            return replace(context, source_versions=versions)
+
+    changed = Changed(supplier.dates)
+    # A second interruption after rebinding must leave the active snapshot and tasks intact.
+    assert run_history_sync(config, changed, clock=lambda: now).state == "failed"
+    rebound = index.pending(old.sequence)
+    assert pending is not None and rebound is not None
+    assert rebound.sequence == pending.sequence and rebound.cutoff == pending.cutoff
+    assert rebound.source_hash != pending.source_hash
+    assert index.tasks() == tasks
+    assert _snapshot(tmp_path) == old
+    assert reader.read_day(days[-1], old) == old_rows
+
+    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", original)
+    result = run_history_sync(config, changed, clock=lambda: now)
+    assert result.state == "completed", result.reason
+    assert result.data_cutoff == supplier.dates[-1]
+    assert not changed.calls
+    current = _snapshot(tmp_path)
+    assert current.source_identity_hash == rebound.source_hash
+    assert len(reader.read_day(supplier.dates[-1], current)) == 2
+    assert reader.read_day(days[-1], old) == old_rows
+    with pytest.raises(RuntimeError, match="history_download_identity_conflict"):
+        index.rebind_context(rebound, pending)
+
+
+def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatch):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+    config = replace(_configuration(tmp_path), history_workers=1)
+    original_finish = HistoryDownloadIndex.finish
+
+    def interrupt_after_confirmation(self, completions):
+        original_finish(self, completions)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(HistoryDownloadIndex, "finish", interrupt_after_confirmation)
+    tuning = HistoryWriteTuning(1, 3, max_codes=1, max_cells=3)
+    result = run_history_sync(config, FakeSupplier(days), clock=lambda: NOW, write_tuning=tuning)
+    assert result.state == "cancelled"
+    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    assert [task.tencent_done for task in index.tasks()] == [True, False]
+    previous = index.pending(0)
+    tasks = index.tasks()
+    monkeypatch.setattr(HistoryDownloadIndex, "finish", original_finish)
+
+    class Changed(FakeSupplier):
+        def load_context(self, as_of, sessions):
+            context = super().load_context(as_of, sessions)
+            return replace(context, source_versions=BaoStockSourceVersions("test", "3.14", ()))
+
+    supplier = Changed(days)
+    original_rebind = HistoryDownloadIndex.rebind_context
+
+    def interrupted_rebind(self, before, after):
+        raise OSError("interrupted_before_rebind")
+
+    monkeypatch.setattr(HistoryDownloadIndex, "rebind_context", interrupted_rebind)
+    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "failed"
+    assert index.pending(0) == previous and index.tasks() == tasks
+    assert not supplier.calls
+    monkeypatch.setattr(HistoryDownloadIndex, "rebind_context", original_rebind)
+    result = run_history_sync(config, supplier, clock=lambda: NOW)
+    assert result.state == "completed", result.reason
+    assert supplier.calls == [("600002", days)]
+    assert len(HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))) == 2
+
+
+@pytest.mark.parametrize("change", ("calendar", "name", "board", "listed_on", "codes"))
+def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monkeypatch, change):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    def fail(*args):
+        raise OSError("interrupted_publication")
+
+    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail)
+    assert run_history_sync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "failed"
+    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    pending, tasks = index.pending(0), index.tasks()
+
+    class Changed(FakeSupplier):
+        def load_context(self, as_of, sessions):
+            context = super().load_context(as_of, sessions)
+            context = replace(context, source_versions=BaoStockSourceVersions("new", "3.14", ()))
+            first, second = context.universe
+            if change == "calendar":
+                return replace(context, calendar=BaoStockCalendar((date(2026, 9, 7), *days[1:])))
+            if change == "codes":
+                return replace(context, universe=(first,))
+            replacements = {"name": "changed", "board": "star", "listed_on": date(2001, 1, 1)}
+            return replace(context, universe=(replace(first, **{change: replacements[change]}), second))
 
     changed = Changed(days)
     result = run_history_sync(_configuration(tmp_path), changed, clock=lambda: NOW)
     assert result.reason == "history_resume_context_changed"
     assert not changed.calls
+    assert index.pending(0) == pending and index.tasks() == tasks
