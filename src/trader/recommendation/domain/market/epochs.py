@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields
 from datetime import date, datetime
 from enum import Enum
 from functools import cached_property
@@ -15,6 +13,7 @@ from types import MappingProxyType
 from typing import Literal, Protocol, TypeAlias
 from zoneinfo import ZoneInfo
 
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.recommendation.domain.market.models import LiveQuote, MarketQuote
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.domain.market.research import ResearchObservation
@@ -721,39 +720,7 @@ def _version(prefix: str, trade_date: date, sequence: int) -> str:
 
 
 def _content_hash(payload: Mapping[str, object]) -> str:
-    encoded = json.dumps(
-        _canonicalize(payload),
-        ensure_ascii=True,
-        allow_nan=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _canonicalize(value: object) -> _CanonicalValue:
-    result: _CanonicalValue
-    if isinstance(value, Enum):
-        result = _canonicalize(value.value)
-    elif value is None or isinstance(value, (str, int, bool)):
-        result = value
-    elif isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("epoch content must contain only finite floats")
-        result = value
-    elif isinstance(value, datetime):
-        result = value.isoformat()
-    elif isinstance(value, date):
-        result = value.isoformat()
-    elif isinstance(value, Mapping):
-        result = {str(key): _canonicalize(item) for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))}
-    elif isinstance(value, (tuple, list)):
-        result = [_canonicalize(item) for item in value]
-    elif is_dataclass(value) and not isinstance(value, type):
-        result = {item.name: _canonicalize(getattr(value, item.name)) for item in fields(value)}
-    else:
-        raise TypeError(f"unsupported epoch content type: {type(value).__name__}")
-    return result
+    return canonical_digest(payload, include_derived=True)
 
 
 __all__ = [

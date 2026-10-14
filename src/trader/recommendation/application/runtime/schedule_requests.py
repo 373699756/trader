@@ -29,7 +29,8 @@ def validate_cycle_identity(request: CycleRequest, identity: DecisionIdentity) -
 
 
 def cycle_order_key(request: CycleRequest) -> int:
-    return request.trade_date.toordinal() * 1_000_000_000 + request.sequence
+    generation = request.session.generation if request.session is not None else 0
+    return generation * 10**24 + request.trade_date.toordinal() * 1_000_000_000 + request.sequence
 
 
 def cycle_correlation_id(request: CycleRequest) -> str:
@@ -37,7 +38,8 @@ def cycle_correlation_id(request: CycleRequest) -> str:
 
 
 def pipeline_task_order_key(request: ScheduledPipelineTask) -> int:
-    return int(request.scheduled_at.timestamp() * 1_000_000)
+    generation = request.session.generation if request.session is not None else 0
+    return generation * 10**24 + int(request.scheduled_at.timestamp() * 1_000_000)
 
 
 def pipeline_task_correlation_id(request: ScheduledPipelineTask) -> str:

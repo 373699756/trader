@@ -71,6 +71,7 @@ from trader.recommendation.application.ports.runtime import (
 )
 from trader.recommendation.application.ports.scoring_inputs import InputBatch, TopKQuoteBatch
 from trader.recommendation.application.runtime.cadence import PipelineTask
+from trader.recommendation.application.runtime.trading_session import SessionLease, session_guard
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
@@ -239,7 +240,7 @@ class MarketInputCoordinator(DataRefreshPort):
         self._market_quote_versions: dict[str, MarketQuote] = {}
         self._candidate_quote_versions: dict[str, MarketQuote] = {}
         self._topk_version = "topk:unavailable"
-        self._score_feature_batches: dict[tuple[str, bool, tuple[str, ...]], tuple[FeatureSnapshot, ...]] = {}
+        self._score_feature_batches: dict[tuple[int, str, bool, tuple[str, ...]], tuple[FeatureSnapshot, ...]] = {}
         self._input_quality: dict[Strategy, InputQualityStatus] = {}
 
     def invalidate_history(self) -> None:
@@ -310,7 +311,7 @@ class MarketInputCoordinator(DataRefreshPort):
             tuple(feature.quote.code for feature in features),
             request.observed_at,
         )
-        with self._lock:
+        with session_guard(request.session), self._lock:
             changed = data_version != self._market_version
             changed_codes = _changed_version_codes(self._market_quote_versions, quote_versions)
             requested_changed = requested != self._latest_requested_codes
@@ -355,7 +356,7 @@ class MarketInputCoordinator(DataRefreshPort):
         request: PipelineTaskRequest,
         deadline: datetime | None,
     ) -> RefreshOutcome:
-        with self._lock:
+        with session_guard(request.session), self._lock:
             population = self._latest_market_features
             issuer_eligibility = self._issuer_eligibility
             initial_plans = self._candidate_plans
@@ -416,7 +417,7 @@ class MarketInputCoordinator(DataRefreshPort):
             )
             for strategy in SCORED_STRATEGIES
         }
-        with self._lock:
+        with session_guard(request.session), self._lock:
             if candidate_pipeline is not self._candidate_pipeline:
                 raise DataRefreshUnavailableError("candidate_population_superseded")
             changed = data_version != self._candidate_version
@@ -438,7 +439,8 @@ class MarketInputCoordinator(DataRefreshPort):
             if len(set(strategy_requested.values())) == 1:
                 strategy = SCORED_STRATEGIES[0]
                 codes = strategy_requested[strategy]
-                self._score_feature_batches[(epoch, False, codes)] = strategy_features[strategy]
+                generation = request.session.generation if request.session is not None else 0
+                self._score_feature_batches[(generation, epoch, False, codes)] = strategy_features[strategy]
             self._record_pending_quality_locked(
                 _PendingQualityContext(
                     request.observed_at,
@@ -537,7 +539,7 @@ class MarketInputCoordinator(DataRefreshPort):
             )
         )
         data_version = self._versions.features("topk", features)
-        with self._lock:
+        with session_guard(request.session), self._lock:
             changed = data_version != self._topk_version
             self._topk_version = data_version
             self._latest_topk_quotes = TopKQuoteBatch(request.observed_at, features)
@@ -559,7 +561,7 @@ class MarketInputCoordinator(DataRefreshPort):
         _require_codes(requested, "intraday_universe_unavailable")
         self._market.refresh_intraday_tail(requested, request.observed_at)
         data_version = f"intraday:{request.observed_at:%Y%m%dT%H%M%S%f}"
-        with self._lock:
+        with session_guard(request.session), self._lock:
             self._intraday_version = data_version
             self._invalidate_scoring_locked()
         return RefreshOutcome(request.task, True, data_version, requested, request.observed_at, False)
@@ -617,7 +619,7 @@ class MarketInputCoordinator(DataRefreshPort):
     ) -> RefreshOutcome:
         version = result.data_version or f"research:{request.task.value}:empty"
         changed = bool(result.changed_codes)
-        with self._lock:
+        with session_guard(request.session), self._lock:
             if changed:
                 self._research_version = version
                 self._invalidate_scoring_locked()
@@ -636,7 +638,9 @@ class MarketInputCoordinator(DataRefreshPort):
 
     def refresh(self, request: CycleRequest) -> None:
         if request.strategy is Strategy.LONG:
-            if not self._long_runtime.offer_refresh(LongRefreshRequest(request.observed_at, request.phase, force=True)):
+            if not self._long_runtime.offer_refresh(
+                LongRefreshRequest(request.observed_at, request.phase, force=True, session=request.session)
+            ):
                 raise DataRefreshUnavailableError("long_refresh_rejected")
             return
         try:
@@ -647,6 +651,7 @@ class MarketInputCoordinator(DataRefreshPort):
                     shared.requested_codes,
                     request.observed_at,
                     include_intraday_tail=True,
+                    session=request.session,
                 )
                 candidate_features = scoring_batch.features
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -679,13 +684,13 @@ class MarketInputCoordinator(DataRefreshPort):
             (*shared.input_stages[:7], candidate_stage.snapshot),
             candidate_stage,
         )
-        with self._lock:
+        with session_guard(request.session), self._lock:
             self._batches[(request.strategy, request.input_version)] = batch
             while len(self._batches) > 32:
                 self._batches.pop(next(iter(self._batches)))
 
     def _cached_input(self, request: CycleRequest) -> _SharedInputBatch:
-        with self._lock:
+        with session_guard(request.session), self._lock:
             market_features = self._latest_market_features
             issuer_eligibility = self._issuer_eligibility
             input_stages, candidate_stage = self._observed_input_locked(request.strategy)
@@ -700,6 +705,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 requested,
                 request.observed_at,
                 include_intraday_tail=False,
+                session=request.session,
             )
             if requested
             else _ScoringFeatureBatch(candidate_features)
@@ -740,10 +746,12 @@ class MarketInputCoordinator(DataRefreshPort):
         observed_at: datetime,
         *,
         include_intraday_tail: bool,
+        session: SessionLease | None,
     ) -> _ScoringFeatureBatch:
-        with self._lock:
+        with session_guard(session), self._lock:
             epoch = self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail)
-            key = (epoch, include_intraday_tail, requested)
+            generation = session.generation if session is not None else 0
+            key = (generation, epoch, include_intraday_tail, requested)
             cached = self._score_feature_batches.get(key)
             if cached is not None:
                 return _ScoringFeatureBatch(cached)
@@ -758,7 +766,7 @@ class MarketInputCoordinator(DataRefreshPort):
             )
             if feature.quote.code in requested_codes
         )
-        with self._lock:
+        with session_guard(session), self._lock:
             if epoch == self._scoring_epoch_locked(include_intraday_tail=include_intraday_tail):
                 self._score_feature_batches[key] = features
                 while len(self._score_feature_batches) > 8:
@@ -798,7 +806,7 @@ class MarketInputCoordinator(DataRefreshPort):
             return
 
     def batch(self, request: CycleRequest) -> InputBatch | None:
-        with self._lock:
+        with session_guard(request.session), self._lock:
             return self._batches.get((request.strategy, request.input_version))
 
     def topk_batch(self) -> TopKQuoteBatch | None:

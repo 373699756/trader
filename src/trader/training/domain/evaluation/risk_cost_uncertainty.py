@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import re
 from collections import Counter, defaultdict
@@ -13,6 +11,7 @@ from decimal import Decimal
 from statistics import fmean
 from typing import Literal
 
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.recommendation.domain.market.factors import round_score
 from trader.recommendation.domain.risk.decision import RiskDecision
 from trader.recommendation.domain.scoring.alpha import AlphaScore
@@ -868,9 +867,7 @@ def _content_hash(report: RiskCostUncertaintyReport) -> str:
         "terminal_holdout_opened": report.terminal_holdout_opened,
         "automatic_model_update": report.automatic_model_update,
     }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    ).hexdigest()
+    return canonical_digest(payload)
 
 
 def _sample_evidence_hash(samples: tuple[RiskCostUncertaintySample, ...]) -> str:
@@ -926,9 +923,7 @@ def _sample_evidence_hash(samples: tuple[RiskCostUncertaintySample, ...]) -> str
         }
         for sample in samples
     )
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    ).hexdigest()
+    return canonical_digest(payload)
 
 
 def _uncertainty_evidence_payload(risk: RiskDecision) -> dict[str, float | tuple[float, float] | None]:

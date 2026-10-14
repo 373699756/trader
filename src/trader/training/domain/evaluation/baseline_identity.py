@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass, field
 from typing import Literal
+
+from trader.infra.serialization.canonical_codec import canonical_digest
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 BaselineIdentityStatus = Literal[
@@ -102,8 +103,7 @@ class BaselineIdentityAudit:
             "conflicts": conflicts,
             "unavailable": unavailable,
         }
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        object.__setattr__(self, "content_hash", hashlib.sha256(encoded).hexdigest())
+        object.__setattr__(self, "content_hash", canonical_digest(payload))
 
 
 def source_hash(text: str) -> str:

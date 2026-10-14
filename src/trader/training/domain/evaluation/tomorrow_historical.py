@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import json
 import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 
@@ -303,18 +302,7 @@ class TomorrowHistoricalSpec:
 
 
 def _canonical_hash(value: object) -> str:
-    encoded = json.dumps(_canonical(value), ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def _canonical(value: object) -> object:
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _canonical(getattr(value, field.name)) for field in dataclasses.fields(value) if field.init}
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, tuple):
-        return [_canonical(item) for item in value]
-    return value
+    return canonical_digest(value)
 
 
 TOMORROW_HISTORICAL_SPEC = TomorrowHistoricalSpec(

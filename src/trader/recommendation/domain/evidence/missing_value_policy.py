@@ -38,7 +38,7 @@ def assess_missing_values(feature: FeatureSnapshot, policy: MissingValuePolicy) 
     missing = tuple(
         MissingField(rule.field_id, rule.severity, rule.penalty)
         for rule in policy.rules
-        if feature.optional_value(rule.field_id) is None
+        if rule.field_id in feature.missing_fields or feature.optional_value(rule.field_id) is None
     )
     critical = any(item.severity is MissingSeverity.CRITICAL for item in missing)
     penalty = Decimal("100") if critical else min(Decimal("100"), sum((item.penalty for item in missing), Decimal("0")))

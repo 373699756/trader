@@ -88,6 +88,8 @@ def runtime_status(
             "task_lanes": [asdict(lane) for lane in status.task_lanes],
             "cadence": _cadence_payload(status.cadence),
             "calendar": {
+                "generation": status.session.generation,
+                "discontinuity_reason": status.session.discontinuity_reason,
                 "state": status.calendar.state,
                 "trade_date": status.calendar.trade_date.isoformat()
                 if status.calendar.trade_date is not None

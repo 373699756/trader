@@ -27,11 +27,8 @@ from trader.training.application.tomorrow_research_evidence import (
     next_research_stage,
     production_readiness_audit,
 )
-from trader.training.domain.evaluation.research_identity import (
-    canonical_research_hash,
-    canonical_research_json,
-    canonical_research_value,
-)
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json, research_value
 
 
 class TomorrowResearchEvidenceIndexError(RuntimeError):
@@ -218,11 +215,11 @@ class TomorrowResearchEvidenceIndex:
 
 
 def _encode(value: TomorrowResearchEvidenceGraph | TomorrowResearchStageHandoff) -> str:
-    payload = canonical_research_value(value)
+    payload = research_value(value)
     if not isinstance(payload, dict):
         raise TypeError("Tomorrow research artifact must encode to an object")
     payload["content_hash"] = value.content_hash
-    return canonical_research_json(payload)
+    return research_json(payload)
 
 
 def _available_disk_gb(path: Path) -> float:
@@ -394,7 +391,7 @@ def _report(
         ],
         "completed_stage": handoff.stage,
         "next_stage": next_stage,
-        "resource_probe": canonical_research_value(resource_probe),
+        "resource_probe": research_value(resource_probe),
         "evidence_partitions": [
             {
                 "relative_path": item.relative_path,
@@ -415,7 +412,7 @@ def _report(
         "automatic_model_update": False,
     }
     payload["content_hash"] = canonical_research_hash(payload)
-    return canonical_research_json(payload)
+    return research_json(payload)
 
 
 def _read_report_resource_probe(path: Path) -> TomorrowResearchResourceProbe | None:

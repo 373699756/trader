@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Literal
+
+from trader.infra.serialization.canonical_codec import canonical_digest
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 SCORE_RESEARCH_OBSERVATION_CUTOFF = time(15, 0)
@@ -33,11 +33,7 @@ class ScoringResearchSpec:
     def __post_init__(self) -> None:
         _validate_spec_identity(self)
         _validate_spec_dates(self)
-        payload = {
-            field.name: _canonical(getattr(self, field.name)) for field in dataclasses.fields(self) if field.init
-        }
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        object.__setattr__(self, "content_hash", hashlib.sha256(encoded.encode()).hexdigest())
+        object.__setattr__(self, "content_hash", canonical_digest(self))
 
     @property
     def allowed_historical_dates(self) -> frozenset[date]:
@@ -163,14 +159,6 @@ def _weekdays(start: date, end: date) -> tuple[date, ...]:
         for ordinal in range(start.toordinal(), end.toordinal() + 1)
         if date.fromordinal(ordinal).weekday() < 5
     )
-
-
-def _canonical(value: object) -> object:
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, tuple):
-        return [_canonical(item) for item in value]
-    return value
 
 
 HISTORICAL_RESEARCH_SPEC = ScoringResearchSpec(

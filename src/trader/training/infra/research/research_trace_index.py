@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
+from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.research_trace_validation import (
     boolean as _boolean,
 )
@@ -75,6 +76,7 @@ from trader.training.application.research_audit import (
     ResearchRiskFactAudit,
     ShadowMode,
 )
+from trader.training.infra.research.trace_capacity import ResearchTraceCapacityError, TracePhysicalBudget
 from trader.training.infra.research.trace_codec import (
     DEFAULT_DECODED_PAYLOAD_BYTES,
     decoded_payload_bytes,
@@ -97,10 +99,6 @@ _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class ResearchTraceConflictError(RuntimeError):
-    pass
-
-
-class ResearchTraceCapacityError(RuntimeError):
     pass
 
 
@@ -138,6 +136,8 @@ class ResearchTraceLimits:
     trade_date_bytes: int = 1024 * 1024 * 1024
     archive_bytes: int = 20 * 1024 * 1024 * 1024
     trade_dates: int = 120
+    physical_trade_date_bytes: int = 1024 * 1024 * 1024
+    physical_total_bytes: int = 20 * 1024 * 1024 * 1024
 
     def __post_init__(self) -> None:
         values = (
@@ -147,6 +147,8 @@ class ResearchTraceLimits:
             self.trade_date_bytes,
             self.archive_bytes,
             self.trade_dates,
+            self.physical_trade_date_bytes,
+            self.physical_total_bytes,
         )
         if min(values) < 1:
             raise ValueError("research trace capacities must be positive")
@@ -166,6 +168,7 @@ class SQLiteResearchTraceIndex:
     ) -> None:
         limits = limits or ResearchTraceLimits()
         self._root = runtime_root / "research"
+        self._writer_lock = ProcessLock(self._root / ".trace-write.lock")
         self._legacy_database = self._root / "committed-events.sqlite3"
         self._partitions = self._root / "committed-events"
         self._capacity = limits.events_per_trade_date
@@ -174,6 +177,7 @@ class SQLiteResearchTraceIndex:
         self._maximum_total_bytes = limits.trade_date_bytes
         self._maximum_archive_bytes = limits.archive_bytes
         self._maximum_trade_dates = limits.trade_dates
+        self._physical_budget = TracePhysicalBudget(limits.physical_trade_date_bytes, limits.physical_total_bytes)
         self._use_legacy_layout = use_legacy_layout
         self._lock = threading.RLock()
         self._initialized_databases: set[Path] = set()
@@ -214,7 +218,7 @@ class SQLiteResearchTraceIndex:
         if len(payload) > self._maximum_payload_bytes:
             raise ResearchTraceCapacityError("research trace payload capacity exhausted")
         database = self._database_for(event.trade_date)
-        with self._lock:
+        with self._lock, self._writer_lock:
             existing = self._existing_row(event.decision_version, event.trade_date, database)
             if existing is not None:
                 existing_payload = bytes(existing["payload"])
@@ -242,8 +246,11 @@ class SQLiteResearchTraceIndex:
                 raise ResearchTraceCapacityError("research trace trade-date capacity exhausted")
             if archive.retained_bytes + len(payload) > self._maximum_archive_bytes:
                 raise ResearchTraceCapacityError("research trace archive capacity exhausted")
+            self._physical_budget.require(self._source_databases(), database, pending_bytes=65536)
             self._initialize_database(database)
             with self._connection(database, write=True) as connection:
+                connection.execute("PRAGMA cache_spill = OFF")
+                connection.execute("BEGIN IMMEDIATE")
                 retained = int(connection.execute("SELECT COUNT(*) FROM committed_events").fetchone()[0])
                 retained_bytes = int(
                     connection.execute("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM committed_events").fetchone()[0]
@@ -268,7 +275,8 @@ class SQLiteResearchTraceIndex:
                         payload,
                     ),
                 )
-                self._recorded += 1
+                self._physical_budget.require_commit(connection, self._source_databases(), database)
+            self._recorded += 1
 
     def get(self, decision_version: str) -> DecisionObservation | None:
         self.initialize()
@@ -434,9 +442,15 @@ class SQLiteResearchTraceIndex:
     def _initialize_database(self, database: Path) -> None:
         if database in self._initialized_databases:
             return
+        self._physical_budget.require(self._source_databases(), database, pending_bytes=262144)
         initialize_database(database, self._initialized_databases)
         with self._connection(database, write=True) as connection:
-            self._quarantined += self._quarantine_invalid_rows(connection)
+            connection.execute("PRAGMA cache_spill = OFF")
+            connection.execute("BEGIN IMMEDIATE")
+            quarantined = self._quarantine_invalid_rows(connection)
+            if quarantined:
+                self._physical_budget.require_commit(connection, self._source_databases(), database)
+        self._quarantined += quarantined
 
     def _partition_databases(self) -> tuple[Path, ...]:
         if not self._partitions.exists():
@@ -491,8 +505,11 @@ class SQLiteResearchTraceIndex:
         if database == self._legacy_database:
             self._quarantined += 1
             return
-        with self._connection(database, write=True) as connection:
+        with self._writer_lock, self._connection(database, write=True) as connection:
+            connection.execute("PRAGMA cache_spill = OFF")
+            connection.execute("BEGIN IMMEDIATE")
             quarantine_row(connection, decision_version, reason)
+            self._physical_budget.require_commit(connection, self._source_databases(), database)
         self._quarantined += 1
 
     def _quarantine_invalid_rows(self, connection: sqlite3.Connection) -> int:
@@ -737,7 +754,6 @@ def _decision_candidate_audit(raw: dict[str, object]) -> ResearchDecisionCandida
 __all__ = [
     "LEGACY_RESEARCH_EVENT_SCHEMA_VERSION",
     "RESEARCH_EVENT_SCHEMA_VERSION",
-    "ResearchTraceCapacityError",
     "ResearchTraceConflictError",
     "ResearchTraceLimits",
     "SQLiteResearchTraceIndex",

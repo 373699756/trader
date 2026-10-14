@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import re
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
-from enum import Enum
 from functools import cached_property
 from types import MappingProxyType
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
@@ -815,31 +813,7 @@ def _decision_entry_identity(item: ScoredDecisionEntry) -> dict[str, object]:
 
 
 def _content_hash(value: object) -> str:
-    payload = _canonical_value(value)
-    serialized = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
-def _canonical_value(value: object) -> _CanonicalValue:
-    if value is None or isinstance(value, (str, int, bool)):
-        result: _CanonicalValue = value
-    elif isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("decision epoch cannot hash non-finite values")
-        result = value
-    elif isinstance(value, (date, datetime)):
-        result = value.isoformat()
-    elif isinstance(value, Enum):
-        result = str(value.value)
-    elif is_dataclass(value):
-        result = {item.name: _canonical_value(getattr(value, item.name)) for item in fields(value)}
-    elif isinstance(value, Mapping):
-        result = {str(key): _canonical_value(item) for key, item in sorted(value.items(), key=lambda row: str(row[0]))}
-    elif isinstance(value, (tuple, list)):
-        result = [_canonical_value(item) for item in value]
-    else:
-        raise TypeError(f"unsupported decision epoch value: {type(value).__name__}")
-    return result
+    return canonical_digest(value, include_derived=True)
 
 
 def _sorted_unique_codes(values: tuple[str, ...], name: str) -> tuple[str, ...]:

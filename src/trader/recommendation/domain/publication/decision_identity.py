@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -12,6 +10,7 @@ from functools import cached_property
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
@@ -797,11 +796,7 @@ def _require_shanghai(value: datetime, label: str) -> None:
 
 
 def _hash(payload: dict[str, _Json]) -> str:
-    return hashlib.sha256(_json_bytes(payload)).hexdigest()
-
-
-def _json_bytes(payload: dict[str, _Json]) -> bytes:
-    return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
+    return canonical_digest(payload)
 
 
 def _display_text(value: str, label: str) -> str:

@@ -22,11 +22,8 @@ from trader.training.application.tomorrow_daily_close_training import (
     ValidationMetrics,
     ValidationReport,
 )
-from trader.training.domain.evaluation.research_identity import (
-    canonical_research_hash,
-    canonical_research_json,
-    canonical_research_value,
-)
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json, research_value
 
 TomorrowDailyCloseEvidence = DatasetManifest | FeatureDataset | ValidationReport | CandidateModelSnapshot
 
@@ -40,11 +37,11 @@ class TomorrowDailyCloseEvidenceCodec:
 
     @staticmethod
     def encode(evidence: TomorrowDailyCloseEvidence) -> str:
-        payload = canonical_research_value(evidence)
+        payload = research_value(evidence)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow daily-close artifact must encode to an object")
         payload["content_hash"] = evidence.content_hash
-        return canonical_research_json(payload)
+        return research_json(payload)
 
     @classmethod
     def decode_manifest(cls, encoded: str) -> DatasetManifest:

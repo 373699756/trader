@@ -371,6 +371,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
             last_error_code="ResearchTraceCapacityError",
         ),
         company_research=ResearchRuntimeStatus(state="idle"),
+        session=SimpleNamespace(generation=0, discontinuity_reason="startup"),
         strategy_error_codes=(),
         recent_errors=(),
         deepseek=Mock(),
@@ -434,6 +435,8 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         "is_trading_day": None,
         "consecutive_failure_count": 0,
         "next_retry_at": None,
+        "generation": 0,
+        "discontinuity_reason": "startup",
     }
     assert payload["scheduler"]["cadence"]["schedule_points"] == [
         {

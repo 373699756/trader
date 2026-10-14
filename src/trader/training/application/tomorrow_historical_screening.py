@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import math
 from collections import Counter, defaultdict
 from collections.abc import Sequence
@@ -32,7 +31,7 @@ from trader.training.domain.evaluation.paired_statistics import (
     PreregisteredBootstrapPlan,
     paired_moving_block_statistics,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_json
+from trader.training.domain.evaluation.research_identity import research_rows_hash
 from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalCandidate,
@@ -484,11 +483,7 @@ def _gate_failures(metrics: TomorrowHistoricalGateMetrics, spec: TomorrowHistori
 
 
 def _rows_hash(rows: tuple[TomorrowHistoricalRow, ...]) -> str:
-    digest = hashlib.sha256()
-    for row in rows:
-        digest.update(canonical_research_json(row).encode())
-        digest.update(b"\n")
-    return digest.hexdigest()
+    return research_rows_hash(rows)
 
 
 def _mean(values: tuple[float, ...]) -> float:

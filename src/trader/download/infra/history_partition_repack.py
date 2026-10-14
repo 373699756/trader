@@ -17,7 +17,6 @@ from trader.download.domain.history_control import (
     HistoryControlState,
     HistorySnapshotPartition,
 )
-from trader.download.domain.history_identity import history_content_hash
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
@@ -47,6 +46,7 @@ from trader.download.infra.history_reference_files import (
     read_bound_history_reference,
     write_history_reference,
 )
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.model_bundles.bundle_repository import inspect_active_head_bundle
 
@@ -433,7 +433,7 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
         state,
         active,
         files,
-        history_content_hash(files),
+        canonical_digest(files),
         sum(item.size_bytes for item in files if item.relative_path != _CONTROL_NAME),
         len(universe.securities),
         len(calendar.open_dates),

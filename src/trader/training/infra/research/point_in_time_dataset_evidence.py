@@ -35,7 +35,8 @@ from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeRejectionBoundary,
     PointInTimeSourceIdentity,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash, canonical_research_json
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json
 
 
 class PointInTimeDatasetEvidenceConflictError(RuntimeError):
@@ -118,7 +119,7 @@ class PointInTimeDatasetEvidenceIndex:
 
 
 def _write_once(path: Path, payload: dict[str, object]) -> None:
-    rendered = canonical_research_json(payload)
+    rendered = research_json(payload)
     if publish_immutable(path, rendered):
         return
     if path.read_text(encoding="utf-8") != rendered:

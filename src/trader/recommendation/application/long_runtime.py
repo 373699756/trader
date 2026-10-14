@@ -15,6 +15,7 @@ from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError, QuoteReaderPort
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus, LatestWinsWorker
 from trader.recommendation.application.runtime.schedule import SHANGHAI
+from trader.recommendation.application.runtime.trading_session import StaleSessionError, session_guard
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
@@ -75,6 +76,7 @@ class LongRuntime:
         self._retained_trade_date: date | None = None
         self._retained_quotes: dict[str, MarketQuote] = {}
         self._last_observed_at: datetime | None = None
+        self._last_generation = 0
         self._published_count = 0
         self._publish_rejection_count = 0
         self._input_rejection_count = 0
@@ -87,7 +89,10 @@ class LongRuntime:
         self._worker = LatestWinsWorker(
             "trader-long",
             self._process,
-            order_key=lambda request: int(request.observed_at.timestamp() * 1_000_000),
+            order_key=lambda request: (
+                (request.session.generation if request.session is not None else 0) * 10**24
+                + int(request.observed_at.timestamp() * 1_000_000)
+            ),
         )
 
     @property
@@ -141,8 +146,19 @@ class LongRuntime:
             )
 
     def _process(self, request: LongRefreshRequest) -> None:
-        with self._lock:
-            if self._last_observed_at is not None and request.observed_at < self._last_observed_at:
+        try:
+            self._execute(request)
+        except StaleSessionError:
+            return
+
+    def _execute(self, request: LongRefreshRequest) -> None:
+        with session_guard(request.session), self._lock:
+            generation = request.session.generation if request.session is not None else 0
+            if (
+                generation == self._last_generation
+                and self._last_observed_at is not None
+                and request.observed_at < self._last_observed_at
+            ):
                 self._input_rejection_count += 1
                 self._last_error_code = "input:stale_observation"
                 return
@@ -159,48 +175,50 @@ class LongRuntime:
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError):
             features = ()
             degraded_reasons.append("long_quote_unavailable")
-            with self._lock:
+            with session_guard(request.session), self._lock:
                 self._fetch_failure_count += 1
                 self._last_error_code = "long_quote_unavailable"
-        completed_at = max(request.observed_at, _shanghai(self._now()))
-        fresh = _fresh_quotes(features, frozenset(self._codes), completed_at)
-        items, next_retained, live_count, retained_count, missing_count = self._projection_items(
-            fresh,
-            completed_at,
-        )
-        if live_count != len(self._codes):
-            degraded_reasons.append("long_quotes_partial")
-        projection = LongProjection(
-            trade_date=completed_at.date(),
-            sequence=self._next_sequence(),
-            observed_at=completed_at,
-            input_versions=(
-                ("config", self._config_version),
-                ("long_quotes", f"long-quotes:{request.observed_at:%Y%m%dT%H%M%S%f}"),
-                ("watchlist", self._watchlist_version),
-            ),
-            items=items,
-        )
-        expected = self._index.snapshot(Strategy.LONG).current
-        published = self._index.publish(
-            projection,
-            expected_version=expected.version if expected is not None else None,
-        )
-        with self._lock:
-            self._live_count = live_count
-            self._retained_count = retained_count
-            self._missing_count = missing_count
-            self._degraded_reasons = tuple(dict.fromkeys(degraded_reasons))
+        with session_guard(request.session):
+            completed_at = max(request.observed_at, _shanghai(self._now()))
+            fresh = _fresh_quotes(features, frozenset(self._codes), completed_at)
+            items, next_retained, live_count, retained_count, missing_count = self._projection_items(
+                fresh,
+                completed_at,
+            )
+            if live_count != len(self._codes):
+                degraded_reasons.append("long_quotes_partial")
+            projection = LongProjection(
+                trade_date=completed_at.date(),
+                sequence=self._next_sequence(),
+                observed_at=completed_at,
+                input_versions=(
+                    ("config", self._config_version),
+                    ("long_quotes", f"long-quotes:{request.observed_at:%Y%m%dT%H%M%S%f}"),
+                    ("watchlist", self._watchlist_version),
+                ),
+                items=items,
+            )
+            expected = self._index.snapshot(Strategy.LONG).current
+            published = self._index.publish(
+                projection,
+                expected_version=expected.version if expected is not None else None,
+            )
+            with session_guard(request.session), self._lock:
+                self._live_count = live_count
+                self._retained_count = retained_count
+                self._missing_count = missing_count
+                self._degraded_reasons = tuple(dict.fromkeys(degraded_reasons))
+                if published.accepted:
+                    self._retained_trade_date = completed_at.date()
+                    self._retained_quotes = next_retained
+                    self._last_observed_at = request.observed_at
+                    self._last_generation = generation
+                    self._published_count += 1
+                else:
+                    self._publish_rejection_count += 1
+                    self._last_error_code = f"publish:{published.reason}"
             if published.accepted:
-                self._retained_trade_date = completed_at.date()
-                self._retained_quotes = next_retained
-                self._last_observed_at = request.observed_at
-                self._published_count += 1
-            else:
-                self._publish_rejection_count += 1
-                self._last_error_code = f"publish:{published.reason}"
-        if published.accepted:
-            self._publish_projection_event(projection)
+                self._publish_projection_event(projection)
 
     def _projection_items(
         self,

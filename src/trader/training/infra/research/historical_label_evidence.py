@@ -19,7 +19,8 @@ from trader.training.domain.evaluation.historical_label import (
     HistoricalPreregistrationStatus,
     HistoricalTemporalSplit,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash, canonical_research_json
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json
 
 
 class HistoricalLabelEvidenceConflictError(RuntimeError):
@@ -40,7 +41,7 @@ class HistoricalLabelEvidenceIndex:
             return existing
         payload = _encode_batch(batch)
         payload["content_hash"] = batch.content_hash
-        if publish_immutable(path, canonical_research_json(payload)):
+        if publish_immutable(path, research_json(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != batch.content_hash:

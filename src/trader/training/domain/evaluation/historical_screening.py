@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import json
 import math
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+
+from trader.infra.serialization.canonical_codec import canonical_digest
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 
@@ -46,11 +46,7 @@ class HistoricalScreeningSpec:
             raise ValueError("historical screening cost is invalid")
         if self.promotion_authority:
             raise ValueError("retrospective historical screening cannot have promotion authority")
-        payload = {
-            field.name: _canonical(getattr(self, field.name)) for field in dataclasses.fields(self) if field.init
-        }
-        encoded = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-        object.__setattr__(self, "content_hash", hashlib.sha256(encoded.encode()).hexdigest())
+        object.__setattr__(self, "content_hash", canonical_digest(self))
 
 
 @dataclass(frozen=True)
@@ -79,10 +75,6 @@ class HistoricalPriceBar:
             raise ValueError("historical screening turnover must be finite")
         if self.adjustment != "qfq" or not self.source:
             raise ValueError("historical screening bars require a qfq source")
-
-
-def _canonical(value: object) -> object:
-    return value.isoformat() if isinstance(value, date) else value
 
 
 HISTORICAL_SCREENING_SPEC = HistoricalScreeningSpec(

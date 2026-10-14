@@ -7,7 +7,8 @@ from pathlib import Path
 
 from trader.infra.serialization.sealing import publish_immutable
 from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
-from trader.training.domain.evaluation.research_identity import canonical_research_hash, canonical_research_json
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json
 from trader.training.infra.research.terminal_holdout_reports import (
     TerminalHoldoutReportConflictError,
     decode_terminal_holdout_report,
@@ -29,7 +30,7 @@ class CrossStrategyConclusionReportIndex:
             return existing
         payload = _encode_conclusion(conclusion)
         payload["content_hash"] = conclusion.content_hash
-        if not publish_immutable(path, canonical_research_json(payload)):
+        if not publish_immutable(path, research_json(payload)):
             existing = self.verify()
             if existing.content_hash != conclusion.content_hash:
                 raise TerminalHoldoutReportConflictError("cross-strategy conclusion identity conflict")

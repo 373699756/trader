@@ -20,7 +20,6 @@ from trader.download.domain.history_control import (
     HistorySyncCheckpoint,
     HistoryUniverseIdentity,
 )
-from trader.download.domain.history_identity import history_content_hash
 from trader.download.domain.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
@@ -61,6 +60,7 @@ from trader.download.infra.history_sync_failure import (
     history_failure_code,
     history_failure_detail,
 )
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.infra.workers import WorkerExecutor, injected_executor
 from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -417,7 +417,7 @@ def _control_identities(
     reference = HistoryReferenceSnapshot(
         tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
     )
-    supplier_contract = f"history_ref_{reference.content_hash}_{history_content_hash(context.source_versions)[:16]}"
+    supplier_contract = f"history_ref_{reference.content_hash}_{canonical_digest(context.source_versions)[:16]}"
     source = HistorySourceIdentity("tencent_baostock", "history_daily", supplier_contract[:128], observed)
     calendar = HistoryCalendarIdentity(context.calendar.open_dates, source.content_hash)
     universe = HistoryUniverseIdentity(

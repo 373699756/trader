@@ -1,53 +1,28 @@
-"""Canonical serialization and content identity for research results."""
+"""Research identity rules, independent of persistent JSON representation."""
 
 from __future__ import annotations
 
-import dataclasses
 import hashlib
-import json
-from datetime import date, datetime
+from collections.abc import Iterable
 
+from trader.infra.serialization.canonical_codec import CanonicalExclusion, canonical_digest, canonical_text
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC
+
+RESEARCH_IDENTITY_EXCLUSION = CanonicalExclusion(
+    "research_identity", HISTORICAL_RESEARCH_SPEC.research_identity, "exclude_from_legacy_hash"
+)
 
 
 def canonical_research_hash(value: object) -> str:
-    """Return the stable SHA-256 identity of a research value."""
-
-    return hashlib.sha256(canonical_research_json(value).encode()).hexdigest()
+    return canonical_digest(value, exclusion=RESEARCH_IDENTITY_EXCLUSION)
 
 
-def canonical_research_json(value: object) -> str:
-    """Render a research value using its stable canonical JSON form."""
-
-    return json.dumps(
-        canonical_research_value(value),
-        ensure_ascii=True,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+def research_rows_hash(rows: Iterable[object]) -> str:
+    digest = hashlib.sha256()
+    for row in rows:
+        digest.update(canonical_text(row, exclusion=RESEARCH_IDENTITY_EXCLUSION).encode())
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
-def canonical_research_value(value: object) -> object:
-    """Project a typed research value into canonical serialization primitives."""
-
-    if dataclasses.is_dataclass(value):
-        preserves_historical_identity = (
-            getattr(value, "research_identity", None) == HISTORICAL_RESEARCH_SPEC.research_identity
-        )
-        return {
-            field.name: canonical_research_value(getattr(value, field.name))
-            for field in dataclasses.fields(value)
-            if field.init
-            and not (preserves_historical_identity and field.metadata.get("exclude_from_legacy_hash", False))
-        }
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-    if isinstance(value, (tuple, list)):
-        return [canonical_research_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): canonical_research_value(item) for key, item in value.items()}
-    return value
-
-
-__all__ = ["canonical_research_hash", "canonical_research_json", "canonical_research_value"]
+__all__ = ["RESEARCH_IDENTITY_EXCLUSION", "canonical_research_hash", "research_rows_hash"]

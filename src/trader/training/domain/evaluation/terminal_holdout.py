@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
-import hashlib
-import json
 import math
 import re
 from collections import defaultdict
@@ -12,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.training.domain.evaluation.baseline import population_spearman
 from trader.training.domain.evaluation.paired_statistics import (
     PreregisteredBootstrapPlan,
@@ -615,23 +613,7 @@ def _anchor(strategy: TerminalStrategy) -> str:
 
 
 def _canonical_hash(value: object) -> str:
-    def canonical(item: object) -> object:
-        if dataclasses.is_dataclass(item):
-            return {
-                field.name: canonical(getattr(item, field.name)) for field in dataclasses.fields(item) if field.init
-            }
-        if isinstance(item, date):
-            return item.isoformat()
-        if isinstance(item, tuple):
-            return [canonical(child) for child in item]
-        if isinstance(item, list):
-            return [canonical(child) for child in item]
-        if isinstance(item, dict):
-            return {str(key): canonical(child) for key, child in item.items()}
-        return item
-
-    payload = json.dumps(canonical(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode()).hexdigest()
+    return canonical_digest(value)
 
 
 __all__ = [

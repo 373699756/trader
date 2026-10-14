@@ -13,7 +13,8 @@ from trader.training.application.historical_candidate_confirmation import (
     HistoricalConfirmationTerminalBatch,
 )
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
-from trader.training.domain.evaluation.research_identity import canonical_research_hash, canonical_research_json
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json
 
 _STRATEGIES: tuple[ResearchStrategy, ...] = ("tomorrow", "d25")
 
@@ -39,7 +40,7 @@ class HistoricalConfirmationReportPublication:
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        if publish_immutable(self._path, canonical_research_json(payload)):
+        if publish_immutable(self._path, research_json(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != index.content_hash:

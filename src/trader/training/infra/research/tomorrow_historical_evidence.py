@@ -7,15 +7,12 @@ from pathlib import Path
 
 from trader.infra.serialization.sealing import publish_immutable
 from trader.training.application.tomorrow_historical_report import TomorrowHistoricalReport
-from trader.training.domain.evaluation.research_identity import (
-    canonical_research_hash,
-    canonical_research_json,
-    canonical_research_value,
-)
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalModelSnapshot,
 )
+from trader.training.infra.research.identity_codec import research_json, research_value
 
 
 class TomorrowHistoricalEvidenceConflictError(RuntimeError):
@@ -79,11 +76,11 @@ class TomorrowHistoricalEvidenceIndex:
             if persisted_hash != content_hash:
                 raise TomorrowHistoricalEvidenceConflictError("Tomorrow historical artifact identity conflict")
             return persisted_hash
-        payload = canonical_research_value(value)
+        payload = research_value(value)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow historical artifact must be a JSON object")
         payload["content_hash"] = content_hash
-        if publish_immutable(path, canonical_research_json(payload)):
+        if publish_immutable(path, research_json(payload)):
             return str(content_hash)
         persisted_hash = str(self._read_verified(path, path.stem)["content_hash"])
         if persisted_hash != content_hash:

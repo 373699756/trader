@@ -24,16 +24,69 @@ from trader.training.application.research_audit import (
 )
 from trader.training.infra.research.research_trace_index import (
     LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
-    ResearchTraceCapacityError,
     ResearchTraceConflictError,
     ResearchTraceLimits,
     SQLiteResearchTraceIndex,
 )
+from trader.training.infra.research.trace_capacity import ResearchTraceCapacityError
 from trader.training.infra.research.trace_projection import observation_bytes
 
 
 def _persistent_event(value):
     return DecisionObservation(build_decision_committed(value), None).materialize().event
+
+
+@pytest.mark.parametrize("limit", ("physical_trade_date_bytes", "physical_total_bytes"))
+def test_physical_capacity_rejection_preserves_old_audit_and_allows_duplicate(tmp_path, limit):
+    first = DecisionObservation(_persistent_event(decision()), None)
+    existing = SQLiteResearchTraceIndex(tmp_path)
+    existing.record(first)
+    restricted = SQLiteResearchTraceIndex(tmp_path, limits=replace(ResearchTraceLimits(), **{limit: 1}))
+    restricted.record(first)
+    with pytest.raises(ResearchTraceCapacityError, match="physical"):
+        restricted.record(DecisionObservation(_persistent_event(decision(sequence=2)), None))
+    assert existing.get(first.event.decision_version) == first
+    assert existing.status().retained == 1
+
+
+def test_physical_capacity_counts_wal_and_rejects_before_partition_creation(tmp_path):
+    from trader.training.infra.research.trace_capacity import TracePhysicalBudget
+
+    database = tmp_path / "audit.sqlite3"
+    database.write_bytes(b"a" * 4096)
+    wal = tmp_path / "audit.sqlite3-wal"
+    wal.write_bytes(b"b" * 16384)
+    with pytest.raises(ResearchTraceCapacityError, match="physical partition"):
+        TracePhysicalBudget(8192, 65536).require((database,), database)
+    hardlink = tmp_path / "same.sqlite3"
+    hardlink.hardlink_to(database)
+    physical = sum(max(path.stat().st_size, getattr(path.stat(), "st_blocks", 0) * 512) for path in (database, wal))
+    TracePhysicalBudget(physical, physical).require((database, hardlink), database)
+    limited = SQLiteResearchTraceIndex(tmp_path / "limited", limits=ResearchTraceLimits(physical_total_bytes=1))
+    with pytest.raises(ResearchTraceCapacityError, match="physical total"):
+        limited.record(DecisionObservation(_persistent_event(decision()), None))
+    assert not tuple((tmp_path / "limited").rglob("*.sqlite3"))
+
+
+def test_physical_commit_admission_rolls_back_index_and_payload_growth(tmp_path):
+    from trader.training.infra.research.trace_capacity import TracePhysicalBudget
+    from trader.training.infra.research.trace_storage import connection
+
+    database = tmp_path / "audit.sqlite3"
+    with connection(database, write=True) as conn:
+        conn.executescript(
+            "PRAGMA journal_mode=WAL; CREATE TABLE audit (id INTEGER PRIMARY KEY, payload BLOB); CREATE INDEX payload_idx ON audit(payload); INSERT INTO audit VALUES(1, 'old');"
+        )
+    size_before = database.stat().st_size
+    with pytest.raises(ResearchTraceCapacityError, match="physical"):
+        with connection(database, write=True) as conn:
+            conn.execute("PRAGMA cache_spill=OFF")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("INSERT INTO audit VALUES(2, zeroblob(262144))")
+            TracePhysicalBudget(131072, 131072).require_commit(conn, (database,), database)
+    with connection(database, write=False) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
+    assert database.stat().st_size == size_before
 
 
 def test_committed_event_trace_survives_restart_and_replays_idempotently(tmp_path) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
@@ -32,6 +32,7 @@ from trader.recommendation.application.runtime.schedule import (
 from trader.recommendation.application.runtime.schedule_requests import (
     failure_code,
 )
+from trader.recommendation.application.runtime.trading_session import StaleSessionError, session_guard
 from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
 )
@@ -60,6 +61,10 @@ class CloseControlCoordinator:
         self._control_completed: OrderedDict[str, None] = OrderedDict()
         self._close_input: RefreshOutcome | None = None
 
+    def rotate_session(self) -> None:
+        with self._lock:
+            self._close_input = None
+
     def process_close_recovery(self, scheduled: ScheduledPipelineTask) -> None:
         at = scheduled.scheduled_at
         missing = tuple(
@@ -72,7 +77,9 @@ class CloseControlCoordinator:
         if missing and (close_input is None or close_input.completed_at.date() != at.date()):
             try:
                 outcome = self._dependencies.data.refresh_task(
-                    PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, shanghai_now(self._dependencies.clock.now()), ())
+                    PipelineTaskRequest(
+                        PipelineTask.CLOSE_QUOTES, shanghai_now(self._dependencies.clock.now()), (), scheduled.session
+                    )
                 )
                 if outcome.completed_at.date() != at.date():
                     raise DataRefreshUnavailableError("close_input_trade_date_mismatch")
@@ -80,7 +87,7 @@ class CloseControlCoordinator:
                 self._hooks.failure("refresh", failure_code(exc, "refresh_unavailable"), None)
                 self._hooks.pipeline_result(scheduled, SchedulePointResult.RETRY)
                 return
-            with self._lock:
+            with session_guard(scheduled.session), self._lock:
                 self._close_input = outcome
         # Reconcile authoritative formal/control state on later ticks; handoff is not completion.
         with self._lock:
@@ -96,7 +103,9 @@ class CloseControlCoordinator:
         for strategy in missing:
             lane = self._hooks.lane_status(strategy)
             if not lane.running and not lane.pending:
-                self._hooks.submit_cycle(self._hooks.scheduled_request(strategy, at, "close_fallback"))
+                self._hooks.submit_cycle(
+                    replace(self._hooks.scheduled_request(strategy, at, "close_fallback"), session=scheduled.session)
+                )
 
     def freeze_close_fallback(
         self,
@@ -107,13 +116,16 @@ class CloseControlCoordinator:
     ) -> None:
         native_version = dict(current.input_versions).get("native", current.version)
         try:
-            self._dependencies.freezes.freeze_close_fallback(
-                request.strategy,
-                request.observed_at,
-                current,
-                recovery_path=recovery_path,
-                official_close_version=f"official-close:{native_version}",
-            )
+            with session_guard(request.session):
+                self._dependencies.freezes.freeze_close_fallback(
+                    request.strategy,
+                    request.observed_at,
+                    current,
+                    recovery_path=recovery_path,
+                    official_close_version=f"official-close:{native_version}",
+                )
+        except StaleSessionError:
+            return
         except FreezeUnavailableError:
             self._hooks.failure("freeze", "close_fallback_unavailable", request.strategy)
         except Exception as exc:
@@ -129,7 +141,8 @@ class CloseControlCoordinator:
         *,
         scheduled: ScheduledPipelineTask,
     ) -> bool:
-        key = f"freeze:{at.date().isoformat()}:{strategy.value}"
+        generation = scheduled.session.generation if scheduled.session is not None else 0
+        key = f"freeze:{at.date().isoformat()}:{strategy.value}:{generation}"
         if not self._reserve_control(key):
             return False
         future = self._control.submit_urgent(self._run_freeze, key, strategy, at, scheduled)
@@ -146,7 +159,8 @@ class CloseControlCoordinator:
         *,
         scheduled: ScheduledPipelineTask,
     ) -> bool:
-        key = f"checkpoint:{at.date().isoformat()}:{strategy.value}"
+        generation = scheduled.session.generation if scheduled.session is not None else 0
+        key = f"checkpoint:{at.date().isoformat()}:{strategy.value}:{generation}"
         if not self._reserve_control(key):
             return False
         future = self._control.submit_urgent(self._run_checkpoint, key, strategy, at, scheduled)
@@ -165,7 +179,17 @@ class CloseControlCoordinator:
     ) -> None:
         success = False
         try:
-            self._dependencies.freezes.capture_checkpoint(strategy, at)
+            with session_guard(scheduled.session):
+                current = self._dependencies.index.snapshot(strategy).current
+                if (
+                    scheduled.session is not None
+                    and scheduled.session.generation > 1
+                    and (current is None or not scheduled.session.allows_version(current.version))
+                ):
+                    raise StaleSessionError("checkpoint_requires_current_session")
+                self._dependencies.freezes.capture_checkpoint(strategy, at)
+        except StaleSessionError:
+            return
         except FreezeUnavailableError as exc:
             self._hooks.failure("checkpoint", failure_code(exc, "checkpoint_unavailable"), strategy)
         except Exception as exc:
@@ -176,13 +200,17 @@ class CloseControlCoordinator:
                 self._hooks.success("checkpoint", strategy)
         finally:
             self._finish_control(key, success=success)
-            self._dependencies.cadence.record_point_result(
-                at.date().isoformat(),
-                scheduled.schedule_point or SchedulePoint.AFTERNOON_CHECKPOINT,
-                strategy.value,
-                SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
-                at=shanghai_now(self._dependencies.clock.now()),
-            )
+            try:
+                with session_guard(scheduled.session):
+                    self._dependencies.cadence.record_point_result(
+                        at.date().isoformat(),
+                        scheduled.schedule_point or SchedulePoint.AFTERNOON_CHECKPOINT,
+                        strategy.value,
+                        SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
+                        at=shanghai_now(self._dependencies.clock.now()),
+                    )
+            except StaleSessionError:
+                pass
 
     def _run_freeze(
         self,
@@ -192,9 +220,22 @@ class CloseControlCoordinator:
         scheduled: ScheduledPipelineTask,
     ) -> None:
         success = False
+        missed = False
         try:
-            current = self._dependencies.index.snapshot(strategy).current
-            self._dependencies.freezes.freeze(strategy, at, current)
+            with session_guard(scheduled.session):
+                current = self._dependencies.index.snapshot(strategy).current
+                if (
+                    scheduled.session is not None
+                    and scheduled.session.generation > 1
+                    and (current is None or not scheduled.session.allows_version(current.version))
+                ):
+                    # No eligible session input: release the normal freeze point so
+                    # close recovery can build a fresh, explicitly labelled fallback.
+                    missed = True
+                    return
+                self._dependencies.freezes.freeze(strategy, at, current)
+        except StaleSessionError:
+            return
         except FreezeUnavailableError:
             self._hooks.failure("freeze", "freeze_unavailable", strategy)
         except Exception as exc:
@@ -205,13 +246,19 @@ class CloseControlCoordinator:
                 self._hooks.success("freeze", strategy)
         finally:
             self._finish_control(key, success=success)
-            self._dependencies.cadence.record_point_result(
-                at.date().isoformat(),
-                scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
-                strategy.value,
-                SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
-                at=shanghai_now(self._dependencies.clock.now()),
-            )
+            try:
+                with session_guard(scheduled.session):
+                    self._dependencies.cadence.record_point_result(
+                        at.date().isoformat(),
+                        scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
+                        strategy.value,
+                        SchedulePointResult.MISSED
+                        if missed
+                        else (SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY),
+                        at=shanghai_now(self._dependencies.clock.now()),
+                    )
+            except StaleSessionError:
+                pass
 
     def submit_settlement(self, at: datetime) -> None:
         key = f"settlement:{at.date().isoformat()}"

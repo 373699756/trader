@@ -8,12 +8,13 @@ from pathlib import Path
 
 from trader.infra.serialization.fields import is_text_sequence
 from trader.infra.serialization.sealing import publish_immutable
-from trader.training.domain.evaluation.research_identity import canonical_research_hash, canonical_research_json
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
 from trader.training.domain.evaluation.terminal_holdout import (
     TerminalHoldoutMetrics,
     TerminalHoldoutReport,
     TerminalStrategy,
 )
+from trader.training.infra.research.identity_codec import research_json
 
 
 class TerminalHoldoutReportConflictError(RuntimeError):
@@ -36,7 +37,7 @@ class TerminalHoldoutReportIndex:
             return existing
         payload = encode_terminal_holdout_report(report)
         payload["content_hash"] = report.content_hash
-        if not publish_immutable(path, canonical_research_json(payload)):
+        if not publish_immutable(path, research_json(payload)):
             existing = self.verify()
             if existing.content_hash != report.content_hash:
                 raise TerminalHoldoutReportConflictError("terminal holdout report identity conflict")

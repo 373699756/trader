@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from bisect import bisect_left
 from dataclasses import dataclass
@@ -11,6 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 
+from trader.infra.serialization.canonical_codec import canonical_digest
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.research import CorporateRiskCategory, ResearchObservation
 
@@ -351,8 +350,7 @@ def _fact(
 
 
 def _sha256(payload: dict[str, str]) -> str:
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_digest(payload, ensure_ascii=False)
 
 
 __all__ = [

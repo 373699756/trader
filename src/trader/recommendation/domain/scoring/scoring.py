@@ -4,10 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Literal
 
 from trader.recommendation.domain.candidate.composition import LocalScoreResult, compose
+from trader.recommendation.domain.evidence.missing_value_policy import (
+    MissingFieldRule,
+    MissingValuePolicy,
+    assess_missing_values,
+)
+from trader.recommendation.domain.evidence.quality import MissingSeverity
 from trader.recommendation.domain.market.factors import clamp, weighted_score
 from trader.recommendation.domain.market.models import (
     Board,
@@ -462,7 +469,21 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
         }
     else:
         raise ValueError("long has no board score")
-    return compose(components, policy.local_weights)
+    result = compose(components, policy.local_weights)
+    rules = tuple(
+        MissingFieldRule(field, MissingSeverity.GENERAL, Decimal(str(weight * inner_weight * 50.0)), False)
+        for component, weight in policy.local_weights.items()
+        if component != "market_state"
+        for field, inner_weight in (
+            ((component, 1.0),) if component == "entry_quality" else policy.local_component_weights[component].items()
+        )
+    )
+    quality = assess_missing_values(snapshot, MissingValuePolicy(rules))
+    penalty = float(quality.quality_penalty)
+    return LocalScoreResult(
+        components={**result.components, "quality_penalty": penalty},
+        base_score=clamp(result.base_score - penalty),
+    )
 
 
 def _weighted_known(

@@ -7,13 +7,13 @@ safety vetoes are controls; only the registered secondary rules may be removed.
 from __future__ import annotations
 
 import dataclasses
-import hashlib
-import json
 import math
 import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
+
+from trader.infra.serialization.canonical_codec import canonical_digest
 
 FilterRuleId = Literal[
     "evidence",
@@ -534,19 +534,7 @@ def _percentile(values: tuple[float, ...], probability: float) -> float | None:
 
 
 def _canonical_hash(value: object) -> str:
-    def encode(item: object) -> object:
-        if dataclasses.is_dataclass(item):
-            return {field.name: encode(getattr(item, field.name)) for field in dataclasses.fields(item) if field.init}
-        if isinstance(item, date):
-            return item.isoformat()
-        if isinstance(item, (tuple, list)):
-            return [encode(child) for child in item]
-        if isinstance(item, dict):
-            return {str(key): encode(child) for key, child in item.items()}
-        return item
-
-    payload = json.dumps(encode(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(payload.encode()).hexdigest()
+    return canonical_digest(value)
 
 
 __all__ = [

@@ -118,6 +118,7 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.infra.research.trace_projection",
         "trader.training.infra.research.outcome_evidence_repository",
         "trader.training.infra.research.research_trace_index",
+        "trader.training.infra.research.trace_capacity",
     }
 
     assert _research_modules_loaded_by("trader.entrypoints.server") <= allowed

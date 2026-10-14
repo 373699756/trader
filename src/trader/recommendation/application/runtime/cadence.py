@@ -17,6 +17,7 @@ from trader.recommendation.application.runtime.schedule import (
     seconds_until_next_schedule_boundary,
     shanghai_now,
 )
+from trader.recommendation.application.runtime.trading_session import SessionLease
 
 
 class CadenceBand(str, Enum):
@@ -172,6 +173,7 @@ class ScheduledPipelineTask:
     phase: MarketPhase
     freeze_strategies: tuple[str, ...] = ()
     schedule_point: SchedulePoint | None = None
+    session: SessionLease | None = None
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,10 @@ class CadencePlanner:
                 }:
                     continue
                 if key.schedule_point in {SchedulePoint.AFTERNOON_FREEZE, SchedulePoint.CLOSE_QUOTES}:
+                    if state.status is SchedulePointStatus.INFLIGHT:
+                        self._point_states[key] = replace(
+                            state, status=SchedulePointStatus.PENDING, updated_at=local, next_retry_at=None
+                        )
                     continue
                 self._point_states[key] = replace(
                     state,

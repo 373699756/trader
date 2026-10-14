@@ -6,11 +6,15 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from tests.unit.domain.test_fusion import _risk_fact
+from trader.recommendation.domain.market.factors import round_score
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import (
     BoardStrategyPolicy,
+    FusionMode,
     Strategy,
 )
+from trader.recommendation.domain.risk.fusion import FusionPolicy, FusionRequest, fuse_score
 from trader.recommendation.domain.scoring.scoring import (
     BoardCrossSectionRequest,
     apply_board_policy,
@@ -20,6 +24,45 @@ from trader.recommendation.domain.scoring.scoring import (
 )
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("masked", (True, False))
+def test_production_score_deducts_missing_weight_even_after_neutral_fill(application_feature_factory, strategy, masked):
+    component = "tail_structure" if strategy is Strategy.TOMORROW else "quality_value"
+    missing = "tail_return_30m" if strategy is Strategy.TOMORROW else "quality_score"
+    names = (*_LOCAL_COMPONENT_WEIGHTS[strategy], "entry_quality")
+    if strategy is Strategy.TOMORROW:
+        names = (*names, "market_state")
+    policy = _policy(strategy, Board.MAIN, {name: 1 / len(names) for name in names})
+    values = {name: 50.0 for parts in _LOCAL_COMPONENT_WEIGHTS[strategy].values() for name in parts}
+    values["entry_quality"] = 50.0
+    complete = replace(_features(application_feature_factory, 1, Board.MAIN)[0], values=values, missing_fields=())
+    expected_penalty = 50.0 * _LOCAL_COMPONENT_WEIGHTS[strategy][component][missing] / len(names)
+    incomplete = replace(
+        complete,
+        values=values if masked else {key: value for key, value in values.items() if key != missing},
+        missing_fields=(missing,) if masked else (),
+    )
+    original = score_board_strategy(complete, policy)
+    scored = score_board_strategy(incomplete, policy)
+    assert original.base_score == pytest.approx(50.0)
+    assert original.components["quality_penalty"] == 0.0
+    assert scored.components["quality_penalty"] == pytest.approx(expected_penalty)
+    assert scored.base_score == pytest.approx(50.0 - expected_penalty)
+    final = fuse_score(
+        FusionRequest(
+            local=scored,
+            local_risk_facts=(_risk_fact("local", "local_rule", 2.0),),
+            review=None,
+            risk_rules={},
+            fusion_mode=FusionMode.LOCAL_DEGRADED,
+            policy=FusionPolicy(25.0),
+        )
+    )
+    assert final.score.final_score == final.score.local_score == round_score(scored.base_score - 2.0)
+    assert final.score.components["quality_penalty"] == pytest.approx(expected_penalty)
+
 
 _CANDIDATE_COMPONENT_WEIGHTS = {
     Strategy.TOMORROW: {"stability": {"low_volatility_score": 0.5, "low_drawdown_score": 0.5}},

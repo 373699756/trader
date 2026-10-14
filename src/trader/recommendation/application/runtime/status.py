@@ -14,6 +14,7 @@ from trader.recommendation.application.runtime.cadence import CadencePlannerStat
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue
 from trader.recommendation.application.runtime.schedule import MarketPhase
+from trader.recommendation.application.runtime.trading_session import TradingSessionStatus
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ class SchedulerRuntimeStatus:
     recent_errors: tuple[RuntimeIssue, ...]
     input_quality: tuple[InputQualityStatus, ...]
     publication_io: tuple[PublicationIoSnapshot, ...] = ()
+    session: TradingSessionStatus = TradingSessionStatus(0, None, "startup")
     calendar: TradingCalendarRuntimeStatus = TradingCalendarRuntimeStatus(
         state="unknown",
         trade_date=None,

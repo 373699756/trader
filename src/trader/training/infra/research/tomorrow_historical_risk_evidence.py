@@ -10,11 +10,8 @@ from trader.training.application.tomorrow_historical_validation import (
     TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
     TomorrowHistoricalRiskValidationOutcome,
 )
-from trader.training.domain.evaluation.research_identity import (
-    canonical_research_hash,
-    canonical_research_json,
-    canonical_research_value,
-)
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json, research_value
 
 
 class TomorrowHistoricalRiskEvidenceConflictError(RuntimeError):
@@ -66,7 +63,7 @@ class TomorrowHistoricalRiskEvidenceIndex:
         }
 
     def _write(self, path: Path, value: object, expected_hash: str) -> None:
-        payload = canonical_research_value(value)
+        payload = research_value(value)
         if not isinstance(payload, dict):
             raise TypeError("historical risk artifact must serialize to an object")
         payload["content_hash"] = expected_hash
@@ -75,7 +72,7 @@ class TomorrowHistoricalRiskEvidenceIndex:
             if self._read_verified(path).get("content_hash") != expected_hash:
                 raise TomorrowHistoricalRiskEvidenceConflictError("historical risk artifact identity conflict")
             return
-        if publish_immutable(path, canonical_research_json(payload)):
+        if publish_immutable(path, research_json(payload)):
             return
         if self._read_verified(path).get("content_hash") != expected_hash:
             raise TomorrowHistoricalRiskEvidenceConflictError("historical risk artifact identity conflict")

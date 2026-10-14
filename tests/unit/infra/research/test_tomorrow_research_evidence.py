@@ -17,7 +17,8 @@ from trader.training.application.tomorrow_research_orchestrator import (
     TomorrowResearchOrchestrator,
     TomorrowResearchPrerequisiteStatus,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash, canonical_research_json
+from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.infra.research.identity_codec import research_json
 from trader.training.infra.research.tomorrow_research_evidence import (
     TomorrowResearchEvidenceIndex,
     TomorrowResearchEvidenceIndexError,
@@ -98,7 +99,7 @@ def test_repository_rejects_legacy_owner_even_when_payload_hash_is_valid(tmp_pat
     assert isinstance(artifact, dict)
     artifact["owner"] = "h1_coverage"
     payload["content_hash"] = canonical_research_hash(payload)
-    path.write_text(canonical_research_json(payload), encoding="utf-8")
+    path.write_text(research_json(payload), encoding="utf-8")
 
     with pytest.raises(TomorrowResearchEvidenceIndexError, match="invalid"):
         repository.load_handoff("resource_probe")

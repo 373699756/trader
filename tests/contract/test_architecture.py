@@ -66,6 +66,16 @@ def test_active_code_does_not_import_legacy_package() -> None:
     assert violations == []
 
 
+def test_business_domains_delegate_json_representation_to_codecs() -> None:
+    violations = [
+        str(path.relative_to(SOURCE_ROOT))
+        for business in ("download", "training", "recommendation")
+        for path in (SOURCE_ROOT / business / "domain").rglob("*.py")
+        if any(name == "json" or name.startswith("json.") for name in _imports(path))
+    ]
+    assert violations == []
+
+
 def test_active_source_files_do_not_exceed_1200_lines() -> None:
     source_suffixes = {".py", ".js", ".css", ".html"}
     violations = {
@@ -121,7 +131,12 @@ def test_active_dependency_direction() -> None:
                 )
                 continue
             for imported in _imports(path):
-                if imported in {"trader.infra.shutdown", "trader.infra.workers", "trader.infra.cache_contracts"}:
+                if imported in {
+                    "trader.infra.shutdown",
+                    "trader.infra.workers",
+                    "trader.infra.cache_contracts",
+                    "trader.infra.serialization.canonical_codec",
+                }:
                     continue
                 if imported.startswith(prefixes):
                     violations.append(f"{path.relative_to(SOURCE_ROOT)} -> {imported}")

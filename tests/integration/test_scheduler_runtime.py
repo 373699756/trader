@@ -64,6 +64,9 @@ class FixedClock:
     def now(self) -> datetime:
         return self.current
 
+    def monotonic(self) -> float:
+        return self.current.timestamp()
+
 
 class DataRefresh:
     def __init__(self) -> None:
@@ -339,6 +342,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=DataRefresh(),
@@ -693,6 +697,7 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=DataRefresh(),
@@ -896,6 +901,7 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=calendar,
             cadence=_cadence(observed_at),
             data=data,
@@ -933,6 +939,8 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
         payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
         assert payload["health"] == {"level": "degraded", "issue_count": 1}
         assert payload["scheduler"]["calendar"] == {  # type: ignore[index]
+            "generation": 1,
+            "discontinuity_reason": "startup",
             "state": "unavailable",
             "trade_date": observed_at.date().isoformat(),
             "is_trading_day": None,
@@ -1104,6 +1112,7 @@ def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(checkpoint_at.replace(hour=9, minute=15)),
             data=data,
@@ -1159,7 +1168,7 @@ def test_afternoon_checkpoint_is_dispatched_for_both_scored_strategies() -> None
 
 def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> None:
     morning = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
-    final_window_at = datetime(2026, 8, 11, 14, 50, tzinfo=SHANGHAI)
+    final_window_at = datetime(2026, 8, 11, 14, 59, tzinfo=SHANGHAI)
     close_at = datetime(2026, 8, 11, 15, 0, tzinfo=SHANGHAI)
     clock = FixedClock(morning)
     data = DataRefresh()
@@ -1182,6 +1191,7 @@ def test_current_fixture_runs_without_the_legacy_pipeline_through_shutdown() -> 
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(morning),
             data=data,
@@ -1265,6 +1275,7 @@ def test_after_close_cold_start_recovers_missing_scored_strategies_and_long(hour
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
             data=data,
@@ -1354,6 +1365,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(after_close),
             data=data,
@@ -1866,6 +1878,7 @@ def test_first_completed_current_can_freeze_while_newer_cycle_is_still_scoring()
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(observed_at),
             data=DataRefresh(),
@@ -2032,6 +2045,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
                 thread_name_prefix="test-control",
             ),
             clock=clock,
+            monotonic=clock.monotonic,
             calendar=TradingCalendar(),
             cadence=_cadence(NOW),
             data=data,

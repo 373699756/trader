@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -49,3 +50,4 @@ class RuntimeDependencies:
     publish_overlay: OverlayPublisher
     latency: LatencyWaterfall = field(default_factory=LatencyWaterfall)
     publication_io: PublicationIoTracker | None = None
+    monotonic: Callable[[], float] = time.monotonic
