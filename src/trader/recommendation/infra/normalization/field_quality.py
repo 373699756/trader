@@ -67,11 +67,26 @@ class FieldSelection:
     selected_observations: Mapping[str, SourceObservation]
     conflicts: tuple[str, ...]
     quality: Mapping[str, FieldQualityState]
-    field_values: Mapping[str, FieldValue]
+    conflict_counts: Mapping[str, int]
+
+    @property
+    def field_values(self) -> Mapping[str, FieldValue]:
+        """Materialize audit values only for consumers that request them."""
+        return {
+            field: _set_field_state(
+                field,
+                value,
+                self.selected_observations[field],
+                self.quality[field],
+                conflict_count=self.conflict_counts.get(field, 0),
+            )
+            for field, value in self.values.items()
+        }
 
 
 @dataclass
 class _SelectionState:
+    validated_observations: set[int]
     selected_orders: dict[str, tuple[datetime, datetime, int, str, str]]
     tied_values: dict[str, set[tuple[int, str | float]]]
     tie_base_counts: dict[str, int]
@@ -79,7 +94,7 @@ class _SelectionState:
     values: dict[str, JsonScalar]
     sources: dict[str, str]
     quality: dict[str, FieldQualityState]
-    field_values: dict[str, FieldValue]
+    conflict_counts: dict[str, int]
     conflicts: set[str]
 
 
@@ -94,7 +109,10 @@ def source_priority(source: str) -> int:
 
 
 def allows_source_for_field(source: str, field: str) -> bool:
-    normalized = normalize_source(source)
+    return _allows_normalized_source_for_field(normalize_source(source), field)
+
+
+def _allows_normalized_source_for_field(normalized: str, field: str) -> bool:
     if field in REALTIME_FIELDS:
         return normalized in REALTIME_SOURCES
     if field in BOARD_FIELDS:
@@ -135,6 +153,7 @@ def select_fields(
     """Select one value per field by source/time/priority rule with conflicts."""
 
     state = _SelectionState(
+        validated_observations=set(),
         selected_orders={},
         tied_values={},
         tie_base_counts={},
@@ -142,17 +161,19 @@ def select_fields(
         values={},
         sources={},
         quality={},
-        field_values={},
+        conflict_counts={},
         conflicts=set(),
     )
 
     for observation in observations:
         normalized_source = normalize_source(observation.source)
+        default_order = field_order(observation, targeted=targeted, field="")
+        realtime_order = field_order(observation, targeted=targeted, field="price")
         for field, value in observation.fields.items():
-            if value is None or not allows_source_for_field(normalized_source, field):
+            if value is None or not _allows_normalized_source_for_field(normalized_source, field):
                 continue
 
-            order = field_order(observation, targeted=targeted, field=field)
+            order = realtime_order if field in REALTIME_FIELDS else default_order
             current_order = state.selected_orders.get(field)
 
             if current_order is None or order > current_order:
@@ -175,13 +196,7 @@ def select_fields(
                     state.conflicts.add(f"{field}:conflict")
                     state.quality[field] = FieldQualityState.CONFLICTING
                     conflict_count = state.tie_base_counts[field] + len(state.tied_values[field]) - 1
-                    state.field_values[field] = _set_field_state(
-                        field,
-                        current_value,
-                        state.selected_observations[field],
-                        FieldQualityState.CONFLICTING,
-                        conflict_count=conflict_count,
-                    )
+                    state.conflict_counts[field] = conflict_count
             elif state.quality.get(field) == FieldQualityState.CONFLICTING:
                 state.quality[field] = FieldQualityState.CONFLICTING
             # Older observations do not replace the winner; keep winner quality unchanged.
@@ -192,7 +207,7 @@ def select_fields(
         selected_observations=state.selected_observations,
         conflicts=tuple(sorted(state.conflicts)),
         quality=state.quality,
-        field_values=state.field_values,
+        conflict_counts=state.conflict_counts,
     )
 
 
@@ -203,10 +218,15 @@ def _apply_new_selection(
     order: tuple[datetime, datetime, int, str, str],
     state: _SelectionState,
 ) -> None:
+    if not field_name.strip():
+        raise ValueError("field name must not be empty")
+    if id(observation) not in state.validated_observations:
+        # SourceObservation already validates scalar values. Validate shared
+        # FieldValue coordinates once, even when no audit projection is requested.
+        _set_field_state(field_name, value, observation, FieldQualityState.VALID)
+        state.validated_observations.add(id(observation))
     previous_quality = state.quality.get(field_name)
-    previous_field = state.field_values.get(field_name)
-    previous_conflict_count = previous_field.conflict_count if previous_field is not None else 0
-    normalized_source = normalize_source(observation.source)
+    previous_conflict_count = state.conflict_counts.get(field_name, 0)
 
     if state.selected_orders.get(field_name) != order:
         state.tied_values[field_name] = {scalar_order(value)}
@@ -214,18 +234,12 @@ def _apply_new_selection(
     state.selected_orders[field_name] = order
     state.selected_observations[field_name] = observation
     state.values[field_name] = value
-    state.sources[field_name] = normalized_source
+    state.sources[field_name] = order[-1]
     selected_state = FieldQualityState.DEGRADED if observation.missing_reasons else FieldQualityState.VALID
     if previous_quality == FieldQualityState.CONFLICTING:
         selected_state = FieldQualityState.CONFLICTING
     state.quality[field_name] = selected_state
-    state.field_values[field_name] = _set_field_state(
-        field_name,
-        value,
-        observation,
-        selected_state,
-        conflict_count=previous_conflict_count,
-    )
+    state.conflict_counts[field_name] = previous_conflict_count
 
 
 def _set_field_state(

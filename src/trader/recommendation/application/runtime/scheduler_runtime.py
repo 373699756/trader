@@ -25,6 +25,7 @@ from trader.recommendation.application.ports.runtime import (
     TradingCalendarUnavailableError,
 )
 from trader.recommendation.application.runtime.cadence import (
+    PERIODIC_TASKS,
     PipelineTask,
     ScheduledPipelineTask,
     SchedulePointResult,
@@ -300,7 +301,8 @@ class SchedulerRuntime:
                 ).phase
             )
         for scheduled in batch.tasks:
-            self._dispatch_pipeline_task(replace(scheduled, session=session))
+            if not self._periodic_task_inflight(scheduled):
+                self._dispatch_pipeline_task(replace(scheduled, session=session))
         phase = decision_at(observed_at, is_trading_day=is_trading_day).phase
         try:
             self._research.offer_due(observed_at, phase, is_trading_day=is_trading_day)
@@ -410,6 +412,16 @@ class SchedulerRuntime:
                 {"-": SchedulePointResult.COMPLETED},
                 at=scheduled.scheduled_at,
             )
+
+    def _periodic_task_inflight(self, scheduled: ScheduledPipelineTask) -> bool:
+        if scheduled.task not in PERIODIC_TASKS or scheduled.schedule_point is not None:
+            return False
+        lane = (
+            self._lanes[Strategy.LONG].status()
+            if scheduled.task is PipelineTask.LONG_QUOTES
+            else self._task_lanes[pipeline_lane(scheduled.task)].status()
+        )
+        return lane.running or lane.pending
 
     def _submit_scoring(self, scheduled: ScheduledPipelineTask) -> bool:
         decision = decision_at(scheduled.scheduled_at, is_trading_day=True)

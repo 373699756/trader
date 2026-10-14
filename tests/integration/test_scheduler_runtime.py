@@ -1022,6 +1022,12 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
     try:
         runtime.submit_due(observed_at)
         assert data.candidate_started.wait(1.0)
+        runtime.submit_due(observed_at + timedelta(seconds=2))
+        candidate_lane = next(
+            lane for lane in runtime.status().task_lanes if lane.name == "trader-task-candidate_quotes"
+        )
+        assert candidate_lane.running
+        assert not candidate_lane.pending
         assert not decisions.build_started.wait(0.2)
         assert index.snapshot(Strategy.TOMORROW).current is None
 

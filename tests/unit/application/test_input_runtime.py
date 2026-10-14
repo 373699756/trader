@@ -1239,6 +1239,50 @@ def test_rank_one_quote_failure_promotes_exactly_rank_121_without_duplicate_requ
     )
 
 
+@pytest.mark.parametrize("quote_age", [0, 31])
+def test_candidate_refresh_keeps_population_watermark_but_checks_raw_quote_age(
+    application_feature_factory,
+    quote_age: int,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    refresh_at = observed_at + timedelta(seconds=45)
+    features = tuple(application_feature_factory(f"600{index:03d}", observed_at) for index in range(121))
+
+    class LaterQuotesMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            return tuple(
+                replace(
+                    feature,
+                    observed_at=observed_at,
+                    quote=replace(
+                        feature.quote,
+                        source_time=observed_at - timedelta(seconds=quote_age),
+                        received_time=observed_at,
+                    ),
+                )
+                for feature in super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
+            )
+
+    market = LaterQuotesMarket(features)
+    adapter = build_cycle_fixture(
+        market,
+        config_version="test-config",
+        candidate_pool_size=120,
+        decision_build=_decision_build(now=lambda: refresh_at),
+    )
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    original = adapter.data._candidate_plans
+    assert original is not None and original.physical_union()
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, refresh_at))
+    statuses = adapter.data.input_quality_status()
+    assert all(item.candidate_feature_count == (120 if quote_age == 0 else 0) for item in statuses)
+    assert adapter.data._candidate_plans.population_evaluated_at == observed_at
+    assert all("stale_quote" not in plan.population_filter_reason_counts for plan in original.plans.values())
+
+    with pytest.raises(DataRefreshUnavailableError, match="candidate_population_trade_date_mismatch"):
+        adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, refresh_at + timedelta(days=1)))
+
+
 def test_deadline_stops_refill_and_preserves_the_last_complete_candidate_batch(
     application_feature_factory,
 ) -> None:

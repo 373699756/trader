@@ -553,10 +553,10 @@ state.renderSummary(
             ][index],
             state: "ready",
             input_count: index === 0 ? 5289 : 320,
-            output_count: index === 3 ? 320 : index === 6 ? 196 : 320,
+            output_count: index === 3 ? 320 : index === 6 ? 129 : 320,
             rejected_count: index === 3 ? 4969 : index === 6 ? 124 : 0,
-            pending_count: 0,
-            failed_count: 0,
+            pending_count: index === 6 ? 66 : 0,
+            failed_count: index === 6 ? 1 : 0,
             reasons: [{ code: [
               "static_reference_unavailable", "static_baseline_loaded", "static_identity_pending", "historical_st",
               "refresh_pending", "invalid_quote_structure", "insufficient_liquidity", "board_limit",
@@ -575,6 +575,7 @@ assert.strictEqual(
 );
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级稳定过滤"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("320 → 129 · 淘汰 124 · 待补充 66 · 失败 1"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("静态数据准备"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("动态数据准备"));
 const combinedObservationElements = summaryFixture();

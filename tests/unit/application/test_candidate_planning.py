@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests.unit.domain.test_decision_identity import NOW
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanSet
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
@@ -39,6 +40,7 @@ def test_physical_candidate_union_is_bounded_by_two_strategy_board_windows() -> 
             )
         },
         limit_per_board=120,
+        population_evaluated_at=NOW,
     )
 
     assert len(plans.physical_union()) == 2 * 3 * 120
@@ -57,6 +59,7 @@ def test_candidate_plan_rejects_a_board_window_larger_than_the_fixed_cap() -> No
                 )
             },
             limit_per_board=121,
+            population_evaluated_at=NOW,
         )
 
 
@@ -71,6 +74,7 @@ def test_candidate_plan_resolves_only_the_strategies_that_own_failed_codes() -> 
             )
         },
         limit_per_board=120,
+        population_evaluated_at=NOW,
     )
 
     assert plans.strategies_for_codes({"000000"}) == frozenset({Strategy.TOMORROW})

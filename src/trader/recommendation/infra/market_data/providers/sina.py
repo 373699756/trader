@@ -6,7 +6,7 @@ import math
 import re
 import threading
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
@@ -97,26 +97,31 @@ class SinaClient:
             page_count = max(1, math.ceil(total / self._page_size))
             pages: dict[int, list[Mapping[str, object]]] = {}
             pool = injected_executor(self._worker_pool)
-            for offset in range(1, page_count + 1, self._workers):
-                futures: dict[Future[object], int] = {}
-                try:
-                    for page in range(offset, min(page_count + 1, offset + self._workers)):
+            futures: dict[Future[object], int] = {}
+            next_page = 1
+            try:
+                while next_page <= page_count or futures:
+                    while next_page <= page_count and len(futures) < self._workers:
+                        self._ensure_running(deadline, cancel_event)
                         future = submit_or_reject(
                             pool,
                             self._fetch_page,
-                            page,
+                            next_page,
                             session=session,
                             deadline=deadline,
                             cancel_event=cancel_event,
                         )
-                        futures[future] = page
-                finally:
-                    wait(futures)
-                for future, page in futures.items():
-                    payload = future.result()
-                    if not isinstance(payload, list):
-                        raise RuntimeError(f"sina page {page} was not a list")
-                    pages[page] = [item for item in payload if isinstance(item, dict)]
+                        futures[future] = next_page
+                        next_page += 1
+                    completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in completed:
+                        page = futures.pop(future)
+                        payload = future.result()
+                        if not isinstance(payload, list):
+                            raise RuntimeError(f"sina page {page} was not a list")
+                        pages[page] = [item for item in payload if isinstance(item, dict)]
+            finally:
+                wait(futures)
         rows: list[Mapping[str, object]] = []
         for page in range(1, page_count + 1):
             payload = pages[page]

@@ -132,7 +132,7 @@ def run(
             load_execution_cost_policy(config_path.parent),
         ),
     )
-    worst_case_plans = _worst_case_candidate_plans(budgets.workload.market_rows)
+    worst_case_plans = _worst_case_candidate_plans(budgets.workload.market_rows, market_quotes[0].received_time)
     candidate_union = _candidate_union_quotes(market_quotes, worst_case_plans)
     candidate_union_fixture = _CandidateUnionFixture(worst_case_plans, candidate_union)
     operations, provenance = _operations(
@@ -634,7 +634,7 @@ def _fixtures(
     return market, quotes, candidates
 
 
-def _worst_case_candidate_plans(market_rows: int) -> CandidatePlanSet:
+def _worst_case_candidate_plans(market_rows: int, observed_at: datetime) -> CandidatePlanSet:
     if market_rows < 4360:
         raise ValueError("performance market fixture cannot provide two disjoint strategy windows")
     board_starts = {
@@ -670,7 +670,7 @@ def _worst_case_candidate_plans(market_rows: int) -> CandidatePlanSet:
             population_rejected_count=0,
             population_filter_reason_counts={},
         )
-    return CandidatePlanSet(plans, limit_per_board=120)
+    return CandidatePlanSet(plans, limit_per_board=120, population_evaluated_at=observed_at)
 
 
 def _candidate_union_quotes(

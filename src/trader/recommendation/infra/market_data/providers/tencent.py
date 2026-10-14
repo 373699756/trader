@@ -65,7 +65,6 @@ class TencentClient:
         if not normalized:
             return ()
         self._ensure_running()
-        received_at = now or self._wall_clock()
         shards = tuple(
             normalized[offset : offset + _QUOTE_SHARD_SIZE] for offset in range(0, len(normalized), _QUOTE_SHARD_SIZE)
         )
@@ -79,7 +78,7 @@ class TencentClient:
                     pool,
                     self._fetch_quote_shard,
                     shard,
-                    received_at,
+                    now,
                     timeout_seconds,
                 ): shard
                 for shard in wave
@@ -99,7 +98,7 @@ class TencentClient:
     def _fetch_quote_shard(
         self,
         codes: tuple[str, ...],
-        received_at: datetime,
+        received_at: datetime | None,
         timeout_seconds: float | None,
     ) -> tuple[MarketQuote, ...]:
         self._ensure_running()
@@ -117,6 +116,7 @@ class TencentClient:
             response.raise_for_status()
             text = response.content.decode("gb18030", errors="replace")
         self._ensure_running()
+        received_at = received_at or self._wall_clock()
         return normalize_quotes(
             (
                 {str(index): value for index, value in enumerate(payload.split("~"))}

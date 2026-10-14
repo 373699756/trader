@@ -60,6 +60,18 @@ def test_field_selection_is_order_independent() -> None:
     assert first.sources["price"] == "eastmoney"
 
 
+def test_lazy_field_audit_preserves_eager_coordinate_validation() -> None:
+    invalid = _observation(
+        "eastmoney",
+        payload_hash="invalid",
+        value=10.0,
+        source_time=OBSERVED_AT + timedelta(seconds=1),
+        received_at=OBSERVED_AT,
+    )
+    with pytest.raises(ValueError, match="cannot precede"):
+        select_fields((invalid,), targeted=False)
+
+
 def test_field_selection_targets_tencent_when_targeted_code() -> None:
     eastmoney = _observation("eastmoney", payload_hash="z", value=10.0)
     tencent = _observation("tencent", payload_hash="a", value=10.5)

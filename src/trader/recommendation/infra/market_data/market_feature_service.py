@@ -132,9 +132,11 @@ class MarketFeatureService:
             )
         )
         collection_ms = self._elapsed_ms(acquisition_started)
+        static_started = self._monotonic()
         eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline.observe(
             quotes, reference, observed_at
         )
+        self.quotes.gateway.record_local_latency("static_eligibility", self._elapsed_ms(static_started))
         raw_quotes = quotes
         quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
         assembly_started = self._monotonic()
@@ -147,13 +149,16 @@ class MarketFeatureService:
             observed_at=observed_at,
             recover_tail=False,
         )
+        self.quotes.gateway.record_local_latency("history_load", self._elapsed_ms(assembly_started))
         self.runner.ensure_before_deadline(deadline)
+        feature_started = self._monotonic()
         features = self.quotes.build_market_features(
             quotes,
             histories,
             observed_at,
             action_restrictions=action_restrictions,
         )
+        self.quotes.gateway.record_local_latency("feature_build", self._elapsed_ms(feature_started))
         self.runner.ensure_before_deadline(deadline)
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
         with self._eligibility_lock:

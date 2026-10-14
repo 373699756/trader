@@ -91,9 +91,12 @@ def main() -> int:
     parser.add_argument(
         "--score-cards-only", action="store_true", help="check score cards and table detail interaction"
     )
+    parser.add_argument("--filter-counts-only", action="store_true", help="check filter disposition counts")
     args = parser.parse_args()
     try:
-        report = _run(args.output.parent, score_cards_only=args.score_cards_only)
+        report = _run(
+            args.output.parent, score_cards_only=args.score_cards_only, filter_counts_only=args.filter_counts_only
+        )
     except Exception as exc:
         report = {
             "schema_version": REPORT_SCHEMA,
@@ -106,7 +109,7 @@ def main() -> int:
     return 0 if report["passed"] else 1
 
 
-def _run(output_dir: Path, *, score_cards_only: bool = False) -> dict[str, object]:
+def _run(output_dir: Path, *, score_cards_only: bool = False, filter_counts_only: bool = False) -> dict[str, object]:
     driver_binary = shutil.which("geckodriver")
     app_port = _free_port()
     services, publish_empty_draft = _browser_services()
@@ -150,6 +153,8 @@ def _run(output_dir: Path, *, score_cards_only: bool = False) -> dict[str, objec
             browser_name = "chrome-headless"
         _navigate(base, f"http://127.0.0.1:{app_port}/")
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
+        if filter_counts_only:
+            return _filter_counts(base, browser_name)
         if score_cards_only:
             return _score_cards(base, output_dir, browser_name)
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
@@ -531,6 +536,39 @@ def _run(output_dir: Path, *, score_cards_only: bool = False) -> dict[str, objec
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
+
+
+def _filter_counts(base: str | _ChromeSession, browser_name: str) -> dict[str, object]:
+    results = []
+    for width, height in VIEWPORTS:
+        _set_viewport(base, width, height)
+        result = _execute(
+            base,
+            """
+            const list = document.querySelector('#observationStageList');
+            const drawer = document.querySelector('#observationDrawer');
+            drawer.classList.add('is-open');
+            const stages = ['data_source', 'static_market', 'static_standardize', 'static_filter',
+              'dynamic_market', 'dynamic_standardize', 'dynamic_filter', 'candidate_pool',
+              'quality_check', 'local_score', 'risk_review', 'score_merge', 'downside_action', 'final_selection'];
+            window.TraderStatusView.renderObservationStages({observationStageList: list}, stages.map(stage =>
+              ({stage, state: 'degraded', input_count: 4391, output_count: 129,
+                rejected_count: 1079, pending_count: 3182, failed_count: 1, latency_ms: 1000})
+            ), null, false, []);
+            const row = list.querySelector('[data-stage-keys="dynamic_filter"]');
+            const text = row.querySelector('span');
+            const expected = '4391 → 129 · 淘汰 1079 · 待补充 3182 · 失败 1';
+            return {text: text.textContent, passed: text.textContent.includes(expected)
+              && text.scrollWidth <= text.clientWidth && row.getBoundingClientRect().width > 0};
+        """,
+        )
+        results.append({"viewport": [width, height], **result})
+    return {
+        "schema_version": REPORT_SCHEMA,
+        "browser": browser_name,
+        "passed": all(result["passed"] for result in results),
+        "filter_counts": results,
+    }
 
 
 def _score_cards(base: str | _ChromeSession, output_dir: Path, browser_name: str) -> dict[str, object]:

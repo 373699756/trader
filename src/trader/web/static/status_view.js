@@ -374,7 +374,7 @@
         : Number.isFinite(stage && stage.duration_ms) ? stage.duration_ms : 0;
       const stageIssues = visibleIssues.filter((issue) => stageKeys.some((key) => issueBelongsToStage(issue, key)));
       const disposition = isFilter
-        ? `淘汰 ${displayCount(rejected)}`
+        ? `淘汰 ${displayCount(rejected)} · 待补充 ${displayCount(pending)} · 失败 ${displayCount(failed)}`
         : `待就绪 ${displayCount(pending + failed)}`;
       const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
       const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKeys.includes("final_selection") ? publicationIoMarkup(publicationReceipts) : ""}`;

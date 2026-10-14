@@ -551,6 +551,10 @@ class StaticGateway:
     def __init__(self, quotes) -> None:
         self._quotes = quotes
         self._references = {}
+        self.local_latencies: dict[str, float] = {}
+
+    def record_local_latency(self, stage: str, duration_ms: float) -> None:
+        self.local_latencies[stage] = duration_ms
 
     def fetch_candidates(self, _codes, **_kwargs):
         return self._quotes

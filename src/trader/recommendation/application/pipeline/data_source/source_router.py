@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
+import traceback
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -78,6 +80,8 @@ from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQu
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.selection.scored_selection import ScoredCandidateStageCounts, SelectedCandidateInput
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -254,6 +258,15 @@ class MarketInputCoordinator(DataRefreshPort):
         except DataRefreshUnavailableError:
             raise
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            frames = traceback.extract_tb(exc.__traceback__, limit=-1)
+            if frames:
+                _LOGGER.warning(
+                    "refresh failed: task=%s code=%s boundary=%s:%s",
+                    request.task.value,
+                    _failure_code(exc),
+                    frames[0].name,
+                    frames[0].lineno,
+                )
             raise DataRefreshUnavailableError(_failure_code(exc)) from exc
 
     def _run_refresh_task(

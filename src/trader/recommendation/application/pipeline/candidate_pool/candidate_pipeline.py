@@ -107,7 +107,9 @@ def execute_candidate_pipeline(
             started,
             monotonic,
         )
-    return CandidatePipelineResult(CandidatePlanSet(plans, context.limit_per_board), normalized, filtered, candidates)
+    return CandidatePipelineResult(
+        CandidatePlanSet(plans, context.limit_per_board, context.evaluated_at), normalized, filtered, candidates
+    )
 
 
 def select_candidate_output(

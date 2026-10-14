@@ -232,6 +232,71 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     assert snapshot.source_versions["tencent"] == "candidate-latest"
 
 
+def test_full_market_projection_finishes_once_under_targeted_publication(monkeypatch) -> None:
+    seed = _quote()
+    full = replace(seed, price=12.1, source_time=NOW + timedelta(seconds=1), received_time=NOW + timedelta(seconds=1))
+    targeted = replace(
+        seed, price=12.2, source_time=NOW + timedelta(seconds=2), received_time=NOW + timedelta(seconds=2)
+    )
+    gateway = MarketDataGateway(
+        SequenceMarketClient(((seed,), (full,))),
+        StaticMarketClient(()),
+        StaticTencentClient((targeted,)),
+        minimum_market_rows=1,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        wall_clock=lambda: NOW + timedelta(seconds=3),
+    )
+    gateway.fetch_market(observed_at=NOW)
+    projection_entered = threading.Event()
+    release_projection = threading.Event()
+    target_started = threading.Event()
+    target_done = threading.Event()
+    project = gateway_module._try_columnar_snapshot
+    projections = []
+    errors = []
+
+    def blocked_projection(snapshot, **kwargs):
+        projections.append(snapshot.merge_epoch)
+        projection_entered.set()
+        assert release_projection.wait(2.0)
+        return project(snapshot, **kwargs)
+
+    def refresh_full():
+        try:
+            gateway.fetch_market(observed_at=NOW + timedelta(seconds=1))
+        except BaseException as exc:
+            errors.append(exc)
+
+    def refresh_target():
+        target_started.set()
+        try:
+            gateway.fetch_candidates((seed.code,), observed_at=NOW + timedelta(seconds=2))
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            target_done.set()
+
+    monkeypatch.setattr(gateway_module, "_try_columnar_snapshot", blocked_projection)
+    full_thread = threading.Thread(target=refresh_full)
+    target_thread = threading.Thread(target=refresh_target)
+    full_thread.start()
+    try:
+        assert projection_entered.wait(1.0)
+        target_thread.start()
+        assert target_started.wait(1.0)
+        target_done.wait(0.1)
+    finally:
+        release_projection.set()
+        full_thread.join(2.0)
+        if target_thread.ident is not None:
+            target_thread.join(2.0)
+    assert not full_thread.is_alive() and not target_thread.is_alive()
+    assert not errors
+    assert len(projections) == 1
+    assert gateway.current_quotes((seed.code,))[0].price == 12.2
+
+
 def test_later_full_market_cycle_replaces_older_cross_source_quote() -> None:
     older_sina = replace(
         _quote(),

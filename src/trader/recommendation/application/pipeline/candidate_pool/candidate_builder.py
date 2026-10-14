@@ -35,8 +35,11 @@ SCORED_STRATEGIES = (Strategy.TOMORROW, Strategy.D25)
 class CandidatePlanSet:
     plans: Mapping[Strategy, ScoredCandidatePlan]
     limit_per_board: int
+    population_evaluated_at: datetime
 
     def __post_init__(self) -> None:
+        if self.population_evaluated_at.tzinfo is None or self.population_evaluated_at.utcoffset() is None:
+            raise ValueError("candidate population time must be timezone-aware")
         plans = dict(self.plans)
         if set(plans) != set(SCORED_STRATEGIES):
             raise ValueError("candidate planning requires every scored strategy")
@@ -86,6 +89,7 @@ class CandidatePlanningContext:
     model_scoring: ModelScoringPort | None
     limit_per_board: int
     apply_model_eligibility: bool = True
+    population_evaluated_at: datetime | None = None
 
 
 def build_candidate_plans(
@@ -93,7 +97,10 @@ def build_candidate_plans(
     candidate_features: Sequence[FeatureSnapshot] | None,
     context: CandidatePlanningContext,
 ) -> CandidatePlanSet:
-    features = normalize_candidate_discovery_population(population, context.evaluated_at)
+    population_at = context.population_evaluated_at or context.evaluated_at
+    if population_at.date() != context.evaluated_at.date():
+        raise ValueError("candidate_population_trade_date_mismatch")
+    features = normalize_candidate_discovery_population(population, population_at)
     candidates = tuple(candidate_features) if candidate_features is not None else None
     plans = {
         strategy: plan_scored_feature_candidates(
@@ -102,7 +109,7 @@ def build_candidate_plans(
             ScoredSelectionOptions(
                 evaluated_at=context.evaluated_at,
                 max_age_seconds=_maximum_age_seconds(strategy),
-                population_evaluated_at=context.evaluated_at,
+                population_evaluated_at=population_at,
                 population_max_age_seconds=_maximum_age_seconds(strategy),
                 phase="candidate_discovery",
                 candidate_features=candidates,
@@ -127,7 +134,7 @@ def build_candidate_plans(
         )
         for strategy in SCORED_STRATEGIES
     }
-    return CandidatePlanSet(plans, context.limit_per_board)
+    return CandidatePlanSet(plans, context.limit_per_board, population_at)
 
 
 def _maximum_age_seconds(strategy: Strategy) -> float:
@@ -157,6 +164,7 @@ def refresh_candidate_reserves(
     *,
     can_refill: Callable[[], bool],
 ) -> CandidateRefreshPlan:
+    context = replace(context, population_evaluated_at=initial_plans.population_evaluated_at)
     pending = initial_plans.physical_union()
     if not pending:
         return CandidateRefreshPlan(

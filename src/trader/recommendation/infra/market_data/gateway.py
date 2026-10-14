@@ -319,10 +319,11 @@ class MarketDataGateway:
         )
         self.record_local_latency("merge", _elapsed(merge_started, self._monotonic()))
         snapshot = _with_snapshot_degradation(snapshot, _source_degraded_reasons(results))
-        while True:
-            commit_started = self._monotonic()
-            with self._state_lock:
-                latest = self._latest_snapshot
+        commit_started = self._monotonic()
+        # Serialize the local commit with targeted overlays. Retrying the whole
+        # columnar projection on every overlay can starve full-market publication.
+        with self._state_lock:
+            latest = self._latest_snapshot
             commit_snapshot = _preserve_newer_quotes(
                 snapshot, latest, merge_epoch=self._versions.advance("market_commit")
             )
@@ -331,25 +332,22 @@ class MarketDataGateway:
                 config_version=self._config_version,
                 schema_version=self._schema_version,
             )
-            with self._state_lock:
-                if self._latest_snapshot is not latest:
-                    continue
-                self._latest_snapshot = commit_snapshot
-                if columnar is None:
-                    self._latest_changes = _columnar_failure_changes(latest, commit_snapshot)
-                else:
-                    self._latest_changes = market_changes(self._latest_batch, columnar)
-                    self._latest_batch = columnar
-                self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
-                self._latest_source = "eastmoney+sina" if len(successes) == 2 else outcome.vendor
-                self._last_route_outcome = outcome
-                self._merge_count += 1
-                self._conflict_count += len(commit_snapshot.conflicts)
-                self.record_local_latency(
-                    "canonical_commit",
-                    _elapsed(commit_started, self._monotonic()),
-                )
-                return tuple(self._latest_by_code.values())
+            self._latest_snapshot = commit_snapshot
+            if columnar is None:
+                self._latest_changes = _columnar_failure_changes(latest, commit_snapshot)
+            else:
+                self._latest_changes = market_changes(self._latest_batch, columnar)
+                self._latest_batch = columnar
+            self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
+            self._latest_source = "eastmoney+sina" if len(successes) == 2 else outcome.vendor
+            self._last_route_outcome = outcome
+            self._merge_count += 1
+            self._conflict_count += len(commit_snapshot.conflicts)
+            self.record_local_latency(
+                "canonical_commit",
+                _elapsed(commit_started, self._monotonic()),
+            )
+            return tuple(self._latest_by_code.values())
 
     def fetch_candidates(
         self,

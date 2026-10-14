@@ -172,6 +172,30 @@ def test_tencent_normalizes_targeted_quote() -> None:
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
+def test_tencent_receipt_time_is_captured_after_the_response() -> None:
+    clock = [NOW]
+    fields = [""] * 50
+    fields[1:5] = ["测试股份", "600001", "12.00", "11.65"]
+    fields[30] = "20260716100001"
+    body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
+
+    class DelayedSession(FakeSession):
+        def get(self, url, **kwargs):
+            clock[0] = NOW + timedelta(seconds=2)
+            return super().get(url, **kwargs)
+
+    session = DelayedSession([body])
+    client = TencentClient(
+        worker_pool=None,
+        timeout_seconds=3,
+        session_factory=lambda: session,
+        wall_clock=lambda: clock[0],
+    )
+    quote = client.fetch_quotes(("600001",))[0]
+    assert quote.received_time == NOW + timedelta(seconds=2)
+    assert quote.source_time == NOW + timedelta(seconds=1)
+
+
 def test_tencent_targeted_quotes_use_three_bounded_shards() -> None:
     state = {"active": 0, "maximum": 0, "urls": []}
     lock = threading.Lock()
@@ -534,6 +558,42 @@ def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
     assert len(quotes) == 201
     assert state["maximum"] >= 2
     assert state["factory_calls"] == 1
+
+
+def test_sina_refills_a_free_worker_before_the_slowest_page_finishes() -> None:
+    third_started = threading.Event()
+
+    class UnevenPages:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def get(self, url, **kwargs):
+            if "getHQNodeStockCount" in url:
+                return FakeResponse(b"201")
+            page = int(kwargs["params"]["page"])
+            if page == 1:
+                assert third_started.wait(2), "an idle worker must not wait for the slow first page"
+            if page == 3:
+                third_started.set()
+            return FakeResponse(
+                [
+                    {"symbol": f"sh{600000 + (page - 1) * 100 + index:06d}", "trade": "12.00"}
+                    for index in range(100 if page < 3 else 1)
+                ]
+            )
+
+    pool = BoundedExecutor(worker_count=2, queue_capacity=2, thread_name_prefix="sina-refill-test")
+    client = SinaClient(worker_pool=pool, timeout_seconds=2, workers=2, page_size=100, session_factory=UnevenPages)
+    pool.start()
+    try:
+        quotes = client.fetch_market(NOW)
+    finally:
+        pool.stop()
+    assert len(quotes) == 201
+    assert len({quote.code for quote in quotes}) == 201
 
 
 def test_eastmoney_full_market_reuses_one_session_and_stops_before_expired_deadline() -> None:
