@@ -689,8 +689,7 @@ assert.strictEqual(
   summaryElements.topScoresStatus.textContent,
   "1  82.00 · 600001 正式股票\n2  75.00 · 600002 观察股票",
 );
-assert.match(summaryElements.topScoresStatus.innerHTML, /button class="top-score-row"/);
-assert.match(summaryElements.topScoresStatus.innerHTML, /data-code="600002"/);
+assert.strictEqual(summaryElements.topScoresStatus.innerHTML, undefined);
 const persistedPipelineElements = summaryFixture();
 pipelineFixture.stage_snapshots = Array.from({ length: 14 }, (_value, index) => ({
   stage: ["data_source", "static_market", "static_standardize", "static_filter",

@@ -157,7 +157,6 @@
         if (event.key === "Enter" || event.key === " ") selectRow(event);
       });
     });
-    els.topScoresStatus.addEventListener("click", selectScoreLeader);
     els.observationStageList.addEventListener("click", toggleObservationStage);
     els.observationStageList.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
@@ -568,7 +567,7 @@
     });
     const observationLabel = selection.strategyLabel(payload.strategy);
     els.observationPoolHint.textContent = highScoreOutsidePool
-      ? `${observationLabel}策略有高分股票未入池；点上方前三名查看原因。分数之外还须通过成本、风险、名额与集中度规则。`
+      ? `${observationLabel}策略有高分股票未入池；分数之外还须通过成本、风险、名额与集中度规则。`
       : `${observationLabel}策略观察池仅展示通过成本、风险、名额与集中度规则的入选股票。`;
     const firstVisible = recommendations[0] || observations[0] || items[0];
     statusView.renderSummary(
@@ -694,13 +693,6 @@
     const item = selection.detailItem(payload, row.dataset.code);
     if (!item) return;
     showDetail(item, payload);
-  }
-
-  function selectScoreLeader(event) {
-    const button = event.target.closest("button[data-code]");
-    if (!button || !state.payload) return;
-    const item = selection.detailItem(state.payload, button.dataset.code);
-    if (item) showDetail(item, state.payload);
   }
 
   function showDetail(item, payload) {

@@ -443,11 +443,11 @@ tr:focus-visible {
 .summary-band {
   display: grid;
   grid-template-columns:
-    minmax(220px, 0.95fr) minmax(400px, 1.65fr)
+    minmax(190px, 0.95fr) minmax(150px, 0.7fr) minmax(260px, 1.2fr)
     minmax(180px, 0.75fr) minmax(210px, 0.9fr);
-  gap: 1px;
+  gap: 8px;
+  padding: 8px 16px;
   border-bottom: 1px solid var(--line);
-  background: var(--line);
 }
 
 .funnel-item {
@@ -479,7 +479,9 @@ tr:focus-visible {
 .summary-item {
   min-width: 0;
   min-height: 78px;
-  padding: 10px 16px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   background: var(--surface);
 }
 
@@ -488,6 +490,7 @@ tr:focus-visible {
   margin-bottom: 4px;
   color: var(--muted);
   font-size: 11px;
+  line-height: 14px;
 }
 
 .summary-item > strong {
@@ -519,23 +522,12 @@ tr:focus-visible {
 }
 
 .score-leaders-summary {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(128px, 0.78fr) minmax(230px, 1.45fr);
-  column-gap: 14px;
-  align-content: start;
   background: var(--surface-raised);
 }
 
 .score-leaders-summary > span {
-  grid-column: 1;
-  grid-row: 1;
   color: color-mix(in srgb, var(--blue) 78%, var(--text));
   font-weight: 650;
-}
-
-.score-leaders-content {
-  display: contents;
 }
 
 .publication-version-detail {
@@ -548,61 +540,17 @@ tr:focus-visible {
   cursor: pointer;
 }
 
-.score-range-summary {
-  grid-column: 1;
-  grid-row: 2;
+.top-scores-list {
   min-width: 0;
-}
-
-.score-range-summary .funnel-score-range {
+  min-height: 42px;
   display: block;
-  margin-top: 0;
-  min-width: 0;
-  overflow: hidden;
   color: var(--text);
-  font-size: 17px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 700;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.score-leaders-content > .top-scores-list {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-  align-self: start;
-  min-width: 0;
-  height: 42px;
-  display: block;
-  overflow: hidden;
-  color: var(--blue);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 14px;
-  text-overflow: clip;
   white-space: pre-line;
-}
-
-.top-score-row {
-  display: block;
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  font: inherit;
-  line-height: 14px;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.top-score-row:hover,
-.top-score-row:focus-visible {
-  color: var(--text);
-  text-decoration: underline;
+  overflow-wrap: anywhere;
 }
 
 .observation-pool-hint {
@@ -610,18 +558,6 @@ tr:focus-visible {
   color: var(--muted);
   font-size: 11px;
   line-height: 16px;
-}
-
-.score-range-summary > small {
-  display: block;
-  min-width: 0;
-  margin-top: 3px;
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 15px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .input-quality-live {

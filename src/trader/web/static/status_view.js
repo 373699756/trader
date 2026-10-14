@@ -667,14 +667,6 @@
               ? `最高统一评分 ${maximum.toFixed(2)}`
               : `最高相对信号分 ${maximum.toFixed(2)}`
             : `最高分 ${maximum.toFixed(2)}`;
-    if (scoredItems.length) {
-      els.topScoresStatus.innerHTML = scoredItems.map((item, index) =>
-        `<button class="top-score-row" type="button" data-code="${window.TraderRender.escapeHtml(item.code)}" `
-        + `title="查看${window.TraderRender.escapeHtml(item.name)}的评分与入池原因">`
-        + `${index + 1}  ${item.score.toFixed(2)} · ${window.TraderRender.escapeHtml(item.code)} `
-        + `${window.TraderRender.escapeHtml(item.name)}</button>`
-      ).join("");
-    }
     if (els.topScoresMeta) {
       els.topScoresMeta.textContent = scoreEvidenceMissing
         ? "明日冻结记录 · 已评分证据不完整"

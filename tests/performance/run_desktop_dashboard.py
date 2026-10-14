@@ -88,9 +88,12 @@ class _ObservationResult(TypedDict):
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--score-cards-only", action="store_true", help="check score cards and table detail interaction"
+    )
     args = parser.parse_args()
     try:
-        report = _run(args.output.parent)
+        report = _run(args.output.parent, score_cards_only=args.score_cards_only)
     except Exception as exc:
         report = {
             "schema_version": REPORT_SCHEMA,
@@ -103,7 +106,7 @@ def main() -> int:
     return 0 if report["passed"] else 1
 
 
-def _run(output_dir: Path) -> dict[str, object]:
+def _run(output_dir: Path, *, score_cards_only: bool = False) -> dict[str, object]:
     driver_binary = shutil.which("geckodriver")
     app_port = _free_port()
     services, publish_empty_draft = _browser_services()
@@ -147,6 +150,8 @@ def _run(output_dir: Path) -> dict[str, object]:
             browser_name = "chrome-headless"
         _navigate(base, f"http://127.0.0.1:{app_port}/")
         _wait(lambda: bool(_execute(base, "return Boolean(window.TraderDashboardDiagnostics);")), "dashboard readiness")
+        if score_cards_only:
+            return _score_cards(base, output_dir, browser_name)
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=tomorrow]").click(); return true;')
         _wait(
             lambda: (
@@ -203,10 +208,8 @@ def _run(output_dir: Path) -> dict[str, object]:
               topScores: document.querySelector('#topScoresStatus').textContent,
               topScoresMeta: document.querySelector('#topScoresMeta').textContent,
               topScoresHeight: document.querySelector('#topScoresStatus').getBoundingClientRect().height,
-              topScoresAtCardTop: Math.abs(
-                document.querySelector('#topScoresStatus').getBoundingClientRect().top
-                - document.querySelector('#scoreLeadersPanel > span').getBoundingClientRect().top
-              ) < 1,
+              topScoresBelowTitle: document.querySelector('#topScoresStatus').getBoundingClientRect().top
+                >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom,
               topScoresLineHeight: parseFloat(getComputedStyle(document.querySelector('#topScoresStatus')).lineHeight),
               source: document.querySelector('#quoteSource').textContent,
             };
@@ -304,12 +307,12 @@ def _run(output_dir: Path) -> dict[str, object]:
                 _execute(base, 'return document.querySelector("#tableBody").textContent.trim();')
             ),
             "top_scores": str(_execute(base, 'return document.querySelector("#topScoresStatus").textContent;')),
-            "top_scores_at_card_top": bool(
+            "top_scores_below_title": bool(
                 _execute(
                     base,
                     """
-                    return Math.abs(document.querySelector('#topScoresStatus').getBoundingClientRect().top
-                      - document.querySelector('#scoreLeadersPanel > span').getBoundingClientRect().top) < 1;
+                    return document.querySelector('#topScoresStatus').getBoundingClientRect().top
+                      >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom;
                     """,
                 )
             ),
@@ -323,8 +326,8 @@ def _run(output_dir: Path) -> dict[str, object]:
             }, {strategy: 'd25', selection_diagnostics: {maximum_final_score: 70.78}}, []);
             return {
               text: score.textContent,
-              aligned: Math.abs(score.getBoundingClientRect().top
-                - document.querySelector('#scoreLeadersPanel > span').getBoundingClientRect().top) < 1
+              belowTitle: score.getBoundingClientRect().top
+                >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom
             };
             """,
         )
@@ -443,9 +446,9 @@ def _run(output_dir: Path) -> dict[str, object]:
                     "公司风险历史暂不可核验（1只）"
                 ),
                 "top_scores": "1  74.25 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁",
-                "top_scores_at_card_top": True,
+                "top_scores_below_title": True,
             }
-            and highest_score_layout == {"text": "最高分 70.78", "aligned": True}
+            and highest_score_layout == {"text": "最高分 70.78", "belowTitle": True}
             and error_details["visible"] is True
             and error_details["raw_code_hidden_from_header"] is True
             and error_details["scores_absent"] is True
@@ -484,7 +487,7 @@ def _run(output_dir: Path) -> dict[str, object]:
             and quality_summary.get("funnelMeta")
             == "荐股链路 5291→5291→1000→1000→500→360→350→56→20→20→20→2 · 正式 0 · 观察 2"
             and quality_summary.get("topScores") == "1  74.00 · 600009 上海机场\n2  72.00 · 600001 邯郸钢铁"
-            and quality_summary.get("topScoresAtCardTop") is True
+            and quality_summary.get("topScoresBelowTitle") is True
             and float(quality_summary.get("topScoresHeight", 0))
             >= 2 * float(quality_summary.get("topScoresLineHeight", 0))
             and quality_summary.get("topScoresMeta") == "策略内最终评分 · 2 只"
@@ -528,6 +531,100 @@ def _run(output_dir: Path) -> dict[str, object]:
         server.shutdown()
         server.server_close()
         server_thread.join(timeout=5)
+
+
+def _score_cards(base: str | _ChromeSession, output_dir: Path, browser_name: str) -> dict[str, object]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
+    _wait(
+        lambda: bool(_execute(base, 'return document.querySelector("#tableBody tr[data-code]");')),
+        "long table for detail regression",
+    )
+    table_detail = _execute(
+        base,
+        """
+        const row = document.querySelector('#tableBody tr[data-code]');
+        row.click();
+        const drawer = document.querySelector('#detailDrawer');
+        const opened = drawer.classList.contains('is-open');
+        document.querySelector('#drawerClose').click();
+        return opened && !drawer.classList.contains('is-open');
+        """,
+    )
+    results: list[dict[str, object]] = []
+    for width, height in VIEWPORTS:
+        _set_viewport(base, width, height)
+        result = _execute(
+            base,
+            r"""
+            const panel = document.querySelector('#scoreLeadersPanel');
+            const title = document.querySelector('#scoreLeadersTitle');
+            const range = document.querySelector('#scoreRangePanel');
+            const scores = document.querySelector('#topScoresStatus');
+            const meta = document.querySelector('#topScoresMeta');
+            const drawer = document.querySelector('#detailDrawer');
+            const items = [
+              {code: '600001', name: '示例股票甲', scores: {final_score: 69.09}},
+              {code: '600002', name: '示例股票乙', scores: {final_score: 66.18}},
+              {code: '600003', name: '示例股票丙', scores: {final_score: 61.18}},
+            ];
+            const cases = [];
+            for (const strategy of ['tomorrow', 'd25', 'long']) {
+              for (const count of [0, 1, 2, 3, 0, 3]) {
+                const payload = {strategy, top_scores: items.slice(0, count), input_versions: {
+                  score_scale: 'weighted_evidence_quality_0_100'
+                }};
+                window.TraderStatusView.renderTopScores({topScoresStatus: scores, topScoresMeta: meta}, payload, []);
+                scores.click();
+                const cardBox = panel.getBoundingClientRect();
+                const titleBox = title.getBoundingClientRect();
+                const listBox = scores.getBoundingClientRect();
+                const visibleCount = strategy === 'long' ? 0 : count;
+                const expected = visibleCount ? items.slice(0, visibleCount).map((item, index) =>
+                  `${index + 1}  ${item.scores.final_score.toFixed(2)} · ${item.code} ${item.name}`).join('\n')
+                  : '暂无评分数据';
+                cases.push({strategy, count,
+                  listHeight: scores.clientHeight, contentHeight: scores.scrollHeight,
+                  passed:
+                  scores.textContent === expected && scores.childElementCount === 0
+                  && !drawer.classList.contains('is-open')
+                  && title.textContent === '评分最高的三只股票' && titleBox.height > 0
+                  && titleBox.top >= cardBox.top && titleBox.bottom <= listBox.top
+                  && listBox.bottom <= cardBox.bottom
+                  && listBox.top + scores.scrollHeight <= cardBox.bottom
+                  && scores.scrollWidth <= scores.clientWidth
+                  && !document.documentElement.querySelector('#scoreLeadersPanel button, #scoreLeadersPanel a')
+                  && range.querySelector('#scoreRangeTitle').textContent === '评分范围'
+                  && range.contains(meta) && !panel.contains(meta)
+                  && range.getBoundingClientRect().right < cardBox.left
+                  && document.querySelectorAll('.summary-band > .summary-item').length === 5
+                  && document.documentElement.scrollWidth <= document.documentElement.clientWidth
+                  && new Set(Array.from(document.querySelectorAll('.summary-item')).map(
+                    card => card.getBoundingClientRect().height)).size === 1
+                });
+              }
+            }
+            window.TraderStatusView.renderTopScores({topScoresStatus: scores, topScoresMeta: meta},
+              {strategy: 'tomorrow', top_scores: items,
+                input_versions: {score_scale: 'weighted_evidence_quality_0_100'}}, []);
+            document.querySelector('#funnelScoreRange').textContent = '1.18–69.09';
+            return {viewport: [window.innerWidth, window.innerHeight], cases,
+              passed: cases.every(item => item.passed)};
+            """,
+        )
+        if not isinstance(result, dict):
+            raise RuntimeError("score card browser result must be an object")
+        screenshot = f"score-cards-{width}x{height}.png"
+        (output_dir / screenshot).write_bytes(base64.b64decode(str(_screenshot(base))))
+        results.append({**result, "screenshot": screenshot})
+    return {
+        "schema_version": REPORT_SCHEMA,
+        "browser": browser_name,
+        "passed": table_detail is True and all(result.get("passed") is True for result in results),
+        "table_detail_preserved": table_detail,
+        "score_cards": results,
+        "external_network_calls": 0,
+    }
 
 
 def _browser_services() -> tuple[UnifiedWebServices, Callable[[], None]]:
@@ -869,9 +966,10 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           quoteTimeVisible: document.querySelector('#quoteTime').getClientRects().length > 0,
           dataStatusOwnsReadiness: dataStatus.contains(document.querySelector('#inputQualityStatus'))
             && dataStatus.contains(document.querySelector('#inputQualityMeta')),
-          scoresInScoreLeaders: scoreLeaders.contains(scoreRange) && scoreLeaders.contains(topScores),
-          topScoresAtCardTop: Math.abs(topScores.getBoundingClientRect().top
-            - scoreLeaders.querySelector(':scope > span').getBoundingClientRect().top) < 1,
+          separateScoreCards: document.querySelector('#scoreRangePanel').contains(scoreRange)
+            && !scoreLeaders.contains(scoreRange) && scoreLeaders.contains(topScores),
+          topScoresBelowTitle: topScores.getBoundingClientRect().top
+            >= document.querySelector('#scoreLeadersTitle').getBoundingClientRect().bottom,
           funnelInHeader: marketStatus.contains(document.querySelector('#funnelMeta')),
           equalSummaryHeights: new Set(
             Array.from(document.querySelectorAll('.summary-band > .summary-item'))
@@ -934,12 +1032,12 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("ordered")
         and result.get("longVisible")
         and result.get("noLongOverlap")
-        and result.get("summaryItems") == 4
+        and result.get("summaryItems") == 5
         and result.get("marketStatusInHeader")
         and result.get("quoteTimeVisible")
         and result.get("dataStatusOwnsReadiness")
-        and result.get("scoresInScoreLeaders")
-        and result.get("topScoresAtCardTop") is True
+        and result.get("separateScoreCards")
+        and result.get("topScoresBelowTitle") is True
         and result.get("funnelInHeader")
         and result.get("equalSummaryHeights")
         and result.get("scoresAbsentFromObservation")
