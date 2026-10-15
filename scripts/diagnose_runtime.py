@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
+_QUOTE_SOURCES = ("tencent", "eastmoney", "sina")
 
 Profile = Literal[
     "web",
@@ -32,6 +33,7 @@ Profile = Literal[
     "tencent-history-window",
     "history-sqlite",
     "history-source-compare",
+    "market-factor-compare",
     "history-write",
     "history-space",
     "history-industry",
@@ -62,6 +64,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "tencent-history-window": ("tencent_history_window",),
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
+    "market-factor-compare": ("market_factor_compare",),
     "history-write": ("history_write_benchmark",),
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
@@ -135,6 +138,11 @@ class DiagnosticOptions:
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
     qfq_root: Path = PROJECT_ROOT / "data/qfq"
+    market_sources: tuple[str, ...] = ("tencent", "eastmoney", "sina")
+    market_profiles: tuple[str, ...] = ("v2", "v3")
+    market_sizes: tuple[int, ...] = (120, 720, 0)
+    market_mode: str = "all"
+    market_batch_seconds: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -171,13 +179,13 @@ def _parser() -> argparse.ArgumentParser:
         help="Tencent K-line host for bounded history probes",
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
-    parser.add_argument(
-        "--qfq-root",
-        type=Path,
-        default=PROJECT_ROOT / "data/qfq",
-        help="legacy qfq source for isolated migration benchmark",
-    )
+    parser.add_argument("--qfq-root", type=Path, default=PROJECT_ROOT / "data/qfq")
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
+    parser.add_argument("--market-sources", nargs="+", choices=_QUOTE_SOURCES, default=_QUOTE_SOURCES)
+    parser.add_argument("--market-profiles", nargs="+", choices=("v2", "v3"), default=("v2", "v3"))
+    parser.add_argument("--market-sizes", nargs="+", type=int, choices=(0, 120, 720), default=(120, 720, 0))
+    parser.add_argument("--market-mode", choices=("single", "combined", "all"), default="all")
+    parser.add_argument("--market-batch-seconds", type=float, default=30)
     parser.add_argument(
         "--codes",
         nargs="+",
@@ -341,6 +349,11 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             eligibility_evidence=tuple(args.eligibility_evidence),
             download_sizes=tuple(args.download_sizes),
             qfq_root=args.qfq_root.expanduser().resolve(),
+            market_sources=tuple(args.market_sources),
+            market_profiles=tuple(args.market_profiles),
+            market_sizes=tuple(args.market_sizes),
+            market_mode=args.market_mode,
+            market_batch_seconds=args.market_batch_seconds,
         ),
         output,
     )
@@ -671,6 +684,19 @@ def build_commands(
                 "--config",
                 str(options.runtime_config),
             ),
+            common_timeout,
+        ),
+        "market_factor_compare": DiagnosticCommand(
+            "market_factor_compare",
+            (python_executable, "-m", "scripts.runtime_diagnostics.market_factor_compare")
+            + ("--config", str(options.runtime_config), "--qfq-root", str(options.qfq_root))
+            + ("--sources", *options.market_sources)
+            + ("--profiles", *options.market_profiles)
+            + ("--sizes", *(str(size) for size in options.market_sizes))
+            + ("--mode", options.market_mode, "--rounds", str(options.source_samples))
+            + ("--interval-seconds", str(options.source_interval_seconds))
+            + ("--timeout-seconds", str(options.source_timeout_seconds))
+            + ("--batch-seconds", str(options.market_batch_seconds)),
             common_timeout,
         ),
     }
@@ -1029,6 +1055,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "baostock_concurrency": _baostock_concurrency_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
     "history_source_compare": _history_sqlite_performance_details,
+    "market_factor_compare": _history_sqlite_performance_details,
     "history_write_benchmark": _history_sqlite_performance_details,
     "history_space": _history_sqlite_performance_details,
     "history_industry": _history_sqlite_performance_details,
