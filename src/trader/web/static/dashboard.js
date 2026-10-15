@@ -684,7 +684,7 @@
   function showDetail(item, payload) {
     errorDrawer.close(false);
     state.selectedCode = item.code;
-    els.drawerCode.textContent = `${item.code || "-"} · ${item.industry || "未分类"}`;
+    els.drawerCode.textContent = [item.code || "-", item.industry].filter(Boolean).join(" · ");
     els.drawerTitle.textContent = `${item.name || "股票"} 股票详情`;
     els.drawerContent.innerHTML = window.TraderRender.drawer(item, payload);
     els.detailDrawer.classList.add("is-open");
@@ -700,7 +700,7 @@
       closeDrawer();
       return;
     }
-    els.drawerCode.textContent = `${item.code} · ${item.industry || "未分类"}`;
+    els.drawerCode.textContent = [item.code, item.industry].filter(Boolean).join(" · ");
     els.drawerTitle.textContent = `${item.name || "股票"} 股票详情`;
     els.drawerContent.innerHTML = window.TraderRender.drawer(item, payload);
   }

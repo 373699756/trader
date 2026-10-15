@@ -1366,7 +1366,7 @@ for (const payload of [getPayload, patchPayload]) {
   const row = state.tableRows([item], payload);
   const detail = state.drawer(item, payload);
   assert.match(row, /<td>2<\/td>/);
-  assert.match(row, /风险研究：部分/);
+  assert.doesNotMatch(row, /风险研究：/);
   assert.match(row, /已复核/);
   assert.doesNotMatch(row, /<td>长期<\/td>|未复核/);
   assert.match(detail, /模型相对信号分<\/span><strong>82\.50/);
@@ -1398,11 +1398,26 @@ sandbox.window.TraderStatusView.renderBudgetSummary(
 assert.match(budgetWithObservation.budgetMeta.textContent, /复核 1\/1/);
 assert.match(sandbox.window.TraderRender.tableDefinition(getPayload).head, /本地 \/ 风险复核 \/ 最终/);
 const noResearchItem = { ...getPayload.items[0], research_coverage: null, review_outcome: null, risks: [] };
-assert.match(state.drawer(noResearchItem, getPayload), /风险研究：覆盖未知/);
-assert.doesNotMatch(state.drawer(noResearchItem, getPayload), /风险研究：未获取|风险扣分/);
+assert.doesNotMatch(state.drawer(noResearchItem, getPayload), /公司风险研究|风险研究：|风险扣分/);
+assert.match(state.tableRows([noResearchItem], getPayload), /无记录/);
+const unknownResearchItem = { ...noResearchItem, code: "600312", industry: "", action: "unavailable",
+  pct_change: 1.2, research_coverage: { evidence_count: 2, structured_risk_fact_count: 0,
+    review_eligible: false,
+    components: { financial: "unknown", announcements: "unknown", pledge: "unknown", unlock: "unknown" } } };
+const unknownRow = state.tableRows([unknownResearchItem], getPayload);
+assert.match(unknownRow, /600312 · 主板/);
+assert.doesNotMatch(unknownRow, /未分类|风险研究：/);
+assert.match(unknownRow, /<td class="positive">\+1\.20%<\/td>/);
+assert.match(unknownRow, /未入复核/);
+assert.doesNotMatch(state.drawer(unknownResearchItem, getPayload), /公司风险研究|风险研究：/);
+assert.match(state.drawer(unknownResearchItem, getPayload), /未进入本次 DeepSeek 复核候选/);
+assert.match(state.tableRows([{ ...unknownResearchItem, pct_change: -1.2 }], getPayload),
+  /<td class="negative">-1\.20%<\/td>/);
+assert.match(state.tableRows([{ ...unknownResearchItem, research_coverage: {
+  ...unknownResearchItem.research_coverage, review_eligible: true } }], getPayload), /无结果/);
 const legacyRiskItem = { ...getPayload.items[0], research_coverage: { evidence_count: 2 },
   risks: [{ risk_code: "unlock_risk" }] };
-assert.match(state.drawer(legacyRiskItem, getPayload), /历史状态未知/);
+assert.doesNotMatch(state.drawer(legacyRiskItem, getPayload), /公司风险研究/);
 assert.match(state.drawer(legacyRiskItem, getPayload), /来源未保存/);
 const scoredItem = {
   rank: 1,

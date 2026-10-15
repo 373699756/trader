@@ -311,8 +311,8 @@
   }
 
   function stock(item) {
-    const context = [BOARD_LABELS[item.board], item.industry || "未分类"].filter(Boolean).join(" · ");
-    return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml(item.code || "-")} · ${escapeHtml(context)}</span>`;
+    const context = [BOARD_LABELS[item.board], item.industry].filter(Boolean).join(" · ");
+    return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml([item.code || "-", context].filter(Boolean).join(" · "))}</span>`;
   }
 
   function tierTag(item) {
@@ -326,14 +326,14 @@
     const scores = item.scores || {};
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
-    const review = reviewStatus(item.review_outcome);
+    const review = reviewStatus(item);
     const legacyScore = scores.deepseek_score == null ? "" : `<span><b>${number(scores.deepseek_score, 2)}</b>旧复核分</span>`;
     const legacyPenalty = Number(scores.deepseek_risk_penalty) > 0
       ? `<span><b>${number(scores.deepseek_risk_penalty, 2)}</b>旧复核扣分</span>` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
-      <td>${stock(item)}<span class="stock-code">${escapeHtml(researchStatus(item.research_coverage))}</span></td>
+      <td>${stock(item)}</td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
       <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
@@ -474,26 +474,20 @@
       ["旧版DeepSeek风险扣分", Number(scores.deepseek_risk_penalty) > 0 ? number(scores.deepseek_risk_penalty, 2) : null],
     ];
     const scoreParts = [detailGrid(scoreValues)];
-    scoreParts.push(note(reviewResult(item.review_outcome), "muted"));
+    scoreParts.push(note(reviewResult(item), "muted"));
     if (Array.isArray(item.risks) && item.risks.length > 0) {
       scoreParts.push('<h4 class="detail-subtitle">实际风险</h4>', riskList(item.risks));
     }
     const research = item.research_coverage;
-    const researchParts = [
-      detailGrid([
-        ["总体状态", researchStatus(research)],
-        ["研究证据", research ? `${number(research.evidence_count, 0)} 条` : null],
-        ["结构化风险事实", research ? `${number(research.structured_risk_fact_count, 0)} 条` : null],
-        ["复核证据资格", research ? (research.review_eligible === true ? "符合" : "不符合") : null],
-        ["财务数据", researchComponentStatus(research, "financial")],
-        ["公司公告 / 减持", researchComponentStatus(research, "announcements")],
-        ["股权质押", researchComponentStatus(research, "pledge")],
-        ["限售解禁", researchComponentStatus(research, "unlock")],
-      ]),
-    ];
-    if (!research || !research.components) {
-      researchParts.push(note("该决策未保存逐项研究覆盖，历史状态未知。", "muted"));
-    }
+    const researchParts = hasResearchCoverage(research) ? detailGrid([
+      ["总体状态", researchStatus(research)],
+      ["研究证据", `${number(research.evidence_count, 0)} 条`],
+      ["结构化风险事实", `${number(research.structured_risk_fact_count, 0)} 条`],
+      ["财务数据", researchComponentStatus(research, "financial")],
+      ["公司公告 / 减持", researchComponentStatus(research, "announcements")],
+      ["股权质押", researchComponentStatus(research, "pledge")],
+      ["限售解禁", researchComponentStatus(research, "unlock")],
+    ]) : "";
     if (downside) {
       scoreParts.push(
         '<h4 class="detail-subtitle">下行保护</h4>',
@@ -511,7 +505,7 @@
     return [
       section("推荐结论", conclusion),
       section("核心行情", detailGrid(marketValues) + marketNotes.join("")),
-      section("公司风险研究", researchParts.join("")),
+      section("公司风险研究", researchParts),
       section("评分与风险", scoreParts.join("")),
     ].join("");
   }
@@ -553,24 +547,38 @@
     return reason ? "推荐条件暂未满足" : "暂无补充说明";
   }
 
-  function reviewStatus(outcome) {
-    return ({ applied: "已复核", abstain: "已弃权", late: "已迟到", rejected: "未通过" })[outcome] || "未复核";
+  function reviewStatus(item) {
+    const outcome = item.review_outcome;
+    if (outcome) return ({ applied: "已复核", abstain: "已弃权", late: "已迟到", rejected: "未通过" })[outcome] || "结果未知";
+    if (item.research_coverage && item.research_coverage.review_eligible === false) return "未入复核";
+    return item.research_coverage && item.research_coverage.review_eligible === true ? "无结果" : "无记录";
   }
 
-  function reviewResult(outcome) {
-    return ({
+  function reviewResult(item) {
+    const outcome = item.review_outcome;
+    if (outcome) return ({
       applied: "结构化风险复核已完成；最终评分仍为本地分",
       abstain: "风险复核弃权；最终评分仍为本地分",
       late: "风险复核结果迟到，未参与本次决策",
       rejected: "风险复核未生效，保留本地决策",
-    })[outcome] || "未复核；最终评分为本地分";
+    })[outcome] || "复核结果未知；最终评分为本地分";
+    if (item.research_coverage && item.research_coverage.review_eligible === false) {
+      return "未进入本次 DeepSeek 复核候选；最终评分为本地分";
+    }
+    return item.research_coverage && item.research_coverage.review_eligible === true
+      ? "本次 DeepSeek 复核无结果；最终评分为本地分"
+      : "未保存 DeepSeek 复核结果；最终评分为本地分";
+  }
+
+  function hasResearchCoverage(research) {
+    if (!research || !research.components) return false;
+    return ["financial", "announcements", "pledge", "unlock"]
+      .some((key) => ["known_clear", "known_risk", "stale"].includes(research.components[key]));
   }
 
   function researchStatus(research) {
-    if (!research || !research.components) return "风险研究：覆盖未知";
     const values = ["financial", "announcements", "pledge", "unlock"].map((key) => research.components[key]);
     if (values.every((value) => value === "known_clear" || value === "known_risk")) return "风险研究：已核";
-    if (values.every((value) => value === "unknown")) return "风险研究：未获取";
     return "风险研究：部分";
   }
 
