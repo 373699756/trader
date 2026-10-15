@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
 from typing import Literal, Protocol
 
@@ -22,7 +22,7 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.application.ports.clock import Clock
 from trader.recommendation.application.ports.decision_records import DecisionRecordError
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
-from trader.recommendation.domain.market.models import MarketQuote
+from trader.recommendation.domain.market.models import MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
@@ -53,6 +53,10 @@ class CachedQuoteReader(Protocol):
     def cached_quotes(self, codes: Sequence[str]) -> Mapping[str, MarketQuote]: ...
 
 
+class _IndustryClassificationReader(Protocol):
+    def model_industries(self, codes: Sequence[str]) -> Mapping[str, ModelIndustryReference]: ...
+
+
 @dataclass(frozen=True)
 class OutcomeTierSummary:
     tier: Literal["recommend", "watch"]
@@ -71,6 +75,7 @@ class OutcomeSummaryReader(Protocol):
 class DecisionQuerySources:
     cached_quotes: CachedQuoteReader | None = None
     outcome_summaries: OutcomeSummaryReader | None = None
+    industry_classifications: _IndustryClassificationReader | None = None
 
 
 @dataclass(frozen=True)
@@ -122,6 +127,7 @@ class DecisionItemView:
     risk_details: tuple[DecisionRiskDisclosure, ...] = ()
     anchor_daily_return_pct: float | None = None
     anchor_to_now_pct: float | None = None
+    classified_industry: str | None = None
 
 
 @dataclass(frozen=True)
@@ -184,6 +190,7 @@ class UnifiedDecisionQueries:
         self._clock = clock
         self._cached_quotes = sources.cached_quotes if sources is not None else None
         self._outcome_summaries = sources.outcome_summaries if sources is not None else None
+        self._industry_classifications = sources.industry_classifications if sources is not None else None
 
     def current(self, strategy: Strategy) -> DecisionView:
         now = self._clock.now()
@@ -196,16 +203,31 @@ class UnifiedDecisionQueries:
             draft = _current_draft(self._drafts.snapshot(strategy), strategy, now)
             if draft is None:
                 return empty
-            draft_view = _observation_draft(draft)
-            return replace(empty, draft=draft_view, etag=draft.version)
+            classified_industries = self._classified_industries(draft, now)
+            draft_view = _observation_draft(draft, classified_industries)
+            return replace(empty, draft=draft_view, etag=_classified_etag(draft.version, classified_industries))
         quotes = _valid_overlay_quotes(decision, snapshot.overlay)
+        classified_industries = self._classified_industries(decision, now)
         view_input = _ScoredViewInput(
             "current",
             quotes,
             snapshot.overlay.version if quotes and snapshot.overlay is not None else None,
             formal,
+            classified_industries,
         )
         return _scored_view(decision, now, view_input)
+
+    def _classified_industries(self, decision: ScoredDecision, now: datetime) -> Mapping[str, str]:
+        source = self._industry_classifications
+        if source is None:
+            return {}
+        codes = tuple(item.code for item in scored_top_six(decision.items) if not item.industry.strip())
+        references = source.model_industries(codes) if codes else {}
+        return {
+            code: reference.industry_id
+            for code, reference in references.items()
+            if code in codes and reference.classification == "证监会行业分类" and reference.effective_date <= now.date()
+        }
 
     def history(self, strategy: Strategy, trade_date: date) -> DecisionView:
         now = self._clock.now()
@@ -297,9 +319,9 @@ def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: dat
     return decision if now < boundary else None
 
 
-def _observation_draft(decision: ScoredDecision) -> DecisionDraftView:
+def _observation_draft(decision: ScoredDecision, classified_industries: Mapping[str, str]) -> DecisionDraftView:
     top_scores = tuple(
-        replace(_scored_item(item, None), rank=rank)
+        replace(_scored_item(item, None, classified_industry=classified_industries.get(item.code)), rank=rank)
         for rank, item in enumerate(scored_top_six(decision.items), start=1)
     )
     return DecisionDraftView(
@@ -318,6 +340,7 @@ class _ScoredViewInput:
     quotes: Mapping[str, DecisionQuote]
     overlay_version: str | None
     formal: CommittedDecisionRecord | None
+    classified_industries: Mapping[str, str] = field(default_factory=dict)
 
 
 def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredViewInput) -> DecisionView:
@@ -326,14 +349,19 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
     formal = view_input.formal
     top_scores = tuple(
         replace(
-            _scored_item(item, overlay_quotes.get(item.code), historical=view == "history"),
+            _scored_item(
+                item,
+                overlay_quotes.get(item.code),
+                historical=view == "history",
+                classified_industry=view_input.classified_industries.get(item.code),
+            ),
             rank=rank,
         )
         for rank, item in enumerate(scored_top_six(decision.items), start=1)
     )
     items = top_scores
     coverage = scored_decision_coverage(decision)
-    etag = _etag(decision.version, view_input.overlay_version)
+    etag = _classified_etag(_etag(decision.version, view_input.overlay_version), view_input.classified_industries)
     if view == "history":
         quote_identity = [
             (code, quote.price, quote.pct_change, quote.source, quote.source_time.isoformat(), quote.data_version)
@@ -369,7 +397,13 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
     )
 
 
-def _scored_item(item: DecisionItem, quote: DecisionQuote | None, *, historical: bool = False) -> DecisionItemView:
+def _scored_item(
+    item: DecisionItem,
+    quote: DecisionQuote | None,
+    *,
+    historical: bool = False,
+    classified_industry: str | None = None,
+) -> DecisionItemView:
     components = dict(item.score_components)
     model = item.model_diagnostics
     display_quote = quote if historical else quote or item.quote
@@ -433,6 +467,7 @@ def _scored_item(item: DecisionItem, quote: DecisionQuote | None, *, historical:
         estimated_cost_pct=model.estimated_cost_pct if model is not None else None,
         predicted_net_excess_pct=model.predicted_net_excess_pct if model is not None else None,
         model_disagreement_pct=model.model_disagreement_pct if model is not None else None,
+        classified_industry=classified_industry,
     )
 
 
@@ -553,6 +588,14 @@ def _etag(decision_version: str, overlay_version: str | None) -> str:
     if overlay_version is None:
         return decision_version
     return f"{decision_version}+{overlay_version}"
+
+
+def _classified_etag(base: str, classified_industries: Mapping[str, str]) -> str:
+    if not classified_industries:
+        return base
+    identity = tuple(sorted(classified_industries.items()))
+    digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(",", ":")).encode()).hexdigest()[:16]
+    return f"{base}+industry:{digest}"
 
 
 __all__ = [

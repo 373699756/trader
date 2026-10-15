@@ -461,6 +461,7 @@
       name: item.name || "",
       board: item.board || "",
       industry: item.industry || "",
+      classified_industry: item.classified_industry || "",
       group: item.group || null,
       selected: item.selected === true,
       tier: item.tier || "avoid",

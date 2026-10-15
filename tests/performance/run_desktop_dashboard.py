@@ -12,7 +12,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -33,13 +33,14 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
     UnifiedDecisionEventStream,
 )
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import (  # noqa: E402
+    DecisionQuerySources,
     UnifiedDecisionQueries,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (  # noqa: E402
     UnifiedDecisionIndex,
 )
 from trader.recommendation.application.ports.decision_records import CommittedDecisionRecord  # noqa: E402
-from trader.recommendation.domain.market.models import Board  # noqa: E402
+from trader.recommendation.domain.market.models import Board, ModelIndustryReference  # noqa: E402
 from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
     DecisionItem,
     DecisionQuote,
@@ -60,6 +61,17 @@ _NOW = datetime(2026, 8, 13, 12, 30, tzinfo=_SHANGHAI)
 class _BrowserClock:
     def now(self) -> datetime:
         return _NOW
+
+
+class _BrowserIndustryClassifications:
+    def model_industries(self, codes: Sequence[str]) -> dict[str, ModelIndustryReference]:
+        if "600009" not in codes:
+            return {}
+        return {
+            "600009": ModelIndustryReference(
+                "G56航空运输业", "证监会行业分类", _NOW.date(), "fixture", "industry:browser"
+            )
+        }
 
 
 class _BrowserHistory:
@@ -540,7 +552,13 @@ def _browser_services() -> tuple[ProfiledWebServices, Callable[[], None]]:
         ProfiledWebServices(
             {
                 profile: UnifiedWebServices(
-                    UnifiedDecisionQueries(index, drafts, _BrowserHistory(), _BrowserClock()),
+                    UnifiedDecisionQueries(
+                        index,
+                        drafts,
+                        _BrowserHistory(),
+                        _BrowserClock(),
+                        DecisionQuerySources(industry_classifications=_BrowserIndustryClassifications()),
+                    ),
                     UnifiedDecisionEventStream(),
                     status_provider,
                     profile_id=profile,
@@ -709,6 +727,13 @@ def _viewport(base: str | _ChromeSession, output_dir: Path, width: int, height: 
           rows: rows.length,
           ranks: rows.map((row) => Number(row.cells[0].textContent)),
           tiers: rows.map((row) => row.cells[1].textContent.trim()),
+          current_columns: rows[0]?.cells.length,
+          classified_industry: rows[0]?.cells[2].textContent.includes('证监会行业 G56航空运输业'),
+          score_labels_absent: !/本地|风险复核|最终/.test(rows[0]?.cells[8].textContent || ''),
+          action_alignment: [getComputedStyle(document.querySelector('.action-heading')).textAlign,
+            getComputedStyle(rows[0].cells[9]).textAlign],
+          reason_alignment: [getComputedStyle(document.querySelector('.reason-heading')).textAlign,
+            getComputedStyle(rows[0].cells[10]).textAlign],
           browser_errors: window.TraderDashboardDiagnostics.snapshot().browserErrors,
         };
         """,
@@ -754,6 +779,11 @@ def _viewport_passed(result: dict[str, object]) -> bool:
         and result.get("rows") == 2
         and result.get("ranks") == [1, 2]
         and result.get("tiers") == ["回避", "回避"]
+        and result.get("current_columns") == 11
+        and result.get("classified_industry") is True
+        and result.get("score_labels_absent") is True
+        and result.get("action_alignment") == ["center", "left"]
+        and result.get("reason_alignment") == ["center", "left"]
         and result.get("browser_errors") == []
     )
 

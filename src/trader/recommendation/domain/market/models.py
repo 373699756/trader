@@ -24,7 +24,7 @@ class Board(str, Enum):
 
 @dataclass(frozen=True)
 class ModelIndustryReference:
-    """Point-in-time industry identity used only by industry-aware scoring heads."""
+    """Point-in-time CSRC classification for model inputs and labeled read-only display."""
 
     industry_id: str
     classification: str

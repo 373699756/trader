@@ -215,6 +215,7 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
         "name": item.name,
         "board": item.board,
         "industry": item.industry,
+        "classified_industry": item.classified_industry,
         "group": item.group,
         "selected": item.selected,
         "rank": item.rank,

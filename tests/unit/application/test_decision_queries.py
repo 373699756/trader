@@ -13,7 +13,7 @@ from trader.recommendation.application.pipeline.freeze_publish.read_only_queries
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.domain.evidence.pipeline import PipelineStageStatus, RecommendationPipelineStatus
-from trader.recommendation.domain.market.models import Board, MarketQuote
+from trader.recommendation.domain.market.models import Board, MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionItem,
@@ -101,6 +101,45 @@ def test_queries_expose_one_shape_for_scored_and_long_current_views() -> None:
     assert long_view.score_status == "not_applicable"
     assert long_view.items[0].name == "样例"
     assert long_view.items[0].price == 12.3
+
+
+def test_current_uses_separate_classified_industry_without_changing_frozen_history() -> None:
+    base = _decision()
+    decision = replace(base, items=(replace(base.items[0], industry=""),))
+    index = UnifiedDecisionIndex()
+    assert index.publish(decision, expected_version=None).accepted
+
+    class Classifications:
+        def model_industries(self, codes: tuple[str, ...]) -> dict[str, ModelIndustryReference]:
+            assert codes == ("600000",)
+            return {
+                "600000": ModelIndustryReference(
+                    "D44电力、热力生产和供应业", "证监会行业分类", TRADE_DATE, "baostock", "industry:1"
+                )
+            }
+
+    sources = DecisionQuerySources(industry_classifications=Classifications())
+    queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock(), sources)
+    current = queries.current(Strategy.TOMORROW)
+
+    assert current.items[0].industry == ""
+    assert current.items[0].classified_industry == "D44电力、热力生产和供应业"
+    assert current.items[0].final_score == decision.items[0].final_score
+    assert current.etag is not None and "+industry:" in current.etag
+
+    populated = UnifiedDecisionIndex()
+    assert populated.publish(_decision(), expected_version=None).accepted
+    unchanged = UnifiedDecisionQueries(
+        populated, UnifiedDecisionDraftIndex(), _Repository(), _Clock(), sources
+    ).current(Strategy.TOMORROW)
+    assert unchanged.items[0].industry == "银行"
+    assert unchanged.items[0].classified_industry is None
+
+    record = CommittedDecisionRecord(decision, NOW.replace(hour=11), "scheduled")
+    history = UnifiedDecisionQueries(
+        UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), _Repository(record), _Clock(), sources
+    ).history(Strategy.TOMORROW, TRADE_DATE)
+    assert history.items[0].classified_industry is None
 
 
 def test_queries_read_only_formal_history_and_long_has_no_history() -> None:

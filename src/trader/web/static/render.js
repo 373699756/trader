@@ -253,16 +253,17 @@
       columns: [
         '<col style="width:56px">',
         '<col style="width:86px">',
-        '<col style="width:168px">',
-        '<col style="width:92px">',
-        '<col style="width:92px">',
-        '<col style="width:150px">',
-        '<col style="width:112px">',
-        '<col style="width:220px">',
-        '<col style="width:96px">',
-        '<col style="width:190px">',
+        '<col style="width:230px">',
+        '<col style="width:80px">',
+        '<col style="width:88px">',
+        '<col style="width:85px">',
+        '<col style="width:95px">',
+        '<col style="width:100px">',
+        '<col style="width:165px">',
+        '<col style="width:95px">',
+        '<col style="width:185px">',
       ].join(""),
-      head: "<tr><th>排名</th><th>状态</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>成交 / 换手</th><th>总市值</th><th>本地 / 风险复核 / 最终</th><th>动作</th><th>原因</th></tr>",
+      head: "<tr><th>排名</th><th>状态</th><th>股票</th><th>最新价</th><th>今日涨跌</th><th>换手率</th><th>成交额</th><th>总市值</th><th>本地 / 风险复核 / 最终</th><th class=\"action-heading\">动作</th><th class=\"reason-heading\">原因</th></tr>",
     };
   }
 
@@ -311,7 +312,9 @@
   }
 
   function stock(item) {
-    const context = [BOARD_LABELS[item.board], item.industry].filter(Boolean).join(" · ");
+    const industry = String(item.industry || "").trim()
+      || (item.classified_industry ? `证监会行业 ${item.classified_industry}` : "");
+    const context = [BOARD_LABELS[item.board], industry].filter(Boolean).join(" · ");
     return `<span class="stock-name">${escapeHtml(item.name || "-")}</span><span class="stock-code">${escapeHtml([item.code || "-", context].filter(Boolean).join(" · "))}</span>`;
   }
 
@@ -327,19 +330,17 @@
     const action = String(item.action || "unavailable");
     const rowClass = action === "unavailable" ? "is-unavailable" : "";
     const review = reviewStatus(item);
-    const legacyScore = scores.deepseek_score == null ? "" : `<span><b>${number(scores.deepseek_score, 2)}</b>旧复核分</span>`;
-    const legacyPenalty = Number(scores.deepseek_risk_penalty) > 0
-      ? `<span><b>${number(scores.deepseek_risk_penalty, 2)}</b>旧复核扣分</span>` : "";
     return `<tr class="${rowClass}" tabindex="0" data-code="${escapeHtml(item.code)}">
       <td>${number(item.rank, 0)}</td>
       <td>${tierTag(item)}</td>
       <td>${stock(item)}</td>
       <td>${number(item.price, 2)}</td>
       <td class="${change.className}">${change.text}</td>
-      <td>${compact(item.amount)}<span class="stock-code">换手 ${number(item.turnover_rate, 2)}%</span></td>
+      <td>${valuePercent(item.turnover_rate) || "-"}</td>
+      <td>${compact(item.amount)}</td>
       <td>${compact(item.market_cap)}</td>
-      <td><div class="score-stack"><span><b>${number(scores.local_score, 2)}</b>本地</span><span><b>${review}</b>风险复核</span>${legacyScore}${legacyPenalty}<span><b>${number(scores.final_score, 2)}</b>最终</span></div></td>
-      <td><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
+      <td><div class="score-stack"><span aria-label="本地评分"><b>${number(scores.local_score, 2)}</b></span><span aria-label="风险复核"><b>${review}</b></span><span aria-label="最终评分"><b>${number(scores.final_score, 2)}</b></span></div></td>
+      <td class="action-cell"><span class="action-tag" data-action="${escapeHtml(action)}">${escapeHtml(ACTION_LABELS[action] || "动作状态未知")}</span></td>
       <td class="reason-cell"><span class="reason-tag">${escapeHtml(actionReason(item.action_reason))}</span></td>
     </tr>`;
   }
@@ -384,7 +385,7 @@
   function tableColumnCount(snapshot) {
     if (snapshot && snapshot.historical === true) return 7;
     if (snapshot && snapshot.strategy === "long") return 7;
-    return 10;
+    return 11;
   }
 
   function historyRow(item) {

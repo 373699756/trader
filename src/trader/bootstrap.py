@@ -1129,7 +1129,7 @@ def _build_publication(
         subscriber_limit=settings.api.sse_max_clients,
     )
     clock = ShanghaiClock(context.now)
-    query_sources = DecisionQuerySources(market_data, dependencies.outcomes)
+    query_sources = DecisionQuerySources(market_data, dependencies.outcomes, market_data.references)
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, query_sources)
     research_trace = SQLiteResearchTraceIndex(
         settings.runtime_dir,

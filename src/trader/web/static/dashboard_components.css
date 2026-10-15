@@ -364,9 +364,15 @@ td:nth-child(2) {
 
 table:not(.is-long-table) th:nth-child(2),
 table:not(.is-long-table) td:nth-child(2),
-table:not(.is-long-table):not(.is-history) th:nth-child(8),
-table:not(.is-long-table):not(.is-history) td:nth-child(8) {
+table:not(.is-long-table):not(.is-history) th:nth-child(9),
+table:not(.is-long-table):not(.is-history) td:nth-child(9),
+th.action-heading,
+th.reason-heading {
   text-align: center;
+}
+
+table:not(.is-long-table):not(.is-history) td:nth-child(3) {
+  white-space: normal;
 }
 
 table:not(.is-long-table) th:nth-child(3),
@@ -378,6 +384,11 @@ table:not(.is-long-table) td:nth-child(3) {
   text-align: left;
   box-shadow: 1px 0 0 var(--line);
   background: inherit;
+}
+
+table:not(.is-long-table):not(.is-history) th:nth-child(3),
+table:not(.is-long-table):not(.is-history) td:nth-child(3) {
+  width: 230px;
 }
 
 table.is-long-table th:nth-child(2),
@@ -425,17 +436,16 @@ tbody tr.is-unavailable td.negative {
 }
 
 .score-stack {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
   color: var(--muted);
   font-size: 10px;
   text-align: center;
 }
 
 .score-stack span {
-  min-width: 44px;
+  min-width: 0;
 }
 
 .score-stack b {
@@ -506,6 +516,7 @@ tbody tr.is-unavailable td.negative {
   background: #312819;
 }
 
+.action-cell,
 .reason-cell {
   text-align: left;
 }
