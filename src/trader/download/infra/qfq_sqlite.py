@@ -14,7 +14,7 @@ from pathlib import Path
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
-from trader.download.infra.qfq_codec import decode_cell, encode_cell
+from trader.download.infra.qfq_codec import DecodeCell, EncodeCell
 
 QFQ_SHARD_NAMES = (
     "qfq_sse_main.sqlite3",
@@ -30,7 +30,7 @@ CREATE TABLE identities(code TEXT PRIMARY KEY, digest TEXT NOT NULL, source TEXT
 """
 
 
-def qfq_shard_name(code: str) -> str:
+def QfqShardName(code: str) -> str:
     if len(code) != 6 or not code.isascii() or not code.isdigit():
         raise ValueError("qfq code invalid")
     if code.startswith(("600", "601", "603", "605")):
@@ -96,7 +96,7 @@ class SQLiteQfqWindowCache:
             for name in self._existing_names():
                 with closing(self._read_connection(name)) as connection:
                     for (code,) in connection.execute("SELECT code FROM identities"):
-                        if qfq_shard_name(code) != name:
+                        if QfqShardName(code) != name:
                             raise RuntimeError("qfq code routed to wrong shard")
                         result.add(code)
             return frozenset(result)
@@ -105,7 +105,7 @@ class SQLiteQfqWindowCache:
 
     def read_code(self, code: str) -> PublishedHistoryWindow:
         self._ensure_layout()
-        name = qfq_shard_name(code)
+        name = QfqShardName(code)
         if not (self.root / name).is_file():
             return PublishedHistoryWindow(code, ())
         try:
@@ -113,7 +113,7 @@ class SQLiteQfqWindowCache:
                 rows = self._read_rows(connection, code)
         except sqlite3.Error as exc:
             raise RuntimeError("qfq shard read failed") from exc
-        return PublishedHistoryWindow(code, tuple(decode_cell(code, day, payload) for day, payload in rows))
+        return PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
 
     def read_codes(self, codes: Sequence[str]) -> tuple[PublishedHistoryWindow, ...]:
         """Read a bounded batch while sharing one connection per touched board shard."""
@@ -121,7 +121,7 @@ class SQLiteQfqWindowCache:
         self._ensure_layout()
         grouped: dict[str, list[str]] = {}
         for code in dict.fromkeys(codes):
-            grouped.setdefault(qfq_shard_name(code), []).append(code)
+            grouped.setdefault(QfqShardName(code), []).append(code)
         result: list[PublishedHistoryWindow] = []
         try:
             for name, requested in grouped.items():
@@ -132,9 +132,7 @@ class SQLiteQfqWindowCache:
                     for code in requested:
                         rows = self._read_rows(connection, code)
                         result.append(
-                            PublishedHistoryWindow(
-                                code, tuple(decode_cell(code, day, payload) for day, payload in rows)
-                            )
+                            PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
                         )
         except sqlite3.Error as exc:
             raise RuntimeError("qfq batch read failed") from exc
@@ -156,7 +154,7 @@ class SQLiteQfqWindowCache:
                             "SELECT code,digest,source,cutoff,dates FROM identities ORDER BY code"
                         )
                     }
-                    if any(qfq_shard_name(code) != name for code in identities if code in allowed_codes):
+                    if any(QfqShardName(code) != name for code in identities if code in allowed_codes):
                         raise RuntimeError("qfq code routed to wrong shard")
                     bars = connection.execute("SELECT code,day,payload FROM bars ORDER BY code,day")
                     for code, group in groupby(bars, key=lambda row: row[0]):
@@ -206,7 +204,7 @@ class SQLiteQfqWindowCache:
 
     def source_identity(self, code: str) -> str | None:
         self._ensure_layout()
-        name = qfq_shard_name(code)
+        name = QfqShardName(code)
         if not (self.root / name).is_file():
             return None
         try:
@@ -263,8 +261,8 @@ class SQLiteQfqWindowCache:
         for window in windows:
             cells = tuple(cell for cell in window.cells[-self.sessions :] if cell.status == "complete")
             if cells:
-                grouped.setdefault(qfq_shard_name(window.code), []).append(
-                    (window.code, tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in cells))
+                grouped.setdefault(QfqShardName(window.code), []).append(
+                    (window.code, tuple((cell.trade_date.isoformat(), EncodeCell(cell)) for cell in cells))
                 )
         if not grouped:
             return (), 0
@@ -302,7 +300,7 @@ class SQLiteQfqWindowCache:
         peer._ensure_layout()
         grouped: dict[str, list[PublishedHistoryWindow]] = {}
         for window in windows:
-            grouped.setdefault(qfq_shard_name(window.code), []).append(window)
+            grouped.setdefault(QfqShardName(window.code), []).append(window)
         changed: list[str] = []
         count = 0
         committed: list[str] = []
@@ -347,7 +345,7 @@ class SQLiteQfqWindowCache:
         changed, count = False, 0
         for window in windows:
             cells = tuple(cell for cell in window.cells[-self.sessions :] if cell.status == "complete")
-            target = tuple((cell.trade_date.isoformat(), encode_cell(cell)) for cell in cells)
+            target = tuple((cell.trade_date.isoformat(), EncodeCell(cell)) for cell in cells)
             if not target:
                 continue
             old = tuple(
@@ -427,7 +425,7 @@ class SQLiteQfqWindowCache:
                 for code, digest, source, calendar_json in connection.execute(
                     "SELECT code,digest,source,dates FROM identities"
                 ):
-                    if qfq_shard_name(code) != name:
+                    if QfqShardName(code) != name:
                         raise RuntimeError("qfq code routed to wrong shard")
                     identities.append((code, digest, source))
                     dates.update(date.fromisoformat(day) for day in json.loads(calendar_json))
@@ -443,7 +441,7 @@ class SQLiteQfqWindowCache:
 
     def iter_windows(self, manifest: PublishedHistoryManifest, *, sessions: int) -> Iterator[PublishedHistoryWindow]:
         for name in self._existing_names():
-            codes = tuple(code for code in manifest.universe_codes if qfq_shard_name(code) == name)
+            codes = tuple(code for code in manifest.universe_codes if QfqShardName(code) == name)
             yield from self.read_windows(manifest, codes, sessions=sessions)
 
     def read_windows(
@@ -463,7 +461,7 @@ class SQLiteQfqWindowCache:
         grouped: dict[str, list[str]] = {}
         allowed = frozenset(manifest.universe_codes)
         for code in dict.fromkeys(codes):
-            name = qfq_shard_name(code)
+            name = QfqShardName(code)
             if code in allowed and (self.root / name).is_file():
                 grouped.setdefault(name, []).append(code)
         result: list[PublishedHistoryWindow] = []
@@ -472,6 +470,6 @@ class SQLiteQfqWindowCache:
                 for code in requested:
                     rows = self._read_rows(connection, code)[-sessions:]
                     result.append(
-                        PublishedHistoryWindow(code, tuple(decode_cell(code, day, payload) for day, payload in rows))
+                        PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
                     )
         return tuple(sorted(result, key=lambda item: item.code))

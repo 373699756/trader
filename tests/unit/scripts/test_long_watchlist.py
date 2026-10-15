@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scripts.runtime_diagnostics.long_watchlist import audit_code, financial_admission
-from trader.infra.settings import load_strategy_settings
+from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.domain.market.research import FinancialReport
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -69,7 +69,7 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
     result = audit_code(
         "000001",
         observed_at=datetime(2026, 10, 9, 16, tzinfo=SHANGHAI),
-        policy=load_strategy_settings(PROJECT_ROOT / "config/strategy.json").long_research,
+        policy=LoadStrategySettings(PROJECT_ROOT / "config/strategy.json").long_research,
         timeout=1,
         exclusions={},
         evidence_caches=(tmp_path,),

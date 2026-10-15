@@ -1,10 +1,10 @@
 import json
 
-from trader.training.entrypoints.h1_point_in_time import main
+from trader.training.entrypoints.h1_point_in_time import Main
 
 
 def test_h1_audit_command_is_explicit_read_only_and_strategy_scoped(tmp_path, capsys):
-    assert main(["--runtime-dir", str(tmp_path)]) == 1
+    assert Main(["--runtime-dir", str(tmp_path)]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema_version"] == "score_h1_point_in_time_audit"
     assert [item["strategy"] for item in payload["strategies"]] == ["tomorrow", "d25"]

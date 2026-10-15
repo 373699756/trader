@@ -31,10 +31,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.download.infra.baostock_session import (  # noqa: E402
     BaoStockSessionSdkPort,
+    LoadBaostockSdk,
+    LoginBaostock,
+    LogoutBaostock,
     RateLimitedBaoStockSdk,
-    load_baostock_sdk,
-    login_baostock,
-    logout_baostock,
 )
 
 _DEFAULT_CODES = (
@@ -247,14 +247,14 @@ def _one(sdk: RateLimitedBaoStockSdk, code: str, *, days: int) -> CodeResult:
 
 
 def _open() -> BaoStockSessionSdkPort:
-    sdk = load_baostock_sdk()
-    login_baostock(sdk)
+    sdk = LoadBaostockSdk()
+    LoginBaostock(sdk)
     return sdk
 
 
 def _close(sdk: BaoStockSessionSdkPort) -> None:
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-        logout_baostock(sdk)
+        LogoutBaostock(sdk)
 
 
 def _serial(command: WorkerCommand) -> tuple[CodeResult, ...]:

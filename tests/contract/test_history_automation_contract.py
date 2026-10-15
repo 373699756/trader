@@ -12,16 +12,16 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.domain.history_automation import HistoryAutomationStatus
-from trader.download.entrypoints.history_automation_projection import project_history_automation_status
+from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationStatus
 from trader.download.infra.history_automation_installation import (
     HistoryAutomationInstallationRequest,
-    plan_history_automation_installation,
+    PlanHistoryAutomationInstallation,
 )
-from trader.entrypoints.cli import build_parser, main
+from trader.entrypoints.cli import BuildParser, Main
 
 
 def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_status() -> None:
-    parser = build_parser()
+    parser = BuildParser()
 
     for command in (
         "scheduled-history-maintenance",
@@ -60,7 +60,7 @@ def test_check_status_projection_is_explicit_and_keeps_automatic_training_disabl
         False,
     )
 
-    assert project_history_automation_status(status) == {
+    assert ProjectHistoryAutomationStatus(status) == {
         "schema_version": "history_automation_status",
         "state": "ready",
         "reason": None,
@@ -101,11 +101,11 @@ def test_internal_status_command_reads_persisted_projection_without_loading_supp
         False,
     )
     monkeypatch.setattr(
-        "trader.download.infra.history_automation_status.read_history_automation_status", lambda *_: status
+        "trader.download.infra.history_automation_status.ReadHistoryAutomationStatus", lambda *_: status
     )
     monkeypatch.setattr("trader.entrypoints.cli._shanghai_now", lambda: now)
 
-    assert main(["history-automation-status"]) == 0
+    assert Main(["history-automation-status"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["state"] == "data_incomplete"
     assert payload["matured_label_days_since_training"] == 0
@@ -115,7 +115,7 @@ def test_internal_status_command_reads_persisted_projection_without_loading_supp
 def test_scheduled_cli_does_not_create_a_supplier_before_weekly_cadence_is_due(monkeypatch, tmp_path, capsys) -> None:
     from types import SimpleNamespace
 
-    from trader.download.entrypoints.commands import run_download_command
+    from trader.download.entrypoints.commands import RunDownloadCommand
 
     now = datetime(2026, 9, 11, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
     status = HistoryAutomationStatus(
@@ -137,14 +137,14 @@ def test_scheduled_cli_does_not_create_a_supplier_before_weekly_cadence_is_due(m
     monkeypatch.setattr("trader.download.entrypoints.commands._repository_root", lambda: tmp_path)
     monkeypatch.setattr("trader.download.entrypoints.commands._shanghai_now", lambda: now)
     monkeypatch.setattr(
-        "trader.infra.settings.load_runtime_settings",
+        "trader.infra.settings.LoadRuntimeSettings",
         lambda _: SimpleNamespace(
             runtime_dir=tmp_path / "runtime",
             reference_dir=tmp_path / "data" / "reference",
         ),
     )
     monkeypatch.setattr(
-        "trader.download.infra.history_maintenance_runner.read_history_automation_status", lambda *_: status
+        "trader.download.infra.history_maintenance_runner.ReadHistoryAutomationStatus", lambda *_: status
     )
     (tmp_path / "config").mkdir()
     shutil.copy2(Path(__file__).resolve().parents[2] / "config" / "download.json", tmp_path / "config/download.json")
@@ -153,13 +153,13 @@ def test_scheduled_cli_does_not_create_a_supplier_before_weekly_cadence_is_due(m
         pytest.fail("a no-op scheduled wakeup must not construct a supplier")
 
     monkeypatch.setattr("trader.download.infra.baostock_sync_supplier.BaoStockHistorySupplier", unexpected_supplier)
-    assert run_download_command("scheduled-history-maintenance", config_path=tmp_path / "config.json") == 0
+    assert RunDownloadCommand("scheduled-history-maintenance", config_path=tmp_path / "config.json") == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["maintenance_state"] == "not_due"
     assert payload["maintenance_reason"] == "weekly_cadence_not_due"
     assert payload["automatic_model_update"] is False
     status = replace(status, data_cutoff=None)
-    assert run_download_command("scheduled-history-maintenance", config_path=tmp_path / "config.json") == 1
+    assert RunDownloadCommand("scheduled-history-maintenance", config_path=tmp_path / "config.json") == 1
     assert json.loads(capsys.readouterr().out)["maintenance_state"] == "blocked"
 
 
@@ -167,7 +167,7 @@ def test_linux_user_units_pass_systemd_native_verification_when_available(tmp_pa
     verifier = shutil.which("systemd-analyze")
     if verifier is None:
         pytest.skip("systemd-analyze is unavailable")
-    plan = plan_history_automation_installation(
+    plan = PlanHistoryAutomationInstallation(
         HistoryAutomationInstallationRequest(
             "linux",
             Path.cwd().resolve(),

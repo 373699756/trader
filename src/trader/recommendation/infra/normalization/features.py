@@ -17,40 +17,40 @@ from trader.infra.market_data.history.history import (
     DailyBar,
     HistoryContext,
     HistoryProfile,
-    require_qfq_history,
-    return_pct,
-    summarize_history_metrics,
+    RequireQfqHistory,
+    ReturnPct,
+    SummarizeHistoryMetrics,
 )
-from trader.recommendation.domain.market.factors import clamp, percentile_scores_with_metadata, weighted_score
+from trader.recommendation.domain.market.factors import Clamp, PercentileScoresWithMetadata, WeightedScore
 from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
+    CalculateProfileQfqAlpha,
     QfqPriceAnchors,
-    calculate_profile_qfq_alpha,
 )
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.recommendation.domain.market.news import NewsSignalPolicy, derive_news_signals
+from trader.recommendation.domain.market.news import DeriveNewsSignals, NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
+    DeriveCorporateRiskFeatures,
+    DeriveLongResearchFeatures,
+    DeriveMarketRegime,
     FeatureComponentWeightPolicy,
     LongResearchInputs,
     LongResearchPolicy,
     MarketRegimePolicy,
+    ResearchComponentsFromObservation,
     ResearchObservation,
-    derive_corporate_risk_features,
-    derive_long_research_features,
-    derive_market_regime,
-    research_components_from_observation,
 )
 from trader.recommendation.domain.market.tail import (
+    DeriveTailSignals,
     MinuteBar,
+    TailSignalEvidence,
     TailSignalPolicy,
-    derive_tail_signals,
-    tail_signal_evidence,
 )
-from trader.recommendation.domain.risk.downside import derive_entry_setup_values
+from trader.recommendation.domain.risk.downside import DeriveEntrySetupValues
 from trader.recommendation.infra.normalization.feature_math import (
     _CROSS_SECTION_FIELDS,
     _breakout_score,
@@ -65,7 +65,7 @@ from trader.recommendation.infra.normalization.feature_math import (
     _slope_score,
     _structured_evidence,
 )
-from trader.recommendation.infra.normalization.feature_risks import extreme_structure_risks
+from trader.recommendation.infra.normalization.feature_risks import ExtremeStructureRisks
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -243,7 +243,7 @@ class FeatureBuilder:
         observed_at: datetime,
         **options: Unpack[FeatureBuildOptions],
     ) -> tuple[FeatureSnapshot, ...]:
-        require_qfq_history(histories)
+        RequireQfqHistory(histories)
         grouped: dict[str, list[MarketQuote]] = defaultdict(list)
         for quote in quotes:
             grouped[quote.data_version].append(quote)
@@ -278,7 +278,7 @@ class FeatureBuilder:
         history_summaries = options.get("history_summaries")
         tail_signals = (
             {
-                quote.code: derive_tail_signals(
+                quote.code: DeriveTailSignals(
                     tuple(intraday_minutes.get(quote.code, ())),
                     observed_at=observed_at,
                     policy=self._tail_signal_policy,
@@ -296,26 +296,26 @@ class FeatureBuilder:
             )
             for quote in quotes
         }
-        amount_percentiles, amount_stats = percentile_scores_with_metadata(
+        amount_percentiles, amount_stats = PercentileScoresWithMetadata(
             {code: values.get("amount_median_20d") for code, values in raw.items()},
             population_data_version=data_version,
         )
-        speed_percentiles, speed_stats = percentile_scores_with_metadata(
+        speed_percentiles, speed_stats = PercentileScoresWithMetadata(
             {quote.code: quote.speed for quote in quotes}, population_data_version=data_version
         )
         strength_results = {
-            days: percentile_scores_with_metadata(
+            days: PercentileScoresWithMetadata(
                 {code: values.get(f"return_{days}d") for code, values in raw.items()},
                 population_data_version=data_version,
             )
             for days in (3, 5, 10, 20)
         }
-        volatility_scores, volatility_stats = percentile_scores_with_metadata(
+        volatility_scores, volatility_stats = PercentileScoresWithMetadata(
             {code: values.get("volatility_20d") for code, values in raw.items()},
             inverse=True,
             population_data_version=data_version,
         )
-        drawdown_scores, drawdown_stats = percentile_scores_with_metadata(
+        drawdown_scores, drawdown_stats = PercentileScoresWithMetadata(
             {code: values.get("max_drawdown_20d") for code, values in raw.items()},
             population_data_version=data_version,
         )
@@ -354,8 +354,8 @@ class FeatureBuilder:
             research_observation = (research_observations or {}).get(quote.code)
             candidate_evidence = tuple(research_observation.evidence if research_observation is not None else ())[:15]
             tail_signal = tail_signals.get(quote.code) if tail_signals is not None else None
-            intraday_evidence = tail_signal_evidence(quote.code, tail_signal) if tail_signal is not None else None
-            news_signals = derive_news_signals(
+            intraday_evidence = TailSignalEvidence(quote.code, tail_signal) if tail_signal is not None else None
+            news_signals = DeriveNewsSignals(
                 candidate_evidence,
                 observed_at=observed_at,
                 policy=self._news_signal_policy,
@@ -380,7 +380,7 @@ class FeatureBuilder:
                     "evidence_freshness": news_signals.freshness_score,
                 }
             )
-            values["entry_quality"] = derive_entry_setup_values(quote, values).score
+            values["entry_quality"] = DeriveEntrySetupValues(quote, values).score
             if tail_signal is not None:
                 values.update(
                     {
@@ -394,9 +394,9 @@ class FeatureBuilder:
             for name in _CROSS_SECTION_FIELDS:
                 if name in reference:
                     values[name] = reference[name]
-            market_regime = derive_market_regime(values.get("market_breadth"), self._market_regime_policy)
+            market_regime = DeriveMarketRegime(values.get("market_breadth"), self._market_regime_policy)
             values.update(
-                derive_long_research_features(
+                DeriveLongResearchFeatures(
                     research_observation or ResearchObservation(),
                     LongResearchInputs(
                         price=quote.price,
@@ -410,14 +410,14 @@ class FeatureBuilder:
             )
             observation = research_observation or ResearchObservation()
             values.update(
-                derive_corporate_risk_features(
+                DeriveCorporateRiskFeatures(
                     observation.corporate_risk_facts,
                     observed_at,
                     history_complete=observation.corporate_risk_history_complete,
                 )
             )
             values.update(
-                extreme_structure_risks(
+                ExtremeStructureRisks(
                     quote,
                     values,
                     observed_at,
@@ -452,7 +452,7 @@ class FeatureBuilder:
                         *candidate_evidence,
                     ),
                     normalization=normalization,
-                    research_components=research_components_from_observation(research_observation),
+                    research_components=ResearchComponentsFromObservation(research_observation),
                 )
             )
         return tuple(snapshots)
@@ -464,7 +464,7 @@ class FeatureBuilder:
         history_summary: HistoryContext | None = None,
     ) -> dict[str, float | None]:
         context = history_summary
-        history = context.profile if context is not None else summarize_history_metrics(bars)
+        history = context.profile if context is not None else SummarizeHistoryMetrics(bars)
         observation_date = quote.source_time.astimezone(_SHANGHAI).date().isoformat()
         completed_bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
         if (
@@ -474,15 +474,15 @@ class FeatureBuilder:
         ):
             setup_history = context.previous_profile
         else:
-            setup_history = summarize_history_metrics(completed_bars) if len(completed_bars) != len(bars) else history
+            setup_history = SummarizeHistoryMetrics(completed_bars) if len(completed_bars) != len(bars) else history
         returns = {
-            days: context.return_pct(days, quote.price) if context is not None else return_pct(bars, days, quote.price)
+            days: context.return_pct(days, quote.price) if context is not None else ReturnPct(bars, days, quote.price)
             for days in (1, 3, 5, 10, 20, 40, 60)
         }
         anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *self._model_momentum_horizons)))
         qfq_alpha = {
             item.feature_id.value: item.value
-            for item in calculate_profile_qfq_alpha(
+            for item in CalculateProfileQfqAlpha(
                 QfqPriceAnchors(
                     quote.price,
                     tuple(
@@ -511,7 +511,7 @@ class FeatureBuilder:
             or amount_median is None
             or not math.isfinite(amount_median)
             or amount_median <= 0
-            else clamp(50.0 + 25.0 * quote.amount / amount_median)
+            else Clamp(50.0 + 25.0 * quote.amount / amount_median)
         )
         limit = quote.exchange_limit_pct or (20.0 if quote.code.startswith(("300", "301", "688", "689")) else 10.0)
         limit_proximity = (
@@ -524,12 +524,12 @@ class FeatureBuilder:
         )
         risk_adjusted = None
         if returns[20] is not None and volatility is not None and volatility > 0:
-            risk_adjusted = clamp(50.0 + returns[20] / volatility * 5.0)
+            risk_adjusted = Clamp(50.0 + returns[20] / volatility * 5.0)
         close_location = _close_location(quote)
         trend_score = (
             None
             if ma_position is None
-            else weighted_score(
+            else WeightedScore(
                 {"ma20_60_position": ma_position, "ma_slope": slope or 50.0},
                 self._feature_component_weights.trend_score,
             )

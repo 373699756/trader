@@ -50,7 +50,7 @@ from trader.recommendation.domain.publication.decision_identity import (  # noqa
     SelectionDiagnostics,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
-from trader.web import create_app  # noqa: E402
+from trader.web import CreateApp  # noqa: E402
 
 VIEWPORTS = ((1280, 720), (1440, 900), (1920, 1080))
 REPORT_SCHEMA = "desktop-browser"
@@ -107,7 +107,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
     driver_binary = shutil.which("geckodriver")
     app_port = _free_port()
     services, publish_empty_draft = _browser_services()
-    server = make_server("127.0.0.1", app_port, create_app(services=services), threaded=True)
+    server = make_server("127.0.0.1", app_port, CreateApp(services=services), threaded=True)
     driver_port = _free_port()
     server_thread = threading.Thread(target=server.serve_forever, name="browser-fixture", daemon=True)
     server_thread.start()

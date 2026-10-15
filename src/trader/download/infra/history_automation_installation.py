@@ -77,7 +77,7 @@ class HistoryAutomationInstallationResult:
     managed_paths: tuple[Path, ...]
 
 
-def plan_history_automation_installation(
+def PlanHistoryAutomationInstallation(
     request: HistoryAutomationInstallationRequest,
 ) -> HistoryAutomationInstallationPlan:
     files: tuple[HistoryAutomationManagedFile, ...]
@@ -143,7 +143,7 @@ def plan_history_automation_installation(
     return HistoryAutomationInstallationPlan(request, files, receipt, install, uninstall)
 
 
-def apply_history_automation_installation(
+def ApplyHistoryAutomationInstallation(
     plan: HistoryAutomationInstallationPlan,
     *,
     confirmed: bool,
@@ -164,7 +164,7 @@ def apply_history_automation_installation(
     return _result("installed", plan)
 
 
-def remove_history_automation_installation(
+def RemoveHistoryAutomationInstallation(
     plan: HistoryAutomationInstallationPlan,
     *,
     confirmed: bool,
@@ -284,7 +284,7 @@ __all__ = [
     "HistoryAutomationInstallationPlan",
     "HistoryAutomationInstallationRequest",
     "HistoryAutomationInstallationResult",
-    "apply_history_automation_installation",
-    "plan_history_automation_installation",
-    "remove_history_automation_installation",
+    "ApplyHistoryAutomationInstallation",
+    "PlanHistoryAutomationInstallation",
+    "RemoveHistoryAutomationInstallation",
 ]

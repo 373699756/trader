@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from trader.web import create_app
+from trader.web import CreateApp
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_create_app_has_no_thread_or_filesystem_side_effects(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    app = create_app()
+    app = CreateApp()
     assert list(tmp_path.iterdir()) == []
     assert app.test_client().get("/").status_code == 200
     assert app.test_client().get("/api/status").status_code == 503
@@ -21,7 +21,7 @@ def test_create_app_has_no_thread_or_filesystem_side_effects(tmp_path, monkeypat
 
 
 def test_create_app_snapshots_template_and_static_release_before_serving_requests() -> None:
-    app = create_app()
+    app = CreateApp()
 
     assert app.static_folder is None
     assert app.jinja_env.cache
@@ -29,7 +29,7 @@ def test_create_app_snapshots_template_and_static_release_before_serving_request
 
 
 def test_dashboard_uses_only_packaged_assets_and_fixed_long_groups() -> None:
-    client = create_app().test_client()
+    client = CreateApp().test_client()
     page = client.get("/").get_data(as_text=True)
     dashboard = client.get("/static/dashboard.js").get_data(as_text=True)
     release_contract = client.get("/static/release_contract.js").get_data(as_text=True)

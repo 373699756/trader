@@ -10,18 +10,18 @@ import pytest
 from tests.unit.application.pipeline_helpers import observed_input_stages, observed_market_batch
 from tests.unit.application.test_tomorrow_projection import _verified_feature
 from trader.bootstrap import _recommendation_policy
-from trader.infra.settings import load_strategy_settings
+from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanningContext
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
-    assemble_candidate_inputs,
-    execute_candidate_pipeline,
+    AssembleCandidateInputs,
+    ExecuteCandidatePipeline,
 )
 from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import (
-    build_dynamic_market_snapshot,
-    dynamic_source_health,
+    BuildDynamicMarketSnapshot,
+    DynamicSourceHealth,
 )
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import assess_candidate_input_stage
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import AssessCandidateInputStage
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, StageOutput
 from trader.recommendation.domain.evidence.pipeline import PIPELINE_STAGES, SourceHealth, SourceHealthState, StageState
 from trader.recommendation.domain.market.static import StaticIssuer
 from trader.recommendation.domain.publication.models import Strategy
@@ -31,12 +31,12 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def _policy():
-    return _recommendation_policy(load_strategy_settings(ROOT / "config" / "strategy.json"))
+    return _recommendation_policy(LoadStrategySettings(ROOT / "config" / "strategy.json"))
 
 
 def test_zero_input_stages_are_not_ready_instead_of_completed() -> None:
     for stage in PIPELINE_STAGES:
-        output = stage_output(
+        output = StageOutput(
             stage,
             (),
             input_batch_id="batch",
@@ -72,7 +72,7 @@ def test_source_age_is_not_reset_by_discovery_normalization(application_feature_
     old = _verified_feature(application_feature_factory("600001", AS_OF - timedelta(minutes=10)))
     batch = observed_market_batch((old,), AS_OF)
     ticks = iter(index / 10 for index in range(100))
-    result = execute_candidate_pipeline(
+    result = ExecuteCandidatePipeline(
         batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None, 1), lambda: next(ticks)
     )
     assert result.normalized.snapshot.source_health == batch.dynamic_stage.snapshot.source_health
@@ -84,11 +84,11 @@ def test_quality_checks_actual_missing_directed_quote(application_feature_factor
     feature = _verified_feature(application_feature_factory("600001", AS_OF - timedelta(seconds=10)))
     batch = observed_market_batch((feature,), AS_OF)
     ticks = iter(index / 10 for index in range(100))
-    result = execute_candidate_pipeline(
+    result = ExecuteCandidatePipeline(
         batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None, 1), lambda: next(ticks)
     )
     candidate = result.candidates[Strategy.TOMORROW]
-    output = assess_candidate_input_stage(candidate, as_of=AS_OF, minimum_history_sessions=20, latency_ms=13)
+    output = AssessCandidateInputStage(candidate, as_of=AS_OF, minimum_history_sessions=20, latency_ms=13)
     assert candidate.snapshot.output_count == 1
     assert (output.snapshot.input_count, output.snapshot.output_count, output.snapshot.pending_count) == (1, 0, 1)
     assert output.snapshot.state is StageState.NOT_READY
@@ -122,7 +122,7 @@ def test_partial_dynamic_collection_retains_static_input_population(application_
             ),
         ),
         complete.static_stages[-1],
-        stage_output(
+        StageOutput(
             PIPELINE_STAGES[3],
             (feature,),
             input_batch_id="static",
@@ -132,7 +132,7 @@ def test_partial_dynamic_collection_retains_static_input_population(application_
             latency_ms=1,
         ).business_rejections,
     )
-    result = build_dynamic_market_snapshot(static, (), as_of=AS_OF, data_version="fixture:empty", latency_ms=5)
+    result = BuildDynamicMarketSnapshot(static, (), as_of=AS_OF, data_version="fixture:empty", latency_ms=5)
     assert (result.snapshot.input_count, result.snapshot.output_count, result.snapshot.pending_count) == (1, 0, 1)
     assert result.snapshot.reasons[0].code == "refresh_pending"
     assert result.snapshot.source_health.latest_success_at is None
@@ -143,19 +143,19 @@ def test_directed_quality_reads_new_immutable_candidate_batch(application_featur
     feature = _verified_feature(application_feature_factory("600001", AS_OF))
     batch = observed_market_batch((feature,), AS_OF)
     ticks = iter(index / 10 for index in range(100))
-    pipeline = execute_candidate_pipeline(
+    pipeline = ExecuteCandidatePipeline(
         batch.dynamic_stage, CandidatePlanningContext(AS_OF, "batch", _policy(), None, 1), lambda: next(ticks)
     )
     original = pipeline.candidates[Strategy.TOMORROW]
     stale = replace(feature, quote=replace(feature.quote, source_time=AS_OF - timedelta(minutes=10)))
-    directed = assemble_candidate_inputs(original, (stale,), as_of=AS_OF, data_version="fixture:correction")
-    result = assess_candidate_input_stage(directed, as_of=AS_OF, minimum_history_sessions=20, latency_ms=7)
+    directed = AssembleCandidateInputs(original, (stale,), as_of=AS_OF, data_version="fixture:correction")
+    result = AssessCandidateInputStage(directed, as_of=AS_OF, minimum_history_sessions=20, latency_ms=7)
     assert original.records[0].features is None
     assert directed.snapshot.output_batch_id != original.snapshot.output_batch_id
     assert result.snapshot.input_batch_id == directed.snapshot.output_batch_id
     assert (result.snapshot.output_count, result.snapshot.pending_count, result.snapshot.rejected_count) == (0, 1, 0)
     assert result.snapshot.reasons[0].code == "stale_quote"
     assert result.snapshot.source_health.age_seconds == 600
-    health = dynamic_source_health((feature, stale), AS_OF)
+    health = DynamicSourceHealth((feature, stale), AS_OF)
     assert health.state is SourceHealthState.UNAVAILABLE
     assert health.healthy_source_count == 0

@@ -34,9 +34,9 @@ _UNKNOWN_MODEL_CAPABILITIES = ModelCapabilities(
 )
 
 
-def capabilities(model: str) -> ModelCapabilities:
+def Capabilities(model: str) -> ModelCapabilities:
     """Look up capabilities, conservatively defaulting unknown models."""
     return MODELS.get(model, _UNKNOWN_MODEL_CAPABILITIES)
 
 
-__all__ = ["MODELS", "capabilities"]
+__all__ = ["MODELS", "Capabilities"]

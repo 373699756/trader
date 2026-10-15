@@ -10,7 +10,7 @@ from trader.download.domain.baostock_daily import BaoStockAdjustment, BaoStockCe
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
 
 
-def encode_cell(cell: PublishedHistoryCell) -> str:
+def EncodeCell(cell: PublishedHistoryCell) -> str:
     return json.dumps(
         [cell.status, _side_values(cell.unadjusted), _side_values(cell.qfq)],
         separators=(",", ":"),
@@ -18,7 +18,7 @@ def encode_cell(cell: PublishedHistoryCell) -> str:
     )
 
 
-def decode_cell(code: str, day: str, payload: str) -> PublishedHistoryCell:
+def DecodeCell(code: str, day: str, payload: str) -> PublishedHistoryCell:
     value: object = json.loads(payload)
     if not isinstance(value, list) or len(value) != 3 or not isinstance(value[0], str):
         raise ValueError("qfq cell payload invalid")

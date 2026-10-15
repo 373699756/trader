@@ -19,7 +19,7 @@ from trader.training.infra.model_bundles.predictor import TrainedHeadPredictor
 from trader.training.infra.profile.composition import SingleHeadCombiner
 
 
-def build_trained_scoring_profile(
+def BuildTrainedScoringProfile(
     profile_id: ScoringProfileId,
     bundles: tuple[TrainedHeadModelBundle, ...],
 ) -> LoadedScoringProfile:
@@ -55,4 +55,4 @@ def _evidence(bundle: TrainedHeadModelBundle) -> ProfileEvidence:
     )
 
 
-__all__ = ["build_trained_scoring_profile"]
+__all__ = ["BuildTrainedScoringProfile"]

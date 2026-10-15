@@ -28,10 +28,10 @@ class StaticMarketReference:
     source_time: datetime
 
 
-def normalize_static_issuer(issuer: StaticIssuer) -> StaticIssuer | None:
+def NormalizeStaticIssuer(issuer: StaticIssuer) -> StaticIssuer | None:
     if len(issuer.code) != 6 or not issuer.code.isascii() or not issuer.code.isdigit() or not issuer.name.strip():
         return None
     return replace(issuer, name=issuer.name.strip())
 
 
-__all__ = ["StaticIssuer", "StaticMarketReference", "normalize_static_issuer"]
+__all__ = ["StaticIssuer", "StaticMarketReference", "NormalizeStaticIssuer"]

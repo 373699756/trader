@@ -15,10 +15,10 @@ import pytest
 import trader.entrypoints.cli as cli_module
 import trader.entrypoints.server as server_module
 import trader.training.entrypoints.commands as research_commands
-from trader.entrypoints.cli import build_parser, main
-from trader.entrypoints.server import build_parser as build_server_parser
+from trader.entrypoints.cli import BuildParser, Main
+from trader.entrypoints.server import BuildParser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
-from trader.infra.settings import load_runtime_settings
+from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
 from trader.training.infra.research.h1_point_in_time_snapshot import H1PointInTimeSnapshotConflictError
@@ -68,7 +68,7 @@ def test_default_runtime_config_uses_the_canonical_namespace() -> None:
 
 
 def test_cli_exposes_current_maintenance_and_explicit_offline_research_commands() -> None:
-    help_text = build_parser().format_help()
+    help_text = BuildParser().format_help()
 
     for removed in ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"):
         assert removed not in help_text
@@ -580,7 +580,7 @@ def test_cli_aggregates_all_stages_and_preserves_nonzero_gate_results(
     monkeypatch.setattr(cli_module, "_run_group_stage", fake_stage)
     config = ROOT / "config/runtime.json"
 
-    assert main(["--config", str(config), "--profile", "v2", command, *extra]) == 1
+    assert Main(["--config", str(config), "--profile", "v2", command, *extra]) == 1
 
     assert [call[-1] if "--workers" not in call else call[-3] for call in calls] == list(expected_stages)
     assert all(call[:4] == ["--config", str(config), "--profile", "v2"] for call in calls)
@@ -630,7 +630,7 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     config = _runtime_config(tmp_path)
     monkeypatch.setattr(research_commands, "_history_data_root", lambda: history_root)
 
-    assert main(["--config", str(config), "research-status"]) == 0
+    assert Main(["--config", str(config), "research-status"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema_version"] == "research_readiness"
@@ -739,9 +739,9 @@ def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
             heads=heads,
         )
 
-    monkeypatch.setattr("trader.training.infra.profile.v3.training.run_v3_training", train)
+    monkeypatch.setattr("trader.training.infra.profile.v3.training.RunV3Training", train)
 
-    assert main(["--config", str(config), "train-v3"]) == 0
+    assert Main(["--config", str(config), "train-v3"]) == 0
 
     assert observed == [(history, ROOT / "data" / "train")]
     payload = json.loads(capsys.readouterr().out)
@@ -785,9 +785,9 @@ def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
             heads=heads,
         )
 
-    monkeypatch.setattr("trader.training.infra.profile.v2.training.run_v2_training", train)
+    monkeypatch.setattr("trader.training.infra.profile.v2.training.RunV2Training", train)
 
-    assert main(["--config", str(config), "train-v2"]) == 0
+    assert Main(["--config", str(config), "train-v2"]) == 0
 
     assert observed == [(history, ROOT / "data" / "train")]
     payload = json.loads(capsys.readouterr().out)
@@ -809,7 +809,7 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
         lambda _repository: (_ for _ in ()).throw(TomorrowResearchEvidenceIndexError("graph invalid")),
     )
 
-    result = research_commands._read_tomorrow_research_status(load_runtime_settings(config))
+    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config))
 
     assert result["status"] == "artifact_conflict"
     assert result["input_prerequisite_status"] == "ready"
@@ -827,7 +827,7 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _BrokenPrerequisite())
 
-    result = research_commands._read_tomorrow_research_status(load_runtime_settings(config))
+    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config))
 
     assert result["status"] == "artifact_conflict"
     assert result["input_prerequisite_status"] == "artifact_conflict"
@@ -861,7 +861,7 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
 )
 def test_removed_legacy_cli_commands_are_rejected(command: str) -> None:
     with pytest.raises(SystemExit) as error:
-        build_parser().parse_args([command])
+        BuildParser().parse_args([command])
     assert error.value.code == 2
 
 
@@ -903,13 +903,13 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
     )
     monkeypatch.setattr(
         server_module,
-        "build_system",
+        "BuildSystem",
         lambda _config, *, scoring_profile: SimpleNamespace(settings=settings),
     )
     monkeypatch.setattr(server_module, "ProcessLock", _LockedProcess)
 
     with pytest.raises(SystemExit) as error:
-        server_module.main(["--config", str(tmp_path / "runtime.json"), "--profile", "v2"])
+        server_module.Main(["--config", str(tmp_path / "runtime.json"), "--profile", "v2"])
 
     message = str(error.value)
     assert "trader-server is already running" in message

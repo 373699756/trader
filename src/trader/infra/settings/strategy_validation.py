@@ -16,7 +16,7 @@ from trader.infra.settings.parser import (
 )
 from trader.recommendation.domain.market.factors import PRODUCTION_FACTOR_IDS
 from trader.recommendation.domain.market.research import MarketRegimePolicy
-from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES, deepseek_risk_rule_code
+from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES, DeepseekRiskRuleCode
 
 
 def _validate_strategy_settings(settings: StrategySettings) -> None:
@@ -233,7 +233,7 @@ def _validate_risk_rules_contract(settings: StrategySettings) -> None:
 def _validate_deepseek_risk_mapping_targets(registered_risk_codes: set[str]) -> None:
     for risk_code in DEEPSEEK_STRUCTURED_RISK_CODES:
         for severity in ("low", "medium", "high"):
-            mapped_code = deepseek_risk_rule_code(risk_code, severity)
+            mapped_code = DeepseekRiskRuleCode(risk_code, severity)
             if mapped_code not in registered_risk_codes:
                 raise ConfigurationError("DeepSeek structured risks must map completely to local risk rules")
 

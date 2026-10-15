@@ -5,7 +5,7 @@ from __future__ import annotations
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 
 
-def project_history_maintenance_status(status: HistoryMaintenanceStatus) -> dict[str, object]:
+def ProjectHistoryMaintenanceStatus(status: HistoryMaintenanceStatus) -> dict[str, object]:
     return {
         "schema_version": "history_maintenance_status",
         "state": status.state,
@@ -23,4 +23,4 @@ def project_history_maintenance_status(status: HistoryMaintenanceStatus) -> dict
     }
 
 
-__all__ = ["project_history_maintenance_status"]
+__all__ = ["ProjectHistoryMaintenanceStatus"]

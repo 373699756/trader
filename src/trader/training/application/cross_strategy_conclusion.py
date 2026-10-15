@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.terminal_holdout import (
     TerminalHoldoutMetrics,
     TerminalHoldoutReport,
@@ -36,7 +36,7 @@ class CrossStrategyConclusion:
             raise ValueError("cross-strategy conclusion status is invalid")
         if self.production_authority:
             raise ValueError("cross-strategy conclusion cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def strategy_statuses(self) -> tuple[tuple[str, TerminalStatus], ...]:

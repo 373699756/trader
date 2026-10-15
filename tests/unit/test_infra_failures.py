@@ -2,26 +2,26 @@ from __future__ import annotations
 
 from concurrent.futures import CancelledError
 
-from trader.infra.failures import AdapterFailureCode, classify_adapter_failure
+from trader.infra.failures import AdapterFailureCode, ClassifyAdapterFailure
 
 
 def test_adapter_failure_classification_is_shared_and_structured() -> None:
-    timeout = classify_adapter_failure(
+    timeout = ClassifyAdapterFailure(
         TimeoutError("transport timed out"),
         provider="deepseek",
         operation="chat_completion",
     )
-    cancelled = classify_adapter_failure(
+    cancelled = ClassifyAdapterFailure(
         CancelledError(),
         provider="tencent",
         operation="candidate_quotes",
     )
-    circuit = classify_adapter_failure(
+    circuit = ClassifyAdapterFailure(
         RuntimeError("circuit_open"),
         provider="eastmoney",
         operation="full_market_quotes",
     )
-    late = classify_adapter_failure(
+    late = ClassifyAdapterFailure(
         RuntimeError("eastmoney: late"),
         provider="eastmoney",
         operation="full_market_quotes",
@@ -38,7 +38,7 @@ def test_adapter_failure_classification_is_shared_and_structured() -> None:
 
 
 def test_adapter_failure_detail_is_bounded_and_does_not_preserve_secrets() -> None:
-    failure = classify_adapter_failure(
+    failure = ClassifyAdapterFailure(
         RuntimeError("Authorization: Bearer secret-token"),
         provider="deepseek",
         operation="chat_completion",
@@ -50,7 +50,7 @@ def test_adapter_failure_detail_is_bounded_and_does_not_preserve_secrets() -> No
 
 
 def test_adapter_failure_keeps_worker_rejection_distinct() -> None:
-    failure = classify_adapter_failure(
+    failure = ClassifyAdapterFailure(
         RuntimeError("resource_rejected: injected worker queue is full or stopped"),
         provider="worker",
         operation="submit",

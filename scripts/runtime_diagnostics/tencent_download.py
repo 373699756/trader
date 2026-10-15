@@ -25,8 +25,8 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
-from trader.download.domain.qfq_window import completed_daily_cutoff
-from trader.download.infra.exchange_security_universe import load_current_a_share_universe
+from trader.download.domain.qfq_window import CompletedDailyCutoff
+from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
@@ -36,7 +36,7 @@ from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqSupplier,
     TencentSessionPool,
 )
-from trader.infra.market_data.providers.exchange_security_master import fetch_sse_listings, fetch_szse_listings
+from trader.infra.market_data.providers.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 
@@ -195,9 +195,9 @@ def main() -> int:
             TencentQfqDependencies(
                 session_pool.borrow,
                 partial(
-                    load_current_a_share_universe,
-                    partial(fetch_sse_listings, get=requests.get),
-                    partial(fetch_szse_listings, get=requests.get),
+                    LoadCurrentAShareUniverse,
+                    partial(FetchSseListings, get=requests.get),
+                    partial(FetchSzseListings, get=requests.get),
                     args.timeout_seconds,
                 ),
                 lambda: False,
@@ -205,7 +205,7 @@ def main() -> int:
             TencentQfqOptions(timeout_seconds=args.timeout_seconds, history_host=args.tencent_history_host),
         )
         started = time.monotonic()
-        context = supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
+        context = supplier.load_qfq_context(CompletedDailyCutoff(observed_at), 251)
         context_elapsed = time.monotonic() - started
         experiments = [_benchmark(supplier, context, size, args.workers, observed_at) for size in args.sizes]
         complete = all(
@@ -245,7 +245,7 @@ def main() -> int:
 def _whole_window_probe(args: argparse.Namespace) -> int:
     if not 1 <= len(args.codes) <= 3:
         raise ValueError("whole-window probe permits 1..3 securities")
-    end = completed_daily_cutoff(datetime.now(ZoneInfo("Asia/Shanghai")))
+    end = CompletedDailyCutoff(datetime.now(ZoneInfo("Asia/Shanghai")))
     results: list[dict[str, object]] = []
     with requests.Session() as session:
         observations: list[dict[str, object]] = []

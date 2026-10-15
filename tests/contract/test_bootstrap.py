@@ -13,8 +13,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.training.infra.profile.v3.test_profile import _publish
-from trader.bootstrap import build_system
-from trader.infra.initialization import initialize_if_available
+from trader.bootstrap import BuildSystem
+from trader.infra.initialization import InitializeIfAvailable
 from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
@@ -41,12 +41,12 @@ from trader.recommendation.domain.evidence.pipeline import (
     SourceHealth,
     SourceHealthState,
     StageState,
-    validate_stage_batch_continuity,
+    ValidateStageBatchContinuity,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
-from trader.recommendation.infra.status_projection import input_quality_payload, runtime_status
+from trader.recommendation.infra.status_projection import InputQualityPayload, RuntimeStatus
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -95,7 +95,7 @@ def test_pipeline_batch_continuity_requires_matching_counts() -> None:
         for index, stage in enumerate(PipelineStage, start=1)
     )
     with pytest.raises(ValueError, match="counts are not continuous"):
-        validate_stage_batch_continuity((*stages[:3], replace(stages[3], input_count=2), *stages[4:]))
+        ValidateStageBatchContinuity((*stages[:3], replace(stages[3], input_count=2), *stages[4:]))
 
 
 def _config(tmp_path: Path) -> Path:
@@ -140,7 +140,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     started: list[str] = []
     monkeypatch.setattr(threading.Thread, "start", lambda _thread: started.append("thread"))
 
-    system = build_system(_config(tmp_path))
+    system = BuildSystem(_config(tmp_path))
 
     assert started == []
     assert not (tmp_path / "runtime").exists()
@@ -190,7 +190,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
 
 
 def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_path) -> None:
-    system = build_system(_config(tmp_path))
+    system = BuildSystem(_config(tmp_path))
 
     system.records.initialize()
 
@@ -203,15 +203,15 @@ def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_pat
 
 
 def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None:
-    from trader.download.infra.download_settings import load_history_sync_configuration
+    from trader.download.infra.download_settings import LoadHistorySyncConfiguration
     from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
-    system = build_system(_config(tmp_path))
+    system = BuildSystem(_config(tmp_path))
     native_data = system.scheduler._dependencies.data
     assert isinstance(native_data, MarketInputCoordinator)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
     assert system.history_observer._history is native_data._market.history  # noqa: SLF001
-    configuration = load_history_sync_configuration(system.settings.project_root, system.settings.reference_dir)
+    configuration = LoadHistorySyncConfiguration(system.settings.project_root, system.settings.reference_dir)
     assert native_data._market.history._history.publication.root == system.settings.project_root / "data/qfq/v2"  # noqa: SLF001
     assert native_data._market.history._outcome_history.publication._root == configuration.archive_root  # noqa: SLF001
 
@@ -234,7 +234,7 @@ def test_startup_history_observer_never_downloads_and_keeps_web_readable(
     )
     now = datetime(2026, 10, 9, hour, minute, tzinfo=ZoneInfo("Asia/Shanghai"))
     monkeypatch.setattr("trader.bootstrap._utc_now", lambda: now)
-    system = build_system(_config(tmp_path))
+    system = BuildSystem(_config(tmp_path))
     observer = system.history_observer
     assert observer.start() is True
     try:
@@ -254,7 +254,7 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
     config_path = _config_with_strategy_profile(tmp_path, "v2")
     strategy_path = Path(json.loads(config_path.read_text(encoding="utf-8"))["strategy_config"])
     original = strategy_path.read_bytes()
-    system = build_system(config_path, scoring_profile="v2")
+    system = BuildSystem(config_path, scoring_profile="v2")
     status = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
 
     assert status["profile_id"] == "v2"
@@ -266,20 +266,20 @@ def test_build_system_selects_an_explicit_scoring_profile_without_rewriting_conf
 
 
 def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch) -> None:
-    from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+    from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 
     observed: list[Path] = []
     config_path = _config_with_strategy_profile(tmp_path, "v3")
-    v3_profile = load_scoring_profile("v3", training_root=tmp_path / "data" / "train")
+    v3_profile = LoadScoringProfile("v3", training_root=tmp_path / "data" / "train")
 
     def load(profile: str, *, training_root: Path | None = None):
         assert profile == "v3"
         observed.append(training_root or Path())
         return v3_profile
 
-    monkeypatch.setattr("trader.bootstrap.load_scoring_profile", load)
+    monkeypatch.setattr("trader.bootstrap.LoadScoringProfile", load)
 
-    build_system(config_path)
+    BuildSystem(config_path)
 
     assert observed == [tmp_path / "data" / "train"]
 
@@ -333,7 +333,7 @@ def test_research_trace_initialization_is_fail_open() -> None:
     trace = Mock()
     trace.initialize.side_effect = sqlite3.OperationalError("research database unavailable")
 
-    assert initialize_if_available(trace) is False
+    assert InitializeIfAvailable(trace) is False
 
     trace.initialize.assert_called_once_with()
 
@@ -415,7 +415,7 @@ def test_runtime_status_exposes_and_degrades_on_research_observer_failure() -> N
         }
     )
 
-    payload = runtime_status(scheduler, reviewer, market_health)
+    payload = RuntimeStatus(scheduler, reviewer, market_health)
 
     assert payload["observer"]["consumer_failure_count"] == 3
     assert payload["company_research"]["state"] == "idle"
@@ -571,7 +571,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
         primary_blocker="security_master_coverage_incomplete",
     )
 
-    payload = input_quality_payload((status,))
+    payload = InputQualityPayload((status,))
 
     assert payload["tomorrow"]["summary"] == {
         "trade_date": "2026-08-24",
@@ -615,7 +615,7 @@ def test_runtime_status_serializes_typed_input_quality_for_web_cards() -> None:
 
 
 def test_bootstrap_wires_real_outcome_settlement_without_eager_database_write(tmp_path) -> None:
-    system = build_system(_config(tmp_path))
+    system = BuildSystem(_config(tmp_path))
 
     assert type(system.scheduler._dependencies.settlement).__name__ == "OutcomeSettlementAdapter"
     assert not (tmp_path / "runtime" / "research" / "outcomes.sqlite3").exists()

@@ -23,7 +23,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.infra.atomic_files.json import RuntimeJsonWriter  # noqa: E402
-from trader.infra.settings.loading import load_long_watchlist, load_strategy_settings  # noqa: E402
+from trader.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings  # noqa: E402
 from trader.recommendation.domain.market.research import FinancialReport, LongResearchPolicy  # noqa: E402
 from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient  # noqa: E402
 
@@ -236,8 +236,8 @@ def main() -> int:
         if not target.is_absolute() or target.resolve().is_relative_to(PROJECT_ROOT):
             parser.error("evidence output must be an absolute path outside the repository")
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
-    watchlist = load_long_watchlist(args.watchlist)
-    policy = load_strategy_settings(args.strategy).long_research
+    watchlist = LoadLongWatchlist(args.watchlist)
+    policy = LoadStrategySettings(args.strategy).long_research
     evidence_caches = tuple(args.evidence_cache) or (
         PROJECT_ROOT / ".runtime/trader/evidence_cache",
         PROJECT_ROOT / ".runtime/v2/evidence_cache",

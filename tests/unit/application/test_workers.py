@@ -8,23 +8,23 @@ from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import (
     BoundedExecutor,
     BoundedExecutorStatus,
+    InjectedExecutor,
+    SubmitOrReject,
+    SubmitWithBackpressure,
     WorkerResourceRejectedError,
-    injected_executor,
-    submit_or_reject,
-    submit_with_backpressure,
 )
 
 
 def test_injected_executor_rejects_stopped_pool_and_runs_nested_call_without_new_workers() -> None:
     pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="injected-test")
     with pytest.raises(WorkerResourceRejectedError, match="resource_rejected"):
-        submit_or_reject(injected_executor(pool), threading.get_ident).result()
-    assert injected_executor(None).submit(threading.get_ident).result() == threading.get_ident()
+        SubmitOrReject(InjectedExecutor(pool), threading.get_ident).result()
+    assert InjectedExecutor(None).submit(threading.get_ident).result() == threading.get_ident()
     pool.start()
     try:
 
         def nested() -> tuple[int, int]:
-            future = injected_executor(pool).submit(threading.get_ident)
+            future = InjectedExecutor(pool).submit(threading.get_ident)
             assert future is not None
             return threading.get_ident(), future.result(timeout=1.0)
 
@@ -36,7 +36,7 @@ def test_injected_executor_rejects_stopped_pool_and_runs_nested_call_without_new
     finally:
         pool.stop()
     with pytest.raises(WorkerResourceRejectedError, match="resource_rejected"):
-        submit_or_reject(injected_executor(pool), threading.get_ident).result()
+        SubmitOrReject(InjectedExecutor(pool), threading.get_ident).result()
 
 
 def test_backpressure_waits_for_done_callback_to_release_worker_slot(monkeypatch) -> None:
@@ -62,7 +62,7 @@ def test_backpressure_waits_for_done_callback_to_release_worker_slot(monkeypatch
         assert pool.submit(lambda: "too early") is None
         timer = threading.Timer(0.05, callback_release.set)
         timer.start()
-        assert submit_with_backpressure(pool, lambda: "accepted").result(timeout=2) == "accepted"
+        assert SubmitWithBackpressure(pool, lambda: "accepted").result(timeout=2) == "accepted"
         timer.join(timeout=2)
     finally:
         callback_release.set()
@@ -75,7 +75,7 @@ def test_backpressure_rejects_a_permanently_unavailable_pool(monkeypatch) -> Non
     monkeypatch.setattr(workers, "_CAPACITY_WAIT_SECONDS", 0.02)
     pool = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="unavailable")
     with pytest.raises(WorkerResourceRejectedError, match="resource_rejected"):
-        submit_with_backpressure(pool, lambda: None).result()
+        SubmitWithBackpressure(pool, lambda: None).result()
 
 
 def test_bounded_executor_rejects_over_capacity_and_stops_all_workers() -> None:
@@ -224,7 +224,7 @@ def test_nested_injected_pool_does_not_wait_on_its_own_worker() -> None:
     assert executor.start() is True
 
     def nested_fetch() -> int:
-        borrowed = injected_executor(executor)
+        borrowed = InjectedExecutor(executor)
         future = borrowed.submit(lambda: 42)
         assert future is not None
         return future.result(timeout=1.0)
@@ -249,7 +249,7 @@ def test_nested_injected_pool_does_not_wait_even_with_spare_worker() -> None:
 
     def nested_fetch() -> tuple[str, str]:
         outer_thread = threading.current_thread().name
-        borrowed = injected_executor(executor)
+        borrowed = InjectedExecutor(executor)
         future = borrowed.submit(lambda: threading.current_thread().name)
         assert future is not None
         return outer_thread, future.result(timeout=1.0)
@@ -278,7 +278,7 @@ def test_all_shared_pool_workers_can_run_nested_work_without_waiting_on_their_ow
 
     def nested_fetch() -> int:
         entered.wait(timeout=1.0)
-        borrowed = injected_executor(executor)
+        borrowed = InjectedExecutor(executor)
         future = borrowed.submit(lambda: 42)
         assert future is not None
         return future.result(timeout=0.2)
@@ -344,7 +344,7 @@ def test_full_injected_queue_rejects_without_running_on_caller() -> None:
         running = executor.submit(blocking_task)
         assert running is not None
         assert entered.wait(timeout=1.0)
-        rejected = submit_or_reject(injected_executor(executor), calls.append, threading.get_ident())
+        rejected = SubmitOrReject(InjectedExecutor(executor), calls.append, threading.get_ident())
         with pytest.raises(WorkerResourceRejectedError, match="resource_rejected"):
             rejected.result(timeout=0.1)
         assert calls == []

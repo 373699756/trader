@@ -14,10 +14,10 @@ from trader.training.domain.evaluation.models import (
     EntryDayPriceWindow,
     OutcomeBar,
     OutcomeExitStatus,
+    OutcomeHorizons,
     OutcomeTarget,
     OutcomeTradingStatus,
     RecommendationOutcome,
-    outcome_horizons,
 )
 
 
@@ -87,7 +87,7 @@ class CanonicalOutcomeEvaluator:
         return BenchmarkReturn(trade_date, sum(item.return_pct for item in constituents) / len(constituents))
 
     def evaluate(self, request: OutcomeEvaluationRequest) -> RecommendationOutcome:
-        if request.horizon not in outcome_horizons(request.target.strategy):
+        if request.horizon not in OutcomeHorizons(request.target.strategy):
             raise ValueError("outcome horizon is incompatible with strategy")
         prepared = _prepare_outcome(request)
         if isinstance(prepared, str):
@@ -95,11 +95,11 @@ class CanonicalOutcomeEvaluator:
         return _complete_outcome(request, prepared)
 
     def d25_aggregate(self, outcomes: tuple[RecommendationOutcome, ...]) -> float | None:
-        if len(outcomes) != len(outcome_horizons(Strategy.D25)):
+        if len(outcomes) != len(OutcomeHorizons(Strategy.D25)):
             return None
         ordered = tuple(sorted(outcomes, key=lambda item: item.horizon))
         first = ordered[0]
-        if tuple(item.horizon for item in ordered) != outcome_horizons(Strategy.D25) or any(
+        if tuple(item.horizon for item in ordered) != OutcomeHorizons(Strategy.D25) or any(
             item.strategy is not Strategy.D25
             or item.snapshot_id != first.snapshot_id
             or item.recommend_date != first.recommend_date
@@ -202,7 +202,7 @@ def _evaluated_settlement(request: OutcomeEvaluationRequest, bars: _BarWindow) -
     return settlement.points
 
 
-def evaluate_outcome(request: OutcomeEvaluationRequest) -> RecommendationOutcome:
+def EvaluateOutcome(request: OutcomeEvaluationRequest) -> RecommendationOutcome:
     return CanonicalOutcomeEvaluator().evaluate(request)
 
 
@@ -321,4 +321,4 @@ def _compound_returns(values: tuple[float, ...]) -> float | None:
     return (total - 1.0) * 100.0
 
 
-__all__ = ["CanonicalOutcomeEvaluator", "OutcomeEvaluationRequest", "evaluate_outcome"]
+__all__ = ["CanonicalOutcomeEvaluator", "OutcomeEvaluationRequest", "EvaluateOutcome"]

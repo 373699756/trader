@@ -9,12 +9,12 @@ import os
 from collections.abc import Mapping
 from pathlib import Path
 
-from trader.infra.settings.credentials import CREDENTIAL_FILE_NAME, read_credential_file
+from trader.infra.settings.credentials import CREDENTIAL_FILE_NAME, ReadCredentialFile
 from trader.infra.settings.market_policy import (
-    parse_cache_policy as _parse_cache_policy,
+    ParseCachePolicy as _parse_cache_policy,
 )
 from trader.infra.settings.market_policy import (
-    parse_performance_budgets as _parse_performance_budgets,
+    ParsePerformanceBudgets as _parse_performance_budgets,
 )
 from trader.infra.settings.models import (
     ApiSettings,
@@ -27,48 +27,48 @@ from trader.infra.settings.models import (
     TushareSettings,
 )
 from trader.infra.settings.parser import (
+    Boolean as _boolean,
+)
+from trader.infra.settings.parser import (
     ConfigurationError,
 )
 from trader.infra.settings.parser import (
-    boolean as _boolean,
+    EnvironmentInteger as _environment_integer,
 )
 from trader.infra.settings.parser import (
-    environment_integer as _environment_integer,
+    InferProjectRoot as _infer_project_root,
 )
 from trader.infra.settings.parser import (
-    infer_project_root as _infer_project_root,
+    Integer as _integer,
 )
 from trader.infra.settings.parser import (
-    integer as _integer,
+    IntegerMapping as _integer_mapping,
 )
 from trader.infra.settings.parser import (
-    integer_mapping as _integer_mapping,
+    Number as _number,
+)
+from trader.infra.settings.parser import ReadConfigSections as _read_config_sections
+from trader.infra.settings.parser import (
+    ReadJsonObject as _read_json_object,
 )
 from trader.infra.settings.parser import (
-    mapping as _mapping,
+    RequireExactKeys as _require_exact_keys,
 )
 from trader.infra.settings.parser import (
-    number as _number,
-)
-from trader.infra.settings.parser import read_config_sections as _read_config_sections
-from trader.infra.settings.parser import (
-    read_json_object as _read_json_object,
+    RequireMapping as _mapping,
 )
 from trader.infra.settings.parser import (
-    require_exact_keys as _require_exact_keys,
+    ResolveConfigPath as _resolve_config_path,
 )
 from trader.infra.settings.parser import (
-    resolve_config_path as _resolve_config_path,
+    ResolveProjectPath as _resolve_project_path,
 )
 from trader.infra.settings.parser import (
-    resolve_project_path as _resolve_project_path,
-)
-from trader.infra.settings.parser import (
-    text as _text,
+    Text as _text,
 )
 
 
-def load_runtime_settings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
+def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_config_sections(
         path,
@@ -324,7 +324,7 @@ def _load_deepseek_api_key(project_root: Path) -> str:
         if configured_path:
             raise ConfigurationError("DEEPSEEK_API_KEY_FILE does not exist")
         return ""
-    values = read_credential_file(key_path, label="DeepSeek API key", raw_key="DEEPSEEK_API_KEY")
+    values = ReadCredentialFile(key_path, label="DeepSeek API key", raw_key="DEEPSEEK_API_KEY")
     value = values.get("DEEPSEEK_API_KEY", "")
     if configured_path and not value:
         raise ConfigurationError("DEEPSEEK_API_KEY_FILE does not contain DEEPSEEK_API_KEY")
@@ -347,7 +347,7 @@ def _load_tushare_token(project_root: Path, configured_file: str) -> tuple[str, 
         if environment_path:
             raise ConfigurationError("TUSHARE_TOKEN_FILE does not exist")
         return "", token_path
-    values = read_credential_file(token_path, label="Tushare token", raw_key="TUSHARE_TOKEN")
+    values = ReadCredentialFile(token_path, label="Tushare token", raw_key="TUSHARE_TOKEN")
     value = values.get("TUSHARE_TOKEN", "")
     if not value:
         raise ConfigurationError("Tushare token file does not contain TUSHARE_TOKEN")

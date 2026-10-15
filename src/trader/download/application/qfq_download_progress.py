@@ -9,16 +9,16 @@ from datetime import date
 from typing import Literal
 
 from trader.download.application.progress_message import (
+    FormatProgressField,
+    ProgressDuration,
     ProgressField,
     ProgressLevel,
     ProgressMessage,
-    progress_duration,
-    progress_field,
-    progress_number,
+    ProgressNumber,
 )
 from trader.download.application.stock_download_progress import (
+    FormatStockDownloadProgress,
     StockDownloadProgress,
-    format_stock_download_progress,
 )
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
@@ -26,22 +26,22 @@ from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqPendingReason, QfqUpdateResult, QfqWindowIncompleteError
 
 
-def qfq_message(
+def QfqMessage(
     elapsed: float, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL
 ) -> ProgressMessage:
     return ProgressMessage(
         (
-            progress_field(progress_duration(elapsed), 8),
-            progress_field(f"qfq {stage}", 24, level=level),
+            FormatProgressField(ProgressDuration(elapsed), 8),
+            FormatProgressField(f"qfq {stage}", 24, level=level),
             *(
-                progress_field(part, level=level if level is ProgressLevel.ERROR else ProgressLevel.NORMAL)
+                FormatProgressField(part, level=level if level is ProgressLevel.ERROR else ProgressLevel.NORMAL)
                 for part in details.split(" | ")
             ),
         )
     )
 
 
-def qfq_failure_code(exc: Exception) -> str:
+def QfqFailureCode(exc: Exception) -> str:
     message = str(exc)
     return message if re.fullmatch(r"[a-zA-Z0-9_]{1,64}", message) else type(exc).__name__
 
@@ -89,11 +89,11 @@ class QfqDownloadProgress:
         return self.completed + self.pending + self.not_applicable + self.no_trade_data
 
     def publish(self, stage: str, details: str, *, level: ProgressLevel = ProgressLevel.NORMAL) -> None:
-        self.report(qfq_message(self.elapsed(), stage, details, level=level))
+        self.report(QfqMessage(self.elapsed(), stage, details, level=level))
 
     def record_stock(self, security: BaoStockSecurity, feedback: QfqStockFeedback) -> None:
         self.report(
-            format_stock_download_progress(
+            FormatStockDownloadProgress(
                 self.elapsed(),
                 StockDownloadProgress(
                     command="qfq_download",
@@ -128,7 +128,7 @@ class QfqDownloadProgress:
         failure_level: ProgressLevel = ProgressLevel.WARNING,
     ) -> None:
         self.pending += 1
-        reason = "qfq_window_incomplete" if isinstance(exc, QfqWindowIncompleteError) else qfq_failure_code(exc)
+        reason = "qfq_window_incomplete" if isinstance(exc, QfqWindowIncompleteError) else QfqFailureCode(exc)
         self._add_pending_reason(reason)
         if action == "本地检查" or failure_level is ProgressLevel.ERROR:
             self.errors += 1
@@ -158,7 +158,7 @@ class QfqDownloadProgress:
                 qfq,
                 paired,
                 missing_dates=missing_dates,
-                reason=ProgressField(qfq_failure_code(exc), failure_level),
+                reason=ProgressField(QfqFailureCode(exc), failure_level),
             ),
         )
 
@@ -185,12 +185,12 @@ class QfqDownloadProgress:
         percent = self.processed / self.total * 100 if self.total else 100.0
         self.publish(
             stage,
-            f"已处理 {progress_number(self.processed)}/{progress_number(self.total)}（{percent:6.2f}%） "
-            f"| 合格 {progress_number(self.completed)} | 待重试 {progress_number(self.pending)} "
-            f"| 其中复用 {progress_number(self.skipped)} | 无需下载 {progress_number(self.not_applicable)} "
-            f"| 无真实日线 {progress_number(self.no_trade_data)} "
-            f"| 未处理 {progress_number(self.total - self.processed)} "
-            f"| 变更文件 {progress_number(len(self.changed))} | 变更行 {progress_number(self.rows)}",
+            f"已处理 {ProgressNumber(self.processed)}/{ProgressNumber(self.total)}（{percent:6.2f}%） "
+            f"| 合格 {ProgressNumber(self.completed)} | 待重试 {ProgressNumber(self.pending)} "
+            f"| 其中复用 {ProgressNumber(self.skipped)} | 无需下载 {ProgressNumber(self.not_applicable)} "
+            f"| 无真实日线 {ProgressNumber(self.no_trade_data)} "
+            f"| 未处理 {ProgressNumber(self.total - self.processed)} "
+            f"| 变更文件 {ProgressNumber(len(self.changed))} | 变更行 {ProgressNumber(self.rows)}",
             level=level,
         )
 
@@ -234,7 +234,7 @@ class QfqDownloadProgress:
         if self.pending_reasons:
             self.publish(
                 "待重试原因",
-                " | ".join(f"{item.reason} {progress_number(item.count)} 股" for item in self.pending_reasons),
+                " | ".join(f"{item.reason} {ProgressNumber(item.count)} 股" for item in self.pending_reasons),
                 level=level,
             )
         self.summary(stage, level=level)

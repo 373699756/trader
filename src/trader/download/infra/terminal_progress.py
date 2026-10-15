@@ -7,15 +7,15 @@ import sys
 from threading import Lock
 from typing import TextIO
 
-from trader.download.application.progress_message import ProgressLevel, ProgressMessage, clean_progress_text
+from trader.download.application.progress_message import CleanProgressText, ProgressLevel, ProgressMessage
 
 _COLORS = {ProgressLevel.SUCCESS: "32", ProgressLevel.WARNING: "33", ProgressLevel.ERROR: "31"}
 
 
-def render_progress(message: ProgressMessage, *, color: bool = False) -> str:
+def RenderProgress(message: ProgressMessage, *, color: bool = False) -> str:
     parts = []
     for field in message.fields:
-        value = clean_progress_text(field.text)
+        value = CleanProgressText(field.text)
         if color and field.level in _COLORS:
             content = value.rstrip(" ")
             value = f"\x1b[{_COLORS[field.level]}m{content}\x1b[0m" + value[len(content) :]
@@ -30,10 +30,10 @@ class TerminalDownloadProgress:
         self._color = self._stream.isatty() and os.environ.get("TERM") != "dumb" and not os.environ.get("NO_COLOR")
 
     def __call__(self, message: ProgressMessage) -> None:
-        line = render_progress(message, color=self._color)
+        line = RenderProgress(message, color=self._color)
         with self._lock:
             self._stream.write(line + "\n")
             self._stream.flush()
 
 
-__all__ = ["TerminalDownloadProgress", "render_progress"]
+__all__ = ["TerminalDownloadProgress", "RenderProgress"]

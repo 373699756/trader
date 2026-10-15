@@ -6,7 +6,7 @@ from trader.download.domain.history_automation import HistoryAutomationRunStatus
 from trader.download.infra.history_automation_installation import HistoryAutomationInstallationResult
 
 
-def project_history_automation_status(status: HistoryAutomationStatus) -> dict[str, object]:
+def ProjectHistoryAutomationStatus(status: HistoryAutomationStatus) -> dict[str, object]:
     return {
         "schema_version": "history_automation_status",
         "state": status.state,
@@ -26,14 +26,14 @@ def project_history_automation_status(status: HistoryAutomationStatus) -> dict[s
     }
 
 
-def project_history_automation_run_status(status: HistoryAutomationRunStatus) -> dict[str, object]:
+def ProjectHistoryAutomationRunStatus(status: HistoryAutomationRunStatus) -> dict[str, object]:
     return {
         "schema_version": "history_automation_run_status",
         "observed_at": status.observed_at.isoformat(),
         "archive_root": str(status.archive_root),
         "maintenance_state": status.maintenance_state,
         "maintenance_reason": status.maintenance_reason,
-        "due": project_history_automation_status(status.due_status),
+        "due": ProjectHistoryAutomationStatus(status.due_status),
         "notification_state": status.notification_state,
         "notification_error_code": status.notification_error_code,
         "automatic_model_update": status.automatic_model_update,
@@ -41,7 +41,7 @@ def project_history_automation_run_status(status: HistoryAutomationRunStatus) ->
     }
 
 
-def project_history_automation_installation_result(
+def ProjectHistoryAutomationInstallationResult(
     result: HistoryAutomationInstallationResult,
 ) -> dict[str, object]:
     return {
@@ -53,7 +53,7 @@ def project_history_automation_installation_result(
 
 
 __all__ = [
-    "project_history_automation_installation_result",
-    "project_history_automation_run_status",
-    "project_history_automation_status",
+    "ProjectHistoryAutomationInstallationResult",
+    "ProjectHistoryAutomationRunStatus",
+    "ProjectHistoryAutomationStatus",
 ]

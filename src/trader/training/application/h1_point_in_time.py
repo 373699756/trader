@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from trader.infra.workers import WorkerExecutor, submit_or_reject
+from trader.infra.workers import SubmitOrReject, WorkerExecutor
 from trader.training.application.historical_screening import HistoricalSecurity
 from trader.training.domain.evaluation.h1_point_in_time import (
     H1CapabilityProbe,
@@ -55,7 +55,7 @@ class H1CapabilityProbePort(Protocol):
     def probe(self, *, source_cutoff: date, max_history_sessions: int) -> H1CapabilityProbe: ...
 
 
-def run_capability_probe(
+def RunCapabilityProbe(
     provider: H1CapabilityProbePort,
     spec: H1PointInTimeSpec,
 ) -> H1CapabilityProbe:
@@ -130,7 +130,7 @@ class H1PointInTimeDownloadService:
                 item = next(pending_iter)
             except StopIteration:
                 break
-            futures[submit_or_reject(self._executor, self._fetch, item.code, spec)] = item.code
+            futures[SubmitOrReject(self._executor, self._fetch, item.code, spec)] = item.code
         while futures:
             finished, _ = wait(tuple(futures), return_when=FIRST_COMPLETED)
             for future in finished:
@@ -147,7 +147,7 @@ class H1PointInTimeDownloadService:
                     item = next(pending_iter)
                 except StopIteration:
                     break
-                futures[submit_or_reject(self._executor, self._fetch, item.code, spec)] = item.code
+                futures[SubmitOrReject(self._executor, self._fetch, item.code, spec)] = item.code
         return downloaded, failed
 
     def _fetch(self, code: str, spec: H1PointInTimeSpec) -> tuple[H1PointInTimeRecord, ...]:
@@ -205,5 +205,5 @@ __all__ = [
     "H1PointInTimeDownloadService",
     "H1PointInTimeProvider",
     "PointInTimeUniverseProvider",
-    "run_capability_probe",
+    "RunCapabilityProbe",
 ]

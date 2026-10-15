@@ -19,10 +19,10 @@ from trader.training.application.point_in_time_dataset import (
 )
 from trader.training.domain.evaluation.models import EntryDayPriceWindow, OutcomeBar, OutcomePrice, OutcomeTradingStatus
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
+    BuildPointInTimeDataQualification,
     DailyHistoryQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
-    build_point_in_time_data_qualification,
 )
 from trader.training.domain.evaluation.point_in_time_dataset import (
     POINT_IN_TIME_BENCHMARK_ID,
@@ -83,7 +83,7 @@ def _qualification(*, ready: bool = True):
         state="qualified" if ready else "historical_data_insufficient",
         failure_reasons=() if ready else ("minute_source_unavailable",),
     )
-    return build_point_in_time_data_qualification(daily, (industry,), (minute,))
+    return BuildPointInTimeDataQualification(daily, (industry,), (minute,))
 
 
 def _split() -> PointInTimeDateSplit:

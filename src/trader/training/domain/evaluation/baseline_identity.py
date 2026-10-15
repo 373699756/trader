@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 BaselineIdentityStatus = Literal[
@@ -103,10 +103,10 @@ class BaselineIdentityAudit:
             "conflicts": conflicts,
             "unavailable": unavailable,
         }
-        object.__setattr__(self, "content_hash", canonical_digest(payload))
+        object.__setattr__(self, "content_hash", CanonicalDigest(payload))
 
 
-def source_hash(text: str) -> str:
+def SourceHash(text: str) -> str:
     """Hash a source descriptor for unavailable/runtime claims."""
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -117,5 +117,5 @@ __all__ = [
     "BaselineIdentityAudit",
     "BaselineIdentityClaim",
     "BaselineIdentityStatus",
-    "source_hash",
+    "SourceHash",
 ]

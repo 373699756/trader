@@ -39,19 +39,19 @@ _REQUIRED_DOWNSIDE_FIELDS = (
 )
 
 
-def derive_entry_setup(
+def DeriveEntrySetup(
     snapshot: FeatureSnapshot,
     *,
     require_industry_breadth: bool = False,
 ) -> EntrySetup:
-    return derive_entry_setup_values(
+    return DeriveEntrySetupValues(
         snapshot.quote,
         snapshot.values,
         require_industry_breadth=require_industry_breadth,
     )
 
 
-def derive_entry_setup_values(
+def DeriveEntrySetupValues(
     quote: MarketQuote,
     values: Mapping[str, float | None],
     *,
@@ -100,7 +100,7 @@ def derive_entry_setup_values(
     return EntrySetup("trend_unconfirmed", 50.0) if trend_ok else EntrySetup("none", 0.0)
 
 
-def assess_downside(
+def AssessDownside(
     snapshot: FeatureSnapshot,
     strategy: Strategy,
     *,
@@ -108,7 +108,7 @@ def assess_downside(
 ) -> DownsideAssessment:
     if strategy is Strategy.LONG:
         return DownsideAssessment("pass", (), None, None, None, "none")
-    setup = derive_entry_setup(snapshot, require_industry_breadth=require_industry_breadth)
+    setup = DeriveEntrySetup(snapshot, require_industry_breadth=require_industry_breadth)
     missing = any(snapshot.optional_value(field) is None for field in _REQUIRED_DOWNSIDE_FIELDS)
     atr = snapshot.optional_value("atr20_pct")
     historical_drawdown = snapshot.optional_value("max_drawdown_20d")
@@ -189,7 +189,7 @@ def _finite(value: float | int | str | None) -> float | None:
 __all__ = [
     "DownsideAssessment",
     "EntrySetup",
-    "assess_downside",
-    "derive_entry_setup",
-    "derive_entry_setup_values",
+    "AssessDownside",
+    "DeriveEntrySetup",
+    "DeriveEntrySetupValues",
 ]

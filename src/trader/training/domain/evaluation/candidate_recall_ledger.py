@@ -14,7 +14,7 @@ from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeDatasetRow,
     PointInTimeDayDataset,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 CandidateRecallState = Literal["candidate_recall_attributed", "historical_data_insufficient"]
 CandidateRecallStage = Literal[
@@ -98,7 +98,7 @@ class CandidateRecallDownstreamTrace:
         if (self.first_rejection_boundary == "selected") == bool(reasons):
             raise ValueError("candidate recall boundary and reasons are inconsistent")
         object.__setattr__(self, "rejection_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -124,7 +124,7 @@ class CandidateRecallDayTrace:
             raise ValueError("candidate recall cumulative latency must be monotonic")
         object.__setattr__(self, "downstream_rows", rows)
         object.__setattr__(self, "stage_latencies", latencies)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class CandidateRecallLedgerRow:
         if not math.isfinite(self.net_excess_return_20bp):
             raise ValueError("candidate recall ledger outcome is invalid")
         object.__setattr__(self, "rejection_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -314,7 +314,7 @@ class CandidateRecallDayAttribution:
         if tuple(self.rejection_metrics) != _rejection_metrics((rows,)):
             raise ValueError("candidate recall rejection metrics do not match rows")
         object.__setattr__(self, "rejection_metrics", tuple(self.rejection_metrics))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -409,10 +409,10 @@ class CandidateRecallReport:
         if tuple(self.rejection_metrics) != expected_rejections:
             raise ValueError("candidate recall rejection metrics do not match days")
         object.__setattr__(self, "rejection_metrics", tuple(self.rejection_metrics))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
-def attribute_candidate_recall_day(
+def AttributeCandidateRecallDay(
     day: PointInTimeDayDataset,
     trace: CandidateRecallDayTrace,
 ) -> CandidateRecallDayAttribution:
@@ -441,12 +441,12 @@ def attribute_candidate_recall_day(
     )
 
 
-def build_candidate_recall_report(
+def BuildCandidateRecallReport(
     dataset: PointInTimeDatasetReport,
     days: tuple[CandidateRecallDayAttribution, ...],
 ) -> CandidateRecallReport:
     if dataset.state != "historical_point_in_time_parity" or dataset.manifest is None:
-        return candidate_recall_insufficient_report(dataset, "point_in_time_dataset_unavailable")
+        return CandidateRecallInsufficientReport(dataset, "point_in_time_dataset_unavailable")
     ordered = tuple(sorted(days, key=lambda item: item.trade_date))
     if tuple((item.trade_date, item.dataset_day_hash) for item in ordered) != tuple(
         (item.trade_date, item.content_hash) for item in dataset.days
@@ -456,7 +456,7 @@ def build_candidate_recall_report(
     if len(latency_evidence_hashes) != 1:
         raise CandidateRecallTraceMismatchError("candidate recall latency evidence identity is inconsistent")
     for parent, attributed in zip(dataset.days, ordered, strict=True):
-        expected = attribute_candidate_recall_day(parent, _attribution_trace(attributed))
+        expected = AttributeCandidateRecallDay(parent, _attribution_trace(attributed))
         if attributed != expected:
             raise CandidateRecallTraceMismatchError("candidate recall attributed rows do not match parent dataset")
     aggregates = tuple(_aggregate_stage(stage, ordered) for stage in CANDIDATE_RECALL_STAGES)
@@ -472,7 +472,7 @@ def build_candidate_recall_report(
     )
 
 
-def candidate_recall_insufficient_report(
+def CandidateRecallInsufficientReport(
     dataset: PointInTimeDatasetReport,
     reason: str,
 ) -> CandidateRecallReport:
@@ -732,7 +732,7 @@ __all__ = [
     "CandidateRecallState",
     "CandidateRecallTopKMetric",
     "CandidateRecallTraceMismatchError",
-    "attribute_candidate_recall_day",
-    "build_candidate_recall_report",
-    "candidate_recall_insufficient_report",
+    "AttributeCandidateRecallDay",
+    "BuildCandidateRecallReport",
+    "CandidateRecallInsufficientReport",
 ]

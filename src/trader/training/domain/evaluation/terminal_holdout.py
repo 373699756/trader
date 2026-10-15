@@ -9,11 +9,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
-from trader.training.domain.evaluation.baseline import population_spearman
+from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.training.domain.evaluation.baseline import PopulationSpearman
 from trader.training.domain.evaluation.paired_statistics import (
+    PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
-    paired_moving_block_statistics,
 )
 
 TerminalStrategy = Literal["tomorrow", "d25"]
@@ -221,7 +221,7 @@ class TerminalHoldoutParentState:
     already_opened: bool = False
 
 
-def evaluate_terminal_holdout(evaluation: TerminalHoldoutEvaluation) -> TerminalHoldoutReport:
+def EvaluateTerminalHoldout(evaluation: TerminalHoldoutEvaluation) -> TerminalHoldoutReport:
     """Run exactly one deterministic terminal evaluation over an already sealed candidate."""
 
     if evaluation.terminal_holdout_already_opened:
@@ -355,7 +355,7 @@ def _accumulate_terminal_rank(
     day_rows: tuple[TerminalHoldoutRow, ...],
 ) -> None:
     pairs = tuple((row.predicted_net_excess_return, row.actual_net_excess_returns[0]) for row in day_rows)
-    value = population_spearman(pairs)
+    value = PopulationSpearman(pairs)
     if value is None:
         return
     accumulator.rank_ics.append(value)
@@ -495,7 +495,7 @@ def _cost_lowers(
         for index in range(3)
     )
     result = tuple(
-        paired_moving_block_statistics(
+        PairedMovingBlockStatistics(
             values[index],
             plan=PreregisteredBootstrapPlan(
                 "historical_terminal_holdout",
@@ -613,7 +613,7 @@ def _anchor(strategy: TerminalStrategy) -> str:
 
 
 def _canonical_hash(value: object) -> str:
-    return canonical_digest(value)
+    return CanonicalDigest(value)
 
 
 __all__ = [
@@ -624,5 +624,5 @@ __all__ = [
     "TerminalHoldoutRow",
     "TerminalStatus",
     "TerminalStrategy",
-    "evaluate_terminal_holdout",
+    "EvaluateTerminalHoldout",
 ]

@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.domain.evaluation.models import outcome_horizons
+from trader.training.domain.evaluation.models import OutcomeHorizons
 
 ROOT = Path(__file__).resolve().parents[2]
 DOMAIN = ROOT / "src/trader/training/domain/evaluation/evaluation.py"
@@ -19,9 +19,9 @@ def test_d25_horizons_have_one_domain_owner_and_include_t4() -> None:
     application = APPLICATION.read_text(encoding="utf-8")
     persistence = PERSISTENCE.read_text(encoding="utf-8")
 
-    assert outcome_horizons(Strategy.D25) == (2, 3, 4, 5)
-    assert "outcome_horizons(target.strategy)" in application
-    assert "outcome_horizons(strategy)" in persistence
+    assert OutcomeHorizons(Strategy.D25) == (2, 3, 4, 5)
+    assert "OutcomeHorizons(target.strategy)" in application
+    assert "OutcomeHorizons(strategy)" in persistence
     assert "(2, 3, 5)" not in application
     assert "(2, 3, 5)" not in persistence
 
@@ -65,6 +65,6 @@ def test_outcome_contract_owns_explicit_price_basis_and_exit_tradability() -> No
     assert "expected_trade_dates=expected_dates" in application
     assert '"exit_untradable": outcome.exit_untradable' in persistence
     assert "read_windows" in history
-    assert "outcome_bars(window.cells)" in history
+    assert "OutcomeBars(window.cells)" in history
     pairing = (HISTORY.parent / "published_history_bars.py").read_text(encoding="utf-8")
-    assert "pair_outcome_history(qfq, raw)" in pairing
+    assert "PairOutcomeHistory(qfq, raw)" in pairing

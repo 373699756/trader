@@ -20,15 +20,15 @@ class RuntimeJsonWriter:
 
     def write(self, path: Path, payload: object) -> None:
         if not self._executor.is_running() or self._executor.owns_current_thread():
-            atomic_write_json(path, payload)
+            AtomicWriteJson(path, payload)
             return
-        future = self._executor.submit(atomic_write_json, path, payload)
+        future = self._executor.submit(AtomicWriteJson, path, payload)
         if future is None:
             raise RuntimeError("persistence queue rejected runtime JSON write")
         future.result()
 
 
-def atomic_write_json(path: Path, payload: object) -> None:
+def AtomicWriteJson(path: Path, payload: object) -> None:
     """Write a JSON payload atomically beside the destination file."""
 
     text = json.dumps(
@@ -54,10 +54,10 @@ def atomic_write_json(path: Path, payload: object) -> None:
         raise
 
 
-def atomic_read_json(path: Path) -> object:
+def AtomicReadJson(path: Path) -> object:
     """Read and decode a JSON file using UTF-8."""
 
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-__all__ = ["RuntimeJsonWriter", "atomic_read_json", "atomic_write_json"]
+__all__ = ["RuntimeJsonWriter", "AtomicReadJson", "AtomicWriteJson"]

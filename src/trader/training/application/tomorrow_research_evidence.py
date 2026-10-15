@@ -10,7 +10,7 @@ from datetime import date
 from pathlib import PurePosixPath
 from typing import Literal
 
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 TomorrowResearchStage = Literal[
     "resource_probe",
@@ -127,7 +127,7 @@ class TomorrowResearchEvidenceGraph:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow research artifact graph cannot authorize production or automatic updates")
         object.__setattr__(self, "artifacts", artifacts)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     def extend(self, artifacts: tuple[TomorrowResearchEvidenceRef, ...]) -> TomorrowResearchEvidenceGraph:
         return TomorrowResearchEvidenceGraph((*self.artifacts, *artifacts))
@@ -228,7 +228,7 @@ class TomorrowResearchStageHandoff:
         object.__setattr__(self, "artifacts", artifacts)
         object.__setattr__(self, "evidence_partitions", evidence)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -255,10 +255,10 @@ class TomorrowProductionReadinessAudit:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow production readiness audit cannot grant production authority")
         object.__setattr__(self, "blockers", blockers)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
-def next_research_stage(graph: TomorrowResearchEvidenceGraph) -> TomorrowResearchStage | None:
+def NextResearchStage(graph: TomorrowResearchEvidenceGraph) -> TomorrowResearchStage | None:
     evidence_ids = {item.artifact_id for item in graph.artifacts}
     for stage in _STAGES:
         if _stage_has_negative_terminal(graph, stage):
@@ -268,11 +268,11 @@ def next_research_stage(graph: TomorrowResearchEvidenceGraph) -> TomorrowResearc
     return None
 
 
-def derive_tomorrow_research_run_id(graph: TomorrowResearchEvidenceGraph) -> str | None:
+def DeriveTomorrowResearchRunId(graph: TomorrowResearchEvidenceGraph) -> str | None:
     resource_probe = _evidence(graph, "resource_probe_report")
     if resource_probe is None:
         return None
-    return canonical_research_hash(
+    return CanonicalResearchHash(
         {
             "schema_version": "tomorrow_research_run_identity",
             "sealed_input_and_resource_probe_hash": resource_probe.content_hash,
@@ -280,7 +280,7 @@ def derive_tomorrow_research_run_id(graph: TomorrowResearchEvidenceGraph) -> str
     )
 
 
-def production_readiness_audit(
+def ProductionReadinessAudit(
     graph: TomorrowResearchEvidenceGraph,
     *,
     manual_authorization_hash: str | None,
@@ -442,7 +442,7 @@ __all__ = [
     "TomorrowResearchStage",
     "TomorrowResearchStageHandoff",
     "TomorrowResearchTerminalStatus",
-    "derive_tomorrow_research_run_id",
-    "next_research_stage",
-    "production_readiness_audit",
+    "DeriveTomorrowResearchRunId",
+    "NextResearchStage",
+    "ProductionReadinessAudit",
 ]

@@ -7,8 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.infra.serialization.fields import as_sequence
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.fields import AsSequence
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.factor_diagnostic_report import (
     DiagnosticStatus,
     FactorAggregateDiagnostic,
@@ -22,8 +22,8 @@ from trader.training.application.factor_diagnostic_report import (
     QuintileValues,
     StratumDimension,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json, research_value
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
 
 _REPORT_NAME = "score-factor-diagnostic-report.json"
 
@@ -46,11 +46,11 @@ class JsonFactorDiagnosticReportIndex:
             if existing.report_hash != report.report_hash:
                 raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
             return existing
-        payload = research_value(report)
+        payload = ResearchValue(report)
         if not isinstance(payload, dict):
             raise TypeError("factor diagnostic report payload must be an object")
         payload["report_hash"] = report.report_hash
-        if not publish_immutable(path, research_json(payload)):
+        if not PublishImmutable(path, ResearchJson(payload)):
             existing = self.verify()
             if existing.report_hash != report.report_hash:
                 raise FactorDiagnosticReportConflictError("factor diagnostic report identity conflict")
@@ -64,7 +64,7 @@ class JsonFactorDiagnosticReportIndex:
             if not isinstance(raw, dict):
                 raise TypeError("factor report payload is not an object")
             persisted_hash = raw.pop("report_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("factor report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -207,7 +207,7 @@ def _objects(value: object, label: str) -> tuple[dict[str, object], ...]:
 
 
 def _array(value: object, label: str) -> list[object]:
-    sequence = as_sequence(value)
+    sequence = AsSequence(value)
     if sequence is None:
         raise TypeError(f"factor report {label} must be an array")
     return sequence

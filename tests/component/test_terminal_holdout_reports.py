@@ -8,9 +8,9 @@ import pytest
 
 from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusionService
 from trader.training.domain.evaluation.terminal_holdout import (
+    EvaluateTerminalHoldout,
     TerminalHoldoutEvaluation,
     TerminalHoldoutRow,
-    evaluate_terminal_holdout,
 )
 from trader.training.infra.research.cross_strategy_conclusion_reports import CrossStrategyConclusionReportIndex
 from trader.training.infra.research.terminal_holdout_reports import (
@@ -43,7 +43,7 @@ def _report():
         for day in range(200)
         for stock in range(20)
     )
-    return evaluate_terminal_holdout(
+    return EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
             research_identity="score_tomorrow_historical_candidate",
@@ -94,7 +94,7 @@ def test_terminal_holdout_artifact_archive_rejects_strategy_and_schema_mismatch(
 
 def test_cross_strategy_conclusion_artifact_archive_round_trips_and_detects_conflicts(tmp_path) -> None:
     tomorrow = _report()
-    d25 = evaluate_terminal_holdout(
+    d25 = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="d25",
             research_identity="score_d25_historical_candidate",

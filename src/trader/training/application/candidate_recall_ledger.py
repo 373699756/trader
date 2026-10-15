@@ -6,13 +6,13 @@ from datetime import date
 from typing import Protocol
 
 from trader.training.domain.evaluation.candidate_recall_ledger import (
+    AttributeCandidateRecallDay,
+    BuildCandidateRecallReport,
     CandidateRecallDayAttribution,
     CandidateRecallDayTrace,
+    CandidateRecallInsufficientReport,
     CandidateRecallReport,
     CandidateRecallTraceMismatchError,
-    attribute_candidate_recall_day,
-    build_candidate_recall_report,
-    candidate_recall_insufficient_report,
 )
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDatasetReport
 
@@ -27,20 +27,20 @@ class CandidateRecallLedgerBuilder:
 
     def build(self, dataset: PointInTimeDatasetReport) -> CandidateRecallReport:
         if dataset.state != "historical_point_in_time_parity" or dataset.manifest is None:
-            return candidate_recall_insufficient_report(dataset, "point_in_time_dataset_unavailable")
+            return CandidateRecallInsufficientReport(dataset, "point_in_time_dataset_unavailable")
         days: list[CandidateRecallDayAttribution] = []
         for day in dataset.days:
             trace = self._trace_source.load_day_trace(day.trade_date, day.content_hash)
             if trace is None:
-                return candidate_recall_insufficient_report(dataset, "candidate_recall_trace_unavailable")
+                return CandidateRecallInsufficientReport(dataset, "candidate_recall_trace_unavailable")
             try:
-                days.append(attribute_candidate_recall_day(day, trace))
+                days.append(AttributeCandidateRecallDay(day, trace))
             except CandidateRecallTraceMismatchError:
-                return candidate_recall_insufficient_report(dataset, "candidate_recall_trace_invalid")
+                return CandidateRecallInsufficientReport(dataset, "candidate_recall_trace_invalid")
         try:
-            return build_candidate_recall_report(dataset, tuple(days))
+            return BuildCandidateRecallReport(dataset, tuple(days))
         except CandidateRecallTraceMismatchError:
-            return candidate_recall_insufficient_report(dataset, "candidate_recall_trace_invalid")
+            return CandidateRecallInsufficientReport(dataset, "candidate_recall_trace_invalid")
 
 
 __all__ = ["CandidateRecallLedgerBuilder", "CandidateRecallTracePort"]

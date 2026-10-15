@@ -12,16 +12,16 @@ from typing import Protocol, cast
 
 from trader.infra.cache_contracts import (
     BoundedCache,
+    BuildCacheIdentity,
     CacheIdentity,
     CacheIdentitySpec,
     CacheRequestKey,
-    build_cache_identity,
-    request_key,
+    RequestKey,
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
-from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
+from trader.recommendation.application.runtime.schedule import PhaseAt, ShanghaiNow
 from trader.recommendation.application.runtime.source_lanes import (
     SourceLaneScheduler,
     SourceRequestSupersededError,
@@ -40,7 +40,7 @@ from trader.recommendation.infra.market_data.provider_ports import (
     FullMarketFetcher,
     FullMarketSource,
 )
-from trader.recommendation.infra.normalization.merge import observation_from_quote
+from trader.recommendation.infra.normalization.merge import ObservationFromQuote
 
 
 @dataclass(frozen=True)
@@ -413,7 +413,7 @@ class MarketSourceCoordinator:
             completed_at = max(observed_at, self._wall_clock())
             normalization_started = self._monotonic()
             observations = tuple(
-                observation_from_quote(quote, source=source, observed_at=completed_at) for quote in quotes
+                ObservationFromQuote(quote, source=source, observed_at=completed_at) for quote in quotes
             )
             self._telemetry.record_local_latency(
                 "normalization",
@@ -515,7 +515,7 @@ class MarketSourceCoordinator:
                     raise MarketDataFailedError(request.source, "late")
                 normalization_started = self._monotonic()
                 observations = tuple(
-                    observation_from_quote(quote, source=request.source, observed_at=completed_at) for quote in quotes
+                    ObservationFromQuote(quote, source=request.source, observed_at=completed_at) for quote in quotes
                 )
                 self._telemetry.record_local_latency(
                     "normalization",
@@ -539,7 +539,7 @@ class MarketSourceCoordinator:
                 return
 
         if self._source_lanes is not None:
-            refresh_identity = request_key(
+            refresh_identity = RequestKey(
                 {
                     "dataset": identity.dataset,
                     "source": identity.source,
@@ -567,7 +567,7 @@ class MarketSourceCoordinator:
             request.request,
             request.observed_at,
         )
-        return request_key(
+        return RequestKey(
             {
                 "dataset": cache_identity.dataset,
                 "source": cache_identity.source,
@@ -591,9 +591,9 @@ class MarketSourceCoordinator:
         request: Mapping[str, object],
         observed_at: datetime,
     ) -> CacheIdentity:
-        local = shanghai_now(observed_at)
-        phase = phase_at(local, is_trading_day=True).value
-        return build_cache_identity(
+        local = ShanghaiNow(observed_at)
+        phase = PhaseAt(local, is_trading_day=True).value
+        return BuildCacheIdentity(
             CacheIdentitySpec(
                 dataset=dataset,
                 source=source,

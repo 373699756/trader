@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.infra.workers import ManagedWorkerExecutor
 from trader.recommendation.application.ports.runtime import CycleRequest, ResearchIntent, ResearchRuntimeStatus
-from trader.recommendation.application.runtime.cadence import CadencePolicy, PipelineTask, cadence_band
+from trader.recommendation.application.runtime.cadence import CadencePolicy, PipelineTask, ResolveCadenceBand
 from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.models import Strategy
@@ -84,7 +84,9 @@ class ResearchRuntime:
     def offer_due(self, at: datetime, phase: MarketPhase, *, is_trading_day: bool) -> bool:
         if at.tzinfo is None or at.utcoffset() is None:
             raise ValueError("research cadence time must be timezone-aware")
-        interval = self._cadence.interval(PipelineTask.STOCK_RISK, cadence_band(phase)) if is_trading_day else None
+        interval = (
+            self._cadence.interval(PipelineTask.STOCK_RISK, ResolveCadenceBand(phase)) if is_trading_day else None
+        )
         if interval is None:
             return False
         with self._lock:

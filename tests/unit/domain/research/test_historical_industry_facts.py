@@ -2,12 +2,12 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from trader.training.domain.evaluation.historical_industry_facts import (
+    BuildHistoricalIndustryDatasetReport,
+    BuildHistoricalIndustrySourceAudit,
     HistoricalIndustryFact,
     HistoricalIndustrySourceContract,
     HistoricalIndustryStockWindow,
-    build_historical_industry_dataset_report,
-    build_historical_industry_source_audit,
-    merge_historical_industry_facts,
+    MergeHistoricalIndustryFacts,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -29,14 +29,14 @@ def _fact(source: str, industry: str = "银行") -> HistoricalIndustryFact:
 
 
 def test_consistent_sources_merge_evidence_but_conflicts_fail_closed() -> None:
-    consistent = merge_historical_industry_facts((_fact("source_a"), _fact("source_b")))
+    consistent = MergeHistoricalIndustryFacts((_fact("source_a"), _fact("source_b")))
 
     assert consistent.conflict_count == 0
     assert len(consistent.facts) == 1
     assert consistent.facts[0].sources == ("source_a", "source_b")
     assert len(consistent.facts[0].evidence_hashes) == 2
 
-    conflicting = merge_historical_industry_facts((_fact("source_a"), _fact("source_b", "房地产")))
+    conflicting = MergeHistoricalIndustryFacts((_fact("source_a"), _fact("source_b", "房地产")))
 
     assert conflicting.facts == ()
     assert conflicting.conflict_count == 1
@@ -75,7 +75,7 @@ def test_source_source_audit_uses_actual_dates_and_stratifies_the_full_sample() 
         source_identity_available=True,
     )
 
-    audit = build_historical_industry_source_audit(contract, tuple(facts), tuple(windows))
+    audit = BuildHistoricalIndustrySourceAudit(contract, tuple(facts), tuple(windows))
 
     assert audit.status == "qualified"
     assert audit.sampled_codes == 300
@@ -90,10 +90,10 @@ def test_source_source_audit_uses_actual_dates_and_stratifies_the_full_sample() 
     assert len(audit.fact_hashes) == 300
     assert len(audit.dataset_hash) == 64
 
-    report = build_historical_industry_dataset_report(
+    report = BuildHistoricalIndustryDatasetReport(
         "c" * 64,
         (audit,),
-        merge_historical_industry_facts(tuple(facts)),
+        MergeHistoricalIndustryFacts(tuple(facts)),
     )
     assert report.status == "qualified"
     assert report.training_authority is True
@@ -130,7 +130,7 @@ def test_cross_source_conflict_keeps_an_otherwise_qualified_dataset_closed() -> 
         True,
         True,
     )
-    audit = build_historical_industry_source_audit(contract, tuple(facts), tuple(windows))
+    audit = BuildHistoricalIndustrySourceAudit(contract, tuple(facts), tuple(windows))
     conflict = _fact("source_b", "房地产")
     first = HistoricalIndustryFact(
         "source_a",
@@ -144,10 +144,10 @@ def test_cross_source_conflict_keeps_an_otherwise_qualified_dataset_closed() -> 
         "c" * 64,
     )
 
-    report = build_historical_industry_dataset_report(
+    report = BuildHistoricalIndustryDatasetReport(
         "c" * 64,
         (audit,),
-        merge_historical_industry_facts((first, conflict)),
+        MergeHistoricalIndustryFacts((first, conflict)),
     )
 
     assert report.status == "historical_data_insufficient"
@@ -182,7 +182,7 @@ def test_missing_query_time_keeps_archived_facts_out_of_training_readiness() -> 
     )
     window = HistoricalIndustryStockWindow("000001", "main", "old", (date(2020, 1, 2),))
 
-    audit = build_historical_industry_source_audit(contract, (fact,), (window,))
+    audit = BuildHistoricalIndustrySourceAudit(contract, (fact,), (window,))
 
     assert audit.status == "historical_data_insufficient"
     assert audit.eligible_codes == ()
@@ -215,7 +215,7 @@ def test_claimed_query_time_capability_rejects_a_fact_without_query_time() -> No
     )
     window = HistoricalIndustryStockWindow("000001", "main", "old", (date(2020, 1, 2),))
 
-    audit = build_historical_industry_source_audit(contract, (fact,), (window,))
+    audit = BuildHistoricalIndustrySourceAudit(contract, (fact,), (window,))
 
     assert audit.status == "historical_data_insufficient"
     assert audit.stocks[0].eligible is False

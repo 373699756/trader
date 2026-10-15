@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
-from trader.download.infra.baostock_gateway import BaoStockRowGateway, _result_rows, qfq_source_windows
-from trader.download.infra.baostock_session import RateLimitedBaoStockSdk, login_baostock
+from trader.download.infra.baostock_gateway import BaoStockRowGateway, QfqSourceWindows, _result_rows
+from trader.download.infra.baostock_session import LoginBaostock, RateLimitedBaoStockSdk
 
 
 class SparseRangeSdk:
@@ -319,7 +319,7 @@ def test_gateway_preserves_explicit_suspended_qfq_gap() -> None:
 def test_qfq_source_windows_follow_the_confirmed_001872_code_change() -> None:
     dates = (date(2018, 12, 25), date(2018, 12, 26))
 
-    assert qfq_source_windows("sz.001872", dates) == (
+    assert QfqSourceWindows("sz.001872", dates) == (
         ("sz.000022", (date(2018, 12, 25),)),
         ("sz.001872", (date(2018, 12, 26),)),
     )
@@ -516,7 +516,7 @@ def test_login_preserves_legacy_anonymous_call_shape(monkeypatch: pytest.MonkeyP
 
     sdk = _AnonymousOnlySdk()
 
-    login_baostock(sdk)  # type: ignore[arg-type]
+    LoginBaostock(sdk)  # type: ignore[arg-type]
 
 
 def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -525,14 +525,14 @@ def test_login_maps_blacklist_and_sdk_socket_bug_to_controlled_codes(monkeypatch
     monkeypatch.delenv("BAOSTOCK_API_KEY", raising=False)
 
     with pytest.raises(RuntimeError, match="supplier_login_failed_blacklisted"):
-        login_baostock(_LoginSdk("10001011"))  # type: ignore[arg-type]
+        LoginBaostock(_LoginSdk("10001011"))  # type: ignore[arg-type]
 
     class _BrokenLoginSdk(_LoginSdk):
         def login(self) -> SimpleNamespace:
             raise UnboundLocalError("mySockect")
 
     with pytest.raises(RuntimeError, match="supplier_login_transport_failed"):
-        login_baostock(_BrokenLoginSdk())  # type: ignore[arg-type]
+        LoginBaostock(_BrokenLoginSdk())  # type: ignore[arg-type]
 
 
 def test_gateway_maps_baostock_blacklist_to_run_level_failure() -> None:

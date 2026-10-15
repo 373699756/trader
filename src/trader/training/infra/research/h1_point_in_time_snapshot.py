@@ -22,7 +22,7 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     ResearchStrategy,
 )
 from trader.training.domain.evaluation.historical_label import H1CoverageMetadata
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
 class H1PointInTimeSnapshotConflictError(RuntimeError):
@@ -113,7 +113,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             if existing and existing != requested:
                 raise H1PointInTimeSnapshotConflictError("H1 universe set conflict")
             for item in ordered:
-                payload_hash = canonical_research_hash(item)
+                payload_hash = CanonicalResearchHash(item)
                 prior = connection.execute(
                     "SELECT payload_hash FROM universe WHERE strategy = ? AND code = ?",
                     (spec.strategy, item.code),
@@ -177,7 +177,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             hashes: list[str] = []
             for record in ordered:
                 payload = _record_payload(record)
-                payload_hash = canonical_research_hash(payload)
+                payload_hash = CanonicalResearchHash(payload)
                 hashes.append(payload_hash)
                 prior = connection.execute(
                     "SELECT payload_hash FROM records WHERE strategy = ? AND code = ? AND trade_date = ?",
@@ -212,7 +212,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                         payload_hash,
                     ),
                 )
-            content_hash = canonical_research_hash({"code": code, "records": hashes})
+            content_hash = CanonicalResearchHash({"code": code, "records": hashes})
             prior_download = connection.execute(
                 "SELECT content_hash FROM downloads WHERE strategy = ? AND code = ? AND status = 'complete'",
                 (spec.strategy, code),
@@ -281,7 +281,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         )
 
     def manifest(self, spec: H1PointInTimeSpec) -> H1CoverageManifest:
-        empty = canonical_research_hash(())
+        empty = CanonicalResearchHash(())
         if not self._database.is_file():
             return H1CoverageManifest(
                 spec.content_hash, empty, empty, empty, empty, empty, 0, 0, 0, 0, "historical_data_insufficient"
@@ -289,7 +289,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         snapshot = self._manifest_snapshot(spec)
         universe_hash = _h1_universe_hash(snapshot.universe_rows)
         history_hashes = tuple((str(row[0]), _db_int(row[1]), str(row[2])) for row in snapshot.completed_rows)
-        histories_hash = canonical_research_hash(history_hashes)
+        histories_hash = CanonicalResearchHash(history_hashes)
         audit = _audit_h1_records(spec, snapshot.records)
         _validate_h1_histories(history_hashes, audit.per_code)
         completed_codes = tuple(code for code, _count, _hash in history_hashes)
@@ -311,9 +311,9 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             spec.content_hash,
             universe_hash,
             histories_hash,
-            canonical_research_hash(calendar_values),
-            canonical_research_hash(audit.field_values),
-            canonical_research_hash(audit.source_values),
+            CanonicalResearchHash(calendar_values),
+            CanonicalResearchHash(audit.field_values),
+            CanonicalResearchHash(audit.source_values),
             completed_count,
             universe_count,
             common_days,
@@ -407,11 +407,11 @@ def _h1_universe_hash(rows: tuple[tuple[object, ...], ...]) -> str:
         security = HistoricalSecurity(
             str(code), cast(ResearchBoard, str(board)), str(name), bool(is_st), bool(is_suspended)
         )
-        payload_hash = canonical_research_hash(security)
+        payload_hash = CanonicalResearchHash(security)
         if payload_hash != str(persisted_hash):
             raise H1PointInTimeSnapshotConflictError("H1 universe payload conflict")
         identities.append((security.code, payload_hash))
-    return canonical_research_hash(tuple(identities))
+    return CanonicalResearchHash(tuple(identities))
 
 
 def _audit_h1_records(
@@ -483,7 +483,7 @@ def _audit_h1_record(
         "risk_facts_hash": str(risk_hash),
         "tail_field_hash": str(tail_hash),
     }
-    if canonical_research_hash(payload) != str(payload_hash):
+    if CanonicalResearchHash(payload) != str(payload_hash):
         raise H1PointInTimeSnapshotConflictError("H1 record payload conflict")
     fields = (str(code), str(trade_date), str(state_hash), str(sector_hash), str(risk_hash))
     return str(code), str(trade_date), str(payload_hash), fields, (str(code), str(trade_date), str(source))
@@ -514,7 +514,7 @@ def _validate_h1_histories(
 ) -> None:
     for code, count, content_hash in history_hashes:
         hashes = per_code.get(code, [])
-        if len(hashes) != count or canonical_research_hash({"code": code, "records": hashes}) != content_hash:
+        if len(hashes) != count or CanonicalResearchHash({"code": code, "records": hashes}) != content_hash:
             raise H1PointInTimeSnapshotConflictError("H1 record content conflict")
 
 

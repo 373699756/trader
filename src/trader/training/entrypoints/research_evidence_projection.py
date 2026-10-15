@@ -19,21 +19,21 @@ if TYPE_CHECKING:
     from trader.training.entrypoints.research_evidence import ResearchEvidenceResult
 
 
-def project_evidence_result(
+def ProjectEvidenceResult(
     report: ResearchEvidenceResult, *, include_details: bool = False
 ) -> tuple[dict[str, object], int]:
     if isinstance(report, CapabilityExecution):
-        return project_capability(report.capability, report.completion, report.publication), 1
+        return ProjectCapability(report.capability, report.completion, report.publication), 1
     if isinstance(report, PointInTimeDataQualificationReport):
-        return project_point_in_time_data_qualification(report), 0 if report.state == "qualified" else 1
+        return ProjectPointInTimeDataQualification(report), 0 if report.state == "qualified" else 1
     if isinstance(report, HistoricalIndustryDatasetReport):
-        return project_historical_industry_report(
+        return ProjectHistoricalIndustryReport(
             report, include_details=include_details
         ), 0 if report.status == "qualified" else 1
-    return project_holdout(report), 0 if report.status == "historical_validated" else 1
+    return ProjectHoldout(report), 0 if report.status == "historical_validated" else 1
 
 
-def project_capability(
+def ProjectCapability(
     capability: H1CapabilityAuditReport,
     completion: H1ResearchCompletion,
     index: CapabilityPublication,
@@ -74,7 +74,7 @@ def project_capability(
     }
 
 
-def project_point_in_time_data_qualification(
+def ProjectPointInTimeDataQualification(
     report: PointInTimeDataQualificationReport,
 ) -> dict[str, object]:
     daily = report.daily_archive
@@ -140,7 +140,7 @@ def project_point_in_time_data_qualification(
     }
 
 
-def project_historical_industry_report(
+def ProjectHistoricalIndustryReport(
     report: HistoricalIndustryDatasetReport,
     *,
     include_details: bool = False,
@@ -214,7 +214,7 @@ def _project_source(source: HistoricalIndustrySourceAudit, *, include_details: b
     return payload
 
 
-def project_holdout(conclusion: CrossStrategyConclusion) -> dict[str, object]:
+def ProjectHoldout(conclusion: CrossStrategyConclusion) -> dict[str, object]:
     reports = (conclusion.tomorrow, conclusion.d25)
     return {
         "schema_version": "terminal_holdout_execution",

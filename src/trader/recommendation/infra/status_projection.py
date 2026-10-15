@@ -23,7 +23,7 @@ from trader.recommendation.domain.evidence.pipeline import (
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 
 
-def runtime_status(
+def RuntimeStatus(
     scheduler: SchedulerRuntime,
     reviewer: DeepSeekReviewer,
     market_health: Callable[[], Mapping[str, object]],
@@ -118,13 +118,13 @@ def runtime_status(
             "freeze_failure_count": status.freeze_failure_count,
             "settlement_completed_count": status.settlement_completed_count,
             "settlement_failure_count": status.settlement_failure_count,
-            "input_quality": input_quality_payload(status.input_quality),
-            "publication_io": [publication_io_payload(item) for item in status.publication_io],
+            "input_quality": InputQualityPayload(status.input_quality),
+            "publication_io": [PublicationIoPayload(item) for item in status.publication_io],
         },
     }
 
 
-def publication_io_payload(item: PublicationIoSnapshot) -> dict[str, object]:
+def PublicationIoPayload(item: PublicationIoSnapshot) -> dict[str, object]:
     health = item.source_health
     return {
         "stage": "final_selection",
@@ -244,7 +244,7 @@ def _cadence_payload(status: CadencePlannerStatus) -> dict[str, object]:
     }
 
 
-def input_quality_payload(statuses: tuple[InputQualityStatus, ...]) -> dict[str, object]:
+def InputQualityPayload(statuses: tuple[InputQualityStatus, ...]) -> dict[str, object]:
     result: dict[str, object] = {}
     for status in statuses:
         summary = status.summary

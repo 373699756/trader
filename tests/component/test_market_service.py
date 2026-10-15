@@ -19,6 +19,7 @@ from tests.component.market_data_test_support import (
     FailFirstTencentClient,
     FailingMarketClient,
     FeatureBuilder,
+    LoadRuntimeSettings,
     MarketDataGateway,
     MarketQuote,
     MutableMonotonic,
@@ -37,7 +38,6 @@ from tests.component.market_data_test_support import (
     _service,
     _tail_minute_bars,
     datetime,
-    load_runtime_settings,
     replace,
     threading,
     time,
@@ -165,7 +165,7 @@ def test_long_quote_circuit_does_not_open_candidate_quote_circuit() -> None:
 
 
 def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -194,7 +194,7 @@ def test_long_quotes_bypass_shared_cache_for_each_realtime_refresh() -> None:
 
 
 def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     final_at = AFTERNOON - timedelta(milliseconds=100)
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -327,7 +327,7 @@ def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> 
 
 
 def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     measured_at = AFTERNOON + timedelta(seconds=91)
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -557,7 +557,7 @@ def test_market_service_uses_injected_runtime_data_pool_for_market_gateway() -> 
 
 
 def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
 
     def wall_clock() -> datetime:

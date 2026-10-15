@@ -10,10 +10,10 @@ from datetime import date, datetime
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.published_history import PublishedHistoryManifest
 from trader.infra.market_data.history.history import (
+    BuildHistoryContext,
     DailyBar,
     HistoryContext,
-    build_history_context,
-    require_qfq_history,
+    RequireQfqHistory,
 )
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
@@ -27,7 +27,7 @@ from trader.recommendation.infra.market_data.history_tail_recovery import (
     CandidateHistoryTailRecovery,
     HistoryTailStatus,
 )
-from trader.recommendation.infra.market_data.published_history_bars import outcome_bars, qfq_bars
+from trader.recommendation.infra.market_data.published_history_bars import OutcomeBars, QfqBars
 from trader.training.domain.evaluation.models import OutcomeBar
 
 _RAW_RETENTION_SESSIONS = 20
@@ -317,13 +317,13 @@ class PublishedHistoryCache:
         observed_at: datetime,
     ) -> Mapping[str, HistoryContext]:
         del observed_at
-        require_qfq_history(histories)
+        RequireQfqHistory(histories)
         with self._lock:
             entries = dict(self._entries)
         return {
             code: entries[code].context
             if code in entries and entries[code].bars == bars
-            else build_history_context(bars, lookback_sessions=self._lookback_sessions)
+            else BuildHistoryContext(bars, lookback_sessions=self._lookback_sessions)
             for code, bars in histories.items()
             if bars
         }
@@ -388,17 +388,17 @@ class PublishedHistoryCache:
         except (RuntimeError, ValueError) as exc:
             self._record_error(type(exc).__name__)
             return {}
-        return {window.code: paired for window in windows if (paired := outcome_bars(window.cells))}
+        return {window.code: paired for window in windows if (paired := OutcomeBars(window.cells))}
 
     def _build_entries(self, manifest: PublishedHistoryManifest) -> dict[str, PublishedHistoryEntry]:
         entries: dict[str, PublishedHistoryEntry] = {}
         for window in self._history.iter_windows(manifest, sessions=self._lookback_sessions):
-            bars = qfq_bars(window)
+            bars = QfqBars(window)
             if not bars:
                 continue
             entries[window.code] = PublishedHistoryEntry(
                 bars=bars[-_RAW_RETENTION_SESSIONS:],
-                context=build_history_context(bars, lookback_sessions=self._lookback_sessions),
+                context=BuildHistoryContext(bars, lookback_sessions=self._lookback_sessions),
             )
         return entries
 

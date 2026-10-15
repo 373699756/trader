@@ -32,8 +32,8 @@ dev = [
 ]
 
 [project.scripts]
-trader-server = "trader.entrypoints.server:main"
-trader-cli = "trader.entrypoints.cli:main"
+trader-server = "trader.entrypoints.server:Main"
+trader-cli = "trader.entrypoints.cli:Main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

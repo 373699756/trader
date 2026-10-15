@@ -10,17 +10,17 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import decision
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
+    BuildDecisionCommitted,
     DecisionObservation,
-    build_decision_committed,
 )
 from trader.training.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
+    PointInTimePopulationHash,
     ResearchCandidateAudit,
     ResearchDecisionCandidateAudit,
     ResearchDecisionSetAudit,
     ResearchPopulationAudit,
-    point_in_time_population_hash,
 )
 from trader.training.infra.research.research_trace_index import (
     LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
@@ -29,11 +29,11 @@ from trader.training.infra.research.research_trace_index import (
     SQLiteResearchTraceIndex,
 )
 from trader.training.infra.research.trace_capacity import ResearchTraceCapacityError
-from trader.training.infra.research.trace_projection import observation_bytes
+from trader.training.infra.research.trace_projection import ObservationBytes
 
 
 def _persistent_event(value):
-    return DecisionObservation(build_decision_committed(value), None).materialize().event
+    return DecisionObservation(BuildDecisionCommitted(value), None).materialize().event
 
 
 @pytest.mark.parametrize("limit", ("physical_trade_date_bytes", "physical_total_bytes"))
@@ -70,21 +70,21 @@ def test_physical_capacity_counts_wal_and_rejects_before_partition_creation(tmp_
 
 def test_physical_commit_admission_rolls_back_index_and_payload_growth(tmp_path):
     from trader.training.infra.research.trace_capacity import TracePhysicalBudget
-    from trader.training.infra.research.trace_storage import connection
+    from trader.training.infra.research.trace_storage import Connection
 
     database = tmp_path / "audit.sqlite3"
-    with connection(database, write=True) as conn:
+    with Connection(database, write=True) as conn:
         conn.executescript(
             "PRAGMA journal_mode=WAL; CREATE TABLE audit (id INTEGER PRIMARY KEY, payload BLOB); CREATE INDEX payload_idx ON audit(payload); INSERT INTO audit VALUES(1, 'old');"
         )
     size_before = database.stat().st_size
     with pytest.raises(ResearchTraceCapacityError, match="physical"):
-        with connection(database, write=True) as conn:
+        with Connection(database, write=True) as conn:
             conn.execute("PRAGMA cache_spill=OFF")
             conn.execute("BEGIN IMMEDIATE")
             conn.execute("INSERT INTO audit VALUES(2, zeroblob(262144))")
             TracePhysicalBudget(131072, 131072).require_commit(conn, (database,), database)
-    with connection(database, write=False) as conn:
+    with Connection(database, write=False) as conn:
         assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
     assert database.stat().st_size == size_before
 
@@ -118,7 +118,7 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
     with pytest.raises(ValueError, match="read-only"):
         archive.record(observation)
 
-    payload = observation_bytes(
+    payload = ObservationBytes(
         observation,
         schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
         legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
@@ -270,10 +270,10 @@ def test_full_market_research_audit_is_compressed_and_survives_restart(tmp_path)
     expanded_audit = replace(
         audit,
         point_in_time_population=population,
-        point_in_time_population_hash=point_in_time_population_hash(population),
+        point_in_time_population_hash=PointInTimePopulationHash(population),
     )
     observation = DecisionObservation(event, expanded_audit)
-    logical_payload = observation_bytes(
+    logical_payload = ObservationBytes(
         observation,
         schema_version="research_committed_event",
         legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
@@ -536,5 +536,5 @@ def _point_in_time_audit(decision_version: str, decision_hash: str, observed_at:
         shadow_mode=legacy.shadow_mode,
         input_observed_at=observed_at,
         point_in_time_population=population,
-        point_in_time_population_hash=point_in_time_population_hash(population),
+        point_in_time_population_hash=PointInTimePopulationHash(population),
     )

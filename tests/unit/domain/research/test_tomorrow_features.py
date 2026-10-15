@@ -7,11 +7,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.training.domain.evaluation.tomorrow_features import (
+    BuildTomorrowStockFeatures,
     DailyFeaturePoint,
     IntradayFeaturePoint,
     PointInTimePublishedFact,
     TomorrowFeatureStockInput,
-    build_tomorrow_stock_features,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -78,7 +78,7 @@ def _stock(index: int, *, history_days: int = 70) -> TomorrowFeatureStockInput:
 
 
 def test_five_tomorrow_feature_families_are_point_in_time_and_deterministic() -> None:
-    rows = build_tomorrow_stock_features(tuple(_stock(index) for index in range(1, 5)))
+    rows = BuildTomorrowStockFeatures(tuple(_stock(index) for index in range(1, 5)))
 
     assert tuple(row.code for row in rows) == ("600001", "600002", "600003", "600004")
     assert {value.family for value in rows[0].values} == {
@@ -94,7 +94,7 @@ def test_five_tomorrow_feature_families_are_point_in_time_and_deterministic() ->
     assert values["overnight_gap"] is not None
     assert values["intraday_return"] is not None
     assert values["tail_return_30m"] is not None
-    assert rows == build_tomorrow_stock_features(tuple(reversed(tuple(_stock(index) for index in range(1, 5)))))
+    assert rows == BuildTomorrowStockFeatures(tuple(reversed(tuple(_stock(index) for index in range(1, 5)))))
 
 
 def test_future_disclosure_is_rejected_even_when_report_period_is_historical() -> None:
@@ -113,7 +113,7 @@ def test_future_disclosure_is_rejected_even_when_report_period_is_historical() -
 def test_insufficient_history_remains_missing_instead_of_becoming_zero() -> None:
     stocks = tuple(_stock(index, history_days=3) for index in range(1, 5))
 
-    rows = build_tomorrow_stock_features(stocks)
+    rows = BuildTomorrowStockFeatures(stocks)
 
     values = {value.name: value.value for value in rows[0].values}
     assert values["residual_reversal_5d"] is None
@@ -131,7 +131,7 @@ def test_tail_return_requires_the_exact_thirty_minute_anchor() -> None:
         ),
     )
 
-    rows = build_tomorrow_stock_features((without_anchor, *tuple(_stock(index) for index in range(2, 5))))
+    rows = BuildTomorrowStockFeatures((without_anchor, *tuple(_stock(index) for index in range(2, 5))))
 
     values = {value.name: value.value for value in rows[0].values}
     assert values["tail_return_30m"] is None

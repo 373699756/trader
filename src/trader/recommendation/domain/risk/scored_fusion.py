@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.candidate.composition import LocalScoreResult
 from trader.recommendation.domain.evidence.review import (
     DeepSeekReview,
@@ -22,7 +22,7 @@ from trader.recommendation.domain.evidence.review import (
     RiskFact,
     RiskRule,
 )
-from trader.recommendation.domain.market.factors import round_score
+from trader.recommendation.domain.market.factors import RoundScore
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import (
     FusionMode,
@@ -33,12 +33,12 @@ from trader.recommendation.domain.publication.models import (
     ScoredStockEvaluation,
     Strategy,
 )
-from trader.recommendation.domain.risk.downside import assess_downside
+from trader.recommendation.domain.risk.downside import AssessDownside
 from trader.recommendation.domain.risk.fusion import (
     DIMENSION_NAMES,
+    FuseScore,
     FusionPolicy,
     FusionRequest,
-    fuse_score,
 )
 
 DECISION_EPOCH_SCHEMA_VERSION = "decision_epoch"
@@ -400,7 +400,7 @@ def _decision_epoch_hash(
     )
 
 
-def select_scored_review_candidates(
+def SelectScoredReviewCandidates(
     selection: ScoredSelectionResult,
     policy: ScoredDecisionPolicy,
 ) -> tuple[ScoredReviewCandidate, ...]:
@@ -431,17 +431,17 @@ def select_scored_review_candidates(
     )
 
 
-def build_scored_decision_epoch(
+def BuildScoredDecisionEpoch(
     request: ScoredDecisionRequest,
     *,
     entries: tuple[ScoredDecisionEntry, ...] | None = None,
 ) -> DecisionEpoch:
     if entries is None:
-        reviewed = review_scored_evaluations(
+        reviewed = ReviewScoredEvaluations(
             request.selection.scored_candidates, tuple(request.reviews.values()), request.observed_at
         )
-        fused = fuse_scored_evaluations(reviewed, request.policy, request.observed_at)
-        entries = select_scored_action_pools(apply_scored_actions(fused, request.policy), request.policy)
+        fused = FuseScoredEvaluations(reviewed, request.policy, request.observed_at)
+        entries = SelectScoredActionPools(ApplyScoredActions(fused, request.policy), request.policy)
     reason_counts = _filter_reason_counts(request.selection)
     return DecisionEpoch(
         trade_date=request.trade_date,
@@ -472,7 +472,7 @@ def build_scored_decision_epoch(
     )
 
 
-def review_scored_evaluations(
+def ReviewScoredEvaluations(
     evaluations: tuple[ScoredStockEvaluation, ...],
     reviews: tuple[DeepSeekReview, ...],
     observed_at: datetime,
@@ -486,7 +486,7 @@ def review_scored_evaluations(
     return tuple(result)
 
 
-def fuse_scored_evaluations(
+def FuseScoredEvaluations(
     reviewed: tuple[ReviewedScoredEvaluation, ...],
     policy: ScoredDecisionPolicy,
     observed_at: datetime,
@@ -505,7 +505,7 @@ def _fuse_evaluation(
     review = reviewed.review
     effective_review = review if review is not None and review.outcome is ReviewOutcome.APPLIED else None
     fusion_mode = FusionMode.HYBRID if effective_review is not None else FusionMode.LOCAL_DEGRADED
-    fused = fuse_score(
+    fused = FuseScore(
         FusionRequest(
             local=LocalScoreResult(components=local_components, base_score=local_base),
             local_risk_facts=evaluation.local_risk_facts,
@@ -517,13 +517,13 @@ def _fuse_evaluation(
             evaluated_at=observed_at,
         )
     )
-    if evaluation.local_score is not None and fused.score.local_score != round_score(evaluation.local_score):
+    if evaluation.local_score is not None and fused.score.local_score != RoundScore(evaluation.local_score):
         raise ValueError("scored local score changed before fusion")
     veto = fused.veto or any(fact.veto for fact in evaluation.local_risk_facts)
     return FusedScoredEvaluation(evaluation, fused.score, fused.deepseek_risk_facts, review, veto)
 
 
-def apply_scored_actions(
+def ApplyScoredActions(
     fused: tuple[FusedScoredEvaluation, ...],
     policy: ScoredDecisionPolicy,
 ) -> tuple[ScoredDecisionEntry, ...]:
@@ -570,7 +570,7 @@ def _action_for(
     if not policy.executable_enabled:
         return RecommendationAction.OBSERVE, "observation_phase"
     if score.final_score >= policy.executable_threshold:
-        downside = assess_downside(
+        downside = AssessDownside(
             evaluation.features,
             policy.strategy,
             require_industry_breadth=False,
@@ -598,7 +598,7 @@ def _unavailable_reason(
     return None
 
 
-def select_scored_action_pools(
+def SelectScoredActionPools(
     entries: tuple[ScoredDecisionEntry, ...],
     policy: ScoredDecisionPolicy,
 ) -> tuple[ScoredDecisionEntry, ...]:
@@ -665,7 +665,7 @@ def _review_context(
     policy: ScoredDecisionPolicy,
 ) -> ReviewCandidateContext:
     assert item.local_score is not None
-    downside = assess_downside(item.features, policy.strategy, require_industry_breadth=False)
+    downside = AssessDownside(item.features, policy.strategy, require_industry_breadth=False)
     return ReviewCandidateContext(
         local_score=item.local_score,
         local_rank=rank,
@@ -817,7 +817,7 @@ def _decision_entry_identity(item: ScoredDecisionEntry) -> dict[str, object]:
 
 
 def _content_hash(value: object) -> str:
-    return canonical_digest(value, include_derived=True)
+    return CanonicalDigest(value, include_derived=True)
 
 
 def _sorted_unique_codes(values: tuple[str, ...], name: str) -> tuple[str, ...]:
@@ -849,6 +849,6 @@ __all__ = [
     "ScoredDecisionPolicy",
     "ScoredDecisionRequest",
     "ScoredReviewCandidate",
-    "build_scored_decision_epoch",
-    "select_scored_review_candidates",
+    "BuildScoredDecisionEpoch",
+    "SelectScoredReviewCandidates",
 ]

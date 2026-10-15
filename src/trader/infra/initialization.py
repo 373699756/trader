@@ -10,7 +10,7 @@ class Initializable(Protocol):
     def initialize(self) -> None: ...
 
 
-def initialize_if_available(resource: Initializable) -> bool:
+def InitializeIfAvailable(resource: Initializable) -> bool:
     try:
         resource.initialize()
     except (OSError, sqlite3.Error):
@@ -18,4 +18,4 @@ def initialize_if_available(resource: Initializable) -> bool:
     return True
 
 
-__all__ = ["Initializable", "initialize_if_available"]
+__all__ = ["Initializable", "InitializeIfAvailable"]

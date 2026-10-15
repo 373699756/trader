@@ -36,7 +36,7 @@ class DecisionCoverage:
             raise ValueError("decision action coverage must partition selected count")
 
 
-def scored_decision_coverage(decision: ScoredDecision) -> DecisionCoverage:
+def ScoredDecisionCoverage(decision: ScoredDecision) -> DecisionCoverage:
     rejected = (
         decision.rejected_count
         if decision.rejected_count is not None
@@ -60,4 +60,4 @@ def scored_decision_coverage(decision: ScoredDecision) -> DecisionCoverage:
     )
 
 
-__all__ = ["DecisionCoverage", "scored_decision_coverage"]
+__all__ = ["DecisionCoverage", "ScoredDecisionCoverage"]

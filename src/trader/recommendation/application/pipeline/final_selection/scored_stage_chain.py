@@ -8,10 +8,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.stage_output import (
+    MeasuredOutput,
     PipelineStageOutput,
-    measured_output,
-    require_previous_stage,
-    stage_output,
+    RequirePreviousStage,
+    StageOutput,
 )
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStage,
@@ -25,14 +25,14 @@ from trader.recommendation.domain.evidence.pipeline import (
 from trader.recommendation.domain.evidence.review import DeepSeekReview, ReviewOutcome
 from trader.recommendation.domain.publication.models import RecommendationAction, ScoredStockEvaluation
 from trader.recommendation.domain.risk.scored_fusion import (
+    ApplyScoredActions,
     FusedScoredEvaluation,
+    FuseScoredEvaluations,
     ReviewedScoredEvaluation,
+    ReviewScoredEvaluations,
     ScoredDecisionEntry,
     ScoredDecisionPolicy,
-    apply_scored_actions,
-    fuse_scored_evaluations,
-    review_scored_evaluations,
-    select_scored_action_pools,
+    SelectScoredActionPools,
 )
 
 
@@ -65,7 +65,7 @@ class ScoredStageChain:
         )
 
 
-def reason_aggregates(counts: Counter[str]) -> tuple[StageReasonAggregate, ...]:
+def ReasonAggregates(counts: Counter[str]) -> tuple[StageReasonAggregate, ...]:
     return tuple(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
         for code, count in sorted(counts.items())
@@ -73,7 +73,7 @@ def reason_aggregates(counts: Counter[str]) -> tuple[StageReasonAggregate, ...]:
     )
 
 
-def complete_scored_stages(
+def CompleteScoredStages(
     source: PipelineStageOutput[ScoredStockEvaluation],
     request: ScoredStageContext,
     monotonic: Callable[[], float],
@@ -81,11 +81,11 @@ def complete_scored_stages(
     review_latency_ms: int = 0,
     review_attempted: bool = False,
 ) -> ScoredStageChain:
-    require_previous_stage(source, PipelineStage.RISK_REVIEW)
+    RequirePreviousStage(source, PipelineStage.RISK_REVIEW)
     if review_latency_ms < 0:
         raise ValueError("review latency cannot be negative")
     started = monotonic()
-    reviewed = review_scored_evaluations(source.records, request.reviews, request.observed_at)
+    reviewed = ReviewScoredEvaluations(source.records, request.reviews, request.observed_at)
     review_reasons: Counter[str] = Counter()
     for item in reviewed:
         if item.review is not None:
@@ -114,15 +114,15 @@ def complete_scored_stages(
     )
     # A legal local fallback remains an output. Review failure is a reason and
     # source degradation, never a business rejection or a lost scoring record.
-    risk = measured_output(
-        stage_output(
+    risk = MeasuredOutput(
+        StageOutput(
             PipelineStage.RISK_REVIEW,
             reviewed,
             input_batch_id=source.snapshot.output_batch_id,
             output_batch_id=f"{source.snapshot.output_batch_id}:risk_review:{request.observation_identity}",
             as_of=request.observed_at,
             input_count=len(source.records),
-            reasons=reason_aggregates(review_reasons),
+            reasons=ReasonAggregates(review_reasons),
             source_health=health,
             latency_ms=0,
         ),
@@ -133,17 +133,17 @@ def complete_scored_stages(
     if review_degraded and reviewed:
         risk = replace(risk, snapshot=replace(risk.snapshot, state=StageState.DEGRADED, degraded=True))
 
-    require_previous_stage(risk, PipelineStage.SCORE_MERGE)
+    RequirePreviousStage(risk, PipelineStage.SCORE_MERGE)
     started = monotonic()
-    fused = fuse_scored_evaluations(risk.records, request.policy, request.observed_at)
-    merge = measured_output(
-        stage_output(
+    fused = FuseScoredEvaluations(risk.records, request.policy, request.observed_at)
+    merge = MeasuredOutput(
+        StageOutput(
             PipelineStage.SCORE_MERGE,
             fused,
             input_batch_id=risk.snapshot.output_batch_id,
             as_of=request.observed_at,
             input_count=len(risk.records),
-            reasons=reason_aggregates(
+            reasons=ReasonAggregates(
                 Counter("hybrid" if item.score.fusion_applied else "local_only" for item in fused)
             ),
             source_health=risk.snapshot.source_health,
@@ -153,18 +153,18 @@ def complete_scored_stages(
         monotonic,
     )
 
-    require_previous_stage(merge, PipelineStage.DOWNSIDE_ACTION)
+    RequirePreviousStage(merge, PipelineStage.DOWNSIDE_ACTION)
     started = monotonic()
-    actions = apply_scored_actions(merge.records, request.policy)
+    actions = ApplyScoredActions(merge.records, request.policy)
     eligible = tuple(item for item in actions if item.action is not RecommendationAction.UNAVAILABLE)
-    action = measured_output(
-        stage_output(
+    action = MeasuredOutput(
+        StageOutput(
             PipelineStage.DOWNSIDE_ACTION,
             eligible,
             input_batch_id=merge.snapshot.output_batch_id,
             as_of=request.observed_at,
             input_count=len(merge.records),
-            reasons=reason_aggregates(Counter(item.action_reason.split(":", 1)[0] for item in actions)),
+            reasons=ReasonAggregates(Counter(item.action_reason.split(":", 1)[0] for item in actions)),
             source_health=merge.snapshot.source_health,
             latency_ms=0,
         ),
@@ -172,18 +172,18 @@ def complete_scored_stages(
         monotonic,
     )
 
-    require_previous_stage(action, PipelineStage.FINAL_SELECTION)
+    RequirePreviousStage(action, PipelineStage.FINAL_SELECTION)
     started = monotonic()
-    ranked = select_scored_action_pools(action.records, request.policy)
+    ranked = SelectScoredActionPools(action.records, request.policy)
     selected = tuple(sorted((item for item in ranked if item.selected), key=lambda item: item.rank))
-    final = measured_output(
-        stage_output(
+    final = MeasuredOutput(
+        StageOutput(
             PipelineStage.FINAL_SELECTION,
             selected,
             input_batch_id=action.snapshot.output_batch_id,
             as_of=request.observed_at,
             input_count=len(action.records),
-            reasons=reason_aggregates(
+            reasons=ReasonAggregates(
                 Counter(item.decision_skip_reason for item in ranked if item.decision_skip_reason)
             ),
             source_health=action.snapshot.source_health,

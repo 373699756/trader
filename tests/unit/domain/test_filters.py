@@ -6,13 +6,13 @@ from datetime import date, timedelta
 import pytest
 
 from trader.recommendation.domain.candidate.filters import (
+    ApplyFilters,
+    BoardForCode,
     FilterTier,
+    HardFilter,
     HardFilterPolicy,
-    apply_filters,
-    board_for_code,
-    hard_filter,
-    level_one_filter_rules,
-    level_two_filter_rules,
+    LevelOneFilterRules,
+    LevelTwoFilterRules,
 )
 from trader.recommendation.domain.market.models import Board
 
@@ -29,14 +29,14 @@ from trader.recommendation.domain.market.models import Board
     ],
 )
 def test_board_for_code(code, expected) -> None:
-    assert board_for_code(code) is expected
+    assert BoardForCode(code) is expected
 
 
 def test_explicit_board_metadata_cannot_make_an_illegal_code_supported(feature_factory, observed_at) -> None:
     snapshot = feature_factory(code="999999")
     snapshot = replace(snapshot, quote=replace(snapshot.quote, board=Board.MAIN))
 
-    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+    result = HardFilter(snapshot, observed_at, max_age_seconds=20)
 
     assert result.allowed is False
     assert result.reasons[0].filter_code == "unsupported_code"
@@ -54,7 +54,7 @@ def test_explicit_board_metadata_cannot_make_an_illegal_code_supported(feature_f
     ],
 )
 def test_hot_price_boundaries(feature_factory, observed_at, code, pct_change, allowed, reason) -> None:
-    result = hard_filter(feature_factory(code=code, pct_change=pct_change), observed_at, max_age_seconds=20)
+    result = HardFilter(feature_factory(code=code, pct_change=pct_change), observed_at, max_age_seconds=20)
 
     assert result.allowed is allowed
     if reason:
@@ -64,7 +64,7 @@ def test_hot_price_boundaries(feature_factory, observed_at, code, pct_change, al
 def test_filter_reports_source_threshold_and_actual(feature_factory, observed_at) -> None:
     snapshot = feature_factory(values={"amount_median_20d": 49_999_999.0})
 
-    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+    result = HardFilter(snapshot, observed_at, max_age_seconds=20)
 
     reason = next(item for item in result.reasons if item.code == "insufficient_liquidity")
     assert reason.threshold == ">= 50000000"
@@ -91,7 +91,7 @@ def test_liquidity_history_is_required_with_exact_boundary(
     actual,
     deferred,
 ) -> None:
-    result = hard_filter(
+    result = HardFilter(
         feature_factory(values={"amount_median_20d": value}),
         observed_at,
         max_age_seconds=20,
@@ -113,11 +113,9 @@ def test_quote_age_boundary_and_future_quote_are_auditable(feature_factory, obse
     stale = replace(exact, quote=replace(exact.quote, source_time=observed_at - timedelta(seconds=20.001)))
     future = replace(exact, quote=replace(exact.quote, source_time=observed_at + timedelta(milliseconds=1)))
 
-    assert hard_filter(exact, observed_at, max_age_seconds=20).allowed is True
-    assert "stale_quote" in {item.filter_code for item in hard_filter(stale, observed_at, max_age_seconds=20).deferred}
-    assert "future_quote" in {
-        item.filter_code for item in hard_filter(future, observed_at, max_age_seconds=20).deferred
-    }
+    assert HardFilter(exact, observed_at, max_age_seconds=20).allowed is True
+    assert "stale_quote" in {item.filter_code for item in HardFilter(stale, observed_at, max_age_seconds=20).deferred}
+    assert "future_quote" in {item.filter_code for item in HardFilter(future, observed_at, max_age_seconds=20).deferred}
 
 
 @pytest.mark.parametrize(
@@ -139,7 +137,7 @@ def test_structured_negative_risks_are_hard_filters(
 ) -> None:
     snapshot = feature_factory(values={field: value})
 
-    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+    result = HardFilter(snapshot, observed_at, max_age_seconds=20)
 
     assert result.allowed is False
     assert expected_code in {item.filter_code for item in result.reasons}
@@ -148,7 +146,7 @@ def test_structured_negative_risks_are_hard_filters(
 def test_missing_structured_risk_is_audited_without_blocking_local_fallback(feature_factory, observed_at) -> None:
     snapshot = feature_factory(values={"corporate_risk_history_unavailable": 1.0})
 
-    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+    result = HardFilter(snapshot, observed_at, max_age_seconds=20)
 
     assert result.allowed is True
     assert "corporate_risk_history_unavailable" in {item.filter_code for item in result.optional_flags}
@@ -157,7 +155,7 @@ def test_missing_structured_risk_is_audited_without_blocking_local_fallback(feat
 def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> None:
     snapshot = feature_factory(code="600001")
 
-    result = hard_filter(
+    result = HardFilter(
         snapshot,
         observed_at,
         max_age_seconds=20,
@@ -169,8 +167,8 @@ def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> 
 
 
 def test_filter_registry_separates_permanent_issuer_and_dynamic_runtime_rules() -> None:
-    level_one = level_one_filter_rules(max_age_seconds=20)
-    level_two = level_two_filter_rules(max_age_seconds=20)
+    level_one = LevelOneFilterRules(max_age_seconds=20)
+    level_two = LevelTwoFilterRules(max_age_seconds=20)
 
     assert {rule.tier for rule in level_one} == {FilterTier.ISSUER_PERMANENT}
     assert {rule.tier for rule in level_two} == {FilterTier.DYNAMIC}
@@ -188,7 +186,7 @@ def test_missing_and_stale_inputs_are_deferred_not_business_rejections(feature_f
         quote=replace(feature_factory().quote, source_time=observed_at - timedelta(seconds=21)),
     )
 
-    result = hard_filter(stale, observed_at, max_age_seconds=20)
+    result = HardFilter(stale, observed_at, max_age_seconds=20)
 
     assert not result.allowed
     assert {item.code for item in result.deferred} == {"stale_quote", "missing_liquidity_history"}
@@ -206,21 +204,21 @@ def test_non_finite_and_structurally_invalid_quotes_are_deferred(feature_factory
     )
 
     assert "invalid_pct_change" in {
-        item.filter_code for item in hard_filter(non_finite, observed_at, max_age_seconds=20).deferred
+        item.filter_code for item in HardFilter(non_finite, observed_at, max_age_seconds=20).deferred
     }
     assert "invalid_pct_change" not in {
-        item.filter_code for item in hard_filter(non_finite, observed_at, max_age_seconds=20).reasons
+        item.filter_code for item in HardFilter(non_finite, observed_at, max_age_seconds=20).reasons
     }
     assert "invalid_quote_structure" in {
-        item.filter_code for item in hard_filter(invalid_ohlc, observed_at, max_age_seconds=20).deferred
+        item.filter_code for item in HardFilter(invalid_ohlc, observed_at, max_age_seconds=20).deferred
     }
     assert "invalid_cross_source_deviation" in {
-        item.filter_code for item in hard_filter(invalid_deviation, observed_at, max_age_seconds=20).deferred
+        item.filter_code for item in HardFilter(invalid_deviation, observed_at, max_age_seconds=20).deferred
     }
 
-    rules = level_two_filter_rules(max_age_seconds=20)
+    rules = LevelTwoFilterRules(max_age_seconds=20)
     for snapshot in (non_finite, invalid_ohlc, invalid_deviation):
-        result = apply_filters(snapshot, rules, now=observed_at)
+        result = ApplyFilters(snapshot, rules, now=observed_at)
         assert result.reasons == ()
         assert result.deferred
 
@@ -244,7 +242,7 @@ def test_invalid_quote_values_never_become_business_rejections(
     source = feature_factory()
     invalid = replace(source, quote=replace(source.quote, **{field: value}))
 
-    result = apply_filters(invalid, level_two_filter_rules(max_age_seconds=20), now=observed_at)
+    result = ApplyFilters(invalid, LevelTwoFilterRules(max_age_seconds=20), now=observed_at)
 
     assert not result.allowed
     assert result.reasons == ()
@@ -267,7 +265,7 @@ def test_cross_source_deviation_boundary(feature_factory, observed_at, deviation
         ),
     )
 
-    assert hard_filter(snapshot, observed_at, max_age_seconds=20).allowed is allowed
+    assert HardFilter(snapshot, observed_at, max_age_seconds=20).allowed is allowed
 
 
 @pytest.mark.parametrize(("sessions", "allowed"), [(0, False), (1, False), (5, False), (6, True)])
@@ -284,7 +282,7 @@ def test_listing_session_boundary_is_enforced(feature_factory, observed_at, sess
         rule_effective_date=date(2023, 8, 28),
     )
 
-    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+    result = HardFilter(snapshot, observed_at, max_age_seconds=20)
 
     assert result.allowed is allowed
     if not allowed:
@@ -313,9 +311,9 @@ def test_board_identity_conflict_and_prefix_fallback_are_observe_only(feature_fa
         execution_restrictions=("missing_listing_age_sessions",),
     )
 
-    conflict_result = hard_filter(conflict, observed_at, max_age_seconds=20)
-    fallback_result = hard_filter(fallback, observed_at, max_age_seconds=20)
-    missing_age_result = hard_filter(missing_age, observed_at, max_age_seconds=20)
+    conflict_result = HardFilter(conflict, observed_at, max_age_seconds=20)
+    fallback_result = HardFilter(fallback, observed_at, max_age_seconds=20)
+    missing_age_result = HardFilter(missing_age, observed_at, max_age_seconds=20)
 
     assert conflict_result.allowed is True
     assert fallback_result.allowed is True
@@ -335,7 +333,7 @@ def test_board_identity_conflict_and_prefix_fallback_are_observe_only(feature_fa
 def test_special_first_session_states_are_rejected(feature_factory, observed_at, field, reason) -> None:
     snapshot = feature_factory(**{field: True})
 
-    result = hard_filter(snapshot, observed_at, max_age_seconds=20)
+    result = HardFilter(snapshot, observed_at, max_age_seconds=20)
 
     assert result.allowed is False
     assert reason in {item.filter_code for item in result.reasons}

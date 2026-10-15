@@ -12,7 +12,7 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.infra.serialization.canonical import content_hash
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
@@ -49,7 +49,7 @@ class _PublicationJournal:
     new_pointer_hash: str
 
 
-def publish_head_bundle(
+def PublishHeadBundle(
     staging: Path,
     output_root: Path,
     strategy: Strategy,
@@ -57,7 +57,7 @@ def publish_head_bundle(
     identity: HeadBundlePublicationIdentity,
 ) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
-    recover_head_bundle_publication(output_root, strategy, profile)
+    RecoverHeadBundlePublication(output_root, strategy, profile)
     pointer = _validate_staging(staging, strategy, profile, identity)
     _write_json(staging / _ACTIVE_BUNDLE_NAME, pointer)
     _fsync_directory(staging)
@@ -73,7 +73,7 @@ def publish_head_bundle(
         _finish_publication(output_root, rollback)
     except BaseException:
         if (output_root / _PUBLICATION_JOURNAL_NAME).exists():
-            recover_head_bundle_publication(output_root, strategy, profile)
+            RecoverHeadBundlePublication(output_root, strategy, profile)
         elif rollback.exists():
             shutil.rmtree(rollback)
             _fsync_directory(output_root)
@@ -84,15 +84,15 @@ def publish_head_bundle(
     return output_root / "model.json"
 
 
-def locate_active_head_bundle(
+def LocateActiveHeadBundle(
     output_root: Path,
     strategy: Strategy,
     profile: TrainedProfileContract,
 ) -> Path:
-    return inspect_active_head_bundle(output_root, strategy, profile).model_path
+    return InspectActiveHeadBundle(output_root, strategy, profile).model_path
 
 
-def inspect_active_head_bundle(
+def InspectActiveHeadBundle(
     output_root: Path,
     strategy: Strategy,
     profile: TrainedProfileContract,
@@ -100,7 +100,7 @@ def inspect_active_head_bundle(
     return _inspect_active_head_bundle(output_root, strategy, profile, allow_publication=False)
 
 
-def recover_head_bundle_publication(
+def RecoverHeadBundlePublication(
     output_root: Path,
     strategy: Strategy,
     profile: TrainedProfileContract,
@@ -122,7 +122,7 @@ def recover_head_bundle_publication(
     _finish_publication(output_root, rollback)
 
 
-def make_bundle_staging_directory(output_root: Path) -> Path:
+def MakeBundleStagingDirectory(output_root: Path) -> Path:
     output_root.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix=".bundle-staging.", dir=output_root))
 
@@ -133,9 +133,9 @@ def _validate_staging(
     profile: TrainedProfileContract,
     identity: HeadBundlePublicationIdentity,
 ) -> dict[str, object]:
-    from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
+    from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle
 
-    bundle = load_head_bundle(staging / "model.json", strategy, profile)
+    bundle = LoadHeadBundle(staging / "model.json", strategy, profile)
     if (
         bundle.training_input_hash != identity.training_input_hash
         or bundle.label_cutoff != identity.label_cutoff
@@ -149,7 +149,7 @@ def _validate_staging(
         "report_hash": report["content_hash"],
         "training_input_hash": training_input["content_hash"],
     }
-    pointer["content_hash"] = content_hash(pointer)
+    pointer["content_hash"] = ContentHash(pointer)
     return pointer
 
 
@@ -168,16 +168,16 @@ def _inspect_active_head_bundle(
     if (
         set(pointer) != expected_fields
         or not _sha256(pointer.get("content_hash"))
-        or content_hash(body) != pointer["content_hash"]
+        or ContentHash(body) != pointer["content_hash"]
         or not all(_sha256(pointer.get(name)) for name in expected_fields - {"content_hash"})
     ):
         raise ValueError("trained-head active bundle pointer is invalid")
     model = output_root / "model.json"
     if not model.is_file() or model.is_symlink():
         raise FileNotFoundError(model)
-    from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
+    from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle
 
-    bundle = load_head_bundle(model, strategy, profile)
+    bundle = LoadHeadBundle(model, strategy, profile)
     training_input = _read_json(output_root / "training-input.json")
     report = _read_json(output_root / "report.json")
     if (
@@ -269,7 +269,7 @@ def _decode_journal(
         or payload.get("schema_version") != f"{profile.profile_id}_head_bundle_publication"
         or payload.get("strategy_head") != strategy.value
         or not isinstance(declared_hash, str)
-        or content_hash(body) != declared_hash
+        or ContentHash(body) != declared_hash
         or not isinstance(payload.get("rollback_directory"), str)
         or not isinstance(previous, list)
         or any(not isinstance(value, str) or value not in _PRODUCTION_NAMES for value in previous)
@@ -296,7 +296,7 @@ def _journal_payload(
         "previous_files": list(journal.previous_files),
         "new_pointer_hash": journal.new_pointer_hash,
     }
-    payload["content_hash"] = content_hash(payload)
+    payload["content_hash"] = ContentHash(payload)
     return payload
 
 
@@ -360,9 +360,9 @@ def _sha256(value: object) -> bool:
 __all__ = [
     "ActiveHeadBundle",
     "HeadBundlePublicationIdentity",
-    "inspect_active_head_bundle",
-    "locate_active_head_bundle",
-    "make_bundle_staging_directory",
-    "publish_head_bundle",
-    "recover_head_bundle_publication",
+    "InspectActiveHeadBundle",
+    "LocateActiveHeadBundle",
+    "MakeBundleStagingDirectory",
+    "PublishHeadBundle",
+    "RecoverHeadBundlePublication",
 ]

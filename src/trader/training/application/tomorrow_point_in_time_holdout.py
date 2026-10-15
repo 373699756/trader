@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from trader.training.domain.evaluation.terminal_holdout import (
+    EvaluateTerminalHoldout,
     TerminalHoldoutEvaluation,
     TerminalHoldoutParentState,
     TerminalHoldoutReport,
     TerminalHoldoutRow,
-    evaluate_terminal_holdout,
 )
 
 TomorrowPointInTimeRow = TerminalHoldoutRow
@@ -26,7 +26,7 @@ class TomorrowPointInTimeHoldoutService:
         self._parent = parent
 
     def execute(self) -> TerminalHoldoutReport:
-        return evaluate_terminal_holdout(
+        return EvaluateTerminalHoldout(
             TerminalHoldoutEvaluation(
                 strategy="tomorrow",
                 research_identity="score_tomorrow_historical_candidate",

@@ -8,7 +8,7 @@ from functools import cached_property, total_ordering
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 
 
-def scalar_order(value: JsonScalar) -> tuple[int, str | float]:
+def ScalarOrder(value: JsonScalar) -> tuple[int, str | float]:
     if value is None:
         return (0, "")
     if isinstance(value, bool):
@@ -25,7 +25,7 @@ class ObservationFacts:
 
     @cached_property
     def key(self) -> tuple[tuple[str, tuple[int, str | float]], ...]:
-        return tuple((name, scalar_order(value)) for name, value in sorted(self.observation.fields.items()))
+        return tuple((name, ScalarOrder(value)) for name, value in sorted(self.observation.fields.items()))
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, ObservationFacts):

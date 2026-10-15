@@ -16,7 +16,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -65,7 +65,7 @@ class H1PointInTimeSpec:
             raise ValueError("H1 research cannot have production authority")
         if self.decision_anchor != "15:00":
             raise ValueError("H1 decision anchor must be 15:00")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def anchor_kind(self) -> H1AnchorKind:
@@ -96,7 +96,7 @@ class H1PointInTimeRecord:
         _validate_h1_record_identity(self)
         _validate_h1_record_anchor(self)
         _validate_h1_record_hashes(self)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _validate_h1_record_identity(record: H1PointInTimeRecord) -> None:
@@ -150,7 +150,7 @@ class H1CapabilityProbe:
             raise ValueError("H1 capability limits are invalid")
         if not math.isfinite(self.estimated_seconds) or self.estimated_seconds < 0:
             raise ValueError("H1 capability estimate is invalid")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def point_in_time_anchors_proven(self) -> bool:
@@ -204,10 +204,10 @@ class H1CapabilityAuditReport:
         object.__setattr__(self, "probes", probes)
         object.__setattr__(self, "strategies", strategies)
         object.__setattr__(self, "probe_failures", failures)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
-def build_h1_capability_audit(
+def BuildH1CapabilityAudit(
     probes: tuple[H1CapabilityProbe, ...], *, probe_failures: tuple[str, ...] = ()
 ) -> H1CapabilityAuditReport:
     if not probes:
@@ -267,7 +267,7 @@ class H1CoverageManifest:
             raise ValueError("H1 manifest dates are invalid")
         if self.state not in ("coverage_ready", "historical_data_insufficient"):
             raise ValueError("H1 coverage state is invalid")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -298,5 +298,5 @@ __all__ = [
     "H1_RESEARCH_IDENTITY",
     "H1_REGISTERED_ON",
     "H1_SOURCE_CUTOFF",
-    "build_h1_capability_audit",
+    "BuildH1CapabilityAudit",
 ]

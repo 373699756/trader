@@ -104,7 +104,7 @@ class _TushareSdkClientAdapter:
         return [dict(zip(names, row, strict=False)) for row in items if isinstance(row, list)]
 
 
-def build_tushare_sdk(
+def BuildTushareSdk(
     token: str,
     timeout_seconds: float,
     *,
@@ -369,7 +369,7 @@ __all__ = [
     "_calendar_observation",
     "_calendar_ranges",
     "_data_version",
-    "build_tushare_sdk",
+    "BuildTushareSdk",
     "_error_code",
     "_failed_observation",
     "_generic_observation",

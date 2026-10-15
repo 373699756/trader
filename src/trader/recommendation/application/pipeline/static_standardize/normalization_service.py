@@ -7,14 +7,14 @@ from datetime import datetime
 
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,
-    require_previous_stage,
-    stage_output,
+    RequirePreviousStage,
+    StageOutput,
 )
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.static import StaticIssuer
 
 
-def normalize_static_market(
+def NormalizeStaticMarket(
     source: PipelineStageOutput[StaticIssuer],
     normalizer: Callable[[StaticIssuer], StaticIssuer | None],
     *,
@@ -22,10 +22,10 @@ def normalize_static_market(
     reasons: tuple[StageReasonAggregate, ...] = (),
     latency_ms: int,
 ) -> PipelineStageOutput[StaticIssuer]:
-    require_previous_stage(source, PipelineStage.STATIC_STANDARDIZE)
+    RequirePreviousStage(source, PipelineStage.STATIC_STANDARDIZE)
     normalized = tuple(value for record in source.records if (value := normalizer(record)) is not None)
     pending = len(source.records) - len(normalized)
-    return stage_output(
+    return StageOutput(
         PipelineStage.STATIC_STANDARDIZE,
         normalized,
         input_batch_id=source.snapshot.output_batch_id,
@@ -45,4 +45,4 @@ def normalize_static_market(
     )
 
 
-__all__ = ["normalize_static_market"]
+__all__ = ["NormalizeStaticMarket"]

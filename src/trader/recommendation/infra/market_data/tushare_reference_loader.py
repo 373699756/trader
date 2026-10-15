@@ -13,10 +13,10 @@ from typing import Protocol, TypeVar, cast
 from zoneinfo import ZoneInfo
 
 from trader.infra.cache_contracts import (
+    BuildCacheIdentity,
     CacheIdentity,
     CacheIdentitySpec,
-    build_cache_identity,
-    request_key,
+    RequestKey,
 )
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.infra.market_data.source_health import (
@@ -33,7 +33,7 @@ from trader.recommendation.application.ports.data_plane_records import (
 )
 from trader.recommendation.application.ports.json_values import JsonObject, JsonValue
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
-from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
 from trader.recommendation.domain.market.static import StaticMarketReference
@@ -49,7 +49,7 @@ from trader.recommendation.infra.market_data.model_industry_reference_loader imp
     ModelIndustryReferenceLoader,
 )
 from trader.recommendation.infra.market_data.official_static_reference import (
-    parse_official_static_reference,
+    ParseOfficialStaticReference,
 )
 from trader.recommendation.infra.market_data.provider_ports import (
     ModelIndustrySource,
@@ -57,14 +57,14 @@ from trader.recommendation.infra.market_data.provider_ports import (
     SecurityMasterSource,
 )
 from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
-    calendar_observations_from_record as _calendar_observations_from_record,
+    CalendarObservationsFromRecord as _calendar_observations_from_record,
 )
 from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
-    calendar_sessions_payload as _calendar_sessions_payload,
+    CalendarSessionsPayload as _calendar_sessions_payload,
 )
-from trader.recommendation.infra.market_data.trading_calendar_state_codec import parse_date as _parse_date
+from trader.recommendation.infra.market_data.trading_calendar_state_codec import ParseDate as _parse_date
 from trader.recommendation.infra.market_data.trading_calendar_state_codec import (
-    trading_calendar_cursor_from_observations as _trading_calendar_cursor_from_observations,
+    TradingCalendarCursorFromObservations as _trading_calendar_cursor_from_observations,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -267,7 +267,7 @@ class ReferenceLoader:
         if client is None:
             return 0
         observations = client.fetch(observed_at)
-        reference = parse_official_static_reference(observations)
+        reference = ParseOfficialStaticReference(observations)
         latest = max(observations, key=lambda item: (item.source_time, item.received_at, item.data_version))
         with self._lock:
             previous = self._security_master
@@ -400,12 +400,12 @@ class ReferenceLoader:
                         {
                             "dataset": "trading_calendar",
                             "start_date": calendar_start_date.isoformat(),
-                            "end_date": shanghai_now(observed_at).date().isoformat(),
+                            "end_date": ShanghaiNow(observed_at).date().isoformat(),
                         },
                         _ReferenceLoadOptions(
                             observed_at=observed_at,
                             function=self._client.fetch_trading_calendar,
-                            args=(min(listing_dates), shanghai_now(observed_at).date(), observed_at),
+                            args=(min(listing_dates), ShanghaiNow(observed_at).date(), observed_at),
                             force=force,
                             kwargs={},
                         ),
@@ -641,13 +641,13 @@ class ReferenceLoader:
     ) -> tuple[SourceObservation, ...]:
         if self._client is None:
             return ()
-        identity = build_cache_identity(
+        identity = BuildCacheIdentity(
             CacheIdentitySpec(
                 dataset=request.dataset,
                 source="tushare",
                 subject_key=request.subject_key,
                 request=request.request,
-                trade_date=shanghai_now(request.options.observed_at).date().isoformat(),
+                trade_date=ShanghaiNow(request.options.observed_at).date().isoformat(),
                 phase="all_day",
                 source_contract_version=self._runner.source_contracts.get("tushare", "tushare-component"),
                 config_version=self._runner.config_version,
@@ -764,7 +764,7 @@ class ReferenceLoader:
         lanes = self._runner.source_lanes
         if lanes is None:
             return
-        refresh_identity = request_key(
+        refresh_identity = RequestKey(
             {
                 "dataset": identity.dataset,
                 "source": identity.source,
@@ -920,7 +920,7 @@ def _latest_effective_trade_date(
     observations: Sequence[SourceObservation],
     observed_at: datetime,
 ) -> date | None:
-    local = shanghai_now(observed_at)
+    local = ShanghaiNow(observed_at)
     available: list[date] = []
     for observation in observations:
         if observation.status != "success" or observation.fields.get("is_open") is not True:

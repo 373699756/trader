@@ -52,15 +52,15 @@ class PreregisteredBootstrapPlan:
 
     @property
     def seed(self) -> int:
-        return preregistered_seed(self.identity, self.master_seed, self.challenger_id, self.block_days)
+        return PreregisteredSeed(self.identity, self.master_seed, self.challenger_id, self.block_days)
 
 
-def preregistered_seed(identity: str, master_seed: int, challenger_id: str, block_days: int) -> int:
+def PreregisteredSeed(identity: str, master_seed: int, challenger_id: str, block_days: int) -> int:
     value = f"{identity}|{master_seed}|{challenger_id}|{block_days}"
     return int.from_bytes(hashlib.sha256(value.encode()).digest()[:8], "big", signed=False)
 
 
-def paired_moving_block_statistics(
+def PairedMovingBlockStatistics(
     values: tuple[float, ...],
     *,
     paired_metric: tuple[float, ...] | None = None,
@@ -129,7 +129,7 @@ def paired_moving_block_statistics(
     )
 
 
-def fixed_family_holm(
+def FixedFamilyHolm(
     p_values: Mapping[str, float | None],
     *,
     family: tuple[str, ...],
@@ -154,7 +154,7 @@ def fixed_family_holm(
     return tuple(decisions)
 
 
-def newey_west_long_run_std(values: tuple[float, ...], *, lag_days: int) -> float:
+def NeweyWestLongRunStd(values: tuple[float, ...], *, lag_days: int) -> float:
     """Return the Bartlett-kernel long-run standard deviation for historical rows."""
 
     if len(values) <= lag_days or lag_days < 1 or any(not math.isfinite(value) for value in values):
@@ -185,8 +185,8 @@ __all__ = [
     "PreregisteredBootstrapResult",
     "PreregisteredBootstrapPlan",
     "PreregisteredHolmDecision",
-    "fixed_family_holm",
-    "newey_west_long_run_std",
-    "paired_moving_block_statistics",
-    "preregistered_seed",
+    "FixedFamilyHolm",
+    "NeweyWestLongRunStd",
+    "PairedMovingBlockStatistics",
+    "PreregisteredSeed",
 ]

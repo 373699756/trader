@@ -14,9 +14,9 @@ from tests.unit.epoch_helpers import (
     research_field_values,
 )
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
+    AssembleScoredFeatures,
     ScoredSelectionNotReadyError,
     ScoredSelectionUseCase,
-    assemble_scored_features,
 )
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.epochs import (
@@ -230,7 +230,7 @@ def test_use_case_assembles_one_coherent_epoch_and_applies_candidate_quote(
 ) -> None:
     snapshot = _data_snapshot()
     use_case = ScoredSelectionUseCase(_Reader(snapshot), _policy(recommendation_policy))
-    assembled = assemble_scored_features(snapshot)
+    assembled = AssembleScoredFeatures(snapshot)
 
     result = use_case.execute(evaluated_at=NOW, max_age_seconds=60.0)
     evaluation = result.evaluations[0]
@@ -286,7 +286,7 @@ def test_feature_assembly_does_not_let_late_candidate_price_replace_newer_market
         field_values={late_quote.code: candidate_field_values(late_quote)},
     )
 
-    assembled = assemble_scored_features(replace(snapshot, candidate_quotes=candidate_epoch))
+    assembled = AssembleScoredFeatures(replace(snapshot, candidate_quotes=candidate_epoch))
 
     assert assembled[0].quote.price == 10.0
     assert assembled[0].values["tail_return_30m"] == 70.0
@@ -336,7 +336,7 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
         },
     )
 
-    assembled = assemble_scored_features(replace(snapshot, research=research))
+    assembled = AssembleScoredFeatures(replace(snapshot, research=research))
 
     assert assembled[0].values["official_investigation_history"] == 1.0
     assert assembled[0].values["corporate_risk_history_unavailable"] == 0.0

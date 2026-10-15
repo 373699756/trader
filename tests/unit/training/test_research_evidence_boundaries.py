@@ -9,7 +9,7 @@ import pytest
 import requests
 
 from trader import bootstrap
-from trader.entrypoints.cli import main as cli_main
+from trader.entrypoints.cli import Main as cli_main
 from trader.training.infra.research.capability_http import BoundedCapabilitySession
 from trader.training.infra.research.command_evidence import CapabilityEvidencePublisher
 
@@ -144,7 +144,7 @@ def test_bootstrap_closes_the_only_session_on_success_and_publication_failure(
         return session
 
     monkeypatch.setattr(requests, "Session", create_session)
-    monkeypatch.setattr(bootstrap, "build_system", lambda *_a, **_kw: pytest.fail("server must not start"))
+    monkeypatch.setattr(bootstrap, "BuildSystem", lambda *_a, **_kw: pytest.fail("server must not start"))
     if publication_failure:
 
         def fail_publication(*_args):
@@ -170,7 +170,7 @@ def test_bootstrap_closes_the_only_session_on_success_and_publication_failure(
     ["repo_output", "details_stdout", "archive_summary", "h1_overlap", "holdout_overlap", "bad_code", "nan_timeout"],
 )
 def test_cli_rejects_invalid_boundaries_before_evidence_io(tmp_path, monkeypatch, capsys, case):
-    monkeypatch.setattr(bootstrap, "execute_research_evidence", lambda _c: pytest.fail("must reject before I/O"))
+    monkeypatch.setattr(bootstrap, "ExecuteResearchEvidence", lambda _c: pytest.fail("must reject before I/O"))
     command = "research-industry-audit"
     argv = ["--history-root", str(tmp_path / "input")]
     if case == "repo_output":
@@ -198,9 +198,9 @@ def test_cli_rejects_invalid_boundaries_before_evidence_io(tmp_path, monkeypatch
 def test_report_write_failure_returns_bounded_stdout_without_retry(tmp_path, monkeypatch, capsys):
     from trader.training.entrypoints import research_evidence_projection
 
-    monkeypatch.setattr(bootstrap, "execute_research_evidence", lambda _c: object())
+    monkeypatch.setattr(bootstrap, "ExecuteResearchEvidence", lambda _c: object())
     monkeypatch.setattr(
-        research_evidence_projection, "project_evidence_result", lambda *_a, **_kw: ({"status": "qualified"}, 0)
+        research_evidence_projection, "ProjectEvidenceResult", lambda *_a, **_kw: ({"status": "qualified"}, 0)
     )
     blocker = tmp_path / "file"
     blocker.write_text("preserve", encoding="utf-8")
@@ -222,8 +222,8 @@ def test_ordinary_cli_validation_does_not_load_new_research_implementations():
         [
             sys.executable,
             "-c",
-            "import sys; from trader.entrypoints.cli import main; "
-            "assert main(sys.argv[1:]) == 0; "
+            "import sys; from trader.entrypoints.cli import Main; "
+            "assert Main(sys.argv[1:]) == 0; "
             "assert not any(name in sys.modules for name in ("
             "'trader.training.infra.research.command_evidence',"
             "'trader.training.infra.research.capability_http',"

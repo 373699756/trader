@@ -4,16 +4,16 @@ import json
 from datetime import date
 from pathlib import Path
 
-from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
-from trader.entrypoints.cli import main as cli_main
+from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
+from trader.entrypoints.cli import Main as cli_main
 from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 from trader.training.domain.evaluation.historical_industry_facts import (
+    BuildHistoricalIndustryDatasetReport,
+    BuildHistoricalIndustrySourceAudit,
     HistoricalIndustrySourceContract,
-    build_historical_industry_dataset_report,
-    build_historical_industry_source_audit,
-    merge_historical_industry_facts,
+    MergeHistoricalIndustryFacts,
 )
-from trader.training.entrypoints.research_evidence_projection import project_point_in_time_data_qualification
+from trader.training.entrypoints.research_evidence_projection import ProjectPointInTimeDataQualification
 from trader.training.infra.research import command_evidence
 from trader.training.infra.research.command_evidence import HistoricalIndustryEvidenceReader
 from trader.training.infra.research.h1_point_in_time_capability import FreeSourceH1CapabilityProbe
@@ -42,7 +42,7 @@ class _Session:
 
 
 def _industry_report():
-    source = build_historical_industry_source_audit(
+    source = BuildHistoricalIndustrySourceAudit(
         HistoricalIndustrySourceContract(
             "baostock_archived_industry",
             "00.9.30",
@@ -57,15 +57,15 @@ def _industry_report():
         (),
         (),
     )
-    return build_historical_industry_dataset_report("a" * 64, (source,), merge_historical_industry_facts(()))
+    return BuildHistoricalIndustryDatasetReport("a" * 64, (source,), MergeHistoricalIndustryFacts(()))
 
 
 def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(
-        command_evidence, "audit_published_historical_industry_facts", lambda _root, **_kw: _industry_report()
+        command_evidence, "AuditPublishedHistoricalIndustryFacts", lambda _root, **_kw: _industry_report()
     )
     report = QualifyPointInTimeData(
-        lambda: inspect_history_snapshot(tmp_path, verify_partitions=True),
+        lambda: InspectHistorySnapshot(tmp_path, verify_partitions=True),
         HistoricalIndustryEvidenceReader(tmp_path),
         FreeSourceH1CapabilityProbe(_Session(), timeout_seconds=1.0),
     ).execute(
@@ -73,7 +73,7 @@ def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_p
         historical_anchor_date=date(2022, 1, 4),
     )
 
-    payload = project_point_in_time_data_qualification(report)
+    payload = ProjectPointInTimeDataQualification(report)
 
     assert payload["status"] == "historical_data_insufficient"
     assert payload["point_in_time_parity"] is False

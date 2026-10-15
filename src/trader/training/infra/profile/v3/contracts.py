@@ -41,7 +41,7 @@ V3_TRAINING_PROFILE = TrainedProfileContract(
 )
 
 
-def contract_for_strategy(strategy: Strategy) -> TrainedHeadContract:
+def ContractForStrategy(strategy: Strategy) -> TrainedHeadContract:
     return V3_TRAINING_PROFILE.head_for_strategy(strategy)
 
 
@@ -50,5 +50,5 @@ __all__ = [
     "HEAD_CONTRACTS",
     "TOMORROW_HEAD_CONTRACT",
     "V3_TRAINING_PROFILE",
-    "contract_for_strategy",
+    "ContractForStrategy",
 ]

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from trader.recommendation.domain.market.factors import average_rank_percentiles
+from trader.recommendation.domain.market.factors import AverageRankPercentiles
 
 
-def percentile_ranks(values: Sequence[float]) -> tuple[float, ...]:
-    return average_rank_percentiles(values)
+def PercentileRanks(values: Sequence[float]) -> tuple[float, ...]:
+    return AverageRankPercentiles(values)
 
 
-__all__ = ["percentile_ranks"]
+__all__ = ["PercentileRanks"]

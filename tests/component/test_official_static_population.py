@@ -24,8 +24,8 @@ from trader.infra.market_data.providers.exchange_security_master import (
 )
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
-from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, manual_blacklist_fact
-from trader.recommendation.infra.market_data.official_static_reference import parse_official_static_reference
+from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, ManualBlacklistFact
+from trader.recommendation.infra.market_data.official_static_reference import ParseOfficialStaticReference
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.status_projection import _stage_snapshot_payload
 
@@ -182,7 +182,7 @@ def test_successful_same_content_refresh_updates_age_without_changing_content_id
 
 def test_unique_registry_filters_the_complete_population_before_quote_and_history_subset(tmp_path):
     registry = SQLiteIssuerEligibilityIndex(tmp_path)
-    registry.record((manual_blacklist_fact("300001", effective_at=NOW, config_hash="fixture"),))
+    registry.record((ManualBlacklistFact("300001", effective_at=NOW, config_hash="fixture"),))
     _, _, _, history, service = _fixture(eligibility=registry)
     service.references.schedule_security_master_refresh(NOW)
     batch = service.fetch_market_feature_batch(NOW)
@@ -216,7 +216,7 @@ def test_parser_rejects_mixed_versions_duplicate_and_missing_name_before_accepta
     )
     for invalid in invalid_batches:
         with pytest.raises(ValueError):
-            parse_official_static_reference(invalid)
+            ParseOfficialStaticReference(invalid)
 
 
 def test_parser_compares_listing_day_in_shanghai_when_observed_time_is_utc():
@@ -227,7 +227,7 @@ def test_parser_compares_listing_day_in_shanghai_when_observed_time_is_utc():
         replace(item, observed_at=midnight, fields={**item.fields, "listing_date": NOW.date().isoformat()})
         for item in rows
     )
-    assert len(parse_official_static_reference(current).records) == 2
+    assert len(ParseOfficialStaticReference(current).records) == 2
 
 
 def test_reference_replaced_during_quote_read_is_not_published_under_old_identity(monkeypatch):

@@ -9,9 +9,9 @@ from trader.training.domain.evaluation.specification import (
     ACTIVE_SCORE_RESEARCH_SPEC,
     HISTORICAL_RESEARCH_SPEC,
     PREREGISTERED_RESEARCH_SPEC,
+    AssessScoreResearchCoverage,
+    GetScoreResearchSpec,
     ScoringResearchSpec,
-    assess_score_research_coverage,
-    get_score_research_spec,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -36,8 +36,8 @@ def test_preregistered_research_is_preregistered_before_its_complete_future_wind
     assert spec.forward_dates[-1] == date(2026, 11, 20)
     assert spec.bootstrap_master_seed == 20260820
     assert len(spec.content_hash) == 64
-    assert get_score_research_spec("historical_research_baseline") is HISTORICAL_RESEARCH_SPEC
-    assert get_score_research_spec("preregistered_research") is PREREGISTERED_RESEARCH_SPEC
+    assert GetScoreResearchSpec("historical_research_baseline") is HISTORICAL_RESEARCH_SPEC
+    assert GetScoreResearchSpec("preregistered_research") is PREREGISTERED_RESEARCH_SPEC
 
 
 def test_research_spec_rejects_registration_after_window_start() -> None:
@@ -54,7 +54,7 @@ def test_research_spec_rejects_registration_after_window_start() -> None:
 
 
 def test_future_research_coverage_fails_when_fixed_planned_dates_are_missed() -> None:
-    coverage = assess_score_research_coverage(
+    coverage = AssessScoreResearchCoverage(
         PREREGISTERED_RESEARCH_SPEC,
         recorded_dates=(date(2026, 8, 21),),
         as_of=_at("2026-08-26T14:49:59"),
@@ -73,7 +73,7 @@ def test_future_research_coverage_fails_when_fixed_planned_dates_are_missed() ->
 
 
 def test_future_research_coverage_does_not_mark_today_or_future_dates_missed() -> None:
-    coverage = assess_score_research_coverage(
+    coverage = AssessScoreResearchCoverage(
         PREREGISTERED_RESEARCH_SPEC,
         recorded_dates=(),
         as_of=_at("2026-08-21T14:59:59"),
@@ -87,7 +87,7 @@ def test_future_research_coverage_does_not_mark_today_or_future_dates_missed() -
 
 
 def test_future_research_coverage_marks_today_missed_at_the_fixed_cutoff() -> None:
-    coverage = assess_score_research_coverage(
+    coverage = AssessScoreResearchCoverage(
         PREREGISTERED_RESEARCH_SPEC,
         recorded_dates=(date(2026, 8, 21),),
         as_of=_at("2026-08-26T15:00:00"),
@@ -104,7 +104,7 @@ def test_future_research_coverage_marks_today_missed_at_the_fixed_cutoff() -> No
 
 def test_research_coverage_rejects_naive_clock() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
-        assess_score_research_coverage(
+        AssessScoreResearchCoverage(
             PREREGISTERED_RESEARCH_SPEC,
             recorded_dates=(),
             as_of=datetime(2026, 8, 21, 15, 0),
@@ -112,7 +112,7 @@ def test_research_coverage_rejects_naive_clock() -> None:
 
 
 def test_research_coverage_is_complete_only_with_every_fixed_date() -> None:
-    coverage = assess_score_research_coverage(
+    coverage = AssessScoreResearchCoverage(
         PREREGISTERED_RESEARCH_SPEC,
         recorded_dates=(*PREREGISTERED_RESEARCH_SPEC.historical_dates, *PREREGISTERED_RESEARCH_SPEC.forward_dates),
         as_of=_at("2026-11-21T00:00:00"),

@@ -6,7 +6,7 @@ import dataclasses
 from dataclasses import dataclass
 from datetime import date
 
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _EMBARGO_DAYS = 5
 _WALK_FORWARD_FOLDS = 5
@@ -47,7 +47,7 @@ class DailyCloseTemporalSplit:
         ):
             raise ValueError("daily-close split must reserve at least 200 dates for point-in-time holdout")
         _strictly_increasing(self.all_dates)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def all_dates(self) -> tuple[date, ...]:
@@ -88,7 +88,7 @@ class ExpandingWalkForwardFold:
             raise ValueError("daily-close walk-forward training must precede validation")
 
 
-def split_complete_trading_dates(
+def SplitCompleteTradingDates(
     trading_dates: tuple[date, ...],
     *,
     point_in_time_reserve_days: int = _MINIMUM_POINT_IN_TIME_RESERVE_DAYS,
@@ -124,7 +124,7 @@ def split_complete_trading_dates(
     )
 
 
-def build_expanding_walk_forward(
+def BuildExpandingWalkForward(
     development_dates: tuple[date, ...],
 ) -> tuple[ExpandingWalkForwardFold, ...]:
     """Build five deterministic expanding folds from six contiguous date blocks."""
@@ -160,6 +160,6 @@ def _strictly_increasing(values: tuple[date, ...]) -> None:
 __all__ = [
     "DailyCloseTemporalSplit",
     "ExpandingWalkForwardFold",
-    "build_expanding_walk_forward",
-    "split_complete_trading_dates",
+    "BuildExpandingWalkForward",
+    "SplitCompleteTradingDates",
 ]

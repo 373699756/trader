@@ -7,24 +7,24 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
+    FilterFeatureCandidates,
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
-    filter_feature_candidates,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,
-    require_previous_stage,
-    stage_output,
+    RequirePreviousStage,
+    StageOutput,
 )
-from trader.recommendation.domain.candidate.filters import HardFilterPolicy, apply_filters, level_two_filter_rules
+from trader.recommendation.domain.candidate.filters import ApplyFilters, HardFilterPolicy, LevelTwoFilterRules
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredDisposition
 from trader.recommendation.domain.selection.scored_selection import FilteredCandidateInputs
 
 
-def filter_dynamic_market(
+def FilterDynamicMarket(
     source: PipelineStageOutput[FeatureSnapshot],
     *,
     as_of: datetime,
@@ -32,13 +32,13 @@ def filter_dynamic_market(
     policy: HardFilterPolicy,
     latency_ms: int,
 ) -> PipelineStageOutput[FeatureSnapshot]:
-    require_previous_stage(source, PipelineStage.DYNAMIC_FILTER)
-    rules = level_two_filter_rules(max_age_seconds=max_age_seconds, policy=policy)
+    RequirePreviousStage(source, PipelineStage.DYNAMIC_FILTER)
+    rules = LevelTwoFilterRules(max_age_seconds=max_age_seconds, policy=policy)
     accepted: list[FeatureSnapshot] = []
     rejected: Counter[str] = Counter()
     pending: Counter[str] = Counter()
     for record in source.records:
-        result = apply_filters(record, rules, now=as_of)
+        result = ApplyFilters(record, rules, now=as_of)
         if result.reasons:
             rejected[result.reasons[0].filter_code] += 1
         elif result.deferred:
@@ -53,7 +53,7 @@ def filter_dynamic_market(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
         for code, count in sorted(pending.items())
     )
-    return stage_output(
+    return StageOutput(
         PipelineStage.DYNAMIC_FILTER,
         accepted,
         input_batch_id=source.snapshot.output_batch_id,
@@ -74,15 +74,15 @@ class QualifiedCandidateInputs:
     qualifications: FilteredCandidateInputs
 
 
-def qualify_candidate_inputs(
+def QualifyCandidateInputs(
     source: PipelineStageOutput[FeatureSnapshot],
     policy: RecommendationPolicy,
     options: ScoredSelectionOptions,
     identity: ScoredSelectionIdentity,
 ) -> QualifiedCandidateInputs:
     """Execute qualification once and retain the immutable evaluations for stage 8."""
-    require_previous_stage(source, PipelineStage.DYNAMIC_FILTER)
-    prepared = filter_feature_candidates(source.records, policy, options, identity)
+    RequirePreviousStage(source, PipelineStage.DYNAMIC_FILTER)
+    prepared = FilterFeatureCandidates(source.records, policy, options, identity)
     accepted: list[FeatureSnapshot] = []
     rejected: Counter[str] = Counter()
     pending: Counter[str] = Counter()
@@ -102,7 +102,7 @@ def qualify_candidate_inputs(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
         for code, count in sorted(pending.items())
     )
-    output = stage_output(
+    output = StageOutput(
         PipelineStage.DYNAMIC_FILTER,
         accepted,
         input_batch_id=source.snapshot.output_batch_id,
@@ -125,4 +125,4 @@ def qualify_candidate_inputs(
     return QualifiedCandidateInputs(output, prepared)
 
 
-__all__ = ["filter_dynamic_market", "qualify_candidate_inputs", "QualifiedCandidateInputs"]
+__all__ = ["FilterDynamicMarket", "QualifyCandidateInputs", "QualifiedCandidateInputs"]

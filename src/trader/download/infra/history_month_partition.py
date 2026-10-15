@@ -19,14 +19,14 @@ from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockCellSta
 from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
-from trader.download.infra.history_partition_proof import calculate_history_proof
+from trader.download.infra.history_partition_proof import CalculateHistoryProof
 from trader.download.infra.history_revision_codec import (
-    decode_history_revision,
-    encode_history_revision,
+    DecodeHistoryRevision,
+    EncodeHistoryRevision,
 )
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.download.infra.history_sqlite_read_connection import open_history_month_reader
-from trader.download.infra.published_history_codec import decode_published_history_cell
+from trader.download.infra.history_sqlite_read_connection import OpenHistoryMonthReader
+from trader.download.infra.published_history_codec import DecodePublishedHistoryCell
 
 _SCHEMA_IDENTITY = "history_direct_prices"
 _CODE = re.compile(r"^[0-9]{6}$")
@@ -625,7 +625,7 @@ class HistoryMonthPrices:
                 cursor = connection.execute(query, parameters)
                 while rows := cursor.fetchmany(512):
                     for row in rows:
-                        yield decode_published_history_cell(row)
+                        yield DecodePublishedHistoryCell(row)
         except (sqlite3.Error, TypeError, ValueError) as exc:
             raise HistoryMonthPartitionError("published daily query failed") from exc
 
@@ -670,7 +670,7 @@ class HistoryMonthPrices:
                     sequence = connection.execute(
                         "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_observations"
                     ).fetchone()[0]
-                proof = calculate_history_proof(
+                proof = CalculateHistoryProof(
                     connection,
                     sequence,
                     validate_payloads=False,
@@ -712,7 +712,7 @@ class HistoryMonthPrices:
                 connection.execute("BEGIN")
                 candidate._require_metadata(connection)
                 candidate._require_schema(connection)
-                proof = calculate_history_proof(
+                proof = CalculateHistoryProof(
                     connection,
                     reference.sequence,
                     validate_payloads=validate_payloads,
@@ -737,7 +737,7 @@ class HistoryMonthPrices:
             key = (value.trade_date, value.code, value.first_seen_sequence, value.revision_id)
             if previous_key is not None and key < previous_key:
                 raise ValueError("history month revisions must be written in deterministic order")
-            encoded = _EncodedRevision(value, value.trade_date.isoformat(), encode_history_revision(value))
+            encoded = _EncodedRevision(value, value.trade_date.isoformat(), EncodeHistoryRevision(value))
             observed_revision = observations.setdefault(encoded.observation_key, value.revision_id)
             if observed_revision != value.revision_id:
                 raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
@@ -962,12 +962,12 @@ class HistoryMonthPrices:
         return connection
 
     def _read_connection(self) -> sqlite3.Connection:
-        return open_history_month_reader(
+        return OpenHistoryMonthReader(
             self._path, statement_trace=self._statement_trace, mmap_bytes=0, activity=self._activity
         )
 
     def _verification_connection(self) -> sqlite3.Connection:
-        return open_history_month_reader(
+        return OpenHistoryMonthReader(
             self._path,
             statement_trace=self._statement_trace,
             mmap_bytes=_VERIFICATION_MMAP_BYTES,
@@ -1039,7 +1039,7 @@ def _require_revision_identity(
         value.industry,
         value.industry_classification,
     )
-    if existing_payload != encode_history_revision(persisted) or existing_hash != persisted.content_hash:
+    if existing_payload != EncodeHistoryRevision(persisted) or existing_hash != persisted.content_hash:
         raise HistoryMonthPartitionConflictError("history monthly revision identity conflicts")
 
 
@@ -1053,7 +1053,7 @@ def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
         raise HistoryMonthPartitionError("history month row fields are invalid")
     if not isinstance(first_seen_sequence, int) or isinstance(first_seen_sequence, bool):
         raise HistoryMonthPartitionError("history month sequence is invalid")
-    value = decode_history_revision(cast(str, payload_json))
+    value = DecodeHistoryRevision(cast(str, payload_json))
     if (
         value.trade_date.isoformat() != trade_date_value
         or value.code != code

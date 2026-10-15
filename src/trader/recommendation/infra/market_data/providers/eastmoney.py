@@ -15,9 +15,9 @@ import requests
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.tail import MinuteBar
-from trader.recommendation.infra.market_data.outcome_history import pair_outcome_history
+from trader.recommendation.infra.market_data.outcome_history import PairOutcomeHistory
 from trader.recommendation.infra.normalization.quote import (
-    to_float,
+    ToFloat,
 )
 from trader.training.domain.evaluation.models import OutcomeBar
 
@@ -73,7 +73,7 @@ class EastmoneyClient:
     ) -> tuple[OutcomeBar, ...]:
         qfq = self._fetch_daily_history(code, days=days, now=now, adjustment=PriceAdjustment.QFQ)
         raw = self._fetch_daily_history(code, days=days, now=now, adjustment=PriceAdjustment.RAW)
-        return pair_outcome_history(qfq, raw)
+        return PairOutcomeHistory(qfq, raw)
 
     def _fetch_daily_history(
         self,
@@ -108,11 +108,11 @@ class EastmoneyClient:
             parts = str(raw).split(",")
             if len(parts) < 9:
                 continue
-            values = [to_float(value) for value in parts[1:9]]
+            values = [ToFloat(value) for value in parts[1:9]]
             if any(value is None for value in values):
                 continue
             open_price, close, high, low, volume, amount, _amplitude, pct_change = cast(list[float], values)
-            turnover_rate = to_float(parts[10]) if len(parts) > 10 else None
+            turnover_rate = ToFloat(parts[10]) if len(parts) > 10 else None
             bars.append(
                 DailyBar(
                     trade_date=parts[0],
@@ -160,8 +160,8 @@ class EastmoneyClient:
                 source_time = datetime.strptime(parts[0], "%Y-%m-%d %H:%M").replace(tzinfo=_SHANGHAI)
             except ValueError:
                 continue
-            close = to_float(parts[2])
-            volume = to_float(parts[5])
+            close = ToFloat(parts[2])
+            volume = ToFloat(parts[5])
             if (
                 source_time.date() != observed_local.date()
                 or source_time > observed_local

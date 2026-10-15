@@ -5,8 +5,8 @@ from datetime import date, timedelta
 import pytest
 
 from trader.training.domain.evaluation.tomorrow_daily_close import (
-    build_expanding_walk_forward,
-    split_complete_trading_dates,
+    BuildExpandingWalkForward,
+    SplitCompleteTradingDates,
 )
 
 
@@ -18,7 +18,7 @@ def _dates(count: int) -> tuple[date, ...]:
 def test_complete_day_split_first_reserves_latest_point_in_time_holdout_then_applies_sixty_twenty_twenty() -> None:
     trading_dates = _dates(1_000)
 
-    split = split_complete_trading_dates(trading_dates)
+    split = SplitCompleteTradingDates(trading_dates)
 
     assert len(split.development_dates) == 475
     assert len(split.first_embargo_dates) == 5
@@ -36,19 +36,19 @@ def test_complete_day_split_rejects_duplicates_order_errors_and_too_few_dates() 
     trading_dates = _dates(240)
 
     with pytest.raises(ValueError, match="strictly increasing"):
-        split_complete_trading_dates((trading_dates[1], trading_dates[0], *trading_dates[2:]))
+        SplitCompleteTradingDates((trading_dates[1], trading_dates[0], *trading_dates[2:]))
     with pytest.raises(ValueError, match="strictly increasing"):
-        split_complete_trading_dates((*trading_dates, trading_dates[-1]))
+        SplitCompleteTradingDates((*trading_dates, trading_dates[-1]))
     with pytest.raises(ValueError, match="at least"):
-        split_complete_trading_dates(_dates(229))
+        SplitCompleteTradingDates(_dates(229))
     with pytest.raises(ValueError, match="reserve at least 200"):
-        split_complete_trading_dates(_dates(240), point_in_time_reserve_days=199)
+        SplitCompleteTradingDates(_dates(240), point_in_time_reserve_days=199)
 
 
 def test_expanding_walk_forward_has_five_ordered_non_overlapping_validation_folds() -> None:
-    split = split_complete_trading_dates(_dates(320))
+    split = SplitCompleteTradingDates(_dates(320))
 
-    folds = build_expanding_walk_forward(split.development_dates)
+    folds = BuildExpandingWalkForward(split.development_dates)
 
     assert len(folds) == 5
     assert tuple(fold.index for fold in folds) == (1, 2, 3, 4, 5)

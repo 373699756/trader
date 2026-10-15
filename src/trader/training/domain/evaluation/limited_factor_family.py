@@ -10,13 +10,13 @@ from typing import Literal
 
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_RAW_ALPHA_FEATURE_MANIFEST
 from trader.training.domain.evaluation.paired_statistics import (
+    FixedFamilyHolm,
+    PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
     PreregisteredHolmDecision,
-    fixed_family_holm,
-    paired_moving_block_statistics,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 LimitedFactorFamilyState = Literal[
     "factor_family_confirmed",
@@ -114,14 +114,14 @@ class LimitedFactorFamilySpec:
         object.__setattr__(self, "candidates", candidates)
         object.__setattr__(self, "development_dates", development)
         object.__setattr__(self, "confirmation_dates", confirmation)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def research_dates(self) -> tuple[date, ...]:
         return (*self.development_dates, *self.confirmation_dates)
 
 
-def build_intraday_price_volume_family_spec(
+def BuildIntradayPriceVolumeFamilySpec(
     *,
     development_dates: tuple[date, ...],
     confirmation_dates: tuple[date, ...],
@@ -272,7 +272,7 @@ class LimitedFactorFamilyReport:
             raise ValueError("limited factor report schema is invalid")
         object.__setattr__(self, "evidence", evidence)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _validate_report_identity(report: LimitedFactorFamilyReport, reasons: tuple[str, ...]) -> None:
@@ -312,7 +312,7 @@ def _validate_report_outcome(
         raise ValueError("limited factor report state is invalid")
 
 
-def evaluate_limited_factor_family(
+def EvaluateLimitedFactorFamily(
     spec: LimitedFactorFamilySpec,
     *,
     dataset_report_hash: str,
@@ -337,7 +337,7 @@ def evaluate_limited_factor_family(
         )
         for item in supplied
     }
-    holm = fixed_family_holm(
+    holm = FixedFamilyHolm(
         {candidate_id: result.p_value for candidate_id, result in bootstraps_20.items()},
         family=expected_ids,
         alpha=spec.holm_alpha,
@@ -361,7 +361,7 @@ def evaluate_limited_factor_family(
     )
 
 
-def insufficient_limited_factor_family_report(
+def InsufficientLimitedFactorFamilyReport(
     spec: LimitedFactorFamilySpec,
     *,
     dataset_report_hash: str,
@@ -494,7 +494,7 @@ def _bootstrap(
     metric: str,
     values: tuple[float, ...],
 ) -> PreregisteredBootstrapResult:
-    return paired_moving_block_statistics(
+    return PairedMovingBlockStatistics(
         values,
         plan=PreregisteredBootstrapPlan(
             identity=f"limited_factor_{spec.family_id}_{metric}",
@@ -524,7 +524,7 @@ __all__ = [
     "LimitedFactorFamilyReport",
     "LimitedFactorFamilySpec",
     "LimitedFactorFamilyState",
-    "build_intraday_price_volume_family_spec",
-    "evaluate_limited_factor_family",
-    "insufficient_limited_factor_family_report",
+    "BuildIntradayPriceVolumeFamilySpec",
+    "EvaluateLimitedFactorFamily",
+    "InsufficientLimitedFactorFamilyReport",
 ]

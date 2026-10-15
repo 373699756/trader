@@ -8,13 +8,13 @@ from datetime import date
 from typing import Literal
 
 from trader.download.application.progress_message import (
+    CleanProgressText,
+    DisplayWidth,
+    FormatProgressField,
+    ProgressDuration,
     ProgressField,
     ProgressLevel,
     ProgressMessage,
-    clean_progress_text,
-    display_width,
-    progress_duration,
-    progress_field,
 )
 
 _DownloadCommand = Literal["download", "qfq_download"]
@@ -68,44 +68,46 @@ class StockDownloadProgress:
             raise ValueError("stock download progress is invalid")
 
 
-def format_stock_download_progress(elapsed_seconds: float, progress: StockDownloadProgress) -> ProgressMessage:
+def FormatStockDownloadProgress(elapsed_seconds: float, progress: StockDownloadProgress) -> ProgressMessage:
     if not math.isfinite(elapsed_seconds):
         raise ValueError("stock download elapsed time is invalid")
     percent = progress.completed / progress.total * 100 if progress.total else 100.0
-    name = clean_progress_text(progress.name or "—").strip() or "—"
+    name = CleanProgressText(progress.name or "—").strip() or "—"
     short_name = name
-    if display_width(name) > _STOCK_NAME_WIDTH:
+    if DisplayWidth(name) > _STOCK_NAME_WIDTH:
         short_name = ""
         for char in name:
-            if display_width(short_name + char) > _STOCK_NAME_WIDTH - 1:
+            if DisplayWidth(short_name + char) > _STOCK_NAME_WIDTH - 1:
                 break
             short_name += char
         short_name += "…"
     level = _result_level(progress)
     missing = "未知" if progress.missing is None else str(progress.missing)
     parts = [
-        progress_field(progress_duration(elapsed_seconds)),
-        progress_field(f"{progress.command} 股票进度"),
+        FormatProgressField(ProgressDuration(elapsed_seconds)),
+        FormatProgressField(f"{progress.command} 股票进度"),
         ProgressField(f"{progress.completed}/{progress.total}（{percent:.2f}%）"),
-        progress_field(
-            f"股票 {progress.code} {short_name}", width=display_width(f"股票 {progress.code} ") + _STOCK_NAME_WIDTH
+        FormatProgressField(
+            f"股票 {progress.code} {short_name}", width=DisplayWidth(f"股票 {progress.code} ") + _STOCK_NAME_WIDTH
         ),
-        progress_field(f"处理 {progress.action}"),
-        progress_field(f"结果 {progress.result}", level=level),
-        progress_field(f"raw {_format_count(progress.raw, progress.target)}"),
-        progress_field(f"qfq {_format_count(progress.qfq, progress.target)}"),
-        progress_field(f"完整配对 {_format_count(progress.paired, progress.target)}"),
-        progress_field(
+        FormatProgressField(f"处理 {progress.action}"),
+        FormatProgressField(f"结果 {progress.result}", level=level),
+        FormatProgressField(f"raw {_format_count(progress.raw, progress.target)}"),
+        FormatProgressField(f"qfq {_format_count(progress.qfq, progress.target)}"),
+        FormatProgressField(f"完整配对 {_format_count(progress.paired, progress.target)}"),
+        FormatProgressField(
             f"缺日 {missing}", level=ProgressLevel.WARNING if progress.missing != 0 else ProgressLevel.NORMAL
         ),
-        *((progress_field(f"推定停牌 {progress.inferred_suspended}"),) if progress.inferred_suspended else ()),
-        *(progress_field(item) for item in progress.extra),
-        progress_field(f"原因 {progress.reason}", level=level if progress.reason != "无" else ProgressLevel.NORMAL),
+        *((FormatProgressField(f"推定停牌 {progress.inferred_suspended}"),) if progress.inferred_suspended else ()),
+        *(FormatProgressField(item) for item in progress.extra),
+        FormatProgressField(
+            f"原因 {progress.reason}", level=level if progress.reason != "无" else ProgressLevel.NORMAL
+        ),
     ]
     if progress.missing_dates:
-        parts.append(progress_field(f"缺失日期 {_format_missing_dates(progress.missing_dates)}"))
+        parts.append(FormatProgressField(f"缺失日期 {_format_missing_dates(progress.missing_dates)}"))
     if short_name != name:
-        parts.append(progress_field(f"完整名称 {name}"))
+        parts.append(FormatProgressField(f"完整名称 {name}"))
     return ProgressMessage(tuple(parts), progress.reason if progress.result in {"失败", "待重试"} else None)
 
 
@@ -132,4 +134,4 @@ def _format_missing_dates(days: tuple[date, ...]) -> str:
     return preview
 
 
-__all__ = ["StockDownloadProgress", "format_stock_download_progress"]
+__all__ = ["StockDownloadProgress", "FormatStockDownloadProgress"]

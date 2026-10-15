@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.recommendation.domain.market.tail import MinuteBar, TailSignalPolicy, derive_tail_signals
+from trader.recommendation.domain.market.tail import DeriveTailSignals, MinuteBar, TailSignalPolicy
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 POLICY = TailSignalPolicy(
@@ -20,7 +20,7 @@ POLICY = TailSignalPolicy(
 def test_tail_signals_use_exact_return_and_volume_formulas() -> None:
     bars = _minute_bars()
 
-    signals = derive_tail_signals(bars, observed_at=bars[-1].source_time, policy=POLICY)
+    signals = DeriveTailSignals(bars, observed_at=bars[-1].source_time, policy=POLICY)
 
     assert signals.return_pct == pytest.approx(2.0)
     assert signals.return_score == pytest.approx(100.0)
@@ -47,7 +47,7 @@ def test_tail_return_score_has_exact_clamp_boundaries(
 ) -> None:
     bars = _minute_bars(latest_price=latest_price)
 
-    signals = derive_tail_signals(bars, observed_at=bars[-1].source_time, policy=POLICY)
+    signals = DeriveTailSignals(bars, observed_at=bars[-1].source_time, policy=POLICY)
 
     assert signals.return_pct == pytest.approx(expected_return)
     assert signals.return_score == pytest.approx(expected_score)
@@ -64,7 +64,7 @@ def test_tail_volume_score_has_exact_clamp_boundaries(
 ) -> None:
     bars = _minute_bars(tail_volume=tail_volume)
 
-    signals = derive_tail_signals(bars, observed_at=bars[-1].source_time, policy=POLICY)
+    signals = DeriveTailSignals(bars, observed_at=bars[-1].source_time, policy=POLICY)
 
     assert signals.volume_ratio == pytest.approx(expected_ratio)
     assert signals.volume_score == pytest.approx(expected_score)
@@ -92,7 +92,7 @@ def test_tail_signals_ignore_future_and_other_trade_date_bars() -> None:
         ),
     )
 
-    signals = derive_tail_signals((*bars, *unrelated), observed_at=observed_at, policy=POLICY)
+    signals = DeriveTailSignals((*bars, *unrelated), observed_at=observed_at, policy=POLICY)
 
     assert signals.return_pct == pytest.approx(2.0)
     assert signals.volume_ratio == pytest.approx(1.5)
@@ -108,7 +108,7 @@ def test_tail_signals_ignore_bars_received_after_the_observation_time() -> None:
         received_time=observed_at + timedelta(seconds=1),
     )
 
-    signals = derive_tail_signals(
+    signals = DeriveTailSignals(
         (*bars[:-1], received_late),
         observed_at=observed_at,
         policy=POLICY,
@@ -128,7 +128,7 @@ def test_tail_signals_ignore_records_outside_trading_minutes() -> None:
         volume=9_999.0,
     )
 
-    signals = derive_tail_signals((*bars, out_of_session), observed_at=observed_at, policy=POLICY)
+    signals = DeriveTailSignals((*bars, out_of_session), observed_at=observed_at, policy=POLICY)
 
     assert signals.return_pct == pytest.approx(2.0)
     assert signals.volume_ratio == pytest.approx(1.5)
@@ -138,7 +138,7 @@ def test_tail_signals_ignore_records_outside_trading_minutes() -> None:
 def test_tail_signals_exclude_nonpositive_or_nonfinite_close(invalid_close: float) -> None:
     bars = _minute_bars()
 
-    signals = derive_tail_signals(
+    signals = DeriveTailSignals(
         (*bars[:-1], replace(bars[-1], close=invalid_close)),
         observed_at=bars[-1].source_time,
         policy=POLICY,
@@ -152,7 +152,7 @@ def test_tail_signals_exclude_nonpositive_or_nonfinite_close(invalid_close: floa
 def test_tail_signals_do_not_convert_invalid_volume_to_zero(invalid_volume: float) -> None:
     bars = _minute_bars()
 
-    signals = derive_tail_signals(
+    signals = DeriveTailSignals(
         (*bars[:-1], replace(bars[-1], volume=invalid_volume)),
         observed_at=bars[-1].source_time,
         policy=POLICY,
@@ -167,7 +167,7 @@ def test_tail_signals_reject_a_gap_in_the_latest_trading_minute_window() -> None
     bars = _minute_bars()
     with_gap = (*bars[:45], *bars[46:])
 
-    signals = derive_tail_signals(with_gap, observed_at=bars[-1].source_time, policy=POLICY)
+    signals = DeriveTailSignals(with_gap, observed_at=bars[-1].source_time, policy=POLICY)
 
     assert signals.return_pct is None
     assert signals.return_score is None
@@ -179,7 +179,7 @@ def test_tail_signals_exclude_duplicate_minute_without_using_ambiguous_value() -
     bars = _minute_bars()
     duplicate = replace(bars[-1], close=99.0)
 
-    signals = derive_tail_signals((*bars, duplicate), observed_at=bars[-1].source_time, policy=POLICY)
+    signals = DeriveTailSignals((*bars, duplicate), observed_at=bars[-1].source_time, policy=POLICY)
 
     assert signals.latest_at == bars[-2].source_time
     assert signals.latest_price == 10.0
@@ -202,7 +202,7 @@ def test_tail_signals_treat_lunch_break_as_adjacent_trading_minutes() -> None:
         for index, source_time in enumerate(times)
     )
 
-    signals = derive_tail_signals(bars, observed_at=times[-1], policy=POLICY)
+    signals = DeriveTailSignals(bars, observed_at=times[-1], policy=POLICY)
 
     assert signals.return_pct == pytest.approx(2.0)
     assert signals.volume_ratio == pytest.approx(1.5)
@@ -210,7 +210,7 @@ def test_tail_signals_treat_lunch_break_as_adjacent_trading_minutes() -> None:
 
 def test_tail_signals_require_timezone_aware_observation_time() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
-        derive_tail_signals((), observed_at=datetime(2026, 7, 16, 10, 0), policy=POLICY)
+        DeriveTailSignals((), observed_at=datetime(2026, 7, 16, 10, 0), policy=POLICY)
 
 
 def _minute_bars(*, latest_price: float = 10.2, tail_volume: float = 150.0) -> tuple[MinuteBar, ...]:

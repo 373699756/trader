@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from trader.infra.serialization.canonical import content_hash
+from trader.infra.serialization.canonical import ContentHash
 from trader.training.application.tomorrow_training import (
     TOMORROW_TRAINING_COMPUTE_THREADS,
     TOMORROW_TRAINING_PEAK_RSS_MIB,
@@ -26,8 +26,8 @@ def _configure_resources() -> None:
 _configure_resources()
 
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
-from trader.training.infra.profile.v3.training import run_repack_v3_training  # noqa: E402
-from trader.training.infra.training_settings import load_profile_training_settings  # noqa: E402
+from trader.training.infra.profile.v3.training import RunRepackV3Training  # noqa: E402
+from trader.training.infra.training_settings import LoadProfileTrainingSettings  # noqa: E402
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,9 +48,9 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     os.nice(10)
     before = _peak_rss_bytes()
-    settings = load_profile_training_settings(Path(__file__).resolve().parents[1], "v3")
+    settings = LoadProfileTrainingSettings(Path(__file__).resolve().parents[1], "v3")
     with StderrTomorrowTrainingProgress() as progress:
-        result = run_repack_v3_training(
+        result = RunRepackV3Training(
             args.history_root.resolve(),
             args.train_root.resolve(),
             settings=settings,
@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,
         )
         stage_durations = progress.stage_durations
-        repeated = run_repack_v3_training(
+        repeated = RunRepackV3Training(
             args.history_root.resolve(),
             args.train_root.resolve(),
             settings=settings,
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         "stage_durations_ms": {name: round(seconds * 1_000.0, 1) for name, seconds in stage_durations},
         "failure_reasons": [reason for head in result.heads for reason in head.failure_reasons],
     }
-    payload["content_hash"] = content_hash(payload)
+    payload["content_hash"] = ContentHash(payload)
     rendered = json.dumps(payload, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")) + "\n"
     _write_result(args.output.resolve(), rendered)
     print(rendered, end="")

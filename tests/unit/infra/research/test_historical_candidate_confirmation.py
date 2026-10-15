@@ -3,14 +3,14 @@ from datetime import date
 
 import pytest
 
-from trader.training.application.h1_point_in_time_completion import complete_h1_research
+from trader.training.application.h1_point_in_time_completion import CompleteH1Research
 from trader.training.application.historical_candidate_confirmation import (
-    seal_historical_confirmation_terminal_batch,
+    SealHistoricalConfirmationTerminalBatch,
 )
 from trader.training.domain.evaluation.h1_point_in_time import (
+    BuildH1CapabilityAudit,
     H1CapabilityProbe,
     H1PointInTimeSpec,
-    build_h1_capability_audit,
 )
 from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 from trader.training.infra.research.historical_candidate_confirmation import (
@@ -20,7 +20,7 @@ from trader.training.infra.research.historical_candidate_confirmation import (
 
 
 def _batch(tmp_path, *, failure: str = "eastmoney_historical_minute_probe_failed"):
-    capability = build_h1_capability_audit(
+    capability = BuildH1CapabilityAudit(
         (
             H1CapabilityProbe("tencent_qfq_daily", date(2023, 1, 10), False, "qfq", False, 640, 3, 1024, 0.5),
             H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 3, 512, 0.5),
@@ -28,11 +28,11 @@ def _batch(tmp_path, *, failure: str = "eastmoney_historical_minute_probe_failed
         probe_failures=(failure,),
     )
     archive = SQLiteH1PointInTimeSnapshot(tmp_path / "archive")
-    completion = complete_h1_research(
+    completion = CompleteH1Research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
-    return seal_historical_confirmation_terminal_batch(completion)
+    return SealHistoricalConfirmationTerminalBatch(completion)
 
 
 def test_historical_confirmation_archive_is_idempotent_and_hash_bound(tmp_path) -> None:

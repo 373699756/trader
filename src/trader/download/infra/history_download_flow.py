@@ -38,14 +38,14 @@ from trader.download.infra.history_download_index import (
 )
 from trader.download.infra.history_month_partition import HistoryMonthPartitionError
 from trader.download.infra.history_storage_profile import HistoryWriteTuning
-from trader.download.infra.history_sync_failure import HistorySyncFailureError, history_failure_detail
-from trader.infra.workers import WorkerExecutor, WorkerResourceRejectedError, submit_with_backpressure
+from trader.download.infra.history_sync_failure import HistoryFailureDetail, HistorySyncFailureError
+from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
 
 _FATAL = frozenset({"history_st_reference_conflict", "history_supplier_identity_conflict"})
 _LOGGER = logging.getLogger(__name__)
 
 
-def download_failure(exc: BaseException) -> str:
+def DownloadFailure(exc: BaseException) -> str:
     reason = str(exc).strip()
     return reason if re.fullmatch(r"[a-z0-9_]{1,64}", reason) else "history_supplier_failed"
 
@@ -228,7 +228,7 @@ class HistoryDownloadFlow:
             if cells + len(jobs[0].dates) > resources.tuning.max_cells:
                 break
             task = jobs.popleft()
-            future = submit_with_backpressure(resources.executor, self._fetch_task, task)
+            future = SubmitWithBackpressure(resources.executor, self._fetch_task, task)
             futures[future] = task
             cells += len(task.dates)
             codes += 1
@@ -254,7 +254,7 @@ class HistoryDownloadFlow:
             window, failure = exc.window, exc.reason
             unusable_qfq_dates = exc.unusable_qfq_dates
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            failure = download_failure(exc)
+            failure = DownloadFailure(exc)
             if failure in _FATAL:
                 raise
             window = empty
@@ -279,7 +279,7 @@ class HistoryDownloadFlow:
         except HistoryMonthPartitionError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            failure = download_failure(exc)
+            failure = DownloadFailure(exc)
             if failure in _FATAL:
                 raise
             previous = result.previous
@@ -342,7 +342,7 @@ class _TencentPipeline:
             except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
                 if original_failure is None:
                     raise
-                _LOGGER.error("history_writer_cleanup_failed diagnostic=%s", history_failure_detail(exc))
+                _LOGGER.error("history_writer_cleanup_failed diagnostic=%s", HistoryFailureDetail(exc))
 
     def _acknowledge(self) -> None:
         if self._writing is None or not self._writing.done():
@@ -413,7 +413,7 @@ class _TencentPipeline:
         batch = tuple(self._buffered)
         self._buffered.clear()
         self._writing_cells, self._writing_codes = cells, len(batch)
-        self._writing = submit_with_backpressure(self._flow._resources.writer, self._flow._commit, batch)
+        self._writing = SubmitWithBackpressure(self._flow._resources.writer, self._flow._commit, batch)
         self._last_commit = time.monotonic()
 
     def _wait(self, blocked: bool) -> None:
@@ -461,10 +461,10 @@ class _TencentPipeline:
         if self._writer_closed:
             return
         started = time.monotonic()
-        future = submit_with_backpressure(self._flow._resources.writer, self._flow._resources.prices.close_pipeline)
+        future = SubmitWithBackpressure(self._flow._resources.writer, self._flow._resources.prices.close_pipeline)
         future.result()
         self._write_seconds += time.monotonic() - started
         self._writer_closed = True
 
 
-__all__ = ["HistoryDownloadFlow", "HistoryDownloadResources", "download_failure"]
+__all__ = ["HistoryDownloadFlow", "HistoryDownloadResources", "DownloadFailure"]

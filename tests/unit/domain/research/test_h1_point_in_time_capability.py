@@ -3,9 +3,9 @@ from datetime import date
 import pytest
 
 from trader.training.domain.evaluation.h1_point_in_time import (
+    BuildH1CapabilityAudit,
     H1CapabilityAuditReport,
     H1CapabilityProbe,
-    build_h1_capability_audit,
 )
 
 
@@ -32,7 +32,7 @@ def _probe(
 
 
 def test_capability_audit_fails_each_strategy_closed_when_free_sources_lack_historical_anchors() -> None:
-    report = build_h1_capability_audit(
+    report = BuildH1CapabilityAudit(
         (
             _probe(
                 "tencent_qfq_daily",
@@ -79,12 +79,12 @@ def test_capability_audit_requires_independent_qfq_anchor_and_effective_state_ev
         effective_state=False,
         rows=1600,
     )
-    report = build_h1_capability_audit((qfq, anchor))
+    report = BuildH1CapabilityAudit((qfq, anchor))
 
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
     assert all("effective_security_state_unavailable" in item.failure_reasons for item in report.strategies)
     with pytest.raises(ValueError, match="source identities"):
-        build_h1_capability_audit((qfq, qfq))
+        BuildH1CapabilityAudit((qfq, qfq))
 
 
 def test_capability_audit_preserves_bounded_source_probe_failures() -> None:
@@ -97,7 +97,7 @@ def test_capability_audit_preserves_bounded_source_probe_failures() -> None:
         rows=1600,
     )
 
-    report = build_h1_capability_audit(
+    report = BuildH1CapabilityAudit(
         (probe,),
         probe_failures=("minute_source_probe_failed", "minute_source_probe_failed"),
     )
@@ -106,7 +106,7 @@ def test_capability_audit_preserves_bounded_source_probe_failures() -> None:
     assert report.schema_version == "score_h1_source_capability_audit"
     assert {item.state for item in report.strategies} == {"historical_data_insufficient"}
     with pytest.raises(ValueError, match="failure identities"):
-        build_h1_capability_audit((probe,), probe_failures=("invalid failure",))
+        BuildH1CapabilityAudit((probe,), probe_failures=("invalid failure",))
     with pytest.raises(ValueError, match="cannot authorize production"):
         H1CapabilityAuditReport(
             report.probes, report.strategies, schema_version="score_h1_source_capability_audit_legacy"

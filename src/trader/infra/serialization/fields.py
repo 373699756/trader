@@ -17,51 +17,51 @@ from typing import TypeGuard, cast
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
 
-def is_non_empty_text(value: object) -> TypeGuard[str]:
+def IsNonEmptyText(value: object) -> TypeGuard[str]:
     """Return whether ``value`` is a non-empty string."""
 
     return isinstance(value, str) and bool(value)
 
 
-def is_integer(value: object) -> TypeGuard[int]:
+def IsInteger(value: object) -> TypeGuard[int]:
     """Return whether ``value`` is an integer and not a boolean."""
 
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def is_number(value: object) -> TypeGuard[float]:
+def IsNumber(value: object) -> TypeGuard[float]:
     """Return whether ``value`` is a number and not a boolean."""
 
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def is_finite_number(value: object) -> TypeGuard[float]:
+def IsFiniteNumber(value: object) -> TypeGuard[float]:
     """Return whether ``value`` is a finite number and not a boolean."""
 
-    if not is_number(value):
+    if not IsNumber(value):
         return False
     return math.isfinite(value)
 
 
-def is_boolean(value: object) -> TypeGuard[bool]:
+def IsBoolean(value: object) -> TypeGuard[bool]:
     """Return whether ``value`` is a boolean."""
 
     return isinstance(value, bool)
 
 
-def is_sha256_text(value: object) -> TypeGuard[str]:
+def IsSha256Text(value: object) -> TypeGuard[str]:
     """Return whether ``value`` is lowercase hexadecimal SHA-256 text."""
 
     return isinstance(value, str) and len(value) == 64 and all(character in _HEX_DIGITS for character in value)
 
 
-def is_text_sequence(value: object) -> TypeGuard[list[str]]:
+def IsTextSequence(value: object) -> TypeGuard[list[str]]:
     """Return whether ``value`` is a sequence whose items are all strings."""
 
     return isinstance(value, list) and all(isinstance(item, str) for item in value)
 
 
-def as_sequence(value: object) -> list[object] | None:
+def AsSequence(value: object) -> list[object] | None:
     """Return ``value`` as a list when it is one, otherwise ``None``."""
 
     if not isinstance(value, list):
@@ -70,12 +70,12 @@ def as_sequence(value: object) -> list[object] | None:
 
 
 __all__ = [
-    "as_sequence",
-    "is_boolean",
-    "is_finite_number",
-    "is_integer",
-    "is_non_empty_text",
-    "is_number",
-    "is_sha256_text",
-    "is_text_sequence",
+    "AsSequence",
+    "IsBoolean",
+    "IsFiniteNumber",
+    "IsInteger",
+    "IsNonEmptyText",
+    "IsNumber",
+    "IsSha256Text",
+    "IsTextSequence",
 ]

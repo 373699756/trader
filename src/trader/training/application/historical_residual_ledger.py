@@ -13,9 +13,9 @@ from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalPredictionRecord,
     HistoricalResidualSummary,
     JoinedHistoricalResidual,
-    summarize_residuals,
+    SummarizeResiduals,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -61,7 +61,7 @@ class HistoricalResidualLedgerBatch:
             raise ValueError("historical residual batch schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("historical residual batch cannot open holdout or production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 class HistoricalResidualLedgerService:
@@ -88,7 +88,7 @@ class HistoricalResidualLedgerService:
             if item.predicted_net_excess_return is not None
         )
         complete = bool(modeled) and len(joined) == len(modeled)
-        summary = summarize_residuals(joined) if complete else None
+        summary = SummarizeResiduals(joined) if complete else None
         return HistoricalResidualLedgerBatch(
             strategy,
             parent_split_hash,

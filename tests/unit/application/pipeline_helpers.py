@@ -5,15 +5,15 @@ from datetime import datetime
 
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import CandidatePlanningContext
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
-    assemble_candidate_inputs,
-    execute_candidate_pipeline,
+    AssembleCandidateInputs,
+    ExecuteCandidatePipeline,
 )
 from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import (
-    build_dynamic_market_snapshot,
+    BuildDynamicMarketSnapshot,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import assess_candidate_input_stage
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import AssessCandidateInputStage
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, StageOutput
 from trader.recommendation.application.ports.market_data import FullMarketFeatureBatch
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
@@ -31,7 +31,7 @@ def observed_static_stages(population: int, as_of: datetime) -> tuple[PipelineSt
     snapshots = []
     input_id = "observed-static-fixture"
     for index, stage in enumerate(PIPELINE_STAGES[:4]):
-        output = stage_output(
+        output = StageOutput(
             stage,
             tuple(range(population)),
             input_batch_id=input_id,
@@ -62,7 +62,7 @@ def observed_market_batch(features: Sequence[FeatureSnapshot], as_of: datetime) 
             for item in records
         ),
         snapshots[-1],
-        stage_output(
+        StageOutput(
             PIPELINE_STAGES[3],
             records,
             input_batch_id=snapshots[-1].input_batch_id,
@@ -72,7 +72,7 @@ def observed_market_batch(features: Sequence[FeatureSnapshot], as_of: datetime) 
             latency_ms=14,
         ).business_rejections,
     )
-    dynamic = build_dynamic_market_snapshot(static, records, as_of=as_of, data_version="fixture:dynamic", latency_ms=21)
+    dynamic = BuildDynamicMarketSnapshot(static, records, as_of=as_of, data_version="fixture:dynamic", latency_ms=21)
     return FullMarketFeatureBatch(records, IssuerEligibilityBatch(len(records), len(records)), snapshots, dynamic)
 
 
@@ -93,15 +93,15 @@ def observed_quality_input(
 ) -> tuple[tuple[PipelineStageSnapshot, ...], PipelineStageOutput[FeatureSnapshot]]:
     batch = observed_market_batch(features, as_of)
     ticks = iter(index / 100 for index in range(100))
-    pipeline = execute_candidate_pipeline(
+    pipeline = ExecuteCandidatePipeline(
         batch.dynamic_stage,
         CandidatePlanningContext(as_of, "fixture", policy, None, 120),
         lambda: next(ticks),
     )
-    candidates = assemble_candidate_inputs(
+    candidates = AssembleCandidateInputs(
         pipeline.candidates[strategy], tuple(features), as_of=as_of, data_version="fixture:available"
     )
-    quality = assess_candidate_input_stage(candidates, as_of=as_of, minimum_history_sessions=20, latency_ms=17)
+    quality = AssessCandidateInputStage(candidates, as_of=as_of, minimum_history_sessions=20, latency_ms=17)
     snapshots = (
         *batch.static_stages,
         batch.dynamic_stage.snapshot,

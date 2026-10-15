@@ -10,9 +10,9 @@ from trader.training.domain.evaluation.baostock_holdout_isolation import (
     BAOSTOCK_SOURCE_ANCHOR,
     HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY,
     POINT_IN_TIME_HOLDOUT_IDENTITY,
+    AuditBaostockHoldoutIsolation,
     BaoStockHoldoutIsolationBlocker,
     BaoStockHoldoutIsolationInput,
-    audit_baostock_holdout_isolation,
 )
 
 _DAILY_HASH = "1" * 64
@@ -48,7 +48,7 @@ def _valid_input() -> BaoStockHoldoutIsolationInput:
 
 
 def test_latest_200_dates_are_isolated_from_every_daily_close_consumer() -> None:
-    result = audit_baostock_holdout_isolation(_valid_input())
+    result = AuditBaostockHoldoutIsolation(_valid_input())
 
     assert result.status == "isolated"
     assert result.blockers == ()
@@ -64,7 +64,7 @@ def test_latest_200_dates_are_isolated_from_every_daily_close_consumer() -> None
 )
 def test_reserved_date_consumed_by_any_daily_close_stage_is_blocked(field: str) -> None:
     value = _valid_input()
-    result = audit_baostock_holdout_isolation(
+    result = AuditBaostockHoldoutIsolation(
         replace(value, **{field: (*getattr(value, field), value.point_in_time_reserved_dates[0])})
     )
 
@@ -75,10 +75,10 @@ def test_reserved_date_consumed_by_any_daily_close_stage_is_blocked(field: str) 
 def test_reserve_must_be_exactly_the_latest_200_complete_dates() -> None:
     value = _valid_input()
 
-    below_minimum = audit_baostock_holdout_isolation(
+    below_minimum = AuditBaostockHoldoutIsolation(
         replace(value, point_in_time_reserved_dates=value.point_in_time_reserved_dates[1:])
     )
-    not_latest = audit_baostock_holdout_isolation(
+    not_latest = AuditBaostockHoldoutIsolation(
         replace(
             value,
             point_in_time_reserved_dates=(
@@ -98,7 +98,7 @@ def test_reserve_must_be_exactly_the_latest_200_complete_dates() -> None:
 
 def test_daily_close_source_cannot_claim_1500_point_in_time_parity() -> None:
     value = _valid_input()
-    result = audit_baostock_holdout_isolation(
+    result = AuditBaostockHoldoutIsolation(
         replace(value, source_anchor="15:00_point_in_time", point_in_time_parity_claimed=True)
     )
 
@@ -109,7 +109,7 @@ def test_daily_close_source_cannot_claim_1500_point_in_time_parity() -> None:
 
 
 def test_audit_blocks_an_already_opened_point_in_time_holdout() -> None:
-    result = audit_baostock_holdout_isolation(replace(_valid_input(), point_in_time_holdout_opened=True))
+    result = AuditBaostockHoldoutIsolation(replace(_valid_input(), point_in_time_holdout_opened=True))
 
     assert result.blockers == (BaoStockHoldoutIsolationBlocker.POINT_IN_TIME_HOLDOUT_ALREADY_OPENED,)
     assert result.terminal_holdout_opened is False
@@ -117,7 +117,7 @@ def test_audit_blocks_an_already_opened_point_in_time_holdout() -> None:
 
 def test_point_in_time_holdout_cannot_reuse_historical_candidate_identity_or_parent_hash() -> None:
     value = _valid_input()
-    result = audit_baostock_holdout_isolation(
+    result = AuditBaostockHoldoutIsolation(
         replace(
             value,
             point_in_time_holdout_identity=HISTORICAL_CANDIDATE_HOLDOUT_IDENTITY,
@@ -133,7 +133,7 @@ def test_point_in_time_holdout_cannot_reuse_historical_candidate_identity_or_par
 
 def test_identity_and_required_new_parent_hashes_are_fixed() -> None:
     value = _valid_input()
-    result = audit_baostock_holdout_isolation(
+    result = AuditBaostockHoldoutIsolation(
         replace(
             value,
             daily_identity="score_baostock_daily_core_v1",
@@ -176,8 +176,8 @@ def test_consumed_and_reserved_dates_must_belong_to_complete_calendar() -> None:
 
 
 def test_same_metadata_produces_a_deterministic_audit_hash() -> None:
-    first = audit_baostock_holdout_isolation(_valid_input())
-    second = audit_baostock_holdout_isolation(_valid_input())
+    first = AuditBaostockHoldoutIsolation(_valid_input())
+    second = AuditBaostockHoldoutIsolation(_valid_input())
 
     assert first.input_content_hash == second.input_content_hash
     assert first.content_hash == second.content_hash

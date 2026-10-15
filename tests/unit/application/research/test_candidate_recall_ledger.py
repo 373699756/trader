@@ -15,13 +15,13 @@ from trader.training.application.candidate_recall_ledger import CandidateRecallL
 from trader.training.application.limited_factor_family import LimitedFactorFamilyResearchBuilder
 from trader.training.domain.evaluation.candidate_recall_ledger import (
     CANDIDATE_RECALL_STAGES,
+    AttributeCandidateRecallDay,
+    BuildCandidateRecallReport,
     CandidateRecallDayTrace,
     CandidateRecallDownstreamBoundary,
     CandidateRecallDownstreamTrace,
     CandidateRecallStageLatency,
     CandidateRecallTraceMismatchError,
-    attribute_candidate_recall_day,
-    build_candidate_recall_report,
 )
 from trader.training.domain.evaluation.limited_factor_family import (
     LimitedFactorCandidate,
@@ -322,7 +322,7 @@ def test_rejection_results_keep_negative_zero_and_independent_tail_risk_labels()
         else row
         for row in trace.downstream_rows
     )
-    attributed = attribute_candidate_recall_day(day, replace(trace, downstream_rows=downstream))
+    attributed = AttributeCandidateRecallDay(day, replace(trace, downstream_rows=downstream))
     risk = next(item for item in attributed.rejection_metrics if item.boundary == "risk")
     assert risk.positive_net_count == 2
     assert risk.exit_untradable_rate == risk.severe_loss_rate == 0.5
@@ -382,14 +382,14 @@ def test_report_rejects_self_consistent_attribution_with_forged_parent_rows(muta
             ),
         ),
     )
-    altered = attribute_candidate_recall_day(altered_parent, _trace(altered_parent))
+    altered = AttributeCandidateRecallDay(altered_parent, _trace(altered_parent))
     # Upstream rows are absent from the downstream trace: the original hash remains valid.
     forged = replace(altered, dataset_day_hash=parent.content_hash, trace_hash=report.days[0].trace_hash)
     if mutation == "row_hash":
         forged = replace(forged, rows=(replace(forged.rows[0], dataset_row_hash=HASHES[12]), *forged.rows[1:]))
 
     with pytest.raises(CandidateRecallTraceMismatchError, match="parent dataset"):
-        build_candidate_recall_report(dataset, (forged, *report.days[1:]))
+        BuildCandidateRecallReport(dataset, (forged, *report.days[1:]))
 
     dates = tuple(date(2024, 1, day) for day in range(1, 11))
     spec = LimitedFactorFamilySpec(

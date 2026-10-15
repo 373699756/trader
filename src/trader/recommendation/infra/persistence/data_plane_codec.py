@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import TypedDict, cast
 
-from trader.infra.serialization.canonical import canonical_json_text
+from trader.infra.serialization.canonical import CanonicalJsonText
 from trader.recommendation.application.ports.data_plane_records import (
     RiskEvidenceRecord,
     SecurityMasterRecord,
@@ -30,7 +30,7 @@ class _CommonRecordFields(TypedDict):
     schema_version: str
 
 
-def record_to_row(profile: _Profile, record: Record, *, freeze_id: str | None = None) -> dict[str, object]:
+def RecordToRow(profile: _Profile, record: Record, *, freeze_id: str | None = None) -> dict[str, object]:
     if profile.family == "security_master":
         base = _security_master_identity(record)
     elif profile.family == "risk_evidence":
@@ -70,47 +70,47 @@ def _trading_calendar_identity(record: Record) -> dict[str, object]:
     return {"calendar_name": record.calendar_name}
 
 
-def assert_committed_record_integrity(table: str, row: sqlite3.Row) -> None:
-    payload = parse_payload_text(text(row["payload"]))
-    record_payload_for_table(table, payload)
-    payload_text = canonical_json(payload)
-    if sha256(payload_text.encode("utf-8")) != text(row["payload_hash"]):
+def AssertCommittedRecordIntegrity(table: str, row: sqlite3.Row) -> None:
+    payload = ParsePayloadText(Text(row["payload"]))
+    RecordPayloadForTable(table, payload)
+    payload_text = CanonicalJson(payload)
+    if Sha256(payload_text.encode("utf-8")) != Text(row["payload_hash"]):
         raise ValueError("payload hash mismatch")
-    parse_datetime(text(row["observed_at"]))
-    parse_datetime(text(row["source_time"]))
+    ParseDatetime(Text(row["observed_at"]))
+    ParseDatetime(Text(row["source_time"]))
 
 
-def row_to_record(table: str, row: sqlite3.Row) -> Record:
+def RowToRecord(table: str, row: sqlite3.Row) -> Record:
     payload = _row_payload(table, row)
     common: _CommonRecordFields = {
-        "observed_at": parse_datetime(text(row["observed_at"])),
-        "source_time": parse_datetime(text(row["source_time"])),
-        "source": text(row["source"]),
-        "data_version": text(row["data_version"]),
+        "observed_at": ParseDatetime(Text(row["observed_at"])),
+        "source_time": ParseDatetime(Text(row["source_time"])),
+        "source": Text(row["source"]),
+        "data_version": Text(row["data_version"]),
         "payload": payload,
-        "payload_hash": text(row["payload_hash"]),
-        "schema_version": text(row["schema_version"]),
+        "payload_hash": Text(row["payload_hash"]),
+        "schema_version": Text(row["schema_version"]),
     }
     if table in {"security_master_recent", "security_master_formal"}:
-        return SecurityMasterRecord(code=text(row["code"]), **common)
+        return SecurityMasterRecord(code=Text(row["code"]), **common)
     if table in {"risk_evidence_recent", "risk_evidence_formal"}:
         return RiskEvidenceRecord(
-            code=text(row["code"]),
-            evidence_id=text(row["evidence_id"]),
+            code=Text(row["code"]),
+            evidence_id=Text(row["evidence_id"]),
             **common,
         )
     if table in {"source_cursor_recent", "source_cursor_formal"}:
         return SourceCursorRecord(
-            cursor_name=text(row["cursor_name"]),
-            cursor_value=text(row["cursor_value"]),
+            cursor_name=Text(row["cursor_name"]),
+            cursor_value=Text(row["cursor_value"]),
             **common,
         )
     if table in {"trading_calendar_recent", "trading_calendar_formal"}:
-        return TradingCalendarRecord(calendar_name=text(row["calendar_name"]), **common)
+        return TradingCalendarRecord(calendar_name=Text(row["calendar_name"]), **common)
     raise ValueError(f"unsupported table: {table}")
 
 
-def record_payload_for_table(table: str, payload: JsonObject) -> None:
+def RecordPayloadForTable(table: str, payload: JsonObject) -> None:
     if not isinstance(payload, Mapping):
         raise TypeError("payload root must be an object")
     supported = (
@@ -127,7 +127,7 @@ def record_payload_for_table(table: str, payload: JsonObject) -> None:
         raise ValueError("persisted data-plane facts must not be empty")
 
 
-def table_to_record_kind(table: str) -> str:
+def TableToRecordKind(table: str) -> str:
     for prefix, kind in (
         ("security_master_", "security_master"),
         ("risk_evidence_", "risk_evidence"),
@@ -139,8 +139,8 @@ def table_to_record_kind(table: str) -> str:
     raise ValueError(f"unsupported table: {table}")
 
 
-def pk_fields_from_table(table: str) -> tuple[str, ...]:
-    identities = identity_fields_for_table(table)
+def PkFieldsFromTable(table: str) -> tuple[str, ...]:
+    identities = IdentityFieldsForTable(table)
     if table.endswith("_formal"):
         return ("freeze_id", *identities)
     if table.endswith("_recent"):
@@ -148,7 +148,7 @@ def pk_fields_from_table(table: str) -> tuple[str, ...]:
     raise ValueError(f"unsupported table: {table}")
 
 
-def identity_fields_for_table(table: str) -> tuple[str, ...]:
+def IdentityFieldsForTable(table: str) -> tuple[str, ...]:
     if table.startswith("security_master_"):
         return ("code",)
     if table.startswith("risk_evidence_"):
@@ -160,11 +160,11 @@ def identity_fields_for_table(table: str) -> tuple[str, ...]:
     raise ValueError(f"unsupported table: {table}")
 
 
-def identity_values_from_row(table: str, row: sqlite3.Row) -> tuple[str, ...]:
-    return tuple(text(row[field]) for field in pk_fields_from_table(table))
+def IdentityValuesFromRow(table: str, row: sqlite3.Row) -> tuple[str, ...]:
+    return tuple(Text(row[field]) for field in PkFieldsFromTable(table))
 
 
-def to_payload_dict(payload: object) -> dict[str, object]:
+def ToPayloadDict(payload: object) -> dict[str, object]:
     if not isinstance(payload, Mapping):
         raise TypeError("payload must be a mapping")
     return {str(key): _thaw_json(value) for key, value in payload.items()}
@@ -178,30 +178,30 @@ def _thaw_json(value: object) -> object:
     return value
 
 
-def canonical_json(payload: Mapping[str, object]) -> str:
-    return canonical_json_text(payload, ascii_only=False)
+def CanonicalJson(payload: Mapping[str, object]) -> str:
+    return CanonicalJsonText(payload, ascii_only=False)
 
 
-def canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
-    return canonical_json_text(payload, ascii_only=False).encode("utf-8")
+def CanonicalJsonBytes(payload: Mapping[str, object]) -> bytes:
+    return CanonicalJsonText(payload, ascii_only=False).encode("utf-8")
 
 
-def parse_payload_text(raw: str) -> JsonObject:
+def ParsePayloadText(raw: str) -> JsonObject:
     decoded = json.loads(raw)
     if not isinstance(decoded, dict):
         raise TypeError("payload root must be an object")
     return cast(JsonObject, decoded)
 
 
-def parse_payload_bytes(raw: bytes) -> JsonObject:
-    return parse_payload_text(raw.decode("utf-8"))
+def ParsePayloadBytes(raw: bytes) -> JsonObject:
+    return ParsePayloadText(raw.decode("utf-8"))
 
 
-def sha256(payload: bytes) -> str:
+def Sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def text(value: object) -> str:
+def Text(value: object) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8")
     if value is None:
@@ -209,40 +209,40 @@ def text(value: object) -> str:
     return str(value)
 
 
-def parse_datetime(value: object) -> datetime:
-    parsed = datetime.fromisoformat(text(value))
+def ParseDatetime(value: object) -> datetime:
+    parsed = datetime.fromisoformat(Text(value))
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware")
     return parsed
 
 
-def iso_datetime(value: datetime) -> str:
+def IsoDatetime(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("timestamp must be timezone-aware")
     return value.isoformat()
 
 
 def _row_payload(table: str, row: sqlite3.Row) -> JsonObject:
-    payload = parse_payload_text(text(row["payload"]))
-    record_payload_for_table(table, payload)
+    payload = ParsePayloadText(Text(row["payload"]))
+    RecordPayloadForTable(table, payload)
     return payload
 
 
 __all__ = [
-    "assert_committed_record_integrity",
-    "canonical_json",
-    "canonical_json_bytes",
-    "identity_fields_for_table",
-    "identity_values_from_row",
-    "iso_datetime",
-    "parse_datetime",
-    "parse_payload_bytes",
-    "pk_fields_from_table",
-    "record_payload_for_table",
-    "record_to_row",
-    "row_to_record",
-    "sha256",
-    "table_to_record_kind",
-    "text",
-    "to_payload_dict",
+    "AssertCommittedRecordIntegrity",
+    "CanonicalJson",
+    "CanonicalJsonBytes",
+    "IdentityFieldsForTable",
+    "IdentityValuesFromRow",
+    "IsoDatetime",
+    "ParseDatetime",
+    "ParsePayloadBytes",
+    "PkFieldsFromTable",
+    "RecordPayloadForTable",
+    "RecordToRow",
+    "RowToRecord",
+    "Sha256",
+    "TableToRecordKind",
+    "Text",
+    "ToPayloadDict",
 ]

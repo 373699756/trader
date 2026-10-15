@@ -8,14 +8,14 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Literal
 
-from trader.recommendation.domain.candidate.composition import LocalScoreResult, compose
+from trader.recommendation.domain.candidate.composition import Compose, LocalScoreResult
 from trader.recommendation.domain.evidence.missing_value_policy import (
+    AssessMissingValues,
     MissingFieldRule,
     MissingValuePolicy,
-    assess_missing_values,
 )
 from trader.recommendation.domain.evidence.quality import MissingSeverity
-from trader.recommendation.domain.market.factors import clamp, weighted_score
+from trader.recommendation.domain.market.factors import Clamp, WeightedScore
 from trader.recommendation.domain.market.models import (
     Board,
     BoardPopulation,
@@ -29,6 +29,8 @@ from trader.recommendation.domain.publication.models import (
 from trader.recommendation.domain.scoring.scoring_calculations import (
     MAX_FALLBACK_SESSIONS,
     MIN_BOARD_SAMPLE,
+    CandidateFields,
+    SupportedWeight,
     _base_reliability,
     _candidate_fields,
     _default_competition_group,
@@ -40,8 +42,6 @@ from trader.recommendation.domain.scoring.scoring_calculations import (
     _quantile,
     _supported_weight,
     _value_or_missing,
-    candidate_fields,
-    supported_weight,
 )
 
 BOARD_SCHEMA_VERSION = "board_cross_section_score_first"
@@ -104,7 +104,7 @@ class _PopulationBasis:
     fallback_age: int | None
 
 
-def build_board_cross_section(request: BoardCrossSectionRequest) -> BoardCrossSection:
+def BuildBoardCrossSection(request: BoardCrossSectionRequest) -> BoardCrossSection:
     """Build one isolated board cross-section without reading configuration or I/O."""
 
     _validate_request(request)
@@ -271,7 +271,7 @@ def _enrich_features(
     return tuple(enriched)
 
 
-def apply_board_policy(
+def ApplyBoardPolicy(
     cross_section: BoardCrossSection,
     strategy: Strategy,
     policy: BoardStrategyPolicy,
@@ -301,7 +301,7 @@ def apply_board_policy(
     return tuple(result)
 
 
-def project_board_policy(
+def ProjectBoardPolicy(
     cross_section: BoardCrossSection,
     strategy: Strategy,
     policy: BoardStrategyPolicy,
@@ -332,10 +332,10 @@ def project_board_policy(
         schema_version=cross_section.schema_version,
     )
     enriched = _enrich_features(normalized, cross_section.population, request)
-    return apply_board_policy(replace(cross_section, features=enriched), strategy, policy)
+    return ApplyBoardPolicy(replace(cross_section, features=enriched), strategy, policy)
 
 
-def enrich_board_features(
+def EnrichBoardFeatures(
     strategy: Strategy,
     policy: BoardStrategyPolicy,
     request: BoardCrossSectionRequest,
@@ -344,24 +344,24 @@ def enrich_board_features(
 
     if request.board is not policy.board:
         raise ValueError("board cross-section request does not match policy")
-    cross_section = build_board_cross_section(request)
-    return apply_board_policy(cross_section, strategy, policy)
+    cross_section = BuildBoardCrossSection(request)
+    return ApplyBoardPolicy(cross_section, strategy, policy)
 
 
-def board_candidate_score(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> float:
-    return board_candidate_score_from_components(board_candidate_components(snapshot, policy), policy)
+def BoardCandidateScore(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> float:
+    return BoardCandidateScoreFromComponents(BoardCandidateComponents(snapshot, policy), policy)
 
 
-def board_candidate_score_from_components(
+def BoardCandidateScoreFromComponents(
     components: Mapping[str, float],
     policy: BoardStrategyPolicy,
 ) -> float:
     """Compose already-derived candidate components with the configured board weights."""
 
-    return compose(components, policy.candidate_weights).base_score
+    return Compose(components, policy.candidate_weights).base_score
 
 
-def board_candidate_components(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> Mapping[str, float]:
+def BoardCandidateComponents(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> Mapping[str, float]:
     """Return the exact candidate components consumed by the board policy."""
 
     if snapshot.quote.board is not policy.board or policy.strategy is Strategy.LONG:
@@ -397,12 +397,12 @@ def board_candidate_components(snapshot: FeatureSnapshot, policy: BoardStrategyP
     return values
 
 
-def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> LocalScoreResult:
+def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -> LocalScoreResult:
     if snapshot.quote.board is not policy.board:
         raise ValueError("board score policy does not match snapshot board")
     if policy.strategy is Strategy.TOMORROW:
         components = {
-            "tail_structure": weighted_score(
+            "tail_structure": WeightedScore(
                 {
                     "tail_return_30m": snapshot.value("tail_return_30m"),
                     "tail_volume_ratio": snapshot.value("tail_volume_ratio"),
@@ -410,7 +410,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
                 },
                 policy.local_component_weights["tail_structure"],
             ),
-            "turnover_flow": weighted_score(
+            "turnover_flow": WeightedScore(
                 {
                     "turnover_shock_score": snapshot.value("turnover_shock_score"),
                     "amount_shock_score": snapshot.value("amount_shock_score"),
@@ -418,7 +418,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
                 },
                 policy.local_component_weights["turnover_flow"],
             ),
-            "trend": weighted_score(
+            "trend": WeightedScore(
                 {
                     "ma20_60_position": snapshot.value("ma20_60_position"),
                     "ma_slope": snapshot.value("ma_slope"),
@@ -436,7 +436,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
         }
     elif policy.strategy is Strategy.D25:
         components = {
-            "trend": weighted_score(
+            "trend": WeightedScore(
                 {
                     "ma20_60_structure": snapshot.value("ma20_60_structure"),
                     "ma_slope": snapshot.value("ma_slope"),
@@ -444,7 +444,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
                 },
                 policy.local_component_weights["trend"],
             ),
-            "quality_value": weighted_score(
+            "quality_value": WeightedScore(
                 {
                     "quality_score": snapshot.value("quality_score"),
                     "value_score": snapshot.value("value_score"),
@@ -457,7 +457,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
                 ("low_volatility_score", "low_drawdown_score"),
                 policy.local_component_weights["stability"],
             ),
-            "flow_liquidity": weighted_score(
+            "flow_liquidity": WeightedScore(
                 {
                     "amount_percentile_20d": snapshot.value("amount_percentile_20d"),
                     "turnover_shock_score": snapshot.value("turnover_shock_score"),
@@ -469,7 +469,7 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
         }
     else:
         raise ValueError("long has no board score")
-    result = compose(components, policy.local_weights)
+    result = Compose(components, policy.local_weights)
     rules = tuple(
         MissingFieldRule(field, MissingSeverity.GENERAL, Decimal(str(weight * inner_weight * 50.0)), False)
         for component, weight in policy.local_weights.items()
@@ -478,11 +478,11 @@ def score_board_strategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy)
             ((component, 1.0),) if component == "entry_quality" else policy.local_component_weights[component].items()
         )
     )
-    quality = assess_missing_values(snapshot, MissingValuePolicy(rules))
+    quality = AssessMissingValues(snapshot, MissingValuePolicy(rules))
     penalty = float(quality.quality_penalty)
     return LocalScoreResult(
         components={**result.components, "quality_penalty": penalty},
-        base_score=clamp(result.base_score - penalty),
+        base_score=Clamp(result.base_score - penalty),
     )
 
 
@@ -499,7 +499,7 @@ def _weighted_known(
     known_weight = sum(weights[field] for field in known)
     if known_weight <= 0.0:
         return 50.0
-    return clamp(sum(snapshot.value(field) * weights[field] for field in known) / known_weight)
+    return Clamp(sum(snapshot.value(field) * weights[field] for field in known) / known_weight)
 
 
 __all__ = [
@@ -508,14 +508,14 @@ __all__ = [
     "BoardCrossSectionRequest",
     "MAX_FALLBACK_SESSIONS",
     "MIN_BOARD_SAMPLE",
-    "apply_board_policy",
-    "board_candidate_score",
-    "board_candidate_score_from_components",
-    "board_candidate_components",
-    "build_board_cross_section",
-    "candidate_fields",
-    "enrich_board_features",
-    "project_board_policy",
-    "score_board_strategy",
-    "supported_weight",
+    "ApplyBoardPolicy",
+    "BoardCandidateScore",
+    "BoardCandidateScoreFromComponents",
+    "BoardCandidateComponents",
+    "BuildBoardCrossSection",
+    "CandidateFields",
+    "EnrichBoardFeatures",
+    "ProjectBoardPolicy",
+    "ScoreBoardStrategy",
+    "SupportedWeight",
 ]

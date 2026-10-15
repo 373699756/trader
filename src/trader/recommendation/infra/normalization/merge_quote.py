@@ -9,8 +9,8 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
-from trader.infra.market_data.source_identity import source_name, source_priority
-from trader.recommendation.domain.candidate.filters import board_for_code
+from trader.infra.market_data.source_identity import SourceName, SourcePriority
+from trader.recommendation.domain.candidate.filters import BoardForCode
 from trader.recommendation.domain.market.models import (
     Board,
     MarketQuote,
@@ -19,7 +19,7 @@ from trader.recommendation.infra.normalization.field_quality import (
     REALTIME_SOURCES as _REALTIME_SOURCES,
 )
 from trader.recommendation.infra.normalization.field_quality import (
-    select_fields as select_quote_fields,
+    SelectFields as select_quote_fields,
 )
 from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
@@ -61,14 +61,14 @@ class _BoardProjection:
     conflicts: set[str]
 
 
-def merge_code(
+def MergeCode(
     code: str,
     observations: Sequence[SourceObservation],
     *,
     targeted: bool,
 ) -> tuple[MarketQuote, dict[str, str], set[str]]:
     values, sources, selected_observations = _select_fields(observations, targeted=targeted)
-    price_observation = selected_observations.get("price") or max(observations, key=observation_order)
+    price_observation = selected_observations.get("price") or max(observations, key=ObservationOrder)
     board_values, board_sources, restrictions, board_conflicts = _board_identity(code, observations)
     if price_observation.missing_reasons.get("cache_refresh") == "cache_degraded":
         restrictions.add("market_data_degraded")
@@ -113,7 +113,7 @@ def _realtime_prices(
     return [
         (observation, price)
         for observation in observations
-        if source_name(observation.source) in _REALTIME_SOURCES
+        if SourceName(observation.source) in _REALTIME_SOURCES
         if (price := _number(observation.fields.get("price"))) is not None
     ]
 
@@ -130,7 +130,7 @@ def _verify_prices(
         full_market_prices = [
             price
             for observation, price in prices
-            if source_name(observation.source) in {"eastmoney", "sina"} and price is not None
+            if SourceName(observation.source) in {"eastmoney", "sina"} and price is not None
         ]
         verified = tencent is not None and any(
             _price_deviation(tencent, full_market_price) <= 0.5 for full_market_price in full_market_prices
@@ -158,7 +158,7 @@ def _project_quote(projection: _QuoteProjection) -> MarketQuote:
         amplitude=_number(values.get("amplitude")),
         market_cap=_number(values.get("market_cap")),
         industry=_text(values.get("industry")),
-        source=source_name(price_observation.source),
+        source=SourceName(price_observation.source),
         source_time=price_observation.source_time,
         received_time=price_observation.received_at,
         data_version=price_observation.data_version,
@@ -191,7 +191,7 @@ def _board_identity(
     observations: Sequence[SourceObservation],
 ) -> tuple[dict[str, JsonScalar], dict[str, str], set[str], set[str]]:
     candidates = [observation for observation in observations if observation.fields.get("board") is not None]
-    fallback = board_for_code(code)
+    fallback = BoardForCode(code)
     projection = _BoardProjection({}, {}, set(), set())
     if candidates:
         _apply_reported_board(code, candidates, fallback, projection)
@@ -215,9 +215,9 @@ def _apply_reported_board(
     sources = projection.sources
     selected = max(
         candidates,
-        key=lambda item: (_SOURCE_PRIORITY.get(source_name(item.source), 0), *observation_order(item)),
+        key=lambda item: (_SOURCE_PRIORITY.get(SourceName(item.source), 0), *ObservationOrder(item)),
     )
-    source = source_name(selected.source)
+    source = SourceName(selected.source)
     selected_board = _board_value(selected.fields.get("board"))
     reported = {_board_value(item.fields.get("board")) for item in candidates}
     if len(reported) > 1 or (fallback is not Board.UNSUPPORTED and selected_board is not fallback):
@@ -278,17 +278,17 @@ def _apply_board_defaults(
         sources["rule_effective_date"] = "local_rule"
 
 
-def observation_order(observation: SourceObservation) -> tuple[datetime, datetime, int, str, ObservationFacts]:
+def ObservationOrder(observation: SourceObservation) -> tuple[datetime, datetime, int, str, ObservationFacts]:
     return (
         observation.source_time,
         observation.received_at,
-        _SOURCE_PRIORITY.get(source_name(observation.source), 0),
+        _SOURCE_PRIORITY.get(SourceName(observation.source), 0),
         observation.data_version,
         ObservationFacts(observation),
     )
 
 
-def rejection_reason(observation: SourceObservation, observed_at: datetime) -> str | None:
+def RejectionReason(observation: SourceObservation, observed_at: datetime) -> str | None:
     if observation.status != "success":
         return observation.status
     if not observation.data_version.strip():
@@ -361,4 +361,4 @@ def _optional_date(value: JsonScalar) -> date | None:
         return None
 
 
-__all__ = ["merge_code", "observation_order", "rejection_reason", "source_name", "source_priority"]
+__all__ = ["MergeCode", "ObservationOrder", "RejectionReason", "SourceName", "SourcePriority"]

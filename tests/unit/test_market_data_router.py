@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from trader.recommendation.application.ports.market_data import MarketDataFailedError, MarketDataNoDataError
-from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome, VendorRoute, VendorSeverity, route
+from trader.recommendation.infra.market_data.vendor_routing import Route, RouteOutcome, VendorRoute, VendorSeverity
 
 
 def test_route_prefers_required_success_after_optional_failure() -> None:
@@ -17,7 +17,7 @@ def test_route_prefers_required_success_after_optional_failure() -> None:
         calls.append("eastmoney")
         return (("000001",),)
 
-    outcome: RouteOutcome = route(
+    outcome: RouteOutcome = Route(
         (
             VendorRoute("research", optional_fail, VendorSeverity.OPTIONAL),
             VendorRoute("eastmoney", primary_success, VendorSeverity.REQUIRED),
@@ -49,7 +49,7 @@ def test_market_data_router_prefers_no_data_over_failures() -> None:
         raise RuntimeError("offline")
 
     with pytest.raises(MarketDataNoDataError, match="insufficient rows") as exc_info:
-        route(
+        Route(
             (
                 VendorRoute("eastmoney", required_fail, VendorSeverity.REQUIRED),
                 VendorRoute("sina", required_empty, VendorSeverity.REQUIRED),
@@ -72,7 +72,7 @@ def test_market_data_router_raises_market_data_failed_with_vendor_summary() -> N
         raise RuntimeError("timeout")
 
     with pytest.raises(MarketDataFailedError, match=r"sina: .*timeout") as exc_info:
-        route(
+        Route(
             (
                 VendorRoute("eastmoney", failing, VendorSeverity.REQUIRED),
                 VendorRoute("sina", failing, VendorSeverity.REQUIRED),
@@ -93,7 +93,7 @@ def test_market_data_router_marks_circuit_open_as_skipped() -> None:
     def circuit_open() -> tuple[tuple[str], ...]:
         raise MarketDataFailedError("eastmoney", "circuit_open")
 
-    outcome: RouteOutcome = route(
+    outcome: RouteOutcome = Route(
         (
             VendorRoute("eastmoney", circuit_open, VendorSeverity.REQUIRED),
             VendorRoute("sina", lambda: (("000001",),), VendorSeverity.REQUIRED),

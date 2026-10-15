@@ -5,17 +5,17 @@ from pathlib import Path
 
 from trader.recommendation.infra.persistence.data_plane_sqlite import (
     SCHEMA_VERSION,
-    connection_scope,
-    initialize_database,
+    ConnectionScope,
+    InitializeDatabase,
 )
 
 
 def test_initialize_database_sets_schema_to_current_version(tmp_path: Path) -> None:
     database = tmp_path / "market-data.sqlite3"
 
-    initialize_database(database)
+    InitializeDatabase(database)
 
-    with connection_scope(database) as connection:
+    with ConnectionScope(database) as connection:
         version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
 
     assert version is not None
@@ -42,10 +42,10 @@ def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) ->
             """
         )
 
-    initialize_database(database)
-    initialize_database(database)
+    InitializeDatabase(database)
+    InitializeDatabase(database)
 
-    with connection_scope(database) as connection:
+    with ConnectionScope(database) as connection:
         columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(security_master_recent)")}
         tables = {
             str(row["name"])
@@ -68,9 +68,9 @@ def test_initialize_database_recovers_from_invalid_schema_version(tmp_path: Path
         connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         connection.execute("INSERT INTO schema_meta(key, value) VALUES('schema_version', 'N/A')")
 
-    initialize_database(database)
+    InitializeDatabase(database)
 
-    with connection_scope(database) as connection:
+    with ConnectionScope(database) as connection:
         version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
 
     assert version is not None
@@ -95,9 +95,9 @@ def test_initialize_database_handles_data_plane_schema_without_schema_meta(tmp_p
             """
         )
 
-    initialize_database(database)
+    InitializeDatabase(database)
 
-    with connection_scope(database) as connection:
+    with ConnectionScope(database) as connection:
         version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
         rows = {str(row["name"]) for row in connection.execute("PRAGMA table_info(security_master_recent)")}
 

@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.entrypoints.cli import build_parser
+from trader.entrypoints.cli import BuildParser
 from trader.training.application.scoring_hot_path_baseline import ScoringHotPathBaseline
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_scoring_hot_path_baseline_has_explicit_cli_and_fixed_identity() -> None:
-    args = build_parser().parse_args(["research-scoring-hot-path-baseline"])
+    args = BuildParser().parse_args(["research-scoring-hot-path-baseline"])
     assert args.command == "research-scoring-hot-path-baseline"
     assert ScoringHotPathBaseline.__dataclass_fields__["schema_version"].default == (
         "scoring_hot_path_efficiency_baseline"

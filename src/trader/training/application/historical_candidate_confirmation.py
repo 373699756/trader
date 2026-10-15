@@ -11,23 +11,23 @@ from datetime import date
 from typing import Literal
 
 from trader.training.application.h1_point_in_time_completion import H1ResearchCompletion
-from trader.training.domain.evaluation.filter_recall_ablation import FilterAblationRow, run_filter_recall_ablation
+from trader.training.domain.evaluation.filter_recall_ablation import FilterAblationRow, RunFilterRecallAblation
 from trader.training.domain.evaluation.historical_candidate_confirmation import (
+    BuildConfirmationFolds,
     CandidateConfirmationPlan,
     CandidateConfirmationSeries,
+    ConfirmRuleCandidates,
     HistoricalCandidateConfirmationReport,
-    build_confirmation_folds,
-    confirm_rule_candidates,
-    inherit_candidate_confirmation,
+    InheritCandidateConfirmation,
 )
 from trader.training.domain.evaluation.preregistered_rule_candidate import (
+    EvaluateRuleCandidate,
+    EvaluateRuleCandidateFamily,
     PreregisteredRuleCandidate,
     PreregisteredRuleCandidateFamily,
+    PreregisterRuleCandidates,
     RuleCandidateEvaluationReport,
     RuleCandidateMetrics,
-    evaluate_rule_candidate,
-    evaluate_rule_candidate_family,
-    preregister_rule_candidates,
 )
 
 HistoricalStrategy = Literal["tomorrow", "d25"]
@@ -202,7 +202,7 @@ class HistoricalConfirmationTerminalBatch:
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
-def seal_historical_confirmation_terminal_batch(
+def SealHistoricalConfirmationTerminalBatch(
     completion: H1ResearchCompletion,
 ) -> HistoricalConfirmationTerminalBatch:
     """Seal a no-data confirmation terminal without inventing dates, rows, candidates, or statistics."""
@@ -268,7 +268,7 @@ def _validate_confirmation_batch_outcome(batch: HistoricalConfirmationTerminalBa
         raise ValueError("Historical confirmation terminal batch status is invalid")
 
 
-def execute_historical_candidate_confirmation(
+def ExecuteHistoricalCandidateConfirmation(
     family: PreregisteredRuleCandidateFamily,
     development_series: tuple[CandidateConfirmationSeries, ...],
     confirmation_series: tuple[CandidateConfirmationSeries, ...],
@@ -277,7 +277,7 @@ def execute_historical_candidate_confirmation(
 ) -> HistoricalCandidateConfirmationReport:
     """Evaluate a sealed development family and its sole confirmation candidate."""
 
-    return confirm_rule_candidates(
+    return ConfirmRuleCandidates(
         family,
         development_series,
         confirmation_series,
@@ -285,18 +285,18 @@ def execute_historical_candidate_confirmation(
     )
 
 
-def execute_historical_strategy_research(
+def ExecuteHistoricalStrategyResearch(
     request: HistoricalStrategyResearchRequest,
     *,
     repetitions: int = 10_000,
 ) -> HistoricalStrategyResearchResult:
-    ablation = run_filter_recall_ablation(
+    ablation = RunFilterRecallAblation(
         request.development_rows,
         strategy=request.strategy,
         development_dates=request.development_dates,
     )
-    family = preregister_rule_candidates(ablation, removed_components=request.removed_components)
-    candidate_report = evaluate_rule_candidate_family(family, request.development_rows)
+    family = PreregisterRuleCandidates(ablation, removed_components=request.removed_components)
+    candidate_report = EvaluateRuleCandidateFamily(family, request.development_rows)
     if request.parent_status == "ready" and candidate_report.status == "candidate_family_sealed":
         selected_candidate_id = candidate_report.selected_candidate_id
         if selected_candidate_id is None:
@@ -314,14 +314,14 @@ def execute_historical_strategy_research(
             rows=request.confirmation_rows,
             dates=request.confirmation_dates,
         )
-        confirmation = confirm_rule_candidates(
+        confirmation = ConfirmRuleCandidates(
             family,
             development_series,
             confirmation_series,
             CandidateConfirmationPlan(selected_candidate_id, repetitions=repetitions),
         )
     elif request.parent_status != "ready":
-        confirmation = inherit_candidate_confirmation(
+        confirmation = InheritCandidateConfirmation(
             family,
             confirmation_dates=request.confirmation_dates,
             status=request.parent_status,
@@ -338,7 +338,7 @@ def execute_historical_strategy_research(
             if inherited_status == "historical_data_insufficient"
             else "development_candidate_not_selected"
         )
-        confirmation = inherit_candidate_confirmation(
+        confirmation = InheritCandidateConfirmation(
             family,
             confirmation_dates=request.confirmation_dates,
             status=inherited_status,
@@ -355,7 +355,7 @@ def execute_historical_strategy_research(
     )
 
 
-def execute_historical_confirmation_batch(
+def ExecuteHistoricalConfirmationBatch(
     requests: tuple[HistoricalStrategyResearchRequest, ...],
     *,
     repetitions: int = 10_000,
@@ -365,7 +365,7 @@ def execute_historical_confirmation_batch(
         raise ValueError("Historical confirmation batch requires exactly one request for each strategy")
     return HistoricalConfirmationBatchResult(
         tuple(
-            execute_historical_strategy_research(by_strategy[strategy], repetitions=repetitions)
+            ExecuteHistoricalStrategyResearch(by_strategy[strategy], repetitions=repetitions)
             for strategy in _STRATEGIES
         )
     )
@@ -381,7 +381,7 @@ def _candidate_series(
 ) -> tuple[CandidateConfirmationSeries, ...]:
     control = candidates[0]
     control_daily = tuple(_daily_metrics(control, rows, trade_date) for trade_date in dates)
-    folds = build_confirmation_folds(direction_dates) if direction_dates else ()
+    folds = BuildConfirmationFolds(direction_dates) if direction_dates else ()
     result: list[CandidateConfirmationSeries] = []
     for candidate in candidates:
         candidate_daily = tuple(_daily_metrics(candidate, rows, trade_date) for trade_date in dates)
@@ -428,7 +428,7 @@ def _daily_metrics(
     trade_date: date,
 ) -> RuleCandidateMetrics:
     daily = tuple(row for row in rows if row.trade_date == trade_date)
-    return evaluate_rule_candidate(candidate, daily, evaluation_dates=(trade_date,))
+    return EvaluateRuleCandidate(candidate, daily, evaluation_dates=(trade_date,))
 
 
 def _fold_direction(
@@ -438,8 +438,8 @@ def _fold_direction(
     fold: tuple[date, ...],
 ) -> int:
     fold_rows = tuple(row for row in rows if row.trade_date in fold)
-    candidate_metrics = evaluate_rule_candidate(candidate, fold_rows, evaluation_dates=fold)
-    control_metrics = evaluate_rule_candidate(control, fold_rows, evaluation_dates=fold)
+    candidate_metrics = EvaluateRuleCandidate(candidate, fold_rows, evaluation_dates=fold)
+    control_metrics = EvaluateRuleCandidate(control, fold_rows, evaluation_dates=fold)
     increment = candidate_metrics.net_excess_20bp - control_metrics.net_excess_20bp
     return 1 if increment > 0.0 else (-1 if increment < 0.0 else 0)
 
@@ -473,8 +473,8 @@ __all__ = [
     "HistoricalConfirmationTerminalBatch",
     "HistoricalStrategyResearchRequest",
     "HistoricalStrategyResearchResult",
-    "execute_historical_confirmation_batch",
-    "execute_historical_candidate_confirmation",
-    "execute_historical_strategy_research",
-    "seal_historical_confirmation_terminal_batch",
+    "ExecuteHistoricalConfirmationBatch",
+    "ExecuteHistoricalCandidateConfirmation",
+    "ExecuteHistoricalStrategyResearch",
+    "SealHistoricalConfirmationTerminalBatch",
 ]

@@ -66,7 +66,7 @@ def test_empty_gap_fetch_does_not_start_a_supplier_process(monkeypatch: pytest.M
 
     monkeypatch.setattr(supplier, "get_context", unexpected_context)
 
-    assert supplier.fetch_baostock_gaps(()) == supplier.BaoStockGapResult((), ())
+    assert supplier.FetchBaostockGaps(()) == supplier.BaoStockGapResult((), ())
 
 
 @pytest.mark.parametrize(
@@ -77,4 +77,4 @@ def test_gap_fetch_rejects_unbounded_worker_options(retries: int, timeout: float
     request = supplier.BaoStockGapRequest("600001", "daily_qfq", (date(2026, 9, 2),))
 
     with pytest.raises(ValueError, match="options"):
-        supplier.fetch_baostock_gaps((request,), options=supplier.BaoStockGapWorkerOptions(retries, timeout))
+        supplier.FetchBaostockGaps((request,), options=supplier.BaoStockGapWorkerOptions(retries, timeout))

@@ -42,7 +42,7 @@ class DailyBar:
             raise ValueError("daily bar source is required")
 
 
-def require_qfq_history(histories: Mapping[str, tuple[DailyBar, ...]]) -> None:
+def RequireQfqHistory(histories: Mapping[str, tuple[DailyBar, ...]]) -> None:
     for code, bars in histories.items():
         raw_sources = sorted({bar.source for bar in bars if bar.adjustment is not PriceAdjustment.QFQ})
         if raw_sources:
@@ -94,7 +94,7 @@ class HistoryContext:
         return price if price is not None and price > 0.0 else None
 
 
-def build_history_context(
+def BuildHistoryContext(
     bars: tuple[DailyBar, ...],
     *,
     lookback_sessions: int = 61,
@@ -110,15 +110,15 @@ def build_history_context(
         if len(ordered) >= days + 1 and ordered[-days - 1].close > 0
     )
     return HistoryContext(
-        profile=summarize_history_metrics(ordered),
-        previous_profile=summarize_history_metrics(ordered[:-1]) if len(ordered) > 1 else None,
+        profile=SummarizeHistoryMetrics(ordered),
+        previous_profile=SummarizeHistoryMetrics(ordered[:-1]) if len(ordered) > 1 else None,
         latest_trade_date=ordered[-1].trade_date if ordered else "",
         sample_count=len(ordered),
         return_anchors=anchors,
     )
 
 
-def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
+def SummarizeHistoryMetrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
     """Compute all history metrics used by FeatureBuilder in one local pass."""
 
     ma5 = _moving_average_from_tail(bars, 5)
@@ -129,7 +129,7 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
     ma20_slope = (
         (ma20 / prior_ma20 - 1.0) * 100.0 if ma20 is not None and prior_ma20 is not None and prior_ma20 > 0.0 else None
     )
-    atr20 = average_true_range_pct(bars)
+    atr20 = AverageTrueRangePct(bars)
     volume_5d = _positive_average(tuple(bar.volume for bar in bars[-5:]), 5)
     amount_5d = _positive_average(tuple(bar.amount for bar in bars[-5:]), 5)
     high_20d = max((bar.high for bar in bars[-20:] if bar.high > 0.0), default=None) if len(bars) >= 20 else None
@@ -200,7 +200,7 @@ def summarize_history_metrics(bars: tuple[DailyBar, ...]) -> HistoryProfile:
     )
 
 
-def return_pct(bars: tuple[DailyBar, ...], days: int, current_price: float | None = None) -> float | None:
+def ReturnPct(bars: tuple[DailyBar, ...], days: int, current_price: float | None = None) -> float | None:
     if days < 1 or len(bars) < days + 1:
         return None
     end = current_price if current_price is not None else bars[-1].close
@@ -210,7 +210,7 @@ def return_pct(bars: tuple[DailyBar, ...], days: int, current_price: float | Non
     return (end / start - 1.0) * 100.0
 
 
-def moving_average(bars: tuple[DailyBar, ...], days: int) -> float | None:
+def MovingAverage(bars: tuple[DailyBar, ...], days: int) -> float | None:
     if days < 1 or len(bars) < days:
         return None
     closes = [bar.close for bar in bars[-days:] if bar.close > 0]
@@ -228,7 +228,7 @@ def _moving_average_from_tail(bars: tuple[DailyBar, ...], days: int) -> float | 
     return sum(closes) / float(days)
 
 
-def volatility_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
+def VolatilityPct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     if len(bars) < days + 1:
         return None
     returns: list[float] = []
@@ -238,7 +238,7 @@ def volatility_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     return statistics.pstdev(returns) if len(returns) == days else None
 
 
-def maximum_drawdown_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
+def MaximumDrawdownPct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     if len(bars) < days:
         return None
     peak = -math.inf
@@ -251,7 +251,7 @@ def maximum_drawdown_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float | 
     return drawdown if math.isfinite(peak) else None
 
 
-def average_true_range_pct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
+def AverageTrueRangePct(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     if len(bars) < days + 1:
         return None
     values: list[float] = []
@@ -283,14 +283,14 @@ def _amihud_average(bars: list[DailyBar]) -> float | None:
     return sum(values) / 20.0 if len(values) == 20 else None
 
 
-def median_amount(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
+def MedianAmount(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     if len(bars) < days:
         return None
     values = [bar.amount for bar in bars[-days:] if bar.amount > 0]
     return statistics.median(values) if len(values) == days else None
 
 
-def upward_consistency(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
+def UpwardConsistency(bars: tuple[DailyBar, ...], days: int = 20) -> float | None:
     if len(bars) < days:
         return None
     values = [bar.pct_change for bar in bars[-days:] if math.isfinite(bar.pct_change)]
@@ -302,15 +302,15 @@ __all__ = [
     "HistoryAdjustmentError",
     "HistoryContext",
     "PriceAdjustment",
-    "average_true_range_pct",
-    "build_history_context",
-    "maximum_drawdown_pct",
+    "AverageTrueRangePct",
+    "BuildHistoryContext",
+    "MaximumDrawdownPct",
     "HistoryProfile",
-    "median_amount",
-    "moving_average",
-    "summarize_history_metrics",
-    "return_pct",
-    "require_qfq_history",
-    "upward_consistency",
-    "volatility_pct",
+    "MedianAmount",
+    "MovingAverage",
+    "SummarizeHistoryMetrics",
+    "ReturnPct",
+    "RequireQfqHistory",
+    "UpwardConsistency",
+    "VolatilityPct",
 ]

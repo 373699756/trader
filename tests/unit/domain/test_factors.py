@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 
 from trader.recommendation.domain.market.factors import (
-    band_score,
-    percentile_scores,
-    percentile_scores_with_metadata,
-    round_score,
-    weighted_score,
+    BandScore,
+    PercentileScores,
+    PercentileScoresWithMetadata,
+    RoundScore,
+    WeightedScore,
 )
 
 
@@ -24,18 +24,18 @@ from trader.recommendation.domain.market.factors import (
     ],
 )
 def test_band_score_contract(value, expected) -> None:
-    assert band_score(value, 0.0, 0.2, 1.8, 3.5) == pytest.approx(expected)
+    assert BandScore(value, 0.0, 0.2, 1.8, 3.5) == pytest.approx(expected)
 
 
 def test_band_score_treats_non_finite_as_missing_and_rejects_invalid_bounds() -> None:
-    assert band_score(float("nan"), 0.0, 0.2, 1.8, 3.5) == 50.0
-    assert band_score(float("inf"), 0.0, 0.2, 1.8, 3.5) == 50.0
+    assert BandScore(float("nan"), 0.0, 0.2, 1.8, 3.5) == 50.0
+    assert BandScore(float("inf"), 0.0, 0.2, 1.8, 3.5) == 50.0
     with pytest.raises(ValueError, match="band boundaries"):
-        band_score(1.0, 0.0, 0.0, 1.8, 3.5)
+        BandScore(1.0, 0.0, 0.0, 1.8, 3.5)
 
 
 def test_percentile_scores_use_average_rank_for_ties() -> None:
-    scores = percentile_scores({"a": 1.0, "b": 2.0, "c": 2.0, "d": 4.0, "missing": None})
+    scores = PercentileScores({"a": 1.0, "b": 2.0, "c": 2.0, "d": 4.0, "missing": None})
 
     assert scores == {
         "a": 0.0,
@@ -47,7 +47,7 @@ def test_percentile_scores_use_average_rank_for_ties() -> None:
 
 
 def test_percentile_scores_winsorize_and_report_replay_metadata() -> None:
-    scores, metadata = percentile_scores_with_metadata(
+    scores, metadata = PercentileScoresWithMetadata(
         {"low": -1000.0, "a": 1.0, "b": 1.0, "high": 1000.0, "missing": float("nan")}
     )
 
@@ -59,7 +59,7 @@ def test_percentile_scores_winsorize_and_report_replay_metadata() -> None:
 
 
 def test_percentile_scores_single_sample_is_neutral_and_replayable() -> None:
-    scores, metadata = percentile_scores_with_metadata({"only": 7.0, "missing": None})
+    scores, metadata = PercentileScoresWithMetadata({"only": 7.0, "missing": None})
 
     assert scores == {"only": 50.0, "missing": 50.0}
     assert metadata.lower_bound == 7.0
@@ -69,11 +69,11 @@ def test_percentile_scores_single_sample_is_neutral_and_replayable() -> None:
 
 
 def test_round_score_uses_round_half_up() -> None:
-    assert round_score(83.405) == 83.41
-    assert round_score(-2.0) == 0.0
-    assert round_score(101.0) == 100.0
+    assert RoundScore(83.405) == 83.41
+    assert RoundScore(-2.0) == 0.0
+    assert RoundScore(101.0) == 100.0
 
 
 def test_weighted_score_rejects_component_drift() -> None:
     with pytest.raises(ValueError, match="component mismatch"):
-        weighted_score({"one": 50.0}, {"one": 0.5, "two": 0.5})
+        WeightedScore({"one": 50.0}, {"one": 0.5, "two": 0.5})

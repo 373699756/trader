@@ -25,7 +25,7 @@ from trader.recommendation.domain.publication.decision_identity import DecisionI
 from trader.recommendation.domain.publication.models import Strategy
 
 
-def serialize_decision_view(view: DecisionView) -> dict[str, object]:
+def SerializeDecisionView(view: DecisionView) -> dict[str, object]:
     if view.strategy is Strategy.LONG:
         return _serialize_long_view(view)
     return {
@@ -72,8 +72,8 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
             else None
         ),
         "degraded_reasons": list(view.degraded_reasons),
-        "items": [serialize_decision_item(item) for item in view.items],
-        "top_scores": [serialize_decision_item(item) for item in view.top_scores],
+        "items": [SerializeDecisionItem(item) for item in view.items],
+        "top_scores": [SerializeDecisionItem(item) for item in view.top_scores],
         "outcome_summaries": [
             {
                 "tier": item.tier,
@@ -91,8 +91,8 @@ def serialize_decision_view(view: DecisionView) -> dict[str, object]:
                 "content_hash": view.draft.content_hash,
                 "observed_at": _time(view.draft.observed_at),
                 "input_versions": dict(view.draft.input_versions),
-                "items": [serialize_decision_item(item) for item in view.draft.items],
-                "top_scores": [serialize_decision_item(item) for item in view.draft.top_scores],
+                "items": [SerializeDecisionItem(item) for item in view.draft.items],
+                "top_scores": [SerializeDecisionItem(item) for item in view.draft.top_scores],
             }
             if view.draft is not None
             else None
@@ -209,7 +209,7 @@ def _serialize_pipeline_reason(value: PipelineReasonCount) -> dict[str, object]:
     return {"reason": value.reason, "count": value.count}
 
 
-def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
+def SerializeDecisionItem(item: DecisionItemView) -> dict[str, object]:
     return {
         "code": item.code,
         "name": item.name,
@@ -286,7 +286,7 @@ def serialize_decision_item(item: DecisionItemView) -> dict[str, object]:
     }
 
 
-def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
+def SerializeEvent(event: UnifiedPublishedEvent) -> dict[str, object]:
     payload = event.payload
     common: dict[str, object] = {"schema_version": "decision_event"}
     if isinstance(payload, DecisionEventPayload):
@@ -318,7 +318,7 @@ def serialize_event(event: UnifiedPublishedEvent) -> dict[str, object]:
     return common
 
 
-def serialize_error(code: str, message: str) -> dict[str, object]:
+def SerializeError(code: str, message: str) -> dict[str, object]:
     return {
         "schema_version": "api_error",
         "error": {"code": code, "message": message},
@@ -494,4 +494,4 @@ def _research_components(components: ResearchComponentCoverage | None) -> dict[s
     }
 
 
-__all__ = ["serialize_decision_item", "serialize_decision_view", "serialize_error", "serialize_event"]
+__all__ = ["SerializeDecisionItem", "SerializeDecisionView", "SerializeError", "SerializeEvent"]

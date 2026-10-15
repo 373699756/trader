@@ -218,7 +218,7 @@ class ScoringHotPathBaseline:
         object.__setattr__(self, "content_hash", _hash_baseline(self))
 
 
-def build_scoring_hot_path_baseline(  # noqa: PLR0913
+def BuildScoringHotPathBaseline(  # noqa: PLR0913
     epochs: Iterable[ScoringInputEpoch],
     *,
     latencies: Iterable[ScoringHotPathLatency] = (),
@@ -339,5 +339,5 @@ __all__ = [
     "ScoringHotPathLatency",
     "ScoringHotPathSlice",
     "ScoringInputEpoch",
-    "build_scoring_hot_path_baseline",
+    "BuildScoringHotPathBaseline",
 ]

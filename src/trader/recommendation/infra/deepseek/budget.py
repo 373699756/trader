@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
+from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -181,7 +181,7 @@ class DeepSeekBudgetLedger:
         )
         self._summary_lock = threading.Lock()
         self._summaries: dict[str, JsonObject] = {}
-        self._empty_summary = freeze_json_object(cast(dict[str, JsonInput], self._reporting.empty_summary()))
+        self._empty_summary = FreezeJsonObject(cast(dict[str, JsonInput], self._reporting.empty_summary()))
 
     def begin_batch(self, request: BudgetBatchRequest) -> str:
         with self._write_lock:
@@ -661,7 +661,7 @@ class DeepSeekBudgetLedger:
         summary = self._reporting.summary(day)
         if self._health is not None and self._initialized:
             summary["health"] = self._health.summary(day)
-        snapshot = freeze_json_object(cast(dict[str, JsonInput], summary))
+        snapshot = FreezeJsonObject(cast(dict[str, JsonInput], summary))
         with self._summary_lock:
             self._summaries[day] = snapshot
 

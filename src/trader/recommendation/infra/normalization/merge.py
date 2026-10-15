@@ -19,14 +19,14 @@ from trader.recommendation.domain.market.models import (
 )
 from trader.recommendation.infra.normalization.columnar_merge import (
     ColumnarMergeError,
-    try_merge_complete_realtime,
+    TryMergeCompleteRealtime,
 )
 from trader.recommendation.infra.normalization.merge_quote import (
-    merge_code,
-    observation_order,
-    rejection_reason,
-    source_name,
-    source_priority,
+    MergeCode,
+    ObservationOrder,
+    RejectionReason,
+    SourceName,
+    SourcePriority,
 )
 from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
@@ -50,7 +50,7 @@ class _MergeContext:
     degraded_reasons: tuple[str, ...]
 
 
-def merge_market_observations(
+def MergeMarketObservations(
     observations: Sequence[SourceObservation],
     *,
     observed_at: datetime,
@@ -66,17 +66,17 @@ def merge_market_observations(
         if len(observation.subject_key) != 6 or not observation.subject_key.isdigit():
             degraded.add(f"invalid_subject_key:{observation.subject_key}")
             continue
-        reason = rejection_reason(observation, observed_at)
+        reason = RejectionReason(observation, observed_at)
         if reason is not None:
-            degraded.add(f"{source_name(observation.source)}:{reason}")
+            degraded.add(f"{SourceName(observation.source)}:{reason}")
             continue
         valid.append(observation)
         for field, value in observation.missing_reasons.items():
             if field == "cache_refresh":
-                degraded.add(f"{source_name(observation.source)}:{value}")
+                degraded.add(f"{SourceName(observation.source)}:{value}")
             elif field == "cache_error":
-                degraded.add(f"{source_name(observation.source)}:{value}")
-            missing[f"{observation.subject_key}.{field}.{source_name(observation.source)}"] = value
+                degraded.add(f"{SourceName(observation.source)}:{value}")
+            missing[f"{observation.subject_key}.{field}.{SourceName(observation.source)}"] = value
 
     valid, consistency_reasons = _validate_observation_consistency(
         valid, observed_at=observed_at, max_age_seconds=limits.max_age_seconds
@@ -114,7 +114,7 @@ def _merge_valid_observations(
     merge_epoch = context.merge_epoch
     if not context.targeted_codes:
         try:
-            columnar = try_merge_complete_realtime(valid)
+            columnar = TryMergeCompleteRealtime(valid)
         except ColumnarMergeError:
             columnar = None
             context = replace(
@@ -136,11 +136,11 @@ def _merge_valid_observations(
                         max(0.0, (context.observed_at - observation.source_time).total_seconds()),
                         3,
                     )
-                    for source in {source_name(item.source) for item in valid}
+                    for source in {SourceName(item.source) for item in valid}
                     for observation in [
                         max(
-                            (item for item in valid if source_name(item.source) == source),
-                            key=observation_order,
+                            (item for item in valid if SourceName(item.source) == source),
+                            key=ObservationOrder,
                         )
                     ]
                 },
@@ -152,9 +152,9 @@ def _merge_valid_observations(
     latest_by_source: dict[str, SourceObservation] = {}
     for observation in valid:
         grouped[observation.subject_key].append(observation)
-        source = source_name(observation.source)
+        source = SourceName(observation.source)
         current = latest_by_source.get(source)
-        if current is None or observation_order(observation) > observation_order(current):
+        if current is None or ObservationOrder(observation) > ObservationOrder(current):
             latest_by_source[source] = observation
     source_versions = {source: observation.data_version for source, observation in latest_by_source.items()}
     source_ages = {
@@ -166,7 +166,7 @@ def _merge_valid_observations(
     field_sources: dict[str, dict[str, str]] = {}
     conflicts: set[str] = set()
     for code in sorted(grouped):
-        quote, sources, quote_conflicts = merge_code(
+        quote, sources, quote_conflicts = MergeCode(
             code,
             grouped[code],
             targeted=code in context.targeted_codes,
@@ -211,7 +211,7 @@ def _merge_valid_observations(
     )
 
 
-def overlay_canonical_snapshot(
+def OverlayCanonicalSnapshot(
     base: CanonicalMarketSnapshot | None,
     overlay: CanonicalMarketSnapshot,
     *,
@@ -273,7 +273,7 @@ def overlay_canonical_snapshot(
     )
 
 
-def subset_canonical_snapshot(
+def SubsetCanonicalSnapshot(
     snapshot: CanonicalMarketSnapshot,
     codes: Sequence[str],
 ) -> CanonicalMarketSnapshot:
@@ -298,7 +298,7 @@ def subset_canonical_snapshot(
     )
 
 
-def observation_from_quote(quote: MarketQuote, *, source: str, observed_at: datetime) -> SourceObservation:
+def ObservationFromQuote(quote: MarketQuote, *, source: str, observed_at: datetime) -> SourceObservation:
     fields: dict[str, JsonScalar] = {
         "name": quote.name,
         "price": quote.price,
@@ -442,7 +442,7 @@ def _validate_observation_consistency(
         realtime_items = [
             item
             for item in items
-            if source_name(item.source) in {"eastmoney", "sina", "tencent"} and "price" in item.fields
+            if SourceName(item.source) in {"eastmoney", "sina", "tencent"} and "price" in item.fields
         ]
         consistency_items = realtime_items or items
         inconsistent = False
@@ -482,10 +482,10 @@ def _validate_observation_consistency(
             # observations. Reference validity is owned by the reference loader.
             if (
                 max_age_seconds is not None
-                and source_name(item.source) in {"eastmoney", "sina", "tencent"}
+                and SourceName(item.source) in {"eastmoney", "sina", "tencent"}
                 and age > max_age_seconds
             ):
-                reasons.add(f"freshness_expired:{subject}:{source_name(item.source)}")
+                reasons.add(f"freshness_expired:{subject}:{SourceName(item.source)}")
                 continue
             accepted.append(item)
     return accepted, reasons
@@ -529,12 +529,12 @@ def _overlay_replaces(
     incoming_time = (incoming.source_time, incoming.received_time)
     if incoming_time != current_time:
         return incoming_time > current_time
-    incoming_source = source_name(incoming.source)
-    current_source = source_name(current.source)
+    incoming_source = SourceName(incoming.source)
+    current_source = SourceName(current.source)
     if incoming_source == current_source:
         return _same_source_overlay_replaces(current, incoming, base_observed_at, overlay_observed_at)
-    return (source_priority(incoming_source), incoming_source) > (
-        source_priority(current_source),
+    return (SourcePriority(incoming_source), incoming_source) > (
+        SourcePriority(current_source),
         current_source,
     )
 
@@ -554,8 +554,8 @@ def _same_source_overlay_replaces(
     if overlay_observed_at != base_observed_at:
         return overlay_observed_at > base_observed_at
     return ObservationFacts(
-        observation_from_quote(incoming, source=incoming.source, observed_at=overlay_observed_at)
-    ) > ObservationFacts(observation_from_quote(current, source=current.source, observed_at=base_observed_at))
+        ObservationFromQuote(incoming, source=incoming.source, observed_at=overlay_observed_at)
+    ) > ObservationFacts(ObservationFromQuote(current, source=current.source, observed_at=base_observed_at))
 
 
 def _conflict_subject(conflict: str) -> str:
@@ -593,14 +593,14 @@ def _source_quote_order(
     orders = (
         (quote.source_time, quote.received_time, quote.data_version)
         for quote in snapshot.quotes
-        if source_name(quote.source) == source and (codes is None or quote.code in codes)
+        if SourceName(quote.source) == source and (codes is None or quote.code in codes)
     )
     return max(orders, default=None)
 
 
 __all__ = [
-    "merge_market_observations",
-    "observation_from_quote",
-    "overlay_canonical_snapshot",
-    "subset_canonical_snapshot",
+    "MergeMarketObservations",
+    "ObservationFromQuote",
+    "OverlayCanonicalSnapshot",
+    "SubsetCanonicalSnapshot",
 ]

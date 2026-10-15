@@ -18,15 +18,15 @@ if TYPE_CHECKING:
 
 from trader.infra.workers import (
     BoundedExecutor,
-    injected_executor,
-    submit_or_reject,
+    InjectedExecutor,
+    SubmitOrReject,
 )
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.infra.normalization.quote import (
+    BuildMarketQuote,
     MarketQuoteInput,
-    build_market_quote,
-    normalize_quotes,
-    to_float,
+    NormalizeQuotes,
+    ToFloat,
 )
 
 SessionFactory = Callable[[], requests.Session]
@@ -96,14 +96,14 @@ class SinaClient:
             total = int(total_match.group(0))
             page_count = max(1, math.ceil(total / self._page_size))
             pages: dict[int, list[Mapping[str, object]]] = {}
-            pool = injected_executor(self._worker_pool)
+            pool = InjectedExecutor(self._worker_pool)
             futures: dict[Future[object], int] = {}
             next_page = 1
             try:
                 while next_page <= page_count or futures:
                     while next_page <= page_count and len(futures) < self._workers:
                         self._ensure_running(deadline, cancel_event)
-                        future = submit_or_reject(
+                        future = SubmitOrReject(
                             pool,
                             self._fetch_page,
                             next_page,
@@ -129,7 +129,7 @@ class SinaClient:
                 raise RuntimeError(f"sina page {page} was not a list")
             rows.extend(payload)
         received_at = now or self._wall_clock()
-        quotes = normalize_quotes(rows, received_at, normalizer=_quote_from_row)
+        quotes = NormalizeQuotes(rows, received_at, normalizer=_quote_from_row)
         unique_codes = {quote.code for quote in quotes}
         if len(unique_codes) < total:
             raise RuntimeError(f"sina quote coverage is incomplete: {len(quotes)}/{total}")
@@ -269,26 +269,26 @@ def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQ
         return None
     code = code_match.group(1)
     name = str(row.get("name") or "").strip()
-    high = to_float(row.get("high"))
-    low = to_float(row.get("low"))
-    pct_change = to_float(row.get("changepercent"))
-    price = to_float(row.get("trade"))
-    settlement = to_float(row.get("settlement"))
-    return build_market_quote(
+    high = ToFloat(row.get("high"))
+    low = ToFloat(row.get("low"))
+    pct_change = ToFloat(row.get("changepercent"))
+    price = ToFloat(row.get("trade"))
+    settlement = ToFloat(row.get("settlement"))
+    return BuildMarketQuote(
         MarketQuoteInput(
             code=code,
             name=name,
             price=price,
             previous_close=settlement,
-            open_price=to_float(row.get("open")),
+            open_price=ToFloat(row.get("open")),
             high=high,
             low=low,
             pct_change=pct_change,
             change_5m=None,
             speed=None,
             volume_ratio=None,
-            turnover_rate=to_float(row.get("turnoverratio")),
-            amount=to_float(row.get("amount")),
+            turnover_rate=ToFloat(row.get("turnoverratio")),
+            amount=ToFloat(row.get("amount")),
             amplitude=_amplitude(high, low, settlement),
             market_cap=_scaled_market_cap(row.get("mktcap")),
             industry="",
@@ -309,7 +309,7 @@ def _amplitude(high: float | None, low: float | None, previous_close: float | No
 
 
 def _scaled_market_cap(raw: object) -> float | None:
-    value = to_float(raw)
+    value = ToFloat(raw)
     return value * 10_000 if value is not None else None
 
 

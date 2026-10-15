@@ -147,7 +147,7 @@ def test_shared_technical_primitives_have_one_infra_owner() -> None:
     owners = {
         "ShanghaiClock": SOURCE_ROOT / "infra/clock/shanghai.py",
         "RuntimeSettings": SOURCE_ROOT / "infra/settings/models.py",
-        "atomic_write_json": SOURCE_ROOT / "infra/atomic_files/json.py",
+        "AtomicWriteJson": SOURCE_ROOT / "infra/atomic_files/json.py",
         "BoundedLruCache": SOURCE_ROOT / "infra/cache.py",
         "BoundedExecutor": SOURCE_ROOT / "infra/workers.py",
         "ProcessLock": SOURCE_ROOT / "infra/process_lock.py",
@@ -203,8 +203,8 @@ def test_application_does_not_own_infrastructure_implementations() -> None:
         "ProcessLock",
         "RuntimeWorkerResources",
         "RuntimeJsonWriter",
-        "atomic_read_json",
-        "atomic_write_json",
+        "AtomicReadJson",
+        "AtomicWriteJson",
         "ShanghaiClock",
         "ShutdownDeadline",
     }
@@ -277,7 +277,7 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
         assert not retired.exists()
     assert "TomorrowHistoricalModelSnapshot" not in model_port
     assert "ModelPredictorPort" in model_port
-    assert "build_trained_scoring_profile" in factory
+    assert "BuildTrainedScoringProfile" in factory
     assert not (SOURCE_ROOT / "recommendation/application/ports/tomorrow_model.py").exists()
 
 
@@ -428,8 +428,8 @@ def test_identity_and_audit_payloads_have_one_explicit_field_projection() -> Non
     audit = (SOURCE_ROOT / "training/application/research_audit.py").read_text(encoding="utf-8")
     columnar = (SOURCE_ROOT / "recommendation/infra/normalization/columnar.py").read_text(encoding="utf-8")
 
-    assert "def committed_record_identity_payload(" in identity
-    assert "committed_record_identity_payload(record)" in codec
+    assert "def CommittedRecordIdentityPayload(" in identity
+    assert "CommittedRecordIdentityPayload(record)" in codec
     for duplicate in (
         "def _record_payload(",
         "def _decision_payload(",
@@ -521,8 +521,8 @@ def test_functional_package_final_cutover_contract_is_authoritative() -> None:
 def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> None:
     violations: list[str] = []
     forbidden_public_codecs = {
-        "committed_record_bytes",
-        "committed_record_from_bytes",
+        "CommittedRecordBytes",
+        "CommittedRecordFromBytes",
     }
     for boundary in ("domain", "application"):
         for path in (SOURCE_ROOT / boundary).rglob("*.py"):

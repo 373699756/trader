@@ -11,7 +11,7 @@ from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 
 
-def parse_official_static_reference(observations: Sequence[SourceObservation]) -> StaticMarketReference:
+def ParseOfficialStaticReference(observations: Sequence[SourceObservation]) -> StaticMarketReference:
     """Accept only the full response already validated by the official client."""
     if not observations:
         raise ValueError("official static population must not be empty")

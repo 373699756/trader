@@ -19,17 +19,17 @@ from trader.download.infra.baostock_gateway import (
     _DAILY_FACT_FIELDS,
     _DAILY_FIELDS,
     BaoStockSdkPort,
+    QfqSourceWindows,
     _daily_side,
     _is_st,
     _result_rows,
-    qfq_source_windows,
 )
 from trader.download.infra.baostock_session import (
     BaoStockSessionSdkPort,
+    LoadBaostockSdk,
+    LoginBaostock,
+    LogoutBaostock,
     RateLimitedBaoStockSdk,
-    load_baostock_sdk,
-    login_baostock,
-    logout_baostock,
 )
 
 BaoStockGapFamily = Literal["daily_raw", "daily_qfq", "is_st"]
@@ -249,7 +249,7 @@ class _WorkerMonitor:
             raise BaoStockGapSupplierError(reason)
 
 
-def fetch_baostock_gaps(
+def FetchBaostockGaps(
     requests: tuple[BaoStockGapRequest, ...],
     *,
     options: BaoStockGapWorkerOptions | None = None,
@@ -281,8 +281,8 @@ def fetch_baostock_gaps(
 def _worker_main(connection: Connection, requests: tuple[BaoStockGapRequest, ...], retries: int) -> None:
     sdk: BaoStockSessionSdkPort | None = None
     try:
-        sdk = load_baostock_sdk()
-        login_baostock(sdk)
+        sdk = LoadBaostockSdk()
+        LoginBaostock(sdk)
         limited = RateLimitedBaoStockSdk(
             sdk,
             activity=lambda state: connection.send(_SupplierCallActivity(state)),
@@ -300,7 +300,7 @@ def _worker_main(connection: Connection, requests: tuple[BaoStockGapRequest, ...
         connection.send(_WorkerReady(_failure_code(exc)))
     finally:
         if sdk is not None:
-            logout_baostock(sdk)
+            LogoutBaostock(sdk)
         connection.close()
 
 
@@ -329,7 +329,7 @@ def _fetch_request(
     fields = _DAILY_FACT_FIELDS if request.family == "is_st" else _DAILY_FIELDS
     adjustflag = "3" if request.family in {"daily_raw", "is_st"} else "2"
     windows = (
-        qfq_source_windows(source_code, request.trade_dates)
+        QfqSourceWindows(source_code, request.trade_dates)
         if request.family == "daily_qfq"
         else ((source_code, request.trade_dates),)
     )
@@ -472,5 +472,5 @@ __all__ = [
     "BaoStockGapResult",
     "BaoStockGapSupplierError",
     "BaoStockGapUnavailable",
-    "fetch_baostock_gaps",
+    "FetchBaostockGaps",
 ]

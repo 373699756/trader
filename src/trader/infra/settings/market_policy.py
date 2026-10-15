@@ -12,13 +12,13 @@ from trader.infra.settings.models import (
     PerformanceWorkloadSettings,
 )
 from trader.infra.settings.parser import (
+    Boolean,
     ConfigurationError,
-    boolean,
-    integer,
-    mapping,
-    number,
-    require_exact_keys,
-    text,
+    Integer,
+    Number,
+    RequireExactKeys,
+    RequireMapping,
+    Text,
 )
 from trader.recommendation.application.ports.market_data_contracts import (
     LOGICAL_CACHE_LIMIT_BYTES,
@@ -26,8 +26,8 @@ from trader.recommendation.application.ports.market_data_contracts import (
 )
 
 
-def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
-    require_exact_keys(
+def ParseCachePolicy(raw: Mapping[str, object]) -> CachePolicy:
+    RequireExactKeys(
         raw,
         {
             "datasets",
@@ -39,19 +39,19 @@ def parse_cache_policy(raw: Mapping[str, object]) -> CachePolicy:
         },
         "cache_policy",
     )
-    estimator = text(raw, "estimator")
+    estimator = Text(raw, "estimator")
     if estimator != "canonical_json_utf8":
         raise ConfigurationError("cache_policy.estimator must be canonical_json_utf8")
-    datasets = _parse_cache_datasets(mapping(raw, "datasets"))
+    datasets = _parse_cache_datasets(RequireMapping(raw, "datasets"))
     _validate_fixed_cache_datasets(datasets)
-    groups = _parse_cache_groups(mapping(raw, "groups"))
+    groups = _parse_cache_groups(RequireMapping(raw, "groups"))
     try:
         return CachePolicy(
             datasets=datasets,
             groups=groups,
-            total_bytes=integer(raw, "total_bytes", minimum=1),
-            runtime_reserve_bytes=integer(raw, "runtime_reserve_bytes", minimum=1),
-            pool_total_bytes=integer(raw, "pool_total_bytes", minimum=1),
+            total_bytes=Integer(raw, "total_bytes", minimum=1),
+            runtime_reserve_bytes=Integer(raw, "runtime_reserve_bytes", minimum=1),
+            pool_total_bytes=Integer(raw, "pool_total_bytes", minimum=1),
             estimator=estimator,
         )
     except ValueError as exc:
@@ -89,7 +89,7 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
     for name, item in datasets_raw.items():
         if not isinstance(item, dict):
             raise ConfigurationError(f"cache_policy.datasets.{name} must be an object")
-        require_exact_keys(
+        RequireExactKeys(
             item,
             {
                 "refresh_ttl_seconds",
@@ -109,10 +109,10 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
                 action_max_age_seconds=_nullable_number(item, "action_max_age_seconds"),
                 cadence_task=_nullable_text(item, "cadence_task"),
                 action_max_age_multiplier=_nullable_number(item, "action_max_age_multiplier"),
-                negative_ttl_seconds=number(item, "negative_ttl_seconds", minimum=0.000001),
-                capacity=integer(item, "capacity", minimum=1),
-                group=text(item, "group"),
-                persisted=boolean(item, "persisted"),
+                negative_ttl_seconds=Number(item, "negative_ttl_seconds", minimum=0.000001),
+                capacity=Integer(item, "capacity", minimum=1),
+                group=Text(item, "group"),
+                persisted=Boolean(item, "persisted"),
             )
         except ValueError as exc:
             raise ConfigurationError(f"cache_policy.datasets.{name}: {exc}") from exc
@@ -208,11 +208,11 @@ def _parse_cache_groups(groups_raw: Mapping[str, object]) -> dict[str, CacheGrou
     }
     if groups_raw != expected_groups:
         raise ConfigurationError("cache_policy.groups must match the fixed 128/56/24/16/12/12 MiB allocation")
-    return {name: CacheGroupPolicy(max_bytes=integer(groups_raw, name, minimum=1)) for name in expected_groups}
+    return {name: CacheGroupPolicy(max_bytes=Integer(groups_raw, name, minimum=1)) for name in expected_groups}
 
 
-def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSettings:
-    require_exact_keys(
+def ParsePerformanceBudgets(raw: Mapping[str, object]) -> PerformanceBudgetSettings:
+    RequireExactKeys(
         raw,
         {
             "workload",
@@ -224,20 +224,20 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
         },
         "performance_budgets",
     )
-    workload_raw = mapping(raw, "workload")
-    require_exact_keys(workload_raw, {"market_rows", "candidate_rows"}, "performance_budgets.workload")
+    workload_raw = RequireMapping(raw, "workload")
+    RequireExactKeys(workload_raw, {"market_rows", "candidate_rows"}, "performance_budgets.workload")
     workload = PerformanceWorkloadSettings(
-        market_rows=integer(workload_raw, "market_rows", minimum=1),
-        candidate_rows=integer(workload_raw, "candidate_rows", minimum=1),
+        market_rows=Integer(workload_raw, "market_rows", minimum=1),
+        candidate_rows=Integer(workload_raw, "candidate_rows", minimum=1),
     )
     if workload != PerformanceWorkloadSettings(5500, 1080):
         raise ConfigurationError("performance workload must remain fixed at 5500 market rows and 1080 candidates")
 
-    rounds_raw = mapping(raw, "rounds")
-    require_exact_keys(rounds_raw, {"warmup", "measurement"}, "performance_budgets.rounds")
+    rounds_raw = RequireMapping(raw, "rounds")
+    RequireExactKeys(rounds_raw, {"warmup", "measurement"}, "performance_budgets.rounds")
     rounds = PerformanceRoundSettings(
-        warmup=integer(rounds_raw, "warmup", minimum=1),
-        measurement=integer(rounds_raw, "measurement", minimum=1),
+        warmup=Integer(rounds_raw, "warmup", minimum=1),
+        measurement=Integer(rounds_raw, "measurement", minimum=1),
     )
     if rounds != PerformanceRoundSettings(1, 5):
         raise ConfigurationError("performance rounds must remain fixed at one warmup and five measurements")
@@ -274,20 +274,20 @@ def parse_performance_budgets(raw: Mapping[str, object]) -> PerformanceBudgetSet
     }
     data_age = _fixed_positive_number_mapping(raw, "data_age_p95_seconds", expected_age)
 
-    memory_raw = mapping(raw, "memory")
-    require_exact_keys(
+    memory_raw = RequireMapping(raw, "memory")
+    RequireExactKeys(
         memory_raw,
         {"cache_logical_bytes", "process_peak_rss_bytes", "growth_percent"},
         "performance_budgets.memory",
     )
     memory = PerformanceMemorySettings(
-        cache_logical_bytes=integer(memory_raw, "cache_logical_bytes", minimum=1),
-        process_peak_rss_bytes=integer(memory_raw, "process_peak_rss_bytes", minimum=1),
-        growth_percent=number(memory_raw, "growth_percent", minimum=0.000001),
+        cache_logical_bytes=Integer(memory_raw, "cache_logical_bytes", minimum=1),
+        process_peak_rss_bytes=Integer(memory_raw, "process_peak_rss_bytes", minimum=1),
+        growth_percent=Number(memory_raw, "growth_percent", minimum=0.000001),
     )
     if memory != PerformanceMemorySettings(LOGICAL_CACHE_LIMIT_BYTES, PROCESS_PEAK_RSS_LIMIT_BYTES, 20.0):
         raise ConfigurationError("performance memory budget must match the fixed 248/384 MiB contract")
-    relative = number(raw, "relative_regression_percent", minimum=0.000001)
+    relative = Number(raw, "relative_regression_percent", minimum=0.000001)
     if relative != 5.0:
         raise ConfigurationError("relative_regression_percent must remain fixed at 5")
     return PerformanceBudgetSettings(workload, rounds, latency, data_age, memory, relative)
@@ -298,10 +298,10 @@ def _fixed_positive_number_mapping(
     key: str,
     expected: Mapping[str, float],
 ) -> dict[str, float]:
-    values = mapping(raw, key)
+    values = RequireMapping(raw, key)
     if set(values) != set(expected):
         raise ConfigurationError(f"performance_budgets.{key} must define the fixed key set")
-    parsed = {name: number(values, name, minimum=0.000001) for name in expected}
+    parsed = {name: Number(values, name, minimum=0.000001) for name in expected}
     if parsed != expected:
         raise ConfigurationError(f"performance_budgets.{key} must match the fixed budget table")
     return parsed
@@ -310,13 +310,13 @@ def _fixed_positive_number_mapping(
 def _nullable_number(raw: Mapping[str, object], key: str) -> float | None:
     if key not in raw:
         raise ConfigurationError(f"{key} is required")
-    return None if raw[key] is None else number(raw, key, minimum=0.000001)
+    return None if raw[key] is None else Number(raw, key, minimum=0.000001)
 
 
 def _nullable_text(raw: Mapping[str, object], key: str) -> str | None:
     if key not in raw:
         raise ConfigurationError(f"{key} is required")
-    return None if raw[key] is None else text(raw, key)
+    return None if raw[key] is None else Text(raw, key)
 
 
-__all__ = ["parse_cache_policy", "parse_performance_budgets"]
+__all__ = ["ParseCachePolicy", "ParsePerformanceBudgets"]

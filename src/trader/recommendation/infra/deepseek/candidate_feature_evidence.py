@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
-def render_candidate_feature_evidence(snapshot: FeatureSnapshot, *, stock_index: int = 0) -> str:
+def RenderCandidateFeatureEvidence(snapshot: FeatureSnapshot, *, stock_index: int = 0) -> str:
     """Produce a compact, deterministic numeric ground-truth block for one candidate.
 
     The output is a stable string suitable for embedding in a prompt.  It only
@@ -65,13 +65,13 @@ def render_candidate_feature_evidence(snapshot: FeatureSnapshot, *, stock_index:
     return "\n".join(lines)
 
 
-def render_batch_candidate_feature_evidence(candidates: Sequence[FeatureSnapshot]) -> str:
+def RenderBatchCandidateFeatureEvidence(candidates: Sequence[FeatureSnapshot]) -> str:
     """Render ground-truth blocks for a batch of candidates.
 
     Used as a shared preamble in the DeepSeek prompt so the model sees
     authoritative values once per batch.
     """
-    blocks = [render_candidate_feature_evidence(c, stock_index=i) for i, c in enumerate(candidates)]
+    blocks = [RenderCandidateFeatureEvidence(c, stock_index=i) for i, c in enumerate(candidates)]
     return "\n\n---\n\n".join(blocks)
 
 
@@ -95,4 +95,4 @@ def _fmt_large_number(value: float | None) -> str:
     return f"{round(value, 4)}"
 
 
-__all__ = ["render_batch_candidate_feature_evidence", "render_candidate_feature_evidence"]
+__all__ = ["RenderBatchCandidateFeatureEvidence", "RenderCandidateFeatureEvidence"]

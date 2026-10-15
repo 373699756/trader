@@ -8,15 +8,15 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from trader.training.application.tomorrow_research_evidence import (
+    DeriveTomorrowResearchRunId,
+    NextResearchStage,
+    ProductionReadinessAudit,
     TomorrowProductionReadinessAudit,
     TomorrowResearchEvidenceGraph,
     TomorrowResearchStage,
     TomorrowResearchStageHandoff,
-    derive_tomorrow_research_run_id,
-    next_research_stage,
-    production_readiness_audit,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -94,7 +94,7 @@ class TomorrowResearchAdvanceResult:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("Tomorrow research orchestration cannot authorize production")
         object.__setattr__(self, "blockers", tuple(sorted(set(self.blockers))))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 class TomorrowResearchOrchestrator:
@@ -112,7 +112,7 @@ class TomorrowResearchOrchestrator:
         prerequisite = self._prerequisite.inspect()
         state = _AdvanceState(self._repository.load_graph(), prerequisite, [])
         while True:
-            stage = next_research_stage(state.graph)
+            stage = NextResearchStage(state.graph)
             if stage is None:
                 terminal_status: Literal["advanced", "terminal"] = "advanced" if state.completed else "terminal"
                 return self._result(terminal_status, state, None, ())
@@ -153,11 +153,11 @@ class TomorrowResearchOrchestrator:
         return TomorrowResearchAdvanceResult(
             status=status,
             graph_hash=state.graph.content_hash,
-            run_id=derive_tomorrow_research_run_id(state.graph),
+            run_id=DeriveTomorrowResearchRunId(state.graph),
             completed_stages=tuple(state.completed),
             next_stage=next_stage,
             blockers=blockers,
-            readiness=production_readiness_audit(state.graph, manual_authorization_hash=None),
+            readiness=ProductionReadinessAudit(state.graph, manual_authorization_hash=None),
             prerequisite_hash=state.prerequisite.prerequisite_hash,
         )
 

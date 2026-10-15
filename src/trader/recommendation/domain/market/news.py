@@ -52,7 +52,7 @@ class NewsSignals:
     freshness_score: float | None
 
 
-def derive_news_signals(
+def DeriveNewsSignals(
     evidence: Iterable[Evidence],
     *,
     observed_at: datetime,
@@ -99,4 +99,4 @@ def _headline_score(title: str, policy: NewsSignalPolicy) -> float:
     return policy.neutral_score
 
 
-__all__ = ["NewsSignalPolicy", "NewsSignals", "derive_news_signals"]
+__all__ = ["NewsSignalPolicy", "NewsSignals", "DeriveNewsSignals"]

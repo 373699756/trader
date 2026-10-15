@@ -15,7 +15,7 @@ from trader.recommendation.domain.evidence.review import (
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
-from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.recommendation.infra.deepseek.evidence_router import RoutePromptEvidence
 
 CHALLENGER_SCHEMA_VERSION = "deepseek_challenger"
 CHALLENGER_PROMPT_VERSION = "deepseek_challenger_prompt"
@@ -40,14 +40,14 @@ class ChallengerReview:
         object.__setattr__(self, "dimensions", MappingProxyType(dict(self.dimensions)))
 
 
-def build_challenger_messages(
+def BuildChallengerMessages(
     candidates: Sequence[FeatureSnapshot],
     primary_reviews: Mapping[str, DeepSeekReview],
 ) -> list[dict[str, str]]:
     payload = []
     for candidate in sorted(candidates, key=lambda item: item.quote.code):
         primary = primary_reviews[candidate.quote.code]
-        evidence = route_prompt_evidence(candidate).evidence
+        evidence = RoutePromptEvidence(candidate).evidence
         payload.append(
             {
                 "code": candidate.quote.code,
@@ -99,14 +99,14 @@ def build_challenger_messages(
     ]
 
 
-def build_challenger_repair_messages(
+def BuildChallengerRepairMessages(
     candidates: Sequence[FeatureSnapshot],
     primary_reviews: Mapping[str, DeepSeekReview],
     invalid_content: str,
     error: str,
     reasoning_content: str | None = None,
 ) -> list[dict[str, str]]:
-    messages = build_challenger_messages(candidates, primary_reviews)
+    messages = BuildChallengerMessages(candidates, primary_reviews)
     prior_response = {"role": "assistant", "content": invalid_content[:20_000]}
     if reasoning_content:
         prior_response["reasoning_content"] = reasoning_content
@@ -123,7 +123,7 @@ def build_challenger_repair_messages(
     return messages
 
 
-def parse_challenger_reviews(
+def ParseChallengerReviews(
     content: str,
     candidates: Sequence[FeatureSnapshot],
     completed_at: datetime,
@@ -168,7 +168,7 @@ def _parse_challenger_result(
     candidate = candidates_by_code.get(code)
     if candidate is None:
         raise ValueError("challenger result contains invalid code")
-    allowed = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
+    allowed = {item.evidence_id for item in RoutePromptEvidence(candidate).evidence}
     dimensions_raw = raw.get("dimensions")
     if not isinstance(dimensions_raw, dict):
         raise ValueError("challenger dimensions must be an object")
@@ -177,14 +177,14 @@ def _parse_challenger_result(
     return code, ChallengerReview(code, dimensions, completed_at)
 
 
-def merge_challenger_review(
+def MergeChallengerReview(
     primary: DeepSeekReview,
     challenger: ChallengerReview,
     candidate: FeatureSnapshot,
 ) -> DeepSeekReview:
     if primary.code != challenger.code or candidate.quote.code != primary.code:
         raise ValueError("challenger merge codes must match")
-    allowed = {item.evidence_id for item in route_prompt_evidence(candidate).evidence}
+    allowed = {item.evidence_id for item in RoutePromptEvidence(candidate).evidence}
     dimensions = dict(primary.dimensions)
     for name, verdict in challenger.dimensions.items():
         current = dimensions.get(name)
@@ -268,8 +268,8 @@ __all__ = [
     "CHALLENGER_SCHEMA_VERSION",
     "ChallengerDimensionVerdict",
     "ChallengerReview",
-    "build_challenger_messages",
-    "build_challenger_repair_messages",
-    "merge_challenger_review",
-    "parse_challenger_reviews",
+    "BuildChallengerMessages",
+    "BuildChallengerRepairMessages",
+    "MergeChallengerReview",
+    "ParseChallengerReviews",
 ]

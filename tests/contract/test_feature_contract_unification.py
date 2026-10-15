@@ -53,8 +53,8 @@ def test_online_and_historical_cost_ranks_share_the_average_rank_owner() -> None
 
     for relative in consumers:
         source = (ROOT / relative).read_text(encoding="utf-8")
-        assert "percentile_ranks" in source, relative
+        assert "PercentileRanks" in source, relative
         assert "def _percentile_ranks" not in source, relative
 
     owner = (ROOT / "src/trader/recommendation/domain/scoring/utility_scoring.py").read_text(encoding="utf-8")
-    assert "average_rank_percentiles" in owner
+    assert "AverageRankPercentiles" in owner

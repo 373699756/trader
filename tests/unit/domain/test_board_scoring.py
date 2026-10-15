@@ -7,20 +7,20 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_fusion import _risk_fact
-from trader.recommendation.domain.market.factors import round_score
+from trader.recommendation.domain.market.factors import RoundScore
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import (
     BoardStrategyPolicy,
     FusionMode,
     Strategy,
 )
-from trader.recommendation.domain.risk.fusion import FusionPolicy, FusionRequest, fuse_score
+from trader.recommendation.domain.risk.fusion import FuseScore, FusionPolicy, FusionRequest
 from trader.recommendation.domain.scoring.scoring import (
+    ApplyBoardPolicy,
     BoardCrossSectionRequest,
-    apply_board_policy,
-    build_board_cross_section,
-    score_board_strategy,
-    supported_weight,
+    BuildBoardCrossSection,
+    ScoreBoardStrategy,
+    SupportedWeight,
 )
 
 NOW = datetime(2026, 7, 16, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -44,13 +44,13 @@ def test_production_score_deducts_missing_weight_even_after_neutral_fill(applica
         values=values if masked else {key: value for key, value in values.items() if key != missing},
         missing_fields=(missing,) if masked else (),
     )
-    original = score_board_strategy(complete, policy)
-    scored = score_board_strategy(incomplete, policy)
+    original = ScoreBoardStrategy(complete, policy)
+    scored = ScoreBoardStrategy(incomplete, policy)
     assert original.base_score == pytest.approx(50.0)
     assert original.components["quality_penalty"] == 0.0
     assert scored.components["quality_penalty"] == pytest.approx(expected_penalty)
     assert scored.base_score == pytest.approx(50.0 - expected_penalty)
-    final = fuse_score(
+    final = FuseScore(
         FusionRequest(
             local=scored,
             local_risk_facts=(_risk_fact("local", "local_rule", 2.0),),
@@ -60,7 +60,7 @@ def test_production_score_deducts_missing_weight_even_after_neutral_fill(applica
             policy=FusionPolicy(25.0),
         )
     )
-    assert final.score.final_score == final.score.local_score == round_score(scored.base_score - 2.0)
+    assert final.score.final_score == final.score.local_score == RoundScore(scored.base_score - 2.0)
     assert final.score.components["quality_penalty"] == pytest.approx(expected_penalty)
 
 
@@ -109,7 +109,7 @@ def _build_board_cross_section(
     phase: str,
     data_version: str,
 ):
-    return build_board_cross_section(
+    return BuildBoardCrossSection(
         BoardCrossSectionRequest(
             features=features,
             board=board,
@@ -200,7 +200,7 @@ def test_board_score_is_independent_of_industry_and_competition_group(applicatio
         },
     )
 
-    assert score_board_strategy(feature, policy) == score_board_strategy(changed, policy)
+    assert ScoreBoardStrategy(feature, policy) == ScoreBoardStrategy(changed, policy)
 
 
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
@@ -261,7 +261,7 @@ def test_same_input_uses_board_specific_tomorrow_weights(application_feature_fac
     main = replace(feature, values=values, board_policy_id=main_policy.policy_id)
     growth = replace(main, quote=replace(main.quote, board=Board.CHINEXT), board_policy_id=growth_policy.policy_id)
 
-    assert score_board_strategy(main, main_policy).base_score != score_board_strategy(growth, growth_policy).base_score
+    assert ScoreBoardStrategy(main, main_policy).base_score != ScoreBoardStrategy(growth, growth_policy).base_score
 
 
 def test_d25_score_has_no_market_regime_or_overheat_multiplier(application_feature_factory) -> None:
@@ -285,16 +285,16 @@ def test_d25_score_has_no_market_regime_or_overheat_multiplier(application_featu
         phase="afternoon",
         data_version="data",
     )
-    scored = apply_board_policy(cross_section, Strategy.D25, policy)[0]
+    scored = ApplyBoardPolicy(cross_section, Strategy.D25, policy)[0]
 
-    risk_on = score_board_strategy(scored, policy)
-    risk_off = score_board_strategy(replace(scored, market_regime="risk_off"), policy)
+    risk_on = ScoreBoardStrategy(scored, policy)
+    risk_off = ScoreBoardStrategy(replace(scored, market_regime="risk_off"), policy)
 
     assert risk_on == risk_off
 
 
 def test_supported_weight_tracks_known_inputs_within_component() -> None:
-    supported = supported_weight(
+    supported = SupportedWeight(
         Strategy.D25,
         {
             "quality_score": 70.0,
@@ -308,7 +308,7 @@ def test_supported_weight_tracks_known_inputs_within_component() -> None:
 
 
 def test_supported_weight_does_not_require_industry_inputs() -> None:
-    supported = supported_weight(
+    supported = SupportedWeight(
         Strategy.TOMORROW,
         {
             "ma20_60_position": 70.0,
@@ -346,9 +346,9 @@ def test_close_fallback_reliability_excludes_unavailable_intraday_tail() -> None
         "tail_structure": 1 / 6,
     }
 
-    assert supported_weight(Strategy.TOMORROW, values, weights) == pytest.approx(5 / 6)
+    assert SupportedWeight(Strategy.TOMORROW, values, weights) == pytest.approx(5 / 6)
     assert (
-        supported_weight(
+        SupportedWeight(
             Strategy.TOMORROW,
             values,
             weights,

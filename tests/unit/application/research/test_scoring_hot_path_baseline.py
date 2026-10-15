@@ -4,10 +4,10 @@ import pytest
 
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.scoring_hot_path_baseline import (
+    BuildScoringHotPathBaseline,
     ScoringHotPathEquivalence,
     ScoringHotPathLatency,
     ScoringInputEpoch,
-    build_scoring_hot_path_baseline,
 )
 
 
@@ -28,7 +28,7 @@ def _epoch(strategy: Strategy, *, candidates: int = 0, completed: bool = True) -
 
 
 def test_empty_recommendation_keeps_candidate_and_epoch_denominators() -> None:
-    report = build_scoring_hot_path_baseline(
+    report = BuildScoringHotPathBaseline(
         (_epoch(Strategy.TOMORROW),),
         equivalence=(
             ScoringHotPathEquivalence(
@@ -50,7 +50,7 @@ def test_empty_recommendation_keeps_candidate_and_epoch_denominators() -> None:
 
 
 def test_baseline_groups_strategy_phase_and_records_freeze_completion_rate() -> None:
-    report = build_scoring_hot_path_baseline(
+    report = BuildScoringHotPathBaseline(
         (_epoch(Strategy.TOMORROW, candidates=2), _epoch(Strategy.TOMORROW, candidates=1, completed=False)),
         latencies=(ScoringHotPathLatency("local_scoring", 1.0, 2.0, 3.0, 2),),
         formal_current_decision_count=1,

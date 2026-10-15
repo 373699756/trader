@@ -19,9 +19,9 @@ from trader.recommendation.application.ports.decision_records import DecisionRec
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.evaluation.models import (
     BenchmarkReturn,
+    OutcomeHorizons,
     OutcomeTarget,
     RecommendationOutcome,
-    outcome_horizons,
 )
 
 
@@ -90,7 +90,7 @@ class SQLiteOutcomeEvidenceRepository:
                 sum(values) / len(values) if values else None,
             )
             for tier in ("recommend", "watch")
-            for horizon in outcome_horizons(strategy)
+            for horizon in OutcomeHorizons(strategy)
         )
 
     def initialize(self) -> None:
@@ -205,7 +205,7 @@ class SQLiteOutcomeEvidenceRepository:
                     )
 
     def _pending_horizons(self, snapshot_id: str, strategy: Strategy, code: str) -> tuple[int, ...]:
-        horizons = outcome_horizons(strategy)
+        horizons = OutcomeHorizons(strategy)
         with self._lock, self._connection() as connection:
             rows = connection.execute(
                 "SELECT horizon FROM recommendation_outcomes WHERE snapshot_id = ? AND strategy = ? AND stock_code = ?",
@@ -243,7 +243,7 @@ def _summary_samples(
                 continue
             tier: _SummaryTier = "recommend" if item.action is RecommendationAction.EXECUTABLE else "watch"
             identities[(record.version, item.code)] = tier
-            for horizon in outcome_horizons(strategy):
+            for horizon in OutcomeHorizons(strategy):
                 key = (tier, horizon)
                 sample_counts[key] = sample_counts.get(key, 0) + 1
     return identities, sample_counts

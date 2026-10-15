@@ -23,7 +23,7 @@ class IndustryPreparationRequest:
     cancel_requested: Callable[[], bool] = lambda: False
 
 
-def prepare_history_industries(request: IndustryPreparationRequest) -> tuple[BaoStockIndustryInterval, ...]:
+def PrepareHistoryIndustries(request: IndustryPreparationRequest) -> tuple[BaoStockIndustryInterval, ...]:
     calendar = request.calendar
     universe = request.universe
     source = request.source
@@ -103,4 +103,4 @@ def _industry_snapshot_dates(open_dates: tuple[date, ...]) -> tuple[date, ...]:
     return tuple(snapshots)
 
 
-__all__ = ["IndustryPreparationRequest", "prepare_history_industries"]
+__all__ = ["IndustryPreparationRequest", "PrepareHistoryIndustries"]

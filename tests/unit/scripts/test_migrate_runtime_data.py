@@ -11,8 +11,8 @@ import pytest
 from scripts.migrate_runtime_data import MigrationError, inspect_layout, migrate, rollback
 from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityFact,
+    IssuerEligibilityFactHash,
     IssuerEligibilityReason,
-    issuer_eligibility_fact_hash,
 )
 
 
@@ -93,7 +93,7 @@ def test_reference_migration_keeps_generated_evidence_converts_eligibility_and_d
                 fact.evidence_id,
                 fact.source,
                 fact.evidence_hash,
-                issuer_eligibility_fact_hash(fact),
+                IssuerEligibilityFactHash(fact),
             ),
         )
     target = tmp_path / "isolated" / "reference"

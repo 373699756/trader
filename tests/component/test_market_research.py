@@ -22,9 +22,11 @@ from tests.component.market_data_test_support import (
     FakeResponse,
     FeatureBuilder,
     FinancialReport,
+    LoadRuntimeSettings,
     MarketDataDeadlineExceededError,
     PartiallyBlockingStructuredResearchClient,
     Path,
+    PersistResearchComponentStatuses,
     ResearchObservation,
     RiskEvidenceRecord,
     SourceLaneScheduler,
@@ -41,8 +43,6 @@ from tests.component.market_data_test_support import (
     date,
     datetime,
     json,
-    load_runtime_settings,
-    persist_research_component_statuses,
     pytest,
     replace,
     requests,
@@ -58,7 +58,7 @@ from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIss
 
 
 def test_history_intraday_and_research_share_the_bounded_market_cache() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -254,7 +254,7 @@ def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_
 
 
 def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_path) -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -1087,14 +1087,14 @@ def test_research_component_same_time_conflict_preserves_first_committed_status(
     state = ComponentState()
     data_plane = SQLiteDataPlane(tmp_path)
 
-    persist_research_component_statuses(
+    PersistResearchComponentStatuses(
         state,
         data_plane,
         "603083",
         observed_at,
         ResearchObservation(),
     )
-    persist_research_component_statuses(
+    PersistResearchComponentStatuses(
         state,
         data_plane,
         "603083",

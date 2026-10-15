@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 import requests
 
-from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
-from trader.infra.cache_contracts import CacheRequestKey, request_key
+from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson, RuntimeJsonWriter
+from trader.infra.cache_contracts import CacheRequestKey, RequestKey
 from trader.infra.market_data.providers.akshare_http_contracts import (
     AkshareGetFunction,
     AkshareHttpResponse,
@@ -38,16 +38,16 @@ from trader.infra.market_data.providers.akshare_parsing import (
 )
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.market.research import (
+    AnnouncementLevel,
     CorporateRiskFact,
+    CorporateRiskFactsFromAnnouncements,
     FinancialReport,
     LongResearchPolicy,
+    ReductionLevel,
     ResearchAnnouncement,
     ResearchObservation,
-    announcement_level,
-    corporate_risk_facts_from_announcements,
-    reduction_level,
 )
-from trader.recommendation.infra.market_data.providers.akshare_news import fetch_news as _fetch_news
+from trader.recommendation.infra.market_data.providers.akshare_news import FetchNews as _fetch_news
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ def _corporate_risk_projection(
     observed_at: datetime,
     version: str,
 ) -> tuple[tuple[CorporateRiskFact, ...], tuple[Evidence, ...]]:
-    facts = corporate_risk_facts_from_announcements(tuple(announcements))
+    facts = CorporateRiskFactsFromAnnouncements(tuple(announcements))
     by_id = {announcement.announcement_id: announcement for announcement in announcements}
     evidence = tuple(
         Evidence(
@@ -175,7 +175,7 @@ class AkshareResearchClient:
 
     def source_version(self, source: str, code: str, payload: Mapping[str, object]) -> str:
         identity = (source, code)
-        facts = request_key(payload)
+        facts = RequestKey(payload)
         with self._version_lock:
             previous = self._versions.get(identity)
             if previous is not None and previous[0] == facts:
@@ -408,8 +408,8 @@ class AkshareResearchClient:
             historical_announcements.append(announcement)
             if published_at < cutoff:
                 continue
-            negative_level = announcement_level(title, policy)
-            ownership_level = reduction_level(title, policy)
+            negative_level = AnnouncementLevel(title, policy)
+            ownership_level = ReductionLevel(title, policy)
             evidence_id = art_code or f"{version}:{len(parsed)}"
             evidence_types = ["announcement"]
             if ownership_level > 0:
@@ -442,8 +442,8 @@ class AkshareResearchClient:
         titles = tuple(item[0].title for item in parsed)
         positive_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_positive_keywords)
         negative_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_negative_keywords)
-        maximum_negative_level = max((announcement_level(title, policy) for title in titles), default=0)
-        maximum_reduction_level = max((reduction_level(title, policy) for title in titles), default=0)
+        maximum_negative_level = max((AnnouncementLevel(title, policy) for title in titles), default=0)
+        maximum_reduction_level = max((ReductionLevel(title, policy) for title in titles), default=0)
         summary = Evidence(
             evidence_id=f"announcement:{code}:{version}:summary",
             evidence_type="research_summary",
@@ -696,7 +696,7 @@ class AkshareResearchClient:
             return None
         target = self._evidence_cache_dir / "raw" / source / f"{code}.json"
         try:
-            raw = atomic_read_json(target)
+            raw = AtomicReadJson(target)
             if not isinstance(raw, Mapping):
                 return None
             cached_at_raw = raw.get("observed_at")
@@ -715,7 +715,7 @@ class AkshareResearchClient:
             return
         target = self._evidence_cache_dir / "raw" / source / f"{code}.json"
         try:
-            writer = self._json_writer.write if self._json_writer is not None else atomic_write_json
+            writer = self._json_writer.write if self._json_writer is not None else AtomicWriteJson
             writer(
                 target,
                 {

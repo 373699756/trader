@@ -73,7 +73,7 @@ class RouteFailedError(MarketDataFailedError):
         self.route_outcome = outcome
 
 
-def route(
+def Route(
     routes: Sequence[VendorRoute],
     *,
     on_no_data: str = "no_data_from_vendor",
@@ -211,5 +211,5 @@ __all__ = [
     "VendorResult",
     "VendorRoute",
     "VendorSeverity",
-    "route",
+    "Route",
 ]

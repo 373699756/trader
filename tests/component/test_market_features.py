@@ -12,11 +12,13 @@ from tests.component.market_data_test_support import (
     TAIL_POLICY,
     BaoStockIndustryClient,
     BaoStockIndustryRow,
+    BuildHistoryContext,
     ConfigurationError,
     CountingHistoryClient,
     DailyBar,
     FeatureBuilder,
     HistoryAdjustmentError,
+    LoadStrategySettings,
     Path,
     PriceAdjustment,
     StaticGateway,
@@ -25,9 +27,7 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
     _tail_minute_bars,
-    build_history_context,
     json,
-    load_strategy_settings,
     pytest,
     replace,
 )
@@ -218,7 +218,7 @@ def test_feature_builder_rejects_unadjusted_history_for_qfq_features() -> None:
 
 def test_strategy_factor_index_is_complete_and_required() -> None:
     path = Path(__file__).parents[2] / "config" / "strategy.json"
-    settings = load_strategy_settings(path)
+    settings = LoadStrategySettings(path)
 
     assert settings.factor_index["atr20_pct"].factor_id == "atr20_pct"
     assert settings.strategy_version.startswith("strategy_sha256_")
@@ -234,7 +234,7 @@ def test_strategy_loader_rejects_missing_factor_registration(tmp_path) -> None:
     features.write_text(json.dumps(raw), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="factor_index mismatch"):
-        load_strategy_settings(target / "strategy.json")
+        LoadStrategySettings(target / "strategy.json")
 
 
 def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_inputs() -> None:
@@ -291,7 +291,7 @@ def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_ses
         (quote,),
         {quote.code: bars[-20:]},
         AFTERNOON,
-        history_summaries={quote.code: build_history_context(bars)},
+        history_summaries={quote.code: BuildHistoryContext(bars)},
     )[0]
 
     required = {

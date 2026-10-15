@@ -19,10 +19,10 @@ from trader.training.application.historical_extraction_models import (
 )
 from trader.training.application.research_ports import HistoricalBaselineReplayEvaluator
 from trader.training.domain.evaluation.baseline import (
-    mean_rank_ic,
-    population_spearman,
-    quantile_bucket,
-    stock_net_contribution,
+    MeanRankIc,
+    PopulationSpearman,
+    QuantileBucket,
+    StockNetContribution,
 )
 from trader.training.domain.evaluation.historical import CostSettlementBasis
 
@@ -86,7 +86,7 @@ class HistoricalBaselineReplayer:
         )
         field_coverage = math.fsum(coverage_values) / len(coverage_values) if coverage_values else 0.0
         board_fraction, industry_fraction = _concentration(day, selected_codes)
-        rank_ic = population_spearman(
+        rank_ic = PopulationSpearman(
             tuple((item.final_score, basis_by_code[item.code].gross_excess_return) for item in day.evaluated)
         )
         bucket_returns = _bucket_returns(day, basis_by_code)
@@ -181,7 +181,7 @@ def _bucket_returns(
 ) -> tuple[float | None, float | None, float | None, float | None, float | None]:
     if len(day.evaluated) < 5:
         return (None, None, None, None, None)
-    buckets = quantile_bucket(tuple((item.code, item.final_score) for item in day.evaluated))
+    buckets = QuantileBucket(tuple((item.code, item.final_score) for item in day.evaluated))
     results: list[float | None] = []
     for bucket in range(1, 6):
         codes = tuple(code for code, assigned in buckets.items() if assigned == bucket)
@@ -214,7 +214,7 @@ def _aggregate(days: tuple[BaselineDayMetrics, ...]) -> BaselineAggregateMetrics
         else 0.0,
         math.fsum(day.maximum_board_fraction for day in days) / len(days),
         math.fsum(day.maximum_industry_fraction for day in days) / len(days),
-        mean_rank_ic(tuple(day.rank_ic for day in days)),
+        MeanRankIc(tuple(day.rank_ic for day in days)),
         tuple(_optional_mean(tuple(day.score_bucket_net_excess_20bp[index] for day in days)) for index in range(5)),  # type: ignore[arg-type]
     )
 
@@ -248,7 +248,7 @@ def _portfolio_return(
     cost: float,
 ) -> float:
     return math.fsum(
-        stock_net_contribution(
+        StockNetContribution(
             weight,
             basis_by_code[item.code].gross_excess_return,
             basis_by_code[item.code].turnover,

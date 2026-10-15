@@ -20,12 +20,12 @@ from trader.recommendation.domain.publication.models import (
 from trader.recommendation.domain.risk.downside import DownsideAssessment
 from trader.recommendation.domain.risk.rules import Rating
 from trader.recommendation.domain.selection.ranking import (
+    ActionFor,
     ActionPolicy,
+    MinimumSelectionScore,
     PortfolioSelectionPolicy,
-    action_for,
-    minimum_selection_score,
-    select_top_k,
-    select_top_k_with_audit,
+    SelectTopK,
+    SelectTopKWithAudit,
 )
 
 
@@ -33,7 +33,7 @@ def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:
     thresholds = {"tomorrow": 78.0, "d25": 76.0}
 
     assert (
-        minimum_selection_score(
+        MinimumSelectionScore(
             Strategy.TOMORROW,
             thresholds,
             phase="morning_main",
@@ -42,7 +42,7 @@ def test_tomorrow_and_d25_have_morning_draft_selection_floors() -> None:
         == 73.0
     )
     assert (
-        minimum_selection_score(
+        MinimumSelectionScore(
             Strategy.D25,
             thresholds,
             phase="midday",
@@ -339,7 +339,7 @@ def _action_for(
     observation_margin: float,
     minimum_board_reliability: float = 0.0,
 ) -> tuple[RecommendationAction, str]:
-    return action_for(
+    return ActionFor(
         recommendation,
         ActionPolicy(
             thresholds=thresholds,
@@ -360,7 +360,7 @@ def _select_top_k(
     maximum_board_fraction: float = 1.0,
     competition_group_limits: dict[Board, int] | None = None,
 ):
-    return select_top_k(
+    return SelectTopK(
         recommendations,
         PortfolioSelectionPolicy(
             top_k=top_k,
@@ -381,7 +381,7 @@ def _select_top_k_with_audit(
     maximum_board_fraction: float = 1.0,
     competition_group_limits: dict[Board, int] | None = None,
 ):
-    return select_top_k_with_audit(
+    return SelectTopKWithAudit(
         recommendations,
         PortfolioSelectionPolicy(
             top_k=top_k,

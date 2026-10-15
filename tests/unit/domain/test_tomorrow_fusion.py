@@ -22,11 +22,11 @@ from trader.recommendation.domain.publication.models import (
 )
 from trader.recommendation.domain.risk.fusion import FusionPolicy
 from trader.recommendation.domain.risk.scored_fusion import (
+    BuildScoredDecisionEpoch,
     DecisionSelectionLimits,
     ScoredDecisionPolicy,
     ScoredDecisionRequest,
-    build_scored_decision_epoch,
-    select_scored_review_candidates,
+    SelectScoredReviewCandidates,
 )
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -44,8 +44,8 @@ def test_review_candidates_are_deterministic_bounded_and_exclude_non_pass() -> N
     )
     selection = _selection(tuple(reversed(evaluations)))
 
-    forward = select_scored_review_candidates(selection, _policy())
-    reverse = select_scored_review_candidates(
+    forward = SelectScoredReviewCandidates(selection, _policy())
+    reverse = SelectScoredReviewCandidates(
         replace(selection, evaluations=tuple(reversed(selection.evaluations))),
         _policy(),
     )
@@ -66,14 +66,14 @@ def test_review_candidates_exclude_pass_rows_outside_every_documented_predicate(
         )
     )
 
-    assert select_scored_review_candidates(selection, _policy()) == ()
+    assert SelectScoredReviewCandidates(selection, _policy()) == ()
 
 
 def test_review_context_marks_only_actual_downside_protection_members() -> None:
     ordinary = _evaluation(0, local_score=78.0)
     protected = _evaluation(1, local_score=78.0, values={"trend_breakdown": 1.0})
 
-    selected = select_scored_review_candidates(_selection((ordinary, protected)), _policy())
+    selected = SelectScoredReviewCandidates(_selection((ordinary, protected)), _policy())
     contexts = {item.code: item.context for item in selected}
 
     assert contexts[ordinary.code].in_protection_set is False
@@ -85,7 +85,7 @@ def test_invalid_downside_input_changes_action_without_changing_score_or_promoti
         _evaluation(0, local_score=90, values={"atr20_pct": 0}),
         _evaluation(1, local_score=40, values={"atr20_pct": 0}),
     )
-    epoch = build_scored_decision_epoch(_request(_selection(evaluations)))
+    epoch = BuildScoredDecisionEpoch(_request(_selection(evaluations)))
     by_code = {item.code: item for item in epoch.entries}
     assert by_code["600000"].score.final_score == 90
     assert by_code["600000"].action is RecommendationAction.OBSERVE
@@ -112,7 +112,7 @@ def test_hybrid_decision_uses_fixed_fusion_without_repeating_local_risk() -> Non
     )
     review = _review("600001", 100.0, risk_facts=(deepseek_fact,))
 
-    epoch = build_scored_decision_epoch(
+    epoch = BuildScoredDecisionEpoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": review},
@@ -140,7 +140,7 @@ def test_downside_guard_downgrades_executable_without_changing_local_score() -> 
     )
     review = _review("600001", 100.0)
 
-    epoch = build_scored_decision_epoch(
+    epoch = BuildScoredDecisionEpoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": review},
@@ -160,7 +160,7 @@ def test_downside_guard_downgrades_executable_without_changing_local_score() -> 
 def test_missing_downside_input_fails_closed_after_execution_threshold() -> None:
     evaluation = _evaluation(1, local_score=80.0, values={"atr20_pct": None})
 
-    epoch = build_scored_decision_epoch(_request(_selection((evaluation,))))
+    epoch = BuildScoredDecisionEpoch(_request(_selection((evaluation,))))
 
     decision = epoch.entries[0]
     assert decision.score.final_score == 80.0
@@ -187,7 +187,7 @@ def test_late_review_cannot_change_score_or_create_model_risk() -> None:
         completed_at=NOW + timedelta(seconds=1),
     )
 
-    epoch = build_scored_decision_epoch(
+    epoch = BuildScoredDecisionEpoch(
         _request(
             _selection((late_evaluation, current_evaluation)),
             reviews={"600001": review, "600002": _review("600002", 90.0)},
@@ -222,7 +222,7 @@ def test_abstain_review_cannot_apply_model_risk_or_veto() -> None:
         outcome=ReviewOutcome.ABSTAIN,
     )
 
-    epoch = build_scored_decision_epoch(
+    epoch = BuildScoredDecisionEpoch(
         _request(
             _selection((evaluation,)),
             reviews={"600001": abstain},
@@ -244,7 +244,7 @@ def test_hybrid_requires_a_current_applied_or_abstain_review() -> None:
     rejected = replace(_review("600001", 100.0), outcome=ReviewOutcome.REJECTED)
 
     with pytest.raises(ValueError, match="usable DeepSeek review"):
-        build_scored_decision_epoch(
+        BuildScoredDecisionEpoch(
             _request(
                 _selection((evaluation,)),
                 reviews={"600001": rejected},
@@ -269,7 +269,7 @@ def test_decision_rejects_risk_fact_from_after_its_observation_time() -> None:
     )
 
     with pytest.raises(ValueError, match="future risk"):
-        build_scored_decision_epoch(_request(_selection((evaluation,))))
+        BuildScoredDecisionEpoch(_request(_selection((evaluation,))))
 
 
 def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
@@ -283,7 +283,7 @@ def test_final_action_pools_apply_stable_board_and_industry_limits() -> None:
         for index in range(16)
     )
 
-    epoch = build_scored_decision_epoch(_request(_selection(tuple(reversed(evaluations)))))
+    epoch = BuildScoredDecisionEpoch(_request(_selection(tuple(reversed(evaluations)))))
     selected = tuple(item for item in epoch.entries if item.selected)
     executable = tuple(item for item in selected if item.action is RecommendationAction.EXECUTABLE)
     by_code = {item.code: item for item in epoch.entries}
@@ -326,7 +326,7 @@ def test_observe_only_candidate_still_requires_the_observation_score_floor() -> 
         disposition=ScoredDisposition.OBSERVE_ONLY,
     )
 
-    epoch = build_scored_decision_epoch(_request(_selection((below, eligible))))
+    epoch = BuildScoredDecisionEpoch(_request(_selection((below, eligible))))
     by_code = {item.code: item for item in epoch.entries}
 
     assert by_code["600001"].action is RecommendationAction.UNAVAILABLE
@@ -339,10 +339,8 @@ def test_observe_only_candidate_still_requires_the_observation_score_floor() -> 
 def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set() -> None:
     evaluations = tuple(_evaluation(index, local_score=90.0 - index) for index in range(3))
     selection = _selection(evaluations)
-    first = build_scored_decision_epoch(_request(selection))
-    second = build_scored_decision_epoch(
-        _request(replace(selection, evaluations=tuple(reversed(selection.evaluations))))
-    )
+    first = BuildScoredDecisionEpoch(_request(selection))
+    second = BuildScoredDecisionEpoch(_request(replace(selection, evaluations=tuple(reversed(selection.evaluations)))))
 
     assert first.content_hash == second.content_hash
     assert first.version == second.version
@@ -351,11 +349,11 @@ def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set
         evaluations[0],
         features=replace(evaluations[0].features, merge_epoch="market:2"),
     )
-    changed_epoch = build_scored_decision_epoch(_request(_selection((changed, *evaluations[1:]))))
+    changed_epoch = BuildScoredDecisionEpoch(_request(_selection((changed, *evaluations[1:]))))
     assert changed_epoch.content_hash != first.content_hash
 
     with pytest.raises(ValueError, match="outside the review candidate set"):
-        build_scored_decision_epoch(
+        BuildScoredDecisionEpoch(
             _request(
                 selection,
                 reviews={"600001": _review("600001", 80.0)},
@@ -368,7 +366,7 @@ def test_decision_epoch_hash_is_stable_and_rejects_review_outside_protection_set
 
 def test_decision_epoch_carries_and_enforces_its_selection_limits() -> None:
     evaluations = tuple(_evaluation(index, local_score=90.0 - index) for index in range(4))
-    epoch = build_scored_decision_epoch(_request(_selection(evaluations)))
+    epoch = BuildScoredDecisionEpoch(_request(_selection(evaluations)))
 
     assert epoch.selection_limits == DecisionSelectionLimits(
         top_k=6,
@@ -392,7 +390,7 @@ def test_decision_epoch_rejects_pool_external_backfill_even_when_capacity_is_unc
         )
         for index in range(7)
     )
-    epoch = build_scored_decision_epoch(_request(_selection(evaluations)))
+    epoch = BuildScoredDecisionEpoch(_request(_selection(evaluations)))
     entries = []
     for item in epoch.entries:
         if item.selection_rank == 6:

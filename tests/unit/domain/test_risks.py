@@ -5,7 +5,7 @@ from datetime import datetime
 
 from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.risk.rules import aggregate_risk_penalty, derive_local_risk_facts
+from trader.recommendation.domain.risk.rules import AggregateRiskPenalty, DeriveLocalRiskFacts
 
 PENALTIES = {
     "near_limit_crowding": 5.0,
@@ -42,9 +42,9 @@ def test_seven_short_risks_are_deduplicated_and_capped_at_25(application_feature
     feature = application_feature_factory("600001", now)
     feature = replace(feature, values={**feature.values, **dict.fromkeys(PENALTIES, 0.5)})
 
-    facts = derive_local_risk_facts(feature, now, _rules(), strategy=Strategy.TOMORROW)
+    facts = DeriveLocalRiskFacts(feature, now, _rules(), strategy=Strategy.TOMORROW)
 
     assert {fact.risk_code: fact.penalty for fact in facts} == PENALTIES
     assert len({fact.risk_fact_id for fact in (*facts, *facts)}) == 7
-    assert aggregate_risk_penalty((*facts, *facts), cap=25.0) == 25.0
-    assert derive_local_risk_facts(feature, now, _rules(), strategy=Strategy.LONG) == ()
+    assert AggregateRiskPenalty((*facts, *facts), cap=25.0) == 25.0
+    assert DeriveLocalRiskFacts(feature, now, _rules(), strategy=Strategy.LONG) == ()

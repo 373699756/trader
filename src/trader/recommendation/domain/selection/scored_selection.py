@@ -13,14 +13,14 @@ from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.candidate.filters import (
+    ApplyFilters,
     FilterTier,
     HardFilterPolicy,
-    apply_filters,
-    level_one_filter_rules,
-    level_two_filter_rules,
+    LevelOneFilterRules,
+    LevelTwoFilterRules,
 )
 from trader.recommendation.domain.evidence.review import RiskRule
-from trader.recommendation.domain.market.factors import clamp, round_score
+from trader.recommendation.domain.market.factors import Clamp, RoundScore
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import (
     BoardStrategyPolicy,
@@ -30,17 +30,17 @@ from trader.recommendation.domain.publication.models import (
     ScoredStockEvaluation,
     Strategy,
 )
-from trader.recommendation.domain.risk.rules import aggregate_risk_penalty, derive_local_risk_facts
+from trader.recommendation.domain.risk.rules import AggregateRiskPenalty, DeriveLocalRiskFacts
 from trader.recommendation.domain.scoring.scoring import (
+    ApplyBoardPolicy,
+    BoardCandidateComponents,
+    BoardCandidateScoreFromComponents,
     BoardCrossSection,
     BoardCrossSectionRequest,
-    apply_board_policy,
-    board_candidate_components,
-    board_candidate_score_from_components,
-    build_board_cross_section,
-    candidate_fields,
-    project_board_policy,
-    score_board_strategy,
+    BuildBoardCrossSection,
+    CandidateFields,
+    ProjectBoardPolicy,
+    ScoreBoardStrategy,
 )
 
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
@@ -62,7 +62,7 @@ _DEFERRED_FILTER_REASONS = frozenset(
 )
 
 
-def split_filter_reason_counts(
+def SplitFilterReasonCounts(
     counts: Mapping[str, int],
 ) -> tuple[Mapping[str, int], Mapping[str, int]]:
     """Return the (business rejection, input readiness) partitions of a reason distribution."""
@@ -320,8 +320,8 @@ def _validated_population_window(
     return evaluated_at, max_age_seconds
 
 
-def select_scored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
-    plan = plan_scored_candidates(request)
+def SelectScored(request: ScoredSelectionRequest) -> ScoredSelectionResult:
+    plan = PlanScoredCandidates(request)
     evaluations = {item.code: item for item in plan.evaluations}
     scored_codes: list[str] = []
     for board in _SUPPORTED_BOARDS:
@@ -373,7 +373,7 @@ class SelectedCandidateInput:
             raise ValueError("directed input must match its selected candidate")
 
 
-def filter_candidate_inputs(request: ScoredSelectionRequest) -> FilteredCandidateInputs:
+def FilterCandidateInputs(request: ScoredSelectionRequest) -> FilteredCandidateInputs:
     population_filtered = _filter_features(
         request.features,
         request,
@@ -393,11 +393,11 @@ def filter_candidate_inputs(request: ScoredSelectionRequest) -> FilteredCandidat
     return FilteredCandidateInputs(request, population_filtered, candidate_filtered)
 
 
-def plan_scored_candidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
-    return rank_filtered_candidates(filter_candidate_inputs(request))
+def PlanScoredCandidates(request: ScoredSelectionRequest) -> ScoredCandidatePlan:
+    return RankFilteredCandidates(FilterCandidateInputs(request))
 
 
-def rank_filtered_candidates(source: FilteredCandidateInputs) -> ScoredCandidatePlan:
+def RankFilteredCandidates(source: FilteredCandidateInputs) -> ScoredCandidatePlan:
     request = source.request
     population_filtered = source.population
     candidate_filtered = source.candidates
@@ -421,7 +421,7 @@ def rank_filtered_candidates(source: FilteredCandidateInputs) -> ScoredCandidate
         if not population:
             continue
         fallback = request.fallbacks.get(board)
-        cross_section = build_board_cross_section(
+        cross_section = BuildBoardCrossSection(
             BoardCrossSectionRequest(
                 features=population,
                 board=board,
@@ -435,13 +435,13 @@ def rank_filtered_candidates(source: FilteredCandidateInputs) -> ScoredCandidate
         )
         population_versions[board] = cross_section.population.population_version
         policy = request.policy.board_policies[board]
-        enriched_population = apply_board_policy(cross_section, request.policy.strategy, policy)
+        enriched_population = ApplyBoardPolicy(cross_section, request.policy.strategy, policy)
         if request.candidate_features is not None:
             _audit_board_population(enriched_population, policy, evaluations)
         enriched = (
             enriched_population
             if request.candidate_features is None
-            else project_board_policy(cross_section, request.policy.strategy, policy, candidates)
+            else ProjectBoardPolicy(cross_section, request.policy.strategy, policy, candidates)
         )
         reserves[board] = _rank_board_candidates(
             enriched,
@@ -510,13 +510,13 @@ def _audit_board_population(
     evaluations: dict[str, ScoredStockEvaluation],
 ) -> None:
     ranked: list[tuple[bool, float, str]] = []
-    required_fields = candidate_fields(policy.strategy)
+    required_fields = CandidateFields(policy.strategy)
     for feature in features:
         code = feature.quote.code
         current = evaluations[code]
         missing_ratio = feature.missing_ratio(required_fields)
-        components = board_candidate_components(feature, policy)
-        score = board_candidate_score_from_components(components, policy)
+        components = BoardCandidateComponents(feature, policy)
+        score = BoardCandidateScoreFromComponents(components, policy)
         pruning_reason = ""
         if missing_ratio > 0.30:
             pruning_reason = "candidate_core_missing"
@@ -529,7 +529,7 @@ def _audit_board_population(
             features=feature,
             candidate_missing_ratio=round(missing_ratio, 6),
             candidate_components={name: round(value, 6) for name, value in components.items()},
-            candidate_score=round_score(score),
+            candidate_score=RoundScore(score),
             candidate_audit_pruning_reason=pruning_reason,
         )
     ranked.sort(key=lambda item: (item[0], -item[1], item[2]))
@@ -547,8 +547,8 @@ def _filter_features(
     filter_time = evaluated_at or request.evaluated_at
     quote_max_age = request.policy.max_age_seconds if max_age_seconds is None else max_age_seconds
     rules = (
-        *level_one_filter_rules(max_age_seconds=quote_max_age, policy=request.policy.hard_filter),
-        *level_two_filter_rules(
+        *LevelOneFilterRules(max_age_seconds=quote_max_age, policy=request.policy.hard_filter),
+        *LevelTwoFilterRules(
             max_age_seconds=quote_max_age,
             policy=request.policy.hard_filter,
         ),
@@ -558,7 +558,7 @@ def _filter_features(
     issuer_eligible_count = 0
     input_ready_count = 0
     for feature in sorted(features, key=lambda item: item.quote.code):
-        filtered = apply_filters(feature, rules, now=filter_time)
+        filtered = ApplyFilters(feature, rules, now=filter_time)
         issuer_eligible = not any(reason.code in permanent_filter_codes for reason in filtered.reasons)
         if issuer_eligible:
             issuer_eligible_count += 1
@@ -598,7 +598,7 @@ def _rank_board_candidates(
     audit_population: bool,
 ) -> tuple[str, ...]:
     candidates: list[tuple[bool, float, FeatureSnapshot, float]] = []
-    required_fields = candidate_fields(request.policy.strategy)
+    required_fields = CandidateFields(request.policy.strategy)
     for feature in features:
         code = feature.quote.code
         current = evaluations[code]
@@ -612,7 +612,7 @@ def _rank_board_candidates(
         if feature.board_data_reliability < policy.minimum_reliability:
             disposition = ScoredDisposition.OBSERVE_ONLY
             optional_flags = (*optional_flags, _reliability_audit(feature, policy.minimum_reliability))
-        components = board_candidate_components(feature, policy)
+        components = BoardCandidateComponents(feature, policy)
         current = replace(
             current,
             features=feature,
@@ -630,10 +630,10 @@ def _rank_board_candidates(
                 ),
             )
             continue
-        candidate_score = board_candidate_score_from_components(components, policy)
+        candidate_score = BoardCandidateScoreFromComponents(components, policy)
         current = replace(
             current,
-            candidate_score=round_score(candidate_score),
+            candidate_score=RoundScore(candidate_score),
             candidate_audit_pruning_reason=(
                 "candidate_score_below_minimum"
                 if audit_population and candidate_score < policy.candidate_min_score
@@ -672,14 +672,14 @@ def _score_board_candidates(
     selected_codes: list[str] = []
     for candidate_rank, code in enumerate(selected, start=1):
         feature = evaluations[code].features
-        local = score_board_strategy(feature, policy)
-        local_facts = derive_local_risk_facts(
+        local = ScoreBoardStrategy(feature, policy)
+        local_facts = DeriveLocalRiskFacts(
             feature,
             request.evaluated_at,
             request.policy.risk_rules,
             strategy=request.policy.strategy,
         )
-        penalty = aggregate_risk_penalty(local_facts, cap=request.policy.local_risk_cap)
+        penalty = AggregateRiskPenalty(local_facts, cap=request.policy.local_risk_cap)
         current = evaluations[code]
         if any(fact.veto for fact in local_facts):
             current = replace(
@@ -691,9 +691,9 @@ def _score_board_candidates(
             current,
             candidate_rank=candidate_rank,
             local_components=local.components,
-            local_base_score=round_score(local.base_score),
-            local_risk_penalty=round_score(penalty),
-            local_score=round_score(clamp(local.base_score - penalty)),
+            local_base_score=RoundScore(local.base_score),
+            local_risk_penalty=RoundScore(penalty),
+            local_score=RoundScore(Clamp(local.base_score - penalty)),
             local_risk_facts=local_facts,
             execution_gate_reason=request.execution_gate_reasons.get(code, ""),
         )
@@ -792,10 +792,10 @@ __all__ = [
     "ScoredCandidatePlan",
     "ScoredCandidateStageCounts",
     "FilteredCandidateInputs",
-    "filter_candidate_inputs",
-    "rank_filtered_candidates",
+    "FilterCandidateInputs",
+    "RankFilteredCandidates",
     "ScoredSelectionPolicy",
     "ScoredSelectionRequest",
-    "plan_scored_candidates",
-    "select_scored",
+    "PlanScoredCandidates",
+    "SelectScored",
 ]

@@ -13,8 +13,8 @@ from typing import Any
 import pytest
 
 from trader.recommendation.infra.deepseek.candidate_feature_evidence import (
-    render_batch_candidate_feature_evidence,
-    render_candidate_feature_evidence,
+    RenderBatchCandidateFeatureEvidence,
+    RenderCandidateFeatureEvidence,
 )
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.completion_client_contract import (
@@ -22,9 +22,9 @@ from trader.recommendation.infra.deepseek.completion_client_contract import (
     DeepSeekHttpResult,
     ModelCapabilities,
 )
-from trader.recommendation.infra.deepseek.factory import create_deepseek_client
-from trader.recommendation.infra.deepseek.model_capabilities import MODELS, capabilities
-from trader.recommendation.infra.deepseek.model_catalog import validate_model
+from trader.recommendation.infra.deepseek.factory import CreateDeepseekClient
+from trader.recommendation.infra.deepseek.model_capabilities import MODELS, Capabilities
+from trader.recommendation.infra.deepseek.model_catalog import ValidateModel
 
 # ---------------------------------------------------------------------------
 # ModelCapabilities
@@ -60,12 +60,12 @@ class TestModelCapabilities:
 
 class TestModelCapabilitiesRegistry:
     def test_known_supplier_models(self) -> None:
-        assert capabilities("deepseek-v4-flash").requires_reasoning_roundtrip is False
-        assert capabilities("deepseek-v4-pro").requires_reasoning_roundtrip is True
-        assert capabilities("deepseek-v4-pro").reasoning_effort == "high"
+        assert Capabilities("deepseek-v4-flash").requires_reasoning_roundtrip is False
+        assert Capabilities("deepseek-v4-pro").requires_reasoning_roundtrip is True
+        assert Capabilities("deepseek-v4-pro").reasoning_effort == "high"
 
     def test_unknown_uses_conservative_defaults(self) -> None:
-        caps = capabilities("nonexistent-model")
+        caps = Capabilities("nonexistent-model")
         assert caps.preferred_structured_method == "json_object"
         assert caps.requires_reasoning_roundtrip is False
 
@@ -85,35 +85,35 @@ class TestModelCatalog:
     def test_known_model_no_warning(self) -> None:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            validate_model("deepseek-v4-flash")
+            ValidateModel("deepseek-v4-flash")
         assert len(caught) == 0
 
     def test_unknown_model_warns(self) -> None:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            validate_model("unknown-model-xyz")
+            ValidateModel("unknown-model-xyz")
         assert len(caught) == 1
         assert issubclass(caught[0].category, RuntimeWarning)
         assert "unknown-model-xyz" in str(caught[0].message)
 
     def test_strict_unknown_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown DeepSeek model"):
-            validate_model("unknown-model-xyz", strict=True)
+            ValidateModel("unknown-model-xyz", strict=True)
 
 
 class TestDeepSeekClientFactory:
     def test_default_provider_returns_http_client(self) -> None:
-        client = create_deepseek_client()
+        client = CreateDeepseekClient()
         assert isinstance(client, DeepSeekCompletionClient)
         assert isinstance(client, DeepSeekHttpClient)
 
     def test_unknown_provider_rejected(self) -> None:
         with pytest.raises(ValueError, match="Unknown DeepSeek provider"):
-            create_deepseek_client(provider="unknown")
+            CreateDeepseekClient(provider="unknown")
 
     def test_removed_provider_alias_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="Unknown DeepSeek provider"):
-            create_deepseek_client(provider="deepseek_http")
+            CreateDeepseekClient(provider="deepseek_http")
 
 
 # ---------------------------------------------------------------------------
@@ -153,7 +153,7 @@ class _FakeDeepSeekClient(DeepSeekCompletionClient):
         return DeepSeekHttpResult(self._content, 200, 1, False, "")
 
     def capabilities(self, model: str) -> ModelCapabilities:
-        return capabilities(model)
+        return Capabilities(model)
 
 
 class TestDeepSeekCompletionClient:
@@ -296,7 +296,7 @@ class TestCandidateFeatureEvidenceRenderer:
             missing_fields=("news_sentiment",),
             evidence=(),
         )
-        output = render_candidate_feature_evidence(snapshot)
+        output = RenderCandidateFeatureEvidence(snapshot)
         assert "600519" in output
         assert "贵州茅台" in output
         assert "1800.5" in output
@@ -336,7 +336,7 @@ class TestCandidateFeatureEvidenceRenderer:
             values={},
             observed_at=_DT,
         )
-        output = render_candidate_feature_evidence(snapshot)
+        output = RenderCandidateFeatureEvidence(snapshot)
         assert "null" in output
         assert "000001" in output
 
@@ -389,7 +389,7 @@ class TestCandidateFeatureEvidenceRenderer:
         )
         s1 = FeatureSnapshot(quote=q1, values={}, observed_at=_DT)
         s2 = FeatureSnapshot(quote=q2, values={}, observed_at=_DT)
-        output = render_batch_candidate_feature_evidence([s1, s2])
+        output = RenderBatchCandidateFeatureEvidence([s1, s2])
         assert "600519" in output
         assert "000858" in output
         assert "---" in output
@@ -425,6 +425,6 @@ class TestCandidateFeatureEvidenceRenderer:
             observed_at=_DT,
             missing_fields=("news_sentiment",),
         )
-        o1 = render_candidate_feature_evidence(snapshot)
-        o2 = render_candidate_feature_evidence(snapshot)
+        o1 = RenderCandidateFeatureEvidence(snapshot)
+        o2 = RenderCandidateFeatureEvidence(snapshot)
         assert o1 == o2

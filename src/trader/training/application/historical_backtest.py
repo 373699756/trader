@@ -12,7 +12,7 @@ from trader.training.application.historical_screening import (
     HistoricalScreeningSnapshotStatus,
 )
 from trader.training.domain.evaluation.historical_screening import HistoricalScreeningSpec
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,7 @@ class HistoricalBarBacktestReport:
     report_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "report_hash", canonical_research_hash(self))
+        object.__setattr__(self, "report_hash", CanonicalResearchHash(self))
 
 
 class HistoricalScreeningEvidence(Protocol):

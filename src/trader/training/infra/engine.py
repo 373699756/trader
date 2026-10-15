@@ -16,7 +16,7 @@ from typing import Literal, Protocol, cast
 
 from lightgbm.basic import LightGBMError
 
-from trader.download.domain.baostock_daily import BaoStockTrainingSplit, build_baostock_training_split
+from trader.download.domain.baostock_daily import BaoStockTrainingSplit, BuildBaostockTrainingSplit
 from trader.download.domain.history_control import HistoryActiveSnapshot
 from trader.download.infra.history_control_index import (
     HistoryMaintenanceAlreadyRunningError,
@@ -24,9 +24,9 @@ from trader.download.infra.history_control_index import (
 )
 from trader.download.infra.history_partition_repack import (
     HistoryPartitionRepackFenceError,
-    require_history_partition_repack_inactive,
+    RequireHistoryPartitionRepackInactive,
 )
-from trader.infra.serialization.canonical import content_hash
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
 from trader.training.application.tomorrow_training import (
@@ -36,7 +36,7 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgressPort,
     TomorrowTrainingWindow,
 )
-from trader.training.domain.tomorrow_training_input import FrozenDailyInputDescriptor, evaluate_tomorrow_training_input
+from trader.training.domain.tomorrow_training_input import EvaluateTomorrowTrainingInput, FrozenDailyInputDescriptor
 from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputError,
     HistoryTrainingInputSnapshot,
@@ -44,18 +44,18 @@ from trader.training.infra.history.history_training_input import (
 )
 from trader.training.infra.model_bundles.bundle_repository import (
     HeadBundlePublicationIdentity,
-    make_bundle_staging_directory,
-    publish_head_bundle,
-    recover_head_bundle_publication,
+    MakeBundleStagingDirectory,
+    PublishHeadBundle,
+    RecoverHeadBundlePublication,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
-from trader.training.infra.model_fitting import LightGBMFittingParameters, fit_industry_models
+from trader.training.infra.model_fitting import FitIndustryModels, LightGBMFittingParameters
 from trader.training.infra.sample_builder import (
+    BuildTrainingSamples,
     TrainingHistorySource,
     TrainingSampleBuildRequest,
-    build_training_samples,
 )
-from trader.training.infra.sample_cache import TrainingSampleCache, sample_cache_bytes
+from trader.training.infra.sample_cache import SampleCacheBytes, TrainingSampleCache
 from trader.training.infra.sample_repository import (
     TRAINING_SAMPLE_CACHE_MIB,
     TRAINING_SAMPLE_MMAP_BYTES,
@@ -187,7 +187,7 @@ class _TrainingInputDocumentContext:
     contract: TrainedHeadContract
 
 
-def run_profile_training(request: ProfileTrainingRequest) -> TrainingRunResult:
+def RunProfileTraining(request: ProfileTrainingRequest) -> TrainingRunResult:
     return _run_training(
         replace(
             request,
@@ -196,10 +196,10 @@ def run_profile_training(request: ProfileTrainingRequest) -> TrainingRunResult:
     )
 
 
-def run_repack_profile_training(request: ProfileTrainingRequest) -> TrainingRunResult:
+def RunRepackProfileTraining(request: ProfileTrainingRequest) -> TrainingRunResult:
     if request.expected_history_snapshot_hash is None:
         raise ValueError("repack training requires an expected history snapshot hash")
-    return run_profile_training(request)
+    return RunProfileTraining(request)
 
 
 def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
@@ -220,7 +220,7 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
         with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"), HistoryMaintenanceLock(training_lock):
             archive = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
             try:
-                require_history_partition_repack_inactive(archive.archive_root)
+                RequireHistoryPartitionRepackInactive(archive.archive_root)
             except HistoryPartitionRepackFenceError:
                 if request.expected_history_snapshot_hash != archive.snapshot.active_snapshot_hash:
                     raise
@@ -280,7 +280,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
         request.train_root.mkdir(parents=True, exist_ok=True)
         _cleanup_abandoned_workspaces(request.train_root, request.contracts)
         feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
-        cache_identity = content_hash(
+        cache_identity = ContentHash(
             (
                 snapshot.active_snapshot_hash,
                 snapshot.input_descriptor_hash,
@@ -332,7 +332,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
         if all(item.status != "blocked" for item in completed):
             cache.clear()
     except (HistoryTrainingInputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
-        peak_bytes = max(peak_bytes, sample_cache_bytes(cache))
+        peak_bytes = max(peak_bytes, SampleCacheBytes(cache))
         reason = _reason(exc)
         for plan in plans:
             if not any(item.strategy is plan.contract.strategy for item in completed):
@@ -349,7 +349,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
 
 def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleCache) -> tuple[TargetMetric, ...]:
     if not cache.reused:
-        build_training_samples(request)
+        BuildTrainingSamples(request)
     _publish(request.progress, TomorrowTrainingProgress("target_statistics", "started", 0, 1))
     if request.repository.count() == 0:
         raise ValueError("profile_training_rows_empty")
@@ -409,7 +409,7 @@ def _prepare_locked_split(
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         return None, _reason(exc)
     try:
-        split = build_baostock_training_split(
+        split = BuildBaostockTrainingSplit(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.active_snapshot_hash,
             fit_dates=settings.fit_dates,
@@ -443,7 +443,7 @@ def _preflight_failure_result(
     contracts: tuple[TrainedHeadContract, ...],
     completed: list[HeadTrainingResult],
 ) -> TrainingRunResult | None:
-    failures = evaluate_tomorrow_training_input(
+    failures = EvaluateTomorrowTrainingInput(
         archive.describe_frozen_daily_input(),
         expected_manifest_hash=snapshot.active_snapshot_hash,
         expected_source_cutoff=snapshot.source_cutoff,
@@ -471,7 +471,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
     contract = plan.contract
     staging: Path | None = None
     try:
-        models, training_rows, validation_rows = fit_industry_models(
+        models, training_rows, validation_rows = FitIndustryModels(
             request.samples,
             request.split,
             contract,
@@ -509,7 +509,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
         provisional_model = _model_document(context, "0" * 64, models)
         model_payload_hash = cast(str, provisional_model["model_payload_hash"])
         report = _report_document(context, models, model_payload_hash, request.metrics)
-        report_hash = content_hash(report)
+        report_hash = ContentHash(report)
         report["content_hash"] = report_hash
         if not report["validation_passed"]:
             return HeadTrainingResult(
@@ -530,14 +530,14 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
                 sample_database_peak_bytes=request.peak_bytes,
             )
         model = _model_document(context, report_hash, models)
-        model_hash = content_hash(model)
+        model_hash = ContentHash(model)
         model["content_hash"] = model_hash
         output = request.train_root / contract.directory_name
-        staging = make_bundle_staging_directory(output)
+        staging = MakeBundleStagingDirectory(output)
         _write_json(staging / "training-input.json", training_input)
         _write_json(staging / "report.json", report)
         _write_json(staging / "model.json", model)
-        publish_head_bundle(
+        PublishHeadBundle(
             staging,
             output,
             contract.strategy,
@@ -692,7 +692,7 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
         "validation_scope": "daily_close_engineering_proxy",
         "production_authority": False,
     }
-    document["content_hash"] = content_hash(document)
+    document["content_hash"] = ContentHash(document)
     return document
 
 
@@ -719,7 +719,7 @@ def _training_contract_hash(
     profile: TrainedProfileContract, contract: TrainedHeadContract, settings: ProfileTrainingSettings
 ) -> str:
     fitting = settings.fitting
-    return content_hash(
+    return ContentHash(
         {
             "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
@@ -772,7 +772,7 @@ def _training_contract_hash(
 
 
 def _head_split_hash(split: BaoStockTrainingSplit, contract: TrainedHeadContract) -> str:
-    return content_hash(
+    return ContentHash(
         {
             "calendar_split_hash": split.content_hash,
             "strategy_head": contract.strategy.value,
@@ -803,7 +803,7 @@ def _metric_payload(metric: TargetMetric) -> dict[str, object]:
 
 
 def _model_payload_hash(document: dict[str, object]) -> str:
-    return content_hash(
+    return ContentHash(
         {
             key: value
             for key, value in document.items()
@@ -873,7 +873,7 @@ def _recover_incomplete_publications(
     for contract in contracts:
         output = train_root / contract.directory_name
         if output.is_dir():
-            recover_head_bundle_publication(output, contract.strategy, profile)
+            RecoverHeadBundlePublication(output, contract.strategy, profile)
 
 
 def _publish(progress: TomorrowTrainingProgressPort | None, update: TomorrowTrainingProgress) -> None:
@@ -920,6 +920,6 @@ __all__ = [
     "ProfileTrainingRequest",
     "TrainingRunResult",
     "TrainingStatus",
-    "run_profile_training",
-    "run_repack_profile_training",
+    "RunProfileTraining",
+    "RunRepackProfileTraining",
 ]

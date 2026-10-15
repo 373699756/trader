@@ -10,7 +10,7 @@ def test_point_in_time_dataset_is_production_isolated_and_uses_canonical_outcome
     domain = (ROOT / "src/trader/training/domain/evaluation/point_in_time_dataset.py").read_text(encoding="utf-8")
 
     assert "CanonicalOutcomeEvaluator" in application
-    assert "select_scored" in application
+    assert "SelectScored" in application
     assert 'POINT_IN_TIME_BENCHMARK_ID = "point_in_time_local_only_equal_weight"' in domain
     assert "terminal_holdout_opened: bool = False" in domain
     assert "production_authority: bool = False" in domain

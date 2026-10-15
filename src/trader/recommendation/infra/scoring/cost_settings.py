@@ -4,26 +4,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trader.infra.settings.parser import number, read_json_object, require_exact_keys
+from trader.infra.settings.parser import Number, ReadJsonObject, RequireExactKeys
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy, ExecutionCostScenario
 
 
-def load_execution_cost_policy(config_dir: Path) -> ExecutionCostPolicy:
-    document = read_json_object(config_dir / "cost.json")
-    require_exact_keys(
+def LoadExecutionCostPolicy(config_dir: Path) -> ExecutionCostPolicy:
+    document = ReadJsonObject(config_dir / "cost.json")
+    RequireExactKeys(
         document,
         {"online_round_trip_base_rate", "online_liquidity_rank_multiplier", "evaluation_round_trip_bps"},
         "cost",
     )
     return ExecutionCostPolicy(
-        number(document, "online_round_trip_base_rate", minimum=0.0),
-        number(document, "online_liquidity_rank_multiplier", minimum=0.0),
+        Number(document, "online_round_trip_base_rate", minimum=0.0),
+        Number(document, "online_liquidity_rank_multiplier", minimum=0.0),
     )
 
 
-def load_evaluation_cost_scenarios(config_dir: Path) -> tuple[ExecutionCostScenario, ...]:
-    document = read_json_object(config_dir / "cost.json")
-    require_exact_keys(
+def LoadEvaluationCostScenarios(config_dir: Path) -> tuple[ExecutionCostScenario, ...]:
+    document = ReadJsonObject(config_dir / "cost.json")
+    RequireExactKeys(
         document,
         {"online_round_trip_base_rate", "online_liquidity_rank_multiplier", "evaluation_round_trip_bps"},
         "cost",
@@ -35,4 +35,4 @@ def load_evaluation_cost_scenarios(config_dir: Path) -> tuple[ExecutionCostScena
     return tuple(ExecutionCostScenario(f"cost_{bps}bp", bps / 10_000) for bps in bps_values)
 
 
-__all__ = ["load_evaluation_cost_scenarios", "load_execution_cost_policy"]
+__all__ = ["LoadEvaluationCostScenarios", "LoadExecutionCostPolicy"]

@@ -8,25 +8,25 @@ from pathlib import Path
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.infra.history_snapshot_inspection import (
     HistorySnapshotInspectionError,
-    load_active_history_snapshot,
-    verify_active_history_snapshot,
+    LoadActiveHistorySnapshot,
+    VerifyActiveHistorySnapshot,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.training.domain.evaluation.historical_industry_facts import (
+    BuildHistoricalIndustryDatasetReport,
+    BuildHistoricalIndustrySourceAudit,
     HistoricalIndustryCohort,
     HistoricalIndustryDatasetReport,
     HistoricalIndustryFact,
     HistoricalIndustrySourceContract,
     HistoricalIndustryStockWindow,
-    build_historical_industry_dataset_report,
-    build_historical_industry_source_audit,
-    merge_historical_industry_facts,
+    MergeHistoricalIndustryFacts,
 )
 
 _TUSHARE_HISTORICAL_INDUSTRY_MINIMUM_POINTS = 2000
 
 
-def audit_published_historical_industry_facts(
+def AuditPublishedHistoricalIndustryFacts(
     history_root: Path,
     *,
     required_sample_codes: int = 300,
@@ -34,15 +34,15 @@ def audit_published_historical_industry_facts(
 ) -> HistoricalIndustryDatasetReport:
     """Audit the immutable active snapshot without changing its partitions."""
 
-    archive = load_active_history_snapshot(history_root)
-    verify_active_history_snapshot(archive)
+    archive = LoadActiveHistorySnapshot(history_root)
+    VerifyActiveHistorySnapshot(archive)
     reference = HistorySnapshotReader(archive.root).reference_index(archive.snapshot).reference
     facts = _industry_facts(reference, archive.snapshot.content_hash)
     windows = tuple(
         _stock_window(item.code, item.board, item.listed_on, item.delisted_on, archive.calendar.open_dates)
         for item in archive.universe.securities
     )
-    baostock = build_historical_industry_source_audit(
+    baostock = BuildHistoricalIndustrySourceAudit(
         HistoricalIndustrySourceContract(
             "baostock_archived_industry",
             archive.snapshot.content_hash,
@@ -63,7 +63,7 @@ def audit_published_historical_industry_facts(
         if tushare_access_points < _TUSHARE_HISTORICAL_INDUSTRY_MINIMUM_POINTS
         else "source_not_sampled"
     )
-    tushare = build_historical_industry_source_audit(
+    tushare = BuildHistoricalIndustrySourceAudit(
         HistoricalIndustrySourceContract(
             "tushare_index_member_all",
             "document_335",
@@ -80,10 +80,10 @@ def audit_published_historical_industry_facts(
         (),
         required_sample_codes=required_sample_codes,
     )
-    return build_historical_industry_dataset_report(
+    return BuildHistoricalIndustryDatasetReport(
         archive.snapshot.content_hash,
         (baostock, tushare),
-        merge_historical_industry_facts(facts),
+        MergeHistoricalIndustryFacts(facts),
     )
 
 
@@ -128,4 +128,4 @@ def _stock_window(
     return HistoricalIndustryStockWindow(code, board, cohort, expected)  # type: ignore[arg-type]
 
 
-__all__ = ["audit_published_historical_industry_facts"]
+__all__ = ["AuditPublishedHistoricalIndustryFacts"]

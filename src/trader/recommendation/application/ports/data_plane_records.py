@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
-from trader.recommendation.application.ports.json_values import JsonObject, freeze_json_object
+from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonObject
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -43,7 +43,7 @@ class DataPlaneRecord:
         if not self.payload:
             raise ValueError("data-plane payload must not be empty")
         # Persisted payload should be immutable at write boundary.
-        object.__setattr__(self, "payload", freeze_json_object(self.payload))
+        object.__setattr__(self, "payload", FreezeJsonObject(self.payload))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -95,7 +95,7 @@ class SourceCursorRecord:
         if not isinstance(self.payload, dict):
             raise ValueError("payload must be an object")
         # Persisted payload should be immutable at write boundary.
-        object.__setattr__(self, "payload", freeze_json_object(self.payload))
+        object.__setattr__(self, "payload", FreezeJsonObject(self.payload))
         if not self.cursor_value:
             raise ValueError("cursor_value must not be empty")
 
@@ -127,7 +127,7 @@ class TradingCalendarRecord:
             raise ValueError("calendar payload_hash must be a sha256 hex string when provided")
         if not isinstance(self.payload, dict) or not self.payload:
             raise ValueError("calendar payload must be a non-empty object")
-        object.__setattr__(self, "payload", freeze_json_object(self.payload))
+        object.__setattr__(self, "payload", FreezeJsonObject(self.payload))
 
 
 class DataPlanePersistenceError(RuntimeError):

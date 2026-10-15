@@ -7,8 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.serialization.fields import is_boolean, is_integer, is_text_sequence
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.fields import IsBoolean, IsInteger, IsTextSequence
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 from trader.training.domain.evaluation.historical_label import (
     HistoricalAnchor,
@@ -19,8 +19,8 @@ from trader.training.domain.evaluation.historical_label import (
     HistoricalPreregistrationStatus,
     HistoricalTemporalSplit,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson
 
 
 class HistoricalLabelEvidenceConflictError(RuntimeError):
@@ -41,7 +41,7 @@ class HistoricalLabelEvidenceIndex:
             return existing
         payload = _encode_batch(batch)
         payload["content_hash"] = batch.content_hash
-        if publish_immutable(path, research_json(payload)):
+        if PublishImmutable(path, ResearchJson(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != batch.content_hash:
@@ -55,7 +55,7 @@ class HistoricalLabelEvidenceIndex:
             if not isinstance(raw, dict):
                 raise TypeError("historical label artifact is not an object")
             persisted_hash = raw.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("historical label artifact hash mismatch")
             batch = _decode_batch(raw)
             if batch.content_hash != persisted_hash:
@@ -159,7 +159,7 @@ def _decode_preregistration(raw: dict[str, object]) -> HistoricalLabelPreregistr
     if set(raw) != expected:
         raise ValueError("historical label preregistration fields are invalid")
     reasons = raw["failure_reasons"]
-    if not is_text_sequence(reasons):
+    if not IsTextSequence(reasons):
         raise TypeError("historical label failure reasons are invalid")
     split = raw["split"]
     if split is not None and not isinstance(split, dict):
@@ -252,13 +252,13 @@ def _dates(values: tuple[date, ...]) -> list[str]:
 
 
 def _date_values(value: object) -> tuple[date, ...]:
-    if not is_text_sequence(value):
+    if not IsTextSequence(value):
         raise TypeError("historical label dates are invalid")
     return tuple(date.fromisoformat(item) for item in value)
 
 
 def _strings(value: object) -> tuple[str, ...]:
-    if not is_text_sequence(value):
+    if not IsTextSequence(value):
         raise TypeError("historical label strings are invalid")
     return tuple(value)
 
@@ -290,13 +290,13 @@ def _string(value: object) -> str:
 
 
 def _bool(value: object) -> bool:
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError("expected boolean")
     return value
 
 
 def _int(value: object) -> int:
-    if not is_integer(value):
+    if not IsInteger(value):
         raise TypeError("expected integer")
     return value
 

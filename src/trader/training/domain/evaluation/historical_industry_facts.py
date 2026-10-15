@@ -12,7 +12,7 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.download.domain.baostock_daily import BaoStockBoard
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 HistoricalIndustryStatus = Literal["qualified", "historical_data_insufficient"]
 HistoricalIndustryCohort = Literal["old", "new", "delisted"]
@@ -49,7 +49,7 @@ class HistoricalIndustrySourceContract:
         ):
             raise ValueError("historical industry source contract is invalid")
         object.__setattr__(self, "source_version", self.source_version.strip())
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def capabilities(self) -> tuple[bool, ...]:
@@ -100,7 +100,7 @@ class HistoricalIndustryFact:
         object.__setattr__(self, "source_version", self.source_version.strip())
         object.__setattr__(self, "industry", self.industry.strip())
         object.__setattr__(self, "classification", self.classification.strip())
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -158,7 +158,7 @@ class MergedHistoricalIndustryFact:
             raise ValueError("merged historical industry fact is invalid")
         object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "evidence_hashes", evidence)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -251,8 +251,8 @@ class HistoricalIndustrySourceAudit:
         object.__setattr__(self, "stocks", stocks)
         object.__setattr__(self, "fact_hashes", fact_hashes)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "dataset_hash", canonical_research_hash((self.contract.content_hash, fact_hashes)))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "dataset_hash", CanonicalResearchHash((self.contract.content_hash, fact_hashes)))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def source(self) -> str:
@@ -305,8 +305,8 @@ class HistoricalIndustryDatasetReport:
         object.__setattr__(self, "sources", sources)
         object.__setattr__(self, "merged_fact_hashes", merged_fact_hashes)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "dataset_hash", canonical_research_hash(tuple(item.dataset_hash for item in sources)))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "dataset_hash", CanonicalResearchHash(tuple(item.dataset_hash for item in sources)))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def eligible_codes(self) -> tuple[str, ...]:
@@ -317,7 +317,7 @@ class HistoricalIndustryDatasetReport:
         )
 
 
-def resolve_historical_industry(
+def ResolveHistoricalIndustry(
     facts: tuple[HistoricalIndustryFact, ...],
     code: str,
     trade_date: date,
@@ -348,7 +348,7 @@ def resolve_historical_industry(
     )
 
 
-def merge_historical_industry_facts(
+def MergeHistoricalIndustryFacts(
     facts: tuple[HistoricalIndustryFact, ...],
 ) -> HistoricalIndustryMergeResult:
     by_code: dict[str, list[HistoricalIndustryFact]] = defaultdict(list)
@@ -363,7 +363,7 @@ def merge_historical_industry_facts(
         )
         for index, start in enumerate(boundaries):
             end = boundaries[index + 1] if index + 1 < len(boundaries) else None
-            resolution = resolve_historical_industry(tuple(values), code, start)
+            resolution = ResolveHistoricalIndustry(tuple(values), code, start)
             if resolution.status == "conflict":
                 conflicts += 1
             elif resolution.status == "resolved":
@@ -381,7 +381,7 @@ def merge_historical_industry_facts(
     return HistoricalIndustryMergeResult(tuple(merged), conflicts)
 
 
-def build_historical_industry_source_audit(
+def BuildHistoricalIndustrySourceAudit(
     contract: HistoricalIndustrySourceContract,
     facts: tuple[HistoricalIndustryFact, ...],
     windows: tuple[HistoricalIndustryStockWindow, ...],
@@ -426,7 +426,7 @@ def build_historical_industry_source_audit(
     )
 
 
-def build_historical_industry_dataset_report(
+def BuildHistoricalIndustryDatasetReport(
     daily_manifest_hash: str,
     sources: tuple[HistoricalIndustrySourceAudit, ...],
     merge_result: HistoricalIndustryMergeResult,
@@ -458,7 +458,7 @@ def _audit_stock(
 ) -> HistoricalIndustryStockAudit:
     covered = missing = conflicts = time_travel = 0
     for day in window.actual_trade_dates:
-        resolution = resolve_historical_industry(facts, window.code, day)
+        resolution = ResolveHistoricalIndustry(facts, window.code, day)
         if resolution.status == "missing":
             missing += 1
         elif resolution.status == "conflict":
@@ -558,8 +558,8 @@ __all__ = [
     "HistoricalIndustryStockAudit",
     "HistoricalIndustryStockWindow",
     "MergedHistoricalIndustryFact",
-    "build_historical_industry_dataset_report",
-    "build_historical_industry_source_audit",
-    "merge_historical_industry_facts",
-    "resolve_historical_industry",
+    "BuildHistoricalIndustryDatasetReport",
+    "BuildHistoricalIndustrySourceAudit",
+    "MergeHistoricalIndustryFacts",
+    "ResolveHistoricalIndustry",
 ]

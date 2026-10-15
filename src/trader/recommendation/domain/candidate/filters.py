@@ -76,7 +76,7 @@ class FilterResult:
     deferred: tuple[FilterAudit, ...] = ()
 
 
-def board_for_code(code: str) -> Board:
+def BoardForCode(code: str) -> Board:
     normalized = code.strip()
     if len(normalized) != 6 or not normalized.isdigit():
         return Board.UNSUPPORTED
@@ -89,22 +89,20 @@ def board_for_code(code: str) -> Board:
     return Board.UNSUPPORTED
 
 
-def board_for_snapshot(snapshot: FeatureSnapshot) -> Board:
-    return (
-        snapshot.quote.board if snapshot.quote.board is not Board.UNSUPPORTED else board_for_code(snapshot.quote.code)
-    )
+def BoardForSnapshot(snapshot: FeatureSnapshot) -> Board:
+    return snapshot.quote.board if snapshot.quote.board is not Board.UNSUPPORTED else BoardForCode(snapshot.quote.code)
 
 
-def hard_filter(
+def HardFilter(
     snapshot: FeatureSnapshot,
     now: datetime,
     *,
     max_age_seconds: float,
     policy: HardFilterPolicy | None = None,
 ) -> FilterResult:
-    return apply_filters(
+    return ApplyFilters(
         snapshot,
-        default_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
+        DefaultFilterRules(max_age_seconds=max_age_seconds, policy=policy),
         now=now,
     )
 
@@ -151,7 +149,7 @@ def _json_scalar(value: object) -> str | float | bool | None:
     return str(value)
 
 
-def apply_filters(
+def ApplyFilters(
     snapshot: FeatureSnapshot,
     rules: Sequence[FilterRule],
     *,
@@ -164,7 +162,7 @@ def apply_filters(
     ``optional_flags`` but do not block the candidate. ``DEFERRED`` rules are
     collected separately from confirmed business rejections.
     """
-    board = board_for_snapshot(snapshot)
+    board = BoardForSnapshot(snapshot)
     reasons: list[FilterAudit] = []
     optional_flags: list[FilterAudit] = []
     deferred: list[FilterAudit] = []
@@ -193,7 +191,7 @@ class _DefaultFilterRules:
         self.policy = policy
 
     def unsupported_code(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
-        if board_for_code(snapshot.quote.code) is Board.UNSUPPORTED:
+        if BoardForCode(snapshot.quote.code) is Board.UNSUPPORTED:
             return _make_audit(
                 snapshot, "unsupported_code", "supported Shanghai/Shenzhen board code", snapshot.quote.code
             )
@@ -353,7 +351,7 @@ class _DefaultFilterRules:
         return audit
 
     def price_heat_limit(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
-        board = board_for_snapshot(snapshot)
+        board = BoardForSnapshot(snapshot)
         pct_change = snapshot.quote.pct_change
         if pct_change is None or not math.isfinite(pct_change):
             return None
@@ -454,7 +452,7 @@ _PERMANENT_STRUCTURED_RISK_FIELDS = frozenset(
 )
 
 
-def level_one_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+def LevelOneFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
     if not math.isfinite(max_age_seconds) or max_age_seconds < 0:
         raise ValueError("max_age_seconds must be finite and non-negative")
     rules = _DefaultFilterRules(max_age_seconds, policy or HardFilterPolicy())
@@ -480,7 +478,7 @@ def level_one_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy |
     )
 
 
-def level_two_filter_rules(
+def LevelTwoFilterRules(
     *,
     max_age_seconds: float,
     policy: HardFilterPolicy | None = None,
@@ -531,11 +529,11 @@ def level_two_filter_rules(
     )
 
 
-def default_filter_rules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
+def DefaultFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy | None = None) -> tuple[FilterRule, ...]:
     """Return level one defense rules followed by level two point-in-time rules."""
     return (
-        *level_one_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
-        *level_two_filter_rules(max_age_seconds=max_age_seconds, policy=policy),
+        *LevelOneFilterRules(max_age_seconds=max_age_seconds, policy=policy),
+        *LevelTwoFilterRules(max_age_seconds=max_age_seconds, policy=policy),
     )
 
 
@@ -556,10 +554,10 @@ __all__ = [
     "FilterRule",
     "FilterSeverity",
     "FilterTier",
-    "apply_filters",
-    "board_for_code",
-    "board_for_snapshot",
-    "hard_filter",
-    "level_one_filter_rules",
-    "level_two_filter_rules",
+    "ApplyFilters",
+    "BoardForCode",
+    "BoardForSnapshot",
+    "HardFilter",
+    "LevelOneFilterRules",
+    "LevelTwoFilterRules",
 ]

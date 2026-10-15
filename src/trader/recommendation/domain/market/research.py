@@ -10,7 +10,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Literal
 
-from trader.recommendation.domain.market.factors import clamp, weighted_score
+from trader.recommendation.domain.market.factors import Clamp, WeightedScore
 from trader.recommendation.domain.market.models import Evidence
 
 
@@ -292,7 +292,7 @@ class ResearchComponentCoverage:
             raise ValueError("research component status is invalid")
 
 
-def research_components_from_observation(observation: ResearchObservation | None) -> ResearchComponentCoverage:
+def ResearchComponentsFromObservation(observation: ResearchObservation | None) -> ResearchComponentCoverage:
     if observation is None:
         return ResearchComponentCoverage("unknown", "unknown", "unknown", "unknown")
     financial: ResearchComponentStatus = "known_clear" if observation.financial is not None else "unknown"
@@ -312,7 +312,7 @@ def research_components_from_observation(observation: ResearchObservation | None
     return ResearchComponentCoverage(financial, announcements, pledge, unlock)
 
 
-def derive_market_regime(
+def DeriveMarketRegime(
     market_breadth: float | None,
     policy: MarketRegimePolicy,
 ) -> str:
@@ -325,7 +325,7 @@ def derive_market_regime(
     return "neutral"
 
 
-def derive_long_research_features(
+def DeriveLongResearchFeatures(
     observation: ResearchObservation,
     inputs: LongResearchInputs,
     policy: LongResearchPolicy,
@@ -348,7 +348,7 @@ def derive_long_research_features(
     }
 
 
-def derive_corporate_risk_features(
+def DeriveCorporateRiskFeatures(
     facts: tuple[CorporateRiskFact, ...],
     observed_at: datetime,
     *,
@@ -366,7 +366,7 @@ def derive_corporate_risk_features(
     return values
 
 
-def corporate_risk_facts_from_announcements(
+def CorporateRiskFactsFromAnnouncements(
     announcements: tuple[ResearchAnnouncement, ...],
 ) -> tuple[CorporateRiskFact, ...]:
     """Map issuer/exchange disclosure metadata to conservative hard-risk facts."""
@@ -513,7 +513,7 @@ def _growth_values(financial: FinancialReport | None) -> tuple[float | None, flo
 
 def _growth_score(financial: FinancialReport | None, policy: LongResearchPolicy) -> float | None:
     known = [value for value in _growth_values(financial) if value is not None]
-    return clamp(50.0 + policy.growth_points_per_pct * sum(known) / len(known)) if known else None
+    return Clamp(50.0 + policy.growth_points_per_pct * sum(known) / len(known)) if known else None
 
 
 def _financial_deterioration(financial: FinancialReport | None, policy: LongResearchPolicy) -> float | None:
@@ -537,12 +537,12 @@ def _quality_score(financial: FinancialReport | None, policy: LongResearchPolicy
     roe = _finite_or_none(financial.roe_pct)
     if roe is not None:
         scores.append(
-            clamp(50.0 + (roe * annualizer - policy.quality_roe_neutral_pct) * policy.quality_roe_points_per_pct)
+            Clamp(50.0 + (roe * annualizer - policy.quality_roe_neutral_pct) * policy.quality_roe_points_per_pct)
         )
     parent_profit = _finite_or_none(financial.parent_net_profit)
     core_profit = _finite_or_none(financial.core_net_profit)
     if parent_profit is not None and parent_profit > 0.0 and core_profit is not None:
-        scores.append(clamp(core_profit / parent_profit * 100.0))
+        scores.append(Clamp(core_profit / parent_profit * 100.0))
     return sum(scores) / len(scores) if scores else None
 
 
@@ -579,11 +579,11 @@ def _industry_policy_score(
     titles = tuple(item.title for item in observation.announcements)
     positive_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_positive_keywords)
     negative_hits = sum(any(keyword in title for title in titles) for keyword in policy.policy_negative_keywords)
-    evidence_score = clamp(50.0 + policy.policy_keyword_score_step * (positive_hits - negative_hits))
+    evidence_score = Clamp(50.0 + policy.policy_keyword_score_step * (positive_hits - negative_hits))
     industry_value = _finite_or_none(industry_strength)
     if industry_value is None:
         return None
-    return weighted_score(
+    return WeightedScore(
         {"industry_strength": industry_value, "evidence_score": evidence_score},
         weights,
     )
@@ -594,17 +594,17 @@ def _protection_score(inputs: LongResearchInputs, weights: Mapping[str, float]) 
     drawdown = _finite_or_none(inputs.low_drawdown_score)
     if volatility is None or drawdown is None:
         return None
-    return weighted_score(
+    return WeightedScore(
         {"low_volatility_score": volatility, "low_drawdown_score": drawdown},
         weights,
     )
 
 
-def announcement_level(title: str, policy: LongResearchPolicy) -> int:
+def AnnouncementLevel(title: str, policy: LongResearchPolicy) -> int:
     return _announcement_level(title, policy)
 
 
-def reduction_level(title: str, policy: LongResearchPolicy) -> int:
+def ReductionLevel(title: str, policy: LongResearchPolicy) -> int:
     return _reduction_level(title, policy)
 
 
@@ -672,7 +672,7 @@ def _annualizer(report_month: int) -> float | None:
 
 
 def _inverse_linear_score(value: float, full_score_max: float, zero_score_min: float) -> float:
-    return clamp(100.0 * (zero_score_min - value) / (zero_score_min - full_score_max))
+    return Clamp(100.0 * (zero_score_min - value) / (zero_score_min - full_score_max))
 
 
 def _finite_or_none(value: float | None) -> float | None:
@@ -699,10 +699,10 @@ __all__ = [
     "LongResearchInputs",
     "ResearchAnnouncement",
     "ResearchObservation",
-    "announcement_level",
-    "corporate_risk_facts_from_announcements",
-    "derive_corporate_risk_features",
-    "derive_market_regime",
-    "derive_long_research_features",
-    "reduction_level",
+    "AnnouncementLevel",
+    "CorporateRiskFactsFromAnnouncements",
+    "DeriveCorporateRiskFeatures",
+    "DeriveMarketRegime",
+    "DeriveLongResearchFeatures",
+    "ReductionLevel",
 ]

@@ -13,49 +13,49 @@ from zoneinfo import ZoneInfo
 
 from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.research_trace_validation import (
-    boolean as _boolean,
+    Boolean as _boolean,
 )
 from trader.infra.serialization.research_trace_validation import (
-    count_pairs as _count_pairs,
+    CountPairs as _count_pairs,
 )
 from trader.infra.serialization.research_trace_validation import (
-    integer as _integer,
+    Integer as _integer,
 )
 from trader.infra.serialization.research_trace_validation import (
-    list_value as _list,
+    ListValue as _list,
 )
 from trader.infra.serialization.research_trace_validation import (
-    number as _number,
+    Number as _number,
 )
 from trader.infra.serialization.research_trace_validation import (
-    object_value as _object,
+    ObjectValue as _object,
 )
 from trader.infra.serialization.research_trace_validation import (
-    optional_boolean as _optional_boolean,
+    OptionalBoolean as _optional_boolean,
 )
 from trader.infra.serialization.research_trace_validation import (
-    optional_number as _optional_number,
+    OptionalNumber as _optional_number,
 )
 from trader.infra.serialization.research_trace_validation import (
-    optional_number_pairs as _optional_number_pairs,
+    OptionalNumberPairs as _optional_number_pairs,
 )
 from trader.infra.serialization.research_trace_validation import (
-    optional_text as _optional_text,
+    OptionalText as _optional_text,
 )
 from trader.infra.serialization.research_trace_validation import (
-    required_score_pairs as _required_score_pairs,
+    RequiredScorePairs as _required_score_pairs,
 )
 from trader.infra.serialization.research_trace_validation import (
-    score_pairs as _score_pairs,
+    ScorePairs as _score_pairs,
 )
 from trader.infra.serialization.research_trace_validation import (
-    strings as _strings,
+    Strings as _strings,
 )
 from trader.infra.serialization.research_trace_validation import (
-    text as _text,
+    Text as _text,
 )
 from trader.infra.serialization.research_trace_validation import (
-    text_pairs as _text_pairs,
+    TextPairs as _text_pairs,
 )
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
@@ -79,17 +79,17 @@ from trader.training.application.research_audit import (
 from trader.training.infra.research.trace_capacity import ResearchTraceCapacityError, TracePhysicalBudget
 from trader.training.infra.research.trace_codec import (
     DEFAULT_DECODED_PAYLOAD_BYTES,
-    decoded_payload_bytes,
-    persisted_payload_bytes,
-    sha256,
+    DecodedPayloadBytes,
+    PersistedPayloadBytes,
+    Sha256,
 )
-from trader.training.infra.research.trace_projection import observation_bytes
+from trader.training.infra.research.trace_projection import ObservationBytes
 from trader.training.infra.research.trace_storage import (
+    Connection,
+    InitializeDatabase,
+    PartitionDate,
+    QuarantineRow,
     TraceIndexSummary,
-    connection,
-    initialize_database,
-    partition_date,
-    quarantine_row,
 )
 
 LEGACY_RESEARCH_EVENT_SCHEMA_VERSION = "research_committed_event_legacy"
@@ -205,7 +205,7 @@ class SQLiteResearchTraceIndex:
             and observation.research_audit.schema_version != RESEARCH_AUDIT_SCHEMA_VERSION
         ):
             raise ValueError("legacy research audit is read-only")
-        logical_payload = observation_bytes(
+        logical_payload = ObservationBytes(
             observation,
             schema_version=RESEARCH_EVENT_SCHEMA_VERSION,
             legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
@@ -213,8 +213,8 @@ class SQLiteResearchTraceIndex:
         )
         if len(logical_payload) > self._maximum_decoded_payload_bytes:
             raise ResearchTraceCapacityError("research trace decoded payload capacity exhausted")
-        payload = persisted_payload_bytes(logical_payload)
-        payload_hash = sha256(logical_payload)
+        payload = PersistedPayloadBytes(logical_payload)
+        payload_hash = Sha256(logical_payload)
         if len(payload) > self._maximum_payload_bytes:
             raise ResearchTraceCapacityError("research trace payload capacity exhausted")
         database = self._database_for(event.trade_date)
@@ -224,7 +224,7 @@ class SQLiteResearchTraceIndex:
                 existing_payload = bytes(existing["payload"])
                 if (
                     str(existing["payload_hash"]) == payload_hash
-                    and decoded_payload_bytes(
+                    and DecodedPayloadBytes(
                         existing_payload,
                         maximum_bytes=self._maximum_decoded_payload_bytes,
                     )
@@ -432,7 +432,7 @@ class SQLiteResearchTraceIndex:
                 max(0, self._maximum_archive_bytes - summary.retained_bytes),
             )
 
-    _connection = staticmethod(connection)
+    _connection = staticmethod(Connection)
 
     def _database_for(self, trade_date: date) -> Path:
         if self._use_legacy_layout:
@@ -443,7 +443,7 @@ class SQLiteResearchTraceIndex:
         if database in self._initialized_databases:
             return
         self._physical_budget.require(self._source_databases(), database, pending_bytes=262144)
-        initialize_database(database, self._initialized_databases)
+        InitializeDatabase(database, self._initialized_databases)
         with self._connection(database, write=True) as connection:
             connection.execute("PRAGMA cache_spill = OFF")
             connection.execute("BEGIN IMMEDIATE")
@@ -455,7 +455,7 @@ class SQLiteResearchTraceIndex:
     def _partition_databases(self) -> tuple[Path, ...]:
         if not self._partitions.exists():
             return ()
-        return tuple(path for path in sorted(self._partitions.glob("*.sqlite3")) if partition_date(path) is not None)
+        return tuple(path for path in sorted(self._partitions.glob("*.sqlite3")) if PartitionDate(path) is not None)
 
     def _source_databases(self, trade_date: date | None = None) -> tuple[Path, ...]:
         databases: list[Path] = []
@@ -508,7 +508,7 @@ class SQLiteResearchTraceIndex:
         with self._writer_lock, self._connection(database, write=True) as connection:
             connection.execute("PRAGMA cache_spill = OFF")
             connection.execute("BEGIN IMMEDIATE")
-            quarantine_row(connection, decision_version, reason)
+            QuarantineRow(connection, decision_version, reason)
             self._physical_budget.require_commit(connection, self._source_databases(), database)
         self._quarantined += 1
 
@@ -526,7 +526,7 @@ class SQLiteResearchTraceIndex:
         return quarantined
 
     def _quarantine_row(self, connection: sqlite3.Connection, decision_version: str, reason: str) -> None:
-        quarantine_row(connection, decision_version, reason)
+        QuarantineRow(connection, decision_version, reason)
 
 
 def _verified_event(
@@ -535,7 +535,7 @@ def _verified_event(
     maximum_decoded_bytes: int = DEFAULT_DECODED_PAYLOAD_BYTES,
 ) -> DecisionObservation:
     persisted_payload = bytes(row["payload"])
-    payload = decoded_payload_bytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
+    payload = DecodedPayloadBytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
     row_schema = str(row["schema_version"])
     if row_schema not in {LEGACY_RESEARCH_EVENT_SCHEMA_VERSION, RESEARCH_EVENT_SCHEMA_VERSION}:
         raise ValueError("research event row schema is invalid")
@@ -565,8 +565,8 @@ def _observation_from_bytes(
     *,
     maximum_decoded_bytes: int = DEFAULT_DECODED_PAYLOAD_BYTES,
 ) -> DecisionObservation:
-    payload = decoded_payload_bytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
-    if sha256(payload) != payload_hash:
+    payload = DecodedPayloadBytes(persisted_payload, maximum_bytes=maximum_decoded_bytes)
+    if Sha256(payload) != payload_hash:
         raise ValueError("research event payload hash mismatch")
     raw = json.loads(payload)
     if not isinstance(raw, dict):

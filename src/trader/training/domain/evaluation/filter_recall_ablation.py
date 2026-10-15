@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 FilterRuleId = Literal[
     "evidence",
@@ -311,7 +311,7 @@ class FilterRecallAblationReport:
         object.__setattr__(self, "content_hash", _canonical_hash(self))
 
 
-def run_filter_recall_ablation(
+def RunFilterRecallAblation(
     rows: tuple[FilterAblationRow, ...],
     *,
     strategy: str,
@@ -534,7 +534,7 @@ def _percentile(values: tuple[float, ...], probability: float) -> float | None:
 
 
 def _canonical_hash(value: object) -> str:
-    return canonical_digest(value)
+    return CanonicalDigest(value)
 
 
 __all__ = [
@@ -546,5 +546,5 @@ __all__ = [
     "FilterRecallAblationReport",
     "FilterScoreComponent",
     "FilterVariantMetrics",
-    "run_filter_recall_ablation",
+    "RunFilterRecallAblation",
 ]

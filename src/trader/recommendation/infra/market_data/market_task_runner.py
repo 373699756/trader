@@ -12,14 +12,14 @@ if TYPE_CHECKING:
 
 from trader.infra.cache_contracts import (
     BoundedCache,
+    BuildCacheIdentity,
     CacheIdentity,
     CacheIdentitySpec,
     CacheRequestKey,
-    build_cache_identity,
 )
 from trader.infra.workers import BoundedExecutor, WorkerResourceRejectedError
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
-from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now
+from trader.recommendation.application.runtime.schedule import PhaseAt, ShanghaiNow
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
 
 _P = ParamSpec("_P")
@@ -89,15 +89,15 @@ class MarketTaskRunner:
         request: Mapping[str, object],
         observed_at: datetime,
     ) -> CacheIdentity:
-        local = shanghai_now(observed_at)
-        return build_cache_identity(
+        local = ShanghaiNow(observed_at)
+        return BuildCacheIdentity(
             CacheIdentitySpec(
                 dataset=dataset,
                 source=source,
                 subject_key=subject_key,
                 request=request,
                 trade_date=local.date().isoformat(),
-                phase=phase_at(local, is_trading_day=True).value,
+                phase=PhaseAt(local, is_trading_day=True).value,
                 source_contract_version=self.source_contracts.get(source, f"{source}-component"),
                 config_version=self.config_version,
                 schema_version=self.schema_version,

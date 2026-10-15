@@ -1,23 +1,23 @@
 from datetime import date, timedelta
 
-from trader.training.application.h1_point_in_time_completion import complete_h1_research
+from trader.training.application.h1_point_in_time_completion import CompleteH1Research
 from trader.training.application.historical_candidate_confirmation import (
+    ExecuteHistoricalConfirmationBatch,
+    ExecuteHistoricalStrategyResearch,
     HistoricalStrategyResearchRequest,
-    execute_historical_confirmation_batch,
-    execute_historical_strategy_research,
-    seal_historical_confirmation_terminal_batch,
+    SealHistoricalConfirmationTerminalBatch,
 )
 from trader.training.domain.evaluation.filter_recall_ablation import FilterAblationRow
 from trader.training.domain.evaluation.h1_point_in_time import (
+    BuildH1CapabilityAudit,
     H1CapabilityProbe,
     H1PointInTimeSpec,
-    build_h1_capability_audit,
 )
 from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
 
 def _h1_research_completion(tmp_path):
-    capability = build_h1_capability_audit(
+    capability = BuildH1CapabilityAudit(
         (
             H1CapabilityProbe("tencent_qfq_daily", date(2023, 1, 10), False, "qfq", False, 640, 3, 1024, 0.5),
             H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 3, 512, 0.5),
@@ -25,7 +25,7 @@ def _h1_research_completion(tmp_path):
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
     archive = SQLiteH1PointInTimeSnapshot(tmp_path)
-    return complete_h1_research(
+    return CompleteH1Research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
@@ -75,7 +75,7 @@ def _request(strategy: str, *, code_offset: int = 0) -> HistoricalStrategyResear
 
 
 def test_strategy_research_seals_one_candidate_and_keeps_terminal_holdout_closed() -> None:
-    result = execute_historical_strategy_research(_request("tomorrow"), repetitions=100)
+    result = ExecuteHistoricalStrategyResearch(_request("tomorrow"), repetitions=100)
 
     assert result.status == "historical_candidate_ready"
     assert result.candidate_report.selected_candidate_id == "tomorrow_observe_evidence"
@@ -86,7 +86,7 @@ def test_strategy_research_seals_one_candidate_and_keeps_terminal_holdout_closed
 
 
 def test_batch_returns_two_independent_strategy_terminal_states() -> None:
-    batch = execute_historical_confirmation_batch(
+    batch = ExecuteHistoricalConfirmationBatch(
         (
             _request("tomorrow", code_offset=200),
             _request("d25", code_offset=400),
@@ -115,7 +115,7 @@ def test_rejected_parent_is_inherited_without_fabricating_confirmation_evidence(
         parent_failure_reasons=("residual_ledger_unavailable",),
     )
 
-    result = execute_historical_strategy_research(request, repetitions=100)
+    result = ExecuteHistoricalStrategyResearch(request, repetitions=100)
 
     assert result.status == "historical_data_insufficient"
     assert result.confirmation_report.evidence == ()
@@ -144,7 +144,7 @@ def test_development_rejection_cannot_be_reselected_on_confirmation_data() -> No
         confirmation_rows=request.confirmation_rows,
     )
 
-    result = execute_historical_strategy_research(request, repetitions=100)
+    result = ExecuteHistoricalStrategyResearch(request, repetitions=100)
 
     assert result.candidate_report.selected_candidate_id is None
     assert result.status == "historical_rejected"
@@ -164,7 +164,7 @@ def test_ready_parent_without_research_rows_closes_as_data_insufficient() -> Non
         confirmation_rows=(),
     )
 
-    result = execute_historical_strategy_research(request, repetitions=100)
+    result = ExecuteHistoricalStrategyResearch(request, repetitions=100)
 
     assert result.candidate_report.status == "historical_data_insufficient"
     assert result.status == "historical_data_insufficient"
@@ -175,7 +175,7 @@ def test_ready_parent_without_research_rows_closes_as_data_insufficient() -> Non
 def test_historical_confirmation_seals_parent_insufficient_terminal_without_dates_or_results(tmp_path) -> None:
     completion = _h1_research_completion(tmp_path)
 
-    batch = seal_historical_confirmation_terminal_batch(completion)
+    batch = SealHistoricalConfirmationTerminalBatch(completion)
 
     assert batch.status == "historical_data_insufficient"
     assert tuple(item.strategy for item in batch.strategies) == ("tomorrow", "d25")

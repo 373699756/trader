@@ -15,8 +15,8 @@ from pathlib import Path
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
-from trader.download.infra.qfq_codec import decode_cell
-from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, SQLiteQfqWindowCache, qfq_shard_name
+from trader.download.infra.qfq_codec import DecodeCell
+from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, QfqShardName, SQLiteQfqWindowCache
 
 _LEGACY_NAME = re.compile(r"(?:[0-9]{5}(?:-[1-9][0-9]{0,3})?|range-[0-9]{5}-[0-9]{4})\.sqlite3")
 
@@ -38,7 +38,7 @@ class QfqMigrationResult:
     target_bytes: int
 
 
-def inspect_legacy_qfq(source_root: Path) -> tuple[LegacyQfqProfile, ...]:
+def InspectLegacyQfq(source_root: Path) -> tuple[LegacyQfqProfile, ...]:
     profiles: list[LegacyQfqProfile] = []
     if source_root.is_symlink():
         raise ValueError("qfq source must not be a symlink")
@@ -54,7 +54,7 @@ def inspect_legacy_qfq(source_root: Path) -> tuple[LegacyQfqProfile, ...]:
         for code, name in value.items():
             if not isinstance(code, str) or not isinstance(name, str) or not _LEGACY_NAME.fullmatch(name):
                 raise ValueError("qfq legacy routing invalid")
-            qfq_shard_name(code)
+            QfqShardName(code)
             membership.append((code, name))
         for name in sorted({name for _, name in membership}):
             _check_source(root / name)
@@ -76,7 +76,7 @@ def _check_source(path: Path) -> None:
                 raise ValueError("qfq source has pending writes")
 
 
-def legacy_windows(
+def LegacyWindows(
     profile: LegacyQfqProfile, codes: Sequence[str] | None = None
 ) -> Iterator[tuple[PublishedHistoryWindow, str]]:
     allowed = frozenset(codes) if codes is not None else None
@@ -109,12 +109,12 @@ def _legacy_window(connection: sqlite3.Connection, code: str, sessions: int) -> 
         or [day for day, _ in rows] != json.loads(identity[3])
     ):
         raise ValueError("qfq legacy identity mismatch")
-    return PublishedHistoryWindow(code, tuple(decode_cell(code, day, payload) for day, payload in rows)), str(
+    return PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows)), str(
         identity[1]
     )
 
 
-def legacy_fingerprint(profiles: tuple[LegacyQfqProfile, ...]) -> str:
+def LegacyFingerprint(profiles: tuple[LegacyQfqProfile, ...]) -> str:
     digest = hashlib.sha256()
     for profile in profiles:
         paths = (
@@ -135,7 +135,7 @@ def _verify_target(profiles: tuple[LegacyQfqProfile, ...], target_root: Path) ->
         cache = SQLiteQfqWindowCache(target_root, profile.profile)
         if cache.codes() != frozenset(code for code, _ in profile.membership):
             raise ValueError("qfq migrated universe mismatch")
-        for window, source in legacy_windows(profile):
+        for window, source in LegacyWindows(profile):
             if cache.read_code(window.code) != window or cache.source_identity(window.code) != source:
                 raise ValueError("qfq migrated window mismatch")
             codes += 1
@@ -147,7 +147,7 @@ def _verify_target(profiles: tuple[LegacyQfqProfile, ...], target_root: Path) ->
     return codes, rows
 
 
-def build_qfq_layout(source_root: Path, target_root: Path, lock_path: Path) -> QfqMigrationResult:
+def BuildQfqLayout(source_root: Path, target_root: Path, lock_path: Path) -> QfqMigrationResult:
     """Build and verify a new directory; never replace or delete the source."""
     source = source_root.resolve()
     target = target_root.resolve()
@@ -157,12 +157,12 @@ def build_qfq_layout(source_root: Path, target_root: Path, lock_path: Path) -> Q
     if target_root.is_symlink() or target.exists() or staging.exists():
         raise ValueError("qfq migration target must be absent")
     with HistoryMaintenanceLock(lock_path):
-        profiles = inspect_legacy_qfq(source_root)
-        fingerprint = legacy_fingerprint(profiles)
+        profiles = InspectLegacyQfq(source_root)
+        fingerprint = LegacyFingerprint(profiles)
         staging.mkdir(parents=True)
         for profile in profiles:
             cache = SQLiteQfqWindowCache(staging, profile.profile)
-            for window, identity in legacy_windows(profile):
+            for window, identity in LegacyWindows(profile):
                 cache.replace_window(window, identity)
             # One-time offline packing; routine refresh never compacts or copies a database.
             for path in cache.root.glob("*.sqlite3"):
@@ -170,7 +170,7 @@ def build_qfq_layout(source_root: Path, target_root: Path, lock_path: Path) -> Q
                     connection.execute("PRAGMA synchronous=FULL")
                     connection.execute("VACUUM")
         codes, rows = _verify_target(profiles, staging)
-        if legacy_fingerprint(profiles) != fingerprint:
+        if LegacyFingerprint(profiles) != fingerprint:
             raise ValueError("qfq migration source changed")
         files = tuple(staging / profile.profile / name for profile in profiles for name in QFQ_SHARD_NAMES)
         existing = tuple(path for path in files if path.is_file())

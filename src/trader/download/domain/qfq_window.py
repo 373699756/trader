@@ -72,13 +72,13 @@ class QfqUpdateResult:
         return self.pending_codes > 0 or self.failure_reason is not None or widespread_missing
 
 
-def completed_daily_cutoff(observed_at: datetime) -> date:
+def CompletedDailyCutoff(observed_at: datetime) -> date:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("qfq update requires an aware business clock")
     return observed_at.date() if observed_at.time() >= time(15, 10) else observed_at.date() - timedelta(days=1)
 
 
-def merge_daily_tail(
+def MergeDailyTail(
     previous: PublishedHistoryWindow, incoming: PublishedHistoryWindow, dates: tuple[date, ...]
 ) -> PublishedHistoryWindow | None:
     """Exact overlap establishes one adjustment basis; conflicts require a full fetch."""

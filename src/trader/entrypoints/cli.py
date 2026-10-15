@@ -12,10 +12,10 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.settings import RuntimeSettings, load_long_watchlist, load_runtime_settings, load_strategy_settings
+from trader.infra.settings import LoadLongWatchlist, LoadRuntimeSettings, LoadStrategySettings, RuntimeSettings
 from trader.recommendation.domain.scoring.profile_identity import SCORING_PROFILE_IDS, ScoringProfileId
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
-from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, add_research_evidence_parsers
+from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddResearchEvidenceParsers
 
 _COMMAND_GROUPS = {
     "check": ("validate-config", "research-status", "history-automation-status", "performance-check"),
@@ -23,7 +23,7 @@ _COMMAND_GROUPS = {
 _TOMORROW_PRIORITY_LOWERED = False
 
 
-def build_parser() -> argparse.ArgumentParser:
+def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-cli")
     parser.add_argument(
         "--config",
@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Effective scoring profile for this process; config value is used when omitted.",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    add_research_evidence_parsers(subparsers)
+    AddResearchEvidenceParsers(subparsers)
     subparsers.add_parser(
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
@@ -84,8 +84,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
-    parser = build_parser()
+def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI command dispatch
+    parser = BuildParser()
     args = parser.parse_args(argv)
     maintenance_exit = _run_history_maintenance_command(
         args.command,
@@ -98,11 +98,11 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     if args.command in {"train-v2", "train-v3"}:
         if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")
-        from trader.training.entrypoints.commands import configure_training_resources
+        from trader.training.entrypoints.commands import ConfigureTrainingResources
 
-        configure_training_resources()
+        ConfigureTrainingResources()
     config_path = _absolute_config_path(args.config)
-    runtime = load_runtime_settings(config_path)
+    runtime = LoadRuntimeSettings(config_path)
     profile_override = cast(ScoringProfileId | None, args.profile)
     if args.command in _COMMAND_GROUPS:
         return _run_command_group(
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
             scoring_profile=profile_override,
         )
     if args.command == "research-scoring-hot-path-baseline":
-        from trader.entrypoints.performance import run as run_performance
+        from trader.entrypoints.performance import Run as run_performance
 
         report = run_performance(config_path, scoring_profile=profile_override)
         baseline = report["hot_path_baseline"]
@@ -138,12 +138,12 @@ def _run_training_command(
     if args.command in COMMAND_SCHEMAS:
         if args.profile is not None:
             parser.error(f"{args.command} does not accept --profile")
-        from trader.training.entrypoints.research_evidence import run_research_evidence
+        from trader.training.entrypoints.research_evidence import RunResearchEvidence
 
-        return run_research_evidence(args, repository_root=runtime.project_root)
-    from trader.training.entrypoints.commands import ResearchCommandOptions, run_research_command
+        return RunResearchEvidence(args, repository_root=runtime.project_root)
+    from trader.training.entrypoints.commands import ResearchCommandOptions, RunResearchCommand
 
-    return run_research_command(
+    return RunResearchCommand(
         args.command, config_path, runtime, ResearchCommandOptions(workers=int(getattr(args, "workers", 5)))
     )
 
@@ -183,10 +183,10 @@ def _run_history_maintenance_command(
     if command == "qfq_download":
         if profile is not None:
             parser.error("qfq_download does not accept --profile")
-        from trader.bootstrap import execute_qfq_download
+        from trader.bootstrap import ExecuteQfqDownload
 
-        runtime = load_runtime_settings(_absolute_config_path(raw_config_path))
-        result = execute_qfq_download(
+        runtime = LoadRuntimeSettings(_absolute_config_path(raw_config_path))
+        result = ExecuteQfqDownload(
             runtime.project_root,
             reference_root=runtime.reference_dir,
         )
@@ -215,9 +215,9 @@ def _run_history_maintenance_command(
             parser.error("download does not accept --profile")
         return _run_history_download(_absolute_config_path(raw_config_path))
     if command == "history-automation-status":
-        from trader.download.entrypoints.commands import run_download_command
+        from trader.download.entrypoints.commands import RunDownloadCommand
 
-        return run_download_command(command)
+        return RunDownloadCommand(command)
     if command != "scheduled-history-maintenance":
         return None
     if profile is not None:
@@ -227,15 +227,15 @@ def _run_history_maintenance_command(
 
 
 def _run_history_download(config_path: Path) -> int:
-    from trader.download.entrypoints.commands import run_download_command
+    from trader.download.entrypoints.commands import RunDownloadCommand
 
-    return run_download_command("download", config_path=config_path)
+    return RunDownloadCommand("download", config_path=config_path)
 
 
 def _run_scheduled_history_maintenance(config_path: Path) -> int:
-    from trader.download.entrypoints.commands import run_download_command
+    from trader.download.entrypoints.commands import RunDownloadCommand
 
-    return run_download_command("scheduled-history-maintenance", config_path=config_path)
+    return RunDownloadCommand("scheduled-history-maintenance", config_path=config_path)
 
 
 def _shanghai_now() -> datetime:
@@ -246,26 +246,26 @@ def _run_config_validation(
     runtime: RuntimeSettings,
     profile_override: ScoringProfileId | None,
 ) -> int:
-    strategy = load_strategy_settings(
+    strategy = LoadStrategySettings(
         runtime.strategy_config_path,
         scoring_profile=profile_override,
     )
-    watchlist = load_long_watchlist(runtime.long_watchlist_path)
-    from trader.download.infra.download_settings import load_history_sync_configuration
+    watchlist = LoadLongWatchlist(runtime.long_watchlist_path)
+    from trader.download.infra.download_settings import LoadHistorySyncConfiguration
     from trader.recommendation.infra.scoring.cost_settings import (
-        load_evaluation_cost_scenarios,
-        load_execution_cost_policy,
+        LoadEvaluationCostScenarios,
+        LoadExecutionCostPolicy,
     )
-    from trader.training.infra.research_settings import load_research_settings
-    from trader.training.infra.training_settings import load_profile_training_settings
+    from trader.training.infra.research_settings import LoadResearchSettings
+    from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
     config_dir = runtime.config_path.parent
-    download = load_history_sync_configuration(runtime.project_root, runtime.reference_dir)
-    training_v2 = load_profile_training_settings(runtime.project_root, "v2")
-    training_v3 = load_profile_training_settings(runtime.project_root, "v3")
-    research = load_research_settings(config_dir)
-    cost = load_execution_cost_policy(config_dir)
-    cost_scenarios = load_evaluation_cost_scenarios(config_dir)
+    download = LoadHistorySyncConfiguration(runtime.project_root, runtime.reference_dir)
+    training_v2 = LoadProfileTrainingSettings(runtime.project_root, "v2")
+    training_v3 = LoadProfileTrainingSettings(runtime.project_root, "v3")
+    research = LoadResearchSettings(config_dir)
+    cost = LoadExecutionCostPolicy(config_dir)
+    cost_scenarios = LoadEvaluationCostScenarios(config_dir)
     print(
         json.dumps(
             {
@@ -330,7 +330,7 @@ def _effective_profile(
 ) -> ScoringProfileId:
     if profile_override is not None:
         return profile_override
-    return load_strategy_settings(runtime.strategy_config_path).scoring_profile
+    return LoadStrategySettings(runtime.strategy_config_path).scoring_profile
 
 
 def _run_performance_report(
@@ -340,7 +340,7 @@ def _run_performance_report(
     baseline: Path | None,
     scoring_profile: ScoringProfileId | None,
 ) -> int:
-    from trader.entrypoints.performance import run as run_performance
+    from trader.entrypoints.performance import Run as run_performance
 
     report = run_performance(
         config_path,
@@ -386,7 +386,7 @@ def _run_command_group(
 
 
 def _run_group_stage(argv: list[str]) -> int:
-    return main(argv)
+    return Main(argv)
 
 
 def _absolute_config_path(raw_path: str) -> Path:
@@ -407,4 +407,4 @@ def _repository_root_for_validation() -> Path:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(Main())

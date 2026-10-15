@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -17,15 +18,15 @@ SELECTED_RULES = ("C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915", "N")
 # Anchored to pushed d8866ea7; equal totals cannot move debt to another owner.
 EXPECTED_DEBT = frozenset(
     {
-        ("PLR0913", "download/application/download_history.py", "download_history"),
+        ("PLR0913", "download/application/download_history.py", "DownloadHistory"),
         ("C901", "download/infra/baostock_gateway.py", "_reconstruct_unavailable_qfq"),
         ("C901", "http_api/handlers/product_handler.py", "_market_data"),
         ("C901", "infra/market_data/observations.py", "SourceObservation.__post_init__"),
-        ("PLR0913", "recommendation/application/pipeline/data_source/source_quality.py", "build_source_stage_output"),
+        ("PLR0913", "recommendation/application/pipeline/data_source/source_quality.py", "BuildSourceStageOutput"),
         (
             "PLR0913",
             "recommendation/application/pipeline/final_selection/decision_projection.py",
-            "build_scored_hybrid",
+            "BuildScoredHybrid",
         ),
         (
             "PLR0913",
@@ -42,9 +43,9 @@ EXPECTED_DEBT = frozenset(
             "recommendation/application/pipeline/freeze_publish/runtime_adapters.py",
             "DeepSeekAdapter.__init__",
         ),
-        ("PLR0913", "recommendation/application/pipeline/quality_check/pipeline_status.py", "build_supply_status"),
-        ("PLR0913", "recommendation/application/pipeline/stage_output.py", "stage_output"),
-        ("PLR0913", "recommendation/application/pipeline/static_market/static_market_loader.py", "load_static_market"),
+        ("PLR0913", "recommendation/application/pipeline/quality_check/pipeline_status.py", "BuildSupplyStatus"),
+        ("PLR0913", "recommendation/application/pipeline/stage_output.py", "StageOutput"),
+        ("PLR0913", "recommendation/application/pipeline/static_market/static_market_loader.py", "LoadStaticMarket"),
         ("C901", "recommendation/domain/evidence/pipeline.py", "PipelineStageStatus.__post_init__"),
         ("C901", "recommendation/domain/market/refresh.py", "ResearchRefreshResult.__post_init__"),
         ("PLR0913", "recommendation/infra/market_data/history_recovery.py", "HistoryRecovery.__init__"),
@@ -128,7 +129,7 @@ def _read_debt(stdout: str) -> Counter[tuple[str, str, str]]:
 
 
 def _run_ruff(
-    roots: tuple[Path, ...], rules: tuple[str, ...], *, json_output: bool = False
+    roots: tuple[Path, ...], rules: tuple[str, ...], *, json_output: bool = False, ignore: tuple[str, ...] = ()
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         (
@@ -140,6 +141,7 @@ def _run_ruff(
             "--no-cache",
             "--select",
             ",".join(rules),
+            *(("--ignore", ",".join(ignore)) if ignore else ()),
             *(("--output-format", "json") if json_output else ()),
         ),
         cwd=PROJECT_ROOT,
@@ -149,6 +151,25 @@ def _run_ruff(
         encoding="utf-8",
         timeout=RUFF_TIMEOUT_SECONDS,
     )
+
+
+def _check_public_function_names() -> None:
+    for path in SOURCE_ROOT.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not node.name.startswith("_"):
+                if re.fullmatch(r"[A-Z][A-Za-z0-9]*", node.name) is None:
+                    raise ValueError(
+                        f"public function must use PascalCase: {path.relative_to(SOURCE_ROOT)}:{node.lineno}"
+                    )
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets
+            ):
+                for item in ast.walk(node.value):
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value[:1].islower():
+                        raise ValueError(
+                            f"public export must use PascalCase: {path.relative_to(SOURCE_ROOT)}:{item.lineno}"
+                        )
 
 
 def main() -> int:
@@ -161,7 +182,7 @@ def main() -> int:
         print("cannot read retained tool declarations", file=sys.stderr)
         return 2
     try:
-        result = _run_ruff((SOURCE_ROOT,), SELECTED_RULES, json_output=True)
+        result = _run_ruff((SOURCE_ROOT,), SELECTED_RULES, json_output=True, ignore=("N802", "N813"))
         if result.returncode not in {0, 1}:
             print("strict Ruff invocation failed", file=sys.stderr)
             return 2
@@ -174,7 +195,8 @@ def main() -> int:
             print(f"removed: {sorted((expected - actual).elements())}", file=sys.stderr)
             print(f"added:   {sorted((actual - expected).elements())}", file=sys.stderr)
             return 1
-        naming = _run_ruff(NAMING_ROOTS, ("N",))
+        _check_public_function_names()
+        naming = _run_ruff(NAMING_ROOTS, ("N",), ignore=("N802", "N813"))
     except (OSError, UnicodeError, ValueError, SyntaxError):
         print("cannot execute Ruff or resolve strict diagnostics", file=sys.stderr)
         return 2

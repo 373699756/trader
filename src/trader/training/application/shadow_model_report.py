@@ -154,7 +154,7 @@ class ShadowModelReport:
     training_window_end: date
     folds: tuple[ShadowFoldRecord, ...]
     predictions: tuple[ShadowPrediction, ...]
-    spec_hash: str = field(default_factory=lambda: shadow_spec_hash())
+    spec_hash: str = field(default_factory=lambda: ShadowSpecHash())
     feature_version: str = TOMORROW_FEATURE_SCHEMA_ID
     random_seed: int = SHADOW_RANDOM_SEED
     cost_bps: int = SHADOW_COST_BPS
@@ -164,7 +164,7 @@ class ShadowModelReport:
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
-        if self.training_window_start > self.training_window_end or self.spec_hash != shadow_spec_hash():
+        if self.training_window_start > self.training_window_end or self.spec_hash != ShadowSpecHash():
             raise ValueError("shadow report training identity is invalid")
         if (
             self.feature_version != TOMORROW_FEATURE_SCHEMA_ID
@@ -206,7 +206,7 @@ class ShadowModelReport:
         object.__setattr__(self, "content_hash", _canonical_hash(_shadow_report_payload(self)))
 
 
-def shadow_spec_hash() -> str:
+def ShadowSpecHash() -> str:
     return _canonical_hash(
         {
             "implementation_version": SHADOW_IMPLEMENTATION_VERSION,
@@ -318,5 +318,5 @@ __all__ = [
     "ShadowPrediction",
     "ShadowSettlementLabel",
     "ShadowWindowMode",
-    "shadow_spec_hash",
+    "ShadowSpecHash",
 ]

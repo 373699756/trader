@@ -20,8 +20,8 @@ from trader.download.infra.history_control_index import (
     HistoryControlIndex,
 )
 from trader.download.infra.history_reference_files import (
-    history_reference_path,
-    write_history_reference,
+    HistoryReferencePath,
+    WriteHistoryReference,
 )
 
 _REFERENCE_SOURCE_CONTRACT = re.compile(r"history_ref_[0-9a-f]{64}_([0-9a-f]{16})")
@@ -36,11 +36,11 @@ class HistoryPublication:
     reference: HistoryReferenceSnapshot
 
 
-def publish_history_snapshot(control: HistoryControlIndex, publication: HistoryPublication) -> None:
+def PublishHistorySnapshot(control: HistoryControlIndex, publication: HistoryPublication) -> None:
     """Publish a reference file and control identity as one recoverable operation."""
 
-    write_history_reference(
-        history_reference_path(publication.root, publication.reference.content_hash), publication.reference
+    WriteHistoryReference(
+        HistoryReferencePath(publication.root, publication.reference.content_hash), publication.reference
     )
     try:
         source, calendar, universe = publication.identities
@@ -59,7 +59,7 @@ def publish_history_snapshot(control: HistoryControlIndex, publication: HistoryP
         raise
 
 
-def is_reference_only_change(
+def IsReferenceOnlyChange(
     state: HistoryControlState,
     active: HistoryActiveSnapshot,
     source: HistorySourceIdentity,
@@ -83,4 +83,4 @@ def is_reference_only_change(
     )
 
 
-__all__ = ["HistoryPublication", "is_reference_only_change", "publish_history_snapshot"]
+__all__ = ["HistoryPublication", "IsReferenceOnlyChange", "PublishHistorySnapshot"]

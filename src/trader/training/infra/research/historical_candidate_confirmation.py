@@ -7,14 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
-from trader.infra.serialization.fields import is_boolean, is_sha256_text
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.fields import IsBoolean, IsSha256Text
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.historical_candidate_confirmation import (
     HistoricalConfirmationTerminalBatch,
 )
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson
 
 _STRATEGIES: tuple[ResearchStrategy, ...] = ("tomorrow", "d25")
 
@@ -40,7 +40,7 @@ class HistoricalConfirmationReportPublication:
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        if publish_immutable(self._path, research_json(payload)):
+        if PublishImmutable(self._path, ResearchJson(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != index.content_hash:
@@ -56,7 +56,7 @@ class HistoricalConfirmationReportPublication:
                 raise TypeError("Historical confirmation terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
             persisted_hash = payload.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(payload) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(payload) != persisted_hash:
                 raise ValueError("Historical confirmation terminal artifact hash mismatch")
             index = _decode(payload)
             if index.content_hash != persisted_hash:
@@ -89,7 +89,7 @@ class HistoricalConfirmationReportIndex:
             self.label_batch_hash,
             self.daily_close_selection_hash,
         )
-        if any(not is_sha256_text(value) for value in hashes):
+        if any(not IsSha256Text(value) for value in hashes):
             raise ValueError("Historical confirmation terminal index hash is invalid")
         residuals = _ordered_hashes(self.residual_terminal_hashes)
         strategies = _ordered_hashes(self.strategy_terminal_hashes)
@@ -102,7 +102,7 @@ class HistoricalConfirmationReportIndex:
             raise ValueError("Historical confirmation terminal index cannot authorize production")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
         object.__setattr__(self, "strategy_terminal_hashes", strategies)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _index(batch: HistoricalConfirmationTerminalBatch) -> HistoricalConfirmationReportIndex:
@@ -162,7 +162,7 @@ def _decode(raw: dict[str, object]) -> HistoricalConfirmationReportIndex:
 
 def _ordered_hashes(values: tuple[tuple[ResearchStrategy, str], ...]) -> tuple[tuple[ResearchStrategy, str], ...]:
     ordered = tuple(sorted(values, key=lambda item: _STRATEGIES.index(item[0])))
-    if tuple(item[0] for item in ordered) != _STRATEGIES or any(not is_sha256_text(item[1]) for item in ordered):
+    if tuple(item[0] for item in ordered) != _STRATEGIES or any(not IsSha256Text(item[1]) for item in ordered):
         raise ValueError("Historical confirmation terminal strategy hashes are invalid")
     return ordered
 
@@ -185,7 +185,7 @@ def _string(value: object) -> str:
 
 
 def _boolean(value: object) -> bool:
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError("Historical confirmation terminal boolean field is invalid")
     return value
 

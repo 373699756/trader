@@ -82,7 +82,7 @@ class ShutdownReport:
         )
 
 
-def signal_exit_code(signum: int) -> int:
+def SignalExitCode(signum: int) -> int:
     if signum == getattr(signal, "SIGTERM", 15):
         return 143
     return 130
@@ -117,19 +117,19 @@ class ShutdownSignalController:
     @property
     def exit_code(self) -> int:
         with self._lock:
-            return signal_exit_code(self._first_signal) if self._first_signal is not None else 0
+            return SignalExitCode(self._first_signal) if self._first_signal is not None else 0
 
     def handle(self, signum: int, _frame: object | None = None) -> None:
         with self._lock:
             if self._deadline is not None:
-                exit_code = signal_exit_code(self._first_signal or signum)
+                exit_code = SignalExitCode(self._first_signal or signum)
                 force = True
                 deadline = self._deadline
             else:
                 deadline = ShutdownDeadline.start(self._timeout_seconds, monotonic=self._monotonic)
                 self._deadline = deadline
                 self._first_signal = signum
-                exit_code = signal_exit_code(signum)
+                exit_code = SignalExitCode(signum)
                 force = False
         if force:
             self._force_exit(exit_code)
@@ -174,5 +174,5 @@ __all__ = [
     "ShutdownReport",
     "ShutdownSignalController",
     "ShutdownStep",
-    "signal_exit_code",
+    "SignalExitCode",
 ]

@@ -5,12 +5,12 @@ import pytest
 from trader.training.domain.evaluation.baseline_identity import (
     BaselineIdentityAudit,
     BaselineIdentityClaim,
-    source_hash,
+    SourceHash,
 )
 
 
 def _claim(name: str, actual: str | None = "ok", *, required: bool = True) -> BaselineIdentityClaim:
-    return BaselineIdentityClaim(name, "ok", actual, "fixture", source_hash(name), required)
+    return BaselineIdentityClaim(name, "ok", actual, "fixture", SourceHash(name), required)
 
 
 def test_baseline_identity_audit_is_deterministic_and_distinguishes_live_unknown() -> None:

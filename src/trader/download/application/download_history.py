@@ -35,7 +35,7 @@ class DownloadHistoryUseCase:
         )
 
 
-def download_history(
+def DownloadHistory(
     archive: HistorySyncPort,
     configuration: HistorySyncConfiguration,
     supplier: HistorySupplierPort,
@@ -55,4 +55,4 @@ def download_history(
     )
 
 
-__all__ = ["DownloadHistoryUseCase", "download_history"]
+__all__ = ["DownloadHistoryUseCase", "DownloadHistory"]

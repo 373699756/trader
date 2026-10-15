@@ -5,8 +5,8 @@ from trader.training.domain.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
     TOMORROW_TRAINING_ALPHA_NAMES,
     TOMORROW_TRAINING_ALPHA_UNITS,
+    EvaluateTomorrowTrainingInput,
     FrozenDailyInputDescriptor,
-    evaluate_tomorrow_training_input,
 )
 
 
@@ -27,7 +27,7 @@ def _descriptor() -> FrozenDailyInputDescriptor:
 def test_compatible_frozen_daily_input_binds_six_alpha_contract_and_parent_hash() -> None:
     descriptor = _descriptor()
 
-    report = evaluate_tomorrow_training_input(
+    report = EvaluateTomorrowTrainingInput(
         descriptor,
         expected_manifest_hash=descriptor.manifest_hash,
         expected_source_cutoff=descriptor.source_cutoff,
@@ -64,7 +64,7 @@ def test_incompatible_input_reports_all_contract_failures_without_training() -> 
         production_authority=True,
     )
 
-    report = evaluate_tomorrow_training_input(
+    report = EvaluateTomorrowTrainingInput(
         descriptor,
         expected_manifest_hash="b" * 64,
         expected_source_cutoff=date(2026, 8, 31),
@@ -98,7 +98,7 @@ def test_extra_source_fields_do_not_break_the_consumer_contract() -> None:
         fields=(*REQUIRED_DAILY_FIELDS, replace(REQUIRED_DAILY_FIELDS[0], name="supplier_extension")),
     )
 
-    report = evaluate_tomorrow_training_input(
+    report = EvaluateTomorrowTrainingInput(
         descriptor,
         expected_manifest_hash=descriptor.manifest_hash,
         expected_source_cutoff=descriptor.source_cutoff,
@@ -110,12 +110,12 @@ def test_extra_source_fields_do_not_break_the_consumer_contract() -> None:
 def test_dynamic_active_cutoff_is_compatible_only_when_bound_by_the_consumer() -> None:
     descriptor = replace(_descriptor(), source_cutoff=date(2026, 9, 2))
 
-    compatible = evaluate_tomorrow_training_input(
+    compatible = EvaluateTomorrowTrainingInput(
         descriptor,
         expected_manifest_hash=descriptor.manifest_hash,
         expected_source_cutoff=date(2026, 9, 2),
     )
-    stale = evaluate_tomorrow_training_input(
+    stale = EvaluateTomorrowTrainingInput(
         descriptor,
         expected_manifest_hash=descriptor.manifest_hash,
         expected_source_cutoff=date(2026, 9, 1),

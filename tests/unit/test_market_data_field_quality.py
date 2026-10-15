@@ -14,8 +14,8 @@ from trader.recommendation.domain.market.quality import FieldQualityState, Field
 from trader.recommendation.infra.normalization.field_quality import (
     BOARD_FIELDS,
     REALTIME_FIELDS,
-    normalize_source,
-    select_fields,
+    NormalizeSource,
+    SelectFields,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -50,8 +50,8 @@ def test_field_selection_is_order_independent() -> None:
     baseline = _observation("sina", payload_hash="z")
     improved = _observation("eastmoney", payload_hash="a", value=10.1)
 
-    first = select_fields((baseline, improved), targeted=False)
-    second = select_fields((improved, baseline), targeted=False)
+    first = SelectFields((baseline, improved), targeted=False)
+    second = SelectFields((improved, baseline), targeted=False)
 
     assert first.values == second.values
     assert first.sources == second.sources
@@ -69,15 +69,15 @@ def test_lazy_field_audit_preserves_eager_coordinate_validation() -> None:
         received_at=OBSERVED_AT,
     )
     with pytest.raises(ValueError, match="cannot precede"):
-        select_fields((invalid,), targeted=False)
+        SelectFields((invalid,), targeted=False)
 
 
 def test_field_selection_targets_tencent_when_targeted_code() -> None:
     eastmoney = _observation("eastmoney", payload_hash="z", value=10.0)
     tencent = _observation("tencent", payload_hash="a", value=10.5)
 
-    non_targeted = select_fields((eastmoney, tencent), targeted=False)
-    targeted = select_fields((eastmoney, tencent), targeted=True)
+    non_targeted = SelectFields((eastmoney, tencent), targeted=False)
+    targeted = SelectFields((eastmoney, tencent), targeted=True)
 
     assert non_targeted.values["price"] == 10.0
     assert non_targeted.sources["price"] == "eastmoney"
@@ -88,7 +88,7 @@ def test_field_selection_targets_tencent_when_targeted_code() -> None:
 def test_same_coordinate_corrections_and_duplicates_have_order_independent_conflicts() -> None:
     observations = tuple(_observation("eastmoney", payload_hash="", value=value) for value in (10.0, 10.0, 10.2))
     for ordered in permutations(observations):
-        selected = select_fields(ordered, targeted=False)
+        selected = SelectFields(ordered, targeted=False)
         assert selected.values["price"] == 10.2
         assert selected.field_values["price"].conflict_count == 1
         assert selected.quality["price"] is FieldQualityState.CONFLICTING
@@ -98,10 +98,10 @@ def test_source_aliases_are_normalized_before_realtime_priority() -> None:
     eastmoney = _observation("eastmoney", payload_hash="z", value=10.0)
     tencent_long = _observation("tencent_long", payload_hash="a", value=10.5)
 
-    non_targeted = select_fields((eastmoney, tencent_long), targeted=False)
-    targeted = select_fields((eastmoney, tencent_long), targeted=True)
+    non_targeted = SelectFields((eastmoney, tencent_long), targeted=False)
+    targeted = SelectFields((eastmoney, tencent_long), targeted=True)
 
-    assert normalize_source("tencent_long") == "tencent"
+    assert NormalizeSource("tencent_long") == "tencent"
     assert non_targeted.values["price"] == 10.0
     assert non_targeted.sources["price"] == "eastmoney"
     assert targeted.values["price"] == 10.5
@@ -112,9 +112,9 @@ def test_unadmitted_mootdx_shadow_source_cannot_write_realtime_fields() -> None:
     shadow = _observation("mootdx_shadow", payload_hash="a", value=99.0)
     eastmoney = _observation("eastmoney", payload_hash="b", value=10.0)
 
-    selected = select_fields((shadow, eastmoney), targeted=True)
+    selected = SelectFields((shadow, eastmoney), targeted=True)
 
-    assert normalize_source("mootdx_shadow") == "mootdx"
+    assert NormalizeSource("mootdx_shadow") == "mootdx"
     assert selected.values["price"] == 10.0
     assert selected.sources["price"] == "eastmoney"
 
@@ -142,8 +142,8 @@ def test_time_rollback_is_rejected_per_source() -> None:
         value=9.8,
     )
 
-    first = select_fields((older, stale, latest), targeted=False)
-    second = select_fields((latest, stale, older), targeted=False)
+    first = SelectFields((older, stale, latest), targeted=False)
+    second = SelectFields((latest, stale, older), targeted=False)
 
     assert first.values["price"] == 10.1
     assert second.values["price"] == 10.1
@@ -166,7 +166,7 @@ def test_newer_missing_field_cannot_clear_an_older_complete_fact() -> None:
         error_code=None,
     )
 
-    selected = select_fields((complete, missing), targeted=False)
+    selected = SelectFields((complete, missing), targeted=False)
 
     assert selected.values["price"] == 10.1
     assert selected.field_values["price"].data_version == "quality-source"
@@ -176,7 +176,7 @@ def test_field_selection_blocks_disallowed_source_for_realtime_field() -> None:
     blocked = _observation("invalid-source", payload_hash="a", value=8.8)
     winner = _observation("eastmoney", payload_hash="b", value=10.1)
 
-    selected = select_fields((blocked, winner), targeted=False)
+    selected = SelectFields((blocked, winner), targeted=False)
 
     assert selected.values["price"] == 10.1
     assert selected.field_values["price"].source == "eastmoney"
@@ -195,7 +195,7 @@ def test_newer_price_only_observation_cannot_clear_richer_fields() -> None:
         fields={"price": 10.2},
     )
 
-    selected = select_fields((rich, price_only), targeted=False)
+    selected = SelectFields((rich, price_only), targeted=False)
 
     assert selected.values == {"name": "测试股份", "price": 10.2}
     assert selected.field_values["name"].payload_hash == "rich"
@@ -217,7 +217,7 @@ def test_conflict_state_is_exposed_when_value_disagrees() -> None:
         received_at=OBSERVED_AT,
     )
 
-    selected = select_fields((first, second), targeted=False)
+    selected = SelectFields((first, second), targeted=False)
 
     assert selected.conflicts == ("price:conflict",)
     assert selected.values["price"] in (10.1, 10.2)

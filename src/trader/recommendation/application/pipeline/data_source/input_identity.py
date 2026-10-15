@@ -48,9 +48,9 @@ class InputVersionClock:
         return self.accept(kind, material)
 
 
-def quote_versions(features: tuple[FeatureSnapshot, ...]) -> dict[str, MarketQuote]:
+def QuoteVersions(features: tuple[FeatureSnapshot, ...]) -> dict[str, MarketQuote]:
     return {feature.quote.code: replace(feature.quote, received_time=feature.quote.source_time) for feature in features}
 
 
-def changed_version_codes(previous: Mapping[str, MarketQuote], current: Mapping[str, MarketQuote]) -> tuple[str, ...]:
+def ChangedVersionCodes(previous: Mapping[str, MarketQuote], current: Mapping[str, MarketQuote]) -> tuple[str, ...]:
     return tuple(sorted(code for code in {*previous, *current} if previous.get(code) != current.get(code)))

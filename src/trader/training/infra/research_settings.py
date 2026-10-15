@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from trader.infra.settings.parser import integer, mapping, profile_mapping, read_json_object, require_exact_keys
+from trader.infra.settings.parser import Integer, ProfileMapping, ReadJsonObject, RequireExactKeys, RequireMapping
 
 _ARMS = (
     "current_chain",
@@ -30,9 +30,9 @@ class ResearchSettings:
     deepseek_comparison_arms: tuple[str, str, str]
 
 
-def load_research_settings(config_dir: Path) -> ResearchSettings:
-    document = read_json_object(config_dir / "research.json")
-    require_exact_keys(
+def LoadResearchSettings(config_dir: Path) -> ResearchSettings:
+    document = ReadJsonObject(config_dir / "research.json")
+    RequireExactKeys(
         document,
         {
             "terminal_holdout_sessions",
@@ -43,13 +43,13 @@ def load_research_settings(config_dir: Path) -> ResearchSettings:
         },
         "research",
     )
-    embargo = mapping(document, "embargo_sessions")
-    require_exact_keys(embargo, {"tomorrow", "d25"}, "research.embargo_sessions")
+    embargo = RequireMapping(document, "embargo_sessions")
+    RequireExactKeys(embargo, {"tomorrow", "d25"}, "research.embargo_sessions")
     candidates = document.get("fit_date_candidates")
-    v2_profile = profile_mapping(candidates, "v2", "research.fit_date_candidates")
-    v3_profile = profile_mapping(candidates, "v3", "research.fit_date_candidates")
-    require_exact_keys(v2_profile, {"dates"}, "research.fit_date_candidates.v2")
-    require_exact_keys(v3_profile, {"dates"}, "research.fit_date_candidates.v3")
+    v2_profile = ProfileMapping(candidates, "v2", "research.fit_date_candidates")
+    v3_profile = ProfileMapping(candidates, "v3", "research.fit_date_candidates")
+    RequireExactKeys(v2_profile, {"dates"}, "research.fit_date_candidates.v2")
+    RequireExactKeys(v3_profile, {"dates"}, "research.fit_date_candidates.v3")
     v2 = _positive_integers(v2_profile.get("dates"), "research.fit_date_candidates.v2")
     v3 = _positive_integers(v3_profile.get("dates"), "research.fit_date_candidates.v3")
     arms_raw = document.get("ablation_arms")
@@ -60,9 +60,9 @@ def load_research_settings(config_dir: Path) -> ResearchSettings:
     if not isinstance(deepseek_raw, list) or tuple(deepseek_raw) != deepseek_arms:
         raise ValueError("research.deepseek_comparison_arms must match the three-arm contract")
     return ResearchSettings(
-        terminal_holdout_sessions=integer(document, "terminal_holdout_sessions", minimum=200),
-        tomorrow_embargo_sessions=integer(embargo, "tomorrow", minimum=1),
-        d25_embargo_sessions=integer(embargo, "d25", minimum=5),
+        terminal_holdout_sessions=Integer(document, "terminal_holdout_sessions", minimum=200),
+        tomorrow_embargo_sessions=Integer(embargo, "tomorrow", minimum=1),
+        d25_embargo_sessions=Integer(embargo, "d25", minimum=5),
         v2_fit_date_candidates=v2,
         v3_fit_date_candidates=v3,
         ablation_arms=_ARMS,
@@ -81,4 +81,4 @@ def _positive_integers(raw: object, label: str) -> tuple[int, ...]:
     return tuple(raw)
 
 
-__all__ = ["ResearchSettings", "load_research_settings"]
+__all__ = ["ResearchSettings", "LoadResearchSettings"]

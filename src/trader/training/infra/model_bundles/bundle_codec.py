@@ -8,13 +8,13 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.serialization.canonical import content_hash
+from trader.infra.serialization.canonical import ContentHash
 from trader.infra.serialization.fields import (
-    is_boolean,
-    is_finite_number,
-    is_integer,
-    is_non_empty_text,
-    is_sha256_text,
+    IsBoolean,
+    IsFiniteNumber,
+    IsInteger,
+    IsNonEmptyText,
+    IsSha256Text,
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -197,12 +197,12 @@ class _GroupIdentity:
     training_universe_codes: int
 
 
-def load_head_bundle(
+def LoadHeadBundle(
     path: Path,
     strategy: Strategy,
     profile: TrainedProfileContract,
 ) -> TrainedHeadModelBundle:
-    bundle = decode_head_bundle(json.loads(path.read_text(encoding="utf-8")), strategy, profile)
+    bundle = DecodeHeadBundle(json.loads(path.read_text(encoding="utf-8")), strategy, profile)
     report = _decode_group_document(
         json.loads(path.with_name("report.json").read_text(encoding="utf-8")), strategy, profile, report=True
     )
@@ -233,7 +233,7 @@ def load_head_bundle(
     return bundle
 
 
-def decode_head_bundle(
+def DecodeHeadBundle(
     document: object,
     strategy: Strategy,
     profile: TrainedProfileContract,
@@ -431,7 +431,7 @@ def _hashed_object(document: object, fields: set[str], label: str) -> tuple[dict
         raise TypeError(f"trained-head {label} must be a JSON object")
     payload = cast(dict[str, object], dict(document))
     declared_hash = payload.pop("content_hash", None)
-    if not isinstance(declared_hash, str) or content_hash(payload) != declared_hash or set(payload) != fields:
+    if not isinstance(declared_hash, str) or ContentHash(payload) != declared_hash or set(payload) != fields:
         raise ValueError(f"trained-head {label} fields or content hash are invalid")
     return payload, declared_hash
 
@@ -541,10 +541,10 @@ def _valid_target_metrics(value: object, strategy: Strategy) -> bool:
         mean = raw.get("mean")
         deviation = raw.get("standard_deviation")
         if (
-            not is_integer(count)
+            not IsInteger(count)
             or count < 1
-            or not is_finite_number(mean)
-            or not is_finite_number(deviation)
+            or not IsFiniteNumber(mean)
+            or not IsFiniteNumber(deviation)
             or deviation < 0.0
         ):
             return False
@@ -552,14 +552,14 @@ def _valid_target_metrics(value: object, strategy: Strategy) -> bool:
 
 
 def _model_payload_hash(payload: dict[str, object]) -> str:
-    return content_hash(
+    return ContentHash(
         {key: value for key, value in payload.items() if key not in {"report_hash", "model_payload_hash"}}
     )
 
 
 def _require_sha256(payload: dict[str, object], name: str) -> None:
     value = _text(payload, name)
-    if not is_sha256_text(value):
+    if not IsSha256Text(value):
         raise ValueError(f"trained-head {name} is not a SHA-256 value")
 
 
@@ -572,28 +572,28 @@ def _date(payload: dict[str, object], name: str) -> date:
 
 def _text(payload: dict[str, object], name: str) -> str:
     value = payload.get(name)
-    if not is_non_empty_text(value):
+    if not IsNonEmptyText(value):
         raise TypeError(f"trained-head {name} must be non-empty text")
     return value
 
 
 def _integer(payload: dict[str, object], name: str) -> int:
     value = payload.get(name)
-    if not is_integer(value):
+    if not IsInteger(value):
         raise TypeError(f"trained-head {name} must be an integer")
     return value
 
 
 def _number(payload: dict[str, object], name: str) -> float:
     value = payload.get(name)
-    if not is_finite_number(value):
+    if not IsFiniteNumber(value):
         raise TypeError(f"trained-head {name} must be finite numeric")
     return float(value)
 
 
 def _boolean(payload: dict[str, object], name: str) -> bool:
     value = payload.get(name)
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError(f"trained-head {name} must be boolean")
     return value
 
@@ -617,6 +617,6 @@ __all__ = [
     "TrainedIndustryModelSnapshot",
     "TrainedRidgeModelSnapshot",
     "TrainedLightGBMModelSnapshot",
-    "decode_head_bundle",
-    "load_head_bundle",
+    "DecodeHeadBundle",
+    "LoadHeadBundle",
 ]

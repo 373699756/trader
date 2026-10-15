@@ -30,7 +30,7 @@ from trader.download.infra.history_control_index import (
 from trader.download.infra.history_maintenance_runner import (
     PlatformHistoryDesktopNotifier,
     RotatingHistoryAutomationLog,
-    run_scheduled_history_maintenance,
+    RunScheduledHistoryMaintenance,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -102,9 +102,9 @@ def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_d
         sync_calls.append(NOW)
         return _completed(archive)
 
-    first = run_scheduled_history_maintenance(configuration, synchronize, notifier, NOW)
-    repeated = run_scheduled_history_maintenance(configuration, synchronize, notifier, NOW)
-    next_day = run_scheduled_history_maintenance(configuration, synchronize, notifier, NOW.replace(day=11))
+    first = RunScheduledHistoryMaintenance(configuration, synchronize, notifier, NOW)
+    repeated = RunScheduledHistoryMaintenance(configuration, synchronize, notifier, NOW)
+    next_day = RunScheduledHistoryMaintenance(configuration, synchronize, notifier, NOW.replace(day=11))
 
     assert first.notification_state == "sent"
     assert repeated.notification_state == "not_attempted"
@@ -127,7 +127,7 @@ def test_notification_failure_does_not_fail_a_download_or_cadence_noop(tmp_path:
     configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
     notifier = _Notifier(HistoryNotificationResult("notification_degraded", "notification_service_unavailable"))
 
-    status = run_scheduled_history_maintenance(
+    status = RunScheduledHistoryMaintenance(
         configuration, lambda _progress: _completed(archive), notifier, NOW + timedelta(days=days)
     )
 
@@ -154,7 +154,7 @@ def test_scheduled_overlap_returns_already_running_without_notification(tmp_path
     outer_lock = HistoryMaintenanceLock(archive / ".automation.lock")
     outer_lock.acquire()
     try:
-        status = run_scheduled_history_maintenance(
+        status = RunScheduledHistoryMaintenance(
             configuration,
             lambda _progress: _completed(archive),
             notifier,
@@ -189,7 +189,7 @@ def test_manual_download_overlap_is_not_misreported_as_a_completed_notification(
         False,
     )
 
-    status = run_scheduled_history_maintenance(
+    status = RunScheduledHistoryMaintenance(
         configuration, lambda _progress: overlapping, notifier, NOW + timedelta(days=7)
     )
 
@@ -216,9 +216,9 @@ def test_weekly_due_failure_retries_and_successful_publication_stops_further_dow
         repository.publish_snapshot(replace(active, sequence=2, data_cutoff=due_at.date()))
         return _completed(archive)
 
-    first = run_scheduled_history_maintenance(configuration, synchronize, notifier, due_at)
-    retry = run_scheduled_history_maintenance(configuration, synchronize, notifier, due_at)
-    repeated = run_scheduled_history_maintenance(configuration, synchronize, notifier, due_at)
+    first = RunScheduledHistoryMaintenance(configuration, synchronize, notifier, due_at)
+    retry = RunScheduledHistoryMaintenance(configuration, synchronize, notifier, due_at)
+    repeated = RunScheduledHistoryMaintenance(configuration, synchronize, notifier, due_at)
 
     assert first.maintenance_state == "failed"
     assert retry.maintenance_state == "completed"
@@ -235,7 +235,7 @@ def test_automation_without_a_snapshot_requires_manual_initialization(tmp_path: 
     def unexpected_sync(_progress):
         raise AssertionError("scheduled task must not initialize a full market archive")
 
-    status = run_scheduled_history_maintenance(configuration, unexpected_sync, notifier, NOW)
+    status = RunScheduledHistoryMaintenance(configuration, unexpected_sync, notifier, NOW)
 
     assert status.maintenance_state == "blocked"
     assert status.maintenance_reason == "history_snapshot_unavailable"

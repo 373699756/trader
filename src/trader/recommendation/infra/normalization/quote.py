@@ -17,7 +17,7 @@ class QuoteNormalizer(Protocol):
     def __call__(self, raw: Mapping[str, object], received_at: datetime, /) -> MarketQuote | None: ...
 
 
-def to_float(raw: object) -> float | None:
+def ToFloat(raw: object) -> float | None:
     """Parse an arbitrary object as finite float, returning None on invalid input."""
 
     if raw is None or isinstance(raw, bool):
@@ -34,7 +34,7 @@ def to_float(raw: object) -> float | None:
     return value if math.isfinite(value) else None
 
 
-def normalize_quotes(
+def NormalizeQuotes(
     rows: Iterable[Mapping[str, object]],
     received_at: datetime,
     *,
@@ -116,7 +116,7 @@ class MarketQuoteInput:
         _require_timezone(self.received_time, "MarketQuoteInput.received_time")
 
 
-def build_market_quote(values: MarketQuoteInput) -> MarketQuote:
+def BuildMarketQuote(values: MarketQuoteInput) -> MarketQuote:
     """Build a MarketQuote from canonicalized values."""
 
     return MarketQuote(
@@ -148,7 +148,7 @@ def build_market_quote(values: MarketQuoteInput) -> MarketQuote:
         is_st=values.is_st,
         is_suspended=values.is_suspended,
         is_one_price_limit=values.is_one_price_limit
-        or infer_one_price_limit(values.code, values.price, values.high, values.low, values.pct_change),
+        or InferOnePriceLimit(values.code, values.price, values.high, values.low, values.pct_change),
         is_blacklisted=values.is_blacklisted,
         has_major_regulatory_risk=values.has_major_regulatory_risk,
         cross_source_deviation_pct=values.cross_source_deviation_pct,
@@ -156,7 +156,7 @@ def build_market_quote(values: MarketQuoteInput) -> MarketQuote:
     )
 
 
-def infer_one_price_limit(
+def InferOnePriceLimit(
     code: str,
     price: float | None,
     high: float | None,
@@ -174,8 +174,8 @@ def infer_one_price_limit(
 __all__ = [
     "MarketQuoteInput",
     "QuoteNormalizer",
-    "build_market_quote",
-    "infer_one_price_limit",
-    "normalize_quotes",
-    "to_float",
+    "BuildMarketQuote",
+    "InferOnePriceLimit",
+    "NormalizeQuotes",
+    "ToFloat",
 ]

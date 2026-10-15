@@ -43,8 +43,8 @@ from trader.recommendation.infra.deepseek.reviewer_selection import (
 from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.recommendation.infra.deepseek.schema import (
     RAW_FACTS_CACHE_GENERATION,
-    build_review_manifest_hash,
-    review_cache_key,
+    BuildReviewManifestHash,
+    ReviewCacheKey,
 )
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
@@ -588,7 +588,7 @@ class DeepSeekReviewer:
         )
 
     def _raw_cache_key(self, candidate: FeatureSnapshot, execution: _ReviewExecution) -> CacheRequestKey:
-        return review_cache_key(
+        return ReviewCacheKey(
             candidate,
             model=self._settings.model,
             generation=RAW_FACTS_CACHE_GENERATION,
@@ -601,7 +601,7 @@ class DeepSeekReviewer:
         return self._status.status()
 
     def evidence_manifest_hash(self, candidate: FeatureSnapshot) -> str:
-        return build_review_manifest_hash(candidate)
+        return BuildReviewManifestHash(candidate)
 
 
 __all__ = ["DeepSeekReviewer"]

@@ -71,7 +71,7 @@ class DecisionObservation:
         return DecisionObservation(event, audit)
 
 
-def build_decision_committed(
+def BuildDecisionCommitted(
     decision: ScoredDecision,
     *,
     projection_version: str | None = None,
@@ -117,5 +117,5 @@ __all__ = [
     "CommittedDecisionItem",
     "DecisionCommitted",
     "DecisionObservation",
-    "build_decision_committed",
+    "BuildDecisionCommitted",
 ]

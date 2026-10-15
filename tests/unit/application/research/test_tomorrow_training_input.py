@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from trader.training.application.tomorrow_training_input import (
-    verify_tomorrow_training_input_port,
+    VerifyTomorrowTrainingInputPort,
 )
 from trader.training.domain.tomorrow_training_input import (
     REQUIRED_DAILY_FIELDS,
@@ -34,7 +34,7 @@ def test_use_case_reads_only_descriptor_and_returns_hash_bound_compatibility() -
     )
     port = _FrozenPort(descriptor)
 
-    report = verify_tomorrow_training_input_port(
+    report = VerifyTomorrowTrainingInputPort(
         port,
         expected_manifest_hash=descriptor.manifest_hash,
         expected_source_cutoff=descriptor.source_cutoff,

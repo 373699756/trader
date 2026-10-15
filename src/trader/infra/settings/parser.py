@@ -13,7 +13,7 @@ class ConfigurationError(ValueError):
     """Raised when a configuration cannot satisfy its contract."""
 
 
-def read_json_object(path: Path) -> dict[str, object]:
+def ReadJsonObject(path: Path) -> dict[str, object]:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -25,7 +25,7 @@ def read_json_object(path: Path) -> dict[str, object]:
     return raw
 
 
-def read_config_sections(
+def ReadConfigSections(
     path: Path,
     root_keys: set[str],
     section_files: dict[str, set[str]],
@@ -33,19 +33,19 @@ def read_config_sections(
     label: str,
 ) -> dict[str, object]:
     """Read one fixed, non-recursive set of sibling configuration sections."""
-    root = read_json_object(path)
-    require_exact_keys(root, root_keys, label)
+    root = ReadJsonObject(path)
+    RequireExactKeys(root, root_keys, label)
     merged = dict(root)
     for filename, section_keys in section_files.items():
-        section = read_json_object(path.parent / filename)
-        require_exact_keys(section, section_keys, filename.removesuffix(".json"))
+        section = ReadJsonObject(path.parent / filename)
+        RequireExactKeys(section, section_keys, filename.removesuffix(".json"))
         if set(merged).intersection(section):
             raise ConfigurationError(f"{label} has duplicate configuration sections in {filename}")
         merged.update(section)
     return merged
 
 
-def infer_project_root(config_dir: Path) -> Path:
+def InferProjectRoot(config_dir: Path) -> Path:
     # The canonical runtime configuration lives directly under ``config``;
     # project-relative paths (for example ``.runtime/trader``) must therefore
     # Resolve from the project root rather than from the configuration
@@ -55,24 +55,24 @@ def infer_project_root(config_dir: Path) -> Path:
     return config_dir.resolve()
 
 
-def resolve_project_path(project_root: Path, raw_path: str) -> Path:
+def ResolveProjectPath(project_root: Path, raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     return path.resolve() if path.is_absolute() else (project_root / path).resolve()
 
 
-def resolve_config_path(config_dir: Path, raw_path: str) -> Path:
+def ResolveConfigPath(config_dir: Path, raw_path: str) -> Path:
     path = Path(raw_path).expanduser()
     return path.resolve() if path.is_absolute() else (config_dir / path).resolve()
 
 
-def mapping(raw: Mapping[str, object], key: str) -> Mapping[str, object]:
+def RequireMapping(raw: Mapping[str, object], key: str) -> Mapping[str, object]:
     value = raw.get(key)
     if not isinstance(value, dict):
         raise ConfigurationError(f"{key} must be an object")
     return value
 
 
-def profile_mapping(raw: object, profile_id: str, label: str) -> Mapping[str, object]:
+def ProfileMapping(raw: object, profile_id: str, label: str) -> Mapping[str, object]:
     if not isinstance(raw, list):
         raise ConfigurationError(f"{label} must be a profile list")
     profiles: dict[str, Mapping[str, object]] = {}
@@ -88,7 +88,7 @@ def profile_mapping(raw: object, profile_id: str, label: str) -> Mapping[str, ob
     return profiles[profile_id]
 
 
-def require_exact_keys(raw: Mapping[str, object], expected: set[str], label: str) -> None:
+def RequireExactKeys(raw: Mapping[str, object], expected: set[str], label: str) -> None:
     missing = sorted(expected - set(raw))
     unknown = sorted(set(raw) - expected)
     if missing:
@@ -99,21 +99,21 @@ def require_exact_keys(raw: Mapping[str, object], expected: set[str], label: str
         raise ConfigurationError(f"{label} contains unknown keys: {', '.join(unknown)}")
 
 
-def text(raw: Mapping[str, object], key: str) -> str:
+def Text(raw: Mapping[str, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ConfigurationError(f"{key} must be a non-empty string")
     return value.strip()
 
 
-def boolean(raw: Mapping[str, object], key: str) -> bool:
+def Boolean(raw: Mapping[str, object], key: str) -> bool:
     value = raw.get(key)
     if not isinstance(value, bool):
         raise ConfigurationError(f"{key} must be a boolean")
     return value
 
 
-def integer(
+def Integer(
     raw: Mapping[str, object],
     key: str,
     *,
@@ -130,7 +130,7 @@ def integer(
     return value
 
 
-def number(
+def Number(
     raw: Mapping[str, object],
     key: str,
     *,
@@ -150,8 +150,8 @@ def number(
     return result
 
 
-def number_mapping(raw: Mapping[str, object], key: str) -> dict[str, float]:
-    values = mapping(raw, key)
+def NumberMapping(raw: Mapping[str, object], key: str) -> dict[str, float]:
+    values = RequireMapping(raw, key)
     result: dict[str, float] = {}
     for name, value in values.items():
         if not isinstance(name, str) or not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -163,8 +163,8 @@ def number_mapping(raw: Mapping[str, object], key: str) -> dict[str, float]:
     return result
 
 
-def integer_mapping(raw: Mapping[str, object], key: str, *, minimum: int) -> dict[str, int]:
-    values = mapping(raw, key)
+def IntegerMapping(raw: Mapping[str, object], key: str, *, minimum: int) -> dict[str, int]:
+    values = RequireMapping(raw, key)
     result: dict[str, int] = {}
     for name, value in values.items():
         if not isinstance(name, str) or not isinstance(value, int) or isinstance(value, bool) or value < minimum:
@@ -173,27 +173,27 @@ def integer_mapping(raw: Mapping[str, object], key: str, *, minimum: int) -> dic
     return result
 
 
-def nested_number_mapping(raw: Mapping[str, object], key: str) -> dict[str, dict[str, float]]:
-    values = mapping(raw, key)
+def NestedNumberMapping(raw: Mapping[str, object], key: str) -> dict[str, dict[str, float]]:
+    values = RequireMapping(raw, key)
     result: dict[str, dict[str, float]] = {}
     for name, nested in values.items():
         if not isinstance(name, str) or not isinstance(nested, dict):
             raise ConfigurationError(f"{key} must contain objects")
-        result[name] = number_mapping({"values": nested}, "values")
+        result[name] = NumberMapping({"values": nested}, "values")
     return result
 
 
-def triple_nested_number_mapping(raw: Mapping[str, object], key: str) -> dict[str, dict[str, dict[str, float]]]:
-    values = mapping(raw, key)
+def TripleNestedNumberMapping(raw: Mapping[str, object], key: str) -> dict[str, dict[str, dict[str, float]]]:
+    values = RequireMapping(raw, key)
     result: dict[str, dict[str, dict[str, float]]] = {}
     for name, nested in values.items():
         if not isinstance(name, str) or not isinstance(nested, dict):
             raise ConfigurationError(f"{key} must contain objects")
-        result[name] = nested_number_mapping({"values": nested}, "values")
+        result[name] = NestedNumberMapping({"values": nested}, "values")
     return result
 
 
-def environment_integer(name: str, default: int) -> int:
+def EnvironmentInteger(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:
         return default

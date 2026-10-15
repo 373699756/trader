@@ -6,7 +6,7 @@ import json
 from datetime import date
 from typing import cast
 
-from trader.infra.serialization.fields import as_sequence, is_boolean, is_integer, is_number
+from trader.infra.serialization.fields import AsSequence, IsBoolean, IsInteger, IsNumber
 from trader.training.application.tomorrow_daily_close_training import (
     BaseModelKind,
     CandidateModelSnapshot,
@@ -22,8 +22,8 @@ from trader.training.application.tomorrow_daily_close_training import (
     ValidationMetrics,
     ValidationReport,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json, research_value
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
 
 TomorrowDailyCloseEvidence = DatasetManifest | FeatureDataset | ValidationReport | CandidateModelSnapshot
 
@@ -37,11 +37,11 @@ class TomorrowDailyCloseEvidenceCodec:
 
     @staticmethod
     def encode(evidence: TomorrowDailyCloseEvidence) -> str:
-        payload = research_value(evidence)
+        payload = ResearchValue(evidence)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow daily-close artifact must encode to an object")
         payload["content_hash"] = evidence.content_hash
-        return research_json(payload)
+        return ResearchJson(payload)
 
     @classmethod
     def decode_manifest(cls, encoded: str) -> DatasetManifest:
@@ -156,7 +156,7 @@ class TomorrowDailyCloseEvidenceCodec:
                 raise TypeError("artifact payload is not an object")
             payload = {str(key): value for key, value in raw.items()}
             persisted_hash = payload.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(payload) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(payload) != persisted_hash:
                 raise ValueError("artifact content hash mismatch")
             payload["content_hash"] = persisted_hash
             return payload
@@ -350,7 +350,7 @@ def _object(value: object) -> dict[str, object]:
 
 
 def _list(value: object) -> list[object]:
-    sequence = as_sequence(value)
+    sequence = AsSequence(value)
     if sequence is None:
         raise TypeError("artifact value must be an array")
     return sequence
@@ -367,19 +367,19 @@ def _optional_string(value: object) -> str | None:
 
 
 def _bool(value: object) -> bool:
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError("artifact value must be a boolean")
     return value
 
 
 def _int(value: object) -> int:
-    if not is_integer(value):
+    if not IsInteger(value):
         raise TypeError("artifact value must be an integer")
     return value
 
 
 def _float(value: object) -> float:
-    if not is_number(value):
+    if not IsNumber(value):
         raise TypeError("artifact value must be numeric")
     return float(value)
 

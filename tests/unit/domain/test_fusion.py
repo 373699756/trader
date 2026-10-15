@@ -15,8 +15,8 @@ from trader.recommendation.domain.evidence.review import (
 )
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.publication.models import FusionMode
-from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FusionPolicy, FusionRequest, fuse_score
-from trader.recommendation.domain.risk.rules import deepseek_risk_rule_code
+from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES, FuseScore, FusionPolicy, FusionRequest
+from trader.recommendation.domain.risk.rules import DeepseekRiskRuleCode
 
 DIMENSION_WEIGHTS = {name: 0.2 for name in DIMENSION_NAMES}
 NOW = datetime(2026, 7, 16, 14, 30, tzinfo=timezone.utc)
@@ -57,7 +57,7 @@ def _fuse_score(
     evidence=(),
     evaluated_at=None,
 ):
-    return fuse_score(
+    return FuseScore(
         FusionRequest(
             local=local,
             local_risk_facts=local_risk_facts,
@@ -222,7 +222,7 @@ def test_v4_risk_mapping_is_total_for_every_schema_severity(
     expected_template: str,
     severity: str,
 ) -> None:
-    assert deepseek_risk_rule_code(raw_code, severity) == expected_template.format(severity=severity)
+    assert DeepseekRiskRuleCode(raw_code, severity) == expected_template.format(severity=severity)
 
 
 def test_unregistered_model_risk_code_fails_closed() -> None:

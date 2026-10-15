@@ -10,7 +10,7 @@ from trader.training.domain.evaluation.models import OutcomeBar, OutcomePrice, O
 _MINIMUM_ONE_PRICE_LIMIT_DOWN_PCT = -4.5
 
 
-def pair_outcome_history(
+def PairOutcomeHistory(
     qfq_bars: tuple[DailyBar, ...],
     raw_bars: tuple[DailyBar, ...],
 ) -> tuple[OutcomeBar, ...]:
@@ -62,4 +62,4 @@ def _trading_status(raw: DailyBar) -> OutcomeTradingStatus:
     return OutcomeTradingStatus.TRADABLE
 
 
-__all__ = ["pair_outcome_history"]
+__all__ = ["PairOutcomeHistory"]

@@ -6,9 +6,9 @@ from pathlib import Path
 
 from trader.recommendation.application.ports.loaded_profile import LoadedScoringProfile
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.training.infra.model_bundles.bundle_codec import load_head_bundle
-from trader.training.infra.model_bundles.bundle_locator import locate_head_bundles
-from trader.training.infra.model_bundles.profile import build_trained_scoring_profile
+from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle
+from trader.training.infra.model_bundles.bundle_locator import LocateHeadBundles
+from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -17,7 +17,7 @@ class ScoringArtifactsMissingError(RuntimeError):
     """The selected profile has no complete published pair of strategy heads."""
 
 
-def load_scoring_profile(
+def LoadScoringProfile(
     profile_id: ScoringProfileId,
     *,
     training_root: Path | None = None,
@@ -27,9 +27,9 @@ def load_scoring_profile(
     if profile_id in {"v2", "v3"}:
         try:
             profile = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
-            bundle_paths = locate_head_bundles(training_root or Path("data/train"), profile)
-            bundles = tuple(load_head_bundle(path, strategy, profile) for strategy, path in bundle_paths)
-            return build_trained_scoring_profile(profile_id, bundles)
+            bundle_paths = LocateHeadBundles(training_root or Path("data/train"), profile)
+            bundles = tuple(LoadHeadBundle(path, strategy, profile) for strategy, path in bundle_paths)
+            return BuildTrainedScoringProfile(profile_id, bundles)
         except FileNotFoundError as exc:
             raise ScoringArtifactsMissingError("shared strategy-head training models are unavailable") from exc
         except (OSError, TypeError, ValueError) as exc:
@@ -37,4 +37,4 @@ def load_scoring_profile(
     raise ValueError("unknown scoring profile")
 
 
-__all__ = ["ScoringArtifactsMissingError", "load_scoring_profile"]
+__all__ = ["ScoringArtifactsMissingError", "LoadScoringProfile"]

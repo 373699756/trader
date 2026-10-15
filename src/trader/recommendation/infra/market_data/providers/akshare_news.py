@@ -17,7 +17,7 @@ from trader.infra.market_data.providers.akshare_parsing import (
 from trader.recommendation.domain.market.models import Evidence
 
 
-def fetch_news(client: Any, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
+def FetchNews(client: Any, code: str, *, observed_at: datetime, limit: int = 5) -> tuple[Evidence, ...]:
     _validate_code(code)
     if limit <= 0:
         return ()

@@ -5,7 +5,7 @@ import pytest
 from trader.training.domain.evaluation.cost_aware_selection import (
     CostAwareCandidate,
     CostAwareSelectionPolicy,
-    select_cost_aware,
+    SelectCostAware,
 )
 
 
@@ -21,7 +21,7 @@ def test_net_utility_ranking_uses_stock_cost_and_fixed_constraints() -> None:
         _candidate("300003", "chinext", "health", 0.014, 0.001),
     )
 
-    result = select_cost_aware(candidates, policy)
+    result = SelectCostAware(candidates, policy)
 
     assert result.selected_codes[0] == "300001"
     assert len(result.selected_codes) <= 6
@@ -41,7 +41,7 @@ def test_net_utility_ranking_uses_stock_cost_and_fixed_constraints() -> None:
 
 def test_d25_entry_threshold_is_higher_than_maintenance_threshold() -> None:
     policy = CostAwareSelectionPolicy(horizon="d25")
-    result = select_cost_aware(
+    result = SelectCostAware(
         (
             _candidate("600001", "main", "bank", 0.003, 0.002, incumbent=True),
             _candidate("300001", "chinext", "software", 0.003, 0.002, incumbent=True),
@@ -59,9 +59,9 @@ def test_tomorrow_rejects_cross_period_incumbency_and_allows_empty_pool() -> Non
     policy = CostAwareSelectionPolicy(horizon="tomorrow")
 
     with pytest.raises(ValueError, match="Tomorrow"):
-        select_cost_aware((_candidate("600001", "main", "bank", 0.01, 0.001, incumbent=True),), policy)
+        SelectCostAware((_candidate("600001", "main", "bank", 0.01, 0.001, incumbent=True),), policy)
 
-    result = select_cost_aware(
+    result = SelectCostAware(
         (
             _candidate("600001", "main", "bank", 0.001, 0.002),
             _candidate("300001", "chinext", "software", 0.001, 0.002),
@@ -74,7 +74,7 @@ def test_tomorrow_rejects_cross_period_incumbency_and_allows_empty_pool() -> Non
 
 
 def test_industry_whitespace_cannot_bypass_concentration_limit() -> None:
-    result = select_cost_aware(
+    result = SelectCostAware(
         (
             _candidate("600001", "main", "bank", 0.010, 0.001, incumbent=True),
             _candidate("300001", "chinext", " bank ", 0.009, 0.001, incumbent=True),

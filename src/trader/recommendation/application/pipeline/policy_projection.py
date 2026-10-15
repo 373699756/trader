@@ -10,7 +10,7 @@ from trader.recommendation.domain.selection.ranking import CORE_FIELDS
 _PRESELECTION_VALUE_FIELDS = (*CORE_FIELDS, "amount_median_20d", "trend_score")
 
 
-def preselection_replay_feature(feature: FeatureSnapshot) -> FeatureSnapshot:
+def PreselectionReplayFeature(feature: FeatureSnapshot) -> FeatureSnapshot:
     """Remove post-selection evidence from the market population view."""
 
     return replace(
@@ -22,4 +22,4 @@ def preselection_replay_feature(feature: FeatureSnapshot) -> FeatureSnapshot:
     )
 
 
-__all__ = ["preselection_replay_feature"]
+__all__ = ["PreselectionReplayFeature"]

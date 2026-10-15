@@ -20,52 +20,52 @@ from trader.recommendation.application.ports.data_plane_records import (
 )
 from trader.recommendation.infra.persistence import data_plane_sqlite
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    assert_committed_record_integrity as _assert_committed_record_integrity,
+    AssertCommittedRecordIntegrity as _assert_committed_record_integrity,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    canonical_json as _canonical_json,
+    CanonicalJson as _canonical_json,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    canonical_json_bytes as _canonical_json_bytes,
+    CanonicalJsonBytes as _canonical_json_bytes,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    identity_fields_for_table as _identity_fields_for_table,
+    IdentityFieldsForTable as _identity_fields_for_table,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    identity_values_from_row as _identity_values_from_row,
+    IdentityValuesFromRow as _identity_values_from_row,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    iso_datetime as _iso_datetime,
+    IsoDatetime as _iso_datetime,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    parse_datetime as _parse_datetime,
+    ParseDatetime as _parse_datetime,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    parse_payload_bytes as _parse_payload_bytes,
+    ParsePayloadBytes as _parse_payload_bytes,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    pk_fields_from_table as _pk_fields_from_table,
+    PkFieldsFromTable as _pk_fields_from_table,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    record_payload_for_table as _record_payload_for_table,
+    RecordPayloadForTable as _record_payload_for_table,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    record_to_row as _record_to_row,
+    RecordToRow as _record_to_row,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    row_to_record as _row_to_record,
+    RowToRecord as _row_to_record,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    sha256 as _sha256,
+    Sha256 as _sha256,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    table_to_record_kind as _table_to_record_kind,
+    TableToRecordKind as _table_to_record_kind,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    text as _text,
+    Text as _text,
 )
 from trader.recommendation.infra.persistence.data_plane_codec import (
-    to_payload_dict as _to_payload_dict,
+    ToPayloadDict as _to_payload_dict,
 )
 from trader.recommendation.infra.persistence.data_plane_types import (
     _DEFAULT_SCHEMA_VERSION,
@@ -98,7 +98,7 @@ class SQLiteDataPlane:
         with self._lock:
             try:
                 self._runtime_root.mkdir(parents=True, exist_ok=True)
-                data_plane_sqlite.initialize_database(self._database)
+                data_plane_sqlite.InitializeDatabase(self._database)
             except sqlite3.DatabaseError as exc:
                 raise _map_sqlite_error(exc, operation="initialize") from exc
 
@@ -272,7 +272,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.connection_scope(self._database) as connection:
+                with data_plane_sqlite.ConnectionScope(self._database) as connection:
                     for profile in _PROFILES.values():
                         for table in (profile.recent_table, profile.formal_table):
                             for row in connection.execute(
@@ -323,7 +323,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.connection_scope(self._database) as connection:
+                with data_plane_sqlite.ConnectionScope(self._database) as connection:
                     for write in writes:
                         _execute_write(connection, table=table, mode=mode, write=write)
             except sqlite3.DatabaseError as exc:
@@ -350,7 +350,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.connection_scope(self._database) as connection:
+                with data_plane_sqlite.ConnectionScope(self._database) as connection:
                     row = connection.execute(
                         f"""
                         SELECT * FROM {table}
@@ -406,7 +406,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.connection_scope(self._database) as connection:
+                with data_plane_sqlite.ConnectionScope(self._database) as connection:
                     for row in connection.execute(query, params).fetchall():
                         if code_filter is not None:
                             candidate = _text(row["code"])

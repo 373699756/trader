@@ -9,8 +9,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.domain.evaluation.specification import get_score_research_spec
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.domain.evaluation.specification import GetScoreResearchSpec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COST_RATES = (0.002, 0.005, 0.01)
@@ -53,7 +53,7 @@ class FactorDiagnosticDimensions:
         if len({(item.trade_date, item.code) for item in records}) != len(records):
             raise ValueError("factor dimension records must be unique")
         object.__setattr__(self, "records", records)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -273,7 +273,7 @@ class FactorDiagnosticReport:
             (self.dimension_hash, "factor report dimensions"),
         ):
             _hash(value, label)
-        spec = get_score_research_spec(self.research_identity)
+        spec = GetScoreResearchSpec(self.research_identity)
         if self.research_spec_hash != spec.content_hash:
             raise ValueError("factor report research spec hash is invalid")
         if self.schema_version != "score_factor_diagnostic_report" or self.diagnostic_version != (
@@ -305,7 +305,7 @@ class FactorDiagnosticReport:
         if self.status != expected:
             raise ValueError("factor report status must match its valid-day evidence")
         object.__setattr__(self, "factors", factors)
-        object.__setattr__(self, "report_hash", canonical_research_hash(self))
+        object.__setattr__(self, "report_hash", CanonicalResearchHash(self))
 
 
 def _counts(total: int, observed: int, coverage: float, missing_rate: float) -> None:

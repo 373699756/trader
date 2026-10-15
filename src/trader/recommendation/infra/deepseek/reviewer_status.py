@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
+from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
 from trader.recommendation.domain.evidence.review import ReviewOutcome
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
@@ -95,7 +95,7 @@ class ReviewerStatusTracker:
             successful_attempts = self._last_successful_attempts
             failed_attempts = self._last_failed_attempts
         cache = self._cache.status()
-        return freeze_json_object(
+        return FreezeJsonObject(
             cast(
                 Mapping[str, JsonInput],
                 {

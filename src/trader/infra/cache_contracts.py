@@ -221,13 +221,13 @@ class BoundedCache(Protocol, Generic[_T]):
     def stop(self, *, wait: bool = True, timeout_seconds: float | None = None) -> object: ...
 
 
-def build_cache_identity(spec: CacheIdentitySpec) -> CacheIdentity:
-    normalized_phase = "all_day" if spec.dataset in SLOW_DATASETS else normalize_cache_phase(spec.phase)
+def BuildCacheIdentity(spec: CacheIdentitySpec) -> CacheIdentity:
+    normalized_phase = "all_day" if spec.dataset in SLOW_DATASETS else NormalizeCachePhase(spec.phase)
     return CacheIdentity(
         dataset=spec.dataset,
         source=spec.source,
         subject_key=spec.subject_key,
-        request_key=request_key(spec.request),
+        request_key=RequestKey(spec.request),
         trade_date=spec.trade_date,
         phase=normalized_phase,
         source_contract_version=spec.source_contract_version,
@@ -236,7 +236,7 @@ def build_cache_identity(spec: CacheIdentitySpec) -> CacheIdentity:
     )
 
 
-def normalize_cache_phase(phase: str) -> str:
+def NormalizeCachePhase(phase: str) -> str:
     normalized = phase.strip().lower()
     aliases = {
         "morning_observe": "morning_main",
@@ -247,7 +247,7 @@ def normalize_cache_phase(phase: str) -> str:
     return aliases.get(normalized, normalized)
 
 
-def request_key(request: Mapping[str, object]) -> CacheRequestKey:
+def RequestKey(request: Mapping[str, object]) -> CacheRequestKey:
     return tuple((key, _request_value(value)) for key, value in sorted(_normalize_request(request).items()))
 
 
@@ -305,7 +305,7 @@ def _normalize_request(request: Mapping[str, object]) -> dict[str, object]:
     return normalized
 
 
-def canonical_json_bytes(value: object) -> bytes:
+def CanonicalJsonBytes(value: object) -> bytes:
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -334,7 +334,7 @@ class _CanonicalJsonEncoder(json.JSONEncoder):
         elif isinstance(value, Mapping):
             encoded = {str(key): item for key, item in value.items()}
         elif isinstance(value, (set, frozenset)):
-            encoded = sorted(value, key=canonical_json_bytes)
+            encoded = sorted(value, key=CanonicalJsonBytes)
         elif is_dataclass(value) and not isinstance(value, type):
             encoded = {name: getattr(value, name) for name in _canonical_field_names(type(value))}
         else:
@@ -347,16 +347,16 @@ def _canonical_field_names(value_type: type[Any]) -> tuple[str, ...]:
     return tuple(field.name for field in fields(value_type))
 
 
-def freeze_cache_value(value: _T) -> _T:
+def FreezeCacheValue(value: _T) -> _T:
     if isinstance(value, Mapping):
-        frozen = MappingProxyType({str(key): freeze_cache_value(item) for key, item in value.items()})
+        frozen = MappingProxyType({str(key): FreezeCacheValue(item) for key, item in value.items()})
         return cast(_T, frozen)
     if isinstance(value, list):
-        return cast(_T, tuple(freeze_cache_value(item) for item in value))
+        return cast(_T, tuple(FreezeCacheValue(item) for item in value))
     if isinstance(value, tuple):
-        return cast(_T, tuple(freeze_cache_value(item) for item in value))
+        return cast(_T, tuple(FreezeCacheValue(item) for item in value))
     if isinstance(value, set):
-        return cast(_T, frozenset(freeze_cache_value(item) for item in value))
+        return cast(_T, frozenset(FreezeCacheValue(item) for item in value))
     return value
 
 
@@ -371,9 +371,9 @@ __all__ = [
     "CacheStats",
     "CacheStatus",
     "SLOW_DATASETS",
-    "build_cache_identity",
-    "canonical_json_bytes",
-    "freeze_cache_value",
-    "normalize_cache_phase",
-    "request_key",
+    "BuildCacheIdentity",
+    "CanonicalJsonBytes",
+    "FreezeCacheValue",
+    "NormalizeCachePhase",
+    "RequestKey",
 ]

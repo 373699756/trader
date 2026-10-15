@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from trader.recommendation.domain.market.factors import band_score, clamp, percentile_scores_with_metadata
+from trader.recommendation.domain.market.factors import BandScore, Clamp, PercentileScoresWithMetadata
 from trader.recommendation.domain.market.models import (
     Board,
     CrossSectionStats,
@@ -81,7 +81,7 @@ def _normalize_features(
                 values, reference, inverse=inverse, data_version=data_version
             )
         else:
-            score_map, metadata = percentile_scores_with_metadata(
+            score_map, metadata = PercentileScoresWithMetadata(
                 values, inverse=inverse, population_data_version=data_version
             )
         scores[score_name] = score_map
@@ -155,7 +155,7 @@ def _scores_against_reference(
         equal = sum(item == bounded for item in finite)
         average_rank = less + (equal - 1) / 2.0
         score = average_rank * 100.0 / max(1, len(finite) - 1)
-        result[key] = clamp(100.0 - score if inverse else score)
+        result[key] = Clamp(100.0 - score if inverse else score)
     missing_count = sum(not _finite_value(value) for value in values.values())
     return result, CrossSectionStats(lower, upper, len(finite), missing_count, 0.025, 0.975, data_version)
 
@@ -200,7 +200,7 @@ def _flow_confirmation(item: FeatureSnapshot, amount_shock: float | None) -> flo
     if return_5d is None or amount_shock is None:
         return None
     direction = 1.0 if return_5d > 0.0 else -1.0 if return_5d < 0.0 else 0.0
-    return clamp(50.0 + direction * min(50.0, amount_shock * 25.0))
+    return Clamp(50.0 + direction * min(50.0, amount_shock * 25.0))
 
 
 def _band_or_none(
@@ -209,7 +209,7 @@ def _band_or_none(
     return (
         None
         if value is None or not math.isfinite(float(value))
-        else band_score(float(value), lower, optimal_low, optimal_high, upper)
+        else BandScore(float(value), lower, optimal_low, optimal_high, upper)
     )
 
 
@@ -220,13 +220,13 @@ def _candidate_fields(strategy: Strategy) -> tuple[str, ...]:
     return tuple(sorted(fields))
 
 
-def candidate_fields(strategy: Strategy) -> tuple[str, ...]:
+def CandidateFields(strategy: Strategy) -> tuple[str, ...]:
     """Return the immutable quality-gate fields for one active strategy."""
 
     return _candidate_fields(strategy)
 
 
-def supported_weight(
+def SupportedWeight(
     strategy: Strategy,
     values: Mapping[str, float | None],
     weights: Mapping[str, float],
@@ -236,7 +236,7 @@ def supported_weight(
     return _supported_weight(strategy, values, weights, phase=phase)
 
 
-def reliability_fields(
+def ReliabilityFields(
     strategy: Strategy,
     weights: Mapping[str, float],
     *,
@@ -362,4 +362,4 @@ def _mean(values: Sequence[float]) -> float:
     return sum(values) / len(values)
 
 
-__all__ = ["MAX_FALLBACK_SESSIONS", "MIN_BOARD_SAMPLE", "reliability_fields", "supported_weight"]
+__all__ = ["MAX_FALLBACK_SESSIONS", "MIN_BOARD_SAMPLE", "ReliabilityFields", "SupportedWeight"]

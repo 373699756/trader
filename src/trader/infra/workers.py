@@ -312,7 +312,7 @@ def _warm_worker(ready: threading.Barrier) -> int:
     return threading.get_ident()
 
 
-def injected_executor(shared: BoundedExecutor | None, *, inline: bool = False) -> WorkerExecutor:
+def InjectedExecutor(shared: BoundedExecutor | None, *, inline: bool = False) -> WorkerExecutor:
     """Use the caller's pool, or explicit serial execution, without creating resources."""
     if shared is None:
         return _InlineExecutor()
@@ -321,7 +321,7 @@ def injected_executor(shared: BoundedExecutor | None, *, inline: bool = False) -
     return shared
 
 
-def submit_or_reject(
+def SubmitOrReject(
     executor: WorkerExecutor,
     function: Callable[_P, _T],
     /,
@@ -336,7 +336,7 @@ def submit_or_reject(
     return completed
 
 
-def submit_with_backpressure(
+def SubmitWithBackpressure(
     executor: WorkerExecutor,
     function: Callable[_P, _T],
     /,
@@ -379,7 +379,7 @@ __all__ = [
     "ManagedWorkerExecutor",
     "WorkerExecutor",
     "WorkerResourceRejectedError",
-    "injected_executor",
-    "submit_or_reject",
-    "submit_with_backpressure",
+    "InjectedExecutor",
+    "SubmitOrReject",
+    "SubmitWithBackpressure",
 ]

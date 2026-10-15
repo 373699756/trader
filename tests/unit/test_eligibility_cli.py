@@ -27,7 +27,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
     )
     monkeypatch.setattr(
         cli,
-        "load_runtime_settings",
+        "LoadRuntimeSettings",
         lambda _path: SimpleNamespace(
             runtime_dir=tmp_path,
             project_root=tmp_path,
@@ -35,7 +35,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
         ),
     )
 
-    exit_code = cli.main(
+    exit_code = cli.Main(
         [
             "--config",
             str(tmp_path / "runtime.json"),

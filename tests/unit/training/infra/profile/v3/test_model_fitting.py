@@ -6,16 +6,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from trader.download.domain.baostock_daily import build_baostock_training_split
+from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
 from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
 from trader.training.infra import model_fitting
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
-from trader.training.infra.model_fitting import fit_industry_models
+from trader.training.infra.model_fitting import FitIndustryModels
 from trader.training.infra.profile.v2.contracts import V2_HEAD_CONTRACTS, V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS, V3_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_repository import TrainingSample
-from trader.training.infra.training_settings import load_profile_training_settings
+from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[6]
 
@@ -25,10 +25,10 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
     tmp_path: Path, monkeypatch, contract: TrainedHeadContract
 ) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
-    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
     profile = V2_TRAINING_PROFILE if contract in V2_HEAD_CONTRACTS else V3_TRAINING_PROFILE
-    settings = load_profile_training_settings(PROJECT_ROOT, profile.profile_id)
+    settings = LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id)
 
     feature_count = max(contract.feature_positions) + 1
     cache = TrainingSampleCache(tmp_path, contract.model_id, feature_count, split.content_hash)
@@ -53,14 +53,14 @@ def test_industry_fitting_matches_after_complete_cache_reopen(
 
         monkeypatch.setattr(model_fitting, "_fit_lightgbm", checked_fit)
 
-        first, first_training_rows, first_validation_rows = fit_industry_models(
+        first, first_training_rows, first_validation_rows = FitIndustryModels(
             repository, split, contract, settings.fitting
         )
         cache.seal(repository)
 
     with cache.open() as repository:
         assert cache.reused
-        second, second_training_rows, second_validation_rows = fit_industry_models(
+        second, second_training_rows, second_validation_rows = FitIndustryModels(
             repository, split, contract, settings.fitting
         )
 

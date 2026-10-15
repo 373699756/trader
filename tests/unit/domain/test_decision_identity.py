@@ -18,7 +18,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageState,
 )
 from trader.recommendation.domain.market.models import Board
-from trader.recommendation.domain.market.research import ResearchComponentCoverage, research_components_from_observation
+from trader.recommendation.domain.market.research import ResearchComponentCoverage, ResearchComponentsFromObservation
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
@@ -28,16 +28,16 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionQuote,
     DecisionResearchCoverage,
     DecisionRiskDisclosure,
+    FormalScoredDecision,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
     SelectionDiagnostics,
-    formal_scored_decision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.infra.persistence.decision_record_codec import (
-    committed_record_bytes,
-    committed_record_from_bytes,
+    CommittedRecordBytes,
+    CommittedRecordFromBytes,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -131,11 +131,11 @@ def test_scored_identity_is_canonical_for_all_three_scored_strategies() -> None:
 
 def test_formal_record_round_trip_preserves_complete_recommendation_pipeline() -> None:
     current = replace(decision(), pipeline=pipeline())
-    formal = formal_scored_decision(current)
+    formal = FormalScoredDecision(current)
     record = CommittedDecisionRecord(formal, NOW + timedelta(minutes=10), "scheduled")
 
-    encoded = committed_record_bytes(record)
-    restored = committed_record_from_bytes(encoded)
+    encoded = CommittedRecordBytes(record)
+    restored = CommittedRecordFromBytes(encoded)
 
     assert restored.decision.pipeline == current.pipeline
     assert json.loads(encoded)["decision"]["pipeline"]["current_stage"] == "concentration"
@@ -168,8 +168,8 @@ def stage_snapshots(observed_at: datetime = NOW, *, count: int = 1) -> tuple[Pip
 def test_fourteen_stage_audit_survives_formal_codec_and_participates_in_hash() -> None:
     snapshots = stage_snapshots()
     current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=snapshots))
-    record = CommittedDecisionRecord(formal_scored_decision(current), NOW.replace(hour=15, minute=0), "scheduled")
-    restored = committed_record_from_bytes(committed_record_bytes(record))
+    record = CommittedDecisionRecord(FormalScoredDecision(current), NOW.replace(hour=15, minute=0), "scheduled")
+    restored = CommittedRecordFromBytes(CommittedRecordBytes(record))
     assert restored == record
     assert restored.decision.pipeline.stage_snapshots == snapshots
     changed = replace(
@@ -178,17 +178,17 @@ def test_fourteen_stage_audit_survives_formal_codec_and_participates_in_hash() -
     )
     assert changed.content_hash != current.content_hash
     legacy = replace(decision(), pipeline=pipeline())
-    legacy_record = CommittedDecisionRecord(formal_scored_decision(legacy), record.committed_at, "scheduled")
-    encoded = committed_record_bytes(legacy_record)
+    legacy_record = CommittedDecisionRecord(FormalScoredDecision(legacy), record.committed_at, "scheduled")
+    encoded = CommittedRecordBytes(legacy_record)
     assert "stage_snapshots" not in json.loads(encoded)["decision"]["pipeline"]
-    assert committed_record_bytes(committed_record_from_bytes(encoded)) == encoded
+    assert CommittedRecordBytes(CommittedRecordFromBytes(encoded)) == encoded
 
 
 def test_legacy_formal_record_without_pipeline_keeps_original_identity() -> None:
     record = CommittedDecisionRecord(decision(), NOW + timedelta(minutes=10), "scheduled")
-    encoded = committed_record_bytes(record)
+    encoded = CommittedRecordBytes(record)
 
-    restored = committed_record_from_bytes(encoded)
+    restored = CommittedRecordFromBytes(encoded)
 
     assert "pipeline" not in json.loads(encoded)["decision"]
     assert restored == record
@@ -196,7 +196,7 @@ def test_legacy_formal_record_without_pipeline_keeps_original_identity() -> None
 
 
 def test_formal_record_preserves_component_coverage_and_risk_origin() -> None:
-    assert research_components_from_observation(None) == ResearchComponentCoverage(
+    assert ResearchComponentsFromObservation(None) == ResearchComponentCoverage(
         "unknown", "unknown", "unknown", "unknown"
     )
     original = decision()
@@ -215,7 +215,7 @@ def test_formal_record_preserves_component_coverage_and_risk_origin() -> None:
         ),
     )
     record = CommittedDecisionRecord(replace(original, items=(item,)), NOW + timedelta(minutes=10), "scheduled")
-    restored = committed_record_from_bytes(committed_record_bytes(record))
+    restored = CommittedRecordFromBytes(CommittedRecordBytes(record))
 
     assert restored == record
     assert restored.decision.items[0].risk_details == item.risk_details
@@ -225,11 +225,11 @@ def test_formal_record_preserves_component_coverage_and_risk_origin() -> None:
 def test_formal_record_without_new_disclosures_keeps_original_bytes() -> None:
     original = decision()
     record = CommittedDecisionRecord(original, NOW + timedelta(minutes=10), "scheduled")
-    encoded = committed_record_bytes(record)
+    encoded = CommittedRecordBytes(record)
 
     assert b'"risk_details"' not in encoded
     assert b'"components"' not in encoded
-    assert committed_record_bytes(committed_record_from_bytes(encoded)) == encoded
+    assert CommittedRecordBytes(CommittedRecordFromBytes(encoded)) == encoded
 
 
 def test_scored_identity_rejects_long_and_invalid_hybrid_parent_or_local_score() -> None:
@@ -248,7 +248,7 @@ def test_scored_identity_accepts_structured_downside_action_reason_but_rejects_f
     guarded = replace(item, action=RecommendationAction.OBSERVE, reason="downside_guard:trend_breakdown")
     guarded_decision = replace(decision(), items=(guarded,))
     record = CommittedDecisionRecord(guarded_decision, NOW + timedelta(minutes=10), "scheduled")
-    restored = committed_record_from_bytes(committed_record_bytes(record))
+    restored = CommittedRecordFromBytes(CommittedRecordBytes(record))
 
     assert restored.decision.items[0].reason == "downside_guard:trend_breakdown"
     with pytest.raises(ValueError, match="reason must be structured"):
@@ -339,8 +339,8 @@ def test_formal_record_round_trip_preserves_optional_distinct_coverage() -> None
     current = replace(decision(), items=(item,), population_count=82, rejected_count=81)
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
-    encoded = committed_record_bytes(record)
-    restored = committed_record_from_bytes(encoded)
+    encoded = CommittedRecordBytes(record)
+    restored = CommittedRecordFromBytes(encoded)
     encoded_item = json.loads(encoded)["decision"]["items"][0]
 
     assert restored.decision.population_count == 82
@@ -369,8 +369,8 @@ def test_formal_record_round_trip_preserves_display_metadata_and_selection_diagn
     )
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
-    restored = committed_record_from_bytes(committed_record_bytes(record))
-    encoded = json.loads(committed_record_bytes(record))
+    restored = CommittedRecordFromBytes(CommittedRecordBytes(record))
+    encoded = json.loads(CommittedRecordBytes(record))
 
     assert restored == record
     assert restored.decision.items[0].downside == item.downside
@@ -386,8 +386,8 @@ def test_formal_record_codec_keeps_pre_aggregate_selection_diagnostics_compatibl
     )
     record = CommittedDecisionRecord(current, NOW + timedelta(minutes=10), "scheduled")
 
-    encoded = committed_record_bytes(record)
-    restored = committed_record_from_bytes(encoded)
+    encoded = CommittedRecordBytes(record)
+    restored = CommittedRecordFromBytes(encoded)
 
     assert "evaluated_count" not in json.loads(encoded)["decision"]["selection_diagnostics"]
     assert restored == record
@@ -428,9 +428,9 @@ def test_formal_projection_retains_scored_leader_even_when_it_is_avoided() -> No
         ),
     )
 
-    formal = formal_scored_decision(current)
-    restored = committed_record_from_bytes(
-        committed_record_bytes(CommittedDecisionRecord(formal, NOW + timedelta(minutes=10), "scheduled"))
+    formal = FormalScoredDecision(current)
+    restored = CommittedRecordFromBytes(
+        CommittedRecordBytes(CommittedDecisionRecord(formal, NOW + timedelta(minutes=10), "scheduled"))
     )
 
     assert len(formal.items) == 1
@@ -443,7 +443,7 @@ def test_formal_projection_retains_scored_leader_even_when_it_is_avoided() -> No
 @pytest.mark.parametrize("location", ["record", "decision", "item"])
 def test_formal_record_codec_rejects_unknown_fields(location: str) -> None:
     record = CommittedDecisionRecord(decision(), NOW + timedelta(minutes=10), "scheduled")
-    payload = json.loads(committed_record_bytes(record))
+    payload = json.loads(CommittedRecordBytes(record))
     target = {
         "record": payload,
         "decision": payload["decision"],
@@ -452,7 +452,7 @@ def test_formal_record_codec_rejects_unknown_fields(location: str) -> None:
     target["legacy_field"] = "must-not-be-ignored"
 
     with pytest.raises(ValueError, match="unknown fields"):
-        committed_record_from_bytes(json.dumps(payload).encode())
+        CommittedRecordFromBytes(json.dumps(payload).encode())
 
 
 def test_decision_quote_rejects_wrong_code_future_time_and_invalid_market_values() -> None:

@@ -92,7 +92,7 @@ class CostAwareSelectionResult:
     selected_codes: tuple[str, ...]
 
 
-def select_cost_aware(
+def SelectCostAware(
     candidates: tuple[CostAwareCandidate, ...],
     policy: CostAwareSelectionPolicy,
 ) -> CostAwareSelectionResult:
@@ -176,5 +176,5 @@ __all__ = [
     "CostAwareHorizon",
     "CostAwareSelectionPolicy",
     "CostAwareSelectionResult",
-    "select_cost_aware",
+    "SelectCostAware",
 ]

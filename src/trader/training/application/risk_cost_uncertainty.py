@@ -9,15 +9,15 @@ from typing import Literal, Protocol
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDatasetReport
 from trader.training.domain.evaluation.risk_cost_population import (
+    BindRiskCostPopulation,
     RiskCostResearchPartition,
-    bind_risk_cost_population,
-    validate_risk_cost_samples,
+    ValidateRiskCostSamples,
 )
 from trader.training.domain.evaluation.risk_cost_uncertainty import (
+    EvaluateRiskCostUncertainty,
+    InsufficientRiskCostUncertaintyReport,
     RiskCostUncertaintyReport,
     RiskCostUncertaintySample,
-    evaluate_risk_cost_uncertainty,
-    insufficient_risk_cost_uncertainty_report,
 )
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -77,7 +77,7 @@ class RiskCostUncertaintyResearchBuilder:
         self, prerequisite: RiskCostUncertaintyPrerequisite, dataset: PointInTimeDatasetReport
     ) -> RiskCostUncertaintyReport:
         if prerequisite.status != "historical_validated":
-            return insufficient_risk_cost_uncertainty_report(
+            return InsufficientRiskCostUncertaintyReport(
                 prerequisite.parent_report_hash,
                 prerequisite.model_artifact_hash,
                 (*prerequisite.failure_reasons, "risk_cost_parent_evidence_unavailable"),
@@ -87,7 +87,7 @@ class RiskCostUncertaintyResearchBuilder:
         try:
             if dataset.content_hash != prerequisite.dataset_report_hash:
                 raise ValueError("risk-cost prerequisite dataset mismatch")
-            identity = bind_risk_cost_population(
+            identity = BindRiskCostPopulation(
                 dataset,
                 prerequisite.research_partition,
                 prerequisite.profile_id,
@@ -95,7 +95,7 @@ class RiskCostUncertaintyResearchBuilder:
                 prerequisite.model_artifact_hash,
             )
         except ValueError:
-            return insufficient_risk_cost_uncertainty_report(
+            return InsufficientRiskCostUncertaintyReport(
                 prerequisite.parent_report_hash,
                 prerequisite.model_artifact_hash,
                 ("risk_cost_population_unavailable",),
@@ -103,20 +103,20 @@ class RiskCostUncertaintyResearchBuilder:
         try:
             samples = self._evidence.load_samples(prerequisite)
             if samples is None:
-                return insufficient_risk_cost_uncertainty_report(
+                return InsufficientRiskCostUncertaintyReport(
                     prerequisite.parent_report_hash,
                     prerequisite.model_artifact_hash,
                     ("risk_cost_evidence_unavailable",),
                 )
-            validate_risk_cost_samples(dataset, identity, samples)
-            return evaluate_risk_cost_uncertainty(
+            ValidateRiskCostSamples(dataset, identity, samples)
+            return EvaluateRiskCostUncertainty(
                 prerequisite.parent_report_hash,
                 prerequisite.model_artifact_hash,
                 samples,
                 research_identity=identity,
             )
         except ValueError:
-            return insufficient_risk_cost_uncertainty_report(
+            return InsufficientRiskCostUncertaintyReport(
                 prerequisite.parent_report_hash,
                 prerequisite.model_artifact_hash,
                 ("risk_cost_evidence_invalid",),

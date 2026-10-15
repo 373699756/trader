@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.domain.history_control import (
+    CalculateHistoryTrainingCacheInvalidationDates,
+    CalculateHistoryTrainingDue,
     HistoryActiveSnapshot,
     HistoryCalendarIdentity,
     HistoryControlState,
@@ -19,8 +21,6 @@ from trader.download.domain.history_control import (
     HistoryTrainingDueRequest,
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
-    calculate_history_training_cache_invalidation_dates,
-    calculate_history_training_due,
 )
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -176,7 +176,7 @@ def test_history_control_state_canonicalizes_caller_owned_collections() -> None:
 
 def test_training_due_counts_matured_exchange_sessions_not_calendar_days() -> None:
     dates = tuple(date(2026, 8, 1) + timedelta(days=index) for index in range(25))
-    state = calculate_history_training_due(
+    state = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-cadence",
             baseline_label_cutoff=dates[0],
@@ -194,7 +194,7 @@ def test_training_due_counts_matured_exchange_sessions_not_calendar_days() -> No
 
 def test_training_due_changes_from_not_due_on_the_twentieth_mature_label_day() -> None:
     dates = tuple(date(2026, 8, 1) + timedelta(days=index) for index in range(21))
-    nineteenth = calculate_history_training_due(
+    nineteenth = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-nineteenth",
             baseline_label_cutoff=dates[0],
@@ -204,7 +204,7 @@ def test_training_due_changes_from_not_due_on_the_twentieth_mature_label_day() -
             observed_at=NOW,
         )
     )
-    twentieth = calculate_history_training_due(
+    twentieth = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-twentieth",
             baseline_label_cutoff=dates[0],
@@ -223,7 +223,7 @@ def test_training_due_changes_from_not_due_on_the_twentieth_mature_label_day() -
 
 def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data() -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    revised = calculate_history_training_due(
+    revised = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-revision",
             baseline_label_cutoff=dates[0],
@@ -233,7 +233,7 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
             observed_at=NOW,
         )
     )
-    incomplete = calculate_history_training_due(
+    incomplete = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-incomplete",
             baseline_label_cutoff=dates[0],
@@ -249,7 +249,7 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
     assert incomplete.reason == "data_incomplete"
     assert incomplete.matured_label_days_since_training == 0
 
-    ahead = calculate_history_training_due(
+    ahead = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-ahead",
             baseline_label_cutoff=dates[-1],
@@ -265,7 +265,7 @@ def test_training_due_prefers_revision_and_does_not_advance_on_incomplete_data()
 def test_training_due_rebuilds_when_the_execution_contract_changes() -> None:
     dates = tuple(date(2026, 7, 1) + timedelta(days=index) for index in range(40))
 
-    state = calculate_history_training_due(
+    state = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-contract",
             baseline_label_cutoff=dates[-2],
@@ -284,7 +284,7 @@ def test_training_due_rebuilds_when_the_execution_contract_changes() -> None:
 
 def test_training_due_requires_initial_training_without_a_bundle_baseline() -> None:
     dates = (date(2026, 9, 8), date(2026, 9, 9))
-    state = calculate_history_training_due(
+    state = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity="due-initial",
             baseline_label_cutoff=None,
@@ -302,6 +302,6 @@ def test_training_due_requires_initial_training_without_a_bundle_baseline() -> N
 def test_training_revision_invalidates_t1_label_and_sixty_feature_dependants() -> None:
     dates = tuple(date(2026, 1, 1) + timedelta(days=index) for index in range(80))
 
-    invalidated = calculate_history_training_cache_invalidation_dates(dates, (dates[10], dates[30]))
+    invalidated = CalculateHistoryTrainingCacheInvalidationDates(dates, (dates[10], dates[30]))
 
     assert invalidated == dates[9:]

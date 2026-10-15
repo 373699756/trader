@@ -6,8 +6,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.download.domain.history_automation import (
-    derive_history_automation_status,
-    weekly_history_maintenance_decision,
+    DeriveHistoryAutomationStatus,
+    WeeklyHistoryMaintenanceDecision,
 )
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
@@ -64,11 +64,11 @@ def _control_state(
 
 
 def test_due_projection_uses_only_persisted_state_and_tracks_daily_reminder_phase() -> None:
-    pending = derive_history_automation_status(_control_state(), NOW)
+    pending = DeriveHistoryAutomationStatus(_control_state(), NOW)
     claim = HistoryReminderClaim("due-20260910", NOW.date(), NOW)
-    claimed = derive_history_automation_status(_control_state(claims=(claim,)), NOW)
+    claimed = DeriveHistoryAutomationStatus(_control_state(claims=(claim,)), NOW)
     reminder = HistoryReminderState("due-20260910", NOW.date(), "sent", NOW, None)
-    sent = derive_history_automation_status(_control_state(claims=(claim,), reminders=(reminder,)), NOW)
+    sent = DeriveHistoryAutomationStatus(_control_state(claims=(claim,), reminders=(reminder,)), NOW)
 
     assert pending.training_due is True
     assert pending.training_due_reason == "initial_training_required"
@@ -82,7 +82,7 @@ def test_unresolved_due_becomes_pending_again_on_the_next_shanghai_date() -> Non
     claim = HistoryReminderClaim("due-20260910", NOW.date(), NOW)
     reminder = HistoryReminderState("due-20260910", NOW.date(), "sent", NOW, None)
 
-    status = derive_history_automation_status(
+    status = DeriveHistoryAutomationStatus(
         _control_state(claims=(claim,), reminders=(reminder,)),
         NOW.replace(day=11),
     )
@@ -92,7 +92,7 @@ def test_unresolved_due_becomes_pending_again_on_the_next_shanghai_date() -> Non
 
 
 def test_missing_control_state_fails_closed_without_fabricating_due_count() -> None:
-    status = derive_history_automation_status(None, NOW)
+    status = DeriveHistoryAutomationStatus(None, NOW)
 
     assert status.state == "data_incomplete"
     assert status.reason == "history_control_unavailable"
@@ -116,11 +116,11 @@ def test_missing_control_state_fails_closed_without_fabricating_due_count() -> N
     ),
 )
 def test_weekly_archive_cadence_is_independent_of_training_due(cutoff, observed, state, reason) -> None:
-    decision = weekly_history_maintenance_decision(cutoff, observed)
+    decision = WeeklyHistoryMaintenanceDecision(cutoff, observed)
 
     assert (decision.state, decision.reason) == (state, reason)
 
 
 def test_weekly_cadence_rejects_a_naive_business_clock() -> None:
     with pytest.raises(ValueError, match="Asia/Shanghai"):
-        weekly_history_maintenance_decision(NOW.date(), NOW.replace(tzinfo=None))
+        WeeklyHistoryMaintenanceDecision(NOW.date(), NOW.replace(tzinfo=None))

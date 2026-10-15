@@ -19,6 +19,7 @@ from tests.component.market_data_test_support import (
     FakeTusharePro,
     FeatureBuilder,
     Iterator,
+    LoadRuntimeSettings,
     Mapping,
     MarketDataGateway,
     MutableMonotonic,
@@ -40,7 +41,6 @@ from tests.component.market_data_test_support import (
     date,
     datetime,
     json,
-    load_runtime_settings,
     pytest,
     replace,
     threading,
@@ -490,7 +490,7 @@ def test_snapshot_metadata_copies_tushare_versions_under_service_lock() -> None:
 
 
 def test_reference_refresh_reuses_cache_and_refreshes_due_entries_inside_tushare_lane() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -624,7 +624,7 @@ def test_reference_degradation_replaces_same_version_verified_identity_conservat
 
 
 def test_reference_refresh_does_not_query_tushare_history() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -808,7 +808,7 @@ def test_calendar_fetch_timeout_is_bounded(tmp_path) -> None:
 
 
 def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,

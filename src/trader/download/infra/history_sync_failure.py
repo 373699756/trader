@@ -14,12 +14,12 @@ class HistorySyncFailureError(RuntimeError):
     """An actual failed operation, never the location of the last progress event."""
 
     def __init__(self, cause: Exception, stage: HistorySyncProgressStage, item: str | None = None) -> None:
-        super().__init__(history_failure_code(cause))
+        super().__init__(HistoryFailureCode(cause))
         self.stage = stage
         self.item = item
 
 
-def history_failure_code(exc: BaseException) -> str:
+def HistoryFailureCode(exc: BaseException) -> str:
     value = str(exc).strip()
     if re.fullmatch(r"[a-z0-9_]{1,64}", value):
         return value
@@ -42,7 +42,7 @@ def history_failure_code(exc: BaseException) -> str:
     return "history_runtime_failed"
 
 
-def history_failure_detail(exc: BaseException) -> str:
+def HistoryFailureDetail(exc: BaseException) -> str:
     parts: list[str] = []
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -68,4 +68,4 @@ def history_failure_detail(exc: BaseException) -> str:
     return " > ".join(parts)
 
 
-__all__ = ["HistorySyncFailureError", "history_failure_code", "history_failure_detail"]
+__all__ = ["HistorySyncFailureError", "HistoryFailureCode", "HistoryFailureDetail"]

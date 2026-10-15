@@ -57,8 +57,8 @@ def test_infrastructure_technical_capabilities_have_single_owners() -> None:
 
     definitions: dict[str, list[Path]] = {
         "RuntimeJsonWriter": [],
-        "atomic_read_json": [],
-        "atomic_write_json": [],
+        "AtomicReadJson": [],
+        "AtomicWriteJson": [],
         "ShanghaiClock": [],
     }
     for path in SOURCE.rglob("*.py"):
@@ -69,8 +69,8 @@ def test_infrastructure_technical_capabilities_have_single_owners() -> None:
 
     assert definitions == {
         "RuntimeJsonWriter": [Path("infra/atomic_files/json.py")],
-        "atomic_read_json": [Path("infra/atomic_files/json.py")],
-        "atomic_write_json": [Path("infra/atomic_files/json.py")],
+        "AtomicReadJson": [Path("infra/atomic_files/json.py")],
+        "AtomicWriteJson": [Path("infra/atomic_files/json.py")],
         "ShanghaiClock": [Path("infra/clock/shanghai.py")],
     }
 

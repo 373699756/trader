@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.tomorrow_historical_validation import (
     TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
     TomorrowHistoricalRiskValidationOutcome,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json, research_value
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
 
 
 class TomorrowHistoricalRiskEvidenceConflictError(RuntimeError):
@@ -63,7 +63,7 @@ class TomorrowHistoricalRiskEvidenceIndex:
         }
 
     def _write(self, path: Path, value: object, expected_hash: str) -> None:
-        payload = research_value(value)
+        payload = ResearchValue(value)
         if not isinstance(payload, dict):
             raise TypeError("historical risk artifact must serialize to an object")
         payload["content_hash"] = expected_hash
@@ -72,7 +72,7 @@ class TomorrowHistoricalRiskEvidenceIndex:
             if self._read_verified(path).get("content_hash") != expected_hash:
                 raise TomorrowHistoricalRiskEvidenceConflictError("historical risk artifact identity conflict")
             return
-        if publish_immutable(path, research_json(payload)):
+        if PublishImmutable(path, ResearchJson(payload)):
             return
         if self._read_verified(path).get("content_hash") != expected_hash:
             raise TomorrowHistoricalRiskEvidenceConflictError("historical risk artifact identity conflict")
@@ -84,7 +84,7 @@ class TomorrowHistoricalRiskEvidenceIndex:
             if not isinstance(raw, dict):
                 raise TypeError("historical risk artifact is not an object")
             persisted = raw.pop("content_hash")
-            if not isinstance(persisted, str) or canonical_research_hash(raw) != persisted:
+            if not isinstance(persisted, str) or CanonicalResearchHash(raw) != persisted:
                 raise ValueError("historical risk artifact hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowHistoricalRiskEvidenceConflictError("historical risk artifact is invalid") from exc

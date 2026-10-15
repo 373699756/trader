@@ -25,7 +25,7 @@ class CanonicalExclusion:
     metadata_field: str
 
 
-def canonical_value(
+def EncodeCanonicalValue(
     value: object, *, include_derived: bool = False, exclusion: CanonicalExclusion | None = None
 ) -> CanonicalValue:
     if value is None or isinstance(value, (str, bool, int, float)):
@@ -37,7 +37,7 @@ def canonical_value(
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         excluded = exclusion is not None and getattr(value, exclusion.identity_field, None) == exclusion.identity
         return {
-            field.name: canonical_value(
+            field.name: EncodeCanonicalValue(
                 getattr(value, field.name), include_derived=include_derived, exclusion=exclusion
             )
             for field in dataclasses.fields(value)
@@ -46,16 +46,16 @@ def canonical_value(
         }
     if isinstance(value, Mapping):
         return {
-            str(key): canonical_value(item, include_derived=include_derived, exclusion=exclusion)
+            str(key): EncodeCanonicalValue(item, include_derived=include_derived, exclusion=exclusion)
             for key, item in value.items()
         }
     if isinstance(value, (tuple, list, frozenset, set)):
         ordered = sorted(value) if isinstance(value, (frozenset, set)) else value
-        return [canonical_value(item, include_derived=include_derived, exclusion=exclusion) for item in ordered]
+        return [EncodeCanonicalValue(item, include_derived=include_derived, exclusion=exclusion) for item in ordered]
     raise TypeError(f"unsupported canonical identity value: {type(value).__name__}")
 
 
-def canonical_text(
+def CanonicalText(
     value: object,
     *,
     ensure_ascii: bool = True,
@@ -63,7 +63,7 @@ def canonical_text(
     exclusion: CanonicalExclusion | None = None,
 ) -> str:
     return json.dumps(
-        canonical_value(value, include_derived=include_derived, exclusion=exclusion),
+        EncodeCanonicalValue(value, include_derived=include_derived, exclusion=exclusion),
         ensure_ascii=ensure_ascii,
         allow_nan=False,
         sort_keys=True,
@@ -71,7 +71,7 @@ def canonical_text(
     )
 
 
-def canonical_digest(
+def CanonicalDigest(
     value: object,
     *,
     ensure_ascii: bool = True,
@@ -79,10 +79,10 @@ def canonical_digest(
     exclusion: CanonicalExclusion | None = None,
 ) -> str:
     return hashlib.sha256(
-        canonical_text(value, ensure_ascii=ensure_ascii, include_derived=include_derived, exclusion=exclusion).encode(
+        CanonicalText(value, ensure_ascii=ensure_ascii, include_derived=include_derived, exclusion=exclusion).encode(
             "utf-8"
         )
     ).hexdigest()
 
 
-__all__ = ["CanonicalExclusion", "CanonicalValue", "canonical_value", "canonical_text", "canonical_digest"]
+__all__ = ["CanonicalExclusion", "CanonicalValue", "EncodeCanonicalValue", "CanonicalText", "CanonicalDigest"]

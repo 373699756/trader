@@ -16,8 +16,8 @@ import requests
 from flask import Flask
 
 from trader.download.application.download_history import DownloadHistoryUseCase
-from trader.download.application.progress_message import ProgressLevel, ProgressMessage, progress_number
-from trader.download.application.qfq_download_progress import qfq_message
+from trader.download.application.progress_message import ProgressLevel, ProgressMessage, ProgressNumber
+from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
@@ -31,11 +31,11 @@ from trader.download.domain.history_sync import (
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.exchange_security_universe import (
-    load_current_a_share_universe,
-    select_st_eligible_universe,
+    LoadCurrentAShareUniverse,
+    SelectStEligibleUniverse,
 )
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_reference_files import history_st_evidence_path
+from trader.download.infra.history_reference_files import HistoryStEvidencePath
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_gateway import HistorySyncGateway
@@ -54,25 +54,25 @@ from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServic
 from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
-from trader.infra.clock.utc import utc_now as _utc_now
-from trader.infra.initialization import initialize_if_available as _initialize_if_available
+from trader.infra.clock.utc import UtcNow as _utc_now
+from trader.infra.initialization import InitializeIfAvailable as _initialize_if_available
 from trader.infra.market_data.providers.akshare_http_contracts import AkshareGetFunction
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
-    fetch_sse_listings,
-    fetch_szse_listings,
+    FetchSseListings,
+    FetchSzseListings,
 )
 from trader.infra.market_data.providers.tushare import TushareClient
-from trader.infra.market_data.providers.tushare_records import build_tushare_sdk
-from trader.infra.serialization.canonical import content_hash
+from trader.infra.market_data.providers.tushare_records import BuildTushareSdk
+from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings import (
+    LoadLongWatchlist,
+    LoadRuntimeSettings,
+    LoadStrategySettings,
     LongWatchlist,
     RuntimeSettings,
     StrategySettings,
-    load_long_watchlist,
-    load_runtime_settings,
-    load_strategy_settings,
 )
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
@@ -124,14 +124,14 @@ from trader.recommendation.application.runtime.source_lanes import SourceLaneSch
 from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisor,
     RuntimeSupervisorConfig,
-    scheduler_interval_seconds,
+    SchedulerIntervalSeconds,
 )
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
-from trader.recommendation.infra.deepseek.factory import create_deepseek_client
+from trader.recommendation.infra.deepseek.factory import CreateDeepseekClient
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
@@ -165,28 +165,28 @@ from trader.recommendation.infra.policy_settings import (
 )
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem, RuntimeWorkerResources
 from trader.recommendation.infra.runtime.initialization import (
-    fixed_cache_ttl as _fixed_cache_ttl,
+    FixedCacheTtl as _fixed_cache_ttl,
 )
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
-from trader.recommendation.infra.runtime.startup_readiness import warn_missing_local_data
-from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
-from trader.recommendation.infra.scoring.profile_factory import ScoringArtifactsMissingError, load_scoring_profile
-from trader.recommendation.infra.status_projection import runtime_status as _runtime_status
+from trader.recommendation.infra.runtime.startup_readiness import WarnMissingLocalData
+from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile, ScoringArtifactsMissingError
+from trader.recommendation.infra.status_projection import RuntimeStatus as _runtime_status
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
-from trader.training.application.research_audit import try_build_committed_research_audit
+from trader.training.application.research_audit import TryBuildCommittedResearchAudit
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
 from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
-from trader.training.infra.training_settings import load_profile_training_settings
-from trader.web import create_app
+from trader.training.infra.training_settings import LoadProfileTrainingSettings
+from trader.web import CreateApp
 
 if TYPE_CHECKING:
     from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
 
 
-def execute_history_download(
+def ExecuteHistoryDownload(
     configuration: HistorySyncConfiguration,
     *,
     progress: HistorySyncProgressPort | None = None,
@@ -206,9 +206,9 @@ def execute_history_download(
     try:
         history_writer.start()
         load_current_securities = partial(
-            load_current_a_share_universe,
-            partial(fetch_sse_listings, get=requests.get),
-            partial(fetch_szse_listings, get=requests.get),
+            LoadCurrentAShareUniverse,
+            partial(FetchSseListings, get=requests.get),
+            partial(FetchSzseListings, get=requests.get),
             15.0,
         )
         with BaoStockHistorySupplier(
@@ -237,7 +237,7 @@ def execute_history_download(
                     prices,
                     load_current_securities,
                     HistoryStNameSource(
-                        history_st_evidence_path(configuration.reference_root),
+                        HistoryStEvidencePath(configuration.reference_root),
                         http_pool.borrow,
                         history_pool,
                         cancel_requested,
@@ -257,7 +257,7 @@ def execute_history_download(
                         batch_size=configuration.history_workers,
                     ),
                     industry_cache=HistoryIndustryQueryCache(
-                        history_st_evidence_path(configuration.reference_root).with_name("industry_queries.sqlite3")
+                        HistoryStEvidencePath(configuration.reference_root).with_name("industry_queries.sqlite3")
                     ),
                 ),
                 clock=clock,
@@ -273,7 +273,7 @@ def execute_history_download(
             raise RuntimeError("history worker shutdown exceeded 30 seconds")
 
 
-def execute_qfq_download(
+def ExecuteQfqDownload(
     project_root: Path,
     *,
     reference_root: Path,
@@ -298,7 +298,7 @@ def execute_qfq_download(
                 tuple(http_resources.enter_context(requests.Session()) for _index in range(8))
             )
             st_source = HistoryStNameSource(
-                history_st_evidence_path(reference_root),
+                HistoryStEvidencePath(reference_root),
                 http_pool.borrow,
                 qfq_pool,
                 cancel_requested,
@@ -307,12 +307,12 @@ def execute_qfq_download(
             )
 
             def load_qfq_universe(as_of: date) -> tuple[BaoStockSecurity, ...]:
-                official = load_current_a_share_universe(
-                    partial(fetch_sse_listings, get=requests.get),
-                    partial(fetch_szse_listings, get=requests.get),
+                official = LoadCurrentAShareUniverse(
+                    partial(FetchSseListings, get=requests.get),
+                    partial(FetchSzseListings, get=requests.get),
                     15.0,
                 )
-                return select_st_eligible_universe(official, st_source.fetch(official, as_of))
+                return SelectStEligibleUniverse(official, st_source.fetch(official, as_of))
 
             tencent = TencentQfqSupplier(
                 TencentQfqDependencies(
@@ -343,7 +343,7 @@ def execute_qfq_download(
         stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         if not stopped.completed:
             report(
-                qfq_message(
+                QfqMessage(
                     time.monotonic() - started, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR
                 )
             )
@@ -358,13 +358,13 @@ def _report_qfq_st_progress(
 ) -> None:
     if summary is None and completed % 256 != 0:
         return
-    details = f"{progress_number(completed)}/{progress_number(total)}"
+    details = f"{ProgressNumber(completed)}/{ProgressNumber(total)}"
     if summary is not None:
-        details += f" | 合格 {progress_number(summary.clear)} | 曾ST排除 {progress_number(summary.ever_st)} | 未知排除 {progress_number(summary.unknown)}"
-    report(qfq_message(time.monotonic() - started, "ST资格", details))
+        details += f" | 合格 {ProgressNumber(summary.clear)} | 曾ST排除 {ProgressNumber(summary.ever_st)} | 未知排除 {ProgressNumber(summary.unknown)}"
+    report(QfqMessage(time.monotonic() - started, "ST资格", details))
 
 
-def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
+def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
     """Lazily assemble one offline research use case; never build the server runtime."""
     from trader.training.entrypoints.research_evidence import (
         CapabilityCommand,
@@ -414,11 +414,11 @@ def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvide
         if isinstance(command, QualificationCommand):
             from functools import partial
 
-            from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
+            from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
             from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 
             return QualifyPointInTimeData(
-                partial(inspect_history_snapshot, command.history_root, verify_partitions=True),
+                partial(InspectHistorySnapshot, command.history_root, verify_partitions=True),
                 HistoricalIndustryEvidenceReader(command.history_root),
                 probe,
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
@@ -471,7 +471,7 @@ class _PublicationDependencies:
     additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
 
 
-def build_system(
+def BuildSystem(
     config_path: str | Path,
     *,
     scoring_profile: ScoringProfileId | None = None,
@@ -485,21 +485,21 @@ def build_system(
     UnifiedWebServices,
     Flask,
 ]:
-    settings = load_runtime_settings(config_path)
+    settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
         settings = replace(
             settings,
             runtime_dir=settings.runtime_dir / "profiles" / runtime_scope,
             freeze_dir=settings.freeze_dir / runtime_scope,
         )
-    strategy = load_strategy_settings(
+    strategy = LoadStrategySettings(
         settings.strategy_config_path,
         scoring_profile=scoring_profile,
     )
-    watchlist = load_long_watchlist(settings.long_watchlist_path)
-    cost_policy = load_execution_cost_policy(Path(config_path).expanduser().resolve().parent)
+    watchlist = LoadLongWatchlist(settings.long_watchlist_path)
+    cost_policy = LoadExecutionCostPolicy(Path(config_path).expanduser().resolve().parent)
     effective_config_version = (
-        f"{settings.config_version}+{strategy.strategy_version}+cost_{content_hash(cost_policy)[:16]}"
+        f"{settings.config_version}+{strategy.strategy_version}+cost_{ContentHash(cost_policy)[:16]}"
     )
     now = _utc_now
     latency = LatencyWaterfall()
@@ -522,12 +522,12 @@ def build_system(
     persistence = _build_persistence(context)
     profile_id = strategy.scoring_profile
     try:
-        loaded_profile = load_scoring_profile(profile_id, training_root=settings.project_root / "data" / "train")
+        loaded_profile = LoadScoringProfile(profile_id, training_root=settings.project_root / "data" / "train")
     except ScoringArtifactsMissingError:
         loaded_profile = None
-    warn_missing_local_data(settings.project_root, profile_id, model_missing=loaded_profile is None)
+    WarnMissingLocalData(settings.project_root, profile_id, model_missing=loaded_profile is None)
     profile_contract = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
-    training_settings = load_profile_training_settings(settings.project_root, profile_id)
+    training_settings = LoadProfileTrainingSettings(settings.project_root, profile_id)
     training_settings.require_profile(profile_contract)
     market_data = _build_market_data(
         context,
@@ -591,7 +591,7 @@ def build_system(
             ShanghaiClock(now).now,
             model_scoring,
             local_scoring,
-            try_build_committed_research_audit,
+            TryBuildCommittedResearchAudit,
             monotonic=time.monotonic,
             next_sequence=lambda: persistence.sequence.allocate(
                 width=2,
@@ -659,7 +659,7 @@ def build_system(
 
     history_observer = PublishedHistoryObserver(market_data.history)
     qfq_maintenance = QfqDailyMaintenance(
-        lambda cancel: execute_qfq_download(
+        lambda cancel: ExecuteQfqDownload(
             settings.project_root, reference_root=settings.reference_dir, cancel_requested=cancel, now=now
         ),
         now=ShanghaiClock(now).now,
@@ -680,7 +680,7 @@ def build_system(
                 lambda: publication.d25_freezer.restore(now().date()),
                 lambda: persistence.budget.recover_incomplete(now()),
             ),
-            interval_seconds=scheduler_interval_seconds,
+            interval_seconds=SchedulerIntervalSeconds,
             shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
             record_error=lambda _error: None,
         ),
@@ -700,7 +700,7 @@ def build_system(
         ),
         profile_id,
     )
-    app = create_app(services=web_services)
+    app = CreateApp(services=web_services)
     return ApplicationSystem(
         settings=settings,
         strategy=strategy,
@@ -728,20 +728,20 @@ def build_system(
     )
 
 
-def build_profiled_system(config_path: str | Path) -> ProfiledApplicationSystem[Flask]:
+def BuildProfiledSystem(config_path: str | Path) -> ProfiledApplicationSystem[Flask]:
     """Build both production profiles with one read-only delivery surface."""
 
-    settings = load_runtime_settings(config_path)
+    settings = LoadRuntimeSettings(config_path)
     shared_budget = settings.runtime_dir / "shared" / "deepseek-budget.sqlite3"
     systems = (
-        build_system(
+        BuildSystem(
             config_path,
             scoring_profile="v2",
             runtime_scope="v2",
             budget_path=shared_budget,
             owns_shared_runtime=True,
         ),
-        build_system(
+        BuildSystem(
             config_path,
             scoring_profile="v3",
             runtime_scope="v3",
@@ -749,9 +749,9 @@ def build_profiled_system(config_path: str | Path) -> ProfiledApplicationSystem[
             owns_shared_runtime=False,
         ),
     )
-    default_profile = load_strategy_settings(settings.strategy_config_path).scoring_profile
+    default_profile = LoadStrategySettings(settings.strategy_config_path).scoring_profile
     profiles: dict[str, UnifiedWebServices] = {system.profile_id: system.web_services for system in systems}
-    app = create_app(
+    app = CreateApp(
         services=ProfiledWebServices(
             profiles=profiles,
             default_profile=default_profile,
@@ -924,7 +924,7 @@ def _build_market_data(
         cancel_requested=lambda: not workers.research_pool.is_running(),
     )
     tushare_client = TushareClient(
-        sdk_factory=partial(build_tushare_sdk, session_factory=requests.Session),
+        sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
         token=settings.market_data.tushare.token if settings.market_data.tushare.enabled else "",
         points=settings.market_data.tushare.points,
         timeout_seconds=settings.market_data.tushare.timeout_seconds,
@@ -966,8 +966,8 @@ def _build_market_data(
         runner,
         tushare_client,
         security_master_client=ExchangeSecurityMasterClient(
-            sse_fetcher=partial(fetch_sse_listings, get=requests.get),
-            szse_fetcher=partial(fetch_szse_listings, get=requests.get),
+            sse_fetcher=partial(FetchSseListings, get=requests.get),
+            szse_fetcher=partial(FetchSzseListings, get=requests.get),
             timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
             wall_clock=now,
         ),
@@ -1091,7 +1091,7 @@ def _build_reviewer(context: _BuildContext, budget: DeepSeekBudgetLedger) -> Dee
     return DeepSeekReviewer(
         settings.deepseek,
         budget,
-        create_deepseek_client(),
+        CreateDeepseekClient(),
         ReviewCache(
             maximum_entries=2000,
             ttl_seconds=600,
@@ -1190,4 +1190,4 @@ def _build_publication(
     )
 
 
-__all__ = ["ApplicationSystem", "ProfiledApplicationSystem", "build_profiled_system", "build_system"]
+__all__ = ["ApplicationSystem", "ProfiledApplicationSystem", "BuildProfiledSystem", "BuildSystem"]

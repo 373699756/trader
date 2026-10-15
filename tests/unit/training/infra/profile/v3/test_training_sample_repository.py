@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from trader.download.domain.baostock_daily import build_baostock_training_split
+from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
     TOMORROW_HEAD_CONTRACT,
@@ -30,7 +30,7 @@ def _sample(
 
 def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
-    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     training_day = split.model_fit_dates[0]
     early_day = split.early_stopping_dates[0]
     calibration_day = split.calibration_dates[0]
@@ -52,7 +52,7 @@ def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: 
         repository.prepare_for_model_fitting(split)
         repository.require_split(split)
         with pytest.raises(RuntimeError, match="identity is inconsistent"):
-            repository.require_split(build_baostock_training_split(dates, parent_manifest_hash="b" * 64))
+            repository.require_split(BuildBaostockTrainingSplit(dates, parent_manifest_hash="b" * 64))
         with pytest.raises(RuntimeError, match="already prepared"):
             repository.prepare_for_model_fitting(split)
 
@@ -97,7 +97,7 @@ def test_sample_repository_has_only_the_shared_tables_and_one_build_transaction(
 
 def test_validation_statistics_use_one_scan_and_include_validation_only_industries(tmp_path: Path) -> None:
     dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
-    split = build_baostock_training_split(dates, parent_manifest_hash="a" * 64)
+    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
         repository.add_final(
             (

@@ -34,7 +34,7 @@ class HistoryWeeklyMaintenanceDecision:
     reason: str | None
 
 
-def weekly_history_maintenance_decision(
+def WeeklyHistoryMaintenanceDecision(
     data_cutoff: date | None, observed_at: datetime
 ) -> HistoryWeeklyMaintenanceDecision:
     """Archive cadence, independent of feature eligibility and training due."""
@@ -133,7 +133,7 @@ class HistoryAutomationRunStatus:
         return self.maintenance_state in {"completed", "already_current", "already_running", "not_due"}
 
 
-def derive_history_automation_status(
+def DeriveHistoryAutomationStatus(
     control: HistoryAutomationControlState | None,
     observed_at: datetime,
     *,
@@ -232,7 +232,7 @@ __all__ = [
     "HistoryNotificationResult",
     "HistoryNotificationState",
     "HistoryReminderPhase",
-    "derive_history_automation_status",
+    "DeriveHistoryAutomationStatus",
     "HistoryWeeklyMaintenanceDecision",
-    "weekly_history_maintenance_decision",
+    "WeeklyHistoryMaintenanceDecision",
 ]

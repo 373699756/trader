@@ -9,7 +9,7 @@ from typing import Protocol
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
-    select_scored_features,
+    SelectScoredFeatures,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.market.models import FeatureSnapshot
@@ -43,7 +43,7 @@ class RankingSelectionService(RankingSelectionPort):
         *,
         execution_gate_reasons: Mapping[str, str] | None = None,
     ) -> ScoredSelectionResult:
-        return select_scored_features(
+        return SelectScoredFeatures(
             features,
             policy,
             options,

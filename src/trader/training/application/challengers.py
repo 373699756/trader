@@ -24,16 +24,16 @@ from trader.training.application.historical_extraction_models import (
 )
 from trader.training.application.research_ports import HistoricalChallengerReplayEvaluator
 from trader.training.domain.evaluation.challengers import (
+    AssessContinuousEntry,
+    AssessHeatWeakStructure,
+    BuildChallengerParameterManifest,
+    ChallengerRegistry,
     ChallengerSpecification,
     ContinuousEntryInputs,
     HeatWeakStructureInputs,
-    assess_continuous_entry,
-    assess_heat_weak_structure,
-    challenger_parameter_manifest,
-    challenger_registry,
 )
-from trader.training.domain.evaluation.historical import coverage_shrunk_score
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.historical import CoverageShrunkScore
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _MAXIMUM_PER_BOARD = 4
 _MAXIMUM_PER_INDUSTRY = 2
@@ -51,11 +51,11 @@ class ChallengerReplayer:
         baseline: HistoricalBaselineReport,
     ) -> ChallengerReport:
         _validate_parent_reports(extraction, baseline)
-        parameter_hash = canonical_research_hash(challenger_parameter_manifest())
+        parameter_hash = CanonicalResearchHash(BuildChallengerParameterManifest())
         baseline_by_date = {item.trade_date: item for item in baseline.days}
         variants = tuple(
             self._replay_variant(specification, extraction.days, baseline_by_date, parameter_hash)
-            for specification in challenger_registry()
+            for specification in ChallengerRegistry()
         )
         return ChallengerReport(
             "replayed" if extraction.status == "extracted" and len(extraction.days) == 40 else "exploratory",
@@ -144,7 +144,7 @@ def _build_overrides(
         entry_score: float | None = None
         entry_status: Literal["not_enabled", "scored", "critical_missing"] = "not_enabled"
         if specification.continuous_entry:
-            entry = assess_continuous_entry(
+            entry = AssessContinuousEntry(
                 ContinuousEntryInputs(
                     _number(payload.get("price")),
                     _number(payload.get("ma5")),
@@ -161,7 +161,7 @@ def _build_overrides(
             entry_status = entry.status
             if entry.status == "critical_missing":
                 observe_reasons.append("continuous_entry_inputs_missing")
-        coverage_score = coverage_shrunk_score(summary.final_components) if specification.coverage_shrink else None
+        coverage_score = CoverageShrunkScore(summary.final_components) if specification.coverage_shrink else None
         proof = proofs.get((evaluated.code, "formal"))
         expanded = bool(
             specification.candidate_upper_bound
@@ -174,7 +174,7 @@ def _build_overrides(
         )
         selection_eligible = "formal" in summary.eligible_pools and (summary.production_top120 or expanded)
         if specification.heat_weak_structure:
-            heat = assess_heat_weak_structure(
+            heat = AssessHeatWeakStructure(
                 evaluated.board,
                 HeatWeakStructureInputs(
                     _number(payload.get("change_pct")),

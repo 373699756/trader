@@ -12,14 +12,14 @@ from typing import Literal, Protocol
 
 from trader.recommendation.application.ports.loaded_profile import ModelInput, ModelPredictorPort
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
-from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
+from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.shadow_calibration import (
+    FitLogisticModel,
+    FitPlattCalibrator,
     LinearModel,
     PlattCalibrator,
-    fit_logistic_model,
-    fit_platt_calibrator,
 )
 
 _MODEL_FEATURE_IDS = TOMORROW_MODEL_FEATURE_MANIFEST.names
@@ -54,7 +54,7 @@ class TomorrowHistoricalRiskValidationSpec:
             or self.schema_version != "tomorrow_historical_risk_validation_spec"
         ):
             raise ValueError("Tomorrow historical risk validation contract is fixed")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def required_trade_dates(self) -> int:
@@ -191,7 +191,7 @@ class TomorrowHistoricalRiskModelSnapshot:
             or self.schema_version != "tomorrow_historical_risk_model"
         ):
             raise ValueError("Historical risk model artifact is invalid")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     def predict(self, rows: tuple[tuple[float, float, float, float], ...]) -> tuple[float, ...]:
         model = LinearModel(self.logistic_intercept, self.logistic_coefficients, logistic=True)
@@ -226,7 +226,7 @@ class TomorrowHistoricalRiskValidationReport:
         _validate_risk_report_identity(self)
         _validate_risk_report_state(self)
         object.__setattr__(self, "failure_reasons", tuple(sorted(set(self.failure_reasons))))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _validate_risk_report_identity(report: TomorrowHistoricalRiskValidationReport) -> None:
@@ -309,10 +309,10 @@ class TomorrowHistoricalRiskValidationService:
 
     def execute(self) -> TomorrowHistoricalRiskValidationOutcome:
         rows = tuple(self._evidence.tomorrow_historical_risk_rows(HISTORICAL_SCREENING_SPEC))
-        return build_historical_risk_probability(rows, self._predictor)
+        return BuildHistoricalRiskProbability(rows, self._predictor)
 
 
-def evaluate_historical_selected_days(
+def EvaluateHistoricalSelectedDays(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     utilities: tuple[float, ...],
 ) -> tuple[TomorrowHistoricalSelectedDay, ...]:
@@ -365,15 +365,15 @@ def evaluate_historical_selected_days(
     return tuple(result)
 
 
-def evaluate_historical_risk_probability(
+def EvaluateHistoricalRiskProbability(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     predictor: ModelPredictorPort,
     spec: TomorrowHistoricalRiskValidationSpec = TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
 ) -> TomorrowHistoricalRiskValidationReport:
-    return build_historical_risk_probability(rows, predictor, spec).report
+    return BuildHistoricalRiskProbability(rows, predictor, spec).report
 
 
-def build_historical_risk_probability(
+def BuildHistoricalRiskProbability(
     rows: tuple[TomorrowHistoricalRiskRow, ...],
     predictor: ModelPredictorPort,
     spec: TomorrowHistoricalRiskValidationSpec = TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
@@ -414,9 +414,9 @@ def build_historical_risk_probability(
         )
     train_matrix = tuple(item[0][1] for item in training)
     train_targets = tuple(item[1] for item in training)
-    logistic_model = fit_logistic_model(train_matrix, train_targets, ridge=1e-3)
+    logistic_model = FitLogisticModel(train_matrix, train_targets, ridge=1e-3)
     calibration_raw = logistic_model.predict(tuple(item[0][1] for item in calibration))
-    calibrator = fit_platt_calibrator(calibration_raw, tuple(item[1] for item in calibration))
+    calibrator = FitPlattCalibrator(calibration_raw, tuple(item[1] for item in calibration))
     probabilities = calibrator.predict(logistic_model.predict(tuple(item[0][1] for item in test)))
     test_targets = tuple(item[1] for item in test)
     brier = _brier(probabilities, test_targets)
@@ -447,14 +447,14 @@ def build_historical_risk_probability(
         platt_intercept=calibrator.intercept,
         platt_slope=calibrator.slope,
         platt_constant=calibrator.constant,
-        training_evidence_hash=canonical_research_hash(training),
-        calibration_evidence_hash=canonical_research_hash(calibration),
+        training_evidence_hash=CanonicalResearchHash(training),
+        calibration_evidence_hash=CanonicalResearchHash(calibration),
     )
     report = TomorrowHistoricalRiskValidationReport(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
-        evidence_hash=canonical_research_hash(included),
+        evidence_hash=CanonicalResearchHash(included),
         training_trade_dates=len(train_dates),
         calibration_trade_dates=len(calibration_dates),
         test_trade_dates=len(test_dates),
@@ -488,7 +488,7 @@ def _risk_features(
     costs = [0.0] * len(rows)
     scores = [0.0] * len(rows)
     for indices in grouped.values():
-        ranks = percentile_ranks(tuple(rows[index].amihud_20d for index in indices))
+        ranks = PercentileRanks(tuple(rows[index].amihud_20d for index in indices))
         utilities = tuple(
             predictions[index].predicted_excess_return - _PRIMARY_COST * (1.0 + rank)
             for index, rank in zip(indices, ranks, strict=True)
@@ -523,7 +523,7 @@ def _insufficient_report(
         spec_hash=spec.content_hash,
         model_id=predictor.model_id,
         model_hash=predictor.model_hash,
-        evidence_hash=canonical_research_hash(rows),
+        evidence_hash=CanonicalResearchHash(rows),
         training_trade_dates=0,
         calibration_trade_dates=0,
         test_trade_dates=0,
@@ -545,7 +545,7 @@ def _positive_utility_scores(values: tuple[float, ...]) -> tuple[float, ...]:
     result = [0.0] * len(values)
     if not positive:
         return tuple(result)
-    ranks = percentile_ranks(tuple(values[index] for index in positive))
+    ranks = PercentileRanks(tuple(values[index] for index in positive))
     for index, rank in zip(positive, ranks, strict=True):
         result[index] = 100.0 * rank
     return tuple(result)
@@ -586,7 +586,7 @@ __all__ = [
     "TomorrowHistoricalRiskValidationService",
     "TomorrowHistoricalSelectedDay",
     "TomorrowHistoricalRiskRow",
-    "build_historical_risk_probability",
-    "evaluate_historical_risk_probability",
-    "evaluate_historical_selected_days",
+    "BuildHistoricalRiskProbability",
+    "EvaluateHistoricalRiskProbability",
+    "EvaluateHistoricalSelectedDays",
 ]

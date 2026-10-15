@@ -31,7 +31,7 @@ from trader.download.infra.history_control_index import (
     HistoryControlRegressionError,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
-    inspect_history_disk,
+    InspectHistoryDisk,
 )
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -276,12 +276,12 @@ def test_history_lock_and_disk_preflight_are_bounded_and_typed(tmp_path: Path) -
         first.release()
 
     requirement = HistoryDiskRequirement(100, 20, 30, 10)
-    sufficient = inspect_history_disk(
+    sufficient = InspectHistoryDisk(
         tmp_path / "missing" / "archive",
         requirement,
         disk_usage=lambda _path: SimpleNamespace(free=160),
     )
-    insufficient = inspect_history_disk(
+    insufficient = InspectHistoryDisk(
         tmp_path,
         requirement,
         disk_usage=lambda _path: SimpleNamespace(free=159),

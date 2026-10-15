@@ -8,7 +8,7 @@ from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeSpec
 from trader.training.domain.evaluation.historical_label import (
     H1CoverageMetadata,
     HistoricalLabelPreregistrationBatch,
-    preregister_historical_labels,
+    PreregisterHistoricalLabels,
 )
 
 
@@ -22,7 +22,7 @@ class HistoricalLabelPreregistrationService:
 
     def execute(self) -> HistoricalLabelPreregistrationBatch:
         values = tuple(self._metadata.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25"))
-        return preregister_historical_labels(values)
+        return PreregisterHistoricalLabels(values)
 
 
 __all__ = ["H1CoverageMetadataPort", "HistoricalLabelPreregistrationService"]

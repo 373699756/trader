@@ -10,7 +10,7 @@ from typing import cast
 
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
-from trader.recommendation.application.ports.json_values import JsonInput, JsonObject, freeze_json_object
+from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
@@ -137,7 +137,7 @@ class MarketDataHealth:
         history_covered = history.covered_rows
         intraday_rows = intraday.requested_rows
         intraday_covered = intraday.covered_rows
-        return freeze_json_object(
+        return FreezeJsonObject(
             cast(
                 Mapping[str, JsonInput],
                 {

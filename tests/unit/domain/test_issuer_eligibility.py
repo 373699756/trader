@@ -4,12 +4,12 @@ from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.eligibility import (
+    EligibilityFactsFromQuote,
+    EligibilityFactsFromResearch,
     IssuerEligibilityFact,
     IssuerEligibilityReason,
     IssuerEligibilityState,
-    eligibility_facts_from_quote,
-    eligibility_facts_from_research,
-    resolve_issuer_eligibility,
+    ResolveIssuerEligibility,
 )
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.research import (
@@ -64,8 +64,8 @@ def _quote(**overrides: object) -> MarketQuote:
 def test_permanent_fact_only_excludes_from_its_effective_time() -> None:
     fact = _fact()
 
-    before = resolve_issuer_eligibility((fact,), "600001", OBSERVED_AT - timedelta(microseconds=1))
-    at_boundary = resolve_issuer_eligibility((fact,), "600001", OBSERVED_AT)
+    before = ResolveIssuerEligibility((fact,), "600001", OBSERVED_AT - timedelta(microseconds=1))
+    at_boundary = ResolveIssuerEligibility((fact,), "600001", OBSERVED_AT)
 
     assert before.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
     assert at_boundary.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED
@@ -73,7 +73,7 @@ def test_permanent_fact_only_excludes_from_its_effective_time() -> None:
 
 
 def test_quote_status_creates_stable_permanent_facts_without_using_free_text_news() -> None:
-    facts = eligibility_facts_from_quote(
+    facts = EligibilityFactsFromQuote(
         _quote(name="*ST测试", is_st=True, is_blacklisted=True),
         observed_at=OBSERVED_AT,
     )
@@ -87,11 +87,11 @@ def test_quote_status_creates_stable_permanent_facts_without_using_free_text_new
 
 
 def test_quote_fact_identity_accepts_untrusted_supplier_version() -> None:
-    facts = eligibility_facts_from_quote(
+    facts = EligibilityFactsFromQuote(
         _quote(is_st=True, source="来源 with spaces", data_version="版本 " * 200),
         observed_at=OBSERVED_AT,
     )
-    decision = resolve_issuer_eligibility(facts, "600001", OBSERVED_AT)
+    decision = ResolveIssuerEligibility(facts, "600001", OBSERVED_AT)
     assert decision.state is IssuerEligibilityState.PERMANENTLY_EXCLUDED
     assert len(facts[0].evidence_id) < 80
 
@@ -127,7 +127,7 @@ def test_research_creates_loss_and_confirmed_permanent_risk_facts_only() -> None
         corporate_risk_facts=(fraud, investigation),
     )
 
-    facts = eligibility_facts_from_research("600001", observation)
+    facts = EligibilityFactsFromResearch("600001", observation)
 
     assert {fact.reason for fact in facts} == {
         IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS,

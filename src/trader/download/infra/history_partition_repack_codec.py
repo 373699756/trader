@@ -15,8 +15,8 @@ from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackPartitionEvidence,
     HistoryPartitionRepackSourceFileIdentity,
 )
-from trader.infra.serialization.canonical import content_hash
-from trader.infra.serialization.fields import as_sequence
+from trader.infra.serialization.canonical import ContentHash
+from trader.infra.serialization.fields import AsSequence
 from trader.training.application.tomorrow_training import TomorrowTrainingStage
 from trader.training.infra.profile.v3.training_memory_evidence import (
     TomorrowTrainingMemoryEvidence,
@@ -28,7 +28,7 @@ class HistoryPartitionRepackCodecError(RuntimeError):
     """A persisted repack state document is missing or untrusted."""
 
 
-def write_history_partition_repack_build_state(path: Path, state: HistoryPartitionRepackBuildState) -> None:
+def WriteHistoryPartitionRepackBuildState(path: Path, state: HistoryPartitionRepackBuildState) -> None:
     partitions = [
         {
             "relative_path": item.relative_path,
@@ -75,7 +75,7 @@ def write_history_partition_repack_build_state(path: Path, state: HistoryPartiti
     _write_verified_json(path, payload)
 
 
-def read_history_partition_repack_build_state(path: Path) -> HistoryPartitionRepackBuildState:
+def ReadHistoryPartitionRepackBuildState(path: Path) -> HistoryPartitionRepackBuildState:
     payload = _read_verified_json(path, "history_archive_repack_build_state")
     _require_fields(
         payload,
@@ -129,9 +129,7 @@ def read_history_partition_repack_build_state(path: Path) -> HistoryPartitionRep
         raise HistoryPartitionRepackCodecError("history repack build state is invalid") from exc
 
 
-def write_history_partition_repack_activation_journal(
-    path: Path, journal: HistoryPartitionRepackActivationJournal
-) -> None:
+def WriteHistoryPartitionRepackActivationJournal(path: Path, journal: HistoryPartitionRepackActivationJournal) -> None:
     payload: dict[str, object] = {
         "schema_version": "history_archive_repack_activation_journal",
         "state": journal.state,
@@ -144,7 +142,7 @@ def write_history_partition_repack_activation_journal(
     _write_verified_json(path, payload)
 
 
-def read_history_partition_repack_activation_journal(path: Path) -> HistoryPartitionRepackActivationJournal:
+def ReadHistoryPartitionRepackActivationJournal(path: Path) -> HistoryPartitionRepackActivationJournal:
     payload = _read_verified_json(path, "history_archive_repack_activation_journal")
     _require_fields(
         payload,
@@ -172,7 +170,7 @@ def read_history_partition_repack_activation_journal(path: Path) -> HistoryParti
         raise HistoryPartitionRepackCodecError("history repack activation journal is invalid") from exc
 
 
-def read_tomorrow_training_memory_evidence(path: Path) -> TomorrowTrainingMemoryEvidence:
+def ReadTomorrowTrainingMemoryEvidence(path: Path) -> TomorrowTrainingMemoryEvidence:
     payload = _read_verified_json(path, "tomorrow_training_memory_gate")
     _require_fields(
         payload,
@@ -272,7 +270,7 @@ def _read_verified_json(path: Path, schema: str) -> dict[str, object]:
         body = {key: value for key, value in payload.items() if key != "content_hash"}
         if payload.get("schema_version") != schema or not isinstance(declared, str):
             raise ValueError("schema or hash is invalid")
-        if content_hash(body) != declared:
+        if ContentHash(body) != declared:
             raise ValueError("content hash is invalid")
         return payload
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -281,7 +279,7 @@ def _read_verified_json(path: Path, schema: str) -> dict[str, object]:
 
 def _write_verified_json(path: Path, payload: dict[str, object]) -> None:
     document = dict(payload)
-    document["content_hash"] = content_hash(document)
+    document["content_hash"] = ContentHash(document)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary = Path(temporary_name)
@@ -304,7 +302,7 @@ def _object(raw: object) -> dict[str, object]:
 
 
 def _list(payload: dict[str, object], key: str) -> list[object]:
-    sequence = as_sequence(payload[key])
+    sequence = AsSequence(payload[key])
     if sequence is None:
         raise TypeError(f"history repack {key} must be a list")
     return sequence
@@ -351,9 +349,9 @@ def _fsync_directory(path: Path) -> None:
 
 __all__ = [
     "HistoryPartitionRepackCodecError",
-    "read_history_partition_repack_activation_journal",
-    "read_history_partition_repack_build_state",
-    "read_tomorrow_training_memory_evidence",
-    "write_history_partition_repack_activation_journal",
-    "write_history_partition_repack_build_state",
+    "ReadHistoryPartitionRepackActivationJournal",
+    "ReadHistoryPartitionRepackBuildState",
+    "ReadTomorrowTrainingMemoryEvidence",
+    "WriteHistoryPartitionRepackActivationJournal",
+    "WriteHistoryPartitionRepackBuildState",
 ]

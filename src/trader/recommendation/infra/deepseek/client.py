@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 import requests
 
-from trader.infra.failures import classify_adapter_failure
+from trader.infra.failures import ClassifyAdapterFailure
 from trader.recommendation.infra.deepseek.completion_client_contract import (
     CompletionOptions,
     DeepSeekCompletionClient,
@@ -20,8 +20,8 @@ from trader.recommendation.infra.deepseek.completion_client_contract import (
     DeepSeekHttpResult,
     ModelCapabilities,
 )
-from trader.recommendation.infra.deepseek.model_capabilities import capabilities as _lookup_capabilities
-from trader.recommendation.infra.deepseek.model_catalog import validate_model
+from trader.recommendation.infra.deepseek.model_capabilities import Capabilities as _lookup_capabilities
+from trader.recommendation.infra.deepseek.model_catalog import ValidateModel
 
 _POST_TYPE = Callable[..., "requests.Response"]
 
@@ -96,7 +96,7 @@ class DeepSeekHttpClient(DeepSeekCompletionClient):
             return DeepSeekHttpResult(None, None, 0, False, "api_key_missing")
         if not 1 <= maximum_attempts <= 2:
             raise ValueError("DeepSeek batch maximum attempts must be between 1 and 2")
-        validate_model(model)
+        ValidateModel(model)
         caps = _lookup_capabilities(model)
         request = _HttpAttemptRequest(base_url, api_key, model, messages, timeout_seconds, max_tokens, caps)
         last_error = ""
@@ -133,7 +133,7 @@ class DeepSeekHttpClient(DeepSeekCompletionClient):
             timed_out,
             last_error or "request_failed",
             attempt_records=tuple(attempt_records),
-            failure=classify_adapter_failure(
+            failure=ClassifyAdapterFailure(
                 RuntimeError("timeout" if timed_out else (last_error or "request_failed")),
                 provider="deepseek",
                 operation="chat_completion",
@@ -314,7 +314,7 @@ def _attempt_record(
         failure=(
             None
             if succeeded
-            else classify_adapter_failure(
+            else ClassifyAdapterFailure(
                 RuntimeError("timeout" if timed_out else (error or "request_failed")),
                 provider="deepseek",
                 operation="chat_completion",

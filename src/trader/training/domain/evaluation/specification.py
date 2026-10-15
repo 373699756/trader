@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 SCORE_RESEARCH_OBSERVATION_CUTOFF = time(15, 0)
@@ -33,7 +33,7 @@ class ScoringResearchSpec:
     def __post_init__(self) -> None:
         _validate_spec_identity(self)
         _validate_spec_dates(self)
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
     @property
     def allowed_historical_dates(self) -> frozenset[date]:
@@ -65,7 +65,7 @@ class ResearchCoverage:
     forward: ResearchWindowCoverage
 
 
-def assess_score_research_coverage(
+def AssessScoreResearchCoverage(
     spec: ScoringResearchSpec,
     recorded_dates: Iterable[date],
     *,
@@ -311,7 +311,7 @@ _SPEC_BY_IDENTITY = {
 }
 
 
-def get_score_research_spec(research_identity: str) -> ScoringResearchSpec:
+def GetScoreResearchSpec(research_identity: str) -> ScoringResearchSpec:
     try:
         return _SPEC_BY_IDENTITY[research_identity]
     except KeyError as exc:
@@ -326,6 +326,6 @@ __all__ = [
     "ResearchCoverage",
     "ScoringResearchSpec",
     "ResearchWindowCoverage",
-    "assess_score_research_coverage",
-    "get_score_research_spec",
+    "AssessScoreResearchCoverage",
+    "GetScoreResearchSpec",
 ]

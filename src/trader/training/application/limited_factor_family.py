@@ -5,16 +5,16 @@ from __future__ import annotations
 from typing import Protocol
 
 from trader.training.domain.evaluation.candidate_recall_ledger import (
+    BuildCandidateRecallReport,
     CandidateRecallReport,
     CandidateRecallTraceMismatchError,
-    build_candidate_recall_report,
 )
 from trader.training.domain.evaluation.limited_factor_family import (
+    EvaluateLimitedFactorFamily,
     FactorFamilyCandidateSeries,
+    InsufficientLimitedFactorFamilyReport,
     LimitedFactorFamilyReport,
     LimitedFactorFamilySpec,
-    evaluate_limited_factor_family,
-    insufficient_limited_factor_family_report,
 )
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDatasetReport
 
@@ -46,7 +46,7 @@ class LimitedFactorFamilyResearchBuilder:
         if series is None:
             return _insufficient(spec, dataset, recall, "factor_family_evidence_unavailable")
         try:
-            return evaluate_limited_factor_family(
+            return EvaluateLimitedFactorFamily(
                 spec,
                 dataset_report_hash=dataset.content_hash,
                 dataset_manifest_hash=dataset.manifest.content_hash,
@@ -65,7 +65,7 @@ def _parent_evidence_failure(dataset: PointInTimeDatasetReport, recall: Candidat
     if recall.state != "candidate_recall_attributed" or recall.dataset_manifest_hash != dataset.manifest.content_hash:
         return "candidate_recall_unavailable"
     try:
-        expected = build_candidate_recall_report(dataset, recall.days)
+        expected = BuildCandidateRecallReport(dataset, recall.days)
     except CandidateRecallTraceMismatchError:
         return "candidate_recall_parent_mismatch"
     return None if recall == expected else "candidate_recall_parent_mismatch"
@@ -77,7 +77,7 @@ def _insufficient(
     recall: CandidateRecallReport,
     reason: str,
 ) -> LimitedFactorFamilyReport:
-    return insufficient_limited_factor_family_report(
+    return InsufficientLimitedFactorFamilyReport(
         spec,
         dataset_report_hash=dataset.content_hash,
         dataset_manifest_hash=dataset.manifest.content_hash if dataset.manifest is not None else None,

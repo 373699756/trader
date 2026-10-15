@@ -12,24 +12,24 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionPolicy
 
 
-def tomorrow_decision_policy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
+def TomorrowDecisionPolicy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
     return _decision_policy(policy, Strategy.TOMORROW, "tomorrow")
 
 
-def d25_decision_policy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
+def D25DecisionPolicy(policy: RecommendationPolicy) -> ScoredDecisionPolicy:
     return _decision_policy(policy, Strategy.D25, "d25")
 
 
-def scored_decision_policy(
+def BuildScoredDecisionPolicy(
     policy: RecommendationPolicy,
     strategy: Strategy,
     *,
     phase: str = "",
 ) -> ScoredDecisionPolicy:
     if strategy is Strategy.TOMORROW:
-        return tomorrow_decision_policy(policy)
+        return TomorrowDecisionPolicy(policy)
     if strategy is Strategy.D25:
-        return d25_decision_policy(policy)
+        return D25DecisionPolicy(policy)
     raise ValueError("unsupported scored strategy for DeepSeek policy")
 
 
@@ -56,7 +56,7 @@ def _decision_policy(
     )
 
 
-def normalize_scored_review_times(
+def NormalizeScoredReviewTimes(
     reviews: Mapping[str, DeepSeekReview],
     deadline: datetime,
 ) -> dict[str, DeepSeekReview] | None:
@@ -84,8 +84,8 @@ def normalize_scored_review_times(
 
 
 __all__ = [
-    "d25_decision_policy",
-    "normalize_scored_review_times",
-    "tomorrow_decision_policy",
-    "scored_decision_policy",
+    "D25DecisionPolicy",
+    "NormalizeScoredReviewTimes",
+    "TomorrowDecisionPolicy",
+    "BuildScoredDecisionPolicy",
 ]

@@ -14,7 +14,7 @@ import tempfile
 from pathlib import Path
 
 
-def publish_immutable(path: Path, rendered: str) -> bool:
+def PublishImmutable(path: Path, rendered: str) -> bool:
     """Create ``path`` with ``rendered`` unless it already exists.
 
     Returns True when this call created the file. A concurrent writer that wins the
@@ -41,7 +41,7 @@ def publish_immutable(path: Path, rendered: str) -> bool:
         temporary.unlink(missing_ok=True)
 
 
-def publish_immutable_file(path: Path, source: Path) -> bool:
+def PublishImmutableFile(path: Path, source: Path) -> bool:
     """Copy ``source`` to ``path`` unless ``path`` already exists.
 
     Mirrors :func:`publish_immutable` for artifacts published as a whole file rather
@@ -66,7 +66,7 @@ def publish_immutable_file(path: Path, source: Path) -> bool:
         temporary.unlink(missing_ok=True)
 
 
-def replace_file(path: Path, rendered: str) -> None:
+def ReplaceFile(path: Path, rendered: str) -> None:
     """Replace ``path`` with ``rendered`` so readers never observe a partial file."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,7 +96,7 @@ def _discard(temporary_name: str) -> None:
 
 
 __all__ = [
-    "publish_immutable",
-    "publish_immutable_file",
-    "replace_file",
+    "PublishImmutable",
+    "PublishImmutableFile",
+    "ReplaceFile",
 ]

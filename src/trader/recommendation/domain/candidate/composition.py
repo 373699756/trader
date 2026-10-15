@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from trader.recommendation.domain.market.factors import weighted_score
+from trader.recommendation.domain.market.factors import WeightedScore
 
 WEIGHTED_EVIDENCE_SCORE_SCALE = "weighted_evidence_quality_0_100"
 
@@ -20,8 +20,8 @@ class LocalScoreResult:
         object.__setattr__(self, "components", MappingProxyType(dict(self.components)))
 
 
-def compose(components: Mapping[str, float], weights: Mapping[str, float]) -> LocalScoreResult:
-    return LocalScoreResult(components=components, base_score=weighted_score(components, weights))
+def Compose(components: Mapping[str, float], weights: Mapping[str, float]) -> LocalScoreResult:
+    return LocalScoreResult(components=components, base_score=WeightedScore(components, weights))
 
 
-__all__ = ["LocalScoreResult", "WEIGHTED_EVIDENCE_SCORE_SCALE", "compose"]
+__all__ = ["LocalScoreResult", "WEIGHTED_EVIDENCE_SCORE_SCALE", "Compose"]

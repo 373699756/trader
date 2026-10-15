@@ -11,8 +11,8 @@ def test_limited_factor_family_research_is_offline_and_point_in_time_bound() -> 
 
     assert "PointInTimeDatasetReport" in application
     assert "CandidateRecallReport" in application
-    assert "paired_moving_block_statistics" in domain
-    assert "fixed_family_holm" in domain
+    assert "PairedMovingBlockStatistics" in domain
+    assert "FixedFamilyHolm" in domain
     assert "terminal_holdout_opened" in domain
     assert "production_authority" in domain
     assert "trader.infra" not in application

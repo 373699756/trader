@@ -17,7 +17,7 @@ from typing import Protocol, cast
 from flask import Flask
 from werkzeug.serving import BaseWSGIServer, make_server
 
-from trader.bootstrap import build_profiled_system, build_system
+from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 from trader.infra.settings import RuntimeSettings
 from trader.infra.shutdown import (
@@ -45,20 +45,20 @@ class _RuntimeSystem(_StoppableSystem, Protocol):
     def start(self) -> bool: ...
 
 
-def build_parser() -> argparse.ArgumentParser:
+def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="trader-server")
     parser.add_argument("--config", default=os.environ.get("TRADER_CONFIG", ""))
     parser.add_argument("--profile", choices=(*SCORING_PROFILE_IDS, "both"))
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def Main(argv: list[str] | None = None) -> int:
+    args = BuildParser().parse_args(argv)
     config_path = _absolute_config_path(args.config)
     system = (
-        build_profiled_system(config_path)
+        BuildProfiledSystem(config_path)
         if args.profile == "both"
-        else build_system(config_path, scoring_profile=cast(ScoringProfileId | None, args.profile))
+        else BuildSystem(config_path, scoring_profile=cast(ScoringProfileId | None, args.profile))
     )
     _validate_bind(system.settings)
     try:
@@ -327,4 +327,4 @@ def _validate_bind(settings: RuntimeSettings) -> None:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(Main())

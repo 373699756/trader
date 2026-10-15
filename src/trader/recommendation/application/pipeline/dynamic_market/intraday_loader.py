@@ -10,7 +10,7 @@ from trader.recommendation.domain.market.models import FeatureSnapshot
 IntradayLoad = Callable[[tuple[str, ...], datetime], Sequence[FeatureSnapshot]]
 
 
-def load_intraday(
+def LoadIntraday(
     codes: tuple[str, ...],
     as_of: datetime,
     loader: IntradayLoad,
@@ -24,4 +24,4 @@ def load_intraday(
     return loaded
 
 
-__all__ = ["IntradayLoad", "load_intraday"]
+__all__ = ["IntradayLoad", "LoadIntraday"]

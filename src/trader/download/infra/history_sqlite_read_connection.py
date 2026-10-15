@@ -22,7 +22,7 @@ def _retryable_lock(exc: sqlite3.Error) -> bool:
     return str(exc) in _LEGACY_LOCK_MESSAGES
 
 
-def open_history_month_reader(
+def OpenHistoryMonthReader(
     path: Path,
     *,
     statement_trace: Callable[[str], None] | None,
@@ -53,4 +53,4 @@ def open_history_month_reader(
     raise AssertionError("unreachable month reader retry state")
 
 
-__all__ = ["open_history_month_reader"]
+__all__ = ["OpenHistoryMonthReader"]

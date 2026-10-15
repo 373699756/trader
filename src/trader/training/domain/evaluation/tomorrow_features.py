@@ -10,7 +10,7 @@ from datetime import date, datetime, time, timedelta
 from statistics import fmean, pstdev
 from typing import Literal
 
-from trader.recommendation.domain.market.feature_contracts import TOMORROW_RESEARCH_FEATURE_MANIFEST, decimal_return
+from trader.recommendation.domain.market.feature_contracts import TOMORROW_RESEARCH_FEATURE_MANIFEST, DecimalReturn
 from trader.training.domain.evaluation.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
 
 TomorrowFeatureFamily = Literal[
@@ -204,7 +204,7 @@ class TomorrowStockFeatures:
             raise ValueError("Tomorrow feature missing mask does not match values")
 
 
-def build_tomorrow_stock_features(
+def BuildTomorrowStockFeatures(
     stocks: tuple[TomorrowFeatureStockInput, ...],
 ) -> tuple[TomorrowStockFeatures, ...]:
     """Build the fixed five research feature families without production authority."""
@@ -423,7 +423,7 @@ def _tail_amount_share(item: TomorrowFeatureStockInput) -> float | None:
 
 
 def _ratio(numerator: float, denominator: float) -> float | None:
-    return decimal_return(numerator, denominator)
+    return DecimalReturn(numerator, denominator)
 
 
 def _validate_current_prices(item: TomorrowFeatureStockInput) -> None:
@@ -470,5 +470,5 @@ __all__ = [
     "TomorrowFeatureStockInput",
     "TomorrowFeatureValue",
     "TomorrowStockFeatures",
-    "build_tomorrow_stock_features",
+    "BuildTomorrowStockFeatures",
 ]

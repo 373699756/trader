@@ -12,9 +12,9 @@ from typing import cast
 import polars as pl
 
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
-from trader.recommendation.domain.candidate.filters import board_for_code
+from trader.recommendation.domain.candidate.filters import BoardForCode
 from trader.recommendation.domain.market.models import Board, MarketQuote
-from trader.recommendation.infra.normalization.merge_quote import observation_order, source_name
+from trader.recommendation.infra.normalization.merge_quote import ObservationOrder, SourceName
 from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
 _QUOTE_FIELDS = (
@@ -109,7 +109,7 @@ class ColumnarMergeError(RuntimeError):
     """The eligible columnar merge failed and must degrade to scalar."""
 
 
-def try_normalize_complete_realtime_rows(
+def TryNormalizeCompleteRealtimeRows(
     rows: Sequence[Mapping[str, object]],
     options: CompleteRealtimeNormalization,
 ) -> tuple[SourceObservation, ...] | None:
@@ -136,7 +136,7 @@ def _normalize_complete_realtime_rows(
 ) -> tuple[SourceObservation, ...]:
     normalized_source = options.source.strip()
     normalized_version = options.data_version.strip()
-    if source_name(normalized_source) not in _SOURCE_PRIORITY or not normalized_version:
+    if SourceName(normalized_source) not in _SOURCE_PRIORITY or not normalized_version:
         raise ValueError("complete realtime source and data version must be supported")
     if not math.isfinite(options.price_multiplier):
         raise ValueError("complete realtime price multiplier must be finite")
@@ -197,7 +197,7 @@ def _normalize_complete_realtime_rows(
     return tuple(observations)
 
 
-def try_merge_complete_realtime(
+def TryMergeCompleteRealtime(
     observations: Sequence[SourceObservation],
 ) -> ColumnarMarketProjection | None:
     """Return an equivalent columnar projection when every provider row is complete.
@@ -220,7 +220,7 @@ def _merge_complete_realtime(
 ) -> ColumnarMarketProjection | None:
     if not observations:
         return None
-    sources = tuple(source_name(observation.source) for observation in observations)
+    sources = tuple(SourceName(observation.source) for observation in observations)
     if set(sources) != set(_SOURCE_PRIORITY):
         return None
     if any(
@@ -255,10 +255,10 @@ def _merge_complete_realtime(
     for winner_index in winners:
         selected = observations[winner_index]
         code = selected.subject_key
-        selected_source = source_name(selected.source)
+        selected_source = SourceName(selected.source)
         deviation = _price_deviation(prices_by_code.get(code, ()))
         verified = deviation is None or deviation <= 0.5
-        board = board_for_code(code)
+        board = BoardForCode(code)
         restrictions: tuple[str, ...] = _DEGRADED_RESTRICTIONS
         if not verified:
             restrictions = tuple(sorted((*restrictions, "cross_source_deviation")))
@@ -278,7 +278,7 @@ def _merge_complete_realtime(
                 for observation, normalized in zip(observations, sources, strict=True)
                 if normalized == source
             ),
-            key=observation_order,
+            key=ObservationOrder,
         ).data_version
         for source in _SOURCE_PRIORITY
     }
@@ -439,6 +439,6 @@ __all__ = [
     "ColumnarMarketProjection",
     "ColumnarMergeError",
     "CompleteRealtimeNormalization",
-    "try_merge_complete_realtime",
-    "try_normalize_complete_realtime_rows",
+    "TryMergeCompleteRealtime",
+    "TryNormalizeCompleteRealtimeRows",
 ]

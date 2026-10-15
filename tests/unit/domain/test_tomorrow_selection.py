@@ -8,10 +8,10 @@ from trader.recommendation.domain.evidence.review import RiskRule
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import BoardStrategyPolicy, ScoredDisposition, Strategy
 from trader.recommendation.domain.selection.scored_selection import (
+    PlanScoredCandidates,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
-    plan_scored_candidates,
-    select_scored,
+    SelectScored,
 )
 
 NOW = datetime(2026, 7, 28, 14, 40, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -158,7 +158,7 @@ def test_tomorrow_selection_keeps_filter_tristate_and_bounds_each_board(
         ),
     )
 
-    result = select_scored(_request(tuple(reversed(features)), _selection_policy()))
+    result = SelectScored(_request(tuple(reversed(features)), _selection_policy()))
     by_code = {item.code: item for item in result.evaluations}
 
     assert by_code["600000"].disposition is ScoredDisposition.REJECT
@@ -184,8 +184,8 @@ def test_tomorrow_selection_deducts_local_risk_once_and_is_stable(
     features[-3] = replace(features[-3], quote=replace(features[-3].quote, industry="concentrated"))
     policy = _selection_policy()
 
-    forward = select_scored(_request(tuple(features), policy))
-    reverse = select_scored(_request(tuple(reversed(features)), policy))
+    forward = SelectScored(_request(tuple(features), policy))
+    reverse = SelectScored(_request(tuple(reversed(features)), policy))
     risky = next(item for item in forward.scored_candidates if item.code == "600104")
 
     assert risky.local_risk_penalty == 5.0
@@ -209,7 +209,7 @@ def test_production_model_ineligible_candidate_does_not_consume_board_limit(
         model_input_eligible_codes=frozenset({"600001"}),
     )
 
-    result = select_scored(request)
+    result = SelectScored(request)
     by_code = {item.code: item for item in result.evaluations}
 
     assert tuple(item.code for item in result.scored_candidates) == ("600001",)
@@ -233,7 +233,7 @@ def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_c
         },
     )
 
-    plan = plan_scored_candidates(
+    plan = PlanScoredCandidates(
         replace(
             _request(tuple(features), _selection_policy(candidate_limit=1)),
             minimum_history_sessions=20,
@@ -315,7 +315,7 @@ def test_every_required_candidate_rejection_is_applied_before_the_board_cap(
         ),
     )
 
-    plan = plan_scored_candidates(request)
+    plan = PlanScoredCandidates(request)
     by_code = {item.code: item for item in plan.evaluations}
 
     assert plan.limited_codes(3) == tuple(item.quote.code for item in eligible)
@@ -354,8 +354,8 @@ def test_st_and_suspended_rough_leaders_do_not_displace_the_next_three_eligible_
     features[1] = replace(features[1], quote=replace(features[1].quote, is_suspended=True))
 
     request = _request(tuple(features), _selection_policy(candidate_limit=3))
-    plan = plan_scored_candidates(request)
-    repeated = plan_scored_candidates(replace(request, features=tuple(reversed(features))))
+    plan = PlanScoredCandidates(request)
+    repeated = PlanScoredCandidates(replace(request, features=tuple(reversed(features))))
 
     assert plan.limited_codes(3) == ("600002", "600003", "600004")
     assert repeated.limited_codes(3) == plan.limited_codes(3)
@@ -364,7 +364,7 @@ def test_st_and_suspended_rough_leaders_do_not_displace_the_next_three_eligible_
 def test_tomorrow_selection_records_local_threshold_exclusion(application_feature_factory) -> None:
     policy = replace(_selection_policy(top_k=1), minimum_local_score=100.0)
 
-    result = select_scored(_request(_features(application_feature_factory, count=100), policy))
+    result = SelectScored(_request(_features(application_feature_factory, count=100), policy))
 
     assert result.selected == ()
     assert {
@@ -386,7 +386,7 @@ def test_tomorrow_selection_uses_full_population_but_scores_only_explicit_candid
         candidate_features=(candidate,),
     )
 
-    result = select_scored(request)
+    result = SelectScored(request)
 
     assert len(result.evaluations) == 100
     assert tuple(item.code for item in result.scored_candidates) == (candidate.quote.code,)
@@ -406,7 +406,7 @@ def test_explicit_refresh_keeps_candidates_inside_static_boundary(application_fe
         candidate_features=(statically_rejected_refresh, population[1]),
     )
 
-    plan = plan_scored_candidates(request)
+    plan = PlanScoredCandidates(request)
     assert plan.stage_counts.dynamic_filter_eligible == 1
     assert plan.limited_codes(3) == (population[1].quote.code,)
     rejected = next(item for item in plan.evaluations if item.code == population[0].quote.code)
@@ -420,7 +420,7 @@ def test_tomorrow_selection_rejects_feature_observed_after_evaluation(applicatio
     )
 
     try:
-        select_scored(_request((feature,), _selection_policy()))
+        SelectScored(_request((feature,), _selection_policy()))
     except ValueError as exc:
         assert str(exc) == "scored selection cannot use future features"
     else:

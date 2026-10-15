@@ -8,12 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.serialization.canonical import canonical_json_text
-from trader.infra.serialization.fields import is_boolean, is_sha256_text
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.canonical import CanonicalJsonText
+from trader.infra.serialization.fields import IsBoolean, IsSha256Text
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.h1_point_in_time_completion import H1ResearchCompletion
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
 class H1ResearchCompletionEvidenceConflictError(RuntimeError):
@@ -45,7 +45,7 @@ class H1ResearchCompletionEvidenceIndex:
         residuals = tuple(sorted(self.residual_terminal_hashes, key=lambda item: ("tomorrow", "d25").index(item[0])))
         if tuple(item[0] for item in residuals) != ("tomorrow", "d25"):
             raise ValueError("H1 research terminal index requires every strategy")
-        if any(not is_sha256_text(item[1]) for item in residuals):
+        if any(not IsSha256Text(item[1]) for item in residuals):
             raise ValueError("H1 research residual terminal hash is invalid")
         if self.status != "historical_data_insufficient":
             raise ValueError("H1 research terminal index status is invalid")
@@ -54,7 +54,7 @@ class H1ResearchCompletionEvidenceIndex:
         if self.schema_version != "h1_terminal_index":
             raise ValueError("H1 research terminal index schema is invalid")
         object.__setattr__(self, "residual_terminal_hashes", residuals)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 class H1ResearchCompletionEvidenceFiles:
@@ -72,7 +72,7 @@ class H1ResearchCompletionEvidenceFiles:
             return existing
         payload = _encode(index)
         payload["content_hash"] = index.content_hash
-        if publish_immutable(self._path, canonical_json_text(payload)):
+        if PublishImmutable(self._path, CanonicalJsonText(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != index.content_hash:
@@ -86,7 +86,7 @@ class H1ResearchCompletionEvidenceFiles:
                 raise TypeError("H1 research terminal artifact is not an object")
             payload = cast(dict[str, object], raw)
             persisted_hash = payload.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(payload) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(payload) != persisted_hash:
                 raise ValueError("H1 research terminal artifact hash mismatch")
             index = _decode(payload)
             if index.content_hash != persisted_hash:
@@ -161,7 +161,7 @@ def _decode(raw: dict[str, object]) -> H1ResearchCompletionEvidenceIndex:
 
 
 def _hash(value: str) -> None:
-    if not is_sha256_text(value):
+    if not IsSha256Text(value):
         raise ValueError("H1 research terminal hash is invalid")
 
 
@@ -172,7 +172,7 @@ def _string(value: object) -> str:
 
 
 def _bool(value: object) -> bool:
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError("H1 research terminal boolean field is invalid")
     return value
 

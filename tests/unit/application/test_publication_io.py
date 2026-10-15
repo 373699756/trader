@@ -13,19 +13,19 @@ from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinato
     ScoredFreezeCoordinator,
 )
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
+    ObservePublicationIo,
     PublicationIoCompletion,
     PublicationIoTarget,
     PublicationIoTracker,
     PublicationOperation,
-    observe_publication_io,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.ports.decision_records import DecisionCheckpoint, DecisionRecordUnavailableError
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
-from trader.recommendation.domain.publication.decision_identity import formal_scored_decision
+from trader.recommendation.domain.publication.decision_identity import FormalScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-from trader.recommendation.infra.status_projection import publication_io_payload
+from trader.recommendation.infra.status_projection import PublicationIoPayload
 
 
 class _Monotonic:
@@ -135,7 +135,7 @@ def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_pa
     assert result.status == "frozen" and result.record is not None
     assert attempted[0] == attempted[1] == result.record
     assert failure.state is StageState.FAILED  # Earlier immutable receipt is unchanged.
-    payload = publication_io_payload(_receipt(tracker, "formal_write"))
+    payload = PublicationIoPayload(_receipt(tracker, "formal_write"))
     assert payload["count_unit"] == "operation" and payload["output_count"] == 1
     assert "rejection_rate" not in payload and "items" not in payload
     _assert_formal_current_and_history(index, records, clock, result.record)
@@ -174,16 +174,16 @@ def test_late_completion_and_older_cycle_cannot_replace_new_io_and_age_is_preser
     second = tracker.begin("current_publish", new)
     tracker.finish(*second, "current_publish", new, PublicationIoCompletion(), error=None)
     tracker.finish(*first, "current_publish", old, PublicationIoCompletion(), error="io_oserror")
-    with observe_publication_io(tracker, "current_publish", old):
+    with ObservePublicationIo(tracker, "current_publish", old):
         pass
     assert _receipt(tracker, "current_publish").target == new
     clock.value += timedelta(seconds=20)
-    with pytest.raises(OSError), observe_publication_io(tracker, "current_publish", new):
+    with pytest.raises(OSError), ObservePublicationIo(tracker, "current_publish", new):
         raise OSError("secret external payload must not escape")
     receipt = _receipt(tracker, "current_publish")
     assert receipt.source_health.age_seconds == 20.0
     assert receipt.reasons[0].code == "io_oserror"
-    assert "secret" not in str(publication_io_payload(receipt))
+    assert "secret" not in str(PublicationIoPayload(receipt))
     with pytest.raises(FrozenInstanceError):
         receipt.output_count = 1
     with pytest.raises(ValueError):
@@ -239,7 +239,7 @@ def test_ineligible_checkpoint_remains_pending_without_business_rejection(tmp_pa
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
     records = SQLiteDecisionRecords(tmp_path)
     records.initialize()
-    checkpoint = DecisionCheckpoint(formal_scored_decision(decision()), _at(15, 0))
+    checkpoint = DecisionCheckpoint(FormalScoredDecision(decision()), _at(15, 0))
     records.save_checkpoint(checkpoint)
     freezer = _freezer(UnifiedDecisionIndex(), records, clock, tracker, Strategy.TOMORROW)
     assert freezer.freeze_scheduled().status == "no_eligible_decision"
@@ -259,7 +259,7 @@ def test_status_clock_failure_retains_receipt_with_unknown_age() -> None:
         return clock.now()
 
     tracker = PublicationIoTracker(now=now, monotonic=_Monotonic())
-    with observe_publication_io(tracker, "current_publish", PublicationIoTarget.decision(decision())):
+    with ObservePublicationIo(tracker, "current_publish", PublicationIoTarget.decision(decision())):
         pass
     before = tracker.snapshots()[0]
     available = False

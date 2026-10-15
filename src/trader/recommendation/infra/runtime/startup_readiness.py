@@ -11,7 +11,7 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 _LOGGER = logging.getLogger(__name__)
 
 
-def warn_missing_local_data(project_root: Path, profile_id: ScoringProfileId, *, model_missing: bool) -> None:
+def WarnMissingLocalData(project_root: Path, profile_id: ScoringProfileId, *, model_missing: bool) -> None:
     """Warn about absent files without claiming existing files are validated."""
 
     if model_missing:
@@ -34,4 +34,4 @@ def warn_missing_local_data(project_root: Path, profile_id: ScoringProfileId, *,
         )
 
 
-__all__ = ["warn_missing_local_data"]
+__all__ = ["WarnMissingLocalData"]

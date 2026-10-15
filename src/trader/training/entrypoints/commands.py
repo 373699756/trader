@@ -13,14 +13,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
-from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
+from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
 from trader.infra.settings import RuntimeSettings
 from trader.training.application.historical_label import HistoricalLabelPreregistrationService
 from trader.training.application.tomorrow_research_evidence import (
+    DeriveTomorrowResearchRunId,
+    NextResearchStage,
+    ProductionReadinessAudit,
     TomorrowResearchStage,
-    derive_tomorrow_research_run_id,
-    next_research_stage,
-    production_readiness_audit,
 )
 from trader.training.application.tomorrow_research_orchestrator import (
     TomorrowResearchAdvanceResult,
@@ -62,7 +62,7 @@ class ResearchCommandOptions:
     workers: int = 5
 
 
-def configure_training_resources() -> None:
+def ConfigureTrainingResources() -> None:
     """Apply the bounded process policy before loading either training head."""
 
     from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
@@ -126,18 +126,18 @@ class _TomorrowResearchProgress(TomorrowResearchProgressPort):
         )
 
 
-def run_research_command(
+def RunResearchCommand(
     command: str,
     config_path: Path,
     runtime: RuntimeSettings,
     options: ResearchCommandOptions,
 ) -> int:
     if command.startswith("research-"):
-        from trader.recommendation.infra.scoring.cost_settings import load_evaluation_cost_scenarios
-        from trader.training.infra.research_settings import load_research_settings
+        from trader.recommendation.infra.scoring.cost_settings import LoadEvaluationCostScenarios
+        from trader.training.infra.research_settings import LoadResearchSettings
 
-        load_research_settings(config_path.parent)
-        load_evaluation_cost_scenarios(config_path.parent)
+        LoadResearchSettings(config_path.parent)
+        LoadEvaluationCostScenarios(config_path.parent)
     if command == "train-v2":
         return _run_v2_training_orchestrator(runtime)
     if command == "train-v3":
@@ -161,7 +161,7 @@ def run_research_command(
         tomorrow_historical = _read_tomorrow_historical_status(runtime)
         tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
         tomorrow_research = _read_tomorrow_research_status(runtime)
-        history_status = _project_history_snapshot_status(inspect_history_snapshot(_history_data_root()))
+        history_status = _project_history_snapshot_status(InspectHistorySnapshot(_history_data_root()))
         print(
             json.dumps(
                 {
@@ -230,9 +230,9 @@ def _project_history_snapshot_status(status: HistorySnapshotStatus) -> dict[str,
 
 def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     from trader.training.application.baseline_identity_audit import BaselineIdentityAuditService
-    from trader.training.infra.research.baseline_identity_sources import load_baseline_identity_evidence
+    from trader.training.infra.research.baseline_identity_sources import LoadBaselineIdentityEvidence
 
-    audit = BaselineIdentityAuditService(load_baseline_identity_evidence(runtime)).execute()
+    audit = BaselineIdentityAuditService(LoadBaselineIdentityEvidence(runtime)).execute()
     payload = {
         "schema_version": audit.schema_version,
         "status": audit.status,
@@ -261,13 +261,13 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
 def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
     from trader.training.application.profile_training_secondary import TrainV3UseCase
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.infra.profile.v3.training import run_v3_training
-    from trader.training.infra.training_settings import load_profile_training_settings
+    from trader.training.infra.profile.v3.training import RunV3Training
+    from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
     return _run_profile_training_command(
         "v3",
         TrainV3UseCase(
-            partial(run_v3_training, settings=load_profile_training_settings(runtime.project_root, "v3"))
+            partial(RunV3Training, settings=LoadProfileTrainingSettings(runtime.project_root, "v3"))
         ).execute,
         StderrTomorrowTrainingProgress,
     )
@@ -276,13 +276,13 @@ def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
 def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
     from trader.training.application.profile_training_primary import TrainV2UseCase
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.infra.profile.v2.training import run_v2_training
-    from trader.training.infra.training_settings import load_profile_training_settings
+    from trader.training.infra.profile.v2.training import RunV2Training
+    from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
     return _run_profile_training_command(
         "v2",
         TrainV2UseCase(
-            partial(run_v2_training, settings=load_profile_training_settings(runtime.project_root, "v2"))
+            partial(RunV2Training, settings=LoadProfileTrainingSettings(runtime.project_root, "v2"))
         ).execute,
         StderrTomorrowTrainingProgress,
     )
@@ -391,8 +391,8 @@ def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object
             "production_authority": False,
             "automatic_model_update": False,
         }
-    stage = next_research_stage(graph)
-    readiness = production_readiness_audit(graph, manual_authorization_hash=None)
+    stage = NextResearchStage(graph)
+    readiness = ProductionReadinessAudit(graph, manual_authorization_hash=None)
     return {
         "status": (
             "terminal"
@@ -401,7 +401,7 @@ def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object
             if prerequisite.status == "blocked" or graph.artifacts
             else "not_started"
         ),
-        "run_id": derive_tomorrow_research_run_id(graph),
+        "run_id": DeriveTomorrowResearchRunId(graph),
         "graph_hash": graph.content_hash,
         "artifact_count": len(graph.artifacts),
         "next_stage": stage,
@@ -479,4 +479,4 @@ def _read_tomorrow_historical_risk_status(runtime: RuntimeSettings) -> dict[str,
         }
 
 
-__all__ = ["ResearchCommandOptions", "run_research_command"]
+__all__ = ["ResearchCommandOptions", "RunResearchCommand"]

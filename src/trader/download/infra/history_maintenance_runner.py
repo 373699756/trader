@@ -20,7 +20,7 @@ from trader.download.domain.history_automation import (
     HistoryDesktopNotifier,
     HistoryNotificationResult,
     HistoryNotificationState,
-    weekly_history_maintenance_decision,
+    WeeklyHistoryMaintenanceDecision,
 )
 from trader.download.domain.history_control import HistoryReminderClaim, HistoryReminderState
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
@@ -29,7 +29,7 @@ from trader.download.domain.history_sync import (
     HistorySyncProgress,
     HistorySyncProgressPort,
 )
-from trader.download.infra.history_automation_status import read_history_automation_status
+from trader.download.infra.history_automation_status import ReadHistoryAutomationStatus
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
@@ -178,7 +178,7 @@ class PlatformHistoryDesktopNotifier:
         return HistoryNotificationResult("sent", None)
 
 
-def run_scheduled_history_maintenance(
+def RunScheduledHistoryMaintenance(
     configuration: HistorySyncConfiguration,
     synchronize: ScheduledSynchronizer,
     notifier: HistoryDesktopNotifier,
@@ -192,11 +192,11 @@ def run_scheduled_history_maintenance(
     archive_root = configuration.archive_root
     try:
         with HistoryMaintenanceLock(archive_root / ".automation.lock"):
-            due_status = read_history_automation_status(archive_root, observed_at)
-            decision = weekly_history_maintenance_decision(due_status.data_cutoff, observed_at)
+            due_status = ReadHistoryAutomationStatus(archive_root, observed_at)
+            decision = WeeklyHistoryMaintenanceDecision(due_status.data_cutoff, observed_at)
             maintenance = synchronize(progress) if decision.state == "due" else None
             if maintenance is not None:
-                due_status = read_history_automation_status(archive_root, observed_at)
+                due_status = ReadHistoryAutomationStatus(archive_root, observed_at)
             notification_state: HistoryNotificationState
             notification_error: str | None
             if decision.state == "blocked":
@@ -209,7 +209,7 @@ def run_scheduled_history_maintenance(
                     notifier,
                     observed_at,
                 )
-            due_status = read_history_automation_status(archive_root, observed_at)
+            due_status = ReadHistoryAutomationStatus(archive_root, observed_at)
             result = HistoryAutomationRunStatus(
                 observed_at,
                 archive_root,
@@ -223,7 +223,7 @@ def run_scheduled_history_maintenance(
                 False,
             )
     except HistoryMaintenanceAlreadyRunningError:
-        due_status = read_history_automation_status(archive_root, observed_at)
+        due_status = ReadHistoryAutomationStatus(archive_root, observed_at)
         result = HistoryAutomationRunStatus(
             observed_at,
             archive_root,
@@ -342,5 +342,5 @@ def _notification_command(
 __all__ = [
     "PlatformHistoryDesktopNotifier",
     "RotatingHistoryAutomationLog",
-    "run_scheduled_history_maintenance",
+    "RunScheduledHistoryMaintenance",
 ]

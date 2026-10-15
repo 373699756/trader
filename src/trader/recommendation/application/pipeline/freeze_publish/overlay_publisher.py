@@ -12,7 +12,7 @@ from trader.recommendation.application.ports.runtime import (
     DecisionBuilderPort,
     DecisionUnavailableError,
 )
-from trader.recommendation.application.runtime.trading_session import session_guard
+from trader.recommendation.application.runtime.trading_session import SessionGuard
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -53,7 +53,7 @@ class DecisionOverlayRefresher:
             return OverlayRefreshOutcome(strategy, "failed", self.failure_code(exc, "overlay_unavailable"))
         if overlay is None:
             return OverlayRefreshOutcome(strategy, "succeeded")
-        with session_guard(request.session):
+        with SessionGuard(request.session):
             return self._publish(
                 strategy, overlay, expected_version=snapshot.overlay.version if snapshot.overlay else None
             )

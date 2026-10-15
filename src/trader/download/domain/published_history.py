@@ -11,9 +11,9 @@ from trader.download.domain.baostock_daily import (
     BaoStockDailyCell,
     BaoStockDailySide,
     BaoStockTradingStatus,
-    daily_cell_status,
-    validate_daily_prices,
-    validate_daily_raw_fields,
+    DailyCellStatus,
+    ValidateDailyPrices,
+    ValidateDailyRawFields,
 )
 
 
@@ -38,13 +38,13 @@ class PublishedHistorySide:
     def __post_init__(self) -> None:
         if len(self.code) != 6 or not self.code.isdigit() or type(self.trade_date) is not date:
             raise ValueError("published history side identity is invalid")
-        validate_daily_prices(
+        ValidateDailyPrices(
             self.adjustment,
             self.trading_status,
             (self.open_price, self.high_price, self.low_price, self.close_price),
             (self.volume, self.amount),
         )
-        validate_daily_raw_fields(
+        ValidateDailyRawFields(
             self.adjustment,
             self.trading_status,
             (self.preclose, self.pct_change, self.turnover),
@@ -71,13 +71,13 @@ class PublishedHistoryCell:
         expected = (
             "tencent_inferred_suspended"
             if self.status == "tencent_inferred_suspended" and self.unadjusted is None and self.qfq is None
-            else daily_cell_status(self.unadjusted, self.qfq)
+            else DailyCellStatus(self.unadjusted, self.qfq)
         )
         if self.status != expected:
             raise ValueError("published history cell status is invalid")
 
 
-def project_history_cell(cell: BaoStockDailyCell) -> PublishedHistoryCell:
+def ProjectHistoryCell(cell: BaoStockDailyCell) -> PublishedHistoryCell:
     """Project validated supplier facts with exactly the same overlap semantics."""
     return PublishedHistoryCell(
         cell.code, cell.trade_date, cell.status, _project_side(cell.unadjusted), _project_side(cell.qfq)
@@ -154,5 +154,5 @@ __all__ = [
     "PublishedHistoryManifest",
     "PublishedHistorySide",
     "PublishedHistoryWindow",
-    "project_history_cell",
+    "ProjectHistoryCell",
 ]

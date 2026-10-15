@@ -1,10 +1,10 @@
 from datetime import date
 
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
+    BuildPointInTimeDataQualification,
     DailyHistoryQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
-    build_point_in_time_data_qualification,
 )
 
 
@@ -53,7 +53,7 @@ def test_three_independent_data_gates_fail_closed_without_opening_holdout() -> N
         ("historical_1500_anchor_unavailable",),
     )
 
-    report = build_point_in_time_data_qualification(daily, (industry,), (minute,))
+    report = BuildPointInTimeDataQualification(daily, (industry,), (minute,))
 
     assert report.state == "historical_data_insufficient"
     assert report.failure_reasons == (
@@ -103,7 +103,7 @@ def test_report_qualifies_only_when_daily_industry_and_minute_gates_all_pass() -
         (),
     )
 
-    report = build_point_in_time_data_qualification(daily, (industry,), (minute,))
+    report = BuildPointInTimeDataQualification(daily, (industry,), (minute,))
 
     assert report.state == "qualified"
     assert report.failure_reasons == ()

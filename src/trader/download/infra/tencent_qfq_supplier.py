@@ -19,7 +19,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockSecurity,
     BaoStockSourceVersions,
-    daily_cell_status,
+    DailyCellStatus,
 )
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError, HistorySupplierPendingReason
 from trader.download.domain.history_sync import HistorySupplierContext
@@ -220,7 +220,7 @@ class TencentQfqSupplier:
                     day,
                     "tencent_inferred_suspended"
                     if not request_pending and day not in invalid_dates and day not in raw and day not in qfq
-                    else daily_cell_status(raw.get(day), qfq.get(day)),
+                    else DailyCellStatus(raw.get(day), qfq.get(day)),
                     raw.get(day),
                     qfq.get(day),
                 )

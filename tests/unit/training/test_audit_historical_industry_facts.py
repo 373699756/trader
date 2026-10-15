@@ -5,14 +5,14 @@ from datetime import date
 from pathlib import Path
 
 from trader import bootstrap
-from trader.entrypoints.cli import main as cli_main
+from trader.entrypoints.cli import Main as cli_main
 from trader.training.domain.evaluation.historical_industry_facts import (
+    BuildHistoricalIndustryDatasetReport,
+    BuildHistoricalIndustrySourceAudit,
     HistoricalIndustryFact,
     HistoricalIndustrySourceContract,
     HistoricalIndustryStockWindow,
-    build_historical_industry_dataset_report,
-    build_historical_industry_source_audit,
-    merge_historical_industry_facts,
+    MergeHistoricalIndustryFacts,
 )
 from trader.training.entrypoints import research_evidence_projection as script
 
@@ -56,15 +56,15 @@ def _report():
         "a" * 64,
     )
     window = HistoricalIndustryStockWindow("000001", "main", "old", (date(2020, 1, 2),))
-    source = build_historical_industry_source_audit(contract, (fact,), (window,))
-    return build_historical_industry_dataset_report("b" * 64, (source,), merge_historical_industry_facts((fact,)))
+    source = BuildHistoricalIndustrySourceAudit(contract, (fact,), (window,))
+    return BuildHistoricalIndustryDatasetReport("b" * 64, (source,), MergeHistoricalIndustryFacts((fact,)))
 
 
 def test_projection_is_bounded_by_default_and_details_preserve_fact_hashes() -> None:
     report = _report()
 
-    bounded = script.project_historical_industry_report(report)
-    detailed = script.project_historical_industry_report(report, include_details=True)
+    bounded = script.ProjectHistoricalIndustryReport(report)
+    detailed = script.ProjectHistoricalIndustryReport(report, include_details=True)
 
     assert bounded["status"] == "historical_data_insufficient"
     assert bounded["production_authority"] is False
@@ -79,7 +79,7 @@ def test_projection_is_bounded_by_default_and_details_preserve_fact_hashes() -> 
 
 def test_main_rejects_detailed_stdout_without_running_audit(capsys, monkeypatch) -> None:
     monkeypatch.setattr(
-        bootstrap, "execute_research_evidence", lambda _cmd: (_ for _ in ()).throw(AssertionError("must not run"))
+        bootstrap, "ExecuteResearchEvidence", lambda _cmd: (_ for _ in ()).throw(AssertionError("must not run"))
     )
 
     result = main(["--include-details", "--output", "-"])
@@ -93,7 +93,7 @@ def test_main_rejects_detailed_stdout_without_running_audit(capsys, monkeypatch)
 def test_main_writes_detailed_report_only_to_an_external_path(tmp_path, monkeypatch) -> None:
     report = _report()
     target = tmp_path / "industry-report.json"
-    monkeypatch.setattr(bootstrap, "execute_research_evidence", lambda _cmd: report)
+    monkeypatch.setattr(bootstrap, "ExecuteResearchEvidence", lambda _cmd: report)
 
     result = main(["--include-details", "--output", str(target)])
 

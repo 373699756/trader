@@ -26,7 +26,7 @@ def _initialize_reference_data_plane(
         _LOGGER.warning("data plane initialization degraded: %s", type(exc).__name__)
 
 
-def initialize_reference_data_plane(
+def InitializeReferenceDataPlane(
     market_data: MarketFeatureService,
     data_plane: SQLiteDataPlane,
     observed_at: datetime | None = None,
@@ -34,4 +34,4 @@ def initialize_reference_data_plane(
     _initialize_reference_data_plane(market_data, data_plane, observed_at)
 
 
-__all__ = ["initialize_reference_data_plane", "_initialize_reference_data_plane"]
+__all__ = ["InitializeReferenceDataPlane", "_initialize_reference_data_plane"]

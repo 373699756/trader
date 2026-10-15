@@ -9,7 +9,7 @@ from pathlib import Path
 
 from trader.download.infra.history_snapshot_inspection import (
     HistorySnapshotInspectionError,
-    load_active_history_snapshot,
+    LoadActiveHistorySnapshot,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 
@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def build_shadow_report(root: Path) -> dict[str, object]:
-    archive = load_active_history_snapshot(root)
+    archive = LoadActiveHistorySnapshot(root)
     cutoff = archive.snapshot.data_cutoff
     sessions = tuple(day for day in archive.calendar.open_dates if day <= cutoff)
     if not sessions:

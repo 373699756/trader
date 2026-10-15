@@ -25,13 +25,13 @@ from trader.training.application.factor_diagnostic_report import (
     StratumDimension,
 )
 from trader.training.application.historical_extraction_models import HistoricalExtraction
-from trader.training.domain.evaluation.baseline import mean_rank_ic, population_spearman, quantile_bucket
+from trader.training.domain.evaluation.baseline import MeanRankIc, PopulationSpearman, QuantileBucket
 from trader.training.domain.evaluation.factor_diagnostics import (
-    factor_concentration,
-    information_coefficient_ratio,
-    monotonicity,
-    population_pearson,
-    top_bucket_turnover,
+    FactorConcentration,
+    InformationCoefficientRatio,
+    Monotonicity,
+    PopulationPearson,
+    TopBucketTurnover,
 )
 
 _COST_RATES = (0.002, 0.005, 0.01)
@@ -147,16 +147,16 @@ def _evaluate_factor(
         for row in rows
         if row.code in day.top_quintile_codes
     )
-    maximum_stock, top_five = factor_concentration(contributions)
+    maximum_stock, top_five = FactorConcentration(contributions)
     return FactorAggregateDiagnostic(
         factor_name,
         total_count,
         observed_count,
         coverage,
         1.0 - coverage,
-        mean_rank_ic(tuple(item.ic for item in daily)),
-        mean_rank_ic(tuple(item.rank_ic for item in daily)),
-        information_coefficient_ratio(tuple(item.ic for item in daily)),
+        MeanRankIc(tuple(item.ic for item in daily)),
+        MeanRankIc(tuple(item.rank_ic for item in daily)),
+        InformationCoefficientRatio(tuple(item.ic for item in daily)),
         cost_quintiles,
         severe,
         mae,
@@ -210,7 +210,7 @@ def _daily_diagnostic(
 ) -> FactorDailyDiagnostic:
     observed = tuple(row for row in rows if row.factor_value is not None)
     pairs = tuple((cast(float, row.factor_value), row.net_excess(_COST_RATES[0])) for row in observed)
-    buckets = quantile_bucket(tuple((row.code, cast(float, row.factor_value)) for row in observed))
+    buckets = QuantileBucket(tuple((row.code, cast(float, row.factor_value)) for row in observed))
     sufficient = len(observed) >= 5
     counts = cast(
         tuple[int, int, int, int, int],
@@ -228,8 +228,8 @@ def _daily_diagnostic(
         len(observed),
         coverage,
         1.0 - coverage,
-        population_pearson(pairs),
-        population_spearman(pairs),
+        PopulationPearson(pairs),
+        PopulationSpearman(pairs),
         counts,
         costs,
         severe,
@@ -245,7 +245,7 @@ def _daily_cost_quintiles(
     sufficient: bool,
 ) -> FactorCostQuintiles:
     values = _daily_bucket_values(rows, buckets, lambda row: row.net_excess(cost_rate), sufficient)
-    monotonic_fraction, top_minus_bottom = monotonicity(values)
+    monotonic_fraction, top_minus_bottom = Monotonicity(values)
     return FactorCostQuintiles(cost_rate, values, monotonic_fraction, top_minus_bottom)
 
 
@@ -270,7 +270,7 @@ def _aggregate_cost_quintiles(days: tuple[FactorDailyDiagnostic, ...], cost_rate
         QuintileValues,
         tuple(_optional_mean(tuple(item.quintile_net_excess[index] for item in daily_costs)) for index in range(5)),
     )
-    monotonic_fraction, top_minus_bottom = monotonicity(values)
+    monotonic_fraction, top_minus_bottom = Monotonicity(values)
     return FactorCostQuintiles(cost_rate, values, monotonic_fraction, top_minus_bottom)
 
 
@@ -305,10 +305,10 @@ def _lag_diagnostics(
             previous = value_maps[index - lag]
             current = value_maps[index]
             codes = tuple(sorted(set(previous).intersection(current)))
-            decay = population_spearman(tuple((previous[code], current[code]) for code in codes))
+            decay = PopulationSpearman(tuple((previous[code], current[code]) for code in codes))
             if decay is not None:
                 decays.append(decay)
-            turnover = top_bucket_turnover(days[index - lag].top_quintile_codes, days[index].top_quintile_codes)
+            turnover = TopBucketTurnover(days[index - lag].top_quintile_codes, days[index].top_quintile_codes)
             if turnover is not None:
                 turnovers.append(turnover)
         result.append(
@@ -384,8 +384,8 @@ def _stratum_metric(dimension: str, label: str, rows: tuple[_FactorRow, ...]) ->
         len(observed),
         coverage,
         1.0 - coverage,
-        mean_rank_ic(tuple(population_pearson(pairs) for pairs in daily_pairs)),
-        mean_rank_ic(tuple(population_spearman(pairs) for pairs in daily_pairs)),
+        MeanRankIc(tuple(PopulationPearson(pairs) for pairs in daily_pairs)),
+        MeanRankIc(tuple(PopulationSpearman(pairs) for pairs in daily_pairs)),
         _mean(tuple(row.net_excess(_COST_RATES[0]) for row in observed)),
         _mean(tuple(1.0 if row.mae_atr20 <= -1.5 else 0.0 for row in observed)),
         _mean(tuple(row.mae_atr20 for row in observed)),

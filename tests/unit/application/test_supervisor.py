@@ -11,7 +11,7 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisor,
     RuntimeSupervisorConfig,
-    scheduler_interval_seconds,
+    SchedulerIntervalSeconds,
 )
 
 
@@ -162,9 +162,9 @@ def test_scheduler_cadence_tightens_at_final_quote() -> None:
     main = datetime(2026, 7, 16, 10, 0, tzinfo=SHANGHAI)
     final_quote = datetime(2026, 7, 16, 14, 49, 55, tzinfo=SHANGHAI)
 
-    assert scheduler_interval_seconds(morning) == 60.0
-    assert scheduler_interval_seconds(main) == 10.0
-    assert scheduler_interval_seconds(final_quote) == 2.0
+    assert SchedulerIntervalSeconds(morning) == 60.0
+    assert SchedulerIntervalSeconds(main) == 10.0
+    assert SchedulerIntervalSeconds(final_quote) == 2.0
 
 
 class FakePipeline:

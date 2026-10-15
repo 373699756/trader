@@ -13,17 +13,17 @@ from datetime import date, datetime
 from types import MappingProxyType
 from typing import Literal, TypeVar
 
-from trader.training.application.json_values import JsonObject, freeze_json_object
+from trader.training.application.json_values import FreezeJsonObject, JsonObject
 from trader.training.domain.evaluation.historical import (
     SUPPORTED_RESEARCH_BOARDS,
     CostSettlementBasis,
     HistoricalCandidateSummary,
+    OptimisticFinalUpperBound,
     ResearchBoard,
     ResearchDataLineage,
     ResearchSelectionPool,
-    optimistic_final_upper_bound,
 )
-from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, get_score_research_spec
+from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, GetScoreResearchSpec
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SHANGHAI_TIMEZONE = "Asia/Shanghai"
@@ -96,7 +96,7 @@ class HistoricalFullCandidate:
         _require_shanghai(self.feature_as_of, "full candidate feature time")
         if self.lineage.received_at > self.feature_as_of:
             raise ValueError("full candidate lineage cannot be received after feature_as_of")
-        object.__setattr__(self, "payload", freeze_json_object(self.payload))
+        object.__setattr__(self, "payload", FreezeJsonObject(self.payload))
 
 
 @dataclass(frozen=True)
@@ -316,7 +316,7 @@ class HistoricalExtractedDay:
         for item in evaluated:
             summary_candidate = summary_by_code[item.code]
             full_candidate = full_by_code[item.code]
-            upper_bound = optimistic_final_upper_bound(
+            upper_bound = OptimisticFinalUpperBound(
                 summary_candidate.final_components,
                 mandatory_local_risk_penalty=summary_candidate.mandatory_local_risk_penalty,
                 recorded_deepseek_score=summary_candidate.recorded_deepseek_score,
@@ -393,7 +393,7 @@ class HistoricalExtraction:
             raise ValueError("Historical extraction accepts at most 40 unique days")
         if len({item.trade_date for item in coverage}) != len(coverage):
             raise ValueError("Historical extraction coverage dates must be unique")
-        spec = get_score_research_spec(self.research_identity)
+        spec = GetScoreResearchSpec(self.research_identity)
         if self.research_spec_hash != spec.content_hash:
             raise ValueError("Historical extraction research spec hash is invalid")
         if any(item.trade_date not in spec.allowed_historical_dates for item in coverage):

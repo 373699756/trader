@@ -5,12 +5,12 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from trader.infra.market_data.history.history import (
+    BuildHistoryContext,
     DailyBar,
     PriceAdjustment,
-    build_history_context,
-    summarize_history_metrics,
+    SummarizeHistoryMetrics,
 )
-from trader.infra.settings import load_strategy_settings
+from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 
@@ -19,7 +19,7 @@ NOW = datetime(2026, 7, 16, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
 
 
 def test_entry_inputs_exclude_same_day_history_bar() -> None:
-    settings = load_strategy_settings(ROOT / "config/strategy.json")
+    settings = LoadStrategySettings(ROOT / "config/strategy.json")
     builder = FeatureBuilder(
         settings.news_signal,
         settings.tomorrow_tail_signal,
@@ -84,15 +84,15 @@ def test_entry_inputs_exclude_same_day_history_bar() -> None:
         (quote,),
         {quote.code: bars},
         NOW,
-        history_summaries={quote.code: build_history_context(bars)},
+        history_summaries={quote.code: BuildHistoryContext(bars)},
     )[0]
 
     assert feature.values["prior_high_20d"] == max(bar.high for bar in prior[-20:])
-    assert feature.values["atr20_pct"] != summarize_history_metrics(bars).atr20_pct
+    assert feature.values["atr20_pct"] != SummarizeHistoryMetrics(bars).atr20_pct
 
 
 def test_entry_quality_uses_amount_intensity_when_volume_ratio_is_missing() -> None:
-    settings = load_strategy_settings(ROOT / "config/strategy.json")
+    settings = LoadStrategySettings(ROOT / "config/strategy.json")
     builder = FeatureBuilder(
         settings.news_signal,
         settings.tomorrow_tail_signal,

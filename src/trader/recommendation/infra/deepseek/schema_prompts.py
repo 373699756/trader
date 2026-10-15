@@ -10,22 +10,22 @@ from dataclasses import replace
 
 from typing_extensions import Unpack
 
-from trader.infra.cache_contracts import CacheRequestKey, request_key
+from trader.infra.cache_contracts import CacheRequestKey, RequestKey
 from trader.recommendation.domain.market.models import Evidence, FeatureSnapshot
 from trader.recommendation.domain.risk.fusion import STRUCTURED_REVIEW_FEATURES
-from trader.recommendation.infra.deepseek.candidate_feature_evidence import render_batch_candidate_feature_evidence
-from trader.recommendation.infra.deepseek.evidence_router import event_key as _evidence_event_key
-from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
-from trader.recommendation.infra.deepseek.evidence_router import source_tier as _evidence_source_tier
+from trader.recommendation.infra.deepseek.candidate_feature_evidence import RenderBatchCandidateFeatureEvidence
+from trader.recommendation.infra.deepseek.evidence_router import EventKey as _evidence_event_key
+from trader.recommendation.infra.deepseek.evidence_router import RoutePromptEvidence
+from trader.recommendation.infra.deepseek.evidence_router import SourceTier as _evidence_source_tier
 from trader.recommendation.infra.deepseek.schema_constants import PROMPT_VERSION, SCHEMA_VERSION
 from trader.recommendation.infra.deepseek.schema_options import ReviewCacheOptions, StrategyCacheOptions
 
 
-def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]]:
+def BuildMessages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]]:
     if not 1 <= len(candidates) <= 8:
         raise ValueError("DeepSeek batch must contain 1 to 8 candidates")
     ordered_candidates = tuple(sorted(candidates, key=lambda candidate: candidate.quote.code))
-    candidate_feature_evidence = render_batch_candidate_feature_evidence(
+    candidate_feature_evidence = RenderBatchCandidateFeatureEvidence(
         tuple(_prompt_candidate(candidate) for candidate in ordered_candidates)
     )
     payload = {
@@ -60,12 +60,12 @@ def build_messages(candidates: Sequence[FeatureSnapshot]) -> list[dict[str, str]
     ]
 
 
-def build_repair_messages(
+def BuildRepairMessages(
     candidates: Sequence[FeatureSnapshot],
     invalid_content: str,
     error: str,
 ) -> list[dict[str, str]]:
-    messages = build_messages(candidates)
+    messages = BuildMessages(candidates)
     messages.append({"role": "assistant", "content": invalid_content[:20_000]})
     messages.append(
         {
@@ -79,7 +79,7 @@ def build_repair_messages(
     return messages
 
 
-def review_cache_key(
+def ReviewCacheKey(
     candidate: FeatureSnapshot,
     **options: Unpack[ReviewCacheOptions],
 ) -> CacheRequestKey:
@@ -96,7 +96,7 @@ def review_cache_key(
         "structured_features": _cache_features(candidate),
         "evidence": sorted(
             _cache_evidence(item)
-            for item in route_prompt_evidence(candidate).evidence
+            for item in RoutePromptEvidence(candidate).evidence
             if item.evidence_type != "structured_point_in_time"
         ),
         "risk_facts": sorted(
@@ -117,17 +117,17 @@ def review_cache_key(
         "schema_version": schema_version,
         "prompt_version": prompt_version,
     }
-    return request_key(payload)
+    return RequestKey(payload)
 
 
-def build_review_manifest_hash(candidate: FeatureSnapshot) -> str:
+def BuildReviewManifestHash(candidate: FeatureSnapshot) -> str:
     serialized = json.dumps(
         _candidate_manifest_payload(candidate), ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-def strategy_review_cache_key(
+def StrategyReviewCacheKey(
     raw_key: str | CacheRequestKey,
     **options: Unpack[StrategyCacheOptions],
 ) -> CacheRequestKey:
@@ -148,7 +148,7 @@ def strategy_review_cache_key(
         "challenger_identity": challenger_identity,
         "challenger_status": challenger_status,
     }
-    return request_key(payload)
+    return RequestKey(payload)
 
 
 def _cache_features(candidate: FeatureSnapshot) -> list[tuple[str, float | None]]:
@@ -180,7 +180,7 @@ def _cache_evidence(item: Evidence) -> tuple[str, str, str, str, str, str]:
 
 def _candidate_payload(candidate: FeatureSnapshot) -> dict[str, object]:
     payload = _candidate_manifest_payload(candidate)
-    payload["manifest_hash"] = build_review_manifest_hash(candidate)
+    payload["manifest_hash"] = BuildReviewManifestHash(candidate)
     payload["features"] = payload.pop("values")
     return payload
 
@@ -191,7 +191,7 @@ def _candidate_manifest_payload(candidate: FeatureSnapshot) -> dict[str, object]
         for name, raw in candidate.values.items()
         if name in STRUCTURED_REVIEW_FEATURES and raw is not None and math.isfinite(value := float(raw))
     }
-    routed = route_prompt_evidence(candidate)
+    routed = RoutePromptEvidence(candidate)
     evidence = [
         {
             "evidence_id": item.evidence_id[:80],

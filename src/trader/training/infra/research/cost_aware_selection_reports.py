@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.infra.serialization.canonical import canonical_json_text
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.canonical import CanonicalJsonText
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.cost_aware_selection_report import CostAwareSelectionReport
 
 
@@ -24,7 +24,7 @@ class CostAwareSelectionReportIndex:
         if path.exists():
             self._verify_existing(path, expected)
             return report.content_hash
-        if not publish_immutable(path, canonical_json_text(expected)):
+        if not PublishImmutable(path, CanonicalJsonText(expected)):
             self._verify_existing(path, expected)
         return report.content_hash
 

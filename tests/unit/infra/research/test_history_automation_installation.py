@@ -7,10 +7,10 @@ from xml.etree import ElementTree
 import pytest
 
 from trader.download.infra.history_automation_installation import (
+    ApplyHistoryAutomationInstallation,
     HistoryAutomationInstallationRequest,
-    apply_history_automation_installation,
-    plan_history_automation_installation,
-    remove_history_automation_installation,
+    PlanHistoryAutomationInstallation,
+    RemoveHistoryAutomationInstallation,
 )
 
 
@@ -24,7 +24,7 @@ def test_platform_plans_use_one_fixed_zero_argument_command_and_never_train(
     python = root / ".venv" / ("Scripts/python.exe" if platform == "windows" else "bin/python")
     request = HistoryAutomationInstallationRequest(platform, root, config, python, tmp_path / "user", 1000)
 
-    plan = plan_history_automation_installation(request)
+    plan = PlanHistoryAutomationInstallation(request)
     rendered = "\n".join(item.content for item in plan.files)
 
     assert "scheduled-history-maintenance" in rendered
@@ -63,10 +63,10 @@ def test_install_is_confirmation_gated_reversible_and_refuses_foreign_files(tmp_
     python.parent.mkdir(parents=True)
     python.write_text("python", encoding="utf-8")
     request = HistoryAutomationInstallationRequest("linux", root, config, python, tmp_path / "user", 1000)
-    plan = plan_history_automation_installation(request)
+    plan = PlanHistoryAutomationInstallation(request)
     commands: list[tuple[str, ...]] = []
 
-    cancelled = apply_history_automation_installation(
+    cancelled = ApplyHistoryAutomationInstallation(
         plan,
         confirmed=False,
         command_runner=commands.append,
@@ -76,7 +76,7 @@ def test_install_is_confirmation_gated_reversible_and_refuses_foreign_files(tmp_
     assert commands == []
     assert all(not item.path.exists() for item in plan.files)
 
-    installed = apply_history_automation_installation(
+    installed = ApplyHistoryAutomationInstallation(
         plan,
         confirmed=True,
         command_runner=commands.append,
@@ -87,7 +87,7 @@ def test_install_is_confirmation_gated_reversible_and_refuses_foreign_files(tmp_
     assert plan.receipt.path.read_text(encoding="utf-8") == plan.receipt.content
     assert commands == list(plan.install_commands)
 
-    replayed = apply_history_automation_installation(
+    replayed = ApplyHistoryAutomationInstallation(
         plan,
         confirmed=True,
         command_runner=commands.append,
@@ -96,13 +96,13 @@ def test_install_is_confirmation_gated_reversible_and_refuses_foreign_files(tmp_
     assert replayed.state == "installed"
     assert commands == list(plan.install_commands)
 
-    removed = remove_history_automation_installation(plan, confirmed=True, command_runner=commands.append)
+    removed = RemoveHistoryAutomationInstallation(plan, confirmed=True, command_runner=commands.append)
     assert removed.state == "removed"
     assert all(not item.path.exists() for item in plan.files)
     assert not plan.receipt.path.exists()
     assert commands[-len(plan.uninstall_commands) :] == list(plan.uninstall_commands)
 
-    repeated_removal = remove_history_automation_installation(
+    repeated_removal = RemoveHistoryAutomationInstallation(
         plan,
         confirmed=True,
         command_runner=commands.append,
@@ -114,7 +114,7 @@ def test_install_is_confirmation_gated_reversible_and_refuses_foreign_files(tmp_
     foreign.path.parent.mkdir(parents=True, exist_ok=True)
     foreign.path.write_text("foreign task", encoding="utf-8")
     with pytest.raises(RuntimeError, match="not owned"):
-        apply_history_automation_installation(
+        ApplyHistoryAutomationInstallation(
             plan,
             confirmed=True,
             command_runner=commands.append,
@@ -126,7 +126,7 @@ def test_windows_and_macos_templates_are_parseable_native_documents(tmp_path: Pa
     root = tmp_path / "project"
     config = root / "config" / "runtime.json"
     user_home = tmp_path / "user"
-    windows = plan_history_automation_installation(
+    windows = PlanHistoryAutomationInstallation(
         HistoryAutomationInstallationRequest(
             "windows",
             root,
@@ -136,7 +136,7 @@ def test_windows_and_macos_templates_are_parseable_native_documents(tmp_path: Pa
             1000,
         )
     )
-    macos = plan_history_automation_installation(
+    macos = PlanHistoryAutomationInstallation(
         HistoryAutomationInstallationRequest(
             "macos",
             root,

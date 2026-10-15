@@ -19,11 +19,11 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionItem,
     DecisionOverlay,
     DecisionQuote,
+    FormalScoredDecision,
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
     SelectionDiagnostics,
-    formal_scored_decision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
@@ -308,7 +308,7 @@ def test_frozen_empty_recommendations_keep_scored_leader_for_research() -> None:
         ),
     )
     record = CommittedDecisionRecord(
-        formal_scored_decision(current),
+        FormalScoredDecision(current),
         datetime(2026, 8, 8, 14, 50, tzinfo=SHANGHAI),
         "scheduled",
     )

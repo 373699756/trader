@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import Literal, Protocol, TypeAlias
 from zoneinfo import ZoneInfo
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.market.models import LiveQuote, MarketQuote
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
 from trader.recommendation.domain.market.research import ResearchObservation
@@ -720,7 +720,7 @@ def _version(prefix: str, trade_date: date, sequence: int) -> str:
 
 
 def _content_hash(payload: Mapping[str, object]) -> str:
-    return canonical_digest(payload, include_derived=True)
+    return CanonicalDigest(payload, include_derived=True)
 
 
 __all__ = [

@@ -16,13 +16,13 @@ from trader.recommendation.domain.evidence.review import (
     RiskFact,
     RiskRule,
 )
-from trader.recommendation.domain.market.factors import round_score
+from trader.recommendation.domain.market.factors import RoundScore
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.publication.models import (
     FusionMode,
     ScoreBreakdown,
 )
-from trader.recommendation.domain.risk.rules import RiskMappingRequest, aggregate_risk_penalty, map_deepseek_risk_facts
+from trader.recommendation.domain.risk.rules import AggregateRiskPenalty, MapDeepseekRiskFacts, RiskMappingRequest
 
 DIMENSION_NAMES = (
     "value_quality",
@@ -83,10 +83,10 @@ class FusionRequest:
         object.__setattr__(self, "evidence", tuple(self.evidence))
 
 
-def fuse_score(request: FusionRequest) -> FusionResult:
+def FuseScore(request: FusionRequest) -> FusionResult:
     policy = request.policy
     _validate_policy(policy)
-    local_risk_penalty = aggregate_risk_penalty(request.local_risk_facts, cap=policy.local_risk_cap)
+    local_risk_penalty = AggregateRiskPenalty(request.local_risk_facts, cap=policy.local_risk_cap)
     local_score = _bounded_decimal(Decimal(str(request.local.base_score)) - Decimal(str(local_risk_penalty)))
     mapped_risk_facts: tuple[RiskFact, ...] = ()
     veto = any(fact.veto for fact in request.local_risk_facts)
@@ -95,7 +95,7 @@ def fuse_score(request: FusionRequest) -> FusionResult:
         and request.review is not None
         and request.review.outcome is ReviewOutcome.APPLIED
     ):
-        mapped_risk_facts, _mapped_penalty, mapped_veto = map_deepseek_risk_facts(
+        mapped_risk_facts, _mapped_penalty, mapped_veto = MapDeepseekRiskFacts(
             RiskMappingRequest(
                 raw_facts=request.review.risk_facts,
                 rules=request.risk_rules,
@@ -111,13 +111,13 @@ def fuse_score(request: FusionRequest) -> FusionResult:
     return FusionResult(
         score=ScoreBreakdown(
             components=request.local.components,
-            base_score=round_score(request.local.base_score),
-            local_risk_penalty=round_score(local_risk_penalty),
-            local_score=round_score(local_score),
+            base_score=RoundScore(request.local.base_score),
+            local_risk_penalty=RoundScore(local_risk_penalty),
+            local_score=RoundScore(local_score),
             deepseek_score=None,
             confidence_coverage=0.0,
             deepseek_risk_penalty=0.0,
-            final_score=round_score(local_score),
+            final_score=RoundScore(local_score),
             fusion_mode=request.fusion_mode,
             fusion_applied=False,
         ),
@@ -143,5 +143,5 @@ __all__ = [
     "FusionPolicy",
     "FusionRequest",
     "FusionResult",
-    "fuse_score",
+    "FuseScore",
 ]

@@ -8,8 +8,8 @@ import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 
-from trader.download.infra.qfq_layout_migration import build_qfq_layout, inspect_legacy_qfq
-from trader.download.infra.qfq_sqlite import qfq_shard_name
+from trader.download.infra.qfq_layout_migration import BuildQfqLayout, InspectLegacyQfq
+from trader.download.infra.qfq_sqlite import QfqShardName
 
 
 def main() -> int:
@@ -21,14 +21,14 @@ def main() -> int:
     args = parser.parse_args()
     source = args.source_root or args.project_root / "data/qfq"
     try:
-        profiles = inspect_legacy_qfq(source)
+        profiles = InspectLegacyQfq(source)
         if args.apply:
             if args.target_root is None:
                 raise ValueError("apply requires an explicit target")
             target = args.target_root.resolve()
             if target == args.project_root.resolve() or args.project_root.resolve() in target.parents:
                 raise ValueError("migration target must be outside the repository")
-            result = build_qfq_layout(source, args.target_root, source / ".maintenance.lock")
+            result = BuildQfqLayout(source, args.target_root, source / ".maintenance.lock")
             report = {"status": "built_verified", **asdict(result), "source_unchanged": True, "activated": False}
         else:
             report = {
@@ -36,7 +36,7 @@ def main() -> int:
                 "profiles": len(profiles),
                 "codes": sum(len(profile.membership) for profile in profiles),
                 "source_files": sum(len({name for _, name in p.membership}) for p in profiles),
-                "target_files": sum(len({qfq_shard_name(code) for code, _ in p.membership}) for p in profiles),
+                "target_files": sum(len({QfqShardName(code) for code, _ in p.membership}) for p in profiles),
                 "activated": False,
             }
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:

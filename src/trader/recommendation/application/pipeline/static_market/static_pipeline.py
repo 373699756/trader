@@ -10,15 +10,15 @@ from datetime import datetime
 
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import (
-    build_dynamic_market_snapshot,
+    BuildDynamicMarketSnapshot,
 )
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, StageOutput
 from trader.recommendation.application.pipeline.static_filter.permanent_filter_service import (
-    filter_permanent_eligibility,
+    FilterPermanentEligibility,
 )
 from trader.recommendation.application.pipeline.static_market.static_market_cache import StaticMarketCache
-from trader.recommendation.application.pipeline.static_market.static_market_loader import load_static_market
-from trader.recommendation.application.pipeline.static_standardize.normalization_service import normalize_static_market
+from trader.recommendation.application.pipeline.static_market.static_market_loader import LoadStaticMarket
+from trader.recommendation.application.pipeline.static_standardize.normalization_service import NormalizeStaticMarket
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.static_reference import StaticReferenceRead
 from trader.recommendation.application.runtime.schedule import SHANGHAI
@@ -29,19 +29,19 @@ from trader.recommendation.domain.evidence.pipeline import (
     StageReasonAggregate,
 )
 from trader.recommendation.domain.market.eligibility import (
+    EligibilityFactsFromQuote,
     HistoricalStEligibilitySnapshot,
     IssuerEligibilityBatch,
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
     IssuerEligibilityReasonCount,
     IssuerEligibilityState,
-    eligibility_facts_from_quote,
 )
 from trader.recommendation.domain.market.models import (
     FeatureSnapshot,
     MarketQuote,
 )
-from trader.recommendation.domain.market.static import StaticIssuer, normalize_static_issuer
+from trader.recommendation.domain.market.static import NormalizeStaticIssuer, StaticIssuer
 
 
 class StaticMarketPipeline:
@@ -89,7 +89,7 @@ class StaticMarketPipeline:
                     "static_reference_degraded", "official population refresh failed or expired", 1, Severity.WARNING
                 ),
             )
-        source = stage_output(
+        source = StageOutput(
             PipelineStage.DATA_SOURCE,
             baseline.records,
             input_batch_id=root,
@@ -101,7 +101,7 @@ class StaticMarketPipeline:
         )
         source = self._measured_stage(source, started)
         started = self._monotonic()
-        collected = load_static_market(
+        collected = LoadStaticMarket(
             source.records,
             input_batch_id=source.snapshot.output_batch_id,
             as_of=observed_at,
@@ -122,9 +122,9 @@ class StaticMarketPipeline:
         )
         collected = self._measured_stage(collected, started)
         started = self._monotonic()
-        normalized = normalize_static_market(
+        normalized = NormalizeStaticMarket(
             collected,
-            normalize_static_issuer,
+            NormalizeStaticIssuer,
             as_of=observed_at,
             latency_ms=0,
         )
@@ -146,7 +146,7 @@ class StaticMarketPipeline:
         eligible_codes = frozenset(
             decision.code for decision in decisions if decision.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
         )
-        filtered = filter_permanent_eligibility(normalized, decisions, as_of=observed_at, latency_ms=0)
+        filtered = FilterPermanentEligibility(normalized, decisions, as_of=observed_at, latency_ms=0)
         filtered = self._measured_stage(filtered, started)
         batch = IssuerEligibilityBatch(
             input_count=len(population),
@@ -186,7 +186,7 @@ class StaticMarketPipeline:
             fact
             for quote in quotes
             if quote.code in eligible
-            for fact in eligibility_facts_from_quote(quote, observed_at=observed_at)
+            for fact in EligibilityFactsFromQuote(quote, observed_at=observed_at)
         )
         self._record_eligibility(facts)
 
@@ -212,7 +212,7 @@ class StaticMarketPipeline:
         as_of: datetime,
         latency_ms: int,
     ) -> PipelineStageOutput[FeatureSnapshot]:
-        return build_dynamic_market_snapshot(
+        return BuildDynamicMarketSnapshot(
             filtered,
             features,
             as_of=as_of,

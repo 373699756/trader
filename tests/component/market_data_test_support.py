@@ -20,10 +20,10 @@ import requests
 from scripts.runtime_diagnostics.history_fallback import FallbackHistoryClient
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import (
+    BuildHistoryContext,
     DailyBar,
     HistoryAdjustmentError,
     PriceAdjustment,
-    build_history_context,
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers import tushare_records as tushare_records_module
@@ -31,7 +31,7 @@ from trader.infra.market_data.providers.baostock_industry import BaoStockIndustr
 from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
 from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.source_health import ReferenceSourceHealth
-from trader.infra.settings import ConfigurationError, load_runtime_settings, load_strategy_settings
+from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.data_plane_records import (
@@ -85,7 +85,7 @@ from trader.recommendation.infra.market_data.providers.akshare import AkshareRes
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient
-from trader.recommendation.infra.market_data.research_component_persistence import persist_research_component_statuses
+from trader.recommendation.infra.market_data.research_component_persistence import PersistResearchComponentStatuses
 from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.trading_calendar import (
@@ -97,7 +97,7 @@ from trader.recommendation.infra.market_data.tushare_reference_loader import (
     ReferenceLoadRequest,
     _ReferenceLoadOptions,
 )
-from trader.recommendation.infra.market_data.vendor_routing import VendorRoute, VendorSeverity, route
+from trader.recommendation.infra.market_data.vendor_routing import Route, VendorRoute, VendorSeverity
 from trader.recommendation.infra.normalization.columnar import NormalizedMarketChangeSet
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
@@ -120,7 +120,7 @@ TAIL_POLICY = TailSignalPolicy(
     return_score_points_per_pct=25.0,
     volume_score_points_per_ratio=50.0,
 )
-_STRATEGY_SETTINGS = load_strategy_settings(Path(__file__).parents[2] / "config" / "strategy.json")
+_STRATEGY_SETTINGS = LoadStrategySettings(Path(__file__).parents[2] / "config" / "strategy.json")
 MARKET_REGIME_POLICY = _STRATEGY_SETTINGS.market_regime
 LONG_POLICY = _STRATEGY_SETTINGS.long_research
 FEATURE_WEIGHT_POLICY = _STRATEGY_SETTINGS.feature_component_weights
@@ -183,7 +183,7 @@ class _FixtureHistory:
             if bars:
                 ordered = tuple(sorted(bars, key=lambda item: item.trade_date))
                 self._bars[code] = ordered[-20:]
-                self._contexts[code] = build_history_context(ordered, lookback_sessions=61)
+                self._contexts[code] = BuildHistoryContext(ordered, lookback_sessions=61)
         return self.cached(codes)
 
     def cached(self, codes, **_kwargs):
@@ -201,7 +201,7 @@ class _FixtureHistory:
             ordered = tuple(sorted(bars, key=lambda item: item.trade_date))
             if ordered:
                 self._bars[code] = ordered[-20:]
-                self._contexts[code] = build_history_context(ordered, lookback_sessions=61)
+                self._contexts[code] = BuildHistoryContext(ordered, lookback_sessions=61)
 
     def recover_from_data_plane(self):
         return None

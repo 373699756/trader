@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 
 
 class StaleSessionError(RuntimeError):
@@ -55,7 +55,7 @@ class TradingSession:
 
     def capture(self) -> SessionLease:
         with self._lock:
-            at = shanghai_now(self._now())
+            at = ShanghaiNow(self._now())
             elapsed = self._monotonic()
             reason = self._discontinuity(at, elapsed)
             if reason:
@@ -104,7 +104,7 @@ class TradingSession:
 
 
 @contextmanager
-def session_guard(lease: SessionLease | None) -> Iterator[None]:
+def SessionGuard(lease: SessionLease | None) -> Iterator[None]:
     """Unscheduled use cases have no runtime lease; SchedulerRuntime always stamps one."""
     if lease is None:
         yield
@@ -113,4 +113,4 @@ def session_guard(lease: SessionLease | None) -> Iterator[None]:
             yield
 
 
-__all__ = ["SessionLease", "StaleSessionError", "TradingSession", "TradingSessionStatus", "session_guard"]
+__all__ = ["SessionLease", "StaleSessionError", "TradingSession", "TradingSessionStatus", "SessionGuard"]

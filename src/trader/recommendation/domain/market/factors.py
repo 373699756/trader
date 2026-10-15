@@ -89,7 +89,7 @@ PRODUCTION_FACTOR_IDS = frozenset(
 )
 
 
-def clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
+def Clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
     if not math.isfinite(value):
         raise ValueError("score must be finite")
     if lower > upper:
@@ -97,7 +97,7 @@ def clamp(value: float, lower: float = 0.0, upper: float = 100.0) -> float:
     return min(upper, max(lower, value))
 
 
-def round_score(value: float | Decimal, decimals: int = 2) -> float:
+def RoundScore(value: float | Decimal, decimals: int = 2) -> float:
     parsed = Decimal(str(value))
     if not parsed.is_finite():
         raise ValueError("score must be finite")
@@ -106,7 +106,7 @@ def round_score(value: float | Decimal, decimals: int = 2) -> float:
     return float(bounded.quantize(quantum, rounding=ROUND_HALF_UP))
 
 
-def band_score(value: float | None, lower: float, optimal_low: float, optimal_high: float, upper: float) -> float:
+def BandScore(value: float | None, lower: float, optimal_low: float, optimal_high: float, upper: float) -> float:
     if not lower < optimal_low <= optimal_high < upper:
         raise ValueError("band boundaries must satisfy lower < optimal_low <= optimal_high < upper")
     if value is None or not math.isfinite(value):
@@ -120,17 +120,17 @@ def band_score(value: float | None, lower: float, optimal_low: float, optimal_hi
     return 100.0 * (upper - value) / (upper - optimal_high)
 
 
-def weighted_score(values: Mapping[str, float], weights: Mapping[str, float]) -> float:
+def WeightedScore(values: Mapping[str, float], weights: Mapping[str, float]) -> float:
     if set(values) != set(weights):
         missing = sorted(set(weights) - set(values))
         extra = sorted(set(values) - set(weights))
         raise ValueError(f"component mismatch: missing={missing}, extra={extra}")
     if abs(sum(weights.values()) - 1.0) > 1e-9:
         raise ValueError("weights must sum to 1.0")
-    return clamp(sum(clamp(values[name]) * weights[name] for name in weights))
+    return Clamp(sum(Clamp(values[name]) * weights[name] for name in weights))
 
 
-def average_rank_percentiles(values: Sequence[float]) -> tuple[float, ...]:
+def AverageRankPercentiles(values: Sequence[float]) -> tuple[float, ...]:
     """Return stable 0-1 average-rank percentiles aligned with the input."""
 
     parsed = tuple(float(value) for value in values)
@@ -156,12 +156,12 @@ def average_rank_percentiles(values: Sequence[float]) -> tuple[float, ...]:
     return tuple(ranks)
 
 
-def percentile_scores(values: Mapping[str, float | None], *, inverse: bool = False) -> dict[str, float]:
-    scores, _ = percentile_scores_with_metadata(values, inverse=inverse)
+def PercentileScores(values: Mapping[str, float | None], *, inverse: bool = False) -> dict[str, float]:
+    scores, _ = PercentileScoresWithMetadata(values, inverse=inverse)
     return scores
 
 
-def percentile_scores_with_metadata(
+def PercentileScoresWithMetadata(
     values: Mapping[str, float | None],
     *,
     inverse: bool = False,
@@ -199,13 +199,13 @@ def percentile_scores_with_metadata(
         upper_quantile,
         population_data_version,
     )
-    ranks = average_rank_percentiles(tuple(value for value, _key in finite))
+    ranks = AverageRankPercentiles(tuple(value for value, _key in finite))
     for (_value, key), rank in zip(finite, ranks, strict=True):
         result[key] = 100.0 * (1.0 - rank if inverse else rank)
     return result, metadata
 
 
-def winsorize(values: Iterable[float], lower_quantile: float = 0.025, upper_quantile: float = 0.975) -> list[float]:
+def Winsorize(values: Iterable[float], lower_quantile: float = 0.025, upper_quantile: float = 0.975) -> list[float]:
     finite = sorted(float(value) for value in values if math.isfinite(value))
     if not finite:
         return []
@@ -216,8 +216,8 @@ def winsorize(values: Iterable[float], lower_quantile: float = 0.025, upper_quan
     return [min(upper, max(lower, value)) for value in finite]
 
 
-def inverse_score(value: float) -> float:
-    return 100.0 - clamp(value)
+def InverseScore(value: float) -> float:
+    return 100.0 - Clamp(value)
 
 
 def _quantile(sorted_values: list[float], quantile: float) -> float:
@@ -233,14 +233,14 @@ def _quantile(sorted_values: list[float], quantile: float) -> float:
 
 
 __all__ = [
-    "average_rank_percentiles",
-    "band_score",
-    "clamp",
-    "inverse_score",
-    "percentile_scores_with_metadata",
+    "AverageRankPercentiles",
+    "BandScore",
+    "Clamp",
+    "InverseScore",
+    "PercentileScoresWithMetadata",
     "PRODUCTION_FACTOR_IDS",
-    "percentile_scores",
-    "round_score",
-    "weighted_score",
-    "winsorize",
+    "PercentileScores",
+    "RoundScore",
+    "WeightedScore",
+    "Winsorize",
 ]

@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.source_identity import source_name
+from trader.infra.market_data.source_identity import SourceName
 
 _SECURITY_REFERENCE_FIELDS = frozenset(
     {
@@ -26,7 +26,7 @@ _SECURITY_REFERENCE_FIELDS = frozenset(
 )
 
 
-def security_reference_observations(
+def SecurityReferenceObservations(
     observations: Sequence[SourceObservation],
 ) -> tuple[SourceObservation, ...]:
     references: list[SourceObservation] = []
@@ -41,7 +41,7 @@ def security_reference_observations(
         references.append(
             replace(
                 observation,
-                source=f"{source_name(observation.source)}_security_master",
+                source=f"{SourceName(observation.source)}_security_master",
                 fields=fields,
                 missing_reasons={},
                 payload_hash="",
@@ -50,4 +50,4 @@ def security_reference_observations(
     return tuple(references)
 
 
-__all__ = ["security_reference_observations"]
+__all__ = ["SecurityReferenceObservations"]

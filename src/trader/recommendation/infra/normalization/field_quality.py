@@ -13,7 +13,7 @@ from datetime import datetime
 
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 from trader.recommendation.domain.market.quality import FieldQualityState, FieldValue
-from trader.recommendation.infra.normalization.observation_ties import scalar_order
+from trader.recommendation.infra.normalization.observation_ties import ScalarOrder
 
 REALTIME_FIELDS = frozenset(
     {
@@ -98,18 +98,18 @@ class _SelectionState:
     conflicts: set[str]
 
 
-def normalize_source(source: str) -> str:
+def NormalizeSource(source: str) -> str:
     """Normalize source identifier for deterministic source-level rules."""
 
     return source.strip().lower().split("_", 1)[0].split("-", 1)[0]
 
 
-def source_priority(source: str) -> int:
-    return SOURCE_PRIORITY.get(normalize_source(source), 0)
+def SourcePriority(source: str) -> int:
+    return SOURCE_PRIORITY.get(NormalizeSource(source), 0)
 
 
-def allows_source_for_field(source: str, field: str) -> bool:
-    return _allows_normalized_source_for_field(normalize_source(source), field)
+def AllowsSourceForField(source: str, field: str) -> bool:
+    return _allows_normalized_source_for_field(NormalizeSource(source), field)
 
 
 def _allows_normalized_source_for_field(normalized: str, field: str) -> bool:
@@ -120,7 +120,7 @@ def _allows_normalized_source_for_field(normalized: str, field: str) -> bool:
     return True
 
 
-def field_order(
+def FieldOrder(
     observation: SourceObservation,
     *,
     targeted: bool,
@@ -132,8 +132,8 @@ def field_order(
     data version, lazily compared facts, and source name. This keeps input order irrelevant.
     """
 
-    normalized_source = normalize_source(observation.source)
-    source_rank = source_priority(normalized_source)
+    normalized_source = NormalizeSource(observation.source)
+    source_rank = SourcePriority(normalized_source)
     if field in REALTIME_FIELDS and normalized_source == "tencent":
         if observation.source == "tencent_market" and targeted:
             source_rank = 2
@@ -148,7 +148,7 @@ def field_order(
     )
 
 
-def select_fields(
+def SelectFields(
     observations: Sequence[SourceObservation],
     *,
     targeted: bool,
@@ -169,9 +169,9 @@ def select_fields(
     )
 
     for observation in observations:
-        normalized_source = normalize_source(observation.source)
-        default_order = field_order(observation, targeted=targeted, field="")
-        realtime_order = field_order(observation, targeted=targeted, field="price")
+        normalized_source = NormalizeSource(observation.source)
+        default_order = FieldOrder(observation, targeted=targeted, field="")
+        realtime_order = FieldOrder(observation, targeted=targeted, field="price")
         for field, value in observation.fields.items():
             if value is None or not _allows_normalized_source_for_field(normalized_source, field):
                 continue
@@ -192,8 +192,8 @@ def select_fields(
             if order == current_order:
                 current_value = state.values[field]
                 if current_value != value:
-                    state.tied_values[field].add(scalar_order(value))
-                    if scalar_order(value) > scalar_order(current_value):
+                    state.tied_values[field].add(ScalarOrder(value))
+                    if ScalarOrder(value) > ScalarOrder(current_value):
                         _apply_new_selection(field, observation, value, order, state)
                         current_value = value
                     state.conflicts.add(f"{field}:conflict")
@@ -232,7 +232,7 @@ def _apply_new_selection(
     previous_conflict_count = state.conflict_counts.get(field_name, 0)
 
     if state.selected_orders.get(field_name) != order:
-        state.tied_values[field_name] = {scalar_order(value)}
+        state.tied_values[field_name] = {ScalarOrder(value)}
         state.tie_base_counts[field_name] = previous_conflict_count
     state.selected_orders[field_name] = order
     state.selected_observations[field_name] = observation
@@ -256,7 +256,7 @@ def _set_field_state(
     return FieldValue(
         name=field,
         value=value,
-        source=normalize_source(observation.source),
+        source=NormalizeSource(observation.source),
         source_time=observation.source_time,
         received_time=observation.received_at,
         data_version=observation.data_version,
@@ -274,9 +274,9 @@ __all__ = [
     "BOARD_FIELDS",
     "REALTIME_SOURCES",
     "BOARD_SOURCES",
-    "allows_source_for_field",
-    "field_order",
-    "normalize_source",
-    "select_fields",
-    "source_priority",
+    "AllowsSourceForField",
+    "FieldOrder",
+    "NormalizeSource",
+    "SelectFields",
+    "SourcePriority",
 ]

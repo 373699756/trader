@@ -14,8 +14,8 @@ from trader.recommendation.domain.evidence.review import DeepSeekReview, Dimensi
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
 from trader.recommendation.domain.risk.rules import DEEPSEEK_STRUCTURED_RISK_CODES
-from trader.recommendation.infra.deepseek.evidence_router import evidence_quality as _evidence_quality
-from trader.recommendation.infra.deepseek.evidence_router import route_prompt_evidence
+from trader.recommendation.infra.deepseek.evidence_router import EvidenceQuality as _evidence_quality
+from trader.recommendation.infra.deepseek.evidence_router import RoutePromptEvidence
 from trader.recommendation.infra.deepseek.schema_constants import (
     MAX_ASSESSMENT_CHARACTERS,
     MAX_PROMPT_EVIDENCE_PER_CANDIDATE,
@@ -25,11 +25,11 @@ from trader.recommendation.infra.deepseek.schema_constants import (
     SCHEMA_VERSION,
 )
 from trader.recommendation.infra.deepseek.schema_prompts import (
-    build_messages,
-    build_repair_messages,
-    build_review_manifest_hash,
-    review_cache_key,
-    strategy_review_cache_key,
+    BuildMessages,
+    BuildRepairMessages,
+    BuildReviewManifestHash,
+    ReviewCacheKey,
+    StrategyReviewCacheKey,
 )
 
 __all__ = [
@@ -40,14 +40,14 @@ __all__ = [
     "PROMPT_VERSION",
     "RAW_FACTS_CACHE_GENERATION",
     "SCHEMA_VERSION",
-    "build_messages",
-    "build_repair_messages",
-    "build_review_manifest_hash",
-    "classify_review",
-    "clamp_confidence",
-    "parse_reviews",
-    "review_cache_key",
-    "strategy_review_cache_key",
+    "BuildMessages",
+    "BuildRepairMessages",
+    "BuildReviewManifestHash",
+    "ClassifyReview",
+    "ClampConfidence",
+    "ParseReviews",
+    "ReviewCacheKey",
+    "StrategyReviewCacheKey",
 ]
 
 
@@ -79,7 +79,7 @@ class DeepSeekSchemaError(ValueError):
     pass
 
 
-def parse_reviews(
+def ParseReviews(
     content: str,
     candidates: Sequence[FeatureSnapshot],
     completed_at: datetime,
@@ -111,7 +111,7 @@ def parse_reviews(
     return reviews
 
 
-def classify_review(
+def ClassifyReview(
     review: DeepSeekReview,
     *,
     dimension_weights: Mapping[str, float],
@@ -143,7 +143,7 @@ def _parse_review(
     completed_at: datetime,
 ) -> DeepSeekReview:
     _reject_forbidden_model_decisions(raw)
-    routed_evidence = route_prompt_evidence(candidate).evidence
+    routed_evidence = RoutePromptEvidence(candidate).evidence
     allowed_evidence = {item.evidence_id for item in routed_evidence}
     evidence_by_id = {item.evidence_id: item for item in routed_evidence}
     abstain = raw.get("abstain")
@@ -261,7 +261,7 @@ def _parse_review(
         error="insufficient_structured_fact_coverage" if outcome is ReviewOutcome.ABSTAIN and not abstain else "",
         rating="neutral",
         raw_confidence=round(effective_coverage, 4),
-        evidence_manifest_hash=build_review_manifest_hash(candidate),
+        evidence_manifest_hash=BuildReviewManifestHash(candidate),
     )
 
 
@@ -292,7 +292,7 @@ def _dimension(
     *,
     flags: tuple[str, ...] = (),
 ) -> DimensionAssessment:
-    bounded_confidence = clamp_confidence(confidence)
+    bounded_confidence = ClampConfidence(confidence)
     unknown = not evidence_ids or bounded_confidence <= 0.0
     return DimensionAssessment(
         name=name,
@@ -305,7 +305,7 @@ def _dimension(
     )
 
 
-def clamp_confidence(value: float) -> float:
+def ClampConfidence(value: float) -> float:
     if not math.isfinite(value):
         raise DeepSeekSchemaError("confidence must be finite")
     return min(1.0, max(0.0, value))
@@ -485,11 +485,11 @@ __all__ = [
     "PROMPT_VERSION",
     "RAW_FACTS_CACHE_GENERATION",
     "SCHEMA_VERSION",
-    "build_messages",
-    "build_repair_messages",
-    "classify_review",
-    "parse_reviews",
-    "build_review_manifest_hash",
-    "review_cache_key",
-    "strategy_review_cache_key",
+    "BuildMessages",
+    "BuildRepairMessages",
+    "ClassifyReview",
+    "ParseReviews",
+    "BuildReviewManifestHash",
+    "ReviewCacheKey",
+    "StrategyReviewCacheKey",
 ]

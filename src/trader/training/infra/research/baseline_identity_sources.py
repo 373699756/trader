@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from trader.infra.serialization.canonical import file_sha256
-from trader.infra.settings import RuntimeSettings, load_strategy_settings
+from trader.infra.serialization.canonical import FileSha256
+from trader.infra.settings import LoadStrategySettings, RuntimeSettings
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.application.baseline_identity_audit import BaselineIdentityEvidence
-from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, source_hash
+from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, SourceHash
 from trader.training.infra.research.tomorrow_historical_evidence import (
     TomorrowHistoricalEvidenceConflictError,
     TomorrowHistoricalEvidenceIndex,
@@ -25,18 +25,18 @@ class PackagedBaselineIdentityEvidence(BaselineIdentityEvidence):
         return self.claims
 
 
-def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselineIdentityEvidence:
-    strategy = load_strategy_settings(runtime.strategy_config_path)
-    strategy_hash = file_sha256(runtime.strategy_config_path)
+def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineIdentityEvidence:
+    strategy = LoadStrategySettings(runtime.strategy_config_path)
+    strategy_hash = FileSha256(runtime.strategy_config_path)
     design_path = runtime.project_root / "docs/02_工程设计.md"
     strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
     v2 = (
-        load_scoring_profile("v2", training_root=runtime.project_root / "data" / "train")
+        LoadScoringProfile("v2", training_root=runtime.project_root / "data" / "train")
         .heads[Strategy.TOMORROW]
         .predictor
     )
     v3 = (
-        load_scoring_profile("v3", training_root=runtime.project_root / "data" / "train")
+        LoadScoringProfile("v3", training_root=runtime.project_root / "data" / "train")
         .heads[Strategy.TOMORROW]
         .predictor
     )
@@ -51,7 +51,7 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
     historical_report_hash = _optional_text(historical_report, "content_hash")
     historical_model_hash = _optional_text(historical_report, "model_artifact_hash")
     historical_status = "artifact_conflict" if historical_conflict else _optional_text(historical_report, "status")
-    historical_hash_source = source_hash(str(historical_source / "historical-report.json"))
+    historical_hash_source = SourceHash(str(historical_source / "historical-report.json"))
     historical_binding = (
         "conflict" if historical_conflict else "bound" if historical_report_hash and historical_model_hash else None
     )
@@ -68,14 +68,14 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
             "industry_ridge_lightgbm",
             v2.model_id,
             "data/train/v2/tomorrow/model.json",
-            source_hash(v2.model_hash),
+            SourceHash(v2.model_hash),
         ),
         BaselineIdentityClaim(
             "v3_model_identity",
             "industry_ridge_lightgbm",
             v3.model_id,
             "data/train/v3/tomorrow/model.json",
-            source_hash(v3.model_hash),
+            SourceHash(v3.model_hash),
         ),
         BaselineIdentityClaim(
             "historical_screening_conclusion",
@@ -97,7 +97,7 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
             "manual_user_override",
             "manual_user_override",
             "tomorrow-production-activation-policy",
-            source_hash("tomorrow-production-activation-policy"),
+            SourceHash("tomorrow-production-activation-policy"),
         ),
         BaselineIdentityClaim(
             "strategy_source_hash",
@@ -111,21 +111,21 @@ def load_baseline_identity_evidence(runtime: RuntimeSettings) -> PackagedBaselin
             "present",
             "present" if strategy_doc_path.is_file() else None,
             str(strategy_doc_path),
-            file_sha256(strategy_doc_path) if strategy_doc_path.is_file() else source_hash(str(strategy_doc_path)),
+            FileSha256(strategy_doc_path) if strategy_doc_path.is_file() else SourceHash(str(strategy_doc_path)),
         ),
         BaselineIdentityClaim(
             "business_design_document_present",
             "present",
             "present" if design_path.is_file() else None,
             str(design_path),
-            file_sha256(design_path) if design_path.is_file() else source_hash(str(design_path)),
+            FileSha256(design_path) if design_path.is_file() else SourceHash(str(design_path)),
         ),
         BaselineIdentityClaim(
             "live_runtime_identity",
             "available",
             None,
             "running-runtime",
-            source_hash("running-runtime"),
+            SourceHash("running-runtime"),
             required=False,
         ),
     )
@@ -139,4 +139,4 @@ def _optional_text(payload: dict[str, object] | None, name: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-__all__ = ["PackagedBaselineIdentityEvidence", "load_baseline_identity_evidence"]
+__all__ = ["PackagedBaselineIdentityEvidence", "LoadBaselineIdentityEvidence"]

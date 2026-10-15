@@ -8,7 +8,7 @@ from collections.abc import Iterator
 
 from flask import Response, stream_with_context
 
-from trader.http_api.response.decision_projection import serialize_event
+from trader.http_api.response.decision_projection import SerializeEvent
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import (
     ResyncEventPayload,
     ResyncReason,
@@ -18,7 +18,7 @@ from trader.recommendation.application.pipeline.freeze_publish.event_stream impo
 )
 
 
-def decision_event_response(
+def DecisionEventResponse(
     stream: UnifiedDecisionEventStream,
     subscription: UnifiedSubscription,
     *,
@@ -55,7 +55,7 @@ def decision_event_response(
 
 def _encode(event: UnifiedPublishedEvent) -> str:
     payload = json.dumps(
-        serialize_event(event),
+        SerializeEvent(event),
         ensure_ascii=False,
         allow_nan=False,
         separators=(",", ":"),
@@ -68,4 +68,4 @@ def _resync(sequence: int, reason: ResyncReason) -> UnifiedPublishedEvent:
     return UnifiedPublishedEvent(sequence, "resync_required", ResyncEventPayload(reason))
 
 
-__all__ = ["decision_event_response"]
+__all__ = ["DecisionEventResponse"]

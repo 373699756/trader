@@ -8,7 +8,7 @@ import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from trader.download.infra.history_revision_codec import decode_history_revision
+from trader.download.infra.history_revision_codec import DecodeHistoryRevision
 
 
 @dataclass(frozen=True)
@@ -17,7 +17,7 @@ class HistoryLogicalProof:
     row_count: int
 
 
-def calculate_history_proof(
+def CalculateHistoryProof(
     connection: sqlite3.Connection,
     sequence: int,
     *,
@@ -40,7 +40,7 @@ def calculate_history_proof(
     count = 0
     for row in rows:
         if validate_payloads:
-            value = decode_history_revision(row[6])
+            value = DecodeHistoryRevision(row[6])
             if (
                 value.trade_date.isoformat(),
                 value.code,

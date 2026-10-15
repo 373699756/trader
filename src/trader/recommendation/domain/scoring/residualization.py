@@ -67,7 +67,7 @@ LEGACY_EXPOSURE_CONTRACT = ExposureContract(("market", "board", "log_average_amo
 TRAINED_HEAD_EXPOSURE_CONTRACT = ExposureContract(("market", "board", "industry", "log_average_amount_20d"))
 
 
-def residualize_exposure(
+def ResidualizeExposure(
     values: Sequence[float],
     boards: Sequence[str],
     average_amounts: Sequence[float],
@@ -75,11 +75,11 @@ def residualize_exposure(
     industries: Sequence[str] | None = None,
     contract: ExposureContract = LEGACY_EXPOSURE_CONTRACT,
 ) -> tuple[float, ...]:
-    context = create_exposure_context(boards, average_amounts, industries=industries, contract=contract)
-    return residualize_exposure_with_context(values, context)
+    context = CreateExposureContext(boards, average_amounts, industries=industries, contract=contract)
+    return ResidualizeExposureWithContext(values, context)
 
 
-def create_exposure_context(
+def CreateExposureContext(
     boards: Sequence[str],
     average_amounts: Sequence[float],
     *,
@@ -92,7 +92,7 @@ def create_exposure_context(
     return ExposureContext(board_values, amount_values, industry_values, contract)
 
 
-def residualize_exposure_with_context(
+def ResidualizeExposureWithContext(
     values: Sequence[float],
     context: ExposureContext,
 ) -> tuple[float, ...]:
@@ -174,7 +174,7 @@ __all__ = [
     "ExposureDimension",
     "LEGACY_EXPOSURE_CONTRACT",
     "TRAINED_HEAD_EXPOSURE_CONTRACT",
-    "create_exposure_context",
-    "residualize_exposure",
-    "residualize_exposure_with_context",
+    "CreateExposureContext",
+    "ResidualizeExposure",
+    "ResidualizeExposureWithContext",
 ]

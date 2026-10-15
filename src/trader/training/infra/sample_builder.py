@@ -11,13 +11,13 @@ from typing import Protocol, cast
 
 from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.market.feature_contracts import (
+    CalculateProfileQfqAlpha,
     QfqPriceAnchors,
-    calculate_profile_qfq_alpha,
 )
 from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
-    create_exposure_context,
-    residualize_exposure_with_context,
+    CreateExposureContext,
+    ResidualizeExposureWithContext,
 )
 from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgress,
@@ -188,7 +188,7 @@ class _SampleBuildState:
             )
 
 
-def build_training_samples(request: TrainingSampleBuildRequest) -> None:
+def BuildTrainingSamples(request: TrainingSampleBuildRequest) -> None:
     """Build T+1..T+5 targets with one scan and at most five pending sample days."""
 
     calendar = request.archive.snapshot.calendar.open_dates
@@ -268,7 +268,7 @@ def _pending_sample(
         return None
     anchor_horizons = (1, 3, 5, *profile.momentum_horizons)
     raw_features = profile.raw_feature_manifest.bind(
-        calculate_profile_qfq_alpha(
+        CalculateProfileQfqAlpha(
             QfqPriceAnchors(
                 close,
                 tuple((horizon, points[-horizon - 1].qfq_close_price) for horizon in anchor_horizons),
@@ -297,7 +297,7 @@ def _finalize_sample_day(
     eligible = tuple(item for item in values if item.future_returns[0] is not None)
     if not eligible:
         return ()
-    residuals = residualize_sample_day(
+    residuals = ResidualizeSampleDay(
         tuple(item.features[3:] for item in eligible),
         tuple(item.board for item in eligible),
         tuple(item.industry for item in eligible),
@@ -311,7 +311,7 @@ def _finalize_sample_day(
     finalized: list[TrainingSample] = []
     for index, item in enumerate(eligible):
         excess = tuple(
-            training_alpha_target(next_return=value, benchmark_return=cast(float, benchmarks[horizon]))
+            TrainingAlphaTarget(next_return=value, benchmark_return=cast(float, benchmarks[horizon]))
             if value is not None and benchmarks[horizon] is not None
             else None
             for horizon, value in enumerate(item.future_returns)
@@ -337,7 +337,7 @@ def _benchmark(values: Sequence[_PendingSample], horizon: int) -> float | None:
     return math.fsum(cast(float, item) for item in available) / len(available) if available else None
 
 
-def training_alpha_target(*, next_return: float, benchmark_return: float) -> float:
+def TrainingAlphaTarget(*, next_return: float, benchmark_return: float) -> float:
     """Return pre-cost alpha; runtime execution owns the one round-trip cost."""
 
     if not math.isfinite(next_return) or not math.isfinite(benchmark_return):
@@ -345,7 +345,7 @@ def training_alpha_target(*, next_return: float, benchmark_return: float) -> flo
     return next_return - benchmark_return
 
 
-def aligned_sample_dates(
+def AlignedSampleDates(
     calendar: tuple[date, ...],
     available_dates: Collection[date],
     readable_dates: frozenset[date],
@@ -366,7 +366,7 @@ def aligned_sample_dates(
     return tuple(result)
 
 
-def residualize_sample_day(
+def ResidualizeSampleDay(
     momenta: Sequence[Sequence[float]],
     boards: Sequence[str],
     industries: Sequence[str],
@@ -374,14 +374,14 @@ def residualize_sample_day(
 ) -> tuple[tuple[float, ...], ...]:
     if not momenta or not momenta[0] or any(len(row) != len(momenta[0]) for row in momenta):
         raise ValueError("training momentum rows must have one consistent non-empty width")
-    context = create_exposure_context(
+    context = CreateExposureContext(
         boards,
         average_amounts,
         industries=industries,
         contract=TRAINED_HEAD_EXPOSURE_CONTRACT,
     )
     return tuple(
-        residualize_exposure_with_context(tuple(row[offset] for row in momenta), context)
+        ResidualizeExposureWithContext(tuple(row[offset] for row in momenta), context)
         for offset in range(len(momenta[0]))
     )
 
@@ -394,8 +394,8 @@ def _publish(progress: TomorrowTrainingProgressPort | None, update: TomorrowTrai
 __all__ = [
     "TrainingHistorySource",
     "TrainingSampleBuildRequest",
-    "aligned_sample_dates",
-    "build_training_samples",
-    "residualize_sample_day",
-    "training_alpha_target",
+    "AlignedSampleDates",
+    "BuildTrainingSamples",
+    "ResidualizeSampleDay",
+    "TrainingAlphaTarget",
 ]

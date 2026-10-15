@@ -15,9 +15,9 @@ if TYPE_CHECKING:
 
 from trader.infra.cache_contracts import CacheIdentity
 from trader.infra.workers import (
+    InjectedExecutor,
+    SubmitOrReject,
     WorkerExecutor,
-    injected_executor,
-    submit_or_reject,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.market.tail import TAIL_SIGNAL_VALUE_FIELDS, MinuteBar
@@ -215,7 +215,7 @@ class IntradayLoader:
         source_lanes = self._runner.source_lanes
         batch_deadline = state.request.deadline
         nested_inline = source_lanes is not None and source_lanes.owns_current_thread("eastmoney_intraday")
-        pool = injected_executor(self._runner.worker_pool, inline=nested_inline)
+        pool = InjectedExecutor(self._runner.worker_pool, inline=nested_inline)
         futures, timed_out, deferred = self._submit_intraday(
             pool,
             state,
@@ -252,7 +252,7 @@ class IntradayLoader:
             if self._monotonic() >= batch_deadline:
                 deferred.extend(missing[index:])
                 break
-            future = submit_or_reject(
+            future = SubmitOrReject(
                 pool,
                 self._client.fetch_intraday_minutes,
                 code,

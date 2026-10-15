@@ -8,11 +8,11 @@ from datetime import date, datetime
 from pathlib import Path, PurePosixPath
 
 from trader.download.domain.history_control import (
+    CalculateHistoryTrainingCacheInvalidationDates,
+    CalculateHistoryTrainingDue,
     HistoryActiveSnapshot,
     HistoryTrainingDueRequest,
     HistoryTrainingDueState,
-    calculate_history_training_cache_invalidation_dates,
-    calculate_history_training_due,
 )
 from trader.download.infra.history_control_index import (
     HistoryControlError,
@@ -22,13 +22,13 @@ from trader.download.infra.history_snapshot_reader import (
     HistoryPartitionRevisionComparison,
     HistorySnapshotReader,
     HistorySnapshotReadError,
-    route_history_months,
+    RouteHistoryMonths,
 )
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.infra.model_bundles.bundle_repository import (
     ActiveHeadBundle,
-    inspect_active_head_bundle,
+    InspectActiveHeadBundle,
 )
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
@@ -53,7 +53,7 @@ class HistoryTrainingDueQuery:
     expected_training_contract_hash: str | None = None
 
 
-def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrainingDueEvaluation | None:
+def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainingDueEvaluation | None:
     """Read and persist one immutable due observation.
 
     A missing active snapshot is intentionally returned as ``None``: callers
@@ -80,8 +80,8 @@ def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrai
     bundle, bundle_invalid = _active_bundle(query.training_root, profile, strategy)
     current_label_cutoff = _mature_label_cutoff(calendar.open_dates, active.data_cutoff, profile, strategy)
     if bundle_invalid:
-        due_identity = "due-" + canonical_research_hash((active.content_hash, strategy.value, "invalid_bundle"))[:32]
-        due = calculate_history_training_due(
+        due_identity = "due-" + CanonicalResearchHash((active.content_hash, strategy.value, "invalid_bundle"))[:32]
+        due = CalculateHistoryTrainingDue(
             HistoryTrainingDueRequest(
                 due_identity=due_identity,
                 baseline_label_cutoff=None,
@@ -126,14 +126,14 @@ def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrai
             and bundle.training_contract_hash != expected_training_contract_hash
         )
     )
-    invalidated_dates = calculate_history_training_cache_invalidation_dates(
+    invalidated_dates = CalculateHistoryTrainingCacheInvalidationDates(
         calendar.open_dates,
         revised_dates,
         dependency_sessions=profile.history_sessions - 1,
     )
     due_identity = (
         "due-"
-        + canonical_research_hash(
+        + CanonicalResearchHash(
             (
                 active.content_hash,
                 bundle.training_input_hash if bundle is not None else None,
@@ -147,7 +147,7 @@ def evaluate_history_training_due(query: HistoryTrainingDueQuery) -> HistoryTrai
             )
         )[:32]
     )
-    due = calculate_history_training_due(
+    due = CalculateHistoryTrainingDue(
         HistoryTrainingDueRequest(
             due_identity=due_identity,
             baseline_label_cutoff=baseline_cutoff,
@@ -189,7 +189,7 @@ def _revised_dates_since_bundle(
     active_months = {_partition_month(item.relative_path): item for item in active.partitions}
     archive = HistorySnapshotReader(archive_root)
     revisions: set[date] = set()
-    for year, month in route_history_months(start, end):
+    for year, month in RouteHistoryMonths(start, end):
         if (year, month) not in baseline_months or (year, month) not in active_months:
             raise HistorySnapshotReadError("history snapshot comparison month is missing")
         month_start = max(start, date(year, month, 1))
@@ -227,7 +227,7 @@ def _active_bundle(
     if not pointer.exists():
         return None, False
     try:
-        return inspect_active_head_bundle(directory, strategy, profile), False
+        return InspectActiveHeadBundle(directory, strategy, profile), False
     except (OSError, RuntimeError, TypeError, ValueError):
         return None, True
 
@@ -246,4 +246,4 @@ def _mature_label_cutoff(
     return calendar_dates[position - contract.maturity_sessions]
 
 
-__all__ = ["HistoryTrainingDueEvaluation", "HistoryTrainingDueQuery", "evaluate_history_training_due"]
+__all__ = ["HistoryTrainingDueEvaluation", "HistoryTrainingDueQuery", "EvaluateHistoryTrainingDue"]

@@ -16,16 +16,16 @@ import requests
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
-from trader.download.domain.security_eligibility import is_st_security_name
-from trader.download.infra.history_reference_files import read_st_evidence
-from trader.download.infra.history_st_merge import merge_st_evidence
-from trader.infra.workers import WorkerExecutor, submit_with_backpressure
+from trader.download.domain.security_eligibility import IsStSecurityName
+from trader.download.infra.history_reference_files import ReadStEvidence
+from trader.download.infra.history_st_merge import MergeStEvidence
+from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor
 
 _NAME_HISTORY = re.compile(r"证券简称更名历史[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", re.S)
 _CHECKPOINT_CODES = 64
 
 
-def parse_name_history_st(code: str, current_name: str, checked_on: date, text: str) -> HistoryStEvidence:
+def ParseNameHistorySt(code: str, current_name: str, checked_on: date, text: str) -> HistoryStEvidence:
     match = _NAME_HISTORY.search(text)
     if match is None:
         raise ValueError("history_st_name_history_missing")
@@ -36,7 +36,7 @@ def parse_name_history_st(code: str, current_name: str, checked_on: date, text: 
     return HistoryStEvidence(
         code,
         checked_on,
-        "ever_st" if is_st_security_name(f"{current} {names}") else "clear",
+        "ever_st" if IsStSecurityName(f"{current} {names}") else "clear",
     )
 
 
@@ -62,7 +62,7 @@ class HistoryStNameSource:
         self._observed: tuple[HistoryStEvidence, ...] = ()
 
     def fetch(self, universe: tuple[BaoStockSecurity, ...], as_of: date) -> tuple[HistoryStEvidence, ...]:
-        self._observed = read_st_evidence(self._path)
+        self._observed = ReadStEvidence(self._path)
         evidence = {item.code: item for item in self._observed}
         total = len(universe)
         pending = tuple(
@@ -121,7 +121,7 @@ class HistoryStNameSource:
         while len(futures) < self._batch_size and next_security < len(pending):
             security = pending[next_security]
             next_security += 1
-            future = submit_with_backpressure(self._executor, self._fetch_code, security.code, security.name, as_of)
+            future = SubmitWithBackpressure(self._executor, self._fetch_code, security.code, security.name, as_of)
             futures[future] = security.code
         return next_security
 
@@ -141,7 +141,7 @@ class HistoryStNameSource:
         return len(done)
 
     def _write(self, evidence: dict[str, HistoryStEvidence]) -> None:
-        merged = merge_st_evidence(
+        merged = MergeStEvidence(
             self._path, tuple(sorted(evidence.values(), key=lambda item: item.code)), self._observed
         )
         self._observed = merged
@@ -169,7 +169,7 @@ class HistoryStNameSource:
             try:
                 response.raise_for_status()
                 text = response.content.decode("gb18030", errors="strict")
-                return parse_name_history_st(code, current_name, as_of, text)
+                return ParseNameHistorySt(code, current_name, as_of, text)
             finally:
                 response.close()
 

@@ -16,8 +16,8 @@ from trader.recommendation.application.ports.data_plane_records import (
 )
 from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
+    CorporateRiskFactsFromAnnouncements,
     ResearchAnnouncement,
-    corporate_risk_facts_from_announcements,
 )
 
 CNINFO_SOURCE = "cninfo"
@@ -118,7 +118,7 @@ class CninfoAnnouncementIncrementalSync:
                 cursor_value=cursor_value,
             )
             pages_fetched += 1
-            parsed, page_invalid = parse_cninfo_announcement_rows(code, payload, observed_at)
+            parsed, page_invalid = ParseCninfoAnnouncementRows(code, payload, observed_at)
             invalid_rows += page_invalid
             for row in parsed:
                 if row.announcement_id in seen:
@@ -200,7 +200,7 @@ class CninfoAnnouncementIncrementalSync:
         return "" if cursor is None else cursor.cursor_value
 
 
-def parse_cninfo_announcement_rows(
+def ParseCninfoAnnouncementRows(
     code: str,
     payload: Mapping[str, object],
     observed_at: datetime,
@@ -314,7 +314,7 @@ def _component_statuses(
         )
         for item in announcements
     )
-    categories = {fact.category for fact in corporate_risk_facts_from_announcements(research_announcements)}
+    categories = {fact.category for fact in CorporateRiskFactsFromAnnouncements(research_announcements)}
     if not history_complete:
         base_clear = "stale"
     else:
@@ -462,5 +462,5 @@ __all__ = [
     "CninfoAnnouncementIncrementalSync",
     "CninfoAnnouncementRow",
     "CninfoSyncResult",
-    "parse_cninfo_announcement_rows",
+    "ParseCninfoAnnouncementRows",
 ]

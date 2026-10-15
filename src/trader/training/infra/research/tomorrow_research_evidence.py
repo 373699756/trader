@@ -11,10 +11,13 @@ from pathlib import Path
 from typing import Literal, cast
 
 from trader.infra.process_lock import ProcessLock, ProcessLockError
-from trader.infra.serialization.canonical import file_sha256
-from trader.infra.serialization.fields import as_sequence, is_boolean, is_integer, is_number
-from trader.infra.serialization.sealing import publish_immutable, publish_immutable_file, replace_file
+from trader.infra.serialization.canonical import FileSha256
+from trader.infra.serialization.fields import AsSequence, IsBoolean, IsInteger, IsNumber
+from trader.infra.serialization.sealing import PublishImmutable, PublishImmutableFile, ReplaceFile
 from trader.training.application.tomorrow_research_evidence import (
+    DeriveTomorrowResearchRunId,
+    NextResearchStage,
+    ProductionReadinessAudit,
     TomorrowResearchEvidenceGraph,
     TomorrowResearchEvidencePartitionRef,
     TomorrowResearchEvidenceRef,
@@ -23,12 +26,9 @@ from trader.training.application.tomorrow_research_evidence import (
     TomorrowResearchStage,
     TomorrowResearchStageHandoff,
     TomorrowResearchTerminalStatus,
-    derive_tomorrow_research_run_id,
-    next_research_stage,
-    production_readiness_audit,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json, research_value
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
 
 
 class TomorrowResearchEvidenceIndexError(RuntimeError):
@@ -84,11 +84,11 @@ class TomorrowResearchEvidenceIndex:
         if run_id is None:
             return TomorrowResearchEvidenceGraph(())
         graph = self._load_run_graph(run_id)
-        if next_research_stage(graph) is None:
+        if NextResearchStage(graph) is None:
             pending = self.load_handoff("resource_probe")
             if pending is not None:
                 pending_graph = TomorrowResearchEvidenceGraph(pending.artifacts)
-                if derive_tomorrow_research_run_id(pending_graph) != run_id:
+                if DeriveTomorrowResearchRunId(pending_graph) != run_id:
                     return TomorrowResearchEvidenceGraph(())
         return graph
 
@@ -100,7 +100,7 @@ class TomorrowResearchEvidenceIndex:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research graph is invalid") from exc
 
     def seal_evidence_partition(self, reference: TomorrowResearchEvidencePartitionRef, source: Path) -> str:
-        if not source.is_file() or file_sha256(source) != reference.content_hash:
+        if not source.is_file() or FileSha256(source) != reference.content_hash:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research evidence partition hash is invalid")
         target = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
         _seal_file_copy(source, target, reference.content_hash)
@@ -134,13 +134,13 @@ class TomorrowResearchEvidenceIndex:
         if self.host_available_disk_gb() < 30.0:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research available disk is below 30GB")
         updated = current.extend(handoff.artifacts)
-        run_id = derive_tomorrow_research_run_id(updated)
+        run_id = DeriveTomorrowResearchRunId(updated)
         if run_id is None:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research run identity cannot be derived")
         active_run_id = self.current_run_id()
         self._validate_active_run(active_run_id, run_id)
         run_root = self._run_root(run_id)
-        next_stage = next_research_stage(updated)
+        next_stage = NextResearchStage(updated)
         return _TomorrowCommitContext(
             updated,
             run_id,
@@ -153,7 +153,7 @@ class TomorrowResearchEvidenceIndex:
     def _validate_active_run(self, active_run_id: str | None, run_id: str) -> None:
         if active_run_id is None or active_run_id == run_id:
             return
-        if next_research_stage(self._load_run_graph(active_run_id)) is not None:
+        if NextResearchStage(self._load_run_graph(active_run_id)) is not None:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research active run identity conflict")
 
     def _seal_commit_evidence(
@@ -168,7 +168,7 @@ class TomorrowResearchEvidenceIndex:
             if existing is not None and existing != reference:
                 raise TomorrowResearchEvidenceIndexError("Tomorrow research evidence partition identity conflict")
             source = self._evidence_inbox_root / f"{reference.content_hash}.parquet"
-            if not source.is_file() or file_sha256(source) != reference.content_hash:
+            if not source.is_file() or FileSha256(source) != reference.content_hash:
                 raise TomorrowResearchEvidenceIndexError("Tomorrow research sealed evidence partition is missing")
             _seal_file_copy(source, run_root / "evidence" / reference.relative_path, reference.content_hash)
             evidence_by_path[reference.relative_path] = reference
@@ -182,13 +182,13 @@ class TomorrowResearchEvidenceIndex:
     ) -> None:
         encoded_graph = _encode(context.graph)
         _seal_immutable(context.run_root / ".graphs" / f"{context.graph.content_hash}.json", encoded_graph)
-        replace_file(context.run_root / ".checkpoint.json", encoded_graph)
+        ReplaceFile(context.run_root / ".checkpoint.json", encoded_graph)
         report = _report(context.graph, handoff, context.run_id, context.resource_probe, evidence)
-        replace_file(context.run_root / ".report-checkpoint.json", report)
+        ReplaceFile(context.run_root / ".report-checkpoint.json", report)
         if context.next_stage is None:
-            replace_file(context.run_root / "report.json", report)
+            ReplaceFile(context.run_root / "report.json", report)
         if context.active_run_id != context.run_id:
-            replace_file(self._active_run_path, f"{context.run_id}\n")
+            ReplaceFile(self._active_run_path, f"{context.run_id}\n")
 
     def host_available_disk_gb(self) -> float:
         path = self._root
@@ -215,11 +215,11 @@ class TomorrowResearchEvidenceIndex:
 
 
 def _encode(value: TomorrowResearchEvidenceGraph | TomorrowResearchStageHandoff) -> str:
-    payload = research_value(value)
+    payload = ResearchValue(value)
     if not isinstance(payload, dict):
         raise TypeError("Tomorrow research artifact must encode to an object")
     payload["content_hash"] = value.content_hash
-    return research_json(payload)
+    return ResearchJson(payload)
 
 
 def _available_disk_gb(path: Path) -> float:
@@ -369,8 +369,8 @@ def _report(
     resource_probe: TomorrowResearchResourceProbe | None,
     evidence: tuple[TomorrowResearchEvidencePartitionRef, ...],
 ) -> str:
-    next_stage = next_research_stage(graph)
-    readiness = production_readiness_audit(graph, manual_authorization_hash=None)
+    next_stage = NextResearchStage(graph)
+    readiness = ProductionReadinessAudit(graph, manual_authorization_hash=None)
     publishable = readiness.blockers == ("manual_production_authorization_missing",)
     payload: dict[str, object] = {
         "schema_version": "tomorrow_research_report",
@@ -391,7 +391,7 @@ def _report(
         ],
         "completed_stage": handoff.stage,
         "next_stage": next_stage,
-        "resource_probe": research_value(resource_probe),
+        "resource_probe": ResearchValue(resource_probe),
         "evidence_partitions": [
             {
                 "relative_path": item.relative_path,
@@ -411,8 +411,8 @@ def _report(
         "production_authority": False,
         "automatic_model_update": False,
     }
-    payload["content_hash"] = canonical_research_hash(payload)
-    return research_json(payload)
+    payload["content_hash"] = CanonicalResearchHash(payload)
+    return ResearchJson(payload)
 
 
 def _read_report_resource_probe(path: Path) -> TomorrowResearchResourceProbe | None:
@@ -466,7 +466,7 @@ def _verified_object(encoded: str) -> dict[str, object]:
         raise TypeError("Tomorrow research artifact must be an object")
     payload = cast(dict[str, object], raw)
     persisted_hash = payload.pop("content_hash")
-    if not isinstance(persisted_hash, str) or canonical_research_hash(payload) != persisted_hash:
+    if not isinstance(persisted_hash, str) or CanonicalResearchHash(payload) != persisted_hash:
         raise ValueError("Tomorrow research artifact hash mismatch")
     payload["content_hash"] = persisted_hash
     return payload
@@ -474,7 +474,7 @@ def _verified_object(encoded: str) -> dict[str, object]:
 
 def _seal_immutable(path: Path, encoded: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if publish_immutable(path, encoded):
+    if PublishImmutable(path, encoded):
         return
     if path.read_text(encoding="utf-8") != encoded:
         raise TomorrowResearchEvidenceIndexError("Tomorrow research immutable artifact conflict")
@@ -483,12 +483,12 @@ def _seal_immutable(path: Path, encoded: str) -> None:
 def _seal_file_copy(source: Path, target: Path, expected_hash: str) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.is_file():
-        if file_sha256(target) != expected_hash:
+        if FileSha256(target) != expected_hash:
             raise TomorrowResearchEvidenceIndexError("Tomorrow research immutable evidence conflict")
         return
-    if file_sha256(source) != expected_hash:
+    if FileSha256(source) != expected_hash:
         raise TomorrowResearchEvidenceIndexError("Tomorrow research copied evidence hash is invalid")
-    if not publish_immutable_file(target, source) and file_sha256(target) != expected_hash:
+    if not PublishImmutableFile(target, source) and FileSha256(target) != expected_hash:
         raise TomorrowResearchEvidenceIndexError("Tomorrow research immutable evidence conflict")
 
 
@@ -509,7 +509,7 @@ def _object(value: object) -> dict[str, object]:
 
 
 def _array(value: object) -> list[object]:
-    sequence = as_sequence(value)
+    sequence = AsSequence(value)
     if sequence is None:
         raise TypeError("Tomorrow research artifact value must be an array")
     return sequence
@@ -530,19 +530,19 @@ def _strings(value: object) -> tuple[str, ...]:
 
 
 def _boolean(value: object) -> bool:
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError("Tomorrow research artifact value must be a boolean")
     return value
 
 
 def _integer(value: object) -> int:
-    if not is_integer(value):
+    if not IsInteger(value):
         raise TypeError("Tomorrow research artifact value must be an integer")
     return value
 
 
 def _number(value: object) -> float:
-    if not is_number(value):
+    if not IsNumber(value):
         raise TypeError("Tomorrow research artifact value must be numeric")
     return float(value)
 

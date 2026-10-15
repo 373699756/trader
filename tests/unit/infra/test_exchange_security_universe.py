@@ -7,8 +7,8 @@ import pytest
 
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.infra.exchange_security_universe import (
-    load_current_a_share_universe,
-    select_st_eligible_universe,
+    LoadCurrentAShareUniverse,
+    SelectStEligibleUniverse,
 )
 from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 
@@ -33,7 +33,7 @@ def test_current_universe_preserves_listing_identity_and_bounds_requests() -> No
         calls.append(("SZSE", timeout))
         return szse
 
-    universe = load_current_a_share_universe(fetch_sse, fetch_szse, 15.0)
+    universe = LoadCurrentAShareUniverse(fetch_sse, fetch_szse, 15.0)
 
     assert calls == [("SSE", 15.0), ("SZSE", 15.0)]
     assert tuple(item.code for item in universe) == tuple(sorted(item.code for item in (*sse, *szse)))
@@ -54,7 +54,7 @@ def test_incomplete_official_universe_is_rejected(invalid: str) -> None:
         szse = (replace(szse[0], board="unsupported"), *szse[1:])
 
     with pytest.raises(ValueError, match="universe is incomplete"):
-        load_current_a_share_universe(lambda _timeout: sse, lambda _timeout: szse, 15.0)
+        LoadCurrentAShareUniverse(lambda _timeout: sse, lambda _timeout: szse, 15.0)
 
 
 def test_exchange_request_failure_does_not_return_partial_universe() -> None:
@@ -62,13 +62,11 @@ def test_exchange_request_failure_does_not_return_partial_universe() -> None:
         raise TimeoutError("fixture timeout")
 
     with pytest.raises(TimeoutError):
-        load_current_a_share_universe(lambda _timeout: _listings("SSE"), unavailable, 15.0)
+        LoadCurrentAShareUniverse(lambda _timeout: _listings("SSE"), unavailable, 15.0)
 
 
 def test_shared_st_eligibility_selects_the_exact_download_population() -> None:
-    universe = load_current_a_share_universe(
-        lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0
-    )
+    universe = LoadCurrentAShareUniverse(lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0)
     eligible_codes = tuple(item.code for item in universe if not item.code.endswith("9"))
     evidence = tuple(
         HistoryStEvidence(
@@ -79,15 +77,13 @@ def test_shared_st_eligibility_selects_the_exact_download_population() -> None:
         for item in universe
     )
 
-    selected = select_st_eligible_universe(universe, evidence)
+    selected = SelectStEligibleUniverse(universe, evidence)
 
     assert tuple(item.code for item in selected) == eligible_codes
 
 
 @pytest.mark.parametrize("evidence", ((), (HistoryStEvidence("999999", date(2026, 10, 10), "clear"),)))
 def test_downloads_fail_closed_without_complete_shared_st_evidence(evidence) -> None:
-    universe = load_current_a_share_universe(
-        lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0
-    )
+    universe = LoadCurrentAShareUniverse(lambda _timeout: _listings("SSE"), lambda _timeout: _listings("SZSE"), 15.0)
     with pytest.raises(RuntimeError, match="historical ST evidence"):
-        select_st_eligible_universe(universe, evidence)
+        SelectStEligibleUniverse(universe, evidence)

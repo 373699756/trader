@@ -9,10 +9,10 @@ from datetime import datetime
 from typing import Protocol
 
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+    BuildScoredHybrid,
     ScoredLocalProjection,
     ScoredReviewProjection,
-    build_scored_hybrid,
-    validate_review_manifests,
+    ValidateReviewManifests,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.domain.evidence.review import DeepSeekReview
@@ -54,7 +54,7 @@ class ScoreFusionService(ScoreFusionPort):
         review_deadline: datetime,
         review_latency_ms: int = 0,
     ) -> ScoredReviewProjection | None:
-        return build_scored_hybrid(
+        return BuildScoredHybrid(
             projection,
             policy,
             reviews,
@@ -69,7 +69,7 @@ class ScoreFusionService(ScoreFusionPort):
         reviews: Mapping[str, DeepSeekReview],
         expected: Mapping[str, str],
     ) -> bool:
-        return validate_review_manifests(projection, reviews, expected)
+        return ValidateReviewManifests(projection, reviews, expected)
 
 
 __all__ = ["ScoreFusionPort", "ScoreFusionService"]

@@ -63,7 +63,7 @@ class RoutedEvidence:
     exclusion_reasons: tuple[str, ...]
 
 
-def route_prompt_evidence(candidate: FeatureSnapshot) -> RoutedEvidence:
+def RoutePromptEvidence(candidate: FeatureSnapshot) -> RoutedEvidence:
     valid: list[tuple[str, Evidence]] = []
     reasons: list[str] = []
     for item in candidate.evidence:
@@ -154,7 +154,7 @@ def _content_invalid_reason(item: Evidence) -> str:
 def _deduplicate(items: list[tuple[str, Evidence]]) -> tuple[tuple[str, Evidence], ...]:
     selected: dict[tuple[str, str], tuple[str, Evidence]] = {}
     for category, item in items:
-        key = (category, event_key(item))
+        key = (category, EventKey(item))
         current = selected.get(key)
         if current is None or _quality_key(item) < _quality_key(current[1]):
             selected[key] = (category, item)
@@ -166,13 +166,13 @@ def _quality_key(item: Evidence) -> tuple[int, float, str]:
     return (_SOURCE_QUALITY.get(item.source, 10), received_at, item.evidence_id)
 
 
-def event_key(item: Evidence) -> str:
+def EventKey(item: Evidence) -> str:
     normalized_title = " ".join(item.title.strip().lower().split())
     normalized_published_at = item.published_at.astimezone(timezone.utc).isoformat()
     return f"{normalized_published_at}:{normalized_title}"
 
 
-def source_tier(item: Evidence) -> str:
+def SourceTier(item: Evidence) -> str:
     if item.source in _OFFICIAL_SOURCES:
         return "official"
     if item.source in _TRUSTED_SOURCES:
@@ -180,15 +180,15 @@ def source_tier(item: Evidence) -> str:
     return "soft"
 
 
-def evidence_quality(
+def EvidenceQuality(
     evidence: tuple[Evidence, ...], evidence_ids: tuple[str, ...], *, conflicted: bool = False
 ) -> float:
     if conflicted:
         return 0.25
     selected = [item for item in evidence if item.evidence_id in set(evidence_ids)]
-    if any(source_tier(item) == "official" for item in selected):
+    if any(SourceTier(item) == "official" for item in selected):
         return 1.0
-    trusted_sources = {item.source for item in selected if source_tier(item) == "trusted"}
+    trusted_sources = {item.source for item in selected if SourceTier(item) == "trusted"}
     if len(trusted_sources) >= 2:
         return 0.85
     if len(trusted_sources) == 1:
@@ -199,8 +199,8 @@ def evidence_quality(
 __all__ = [
     "MAX_PROMPT_EVIDENCE_PER_CANDIDATE",
     "RoutedEvidence",
-    "event_key",
-    "evidence_quality",
-    "route_prompt_evidence",
-    "source_tier",
+    "EventKey",
+    "EvidenceQuality",
+    "RoutePromptEvidence",
+    "SourceTier",
 ]

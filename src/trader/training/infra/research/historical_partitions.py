@@ -13,8 +13,8 @@ from pathlib import Path
 
 import polars as pl
 
-from trader.infra.serialization.canonical import canonical_json_text, canonical_value, content_hash, file_sha256
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.canonical import CanonicalJsonText, CanonicalValue, ContentHash, FileSha256
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.historical_extraction_models import (
     HistoricalExtractedDay,
     HistoricalExtraction,
@@ -65,7 +65,7 @@ class PolarsHistoricalPartitionSnapshot:
             "research_identity": extraction.research_identity,
             "research_spec_hash": extraction.research_spec_hash,
             "status": extraction.status,
-            "coverage": [canonical_value(item) for item in extraction.coverage],
+            "coverage": [CanonicalValue(item) for item in extraction.coverage],
             "days": [
                 {
                     "trade_date": manifest.trade_date.isoformat(),
@@ -75,7 +75,7 @@ class PolarsHistoricalPartitionSnapshot:
                 for manifest in manifests
             ],
         }
-        top_payload["content_hash"] = content_hash(top_payload)
+        top_payload["content_hash"] = ContentHash(top_payload)
         _write_immutable_json(top_manifest_path, top_payload)
         return manifests
 
@@ -89,7 +89,7 @@ class PolarsHistoricalPartitionSnapshot:
             raise HistoricalPartitionConflictError("Historical extraction top manifest schema mismatch")
         declared_hash = raw.get("content_hash")
         identity = {key: value for key, value in raw.items() if key != "content_hash"}
-        if not isinstance(declared_hash, str) or content_hash(identity) != declared_hash:
+        if not isinstance(declared_hash, str) or ContentHash(identity) != declared_hash:
             raise HistoricalPartitionConflictError("Historical extraction top manifest hash mismatch")
         days = raw.get("days")
         if not isinstance(days, list):
@@ -141,12 +141,12 @@ class PolarsHistoricalPartitionSnapshot:
             raise HistoricalPartitionConflictError("Historical extraction partition manifest is invalid") from exc
         if (
             manifest.trade_date != trade_date
-            or content_hash(_manifest_identity_payload(manifest)) != manifest.content_hash
+            or ContentHash(_manifest_identity_payload(manifest)) != manifest.content_hash
         ):
             raise HistoricalPartitionConflictError("Historical extraction partition manifest identity mismatch")
         for item in manifest.files:
             path = directory / item.path
-            if not path.is_file() or path.stat().st_size != item.size or file_sha256(path) != item.sha256:
+            if not path.is_file() or path.stat().st_size != item.size or FileSha256(path) != item.sha256:
                 raise HistoricalPartitionConflictError("Historical extraction partition file verification failed")
         return manifest
 
@@ -166,7 +166,7 @@ class PolarsHistoricalPartitionSnapshot:
             "proofs.parquet": day.proofs,
         }
         for name, records in tables.items():
-            rows = [{"payload": canonical_json_text(record)} for record in records]
+            rows = [{"payload": CanonicalJsonText(record)} for record in records]
             pl.DataFrame(rows, schema={"payload": pl.String}).write_parquet(
                 directory / name,
                 compression="zstd",
@@ -176,16 +176,16 @@ class PolarsHistoricalPartitionSnapshot:
 
 def _build_manifest(directory: Path, day: HistoricalExtractedDay) -> HistoricalPartitionManifest:
     files = tuple(
-        HistoricalPartitionFile(path.name, path.stat().st_size, file_sha256(path))
+        HistoricalPartitionFile(path.name, path.stat().st_size, FileSha256(path))
         for path in sorted(directory.glob("*.parquet"), key=lambda value: value.name)
     )
     identity: dict[str, object] = {
         "schema_version": _SCHEMA_VERSION,
         "trade_date": day.summary.trade_date.isoformat(),
         "day_hash": day.content_hash,
-        "files": [canonical_value(item) for item in files],
+        "files": [CanonicalValue(item) for item in files],
     }
-    return HistoricalPartitionManifest(day.summary.trade_date, day.content_hash, files, content_hash(identity))
+    return HistoricalPartitionManifest(day.summary.trade_date, day.content_hash, files, ContentHash(identity))
 
 
 def _day_identity(day: HistoricalExtractedDay) -> dict[str, object]:
@@ -215,7 +215,7 @@ def _manifest_identity_payload(manifest: HistoricalPartitionManifest) -> dict[st
         "schema_version": manifest.schema_version,
         "trade_date": manifest.trade_date.isoformat(),
         "day_hash": manifest.day_hash,
-        "files": [canonical_value(item) for item in manifest.files],
+        "files": [CanonicalValue(item) for item in manifest.files],
     }
 
 
@@ -243,7 +243,7 @@ def _manifest_from_payload(raw: object) -> HistoricalPartitionManifest:
 
 
 def _write_immutable_json(path: Path, payload: Mapping[str, object]) -> None:
-    if publish_immutable(path, canonical_json_text(payload)):
+    if PublishImmutable(path, CanonicalJsonText(payload)):
         return
     try:
         existing = json.loads(path.read_text(encoding="utf-8"))
@@ -254,7 +254,7 @@ def _write_immutable_json(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _write_json(path: Path, payload: Mapping[str, object]) -> None:
-    path.write_text(canonical_json_text(payload), encoding="utf-8")
+    path.write_text(CanonicalJsonText(payload), encoding="utf-8")
 
 
 __all__ = [

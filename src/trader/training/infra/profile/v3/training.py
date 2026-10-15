@@ -6,22 +6,22 @@ from trader.training.application.tomorrow_training import TomorrowTrainingProgre
 from trader.training.infra.engine import (
     HeadTrainingResult,
     ProfileTrainingRequest,
+    RunProfileTraining,
+    RunRepackProfileTraining,
     TrainingRunResult,
-    run_profile_training,
-    run_repack_profile_training,
 )
 from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT, V3_TRAINING_PROFILE
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
 
-def run_tomorrow_training(
+def RunTomorrowTraining(
     history_root: Path,
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> HeadTrainingResult:
-    return run_profile_training(
+    return RunProfileTraining(
         ProfileTrainingRequest(
             history_root,
             train_root,
@@ -33,14 +33,14 @@ def run_tomorrow_training(
     ).heads[0]
 
 
-def run_v3_training(
+def RunV3Training(
     history_root: Path,
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
-    return run_profile_training(
+    return RunProfileTraining(
         ProfileTrainingRequest(
             history_root,
             train_root,
@@ -52,7 +52,7 @@ def run_v3_training(
     )
 
 
-def run_repack_tomorrow_training(
+def RunRepackTomorrowTraining(
     history_root: Path,
     train_root: Path,
     *,
@@ -60,7 +60,7 @@ def run_repack_tomorrow_training(
     expected_history_snapshot_hash: str,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> HeadTrainingResult:
-    return run_repack_profile_training(
+    return RunRepackProfileTraining(
         ProfileTrainingRequest(
             history_root,
             train_root,
@@ -73,7 +73,7 @@ def run_repack_tomorrow_training(
     ).heads[0]
 
 
-def run_repack_v3_training(
+def RunRepackV3Training(
     history_root: Path,
     train_root: Path,
     *,
@@ -81,7 +81,7 @@ def run_repack_v3_training(
     expected_history_snapshot_hash: str,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
-    return run_repack_profile_training(
+    return RunRepackProfileTraining(
         ProfileTrainingRequest(
             history_root,
             train_root,
@@ -95,8 +95,8 @@ def run_repack_v3_training(
 
 
 __all__ = [
-    "run_repack_tomorrow_training",
-    "run_repack_v3_training",
-    "run_tomorrow_training",
-    "run_v3_training",
+    "RunRepackTomorrowTraining",
+    "RunRepackV3Training",
+    "RunTomorrowTraining",
+    "RunV3Training",
 ]

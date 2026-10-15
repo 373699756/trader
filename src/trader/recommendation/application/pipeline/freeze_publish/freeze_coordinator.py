@@ -8,9 +8,9 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
+    ObservePublicationIo,
     PublicationIoTarget,
     PublicationIoTracker,
-    observe_publication_io,
 )
 from trader.recommendation.application.ports.clock import Clock
 from trader.recommendation.application.ports.decision_index import DecisionIndexPort
@@ -23,8 +23,8 @@ from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.decision_identity import (
     CommitKind,
     CommittedDecisionRecord,
+    FormalScoredDecision,
     ScoredDecision,
-    formal_scored_decision,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -89,9 +89,9 @@ class ScoredFreezeCoordinator:
             return FreezeOperationResult("runtime_identity_mismatch")
         if not 0.0 <= (boundary - current.observed_at).total_seconds() <= 30.0:
             return FreezeOperationResult("checkpoint_too_old")
-        checkpoint = DecisionCheckpoint(formal_scored_decision(current), boundary)
+        checkpoint = DecisionCheckpoint(FormalScoredDecision(current), boundary)
         try:
-            with observe_publication_io(
+            with ObservePublicationIo(
                 self._publication_io, "checkpoint_write", PublicationIoTarget.decision(current)
             ) as observation:
                 self._records.save_checkpoint(checkpoint)
@@ -112,7 +112,7 @@ class ScoredFreezeCoordinator:
         current = self._current(now.date())
         if current is not None and not self._runtime_identity.matches(current):
             return FreezeOperationResult("runtime_identity_mismatch")
-        with observe_publication_io(
+        with ObservePublicationIo(
             self._publication_io,
             "freeze_seal",
             self._target(now.date(), current or (checkpoint.decision if checkpoint is not None else None)),
@@ -133,7 +133,7 @@ class ScoredFreezeCoordinator:
         committed = self._commit(record)
         if committed.status == "frozen" and checkpoint is not None:
             try:
-                with observe_publication_io(
+                with ObservePublicationIo(
                     self._publication_io, "checkpoint_consume", PublicationIoTarget.decision(seal.decision)
                 ) as observation:
                     self._records.consume_checkpoint(checkpoint, consumed_at=now)
@@ -164,7 +164,7 @@ class ScoredFreezeCoordinator:
         )
         if rejection is not None:
             return FreezeOperationResult(rejection)
-        with observe_publication_io(
+        with ObservePublicationIo(
             self._publication_io, "freeze_seal", PublicationIoTarget.decision(decision)
         ) as observation:
             seal = self._index.seal_close_fallback(
@@ -213,7 +213,7 @@ class ScoredFreezeCoordinator:
 
     def _existing(self, trade_date: date) -> FreezeOperationResult | None:
         try:
-            with observe_publication_io(self._publication_io, "formal_lookup", self._target(trade_date)) as observation:
+            with ObservePublicationIo(self._publication_io, "formal_lookup", self._target(trade_date)) as observation:
                 record = self._records.load(self._strategy, trade_date)
                 observation.reason = "formal_found" if record is not None else "formal_missing"
                 observation.state = StageState.READY if record is not None else StageState.NOT_READY
@@ -224,7 +224,7 @@ class ScoredFreezeCoordinator:
             return FreezeOperationResult("persistence_failed")
         if record is None:
             return None
-        with observe_publication_io(
+        with ObservePublicationIo(
             self._publication_io, "formal_restore", PublicationIoTarget.decision(record.decision)
         ) as observation:
             restored = self._index.restore_formal(record)
@@ -241,7 +241,7 @@ class ScoredFreezeCoordinator:
         boundary: datetime,
     ) -> tuple[DecisionCheckpoint | None, bool]:
         try:
-            with observe_publication_io(
+            with ObservePublicationIo(
                 self._publication_io, "checkpoint_lookup", self._target(trade_date)
             ) as observation:
                 checkpoint = self._records.load_checkpoint(self._strategy, trade_date)
@@ -267,14 +267,14 @@ class ScoredFreezeCoordinator:
 
     def _commit(self, record: CommittedDecisionRecord) -> FreezeOperationResult:
         try:
-            with observe_publication_io(
+            with ObservePublicationIo(
                 self._publication_io, "formal_write", PublicationIoTarget.decision(record.decision)
             ) as observation:
                 self._records.commit(record)
                 observation.output_version = record.version
         except (DecisionRecordError, OSError):
             return FreezeOperationResult("persistence_failed", version=record.version)
-        with observe_publication_io(
+        with ObservePublicationIo(
             self._publication_io, "formal_publish", PublicationIoTarget.decision(record.decision)
         ) as observation:
             published = self._index.commit_formal(record)

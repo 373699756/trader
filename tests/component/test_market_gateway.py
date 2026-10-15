@@ -13,6 +13,7 @@ from tests.component.market_data_test_support import (
     CountingMarketClient,
     FailingMarketClient,
     FeatureBuilder,
+    LoadRuntimeSettings,
     MarketDataDeadlineExceededError,
     MarketDataGateway,
     MarketDataUnavailableError,
@@ -28,7 +29,6 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
     gateway_module,
-    load_runtime_settings,
     pytest,
     replace,
     threading,
@@ -192,7 +192,7 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     )
     gateway.fetch_market(observed_at=NOW)
 
-    original_merge = gateway_module.merge_market_observations
+    original_merge = gateway_module.MergeMarketObservations
     merge_started = threading.Event()
     release_merge = threading.Event()
 
@@ -202,7 +202,7 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
             assert release_merge.wait(1.0)
         return original_merge(*args, **kwargs)
 
-    monkeypatch.setattr(gateway_module, "merge_market_observations", coordinated_merge)
+    monkeypatch.setattr(gateway_module, "MergeMarketObservations", coordinated_merge)
     errors: list[BaseException] = []
 
     def refresh_market() -> None:
@@ -554,7 +554,7 @@ def test_feature_service_does_not_commit_full_market_result_after_deadline() -> 
 
 
 def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_reports_hits() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -587,7 +587,7 @@ def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_report
 
 
 def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_value() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,
@@ -658,7 +658,7 @@ def test_gateway_keeps_last_valid_snapshot_when_both_free_full_market_sources_fa
 
 
 def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retries() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,

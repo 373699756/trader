@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.risk.downside import EntrySetup, assess_downside, derive_entry_setup
+from trader.recommendation.domain.risk.downside import AssessDownside, DeriveEntrySetup, EntrySetup
 
 
 def test_heat_alone_does_not_trigger_downside_guard(feature_factory) -> None:
@@ -19,7 +19,7 @@ def test_heat_alone_does_not_trigger_downside_guard(feature_factory) -> None:
         },
     )
 
-    assessment = assess_downside(feature, Strategy.TOMORROW)
+    assessment = AssessDownside(feature, Strategy.TOMORROW)
 
     assert assessment.status == "pass"
     assert assessment.reasons == ()
@@ -39,7 +39,7 @@ def test_heat_alone_does_not_trigger_downside_guard(feature_factory) -> None:
 def test_downside_guard_observes_structural_tail_risk(feature_factory, values, reason) -> None:
     feature = feature_factory(high=12.5, price=12.0, values=values)
 
-    assessment = assess_downside(feature, Strategy.TOMORROW)
+    assessment = AssessDownside(feature, Strategy.TOMORROW)
 
     assert assessment.status == "observe"
     assert reason in assessment.reasons
@@ -59,14 +59,14 @@ def test_risk_off_requires_weak_market_and_weak_close(feature_factory) -> None:
     )
     strong = replace(weak, values={**weak.values, "tail_return_30m_pct": 0.3, "close_location": 80.0})
 
-    assert "risk_off_weak_close" in assess_downside(weak, Strategy.TOMORROW).reasons
-    assert "risk_off_weak_close" not in assess_downside(strong, Strategy.TOMORROW).reasons
+    assert "risk_off_weak_close" in AssessDownside(weak, Strategy.TOMORROW).reasons
+    assert "risk_off_weak_close" not in AssessDownside(strong, Strategy.TOMORROW).reasons
 
 
 def test_missing_required_downside_inputs_fail_closed(feature_factory) -> None:
     feature = feature_factory(values={"atr20_pct": None})
 
-    assessment = assess_downside(feature, Strategy.D25)
+    assessment = AssessDownside(feature, Strategy.D25)
 
     assert assessment.status == "observe"
     assert assessment.reasons == ("downside_inputs_missing",)
@@ -85,15 +85,15 @@ def test_missing_required_downside_inputs_fail_closed(feature_factory) -> None:
     ],
 )
 def test_invalid_downside_inputs_fail_closed(feature_factory, field, value) -> None:
-    assessment = assess_downside(feature_factory(values={field: value}), Strategy.TOMORROW)
+    assessment = AssessDownside(feature_factory(values={field: value}), Strategy.TOMORROW)
     assert assessment.status == "observe"
     assert assessment.reasons == ("downside_inputs_invalid",)
 
 
 def test_stale_downside_inputs_fail_closed_without_affecting_long(feature_factory) -> None:
     feature = replace(feature_factory(), missing_reasons={"atr20_pct": "stale"})
-    assert assess_downside(feature, Strategy.D25).reasons == ("downside_inputs_stale",)
-    assert assess_downside(feature, Strategy.LONG).status == "pass"
+    assert AssessDownside(feature, Strategy.D25).reasons == ("downside_inputs_stale",)
+    assert AssessDownside(feature, Strategy.LONG).status == "pass"
 
 
 def test_shrink_pullback_and_volume_breakout_are_deterministic(feature_factory) -> None:
@@ -126,10 +126,10 @@ def test_shrink_pullback_and_volume_breakout_are_deterministic(feature_factory) 
         },
     )
 
-    assert derive_entry_setup(pullback).setup_type == "shrink_pullback"
-    assert derive_entry_setup(pullback).score == 100.0
-    assert derive_entry_setup(breakout).setup_type == "volume_breakout"
-    assert derive_entry_setup(breakout).score == 100.0
+    assert DeriveEntrySetup(pullback).setup_type == "shrink_pullback"
+    assert DeriveEntrySetup(pullback).score == 100.0
+    assert DeriveEntrySetup(breakout).setup_type == "volume_breakout"
+    assert DeriveEntrySetup(breakout).score == 100.0
 
 
 def test_confirmed_pullback_does_not_require_breakout_only_inputs(feature_factory) -> None:
@@ -147,7 +147,7 @@ def test_confirmed_pullback_does_not_require_breakout_only_inputs(feature_factor
         },
     )
 
-    assert derive_entry_setup(feature) == EntrySetup("shrink_pullback", 100.0)
+    assert DeriveEntrySetup(feature) == EntrySetup("shrink_pullback", 100.0)
 
 
 def test_confirmed_breakout_does_not_require_pullback_only_inputs(feature_factory) -> None:
@@ -165,7 +165,7 @@ def test_confirmed_breakout_does_not_require_pullback_only_inputs(feature_factor
         },
     )
 
-    assert derive_entry_setup(feature) == EntrySetup("volume_breakout", 100.0)
+    assert DeriveEntrySetup(feature) == EntrySetup("volume_breakout", 100.0)
 
 
 def test_entry_quality_remains_available_without_optional_industry_breadth(feature_factory) -> None:
@@ -184,7 +184,7 @@ def test_entry_quality_remains_available_without_optional_industry_breadth(featu
         },
     )
 
-    setup = derive_entry_setup(feature)
+    setup = DeriveEntrySetup(feature)
 
     assert setup.setup_type == "trend_unconfirmed"
     assert setup.score == 50.0

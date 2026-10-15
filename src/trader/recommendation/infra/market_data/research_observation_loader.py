@@ -17,12 +17,12 @@ from typing import TYPE_CHECKING, ParamSpec, TypedDict, TypeVar, cast
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.atomic_files.json import RuntimeJsonWriter, atomic_read_json, atomic_write_json
+from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson, RuntimeJsonWriter
 from trader.infra.cache_contracts import CacheIdentity
 from trader.infra.workers import (
+    InjectedExecutor,
+    SubmitOrReject,
     WorkerExecutor,
-    injected_executor,
-    submit_or_reject,
 )
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.ports.market_data import MarketDataDeadlineExceededError
@@ -42,16 +42,16 @@ from trader.recommendation.infra.market_data.market_feature_cache_entries import
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.provider_ports import ResearchSource
 from trader.recommendation.infra.market_data.research_component_persistence import (
+    LoaderStatus as _loader_status_from_plane,
+)
+from trader.recommendation.infra.market_data.research_component_persistence import (
+    PersistResearchComponentStatuses as _persist_research_component_statuses_from_plane,
+)
+from trader.recommendation.infra.market_data.research_component_persistence import (
+    RecoverResearchComponentStatuses as _recover_research_component_statuses_from_plane,
+)
+from trader.recommendation.infra.market_data.research_component_persistence import (
     _ResearchDataPlane as _ResearchDataPlaneProtocol,
-)
-from trader.recommendation.infra.market_data.research_component_persistence import (
-    loader_status as _loader_status_from_plane,
-)
-from trader.recommendation.infra.market_data.research_component_persistence import (
-    persist_research_component_statuses as _persist_research_component_statuses_from_plane,
-)
-from trader.recommendation.infra.market_data.research_component_persistence import (
-    recover_research_component_statuses as _recover_research_component_statuses_from_plane,
 )
 from trader.recommendation.infra.market_data.research_load_status import (
     ResearchComponentStatus,
@@ -453,7 +453,7 @@ class ResearchLoader:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         request = state.request
         source_lanes = self._runner.source_lanes
-        pool = injected_executor(
+        pool = InjectedExecutor(
             self._runner.worker_pool,
             inline=source_lanes is not None and source_lanes.owns_current_thread("akshare"),
         )
@@ -496,7 +496,7 @@ class ResearchLoader:
         for code in missing:
             self._runner.ensure_before_deadline(state.request.deadline)
             started = self._monotonic()
-            future = submit_or_reject(
+            future = SubmitOrReject(
                 pool,
                 self._fetch_research_observation,
                 code,
@@ -620,7 +620,7 @@ class ResearchLoader:
             return None
         path = self._research_cache_path(code, include_structured)
         try:
-            raw = atomic_read_json(path)
+            raw = AtomicReadJson(path)
             if not isinstance(raw, Mapping):
                 raise TypeError("research cache root must be a mapping")
             observation_raw = raw["observation"]
@@ -710,7 +710,7 @@ class ResearchLoader:
         target = self._research_cache_path(code, include_structured)
         expires_at = wall_now + timedelta(seconds=ttl)
         try:
-            writer = self._json_writer.write if self._json_writer is not None else atomic_write_json
+            writer = self._json_writer.write if self._json_writer is not None else AtomicWriteJson
             writer(
                 target,
                 {

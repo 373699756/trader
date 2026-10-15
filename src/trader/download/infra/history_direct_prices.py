@@ -12,7 +12,7 @@ from threading import get_ident
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockSecurity
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
-from trader.download.domain.history_price_qualification import qualify_history_pairs, qualify_price_overlap
+from trader.download.domain.history_price_qualification import QualifyHistoryPairs, QualifyPriceOverlap
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_download_index import HistoryDownloadTask
@@ -111,8 +111,8 @@ class HistoryDirectPrices:
         previous = context.previous
         if previous is None:
             previous = self.read(task.code, task.dates)
-        cells = qualify_history_pairs(task.code, task.dates, window, recovery)
-        cells = qualify_price_overlap(cells, previous, full_window=context.full_window)
+        cells = QualifyHistoryPairs(task.code, task.dates, window, recovery)
+        cells = QualifyPriceOverlap(cells, previous, full_window=context.full_window)
         prior = {cell.trade_date: cell for cell in previous}
         suspended = {
             cell.trade_date

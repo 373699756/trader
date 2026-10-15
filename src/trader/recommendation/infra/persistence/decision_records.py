@@ -23,8 +23,8 @@ from trader.recommendation.application.ports.decision_records import (
 from trader.recommendation.domain.publication.decision_identity import CommittedDecisionRecord
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.persistence.decision_record_codec import (
-    committed_record_bytes,
-    committed_record_from_bytes,
+    CommittedRecordBytes,
+    CommittedRecordFromBytes,
 )
 
 FaultInjector = Callable[[str], None]
@@ -109,7 +109,7 @@ class SQLiteDecisionRecords:
             self.recover()
 
     def commit(self, record: CommittedDecisionRecord) -> None:
-        payload = committed_record_bytes(record)
+        payload = CommittedRecordBytes(record)
         digest = _bounded_digest(payload)
         relative = Path("records") / record.strategy.value / record.trade_date.isoformat() / f"{record.version}.json"
         with self._lock:
@@ -240,7 +240,7 @@ class SQLiteDecisionRecords:
             checkpoint.boundary_at,
             "checkpoint_recovery",
         )
-        payload = committed_record_bytes(envelope)
+        payload = CommittedRecordBytes(envelope)
         digest = _bounded_digest(payload)
         relative = (
             Path("checkpoints")
@@ -354,7 +354,7 @@ class SQLiteDecisionRecords:
     def _load_checkpoint_row(self, row: sqlite3.Row) -> DecisionCheckpoint:
         payload = self._verified_payload(str(row["relative_path"]), str(row["payload_sha256"]))
         try:
-            envelope = committed_record_from_bytes(payload)
+            envelope = CommittedRecordFromBytes(payload)
             boundary = envelope.committed_at
             checkpoint = DecisionCheckpoint(envelope.decision, boundary)
         except (TypeError, UnicodeError, ValueError) as exc:
@@ -632,7 +632,7 @@ def _record_from_verified_payload(
     payload: bytes,
 ) -> tuple[CommittedDecisionRecord | None, str]:
     try:
-        record = committed_record_from_bytes(payload)
+        record = CommittedRecordFromBytes(payload)
     except (ValueError, TypeError, UnicodeError):
         return None, "payload_invalid"
     if (

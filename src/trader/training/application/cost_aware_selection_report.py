@@ -14,7 +14,7 @@ from trader.training.application.shadow_model_report import (
     ShadowWindowMode,
 )
 from trader.training.domain.evaluation.cost_aware_selection import CostAwareEvaluation
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -51,7 +51,7 @@ class CostAwareSelectionDay:
             if max(sum(item.industry == industry for item in ranked) for industry in industries) > 2:
                 raise ValueError("cost-aware selection exceeds the industry concentration limit")
         object.__setattr__(self, "evaluations", evaluations)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -98,7 +98,7 @@ class CostAwareSelectionReport:
         if days and {item.horizon for item in days} != {"tomorrow", "d25"}:
             raise ValueError("cost-aware report must contain both horizons")
         object.__setattr__(self, "days", days)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _day_identity(day: CostAwareSelectionDay) -> tuple[date, ShadowHorizon, ShadowWindowMode, ShadowModelFamily]:

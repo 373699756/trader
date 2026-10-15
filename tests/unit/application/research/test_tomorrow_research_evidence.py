@@ -7,12 +7,12 @@ from datetime import date
 import pytest
 
 from trader.training.application.tomorrow_research_evidence import (
+    ProductionReadinessAudit,
     TomorrowResearchEvidenceGraph,
     TomorrowResearchEvidencePartitionRef,
     TomorrowResearchEvidenceRef,
     TomorrowResearchResourceProbe,
     TomorrowResearchStageHandoff,
-    production_readiness_audit,
 )
 
 
@@ -96,7 +96,7 @@ def test_stage_handoff_binds_exact_required_artifacts_and_resource_limits() -> N
 def test_production_readiness_requires_both_holdouts_parity_and_new_authorization() -> None:
     empty = TomorrowResearchEvidenceGraph(())
 
-    audit = production_readiness_audit(empty, manual_authorization_hash=None)
+    audit = ProductionReadinessAudit(empty, manual_authorization_hash=None)
 
     assert audit.status == "production_adaptation_blocked"
     assert audit.blockers == (

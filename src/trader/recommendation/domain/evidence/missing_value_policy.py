@@ -34,7 +34,7 @@ class MissingValuePolicy:
             raise ValueError("missing-value policy requires unique field rules")
 
 
-def assess_missing_values(feature: FeatureSnapshot, policy: MissingValuePolicy) -> QualityAssessment:
+def AssessMissingValues(feature: FeatureSnapshot, policy: MissingValuePolicy) -> QualityAssessment:
     missing = tuple(
         MissingField(rule.field_id, rule.severity, rule.penalty)
         for rule in policy.rules
@@ -56,4 +56,4 @@ def assess_missing_values(feature: FeatureSnapshot, policy: MissingValuePolicy) 
     )
 
 
-__all__ = ["MissingFieldRule", "MissingValuePolicy", "assess_missing_values"]
+__all__ = ["MissingFieldRule", "MissingValuePolicy", "AssessMissingValues"]

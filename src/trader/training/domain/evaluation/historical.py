@@ -139,7 +139,7 @@ def _validate_components(components: tuple[ScoreComponent, ...]) -> None:
         raise ValueError("score component weights must sum to one")
 
 
-def coverage_shrunk_score(components: tuple[ScoreComponent, ...]) -> float:
+def CoverageShrunkScore(components: tuple[ScoreComponent, ...]) -> float:
     """Return the preregistered missing-to-neutral Historical extraction research score."""
 
     _validate_components(components)
@@ -151,7 +151,7 @@ def coverage_shrunk_score(components: tuple[ScoreComponent, ...]) -> float:
     return round(50.0 + coverage * (weighted / coverage - 50.0), 12)
 
 
-def optimistic_final_upper_bound(
+def OptimisticFinalUpperBound(
     components: tuple[ScoreComponent, ...],
     *,
     mandatory_local_risk_penalty: float,
@@ -176,7 +176,7 @@ def optimistic_final_upper_bound(
     return min(100.0, max(0.0, hybrid))
 
 
-def optimistic_component_upper_bound(components: tuple[ScoreComponent, ...]) -> float:
+def OptimisticComponentUpperBound(components: tuple[ScoreComponent, ...]) -> float:
     """Return the weighted upper bound for a candidate or final score family."""
 
     _validate_components(components)
@@ -211,7 +211,7 @@ __all__ = [
     "ResearchBoard",
     "ResearchSelectionPool",
     "ScoreComponent",
-    "coverage_shrunk_score",
-    "optimistic_final_upper_bound",
-    "optimistic_component_upper_bound",
+    "CoverageShrunkScore",
+    "OptimisticFinalUpperBound",
+    "OptimisticComponentUpperBound",
 ]

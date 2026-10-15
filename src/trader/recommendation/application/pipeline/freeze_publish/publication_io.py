@@ -204,7 +204,7 @@ class PublicationIoCompletion:
 
 
 @contextmanager
-def observe_publication_io(
+def ObservePublicationIo(
     tracker: PublicationIoTracker | None,
     operation: PublicationOperation,
     target: PublicationIoTarget,

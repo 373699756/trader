@@ -8,27 +8,27 @@ from datetime import datetime
 
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,
-    require_previous_stage,
-    stage_output,
+    RequirePreviousStage,
+    StageOutput,
 )
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
-def normalize_dynamic_market(
+def NormalizeDynamicMarket(
     source: PipelineStageOutput[FeatureSnapshot],
     normalizer: Callable[[FeatureSnapshot], FeatureSnapshot | None],
     *,
     as_of: datetime,
     latency_ms: int,
 ) -> PipelineStageOutput[FeatureSnapshot]:
-    require_previous_stage(source, PipelineStage.DYNAMIC_STANDARDIZE)
+    RequirePreviousStage(source, PipelineStage.DYNAMIC_STANDARDIZE)
     normalized = tuple(value for record in source.records if (value := normalizer(record)) is not None)
     pending = len(source.records) - len(normalized)
     reasons = (
         (StageReasonAggregate("refresh_pending", "refresh pending", pending, Severity.WARNING),) if pending else ()
     )
-    return stage_output(
+    return StageOutput(
         PipelineStage.DYNAMIC_STANDARDIZE,
         normalized,
         input_batch_id=source.snapshot.output_batch_id,
@@ -41,7 +41,7 @@ def normalize_dynamic_market(
     )
 
 
-def normalize_candidate_discovery_population(
+def NormalizeCandidateDiscoveryPopulation(
     features: Sequence[FeatureSnapshot],
     evaluated_at: datetime,
 ) -> tuple[FeatureSnapshot, ...]:
@@ -58,4 +58,4 @@ def normalize_candidate_discovery_population(
     return tuple(normalized)
 
 
-__all__ = ["normalize_dynamic_market", "normalize_candidate_discovery_population"]
+__all__ = ["NormalizeDynamicMarket", "NormalizeCandidateDiscoveryPopulation"]

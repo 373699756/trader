@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 
 
-def stock_net_contribution(
+def StockNetContribution(
     selected_weight: float,
     gross_excess_return: float,
     turnover: float,
@@ -20,7 +20,7 @@ def stock_net_contribution(
     return selected_weight * gross_excess_return - selected_weight * turnover * cost_rate
 
 
-def population_spearman(pairs: tuple[tuple[float, float], ...]) -> float | None:
+def PopulationSpearman(pairs: tuple[tuple[float, float], ...]) -> float | None:
     """Return population Spearman correlation with average ties, or None below five pairs."""
 
     if len(pairs) < 5:
@@ -39,7 +39,7 @@ def population_spearman(pairs: tuple[tuple[float, float], ...]) -> float | None:
     return covariance / math.sqrt(left_variance * right_variance)
 
 
-def mean_rank_ic(values: tuple[float | None, ...]) -> float | None:
+def MeanRankIc(values: tuple[float | None, ...]) -> float | None:
     known = tuple(value for value in values if value is not None)
     if not known:
         return None
@@ -47,7 +47,7 @@ def mean_rank_ic(values: tuple[float | None, ...]) -> float | None:
     return math.fsum(known) / len(known)
 
 
-def quantile_bucket(rows: tuple[tuple[str, float], ...]) -> dict[str, int]:
+def QuantileBucket(rows: tuple[tuple[str, float], ...]) -> dict[str, int]:
     """Assign five nearly equal score groups with stable code ordering for ties."""
 
     if len({code for code, _score in rows}) != len(rows) or any(not code for code, _score in rows):
@@ -78,4 +78,4 @@ def _finite(values: tuple[float, ...]) -> None:
         raise ValueError("research metric inputs must be finite")
 
 
-__all__ = ["mean_rank_ic", "population_spearman", "quantile_bucket", "stock_net_contribution"]
+__all__ = ["MeanRankIc", "PopulationSpearman", "QuantileBucket", "StockNetContribution"]

@@ -21,7 +21,7 @@ from trader.training.application.research_audit import (
 )
 
 
-def observation_bytes(
+def ObservationBytes(
     observation: DecisionObservation,
     *,
     schema_version: str,

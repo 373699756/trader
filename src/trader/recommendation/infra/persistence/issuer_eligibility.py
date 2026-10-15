@@ -15,12 +15,12 @@ from pathlib import Path
 from trader.recommendation.domain.market.eligibility import (
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
+    IssuerEligibilityFactHash,
     IssuerEligibilityReason,
     IssuerEligibilityReasonCount,
     IssuerEligibilitySnapshot,
-    issuer_eligibility_fact_hash,
-    manual_blacklist_fact,
-    resolve_issuer_eligibility,
+    ManualBlacklistFact,
+    ResolveIssuerEligibility,
 )
 
 _SCHEMA_VERSION = "issuer_eligibility_snapshot"
@@ -90,7 +90,7 @@ class SQLiteIssuerEligibilityIndex:
                 source=str(row[4]),
                 evidence_hash=str(row[5]),
             )
-            if issuer_eligibility_fact_hash(fact) != str(row[6]):
+            if IssuerEligibilityFactHash(fact) != str(row[6]):
                 raise RuntimeError("legacy issuer eligibility migration found invalid content")
             facts.append(fact)
         return cls(root).record(tuple(facts))
@@ -166,7 +166,7 @@ class SQLiteIssuerEligibilityIndex:
         }
         return self.record(
             tuple(
-                manual_blacklist_fact(code, effective_at, config_hash)
+                ManualBlacklistFact(code, effective_at, config_hash)
                 for code in tuple(dict.fromkeys(codes))
                 if code not in existing
             )
@@ -184,7 +184,7 @@ class SQLiteIssuerEligibilityIndex:
             self._ensure_loaded()
             facts = tuple(self._facts.values())
         return tuple(
-            resolve_issuer_eligibility((fact,), code, observed_at)
+            ResolveIssuerEligibility((fact,), code, observed_at)
             for code, fact in sorted(_active_facts_by_code(facts, observed_at).items())
         )
 
@@ -219,7 +219,7 @@ class SQLiteIssuerEligibilityIndex:
     def _validate_incoming(self, facts: tuple[IssuerEligibilityFact, ...]) -> None:
         for fact in facts:
             existing = self._facts.get(fact.identity)
-            if existing is not None and issuer_eligibility_fact_hash(existing) != issuer_eligibility_fact_hash(fact):
+            if existing is not None and IssuerEligibilityFactHash(existing) != IssuerEligibilityFactHash(fact):
                 raise IssuerEligibilityConflictError(
                     f"issuer eligibility evidence conflict: {fact.code}:{fact.reason.value}"
                 )
@@ -283,7 +283,7 @@ class SQLiteIssuerEligibilityIndex:
                 self._integrity_ok = False
                 self._last_error = "eligibility_integrity_error"
                 continue
-            if issuer_eligibility_fact_hash(fact) != str(row[6]):
+            if IssuerEligibilityFactHash(fact) != str(row[6]):
                 self._integrity_ok = False
                 self._last_error = "eligibility_integrity_error"
             self._facts[fact.identity] = fact
@@ -310,7 +310,7 @@ class SQLiteIssuerEligibilityIndex:
                 self._ensure_schema(connection)
                 for fact in category_facts:
                     identity_key = _identity_key(fact)
-                    content_hash = issuer_eligibility_fact_hash(fact)
+                    content_hash = IssuerEligibilityFactHash(fact)
                     existing = connection.execute(
                         "SELECT content_hash FROM issuer_eligibility_facts WHERE identity_key = ?",
                         (identity_key,),
@@ -397,7 +397,7 @@ def _identity_key(fact: IssuerEligibilityFact) -> str:
 def _manifest_hash(facts: tuple[IssuerEligibilityFact, ...]) -> str:
     if not facts:
         return _EMPTY_MANIFEST_HASH
-    payload = "\n".join(issuer_eligibility_fact_hash(fact) for fact in sorted(facts)).encode("ascii")
+    payload = "\n".join(IssuerEligibilityFactHash(fact) for fact in sorted(facts)).encode("ascii")
     return hashlib.sha256(payload).hexdigest()
 
 

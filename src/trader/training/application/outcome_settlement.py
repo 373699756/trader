@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.training.application.outcome_ports import (
     OutcomeSettlementMarketData,
@@ -15,7 +15,7 @@ from trader.training.application.outcome_ports import (
     OutcomeWriterPort,
 )
 from trader.training.domain.evaluation.evaluation import CanonicalOutcomeEvaluator, OutcomeEvaluationRequest
-from trader.training.domain.evaluation.models import BenchmarkConstituentReturn, BenchmarkReturn, outcome_horizons
+from trader.training.domain.evaluation.models import BenchmarkConstituentReturn, BenchmarkReturn, OutcomeHorizons
 
 
 @dataclass(frozen=True)
@@ -44,7 +44,7 @@ class OutcomeSettlementService:
         self._evaluator = CanonicalOutcomeEvaluator()
 
     def settle(self, now: datetime, market_features: Sequence[FeatureSnapshot]) -> SettlementResult:
-        local = shanghai_now(now)
+        local = ShanghaiNow(now)
         benchmark = self._equal_weight_benchmark(local.date().isoformat(), market_features)
         if benchmark is not None:
             self._writer.record_benchmark_return(benchmark, observed_at=now)
@@ -64,7 +64,7 @@ class OutcomeSettlementService:
                 for bar in histories.get(target.stock_code, ())
                 if target.recommend_date <= bar.trade_date <= current_date
             )
-            for horizon in target.pending_horizons or outcome_horizons(target.strategy):
+            for horizon in target.pending_horizons or OutcomeHorizons(target.strategy):
                 if elapsed < horizon:
                     continue
                 loaded = tuple(self._targets.benchmark_returns_after(target.recommend_date, limit=horizon))
@@ -97,8 +97,8 @@ class OutcomeSettlementService:
         market_features: Sequence[FeatureSnapshot],
     ) -> BenchmarkReturn | None:
         if any(
-            shanghai_now(feature.quote.source_time).date().isoformat() != trade_date
-            or shanghai_now(feature.quote.source_time).hour < 15
+            ShanghaiNow(feature.quote.source_time).date().isoformat() != trade_date
+            or ShanghaiNow(feature.quote.source_time).hour < 15
             for feature in market_features
         ):
             return None

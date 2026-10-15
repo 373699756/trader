@@ -13,13 +13,13 @@ JsonObject: TypeAlias = Mapping[str, JsonValue]
 JsonInput: TypeAlias = "JsonScalar | list[JsonInput] | tuple[JsonInput, ...] | Mapping[str, JsonInput]"
 
 
-def freeze_json_object(value: Mapping[str, JsonInput]) -> JsonObject:
+def FreezeJsonObject(value: Mapping[str, JsonInput]) -> JsonObject:
     return MappingProxyType({str(key): _freeze_json_value(item) for key, item in value.items()})
 
 
 def _freeze_json_value(value: JsonInput) -> JsonValue:
     if isinstance(value, Mapping):
-        return freeze_json_object(value)
+        return FreezeJsonObject(value)
     if isinstance(value, (list, tuple)):
         return tuple(_freeze_json_value(item) for item in value)
     if isinstance(value, float) and not math.isfinite(value):
@@ -29,9 +29,9 @@ def _freeze_json_value(value: JsonInput) -> JsonValue:
     return str(value)
 
 
-def thaw_json_value(value: JsonValue) -> JsonInput:
+def ThawJsonValue(value: JsonValue) -> JsonInput:
     if isinstance(value, Mapping):
-        return {key: thaw_json_value(item) for key, item in value.items()}
+        return {key: ThawJsonValue(item) for key, item in value.items()}
     if isinstance(value, tuple):
-        return [thaw_json_value(item) for item in value]
+        return [ThawJsonValue(item) for item in value]
     return value

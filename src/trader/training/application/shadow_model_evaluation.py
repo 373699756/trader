@@ -27,7 +27,7 @@ from trader.training.application.shadow_model_report import (
     ShadowWindowMode,
 )
 from trader.training.domain.evaluation.historical import CostSettlementBasis
-from trader.training.domain.evaluation.shadow_calibration import fit_affine_calibrator, fit_platt_calibrator
+from trader.training.domain.evaluation.shadow_calibration import FitAffineCalibrator, FitPlattCalibrator
 from trader.training.domain.evaluation.tomorrow_features import TOMORROW_FEATURE_NAMES, TomorrowStockFeatures
 
 _COST_RATE = SHADOW_COST_BPS / 10_000.0
@@ -178,10 +178,10 @@ class TomorrowShadowModelEvaluator:
                 severe_result.prediction_predictions
             ) != len(prediction):
                 raise ValueError("shadow severe prediction coverage is incomplete")
-            calibrated_net = fit_affine_calibrator(net_result.calibration_predictions, net_calibration).predict(
+            calibrated_net = FitAffineCalibrator(net_result.calibration_predictions, net_calibration).predict(
                 net_result.prediction_predictions
             )
-            calibrated_severe = fit_platt_calibrator(
+            calibrated_severe = FitPlattCalibrator(
                 severe_result.calibration_predictions,
                 severe_calibration,
             ).predict(severe_result.prediction_predictions)

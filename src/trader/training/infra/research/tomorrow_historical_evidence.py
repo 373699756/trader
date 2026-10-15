@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.tomorrow_historical_report import TomorrowHistoricalReport
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalModelSnapshot,
 )
-from trader.training.infra.research.identity_codec import research_json, research_value
+from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
 
 
 class TomorrowHistoricalEvidenceConflictError(RuntimeError):
@@ -76,11 +76,11 @@ class TomorrowHistoricalEvidenceIndex:
             if persisted_hash != content_hash:
                 raise TomorrowHistoricalEvidenceConflictError("Tomorrow historical artifact identity conflict")
             return persisted_hash
-        payload = research_value(value)
+        payload = ResearchValue(value)
         if not isinstance(payload, dict):
             raise TypeError("Tomorrow historical artifact must be a JSON object")
         payload["content_hash"] = content_hash
-        if publish_immutable(path, research_json(payload)):
+        if PublishImmutable(path, ResearchJson(payload)):
             return str(content_hash)
         persisted_hash = str(self._read_verified(path, path.stem)["content_hash"])
         if persisted_hash != content_hash:
@@ -100,7 +100,7 @@ class TomorrowHistoricalEvidenceIndex:
             if not isinstance(raw, dict):
                 raise TypeError("artifact payload is not an object")
             persisted_hash = raw.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("artifact hash mismatch")
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise TomorrowHistoricalEvidenceConflictError(

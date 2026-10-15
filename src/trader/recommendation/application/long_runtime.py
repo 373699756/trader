@@ -15,7 +15,7 @@ from trader.recommendation.application.ports.long import LongRefreshRequest
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError, QuoteReaderPort
 from trader.recommendation.application.runtime.latest_wins import LatestWinsStatus, LatestWinsWorker
 from trader.recommendation.application.runtime.schedule import SHANGHAI
-from trader.recommendation.application.runtime.trading_session import StaleSessionError, session_guard
+from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
 from trader.recommendation.domain.market.models import FeatureSnapshot, MarketQuote
 from trader.recommendation.domain.publication.decision_identity import LongProjection, LongProjectionItem
 from trader.recommendation.domain.publication.long_groups import LongGroupDefinition, LongWatchItemDefinition
@@ -152,7 +152,7 @@ class LongRuntime:
             return
 
     def _execute(self, request: LongRefreshRequest) -> None:
-        with session_guard(request.session), self._lock:
+        with SessionGuard(request.session), self._lock:
             generation = request.session.generation if request.session is not None else 0
             if (
                 generation == self._last_generation
@@ -175,10 +175,10 @@ class LongRuntime:
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError):
             features = ()
             degraded_reasons.append("long_quote_unavailable")
-            with session_guard(request.session), self._lock:
+            with SessionGuard(request.session), self._lock:
                 self._fetch_failure_count += 1
                 self._last_error_code = "long_quote_unavailable"
-        with session_guard(request.session):
+        with SessionGuard(request.session):
             completed_at = max(request.observed_at, _shanghai(self._now()))
             fresh = _fresh_quotes(features, frozenset(self._codes), completed_at)
             items, next_retained, live_count, retained_count, missing_count = self._projection_items(
@@ -203,7 +203,7 @@ class LongRuntime:
                 projection,
                 expected_version=expected.version if expected is not None else None,
             )
-            with session_guard(request.session), self._lock:
+            with SessionGuard(request.session), self._lock:
                 self._live_count = live_count
                 self._retained_count = retained_count
                 self._missing_count = missing_count

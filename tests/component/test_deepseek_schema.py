@@ -21,11 +21,11 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.risk.fusion import DIMENSION_NAMES
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
-from trader.recommendation.infra.deepseek.challenger import parse_challenger_reviews
+from trader.recommendation.infra.deepseek.challenger import ParseChallengerReviews
 from trader.recommendation.infra.deepseek.client import DeepSeekHttpClient
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.deepseek.schema import SCHEMA_VERSION
-from trader.recommendation.infra.deepseek.schema_prompts import review_cache_key
+from trader.recommendation.infra.deepseek.schema_prompts import ReviewCacheKey
 
 NOW = datetime(2026, 7, 16, 2, 0, tzinfo=timezone.utc)
 
@@ -39,11 +39,11 @@ def test_review_cache_reuses_same_facts_after_delivery_refresh() -> None:
         quote=replace(candidate.quote, received_time=later, price=12.1),
         evidence=tuple(replace(item, received_at=later) for item in candidate.evidence),
     )
-    assert review_cache_key(candidate, model="test") == review_cache_key(refreshed, model="test")
+    assert ReviewCacheKey(candidate, model="test") == ReviewCacheKey(refreshed, model="test")
     revised = replace(refreshed, evidence=tuple(replace(item, title="新监管事实") for item in refreshed.evidence))
-    assert review_cache_key(candidate, model="test") != review_cache_key(revised, model="test")
+    assert ReviewCacheKey(candidate, model="test") != ReviewCacheKey(revised, model="test")
     next_day = replace(refreshed, observed_at=later + timedelta(days=1))
-    assert review_cache_key(candidate, model="test") != review_cache_key(next_day, model="test")
+    assert ReviewCacheKey(candidate, model="test") != ReviewCacheKey(next_day, model="test")
 
 
 def test_finish_reason_length_uses_the_single_schema_repair_attempt(tmp_path) -> None:
@@ -262,7 +262,7 @@ def test_challenger_schema_rejects_unknown_decision_fields(target: str, field: s
         result["dimensions"]["market_flow"][field] = 99
 
     with pytest.raises(ValueError, match="unknown challenger"):
-        parse_challenger_reviews(json.dumps(payload), (candidate,), NOW)
+        ParseChallengerReviews(json.dumps(payload), (candidate,), NOW)
 
 
 @pytest.mark.parametrize(
@@ -282,7 +282,7 @@ def test_challenger_schema_rejects_non_string_text_fields(field: str, value: obj
         result["dimensions"]["market_flow"][field] = value
 
     with pytest.raises(ValueError, match=error):
-        parse_challenger_reviews(json.dumps(payload), (candidate,), NOW)
+        ParseChallengerReviews(json.dumps(payload), (candidate,), NOW)
 
 
 def test_budget_enforces_challenger_limit_inside_strategy_bucket(tmp_path) -> None:

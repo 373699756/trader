@@ -25,9 +25,9 @@ from tests.unit.application.test_tomorrow_projection import (
     _with_model_features,
 )
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+    BuildScoredHybrid,
+    BuildScoredLocal,
     ScoredProjectionInputs,
-    build_scored_hybrid,
-    build_scored_local,
 )
 from trader.recommendation.application.pipeline.freeze_publish.runtime_adapters import DeepSeekAdapter
 from trader.recommendation.application.ports.runtime import PipelineTaskRequest, ReviewUnavailableError
@@ -36,7 +36,7 @@ from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.domain.evidence.pipeline import (
     SourceHealthState,
     StageState,
-    validate_stage_batch_continuity,
+    ValidateStageBatchContinuity,
 )
 from trader.recommendation.domain.evidence.review import ReviewOutcome
 from trader.recommendation.domain.publication.models import Strategy
@@ -54,7 +54,7 @@ def test_real_scored_handoffs_measure_operations_and_match_selected_decision(app
     features = _features(application_feature_factory)
     before = tuple(features)
     ticks = count()
-    projection = build_scored_local(
+    projection = BuildScoredLocal(
         _native_input(features, native_type),
         _policy(),
         sequence=1,
@@ -87,7 +87,7 @@ def test_real_scored_handoffs_measure_operations_and_match_selected_decision(app
 
 def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(application_feature_factory):
     router = _router(_ProductionPredictor())
-    local = build_scored_local(
+    local = BuildScoredLocal(
         _native_input(_features(application_feature_factory)),
         _policy(),
         sequence=1,
@@ -95,7 +95,7 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
     )
     assert local.review_candidates
     ticks = count()
-    result = build_scored_hybrid(
+    result = BuildScoredHybrid(
         local,
         _policy(),
         {
@@ -120,7 +120,7 @@ def test_hybrid_reuses_local_scoring_and_adds_vendor_elapsed_only_to_review(appl
 
 @pytest.mark.parametrize("failure", ("rejected", "empty", "late", "deadline"))
 def test_unusable_reviews_leave_real_degraded_observation_without_new_decision(application_feature_factory, failure):
-    local = build_scored_local(_native_input(_features(application_feature_factory)), _policy(), sequence=1)
+    local = BuildScoredLocal(_native_input(_features(application_feature_factory)), _policy(), sequence=1)
     assert local.review_candidates
     deadline = EVALUATED_AT + timedelta(minutes=8)
     reviews = (
@@ -135,7 +135,7 @@ def test_unusable_reviews_leave_real_degraded_observation_without_new_decision(a
             for item in local.review_candidates
         }
     )
-    result = build_scored_hybrid(local, _policy(), reviews, review_deadline=deadline, review_latency_ms=73)
+    result = BuildScoredHybrid(local, _policy(), reviews, review_deadline=deadline, review_latency_ms=73)
     assert result is not None and result.decision is None
     snapshot = result.stages.risk_review.snapshot
     assert snapshot.state is StageState.DEGRADED
@@ -159,7 +159,7 @@ def test_unusable_reviews_leave_real_degraded_observation_without_new_decision(a
 
 
 def test_non_positive_model_utility_preserves_scores_and_leaves_action_output_empty(application_feature_factory):
-    local = build_scored_local(
+    local = BuildScoredLocal(
         _native_input(_features(application_feature_factory)),
         _policy(),
         sequence=1,
@@ -221,7 +221,7 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     initial_status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
     assert local.pipeline is not None
     assert local.pipeline.stage_snapshots == initial_status.stage_snapshots
-    validate_stage_batch_continuity(local.pipeline.stage_snapshots)
+    ValidateStageBatchContinuity(local.pipeline.stage_snapshots)
     projection = adapter.decisions.projection(local.version)
     assert projection is not None and projection.review_candidates
     failed_at = request.review_deadline + timedelta(microseconds=1) if after_deadline else EVALUATED_AT
@@ -233,7 +233,7 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     else:
         assert reviewer.build_hybrid(local, request) is None
     status = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    validate_stage_batch_continuity(status.stage_snapshots)
+    ValidateStageBatchContinuity(status.stage_snapshots)
     expected = {
         "exception": "deepseek_review_unavailable",
         "manifest": "deepseek_manifest_mismatch",
@@ -246,7 +246,7 @@ def test_review_adapter_records_failure_and_cannot_overwrite_new_input_observati
     assert status.summary.highest_final_score == max(item.final_score for item in local.items)
     assert adapter.decisions.projection(local.version) is projection
 
-    observed = build_scored_hybrid(projection, _policy(), {}, review_deadline=request.review_deadline)
+    observed = BuildScoredHybrid(projection, _policy(), {}, review_deadline=request.review_deadline)
     assert observed is not None
     later = EVALUATED_AT + timedelta(seconds=1)
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, later))

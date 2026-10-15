@@ -23,13 +23,13 @@ from trader.download.domain.baostock_daily import (
     BaoStockSourceVersions,
 )
 from trader.download.domain.history_sync import HistorySupplierContext
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
-from trader.download.infra.download_settings import load_history_sync_configuration
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_reference_files import read_bound_history_reference
-from trader.download.infra.history_supplier_router import fetch_tencent_history_window
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_reference_files import ReadBoundHistoryReference
+from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
+from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
@@ -52,9 +52,9 @@ class _ComparisonSupplier:
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         if self.tencent_first:
-            return fetch_tencent_history_window(self.prices, security, dates, self.context.calendar.open_dates)
+            return FetchTencentHistoryWindow(self.prices, security, dates, self.context.calendar.open_dates)
         batch = self.baseline.fetch_code(security, dates).batch
-        return PublishedHistoryWindow(security.code, tuple(project_history_cell(cell) for cell in batch.cells))
+        return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in batch.cells))
 
     def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
         return self.baseline.fetch_code(security, dates)
@@ -64,7 +64,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
     state = HistoryControlIndex(root / "control.sqlite3").load_published_state()
     if state is None:
         raise ValueError("comparison_requires_published_calendar")
-    reference = read_bound_history_reference(root, state.source.supplier_contract)
+    reference = ReadBoundHistoryReference(root, state.source.supplier_contract)
     selected = tuple(item for item in state.universe.securities if item.code in codes)
     if {item.code for item in selected} != set(codes):
         raise ValueError("comparison_codes_outside_filtered_universe")
@@ -82,7 +82,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
             work = Path(temporary)
             project_root = Path(__file__).resolve().parents[2]
             config = replace(
-                load_history_sync_configuration(project_root, work / "reference"),
+                LoadHistorySyncConfiguration(project_root, work / "reference"),
                 archive_root=work / "history",
                 training_root=work / "train",
                 sessions=sessions,
@@ -111,7 +111,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
                 tuple(item for item in reference.st_evidence if item.code in codes),
             )
             started = time.monotonic()
-            result = run_history_sync(
+            result = RunHistorySync(
                 config,
                 _ComparisonSupplier(context, baseline, prices, tencent_first),
                 worker_pool=pool,

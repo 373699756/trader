@@ -20,11 +20,11 @@ from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeDatasetRow,
     PointInTimeEventFact,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.risk_cost_population import (
+    BindRiskCostPopulation,
     RiskCostResearchPartition,
-    bind_risk_cost_population,
-    validate_risk_cost_samples,
+    ValidateRiskCostSamples,
 )
 from trader.training.domain.evaluation.risk_cost_uncertainty import (
     DeepSeekResearchReview,
@@ -53,7 +53,7 @@ def _sample(row: PointInTimeDatasetRow) -> RiskCostUncertaintySample:
         row.trade_date,
         cast(ResearchBoard, row.board.value),
         row.industry,
-        AlphaScore(row.code, "v3", MODEL_ID, MODEL_HASH, canonical_research_hash(row.feature_vector), 90, 0.01),
+        AlphaScore(row.code, "v3", MODEL_ID, MODEL_HASH, CanonicalResearchHash(row.feature_vector), 90, 0.01),
         RiskDecision(row.code, 0, False, (), UncertaintyAssessment(None, None, None, None, None, None)),
         ExecutionCost(
             row.code,
@@ -95,7 +95,7 @@ def _with_parent_facts(dataset: PointInTimeDatasetReport) -> PointInTimeDatasetR
                             row.anchor_at - timedelta(days=1),
                             row.anchor_at + timedelta(days=3),
                             row.anchor_at,
-                            canonical_research_hash((row.trade_date, row.code, "verified_fact")),
+                            CanonicalResearchHash((row.trade_date, row.code, "verified_fact")),
                         ),
                     ),
                 )
@@ -171,7 +171,7 @@ def test_complete_partition_binds_exact_population_outcomes_features_and_model(
     assert source.calls == 1
     assert report.status == "evaluated"
     assert report.sample_count == 55
-    assert report.research_identity == bind_risk_cost_population(dataset, partition, "v3", MODEL_ID, MODEL_HASH)
+    assert report.research_identity == BindRiskCostPopulation(dataset, partition, "v3", MODEL_ID, MODEL_HASH)
     assert report.production_authority is report.terminal_holdout_opened is False
     assert report.research_identity is not None
     assert {item.trade_date for item in report.decisions} == set(report.research_identity.dates)
@@ -275,9 +275,9 @@ def test_unavailable_evidence_after_population_validation_retains_no_results() -
 
 def test_direct_population_validation_rejects_forged_dataset_identity() -> None:
     dataset = _dataset()
-    identity = bind_risk_cost_population(dataset, "calibration", "v3", MODEL_ID, MODEL_HASH)
+    identity = BindRiskCostPopulation(dataset, "calibration", "v3", MODEL_ID, MODEL_HASH)
     with pytest.raises(ValueError, match="dataset identity"):
-        validate_risk_cost_samples(dataset, replace(identity, partition_hash="a" * 64), _samples(dataset))
+        ValidateRiskCostSamples(dataset, replace(identity, partition_hash="a" * 64), _samples(dataset))
 
 
 def test_prerequisite_refuses_training_and_terminal_holdout() -> None:

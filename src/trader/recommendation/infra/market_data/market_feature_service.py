@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from trader.infra.serialization.canonical import content_hash
+from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonObject
@@ -20,8 +20,8 @@ from trader.recommendation.application.ports.market_data import (
 )
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.eligibility import (
+    EligibilityFactsFromResearch,
     IssuerEligibilityFact,
-    eligibility_facts_from_research,
 )
 from trader.recommendation.domain.market.models import (
     Board,
@@ -42,7 +42,7 @@ from trader.recommendation.infra.market_data.market_cache_identity import (
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.research_load_status import ResearchLoadReport, research_component_coverage
+from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoadReport
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.training.domain.evaluation.models import OutcomeBar
@@ -499,7 +499,7 @@ class MarketFeatureService:
         facts = tuple(
             fact
             for code, observation in observations.items()
-            for fact in eligibility_facts_from_research(code, observation)
+            for fact in EligibilityFactsFromResearch(code, observation)
         )
         self._record_eligibility(facts)
 
@@ -558,9 +558,7 @@ def _research_refresh_result(
         code
         for code in requested
         if code not in deferred
-        and (
-            code not in observations or require_structured and not any(research_component_coverage(observations[code]))
-        )
+        and (code not in observations or require_structured and not any(ResearchComponentCoverage(observations[code])))
     )
     failed_set = set(failed)
     completed = tuple(
@@ -568,13 +566,13 @@ def _research_refresh_result(
     )
     completed_set = set(completed)
     if require_structured:
-        covered = tuple(code for code in completed if all(research_component_coverage(observations[code])))
+        covered = tuple(code for code in completed if all(ResearchComponentCoverage(observations[code])))
         partial = tuple(code for code in completed if code not in covered)
     else:
         covered = completed
         partial = ()
     identity_fields = tuple((code, _research_data_version(observations[code])) for code in sorted(observations))
-    data_version = f"research-batch:{content_hash(identity_fields)}"
+    data_version = f"research-batch:{ContentHash(identity_fields)}"
     return ResearchRefreshResult(
         requested_codes=requested,
         completed_codes=completed,

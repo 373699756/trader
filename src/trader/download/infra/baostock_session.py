@@ -164,7 +164,7 @@ class RateLimitedBaoStockSdk:
         )
 
 
-def load_baostock_sdk() -> BaoStockSessionSdkPort:
+def LoadBaostockSdk() -> BaoStockSessionSdkPort:
     try:
         import baostock
     except ImportError as exc:
@@ -172,7 +172,7 @@ def load_baostock_sdk() -> BaoStockSessionSdkPort:
     return cast(BaoStockSessionSdkPort, baostock)
 
 
-def login_baostock(sdk: BaoStockSessionSdkPort) -> None:
+def LoginBaostock(sdk: BaoStockSessionSdkPort) -> None:
     try:
         result = sdk.login()
     except PermissionError as exc:
@@ -195,14 +195,14 @@ def login_baostock(sdk: BaoStockSessionSdkPort) -> None:
     raise RuntimeError("supplier_login_rejected")
 
 
-def logout_baostock(sdk: BaoStockSessionSdkPort) -> None:
+def LogoutBaostock(sdk: BaoStockSessionSdkPort) -> None:
     try:
         sdk.logout()
     except Exception:
         pass
 
 
-def baostock_dependency_versions() -> tuple[tuple[str, str], ...]:
+def BaostockDependencyVersions() -> tuple[tuple[str, str], ...]:
     values: list[tuple[str, str]] = []
     for package in ("baostock", "pandas"):
         try:
@@ -216,8 +216,8 @@ __all__ = [
     "BaoStockQueryLimiter",
     "BaoStockSessionSdkPort",
     "RateLimitedBaoStockSdk",
-    "baostock_dependency_versions",
-    "load_baostock_sdk",
-    "login_baostock",
-    "logout_baostock",
+    "BaostockDependencyVersions",
+    "LoadBaostockSdk",
+    "LoginBaostock",
+    "LogoutBaostock",
 ]

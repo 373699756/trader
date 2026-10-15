@@ -5,8 +5,8 @@ import pytest
 
 from trader.training.domain.evaluation.historical_label import (
     H1CoverageMetadata,
-    preregister_historical_label,
-    preregister_historical_labels,
+    PreregisterHistoricalLabel,
+    PreregisterHistoricalLabels,
 )
 
 _HASH_A = "a" * 64
@@ -30,7 +30,7 @@ def _metadata(strategy: str, *, state: str = "coverage_ready", count: int = 1_00
 
 
 def test_h1_dates_preregister_sixty_twenty_twenty_with_two_five_day_embargoes() -> None:
-    result = preregister_historical_label(_metadata("tomorrow"))
+    result = PreregisterHistoricalLabel(_metadata("tomorrow"))
     split = result.split
 
     assert result.status == "preregistered"
@@ -50,7 +50,7 @@ def test_h1_dates_preregister_sixty_twenty_twenty_with_two_five_day_embargoes() 
 
 
 def test_each_strategy_preregisters_its_fixed_anchor_label_horizons_and_metrics() -> None:
-    tomorrow, d25 = preregister_historical_labels((_metadata("d25"), _metadata("tomorrow"))).strategies
+    tomorrow, d25 = PreregisterHistoricalLabels((_metadata("d25"), _metadata("tomorrow"))).strategies
 
     assert (tomorrow.strategy, d25.strategy) == ("tomorrow", "d25")
     assert tomorrow.label.anchor == "15:00"
@@ -78,9 +78,7 @@ def test_each_strategy_preregisters_its_fixed_anchor_label_horizons_and_metrics(
 
 
 def test_insufficient_strategy_does_not_block_other_preregistrations() -> None:
-    batch = preregister_historical_labels(
-        (_metadata("tomorrow", state="historical_data_insufficient"), _metadata("d25"))
-    )
+    batch = PreregisterHistoricalLabels((_metadata("tomorrow", state="historical_data_insufficient"), _metadata("d25")))
     assert tuple(item.status for item in batch.strategies) == (
         "historical_data_insufficient",
         "preregistered",
@@ -95,14 +93,14 @@ def test_preregistration_rejects_order_errors_future_dates_and_small_terminal_ho
         replace(metadata, common_trading_dates=tuple(reversed(metadata.common_trading_dates)))
     with pytest.raises(ValueError, match="source cutoff"):
         replace(metadata, common_trading_dates=(*metadata.common_trading_dates[:-1], date(2026, 9, 1)))
-    result = preregister_historical_label(_metadata("tomorrow", count=999))
+    result = PreregisterHistoricalLabel(_metadata("tomorrow", count=999))
     assert result.status == "historical_data_insufficient"
     assert result.failure_reasons == ("common_trading_days_below_1000",)
 
 
 def test_preregistration_identity_is_stable_and_contains_no_return_or_candidate_payload() -> None:
-    result = preregister_historical_label(_metadata("tomorrow"))
-    replay = preregister_historical_label(_metadata("tomorrow"))
+    result = PreregisterHistoricalLabel(_metadata("tomorrow"))
+    replay = PreregisterHistoricalLabel(_metadata("tomorrow"))
 
     assert result.content_hash == replay.content_hash
     assert not hasattr(result, "returns")

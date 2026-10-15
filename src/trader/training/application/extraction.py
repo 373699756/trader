@@ -21,9 +21,9 @@ from trader.training.application.research_ports import (
 )
 from trader.training.domain.evaluation.historical import (
     HistoricalCandidateSummary,
+    OptimisticComponentUpperBound,
+    OptimisticFinalUpperBound,
     ResearchSelectionPool,
-    optimistic_component_upper_bound,
-    optimistic_final_upper_bound,
 )
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, ScoringResearchSpec
 
@@ -171,7 +171,7 @@ def _production_codes(
 
 
 def _upper_bound(candidate: HistoricalCandidateSummary) -> float:
-    return optimistic_final_upper_bound(
+    return OptimisticFinalUpperBound(
         candidate.final_components,
         mandatory_local_risk_penalty=candidate.mandatory_local_risk_penalty,
         recorded_deepseek_score=candidate.recorded_deepseek_score,
@@ -180,7 +180,7 @@ def _upper_bound(candidate: HistoricalCandidateSummary) -> float:
 
 
 def _candidate_upper_bound(candidate: HistoricalCandidateSummary) -> float:
-    return optimistic_component_upper_bound(candidate.candidate_components)
+    return OptimisticComponentUpperBound(candidate.candidate_components)
 
 
 def _can_enter(

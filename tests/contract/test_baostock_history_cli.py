@@ -10,13 +10,13 @@ import pytest
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncProgress
-from trader.entrypoints.cli import build_parser, main
+from trader.entrypoints.cli import BuildParser, Main
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_download_is_a_zero_argument_command() -> None:
-    args = build_parser().parse_args(["download"])
+    args = BuildParser().parse_args(["download"])
 
     assert args.command == "download"
     assert not hasattr(args, "runtime_dir")
@@ -26,7 +26,7 @@ def test_download_is_a_zero_argument_command() -> None:
 
 def test_download_history_is_removed_instead_of_kept_as_a_compatibility_alias() -> None:
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["download_history"])
+        BuildParser().parse_args(["download_history"])
 
 
 @pytest.mark.parametrize("arguments", (("--runtime-dir", "/tmp/history"), ("--sessions", "2000"), ("--mode", "update")))
@@ -34,7 +34,7 @@ def test_download_rejects_every_legacy_argument_during_parsing(arguments: tuple[
     runtime_dir = tmp_path / "must-not-exist"
 
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["download", *arguments])
+        BuildParser().parse_args(["download", *arguments])
 
     assert not runtime_dir.exists()
 
@@ -67,9 +67,9 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
-    monkeypatch.setattr("trader.download.infra.history_sync_runner.run_history_sync", synchronize)
+    monkeypatch.setattr("trader.download.infra.history_sync_runner.RunHistorySync", synchronize)
 
-    assert main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download"]) == 0
+    assert Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download"]) == 0
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -133,18 +133,18 @@ def test_train_tomorrow_uses_the_project_data_roots() -> None:
 
 def test_train_tomorrow_is_removed_from_the_public_cli() -> None:
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["train-tomorrow"])
+        BuildParser().parse_args(["train-tomorrow"])
 
 
 def test_train_v3_is_a_zero_argument_command() -> None:
-    args = build_parser().parse_args(["train-v3"])
+    args = BuildParser().parse_args(["train-v3"])
 
     assert args.command == "train-v3"
     assert not hasattr(args, "runtime_dir")
 
 
 def test_train_v2_is_a_zero_argument_command() -> None:
-    args = build_parser().parse_args(["train-v2"])
+    args = BuildParser().parse_args(["train-v2"])
 
     assert args.command == "train-v2"
     assert not hasattr(args, "runtime_dir")
@@ -154,6 +154,6 @@ def test_removed_train_tomorrow_rejects_an_explicit_history_root_during_parsing(
     history = tmp_path / "must-not-be-used"
 
     with pytest.raises(SystemExit):
-        build_parser().parse_args(["train-tomorrow", "--runtime-dir", str(history)])
+        BuildParser().parse_args(["train-tomorrow", "--runtime-dir", str(history)])
 
     assert not history.exists()

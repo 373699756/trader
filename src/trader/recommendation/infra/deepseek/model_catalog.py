@@ -13,7 +13,7 @@ from trader.recommendation.infra.deepseek.model_capabilities import MODELS
 KNOWN_MODELS: frozenset[str] = frozenset(MODELS.keys())
 
 
-def validate_model(model: str, *, strict: bool = False) -> None:
+def ValidateModel(model: str, *, strict: bool = False) -> None:
     """Validate *model* against the known model catalog.
 
     Args:
@@ -31,4 +31,4 @@ def validate_model(model: str, *, strict: bool = False) -> None:
         return
 
 
-__all__ = ["KNOWN_MODELS", "validate_model"]
+__all__ = ["KNOWN_MODELS", "ValidateModel"]

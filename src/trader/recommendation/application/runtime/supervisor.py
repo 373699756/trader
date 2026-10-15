@@ -14,8 +14,8 @@ from typing import Protocol
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.schedule import (
     MarketPhase,
-    phase_at,
-    seconds_until_next_schedule_boundary,
+    PhaseAt,
+    SecondsUntilNextScheduleBoundary,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -245,8 +245,8 @@ class RuntimeSupervisor:
             self._stop_event.wait(max(0.05, interval))
 
 
-def scheduler_interval_seconds(at: datetime) -> float:
-    phase = phase_at(at, is_trading_day=True)
+def SchedulerIntervalSeconds(at: datetime) -> float:
+    phase = PhaseAt(at, is_trading_day=True)
     maximum = {
         MarketPhase.CLOSED: 30.0,
         MarketPhase.WARMUP: 60.0,
@@ -261,7 +261,7 @@ def scheduler_interval_seconds(at: datetime) -> float:
         MarketPhase.FROZEN: 10.0,
         MarketPhase.AFTER_CLOSE: 60.0,
     }[phase]
-    return seconds_until_next_schedule_boundary(at, maximum_seconds=maximum)
+    return SecondsUntilNextScheduleBoundary(at, maximum_seconds=maximum)
 
 
-__all__ = ["RuntimeSupervisor", "RuntimeSupervisorConfig", "scheduler_interval_seconds"]
+__all__ = ["RuntimeSupervisor", "RuntimeSupervisorConfig", "SchedulerIntervalSeconds"]

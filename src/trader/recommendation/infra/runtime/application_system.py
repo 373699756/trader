@@ -17,8 +17,8 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.application.runtime.resource_orchestration import (
     ApplicationResources,
     AuxiliaryRuntimeResource,
-    start_application_resources,
-    stop_application_resources,
+    StartApplicationResources,
+    StopApplicationResources,
 )
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler
@@ -93,13 +93,13 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, 
         )
 
     def start(self) -> bool:
-        return start_application_resources(
+        return StartApplicationResources(
             self._application_resources(), timeout_seconds=self.settings.pipeline.shutdown_timeout_seconds
         )
 
     def stop(self, *, deadline: ShutdownDeadline | None = None) -> ShutdownReport:
         shared = deadline or ShutdownDeadline.start(self.settings.pipeline.shutdown_timeout_seconds)
-        return stop_application_resources(self._application_resources(), deadline=shared)
+        return StopApplicationResources(self._application_resources(), deadline=shared)
 
 
 __all__ = ["ApplicationSystem", "RuntimeWorkerResources"]

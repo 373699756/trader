@@ -76,7 +76,7 @@ class _StartedResources:
     research_pool: bool
 
 
-def start_application_resources(
+def StartApplicationResources(
     resources: ApplicationResources,
     *,
     timeout_seconds: float,
@@ -151,7 +151,7 @@ def _stop_started_resources(
         runtime.stop(wait=True, deadline=deadline)
 
 
-def stop_application_resources(
+def StopApplicationResources(
     resources: ApplicationResources,
     *,
     deadline: ShutdownDeadline,
@@ -181,4 +181,4 @@ def stop_application_resources(
     return ShutdownReport.from_steps(deadline, steps, forced=deadline.expired)
 
 
-__all__ = ["ApplicationResources", "start_application_resources", "stop_application_resources"]
+__all__ = ["ApplicationResources", "StartApplicationResources", "StopApplicationResources"]

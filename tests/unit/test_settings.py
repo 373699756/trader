@@ -12,16 +12,16 @@ import pytest
 
 from trader.infra.settings import (
     ConfigurationError,
-    load_long_watchlist,
-    load_runtime_settings,
-    load_strategy_settings,
+    LoadLongWatchlist,
+    LoadRuntimeSettings,
+    LoadStrategySettings,
 )
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
-    board_candidate_components,
-    board_candidate_score,
-    score_board_strategy,
+    BoardCandidateComponents,
+    BoardCandidateScore,
+    ScoreBoardStrategy,
 )
 from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 from trader.recommendation.infra.policy_settings import _recommendation_policy
@@ -113,9 +113,9 @@ def _write_strategy_config(tmp_path: Path, raw: dict[str, object]) -> Path:
 
 
 def test_configuration_contract_is_valid() -> None:
-    runtime = load_runtime_settings(RUNTIME_CONFIG)
-    strategy = load_strategy_settings(runtime.strategy_config_path)
-    watchlist = load_long_watchlist(runtime.long_watchlist_path)
+    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
+    strategy = LoadStrategySettings(runtime.strategy_config_path)
+    watchlist = LoadLongWatchlist(runtime.long_watchlist_path)
 
     assert strategy.scoring_profile == "v2"
     assert runtime.config_version.startswith("runtime_sha256_")
@@ -283,13 +283,13 @@ def test_scoring_profile_is_an_explicit_versioned_switch(tmp_path, profile: str)
     raw["scoring_profile"] = profile
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    settings = load_strategy_settings(strategy_path)
+    settings = LoadStrategySettings(strategy_path)
 
     assert settings.scoring_profile == profile
     if profile != "v2":
         assert (
             settings.strategy_version
-            != load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json").strategy_version
+            != LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json").strategy_version
         )
 
 
@@ -297,8 +297,8 @@ def test_scoring_profile_override_changes_the_effective_version_without_writing_
     source = PROJECT_ROOT / "config" / "strategy.json"
     original = source.read_bytes()
 
-    default = load_strategy_settings(source)
-    overridden = load_strategy_settings(source, scoring_profile="v3")
+    default = LoadStrategySettings(source)
+    overridden = LoadStrategySettings(source, scoring_profile="v3")
 
     assert default.scoring_profile == "v2"
     assert overridden.scoring_profile == "v3"
@@ -312,7 +312,7 @@ def test_unknown_scoring_profile_is_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="scoring_profile"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 @pytest.mark.parametrize("retired_profile", ("p1", "p2"))
@@ -322,7 +322,7 @@ def test_retired_scoring_profile_names_are_rejected(tmp_path, retired_profile: s
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="scoring_profile"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_retired_tomorrow_specific_profile_key_is_rejected(tmp_path: Path) -> None:
@@ -331,7 +331,7 @@ def test_retired_tomorrow_specific_profile_key_is_rejected(tmp_path: Path) -> No
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="scoring_profile is required"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 @pytest.mark.parametrize("controller", ("schema_version", "config_version"))
@@ -341,7 +341,7 @@ def test_runtime_rejects_manual_version_controllers(tmp_path, controller: str) -
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="runtime contains unknown keys"):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 def test_runtime_schema_rejects_paid_full_market_sources(tmp_path) -> None:
@@ -350,7 +350,7 @@ def test_runtime_schema_rejects_paid_full_market_sources(tmp_path) -> None:
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="unknown keys"):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 def test_runtime_rejects_non_positive_web_snapshot_retention(tmp_path) -> None:
@@ -359,7 +359,7 @@ def test_runtime_rejects_non_positive_web_snapshot_retention(tmp_path) -> None:
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="web_snapshot_retention_seconds"):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 def _long_watchlist_config(groups: list[tuple[str, list[str]]]) -> dict[str, object]:
@@ -392,7 +392,7 @@ def test_long_watchlist_group_limits_are_enforced(tmp_path) -> None:
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="cannot contain more than 8 codes"):
-        load_long_watchlist(changed_path)
+        LoadLongWatchlist(changed_path)
 
 
 def test_long_watchlist_low_price_groups_reject_duplicate_codes(tmp_path) -> None:
@@ -409,7 +409,7 @@ def test_long_watchlist_low_price_groups_reject_duplicate_codes(tmp_path) -> Non
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="cannot contain duplicate codes"):
-        load_long_watchlist(changed_path)
+        LoadLongWatchlist(changed_path)
 
 
 def test_long_watchlist_rejects_codes_repeated_across_any_groups(tmp_path) -> None:
@@ -426,7 +426,7 @@ def test_long_watchlist_rejects_codes_repeated_across_any_groups(tmp_path) -> No
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="cannot repeat across groups"):
-        load_long_watchlist(changed_path)
+        LoadLongWatchlist(changed_path)
 
 
 def test_long_watchlist_rejects_unknown_source_section(tmp_path) -> None:
@@ -441,7 +441,7 @@ def test_long_watchlist_rejects_unknown_source_section(tmp_path) -> None:
     changed_path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
 
     with pytest.raises(ConfigurationError, match="source_section"):
-        load_long_watchlist(changed_path)
+        LoadLongWatchlist(changed_path)
 
 
 def test_runtime_rejects_removed_decision_execution_mode(tmp_path) -> None:
@@ -450,7 +450,7 @@ def test_runtime_rejects_removed_decision_execution_mode(tmp_path) -> None:
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="unknown keys"):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 @pytest.mark.parametrize("model", ["deepseek-chat", "deepseek-reasoner", "unknown-model"])
@@ -460,7 +460,7 @@ def test_runtime_settings_rejects_unapproved_primary_model(tmp_path, model: str)
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="primary model"):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 def test_runtime_settings_loads_deepseek_key_from_protected_file(tmp_path, monkeypatch) -> None:
@@ -470,7 +470,7 @@ def test_runtime_settings_loads_deepseek_key_from_protected_file(tmp_path, monke
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(key_file))
 
-    runtime = load_runtime_settings(RUNTIME_CONFIG)
+    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
 
     assert runtime.deepseek.api_key == "secret-from-file"
 
@@ -487,7 +487,7 @@ def test_runtime_settings_loads_both_credentials_from_one_protected_assignment_f
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(credential_file))
     monkeypatch.setenv("TUSHARE_TOKEN_FILE", str(credential_file))
 
-    runtime = load_runtime_settings(RUNTIME_CONFIG)
+    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
 
     assert runtime.deepseek.api_key == "deepseek-from-file"
     assert runtime.market_data.tushare.token == "tushare-from-file"
@@ -498,7 +498,7 @@ def test_runtime_settings_prefers_deepseek_environment_key(tmp_path, monkeypatch
     monkeypatch.setenv("DEEPSEEK_API_KEY", "secret-from-environment")
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(missing_file))
 
-    runtime = load_runtime_settings(RUNTIME_CONFIG)
+    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
 
     assert runtime.deepseek.api_key == "secret-from-environment"
 
@@ -512,7 +512,7 @@ def test_runtime_settings_rejects_insecure_deepseek_key_file(tmp_path, monkeypat
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", str(key_file))
 
     with pytest.raises(ConfigurationError, match="must not be accessible by group or other users"):
-        load_runtime_settings(RUNTIME_CONFIG)
+        LoadRuntimeSettings(RUNTIME_CONFIG)
 
 
 def test_runtime_settings_loads_tushare_token_with_environment_priority(tmp_path, monkeypatch) -> None:
@@ -522,7 +522,7 @@ def test_runtime_settings_loads_tushare_token_with_environment_priority(tmp_path
     monkeypatch.setenv("TUSHARE_TOKEN", "environment-token")
     monkeypatch.setenv("TUSHARE_TOKEN_FILE", str(token_file))
 
-    runtime = load_runtime_settings(RUNTIME_CONFIG)
+    runtime = LoadRuntimeSettings(RUNTIME_CONFIG)
 
     assert runtime.market_data.tushare.token == "environment-token"
 
@@ -537,7 +537,7 @@ def test_runtime_settings_loads_tushare_token_from_configured_protected_file(tmp
     monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
     monkeypatch.delenv("TUSHARE_TOKEN_FILE", raising=False)
 
-    runtime = load_runtime_settings(changed_path)
+    runtime = LoadRuntimeSettings(changed_path)
 
     assert runtime.market_data.tushare.token == "configured-file-token"
     assert runtime.market_data.tushare.token_file == token_file
@@ -552,7 +552,7 @@ def test_runtime_settings_rejects_insecure_tushare_token_file(tmp_path, monkeypa
     monkeypatch.setenv("TUSHARE_TOKEN_FILE", str(token_file))
 
     with pytest.raises(ConfigurationError, match="Tushare token file must not be accessible"):
-        load_runtime_settings(RUNTIME_CONFIG)
+        LoadRuntimeSettings(RUNTIME_CONFIG)
 
 
 @pytest.mark.parametrize(
@@ -601,7 +601,7 @@ def test_current_cache_and_performance_configuration_rejects_missing_unknown_or_
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match=message):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_schema(tmp_path) -> None:
@@ -610,7 +610,7 @@ def test_feature_schema_contract_can_be_explicitly_reconciled_with_registered_sc
     raw["factor_contract"]["feature_schema_expected"] = len(FEATURE_SCHEMA_NAMES)
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    strategy = load_strategy_settings(strategy_path)
+    strategy = LoadStrategySettings(strategy_path)
 
     assert strategy.factor_contract["feature_schema"] == FEATURE_SCHEMA_ID
     assert strategy.factor_contract["feature_schema_expected"] == len(FEATURE_SCHEMA_NAMES)
@@ -622,7 +622,7 @@ def test_feature_schema_contract_rejects_schema_contract_version_mismatch(tmp_pa
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="feature_schema mismatch"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_research_timeout_cannot_exceed_point_in_time_source_limit(tmp_path) -> None:
@@ -631,7 +631,7 @@ def test_research_timeout_cannot_exceed_point_in_time_source_limit(tmp_path) -> 
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="research_timeout_seconds must be at most 8.0"):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 def test_priority_reserve_must_leave_capacity_for_normal_events(tmp_path) -> None:
@@ -640,7 +640,7 @@ def test_priority_reserve_must_leave_capacity_for_normal_events(tmp_path) -> Non
     changed_path = _write_runtime_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="priority_queue_size must be smaller"):
-        load_runtime_settings(changed_path)
+        LoadRuntimeSettings(changed_path)
 
 
 def test_removed_fusion_weight_is_rejected(tmp_path) -> None:
@@ -649,7 +649,7 @@ def test_removed_fusion_weight_is_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="strategy.fusion"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_deepseek_weight_cannot_reenter_production_configuration(tmp_path) -> None:
@@ -658,7 +658,7 @@ def test_deepseek_weight_cannot_reenter_production_configuration(tmp_path) -> No
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="strategy.fusion"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
@@ -667,7 +667,7 @@ def test_non_finite_configuration_number_is_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="finite"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 @pytest.mark.parametrize(
@@ -690,7 +690,7 @@ def test_fixed_review_and_observation_gates_cannot_drift(
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match=message):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 @pytest.mark.parametrize("weight_family", ("dimension", "board_candidate", "board_local"))
@@ -709,7 +709,7 @@ def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_
     weights[second] -= 0.01
     strategy_path = _write_strategy_config(tmp_path, raw)
 
-    settings = load_strategy_settings(strategy_path)
+    settings = LoadStrategySettings(strategy_path)
 
     if weight_family == "dimension":
         actual = settings.dimension_weights["tomorrow"]
@@ -723,7 +723,7 @@ def test_strategy_weight_vectors_are_loaded_from_configuration(tmp_path, weight_
 
 def test_strategy_config_has_only_board_specific_candidate_weights() -> None:
     raw = _strategy_document()
-    settings = load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json")
+    settings = LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json")
 
     assert "candidate_weights" not in raw
     assert not hasattr(settings, "candidate_weights")
@@ -745,7 +745,7 @@ def test_strategy_config_requires_complete_component_weight_families(tmp_path) -
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="local_component_weights.tomorrow.trend"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_component_weight_sum_is_rejected(tmp_path) -> None:
@@ -754,7 +754,7 @@ def test_component_weight_sum_is_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="candidate_component_weights.tomorrow.stability"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_feature_component_weight_fields_and_sum_are_rejected(tmp_path) -> None:
@@ -763,7 +763,7 @@ def test_feature_component_weight_fields_and_sum_are_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="feature_component_weights.trend_score"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
     raw["feature_component_weights"]["trend_score"] = {
         "ma20_60_position": 0.7,
@@ -772,12 +772,12 @@ def test_feature_component_weight_fields_and_sum_are_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="feature_component_weights trend_score weights must sum"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_feature_component_weight_configuration_is_typed_immutable_and_changes_identity(tmp_path) -> None:
     source_path = PROJECT_ROOT / "config" / "strategy.json"
-    baseline = load_strategy_settings(source_path)
+    baseline = LoadStrategySettings(source_path)
     raw = _strategy_document()
     raw["feature_component_weights"]["trend_score"] = {
         "ma20_60_position": 0.7,
@@ -785,7 +785,7 @@ def test_feature_component_weight_configuration_is_typed_immutable_and_changes_i
     }
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    changed = load_strategy_settings(changed_path)
+    changed = LoadStrategySettings(changed_path)
 
     assert changed.strategy_version != baseline.strategy_version
     assert changed.feature_component_weights.trend_score == {
@@ -801,13 +801,13 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
     application_feature_factory,
 ) -> None:
     source_path = PROJECT_ROOT / "config" / "strategy.json"
-    source = load_strategy_settings(source_path)
+    source = LoadStrategySettings(source_path)
     raw = _strategy_document()
     weights = raw["candidate_component_weights"]["tomorrow"]["stability"]
     weights["low_volatility_score"] -= 0.1
     weights["low_drawdown_score"] += 0.1
     changed_path = _write_strategy_config(tmp_path, raw)
-    changed = load_strategy_settings(changed_path)
+    changed = LoadStrategySettings(changed_path)
     observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     feature = application_feature_factory("600001", observed_at)
     values = dict(feature.values)
@@ -821,13 +821,13 @@ def test_component_weight_configuration_reaches_domain_and_changes_strategy_iden
     assert changed_policy is not None
     assert source.strategy_version != changed.strategy_version
     assert changed_policy.candidate_component_weights["stability"] == weights
-    assert board_candidate_components(feature, source_policy) != board_candidate_components(feature, changed_policy)
+    assert BoardCandidateComponents(feature, source_policy) != BoardCandidateComponents(feature, changed_policy)
 
 
 def test_configured_candidate_and_local_weights_preserve_two_strategy_golden_vectors(
     application_feature_factory,
 ) -> None:
-    settings = load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json")
+    settings = LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json")
     policy = _recommendation_policy(settings)
     observed_at = datetime(2026, 9, 10, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     source = application_feature_factory("600001", observed_at)
@@ -849,8 +849,8 @@ def test_configured_candidate_and_local_weights_preserve_two_strategy_golden_vec
     for strategy, (candidate_score, local_score) in expected.items():
         board_policy = policy.board_policy(strategy, Board.MAIN)
         assert board_policy is not None
-        assert board_candidate_score(feature, board_policy) == pytest.approx(candidate_score)
-        assert score_board_strategy(feature, board_policy).base_score == pytest.approx(local_score)
+        assert BoardCandidateScore(feature, board_policy) == pytest.approx(candidate_score)
+        assert ScoreBoardStrategy(feature, board_policy).base_score == pytest.approx(local_score)
 
 
 def test_deepseek_risk_mapping_version_controller_is_rejected(tmp_path) -> None:
@@ -859,7 +859,7 @@ def test_deepseek_risk_mapping_version_controller_is_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="strategy contains unknown keys"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_incomplete_risk_trigger_contract_is_rejected(tmp_path) -> None:
@@ -868,7 +868,7 @@ def test_incomplete_risk_trigger_contract_is_rejected(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="trigger"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_risk_rule_cannot_use_factor_outside_registered_strategy(tmp_path) -> None:
@@ -878,7 +878,7 @@ def test_risk_rule_cannot_use_factor_outside_registered_strategy(tmp_path) -> No
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="outside its registered strategies"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_risk_identity_fields_reject_non_string_values(tmp_path) -> None:
@@ -887,7 +887,7 @@ def test_risk_identity_fields_reject_non_string_values(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="stable identity fields"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_news_signal_rejects_overlapping_keyword_sets(tmp_path) -> None:
@@ -896,17 +896,17 @@ def test_news_signal_rejects_overlapping_keyword_sets(tmp_path) -> None:
     strategy_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="must not overlap"):
-        load_strategy_settings(strategy_path)
+        LoadStrategySettings(strategy_path)
 
 
 def test_news_signal_changes_strategy_version(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
-    baseline = load_strategy_settings(source)
+    baseline = LoadStrategySettings(source)
     raw = _strategy_document()
     raw["news_signal"]["positive_keywords"].append("订单增长")
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    changed = load_strategy_settings(changed_path)
+    changed = LoadStrategySettings(changed_path)
 
     assert changed.strategy_version != baseline.strategy_version
 
@@ -917,7 +917,7 @@ def test_news_signal_is_required(tmp_path) -> None:
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="features.news_signal is required"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> None:
@@ -926,7 +926,7 @@ def test_news_signal_fixed_window_and_scores_cannot_drift(tmp_path) -> None:
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="fixed at 72h/1h and 75/50/25"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_tomorrow_tail_signal_is_required(tmp_path) -> None:
@@ -935,7 +935,7 @@ def test_tomorrow_tail_signal_is_required(tmp_path) -> None:
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="scoring.tomorrow_tail_signal is required"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_tomorrow_tail_signal_fixed_formula_cannot_drift(tmp_path) -> None:
@@ -944,7 +944,7 @@ def test_tomorrow_tail_signal_fixed_formula_cannot_drift(tmp_path) -> None:
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_tomorrow_tail_signal_rejects_manual_factor_version(tmp_path) -> None:
@@ -953,13 +953,13 @@ def test_tomorrow_tail_signal_rejects_manual_factor_version(tmp_path) -> None:
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="fixed at 30/30/25/50"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
     raw["tomorrow_tail_signal"]["volume_score_points_per_ratio"] = 50
     raw["factor_index"]["tail_volume_ratio"]["version"] = "3"
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="contains unknown keys: version"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_tomorrow_tail_factor_index_cannot_contradict_executable_formula(tmp_path) -> None:
@@ -968,7 +968,7 @@ def test_tomorrow_tail_factor_index_cannot_contradict_executable_formula(tmp_pat
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="tail_return_30m.formula"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None:
@@ -977,31 +977,31 @@ def test_d25_market_regime_policy_is_required_and_cannot_drift(tmp_path) -> None
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="risk_on_breadth_min"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
     raw = _strategy_document()
     raw["market_regime"]["risk_on_breadth_min"] = 61
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="market regime boundaries are fixed"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_long_research_contract_is_required_and_hashes_keyword_changes(tmp_path) -> None:
     source = PROJECT_ROOT / "config" / "strategy.json"
-    baseline = load_strategy_settings(source)
+    baseline = LoadStrategySettings(source)
     raw = _strategy_document()
     raw["long_research"]["announcements"]["policy_positive_keywords"].append("设备更新")
     changed_path = _write_strategy_config(tmp_path, raw)
 
-    changed = load_strategy_settings(changed_path)
+    changed = LoadStrategySettings(changed_path)
 
     assert changed.strategy_version != baseline.strategy_version
 
     del raw["long_research"]
     changed_path = _write_strategy_config(tmp_path, raw)
     with pytest.raises(ConfigurationError, match="long.long_research is required"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_long_research_severity_keyword_levels_cannot_overlap(tmp_path) -> None:
@@ -1011,7 +1011,7 @@ def test_long_research_severity_keyword_levels_cannot_overlap(tmp_path) -> None:
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="severity keyword levels must not overlap"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)
 
 
 def test_long_factor_index_cannot_hide_a_provider_placeholder(tmp_path) -> None:
@@ -1020,4 +1020,4 @@ def test_long_factor_index_cannot_hide_a_provider_placeholder(tmp_path) -> None:
     changed_path = _write_strategy_config(tmp_path, raw)
 
     with pytest.raises(ConfigurationError, match="value_score.formula"):
-        load_strategy_settings(changed_path)
+        LoadStrategySettings(changed_path)

@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from trader.download.infra import history_sqlite_read_connection
-from trader.download.infra.history_sync_failure import history_failure_detail
+from trader.download.infra.history_sync_failure import HistoryFailureDetail
 
 
 @pytest.mark.parametrize("code,attempts", ((sqlite3.SQLITE_BUSY, 2), (sqlite3.SQLITE_IOERR, 1), (None, 2)))
@@ -42,16 +42,16 @@ def test_month_reader_retries_only_lock_contention_and_closes_failed_handle(tmp_
     monkeypatch.setattr(history_sqlite_read_connection.sqlite3, "connect", connect)
     monkeypatch.setattr(history_sqlite_read_connection.time, "sleep", lambda seconds: None)
     if code != sqlite3.SQLITE_IOERR:
-        connection = history_sqlite_read_connection.open_history_month_reader(
+        connection = history_sqlite_read_connection.OpenHistoryMonthReader(
             tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None
         )
         connection.close()
         assert opened[1].closed
     else:
         with pytest.raises(sqlite3.OperationalError) as failure:
-            history_sqlite_read_connection.open_history_month_reader(
+            history_sqlite_read_connection.OpenHistoryMonthReader(
                 tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None
             )
-        assert "SQLITE_IOERR" in history_failure_detail(failure.value)
+        assert "SQLITE_IOERR" in HistoryFailureDetail(failure.value)
     assert len(opened) == attempts
     assert opened[0].closed

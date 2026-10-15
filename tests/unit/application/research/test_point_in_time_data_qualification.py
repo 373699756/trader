@@ -2,19 +2,19 @@ from datetime import date
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.training.application.point_in_time_data_qualification import (
-    assemble_point_in_time_data_qualification,
+    AssemblePointInTimeDataQualification,
 )
-from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityProbe, build_h1_capability_audit
+from trader.training.domain.evaluation.h1_point_in_time import BuildH1CapabilityAudit, H1CapabilityProbe
 from trader.training.domain.evaluation.historical_industry_facts import (
+    BuildHistoricalIndustryDatasetReport,
+    BuildHistoricalIndustrySourceAudit,
     HistoricalIndustrySourceContract,
-    build_historical_industry_dataset_report,
-    build_historical_industry_source_audit,
-    merge_historical_industry_facts,
+    MergeHistoricalIndustryFacts,
 )
 
 
 def _industry_report():
-    source = build_historical_industry_source_audit(
+    source = BuildHistoricalIndustrySourceAudit(
         HistoricalIndustrySourceContract(
             "baostock_archived_industry",
             "00.9.30",
@@ -29,7 +29,7 @@ def _industry_report():
         (),
         (),
     )
-    return build_historical_industry_dataset_report("a" * 64, (source,), merge_historical_industry_facts(()))
+    return BuildHistoricalIndustryDatasetReport("a" * 64, (source,), MergeHistoricalIndustryFacts(()))
 
 
 def test_current_archive_and_free_source_evidence_project_explicit_three_gate_blockers() -> None:
@@ -43,14 +43,14 @@ def test_current_archive_and_free_source_evidence_project_explicit_three_gate_bl
         partition_count=100,
         reason="history_snapshot_partition_invalid",
     )
-    sources = build_h1_capability_audit(
+    sources = BuildH1CapabilityAudit(
         (
             H1CapabilityProbe("tencent_qfq_daily", date(2024, 1, 9), False, "qfq", False, 640, 1, 1, 1.0),
             H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 1, 1, 1.0),
         )
     )
 
-    report = assemble_point_in_time_data_qualification(archive, sources, _industry_report())
+    report = AssemblePointInTimeDataQualification(archive, sources, _industry_report())
 
     assert report.state == "historical_data_insufficient"
     assert report.daily_archive.completed_codes == 0
@@ -71,11 +71,11 @@ def test_daily_archive_count_mismatch_is_reported_instead_of_becoming_an_invalid
         partition_count=100,
         reason=None,
     )
-    sources = build_h1_capability_audit(
+    sources = BuildH1CapabilityAudit(
         (H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 1, 1, 1.0),)
     )
 
-    report = assemble_point_in_time_data_qualification(archive, sources, _industry_report())
+    report = AssemblePointInTimeDataQualification(archive, sources, _industry_report())
 
     assert report.daily_archive.state == "historical_data_insufficient"
     assert "daily_archive_sessions_below_2000" in report.daily_archive.failure_reasons

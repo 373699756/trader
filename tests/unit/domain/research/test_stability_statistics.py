@@ -7,9 +7,9 @@ import pytest
 from trader.training.domain.evaluation.specification import PREREGISTERED_RESEARCH_SPEC
 from trader.training.domain.evaluation.statistics import (
     BOOTSTRAP_REPETITIONS,
-    bootstrap_seed,
-    holm_step_down,
-    paired_moving_block_bootstrap,
+    BootstrapSeed,
+    HolmStepDown,
+    PairedMovingBlockBootstrap,
 )
 
 
@@ -22,10 +22,10 @@ def test_r5_bootstrap_uses_preregistered_seed_and_is_deterministic() -> None:
     values = tuple(0.001 * index for index in range(1, 41))
     drawdown = tuple(-0.01 if index % 2 else 0.0 for index in range(40))
 
-    first = paired_moving_block_bootstrap(values, drawdown, "continuous_entry", 5)
-    second = paired_moving_block_bootstrap(values, drawdown, "continuous_entry", 5)
+    first = PairedMovingBlockBootstrap(values, drawdown, "continuous_entry", 5)
+    second = PairedMovingBlockBootstrap(values, drawdown, "continuous_entry", 5)
 
-    assert bootstrap_seed("continuous_entry", 5) == expected
+    assert BootstrapSeed("continuous_entry", 5) == expected
     assert first == second
     assert first.seed == expected
     assert first.repetitions == BOOTSTRAP_REPETITIONS == 10_000
@@ -43,14 +43,14 @@ def test_r5_bootstrap_seed_is_namespaced_by_the_new_research_identity() -> None:
         signed=False,
     )
 
-    assert bootstrap_seed("continuous_entry", 5, spec=PREREGISTERED_RESEARCH_SPEC) == expected
-    assert bootstrap_seed("continuous_entry", 5, spec=PREREGISTERED_RESEARCH_SPEC) != bootstrap_seed(
+    assert BootstrapSeed("continuous_entry", 5, spec=PREREGISTERED_RESEARCH_SPEC) == expected
+    assert BootstrapSeed("continuous_entry", 5, spec=PREREGISTERED_RESEARCH_SPEC) != BootstrapSeed(
         "continuous_entry", 5
     )
 
 
 def test_r5_bootstrap_refuses_short_non_circular_blocks() -> None:
-    result = paired_moving_block_bootstrap((0.1, 0.2), (0.0, 0.0), "combined", 3)
+    result = PairedMovingBlockBootstrap((0.1, 0.2), (0.0, 0.0), "combined", 3)
 
     assert result.valid is False
     assert result.p_value is None
@@ -59,7 +59,7 @@ def test_r5_bootstrap_refuses_short_non_circular_blocks() -> None:
 
 
 def test_r5_holm_keeps_the_fixed_five_variant_family_after_first_failure() -> None:
-    decisions = holm_step_down(
+    decisions = HolmStepDown(
         {
             "continuous_entry": 0.009,
             "coverage_shrink": 0.020,

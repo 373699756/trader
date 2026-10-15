@@ -9,22 +9,22 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    decision_observed_at as _decision_observed_at,
+    BuildModelScoringContext as _model_scoring_context,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    merge_overlay_quote as _merge_overlay_quote,
+    DecisionObservedAt as _decision_observed_at,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    model_scoring_context as _model_scoring_context,
+    MergeOverlayQuote as _merge_overlay_quote,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    overlay_observed_at as _overlay_observed_at,
+    OverlayObservedAt as _overlay_observed_at,
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    selected_quote_features as _selected_quote_features,
+    SelectedQuoteFeatures as _selected_quote_features,
 )
 from trader.recommendation.application.pipeline.data_source.source_quality import (
-    decision_failure_code as _decision_failure_code,
+    DecisionFailureCode as _decision_failure_code,
 )
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
     ScoredLocalProjection,
@@ -38,14 +38,14 @@ from trader.recommendation.application.pipeline.local_score.base_scoring import 
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import (
+    AssessCandidateInputStage,
     QualityScoringBatch,
-    assess_candidate_input_stage,
 )
 from trader.recommendation.application.pipeline.quality_check.pipeline_status import (
-    build_supply_status,
-    update_supply_status_decision,
+    BuildSupplyStatus,
+    UpdateSupplyStatusDecision,
 )
-from trader.recommendation.application.pipeline.stage_output import measured_output
+from trader.recommendation.application.pipeline.stage_output import MeasuredOutput
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, ResearchAuditIdentity
 from trader.recommendation.application.ports.runtime import (
@@ -59,8 +59,8 @@ from trader.recommendation.application.ports.scoring_inputs import AcceptedScori
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,
+    IdentityCodes,
     ScoredDecision,
-    identity_codes,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -122,7 +122,7 @@ class LocalDecisionBuilder(DecisionBuilderPort):
         try:
             evaluated_at = _decision_observed_at(batch)
             started = self._monotonic()
-            quality_stage = assess_candidate_input_stage(
+            quality_stage = AssessCandidateInputStage(
                 batch.candidate_stage,
                 as_of=evaluated_at,
                 minimum_history_sessions=(
@@ -135,7 +135,7 @@ class LocalDecisionBuilder(DecisionBuilderPort):
                 latency_ms=0,
                 hard_filter=self._policy.hard_filter,
             )
-            quality_stage = measured_output(quality_stage, started, self._monotonic)
+            quality_stage = MeasuredOutput(quality_stage, started, self._monotonic)
             native_input = (TomorrowNativeInput if request.strategy is Strategy.TOMORROW else D25NativeInput)(
                 batch.request.trade_date,
                 batch.request.phase,
@@ -163,7 +163,7 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             )
         except (RuntimeError, TypeError, ValueError) as exc:
             raise DecisionUnavailableError(_decision_failure_code(exc)) from exc
-        quality_status = build_supply_status(
+        quality_status = BuildSupplyStatus(
             projection,
             batch.candidate_stage_counts,
             candidate_quote_eligible=batch.candidate_quote_eligible,
@@ -205,7 +205,7 @@ class LocalDecisionBuilder(DecisionBuilderPort):
                 and current_quality.stage_snapshots[9] == projection.stages.local_score.snapshot
             ):
                 expected_quality = current_quality
-                current_quality = update_supply_status_decision(
+                current_quality = UpdateSupplyStatusDecision(
                     current_quality,
                     projection,
                     decision,
@@ -273,8 +273,8 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             batch = self._inputs.batch(request)
             if batch is None:
                 return None
-            features_by_code = _selected_quote_features(batch, identity_codes(decision))
-        selected_codes = frozenset(identity_codes(decision))
+            features_by_code = _selected_quote_features(batch, IdentityCodes(decision))
+        selected_codes = frozenset(IdentityCodes(decision))
         features_by_code = {code: feature for code, feature in features_by_code.items() if code in selected_codes}
         observed_at = _overlay_observed_at(request, tuple(features_by_code.values()))
         if previous is not None and previous.observed_at > observed_at:

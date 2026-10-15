@@ -1,16 +1,16 @@
 from datetime import date
 
-from trader.training.application.h1_point_in_time_completion import complete_h1_research
+from trader.training.application.h1_point_in_time_completion import CompleteH1Research
 from trader.training.domain.evaluation.h1_point_in_time import (
+    BuildH1CapabilityAudit,
     H1CapabilityProbe,
     H1PointInTimeSpec,
-    build_h1_capability_audit,
 )
 from trader.training.infra.research.h1_point_in_time_snapshot import SQLiteH1PointInTimeSnapshot
 
 
 def _insufficient_capability():
-    return build_h1_capability_audit(
+    return BuildH1CapabilityAudit(
         (
             H1CapabilityProbe(
                 "tencent_qfq_daily",
@@ -42,7 +42,7 @@ def _insufficient_capability():
 def test_h1_research_completion_seals_all_downstream_insufficient_states_without_fake_rows(tmp_path) -> None:
     archive = SQLiteH1PointInTimeSnapshot(tmp_path)
 
-    completion = complete_h1_research(
+    completion = CompleteH1Research(
         capability=_insufficient_capability(),
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )
@@ -60,7 +60,7 @@ def test_h1_research_completion_seals_all_downstream_insufficient_states_without
 
 def test_h1_research_completion_projects_a_terminal_development_handoff_with_parent_hashes(tmp_path) -> None:
     archive = SQLiteH1PointInTimeSnapshot(tmp_path)
-    completion = complete_h1_research(
+    completion = CompleteH1Research(
         capability=_insufficient_capability(),
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(item)) for item in ("tomorrow", "d25")),
     )

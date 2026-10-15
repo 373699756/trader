@@ -58,7 +58,7 @@ _PROFILES: dict[str, _Profile] = {
 }
 
 
-def profiles() -> dict[str, _Profile]:
+def Profiles() -> dict[str, _Profile]:
     """Return the profile index."""
 
     return _PROFILES

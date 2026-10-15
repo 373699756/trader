@@ -16,7 +16,7 @@ from typing_extensions import Unpack
 
 from trader.infra.cache_contracts import BoundedCache
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.references.security_references import security_reference_observations
+from trader.infra.market_data.references.security_references import SecurityReferenceObservations
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.data_source.input_identity import InputVersionClock
 from trader.recommendation.application.ports.market_data import (
@@ -26,7 +26,7 @@ from trader.recommendation.application.ports.market_data import (
     MarketDataUnavailableError,
 )
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
-from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.application.runtime.source_lanes import SourceLaneScheduler, SourceRequestSupersededError
 from trader.recommendation.domain.market.models import (
     CanonicalMarketSnapshot,
@@ -64,17 +64,17 @@ from trader.recommendation.infra.market_data.source_coordinator import (
 from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
 from trader.recommendation.infra.normalization.columnar import (
     ColumnarQuoteBatch,
+    MarketChanges,
     NormalizedMarketChangeSet,
-    market_changes,
-    targeted_market_changes,
+    TargetedMarketChanges,
 )
 from trader.recommendation.infra.normalization.merge import (
+    MergeMarketObservations,
     MergeObservationLimits,
-    merge_market_observations,
-    observation_from_quote,
-    overlay_canonical_snapshot,
+    ObservationFromQuote,
+    OverlayCanonicalSnapshot,
 )
-from trader.recommendation.infra.normalization.merge_quote import rejection_reason
+from trader.recommendation.infra.normalization.merge_quote import RejectionReason
 
 _TARGET_QUOTE_MAX_COMMIT_RESERVE_SECONDS = 0.2
 _TARGET_QUOTE_MIN_TRANSPORT_TIMEOUT_SECONDS = 0.05
@@ -208,7 +208,7 @@ class MarketDataGateway:
         self,
         observations: Sequence[SourceObservation],
     ) -> None:
-        references = security_reference_observations(observations)
+        references = SecurityReferenceObservations(observations)
         if not references:
             return
         self.update_reference_observations(references)
@@ -305,7 +305,7 @@ class MarketDataGateway:
             raise MarketDataUnavailableError("market data unavailable: " + _parallel_error_message(results))
         observations = tuple(observation for result in successes for observation in result.observations)
         observed_codes = {observation.subject_key for observation in observations}
-        security_references = security_reference_observations(observations)
+        security_references = SecurityReferenceObservations(observations)
         with self._state_lock:
             previous = self._latest_snapshot
             self._remember_observations_locked(observations, completed_at)
@@ -314,7 +314,7 @@ class MarketDataGateway:
                 observation for code, observation in self._reference_observations.items() if code in observed_codes
             )
         merge_started = self._monotonic()
-        snapshot = merge_market_observations(
+        snapshot = MergeMarketObservations(
             (*observations, *references),
             observed_at=completed_at,
             merge_epoch=self._versions.advance("market"),
@@ -340,7 +340,7 @@ class MarketDataGateway:
             if columnar is None:
                 self._latest_changes = _columnar_failure_changes(latest, commit_snapshot)
             else:
-                self._latest_changes = market_changes(self._latest_batch, columnar)
+                self._latest_changes = MarketChanges(self._latest_batch, columnar)
                 self._latest_batch = columnar
             self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
             self._latest_source = "tencent+sina" if len(successes) == 2 else outcome.vendor
@@ -520,12 +520,12 @@ class MarketDataGateway:
             )
         raw_codes = {observation.subject_key for observation in raw_baseline}
         baseline_observations = tuple(
-            observation_from_quote(quote, source=quote.source, observed_at=completed_at)
+            ObservationFromQuote(quote, source=quote.source, observed_at=completed_at)
             for quote in baseline
             if quote.code not in raw_codes
         )
         merge_started = self._monotonic()
-        snapshot = merge_market_observations(
+        snapshot = MergeMarketObservations(
             (*raw_baseline, *baseline_observations, *observations, *references),
             observed_at=completed_at,
             merge_epoch=self._versions.advance("targeted"),
@@ -598,12 +598,12 @@ class MarketDataGateway:
         commit_started = self._monotonic()
         self._remember_observations_locked(observations, completed_at)
         previous = self._latest_snapshot
-        commit_snapshot = overlay_canonical_snapshot(
+        commit_snapshot = OverlayCanonicalSnapshot(
             previous, snapshot, merge_epoch=self._versions.advance("targeted_commit")
         )
         selected_codes = set(codes)
         self._latest_snapshot = commit_snapshot
-        self._latest_changes = targeted_market_changes(previous, commit_snapshot, codes)
+        self._latest_changes = TargetedMarketChanges(previous, commit_snapshot, codes)
         if previous is None:
             self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
         else:
@@ -688,7 +688,7 @@ class MarketDataGateway:
             listing_date = date.fromisoformat(listing_raw)
         except ValueError:
             return observation
-        observed_date = shanghai_now(observation.observed_at).date()
+        observed_date = ShanghaiNow(observation.observed_at).date()
         if not open_dates:
             return observation
         sessions = bisect_right(open_dates, observed_date) - bisect_left(open_dates, listing_date)
@@ -727,7 +727,7 @@ class MarketDataGateway:
         observed_at: datetime,
     ) -> None:
         for observation in observations:
-            if rejection_reason(observation, observed_at) is not None:
+            if RejectionReason(observation, observed_at) is not None:
                 continue
             by_source = self._latest_observations.setdefault(observation.subject_key, {})
             source = observation.source.strip().lower()

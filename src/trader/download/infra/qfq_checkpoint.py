@@ -6,7 +6,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from trader.infra.atomic_files.json import atomic_write_json
+from trader.infra.atomic_files.json import AtomicWriteJson
 
 
 class QfqCheckpoint:
@@ -43,7 +43,7 @@ class QfqCheckpoint:
         next_day = day.isoformat()
         next_codes = set() if self._day != next_day or self._source != source else set(self._codes)
         next_codes.update(codes)
-        atomic_write_json(self._path, {"day": next_day, "source": source, "codes": sorted(next_codes)})
+        AtomicWriteJson(self._path, {"day": next_day, "source": source, "codes": sorted(next_codes)})
         self._day = next_day
         self._source = source
         self._codes = next_codes

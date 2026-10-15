@@ -23,11 +23,11 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
     BaoStockTradingStatus,
-    join_baostock_daily_sides,
+    JoinBaostockDailySides,
 )
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, prepare_history_industries
+from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, PrepareHistoryIndustries
 
 _DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST"
 _DAILY_FACT_FIELDS = "date,code,tradestatus,isST"
@@ -66,11 +66,11 @@ class _DailySideQuery:
     source_code: str | None = None
 
 
-def repairable_qfq_codes() -> frozenset[str]:
+def RepairableQfqCodes() -> frozenset[str]:
     return frozenset(item.current_source_code.split(".")[-1] for item in _QFQ_CODE_ALIASES)
 
 
-def qfq_source_windows(
+def QfqSourceWindows(
     source_code: str,
     dates: tuple[date, ...],
 ) -> tuple[tuple[str, tuple[date, ...]], ...]:
@@ -215,7 +215,7 @@ class BaoStockRowGateway:
         )
         qfq, qfq_nulls, qfq_future, unavailable = self._qfq_sides(spec, security, expected)
         qfq = _reconstruct_unavailable_qfq(raw, qfq, unavailable, expected)
-        batch = join_baostock_daily_sides(
+        batch = JoinBaostockDailySides(
             BaoStockDailyJoinRequest(
                 security.code,
                 expected,
@@ -249,7 +249,7 @@ class BaoStockRowGateway:
         combined_sides: list[BaoStockDailySide] = []
         unavailable_dates: list[date] = []
         null_rows = future_rows = 0
-        for source_code, dates in qfq_source_windows(security.source_code, expected):
+        for source_code, dates in QfqSourceWindows(security.source_code, expected):
             values, _facts, invalid, future, unavailable = self._daily_sides(
                 spec,
                 security,
@@ -279,7 +279,7 @@ class BaoStockRowGateway:
         raw, facts, nulls, future, _unavailable = self._daily_sides(
             spec, security, _DailySideQuery("unadjusted", "3", expected)
         )
-        batch = join_baostock_daily_sides(
+        batch = JoinBaostockDailySides(
             BaoStockDailyJoinRequest(security.code, expected, spec.source_cutoff, nulls), raw, ()
         )
         return BaoStockCodeDownload(
@@ -341,7 +341,7 @@ class BaoStockRowGateway:
         progress: Callable[[HistorySyncProgress], None] | None = None,
     ) -> tuple[BaoStockIndustryInterval, ...]:
         del spec
-        return prepare_history_industries(
+        return PrepareHistoryIndustries(
             IndustryPreparationRequest(
                 calendar,
                 universe,
@@ -665,6 +665,6 @@ __all__ = [
     "BaoStockRowGateway",
     "BaoStockRowResult",
     "BaoStockSdkPort",
-    "qfq_source_windows",
-    "repairable_qfq_codes",
+    "QfqSourceWindows",
+    "RepairableQfqCodes",
 ]

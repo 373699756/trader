@@ -8,10 +8,10 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput, M
 from trader.recommendation.domain.scoring.residualization import LEGACY_EXPOSURE_CONTRACT
 from trader.training.application.tomorrow_historical_validation import (
     TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC,
+    BuildHistoricalRiskProbability,
+    EvaluateHistoricalRiskProbability,
+    EvaluateHistoricalSelectedDays,
     TomorrowHistoricalRiskRow,
-    build_historical_risk_probability,
-    evaluate_historical_risk_probability,
-    evaluate_historical_selected_days,
 )
 
 
@@ -72,7 +72,7 @@ def test_legal_empty_selection_is_a_cash_day_not_missing_evidence() -> None:
     day = date(2025, 1, 2)
     rows = tuple(_row(day, index, benchmark=0.012) for index in range(10))
 
-    result = evaluate_historical_selected_days(rows, utilities=(-0.1,) * len(rows))
+    result = EvaluateHistoricalSelectedDays(rows, utilities=(-0.1,) * len(rows))
 
     assert len(result) == 1
     assert result[0].status == "cash"
@@ -82,7 +82,7 @@ def test_legal_empty_selection_is_a_cash_day_not_missing_evidence() -> None:
     assert result[0].net_excess_return_20bp == -0.012
 
     with pytest.raises(ValueError, match="unique"):
-        evaluate_historical_selected_days((rows[0], rows[0]), utilities=(0.1, 0.1))
+        EvaluateHistoricalSelectedDays((rows[0], rows[0]), utilities=(0.1, 0.1))
 
 
 def test_historical_risk_validation_uses_ordered_60_20_40_splits_without_future_collection() -> None:
@@ -91,7 +91,7 @@ def test_historical_risk_validation_uses_ordered_60_20_40_splits_without_future_
         _row(start + timedelta(days=day_index), stock_index) for day_index in range(122) for stock_index in range(20)
     )
 
-    outcome = build_historical_risk_probability(rows, _Predictor())
+    outcome = BuildHistoricalRiskProbability(rows, _Predictor())
     report = outcome.report
 
     assert report.spec_hash == TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.content_hash
@@ -116,7 +116,7 @@ def test_historical_risk_validation_reports_insufficient_history_instead_of_coll
         _row(start + timedelta(days=day_index), stock_index) for day_index in range(121) for stock_index in range(5)
     )
 
-    report = evaluate_historical_risk_probability(rows, _Predictor())
+    report = EvaluateHistoricalRiskProbability(rows, _Predictor())
 
     assert report.status == "historical_data_insufficient"
     assert report.failure_reasons == ("historical_trade_dates_below_122",)

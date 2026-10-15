@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.model_bundles.bundle_repository import locate_active_head_bundle
+from trader.training.infra.model_bundles.bundle_repository import LocateActiveHeadBundle
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
 
-def locate_head_bundles(
+def LocateHeadBundles(
     training_root: Path,
     profile: TrainedProfileContract,
 ) -> tuple[tuple[Strategy, Path], ...]:
@@ -18,7 +18,7 @@ def locate_head_bundles(
     return tuple(
         (
             contract.strategy,
-            locate_active_head_bundle(
+            LocateActiveHeadBundle(
                 training_root / profile.output_directory / contract.directory_name,
                 contract.strategy,
                 profile,
@@ -28,4 +28,4 @@ def locate_head_bundles(
     )
 
 
-__all__ = ["locate_head_bundles"]
+__all__ = ["LocateHeadBundles"]

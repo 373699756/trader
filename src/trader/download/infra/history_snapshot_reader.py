@@ -28,8 +28,8 @@ from trader.download.infra.history_month_partition import (
 )
 from trader.download.infra.history_reference_files import (
     HistoryReferenceIndex,
-    history_reference_path,
-    read_bound_history_reference,
+    HistoryReferencePath,
+    ReadBoundHistoryReference,
 )
 
 _CODE = re.compile(r"^[0-9]{6}$")
@@ -97,14 +97,14 @@ def _training_months(snapshot: HistoryActiveSnapshot, dates: tuple[date, ...]) -
         or dates[-1] > snapshot.data_cutoff
     ):
         raise ValueError("history training calendar is invalid")
-    expected = route_history_months(dates[0], dates[-1])
+    expected = RouteHistoryMonths(dates[0], dates[-1])
     available = tuple(_reference_month(item) for item in snapshot.partitions if _reference_month(item) in expected)
     if available != expected:
         raise HistorySnapshotReadError("history snapshot does not cover the active calendar")
     return expected
 
 
-def route_history_months(start: date, end: date) -> tuple[tuple[int, int], ...]:
+def RouteHistoryMonths(start: date, end: date) -> tuple[tuple[int, int], ...]:
     if start > end:
         raise ValueError("history month route is invalid")
     year = start.year
@@ -137,14 +137,14 @@ class HistorySnapshotReader:
         digest = source.supplier_contract[len("history_ref_") : len("history_ref_") + 64]
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise HistorySnapshotReadError("history_reference_unavailable")
-        path = history_reference_path(self._root, digest)
+        path = HistoryReferencePath(self._root, digest)
         try:
             stat = path.stat()
             identity = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
             cached = self._references.get(digest)
             if cached is not None and cached[0] == identity:
                 return cached[1]
-            reference = read_bound_history_reference(self._root, source.supplier_contract)
+            reference = ReadBoundHistoryReference(self._root, source.supplier_contract)
             index = HistoryReferenceIndex(reference)
             self._references[digest] = (identity, index)
             return index
@@ -208,7 +208,7 @@ class HistorySnapshotReader:
                 snapshot_sequence=self._reference(snapshot, year, month).sequence,
                 codes=eligible_codes,
             )
-            for year, month in route_history_months(start, end)
+            for year, month in RouteHistoryMonths(start, end)
         )
 
     def row_count_upper_bound(
@@ -221,7 +221,7 @@ class HistorySnapshotReader:
 
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("history range bound is invalid")
-        return sum(self._reference(snapshot, year, month).row_count for year, month in route_history_months(start, end))
+        return sum(self._reference(snapshot, year, month).row_count for year, month in RouteHistoryMonths(start, end))
 
     def read_day(
         self,
@@ -259,7 +259,7 @@ class HistorySnapshotReader:
             raise ValueError("history code window dates are invalid")
         allowed = frozenset(dates)
         rows: list[HistoryRevision] = []
-        for year, month in route_history_months(dates[0], dates[-1]):
+        for year, month in RouteHistoryMonths(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)
             rows.extend(
@@ -313,7 +313,7 @@ class HistorySnapshotReader:
     def _iter_price_revisions(
         self, start: date, end: date, snapshot: HistoryActiveSnapshot
     ) -> Iterator[HistoryRevision]:
-        for year, month in route_history_months(start, end):
+        for year, month in RouteHistoryMonths(start, end):
             repository = self._verified_repository(self._reference(snapshot, year, month))
             yield from repository.iter_range(
                 start, end, snapshot_sequence=self._reference(snapshot, year, month).sequence
@@ -335,7 +335,7 @@ class HistorySnapshotReader:
                 end,
                 snapshot_sequence=self._reference(snapshot, year, month).sequence,
             )
-            for year, month in route_history_months(start, end)
+            for year, month in RouteHistoryMonths(start, end)
         )
         reference_index = self.reference_index(snapshot)
         yield from (
@@ -364,7 +364,7 @@ class HistorySnapshotReader:
         if not self.reference_index(snapshot).eligible(code):
             return ()
         rows: list[PublishedHistoryCell] = []
-        for year, month in route_history_months(dates[0], dates[-1]):
+        for year, month in RouteHistoryMonths(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)
             rows.extend(
@@ -382,7 +382,7 @@ class HistorySnapshotReader:
     ) -> Iterator[PublishedHistoryCell]:
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("published history range is invalid")
-        references = tuple(self._reference(snapshot, year, month) for year, month in route_history_months(start, end))
+        references = tuple(self._reference(snapshot, year, month) for year, month in RouteHistoryMonths(start, end))
         streams = tuple(
             self._verified_repository(reference).iter_published_cells(start, end, snapshot_sequence=reference.sequence)
             for reference in references
@@ -409,7 +409,7 @@ class HistorySnapshotReader:
                 end,
                 snapshot_sequence=self._reference(snapshot, year, month).sequence,
             )
-            for year, month in route_history_months(start, end)
+            for year, month in RouteHistoryMonths(start, end)
         )
         yield from heapq.merge(*streams, key=lambda row: (row[0], row[1]))
 
@@ -451,7 +451,7 @@ class HistorySnapshotReader:
         index = self.reference_index(snapshot)
         if not index.eligible(code):
             return
-        for year, month in route_history_months(start, end):
+        for year, month in RouteHistoryMonths(start, end):
             reference = self._reference(snapshot, year, month)
             repository = self._verified_repository(reference)
             yield from (
@@ -608,5 +608,5 @@ __all__ = [
     "HistorySnapshotReadError",
     "HistoryPartitionRevisionComparison",
     "HistorySnapshotReader",
-    "route_history_months",
+    "RouteHistoryMonths",
 ]

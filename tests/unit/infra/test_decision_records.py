@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision, pipeline, stage_snapshots
-from trader.http_api.response.decision_projection import serialize_decision_view, serialize_event
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.http_api.response.decision_projection import SerializeDecisionView, SerializeEvent
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
@@ -44,8 +44,8 @@ def test_fourteen_stage_audit_restarts_and_has_identical_get_sse_projections(tmp
     restored = restarted.load(Strategy.TOMORROW, current.trade_date)
     assert restored == expected
     queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), restarted, Clock())
-    history = serialize_decision_view(queries.history(Strategy.TOMORROW, current.trade_date))
-    event = serialize_event(UnifiedDecisionEventStream().publish_committed(build_decision_committed(restored.decision)))
+    history = SerializeDecisionView(queries.history(Strategy.TOMORROW, current.trade_date))
+    event = SerializeEvent(UnifiedDecisionEventStream().publish_committed(BuildDecisionCommitted(restored.decision)))
     assert history["pipeline"] == event["pipeline"]
     assert len(history["pipeline"]["stage_snapshots"]) == 14
 

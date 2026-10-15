@@ -8,9 +8,9 @@ import pytest
 from trader.training.application.research_audit import (
     LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION,
     CommittedResearchAudit,
+    PointInTimePopulationHash,
     ResearchDecisionSetAudit,
     ResearchPopulationAudit,
-    point_in_time_population_hash,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -68,7 +68,7 @@ def test_local_audit_keeps_rejected_point_in_time_identity() -> None:
         shadow_mode="control_copy",
         input_observed_at=observed_at,
         point_in_time_population=population,
-        point_in_time_population_hash=point_in_time_population_hash(population),
+        point_in_time_population_hash=PointInTimePopulationHash(population),
     )
 
     assert audit.point_in_time_population[0].disposition == "reject"
@@ -93,7 +93,7 @@ def test_audit_rejects_population_evidence_after_input_time() -> None:
             shadow_mode="control_copy",
             input_observed_at=input_at,
             point_in_time_population=population,
-            point_in_time_population_hash=point_in_time_population_hash(population),
+            point_in_time_population_hash=PointInTimePopulationHash(population),
         )
 
 

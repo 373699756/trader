@@ -8,19 +8,19 @@ from datetime import datetime
 from types import MappingProxyType
 
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
+    PlanScoredFeatureCandidates,
     ScoredSelectionIdentity,
     ScoredSelectionOptions,
-    plan_scored_feature_candidates,
 )
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
-    normalize_candidate_discovery_population,
+    NormalizeCandidateDiscoveryPopulation,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.quality_check.input_quality_service import has_transient_evaluation_gap
+from trader.recommendation.application.pipeline.quality_check.input_quality_service import HasTransientEvaluationGap
 from trader.recommendation.application.pipeline.stage_output import (
     PipelineStageOutput,
-    require_previous_stage,
-    stage_output,
+    RequirePreviousStage,
+    StageOutput,
 )
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate
@@ -92,7 +92,7 @@ class CandidatePlanningContext:
     population_evaluated_at: datetime | None = None
 
 
-def build_candidate_plans(
+def BuildCandidatePlans(
     population: Sequence[FeatureSnapshot],
     candidate_features: Sequence[FeatureSnapshot] | None,
     context: CandidatePlanningContext,
@@ -100,10 +100,10 @@ def build_candidate_plans(
     population_at = context.population_evaluated_at or context.evaluated_at
     if population_at.date() != context.evaluated_at.date():
         raise ValueError("candidate_population_trade_date_mismatch")
-    features = normalize_candidate_discovery_population(population, population_at)
+    features = NormalizeCandidateDiscoveryPopulation(population, population_at)
     candidates = tuple(candidate_features) if candidate_features is not None else None
     plans = {
-        strategy: plan_scored_feature_candidates(
+        strategy: PlanScoredFeatureCandidates(
             features,
             context.policy,
             ScoredSelectionOptions(
@@ -156,7 +156,7 @@ def _model_eligible_codes(
     return frozenset(feature.quote.code for feature in features if model_scoring.is_input_eligible(strategy, feature))
 
 
-def refresh_candidate_reserves(
+def RefreshCandidateReserves(
     population: tuple[FeatureSnapshot, ...],
     initial_plans: CandidatePlanSet,
     context: CandidatePlanningContext,
@@ -169,7 +169,7 @@ def refresh_candidate_reserves(
     if not pending:
         return CandidateRefreshPlan(
             (),
-            build_candidate_plans(
+            BuildCandidatePlans(
                 population,
                 (),
                 replace(
@@ -193,7 +193,7 @@ def refresh_candidate_reserves(
         transient_invalid_strategies.update(initial_plans.strategies_for_codes(missing_codes))
         if wave_by_code:
             refreshed.update(wave_by_code)
-        final_plans = build_candidate_plans(
+        final_plans = BuildCandidatePlans(
             population,
             tuple(refreshed.values()),
             replace(
@@ -227,9 +227,7 @@ def _transient_refresh_strategies(
         strategy
         for strategy in SCORED_STRATEGIES
         if any(
-            has_transient_evaluation_gap(item)
-            for item in plan.plans[strategy].evaluations
-            if item.code in requested_codes
+            HasTransientEvaluationGap(item) for item in plan.plans[strategy].evaluations if item.code in requested_codes
         )
     )
 
@@ -261,7 +259,7 @@ def _planning_evaluated_at(
     return max(value.astimezone(observed_at.tzinfo) for value in values)
 
 
-def build_candidate_stage_output(
+def BuildCandidateStageOutput(
     source: PipelineStageOutput[FeatureSnapshot],
     selected_codes: tuple[str, ...],
     *,
@@ -270,7 +268,7 @@ def build_candidate_stage_output(
 ) -> PipelineStageOutput[FeatureSnapshot]:
     """Bind the deterministic candidate order to the stage-8 observation."""
 
-    require_previous_stage(source, PipelineStage.CANDIDATE_POOL)
+    RequirePreviousStage(source, PipelineStage.CANDIDATE_POOL)
     if len(selected_codes) != len(set(selected_codes)):
         raise ValueError("candidate stage codes must be unique")
     by_code = {item.quote.code: item for item in source.records}
@@ -279,7 +277,7 @@ def build_candidate_stage_output(
     records = tuple(by_code[code] for code in selected_codes)
     limited = len(source.records) - len(records)
     reasons = (StageReasonAggregate("board_limit", "board limit", limited, Severity.INFO),) if limited else ()
-    return stage_output(
+    return StageOutput(
         PipelineStage.CANDIDATE_POOL,
         records,
         input_batch_id=source.snapshot.output_batch_id,
@@ -296,7 +294,7 @@ __all__ = [
     "CandidatePlanningContext",
     "CandidateRefreshPlan",
     "SCORED_STRATEGIES",
-    "build_candidate_plans",
-    "build_candidate_stage_output",
-    "refresh_candidate_reserves",
+    "BuildCandidatePlans",
+    "BuildCandidateStageOutput",
+    "RefreshCandidateReserves",
 ]

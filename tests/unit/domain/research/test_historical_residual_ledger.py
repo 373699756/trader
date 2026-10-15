@@ -6,9 +6,9 @@ import pytest
 from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
+    JoinPredictionOutcome,
     ResidualJoinKey,
-    join_prediction_outcome,
-    summarize_residuals,
+    SummarizeResiduals,
 )
 
 _HASH_A = "a" * 64
@@ -49,14 +49,14 @@ def _outcome(*, actual: float = 0.015) -> HistoricalOutcomeRecord:
 
 
 def test_prediction_and_outcome_join_only_on_exact_typed_identity_and_parent_hash() -> None:
-    joined = join_prediction_outcome(_prediction(), _outcome())
+    joined = JoinPredictionOutcome(_prediction(), _outcome())
 
     assert joined.prediction_error == pytest.approx(0.005)
     assert joined.production_authority is False
     with pytest.raises(ValueError, match="parent split"):
-        join_prediction_outcome(_prediction(), replace(_outcome(), parent_split_hash=_HASH_B))
+        JoinPredictionOutcome(_prediction(), replace(_outcome(), parent_split_hash=_HASH_B))
     with pytest.raises(ValueError, match="identity"):
-        join_prediction_outcome(
+        JoinPredictionOutcome(
             _prediction(),
             replace(_outcome(), key=replace(_outcome().key, code="600002")),
         )
@@ -76,7 +76,7 @@ def test_pending_labels_remain_null_and_cannot_be_joined_or_faked_as_zero() -> N
     )
 
     with pytest.raises(ValueError, match="not matured"):
-        join_prediction_outcome(_prediction(), pending)
+        JoinPredictionOutcome(_prediction(), pending)
     with pytest.raises(ValueError, match="pending"):
         replace(pending, actual_net_excess_return=0.0)
     with pytest.raises(ValueError, match="severe-loss"):
@@ -87,7 +87,7 @@ def test_pending_labels_remain_null_and_cannot_be_joined_or_faked_as_zero() -> N
 
 
 def test_residual_summary_uses_trade_dates_and_separates_selected_population() -> None:
-    selected = join_prediction_outcome(_prediction(selected=True), _outcome(actual=0.015))
+    selected = JoinPredictionOutcome(_prediction(selected=True), _outcome(actual=0.015))
     unselected_prediction = replace(
         _prediction(),
         key=replace(_prediction().key, code="600002"),
@@ -95,7 +95,7 @@ def test_residual_summary_uses_trade_dates_and_separates_selected_population() -
     )
     unselected_outcome = replace(_outcome(actual=-0.005), key=unselected_prediction.key)
 
-    summary = summarize_residuals((selected, join_prediction_outcome(unselected_prediction, unselected_outcome)))
+    summary = SummarizeResiduals((selected, JoinPredictionOutcome(unselected_prediction, unselected_outcome)))
 
     assert summary.evaluated_trade_dates == 1
     assert summary.evaluated_rows == 2

@@ -10,7 +10,7 @@ from typing import Literal, Protocol
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageSnapshot,
     RecommendationPipelineStatus,
-    validate_stage_batch_continuity,
+    ValidateStageBatchContinuity,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -97,7 +97,7 @@ class InputQualityStatus:
     def __post_init__(self) -> None:
         if self.strategy not in {Strategy.TOMORROW, Strategy.D25}:
             raise ValueError("input quality requires a scored strategy")
-        validate_stage_batch_continuity(self.stage_snapshots)
+        ValidateStageBatchContinuity(self.stage_snapshots)
         counts = (
             self.population_count,
             self.candidate_count,

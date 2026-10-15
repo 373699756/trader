@@ -12,7 +12,7 @@ CREDENTIAL_FILE_NAME = ".token_key"
 _CREDENTIAL_KEYS = frozenset({"DEEPSEEK_API_KEY", "TUSHARE_TOKEN"})
 
 
-def read_credential_file(path: Path, *, label: str, raw_key: str) -> dict[str, str]:
+def ReadCredentialFile(path: Path, *, label: str, raw_key: str) -> dict[str, str]:
     content = _read_credential_content(path, label)
     return _parse_credentials(content, label=label, raw_key=raw_key)
 

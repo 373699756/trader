@@ -7,7 +7,7 @@ from datetime import date, datetime
 from typing import Literal, TypeAlias, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.serialization.fields import as_sequence
+from trader.infra.serialization.fields import AsSequence
 from trader.recommendation.domain.evidence.pipeline import (
     PipelineFacet,
     PipelineMetricName,
@@ -32,6 +32,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     DECISION_IDENTITY_SCHEMA_VERSION,
     CommitKind,
     CommittedDecisionRecord,
+    CommittedRecordIdentityPayload,
     DecisionDownside,
     DecisionItem,
     DecisionModelDiagnostics,
@@ -41,7 +42,6 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionStage,
     ScoredDecision,
     SelectionDiagnostics,
-    committed_record_identity_payload,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
@@ -147,18 +147,18 @@ _PIPELINE_FACET_FIELDS = frozenset({"key", "count", "total"})
 _PIPELINE_REASON_FIELDS = frozenset({"reason", "count"})
 
 
-def committed_record_bytes(record: CommittedDecisionRecord) -> bytes:
+def CommittedRecordBytes(record: CommittedDecisionRecord) -> bytes:
     """Encode one current-schema record using its canonical persisted shape."""
 
     if record.schema_version != COMMITTED_RECORD_SCHEMA_VERSION:
         raise ValueError("formal decision record does not use the current schema")
-    payload = committed_record_identity_payload(record)
+    payload = CommittedRecordIdentityPayload(record)
     payload["payload_hash"] = record.payload_hash
     payload["version"] = record.version
     return json.dumps(payload, ensure_ascii=True, allow_nan=False, sort_keys=True, separators=(",", ":")).encode()
 
 
-def committed_record_from_bytes(payload: bytes) -> CommittedDecisionRecord:
+def CommittedRecordFromBytes(payload: bytes) -> CommittedDecisionRecord:
     """Decode and identity-check one current-schema formal record."""
 
     raw = json.loads(payload.decode("utf-8"))
@@ -497,7 +497,7 @@ def _object(
 
 
 def _list(raw: object, label: str) -> list[object]:
-    sequence = as_sequence(raw)
+    sequence = AsSequence(raw)
     if sequence is None:
         raise ValueError(f"{label} must be a list")
     return sequence
@@ -615,4 +615,4 @@ def _shanghai_datetime(value: str) -> datetime:
     return parsed.astimezone(_SHANGHAI)
 
 
-__all__ = ["committed_record_bytes", "committed_record_from_bytes"]
+__all__ = ["CommittedRecordBytes", "CommittedRecordFromBytes"]

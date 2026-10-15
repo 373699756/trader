@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from datetime import date, datetime
 
-from trader.download.domain.qfq_window import QfqUpdateResult, completed_daily_cutoff
+from trader.download.domain.qfq_window import CompletedDailyCutoff, QfqUpdateResult
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ class QfqDailyMaintenance:
         if self._cancel.is_set():
             return False
         now = self._now()
-        cutoff = completed_daily_cutoff(now)
+        cutoff = CompletedDailyCutoff(now)
         if (self._completed_cutoff == cutoff and self._completed_on == now.date()) or (
             self._retry_cutoff == cutoff and self._monotonic() < self._next_retry
         ):

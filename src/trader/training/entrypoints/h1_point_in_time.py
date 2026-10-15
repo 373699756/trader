@@ -13,7 +13,7 @@ from trader.training.infra.research.h1_point_in_time_snapshot import (
 )
 
 
-def main(argv: list[str] | None = None) -> int:
+def Main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m trader.training.entrypoints.h1_point_in_time")
     parser.add_argument("--runtime-dir", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(Main())
 
 
-__all__ = ["main"]
+__all__ = ["Main"]

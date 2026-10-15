@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Protocol
 
-from trader.training.application.h1_point_in_time_completion import H1ResearchCompletion, complete_h1_research
+from trader.training.application.h1_point_in_time_completion import CompleteH1Research, H1ResearchCompletion
 from trader.training.domain.evaluation.h1_point_in_time import H1CapabilityAuditReport, H1PointInTimeSpec
 from trader.training.domain.evaluation.historical_label import H1CoverageMetadata
 
@@ -50,6 +50,6 @@ class CompleteCapabilityEvidence:
     def execute(self, *, code: str, historical_anchor_date: date) -> CapabilityExecution:
         capability = self._probe.run(code=code, historical_anchor_date=historical_anchor_date)
         metadata = tuple(self._metadata.label_metadata(H1PointInTimeSpec(s)) for s in ("tomorrow", "d25"))
-        completion = complete_h1_research(capability=capability, metadata=metadata)
+        completion = CompleteH1Research(capability=capability, metadata=metadata)
         publication = self._publisher.publish(capability, completion)
         return CapabilityExecution(capability, completion, publication)

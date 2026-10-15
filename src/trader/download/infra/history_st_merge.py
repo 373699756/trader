@@ -6,11 +6,11 @@ import time
 from pathlib import Path
 
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.infra.history_reference_files import read_st_evidence, write_st_evidence
+from trader.download.infra.history_reference_files import ReadStEvidence, WriteStEvidence
 from trader.infra.process_lock import ProcessLock, ProcessLockError
 
 
-def merge_st_evidence(
+def MergeStEvidence(
     path: Path, incoming: tuple[HistoryStEvidence, ...], observed: tuple[HistoryStEvidence, ...] = ()
 ) -> tuple[HistoryStEvidence, ...]:
     lock = ProcessLock(path.with_name(".historical_st.lock"))
@@ -24,7 +24,7 @@ def merge_st_evidence(
                 raise RuntimeError("history_st_merge_busy") from exc
             time.sleep(0.05)
     try:
-        existing = read_st_evidence(path)
+        existing = ReadStEvidence(path)
         merged = {item.code: item for item in existing}
         baseline = {item.code: item for item in observed}
         for item in incoming:
@@ -37,7 +37,7 @@ def merge_st_evidence(
                 merged[item.code] = item
         result = tuple(sorted(merged.values(), key=lambda item: item.code))
         if result != existing:
-            write_st_evidence(path, result)
+            WriteStEvidence(path, result)
         return result
     finally:
         lock.release()
@@ -53,4 +53,4 @@ def _incoming_wins(
     return incoming.checked_on == previous.checked_on and (previous == observed or incoming.status == "unknown")
 
 
-__all__ = ["merge_st_evidence"]
+__all__ = ["MergeStEvidence"]

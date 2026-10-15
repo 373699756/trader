@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
+    ObservePublicationIo,
     PublicationIoTarget,
     PublicationIoTracker,
-    observe_publication_io,
 )
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
     UnifiedDecisionIndex,
@@ -16,7 +16,7 @@ from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, ScoredDecision
 
 
-def publish_current_snapshot(
+def PublishCurrentSnapshot(
     index: UnifiedDecisionIndex,
     builder: DecisionBuilderPort,
     identity: DecisionIdentity,
@@ -26,9 +26,7 @@ def publish_current_snapshot(
 ) -> UnifiedDecisionPublishResult:
     if not isinstance(identity, ScoredDecision):
         return index.publish(identity, expected_version=expected_version)
-    with observe_publication_io(
-        publication_io, "current_publish", PublicationIoTarget.decision(identity)
-    ) as observation:
+    with ObservePublicationIo(publication_io, "current_publish", PublicationIoTarget.decision(identity)) as observation:
         overlay = builder.initial_overlay(identity)
         result = index.publish_scored(identity, overlay, expected_version=expected_version)
         observation.reason = result.reason

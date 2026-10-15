@@ -10,11 +10,11 @@ from datetime import date
 from typing import Literal
 
 from trader.training.domain.evaluation.paired_statistics import (
+    FixedFamilyHolm,
+    PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
     PreregisteredBootstrapResult,
     PreregisteredHolmDecision,
-    fixed_family_holm,
-    paired_moving_block_statistics,
 )
 from trader.training.domain.evaluation.preregistered_rule_candidate import PreregisteredRuleCandidateFamily
 
@@ -215,7 +215,7 @@ def _evaluate_candidate_family_segment(
     plans = {candidate_id: _bootstrap(segment, candidate_id, "20bp") for candidate_id in segment.challenger_ids}
     p_values = {candidate_id: bootstrap.p_value for candidate_id, bootstrap in plans.items()}
     p_values[segment.ids[0]] = None
-    holm = fixed_family_holm(p_values, family=segment.holm_family, alpha=plan.alpha)
+    holm = FixedFamilyHolm(p_values, family=segment.holm_family, alpha=plan.alpha)
     holm_by_id = {item.challenger_id: item for item in holm}
     evidence = tuple(
         _candidate_confirmation_evidence(segment, candidate_id, plans[candidate_id], holm_by_id[candidate_id])
@@ -296,7 +296,7 @@ def _bootstrap(
         "absolute_50bp": item.candidate_net_excess_50bp,
     }[metric]
     prefix = "historical_candidate_confirmation_"
-    return paired_moving_block_statistics(
+    return PairedMovingBlockStatistics(
         values,
         plan=PreregisteredBootstrapPlan(
             f"{prefix}{metric}",
@@ -437,7 +437,7 @@ def _optional_mean(values: tuple[float, ...], default: float | None = None) -> f
     return _mean(values) if values else default
 
 
-def confirm_rule_candidates(
+def ConfirmRuleCandidates(
     family: PreregisteredRuleCandidateFamily,
     development_series: tuple[CandidateConfirmationSeries, ...],
     confirmation_series: tuple[CandidateConfirmationSeries, ...],
@@ -530,7 +530,7 @@ def confirm_rule_candidates(
     )
 
 
-def build_confirmation_folds(confirmation_dates: tuple[date, ...]) -> tuple[tuple[date, ...], ...]:
+def BuildConfirmationFolds(confirmation_dates: tuple[date, ...]) -> tuple[tuple[date, ...], ...]:
     """Return five contiguous, date-ordered folds for diagnostics only."""
 
     if len(confirmation_dates) < 5 or tuple(sorted(set(confirmation_dates))) != confirmation_dates:
@@ -560,7 +560,7 @@ def _insufficient(
     )
 
 
-def inherit_candidate_confirmation(
+def InheritCandidateConfirmation(
     family: PreregisteredRuleCandidateFamily,
     *,
     confirmation_dates: tuple[date, ...],
@@ -596,7 +596,7 @@ __all__ = [
     "CandidateConfirmationEvidence",
     "CandidateConfirmationSeries",
     "HistoricalCandidateConfirmationReport",
-    "build_confirmation_folds",
-    "confirm_rule_candidates",
-    "inherit_candidate_confirmation",
+    "BuildConfirmationFolds",
+    "ConfirmRuleCandidates",
+    "InheritCandidateConfirmation",
 ]

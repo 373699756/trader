@@ -29,36 +29,36 @@ from trader.infra.settings.models import (
     StrategySettings,
 )
 from trader.infra.settings.parser import (
+    Boolean as _boolean,
+)
+from trader.infra.settings.parser import (
     ConfigurationError,
 )
 from trader.infra.settings.parser import (
-    boolean as _boolean,
+    Integer as _integer,
 )
 from trader.infra.settings.parser import (
-    integer as _integer,
+    NestedNumberMapping as _nested_number_mapping,
 )
 from trader.infra.settings.parser import (
-    mapping as _mapping,
+    Number as _number,
 )
 from trader.infra.settings.parser import (
-    nested_number_mapping as _nested_number_mapping,
+    NumberMapping as _number_mapping,
+)
+from trader.infra.settings.parser import ReadConfigSections as _read_config_sections
+from trader.infra.settings.parser import (
+    ReadJsonObject as _read_json_object,
+)
+from trader.infra.settings.parser import RequireExactKeys as _require_exact_keys
+from trader.infra.settings.parser import (
+    RequireMapping as _mapping,
 )
 from trader.infra.settings.parser import (
-    number as _number,
+    Text as _text,
 )
-from trader.infra.settings.parser import (
-    number_mapping as _number_mapping,
-)
-from trader.infra.settings.parser import read_config_sections as _read_config_sections
-from trader.infra.settings.parser import (
-    read_json_object as _read_json_object,
-)
-from trader.infra.settings.parser import require_exact_keys as _require_exact_keys
-from trader.infra.settings.parser import (
-    text as _text,
-)
-from trader.infra.settings.parser import triple_nested_number_mapping as _triple_nested_number_mapping
-from trader.infra.settings.runtime_loader import load_runtime_settings
+from trader.infra.settings.parser import TripleNestedNumberMapping as _triple_nested_number_mapping
+from trader.infra.settings.runtime_loader import LoadRuntimeSettings
 from trader.infra.settings.strategy_validation import _validate_strategy_settings
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
@@ -67,7 +67,7 @@ from trader.recommendation.domain.market.research import (
     MarketRegimePolicy,
 )
 from trader.recommendation.domain.market.tail import TailSignalPolicy
-from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId, parse_scoring_profile
+from trader.recommendation.domain.scoring.profile_identity import ParseScoringProfile, ScoringProfileId
 
 _STRATEGY_KEYS = {
     "scoring_profile",
@@ -106,7 +106,7 @@ _STRATEGY_SECTION_FILES = {
 }
 
 
-def load_strategy_settings(
+def LoadStrategySettings(
     config_path: str | os.PathLike[str],
     *,
     scoring_profile: ScoringProfileId | None = None,
@@ -123,12 +123,12 @@ def load_strategy_settings(
     _require_exact_keys(raw, _STRATEGY_KEYS, "strategy")
     configured_profile = _text(raw, "scoring_profile")
     try:
-        configured_profile = parse_scoring_profile(configured_profile)
+        configured_profile = ParseScoringProfile(configured_profile)
     except ValueError as exc:
         raise ConfigurationError(f"scoring_profile {exc}") from exc
     if scoring_profile is not None:
         try:
-            scoring_profile = parse_scoring_profile(scoring_profile)
+            scoring_profile = ParseScoringProfile(scoring_profile)
         except ValueError as exc:
             raise ConfigurationError(f"scoring_profile override {exc}") from exc
         raw = {**raw, "scoring_profile": scoring_profile}
@@ -188,7 +188,7 @@ def load_strategy_settings(
     }
     settings = StrategySettings(
         strategy_version=_strategy_contract_identity(raw),
-        scoring_profile=parse_scoring_profile(effective_profile),
+        scoring_profile=ParseScoringProfile(effective_profile),
         fusion=FusionSettings(
             version="local_score_structured_review",
             confidence_coverage_min=_number(
@@ -239,7 +239,7 @@ def load_strategy_settings(
     return settings
 
 
-def load_long_watchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:
+def LoadLongWatchlist(config_path: str | os.PathLike[str]) -> LongWatchlist:
     raw = _read_json_object(Path(config_path).expanduser().resolve())
     items_raw = raw.get("items")
     if not isinstance(items_raw, list):
@@ -619,7 +619,7 @@ __all__ = [
     "SelectionSettings",
     "ServerSettings",
     "StrategySettings",
-    "load_long_watchlist",
-    "load_runtime_settings",
-    "load_strategy_settings",
+    "LoadLongWatchlist",
+    "LoadRuntimeSettings",
+    "LoadStrategySettings",
 ]

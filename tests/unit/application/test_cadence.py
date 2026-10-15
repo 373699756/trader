@@ -6,17 +6,17 @@ from pathlib import Path
 
 import pytest
 
-from trader.infra.settings import load_runtime_settings
+from trader.infra.settings import LoadRuntimeSettings
 from trader.recommendation.application.runtime.cadence import (
     PERIODIC_TASKS,
     CadencePlanner,
     CadencePolicy,
+    FreshnessLevel,
     PipelineTask,
     SchedulePointKey,
     SchedulePointResult,
     SchedulePointStatus,
-    freshness_level,
-    task_execution_budget_seconds,
+    TaskExecutionBudgetSeconds,
 )
 from trader.recommendation.application.runtime.schedule import SHANGHAI, SchedulePoint
 
@@ -165,11 +165,11 @@ def test_afternoon_tail_has_an_independent_five_second_deadline() -> None:
 
 
 def test_freshness_level_uses_strict_two_and_three_cycle_boundaries() -> None:
-    assert freshness_level(None, 10.0) == "unavailable"
-    assert freshness_level(20.0, 10.0) == "fresh"
-    assert freshness_level(20.001, 10.0) == "stale"
-    assert freshness_level(30.0, 10.0) == "stale"
-    assert freshness_level(30.001, 10.0) == "degraded"
+    assert FreshnessLevel(None, 10.0) == "unavailable"
+    assert FreshnessLevel(20.0, 10.0) == "fresh"
+    assert FreshnessLevel(20.001, 10.0) == "stale"
+    assert FreshnessLevel(30.0, 10.0) == "stale"
+    assert FreshnessLevel(30.001, 10.0) == "degraded"
 
 
 def test_periodic_tasks_skip_missed_cycles_instead_of_bursting_catchup_work() -> None:
@@ -266,11 +266,11 @@ def test_first_tick_after_warmup_still_initializes_reference_data_once() -> None
 
 
 def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> None:
-    assert task_execution_budget_seconds(PipelineTask.CLOSE_QUOTES) >= 180.0
+    assert TaskExecutionBudgetSeconds(PipelineTask.CLOSE_QUOTES) >= 180.0
 
 
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[3] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[3] / "config" / "runtime.json")
     current = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
     planner = CadencePlanner(
         CadencePolicy.from_seconds(runtime.pipeline.cadence_seconds),

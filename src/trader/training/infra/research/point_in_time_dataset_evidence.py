@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Literal, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.serialization.fields import is_boolean, is_integer, is_number, is_text_sequence
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.fields import IsBoolean, IsInteger, IsNumber, IsTextSequence
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.recommendation.domain.market.feature_contracts import FeatureVector
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.models import Strategy
@@ -35,8 +35,8 @@ from trader.training.domain.evaluation.point_in_time_dataset import (
     PointInTimeRejectionBoundary,
     PointInTimeSourceIdentity,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson
 
 
 class PointInTimeDatasetEvidenceConflictError(RuntimeError):
@@ -71,7 +71,7 @@ class PointInTimeDatasetEvidenceIndex:
                 }
             )
         root_payload = _encode_report_root(report, day_entries)
-        root_payload["artifact_hash"] = canonical_research_hash(root_payload)
+        root_payload["artifact_hash"] = CanonicalResearchHash(root_payload)
         _write_once(root_path, root_payload)
         verified = self.verify()
         if verified.content_hash != report.content_hash:
@@ -82,7 +82,7 @@ class PointInTimeDatasetEvidenceIndex:
         try:
             root = _read_object(self._root / "point-in-time-dataset.json")
             artifact_hash = _pop_string(root, "artifact_hash")
-            if canonical_research_hash(root) != artifact_hash:
+            if CanonicalResearchHash(root) != artifact_hash:
                 raise ValueError("point-in-time dataset root hash mismatch")
             day_entries = root.pop("days")
             if not isinstance(day_entries, list) or not all(isinstance(item, dict) for item in day_entries):
@@ -119,8 +119,8 @@ class PointInTimeDatasetEvidenceIndex:
 
 
 def _write_once(path: Path, payload: dict[str, object]) -> None:
-    rendered = research_json(payload)
-    if publish_immutable(path, rendered):
+    rendered = ResearchJson(payload)
+    if PublishImmutable(path, rendered):
         return
     if path.read_text(encoding="utf-8") != rendered:
         raise PointInTimeDatasetEvidenceConflictError("point-in-time dataset shard identity conflict")
@@ -682,7 +682,7 @@ def _pop_string(value: dict[str, object], key: str) -> str:
 
 
 def _strings(value: object) -> tuple[str, ...]:
-    if not is_text_sequence(value):
+    if not IsTextSequence(value):
         raise TypeError("point-in-time artifact value must be a string list")
     return tuple(value)
 
@@ -703,7 +703,7 @@ def _shanghai_datetime(value: object) -> datetime:
 
 
 def _bool(value: object) -> bool:
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError("point-in-time artifact value must be a boolean")
     return value
 
@@ -719,13 +719,13 @@ def _bools(value: object) -> tuple[bool, ...]:
 
 
 def _int(value: object) -> int:
-    if not is_integer(value):
+    if not IsInteger(value):
         raise TypeError("point-in-time artifact value must be an integer")
     return value
 
 
 def _float(value: object) -> float:
-    if not is_number(value):
+    if not IsNumber(value):
         raise TypeError("point-in-time artifact value must be a number")
     return float(value)
 

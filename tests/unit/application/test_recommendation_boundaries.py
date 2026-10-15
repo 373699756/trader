@@ -14,16 +14,16 @@ from tests.unit.application.test_tomorrow_projection import EVALUATED_AT, _nativ
 from tests.unit.application.test_tomorrow_selection import _data_snapshot
 from tests.unit.application.test_tomorrow_selection import _policy as snapshot_policy
 from trader.bootstrap import _recommendation_policy
-from trader.infra.atomic_files.json import atomic_read_json, atomic_write_json
+from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.infra.clock.shanghai import ShanghaiClock
-from trader.infra.settings import load_strategy_settings
+from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import (
     CandidateFilteringPort,
     CandidateFilteringService,
 )
 from trader.recommendation.application.pipeline.dynamic_filter.filter_executor import (
+    AssembleScoredFeatures,
     ScoredSelectionUseCase,
-    assemble_scored_features,
 )
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import (
     FeatureCalculationPort,
@@ -92,7 +92,7 @@ class _RecordingFeatureCalculation(FeatureCalculationPort):
 
     def calculate(self, snapshot: MarketDataPlaneSnapshot) -> tuple[FeatureSnapshot, ...]:
         self.calls += 1
-        return assemble_scored_features(snapshot)
+        return AssembleScoredFeatures(snapshot)
 
 
 class _Reader:
@@ -152,7 +152,7 @@ class _RecordingModelCapability:
 
 
 def _runtime_policy() -> RecommendationPolicy:
-    return _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    return _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
 
 
 def test_market_adapter_uses_candidate_and_local_boundaries(application_feature_factory) -> None:
@@ -298,14 +298,14 @@ def test_atomic_json_has_one_infrastructure_owner() -> None:
     retired = SOURCE_ROOT / "infra/persistence/runtime_json.py"
     assert owner.is_file()
     assert not retired.exists()
-    assert "atomic_write_json" in owner.read_text(encoding="utf-8")
+    assert "AtomicWriteJson" in owner.read_text(encoding="utf-8")
 
 
 def test_atomic_json_round_trip_and_shanghai_clock_boundary(tmp_path) -> None:
     path = tmp_path / "runtime" / "state.json"
-    atomic_write_json(path, {"ready": True, "count": 2})
+    AtomicWriteJson(path, {"ready": True, "count": 2})
 
-    assert atomic_read_json(path) == {"count": 2, "ready": True}
+    assert AtomicReadJson(path) == {"count": 2, "ready": True}
     aware = datetime(2026, 9, 15, 7, 10, tzinfo=SHANGHAI)
     assert ShanghaiClock(lambda: aware).now() == aware
 

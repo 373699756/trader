@@ -32,15 +32,15 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.infra.baostock_gateway import BaoStockRowGateway, BaoStockRowResult
 from trader.download.infra.baostock_session import (
+    BaostockDependencyVersions,
     BaoStockQueryLimiter,
     BaoStockSessionSdkPort,
-    baostock_dependency_versions,
-    load_baostock_sdk,
-    login_baostock,
-    logout_baostock,
+    LoadBaostockSdk,
+    LoginBaostock,
+    LogoutBaostock,
 )
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, prepare_history_industries
+from trader.download.infra.history_industry_preparation import IndustryPreparationRequest, PrepareHistoryIndustries
 
 
 @dataclass(frozen=True)
@@ -252,9 +252,9 @@ class BaoStockHistorySupplier:
         industry_cache: HistoryIndustryQueryCache | None = None,
     ) -> HistorySupplierContext:
         """Use local query evidence first; only a cache miss may start the SDK child."""
-        sdk = load_baostock_sdk()
-        versions = BaoStockSourceVersions(sdk.__version__, platform.python_version(), baostock_dependency_versions())
-        intervals = prepare_history_industries(
+        sdk = LoadBaostockSdk()
+        versions = BaoStockSourceVersions(sdk.__version__, platform.python_version(), BaostockDependencyVersions())
+        intervals = PrepareHistoryIndustries(
             IndustryPreparationRequest(
                 calendar,
                 universe,
@@ -571,8 +571,8 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
     _silence_vendor_output()
     sdk: BaoStockSessionSdkPort | None = None
     try:
-        sdk = load_baostock_sdk()
-        login_baostock(sdk)
+        sdk = LoadBaostockSdk()
+        LoginBaostock(sdk)
         gateway = BaoStockRowGateway(
             _RateLimitedSdk(
                 sdk,
@@ -580,7 +580,7 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
                 query_interval_seconds,
             ),
             python_version=platform.python_version(),
-            dependency_versions=baostock_dependency_versions(),
+            dependency_versions=BaostockDependencyVersions(),
         )
         connection.send(_Ready())
         while True:
@@ -625,7 +625,7 @@ def _worker_main(connection: Connection, query_interval_seconds: float) -> None:
         connection.send(_Ready(_failure_code(exc)))
     finally:
         if sdk is not None:
-            logout_baostock(sdk)
+            LogoutBaostock(sdk)
         connection.close()
 
 

@@ -16,16 +16,16 @@ from trader.training.application.tomorrow_daily_close_training import (
     DailyCloseFeatureRow,
     FeatureDataset,
     ModelDependencyVersion,
+    SelectMatureFoldTrainingRows,
+    SelectMatureTrainingRows,
     StockResidualCorrection,
     StratumCorrection,
-    select_mature_fold_training_rows,
-    select_mature_training_rows,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.tomorrow_daily_close import (
+    BuildExpandingWalkForward,
     DailyCloseTemporalSplit,
     ExpandingWalkForwardFold,
-    build_expanding_walk_forward,
 )
 
 _CANDIDATE_IDS = (
@@ -142,7 +142,7 @@ class DailyCloseCandidateEvaluation:
             raise ValueError("daily-close model selection candidate OOF identities must be unique")
         if self.production_authority:
             raise ValueError("daily-close model selection candidate OOF cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -167,7 +167,7 @@ class DailyCloseModelSelectionResult:
             raise ValueError("daily-close model selection development schema is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("daily-close model selection development cannot open holdout or production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 class DailyCloseCandidateEvaluator:
@@ -231,8 +231,8 @@ class DailyCloseModelSelectionService:
         }
         base_oof: list[DailyCloseOutOfFoldPrediction] = []
         stratum_oof: list[DailyCloseOutOfFoldPrediction] = []
-        for fold in build_expanding_walk_forward(split.development_dates):
-            training_rows = select_mature_fold_training_rows(dataset, fold)
+        for fold in BuildExpandingWalkForward(split.development_dates):
+            training_rows = SelectMatureFoldTrainingRows(dataset, fold)
             validation_rows = _rows_for_dates(dataset, fold.validation_dates)
             if not training_rows or not validation_rows:
                 raise ValueError("daily-close model selection fold lacks mature training or validation rows")
@@ -280,7 +280,7 @@ class DailyCloseModelSelectionService:
             or development.temporal_split_hash != split.content_hash
         ):
             raise ValueError("daily-close model selection development parents do not match freeze inputs")
-        training_rows = select_mature_training_rows(
+        training_rows = SelectMatureTrainingRows(
             dataset,
             split.development_dates,
             prediction_start=split.confirmation_dates[0],

@@ -195,7 +195,7 @@ class DailyReturnFeatureCalculator:
     @classmethod
     def calculate(cls, anchors: QfqPriceAnchors) -> tuple[FeatureValue, ...]:
         return tuple(
-            FeatureValue(feature_id, decimal_return(anchors.current_close, anchors.lag(horizon)))
+            FeatureValue(feature_id, DecimalReturn(anchors.current_close, anchors.lag(horizon)))
             for feature_id, horizon in zip(cls.feature_ids, (1, 3, 5), strict=True)
         )
 
@@ -209,22 +209,22 @@ class SkipRecentMomentumFeatureCalculator:
     def calculate(cls, anchors: QfqPriceAnchors) -> tuple[FeatureValue, ...]:
         recent = anchors.lag(5)
         return tuple(
-            FeatureValue(feature_id, decimal_return(recent, anchors.lag(horizon)))
+            FeatureValue(feature_id, DecimalReturn(recent, anchors.lag(horizon)))
             for feature_id, horizon in zip(cls.feature_ids, (20, 40, 60), strict=True)
         )
 
 
-def decimal_return(end: float | None, start: float | None) -> float | None:
+def DecimalReturn(end: float | None, start: float | None) -> float | None:
     if end is None or start is None or not math.isfinite(end) or not math.isfinite(start) or end <= 0.0 or start <= 0.0:
         return None
     return end / start - 1.0
 
 
-def calculate_tomorrow_qfq_alpha(anchors: QfqPriceAnchors) -> tuple[FeatureValue, ...]:
+def CalculateTomorrowQfqAlpha(anchors: QfqPriceAnchors) -> tuple[FeatureValue, ...]:
     return (*DailyReturnFeatureCalculator.calculate(anchors), *SkipRecentMomentumFeatureCalculator.calculate(anchors))
 
 
-def calculate_profile_qfq_alpha(
+def CalculateProfileQfqAlpha(
     anchors: QfqPriceAnchors,
     momentum_horizons: tuple[int, ...],
 ) -> tuple[FeatureValue, ...]:
@@ -233,7 +233,7 @@ def calculate_profile_qfq_alpha(
         *(
             FeatureValue(
                 FeatureId(f"qfq_momentum_{horizon}d_skip5"),
-                decimal_return(anchors.lag(5), anchors.lag(horizon)),
+                DecimalReturn(anchors.lag(5), anchors.lag(horizon)),
             )
             for horizon in momentum_horizons
         ),
@@ -444,7 +444,7 @@ __all__ = [
     "V2_RAW_ALPHA_FEATURE_MANIFEST",
     "V2_TOMORROW_MODEL_FEATURE_MANIFEST",
     "V2_TREND_MODEL_FEATURE_MANIFEST",
-    "calculate_profile_qfq_alpha",
-    "calculate_tomorrow_qfq_alpha",
-    "decimal_return",
+    "CalculateProfileQfqAlpha",
+    "CalculateTomorrowQfqAlpha",
+    "DecimalReturn",
 ]

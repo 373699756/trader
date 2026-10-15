@@ -14,6 +14,7 @@ from tests.component.market_data_test_support import (
     FeatureBuilder,
     LatencyWaterfall,
     LatestRequestLane,
+    LoadRuntimeSettings,
     MarketDataDeadlineExceededError,
     MarketDataGateway,
     MarketQuote,
@@ -28,7 +29,6 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
     datetime,
-    load_runtime_settings,
     pytest,
     replace,
     threading,
@@ -455,7 +455,7 @@ def test_candidate_source_lane_deadline_returns_baseline_and_discards_late_quote
 
 
 def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,

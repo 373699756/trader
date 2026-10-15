@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
-from trader.infra.serialization.fields import is_sha256_text
+from trader.infra.serialization.fields import IsSha256Text
 
 HistoryPartitionRepackActivationState = Literal[
     "prepared",
@@ -65,7 +65,7 @@ class HistoryPartitionRepackPartitionEvidence:
             or len(path.parts) != 3
             or path.parts[0] != "partitions"
             or path.suffix != ".sqlite3"
-            or any(not is_sha256_text(value) for value in hashes)
+            or any(not IsSha256Text(value) for value in hashes)
             or min(
                 self.row_count,
                 self.observation_count,
@@ -101,8 +101,8 @@ class HistoryPartitionRepackBuildState:
         if (
             not self.source_root
             or not self.target_root
-            or not is_sha256_text(self.source_snapshot_hash)
-            or not is_sha256_text(self.source_file_identity_hash)
+            or not IsSha256Text(self.source_snapshot_hash)
+            or not IsSha256Text(self.source_file_identity_hash)
             or self.source_sequence < 1
             or source_paths != tuple(sorted(set(source_paths)))
             or len(source_paths) != self.expected_partition_count + 1
@@ -115,7 +115,7 @@ class HistoryPartitionRepackBuildState:
             or len(paths) > self.expected_partition_count
             or self.completed != (self.target_snapshot_hash is not None)
             or self.target_snapshot_hash is not None
-            and not is_sha256_text(self.target_snapshot_hash)
+            and not IsSha256Text(self.target_snapshot_hash)
         ):
             raise ValueError("history repack build state is invalid")
 
@@ -138,8 +138,8 @@ class HistoryPartitionRepackActivationJournal:
             not self.source_root
             or not self.target_root
             or not self.backup_root
-            or not is_sha256_text(self.source_snapshot_hash)
-            or not is_sha256_text(self.target_snapshot_hash)
+            or not IsSha256Text(self.source_snapshot_hash)
+            or not IsSha256Text(self.target_snapshot_hash)
         ):
             raise ValueError("history repack activation journal is invalid")
 
@@ -184,9 +184,9 @@ class HistoryPartitionRepackStatus:
     def __post_init__(self) -> None:
         if (
             not self.state
-            or not is_sha256_text(self.source_snapshot_hash)
+            or not IsSha256Text(self.source_snapshot_hash)
             or self.target_snapshot_hash is not None
-            and not is_sha256_text(self.target_snapshot_hash)
+            and not IsSha256Text(self.target_snapshot_hash)
             or not 0 <= self.completed_partitions <= self.total_partitions
             or self.total_partitions < 1
             or min(self.source_bytes, self.target_bytes, self.released_bytes) < 0

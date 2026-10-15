@@ -16,6 +16,7 @@ from tests.component.market_data_test_support import (
     FakeTushareFrame,
     FakeTusharePro,
     FeatureBuilder,
+    LoadRuntimeSettings,
     MutableMonotonic,
     Path,
     ReferenceLoadRequest,
@@ -28,14 +29,13 @@ from tests.component.market_data_test_support import (
     _ReferenceLoadOptions,
     _service,
     date,
-    load_runtime_settings,
     pytest,
     replace,
     threading,
     timedelta,
     tushare_records_module,
 )
-from trader.infra.market_data.providers.tushare_records import build_tushare_sdk
+from trader.infra.market_data.providers.tushare_records import BuildTushareSdk
 
 
 def test_tushare_reference_version_uses_response_time_before_hash_order() -> None:
@@ -494,7 +494,7 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
         points=120,
         timeout_seconds=8,
         wall_clock=lambda: NOW,
-        sdk_factory=partial(build_tushare_sdk, session_factory=requests.Session),
+        sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
     )
 
     observations = client.fetch_daily_history(
@@ -543,7 +543,7 @@ def test_tushare_daily_transport_preserves_only_numeric_provider_error_code(monk
         points=120,
         timeout_seconds=8,
         wall_clock=lambda: NOW,
-        sdk_factory=partial(build_tushare_sdk, session_factory=requests.Session),
+        sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
     )
 
     observations = client.fetch_daily_history(("600001",), date(2026, 7, 1), date(2026, 7, 16), NOW)
@@ -580,7 +580,7 @@ def test_tushare_date_only_financial_records_become_effective_at_shanghai_day_en
 
 
 def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
         cadence_seconds=runtime.pipeline.cadence_seconds,

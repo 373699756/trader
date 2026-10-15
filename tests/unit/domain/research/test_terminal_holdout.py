@@ -6,9 +6,9 @@ from datetime import date, timedelta
 import pytest
 
 from trader.training.domain.evaluation.terminal_holdout import (
+    EvaluateTerminalHoldout,
     TerminalHoldoutEvaluation,
     TerminalHoldoutRow,
-    evaluate_terminal_holdout,
 )
 
 
@@ -43,7 +43,7 @@ def _rows(count: int = 200, *, positive: bool = True) -> tuple[TerminalHoldoutRo
 
 
 def test_terminal_holdout_validates_positive_candidate_against_local_baseline() -> None:
-    report = evaluate_terminal_holdout(
+    report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
             research_identity="score_tomorrow_historical_candidate",
@@ -61,7 +61,7 @@ def test_terminal_holdout_validates_positive_candidate_against_local_baseline() 
 
 
 def test_terminal_holdout_does_not_open_when_parent_is_rejected() -> None:
-    report = evaluate_terminal_holdout(
+    report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
             research_identity="score_tomorrow_historical_candidate",
@@ -82,7 +82,7 @@ def test_terminal_holdout_requires_point_in_time_parity() -> None:
     rows = list(_rows())
     rows[0] = TerminalHoldoutRow(**{**rows[0].__dict__, "point_in_time_parity": False})
     with pytest.raises(ValueError, match="point-in-time"):
-        evaluate_terminal_holdout(
+        EvaluateTerminalHoldout(
             TerminalHoldoutEvaluation(
                 strategy="tomorrow",
                 research_identity="score_tomorrow_historical_candidate",
@@ -95,7 +95,7 @@ def test_terminal_holdout_requires_point_in_time_parity() -> None:
 
 def test_terminal_holdout_reports_data_insufficient_when_a_preregistered_state_is_missing() -> None:
     rows = tuple(replace(row, market_state="up") for row in _rows())
-    report = evaluate_terminal_holdout(
+    report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
             research_identity="score_tomorrow_historical_candidate",
@@ -110,7 +110,7 @@ def test_terminal_holdout_reports_data_insufficient_when_a_preregistered_state_i
 
 
 def test_terminal_holdout_rejects_a_second_terminal_open() -> None:
-    report = evaluate_terminal_holdout(
+    report = EvaluateTerminalHoldout(
         TerminalHoldoutEvaluation(
             strategy="tomorrow",
             research_identity="score_tomorrow_historical_candidate",

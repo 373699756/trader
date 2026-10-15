@@ -71,4 +71,4 @@ def test_run_system_prints_clickable_url_before_web_serving(
 
 def test_server_parser_accepts_every_configured_tomorrow_profile() -> None:
     for profile in ("v2", "v3"):
-        assert server_entrypoint.build_parser().parse_args(["--profile", profile]).profile == profile
+        assert server_entrypoint.BuildParser().parse_args(["--profile", profile]).profile == profile

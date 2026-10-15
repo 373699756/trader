@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.infra.workers import WorkerExecutor, submit_or_reject
+from trader.infra.workers import SubmitOrReject, WorkerExecutor
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 ResearchBoard = Literal["main", "chinext", "star", "unsupported"]
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -87,7 +87,7 @@ class HistoricalScreeningSnapshotManifest:
         if self.spec_hash and _SHA256.fullmatch(self.spec_hash) is None:
             raise ValueError("historical archive spec hash is invalid")
         object.__setattr__(self, "histories", histories)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 class HistoricalUniverseProvider(Protocol):
@@ -181,7 +181,7 @@ class HistoricalDownloadService:
         pending_iter = iter(pending)
         futures: dict[Future[tuple[HistoricalPriceBar, ...]], str] = {}
         for item in pending_iter:
-            futures[submit_or_reject(self._executor, self._fetch, item.code, spec.download_sessions)] = item.code
+            futures[SubmitOrReject(self._executor, self._fetch, item.code, spec.download_sessions)] = item.code
             if len(futures) == self._workers:
                 break
         while futures:
@@ -200,7 +200,7 @@ class HistoricalDownloadService:
                     item = next(pending_iter)
                 except StopIteration:
                     break
-                futures[submit_or_reject(self._executor, self._fetch, item.code, spec.download_sessions)] = item.code
+                futures[SubmitOrReject(self._executor, self._fetch, item.code, spec.download_sessions)] = item.code
         return downloaded, failed
 
     def _record_download(

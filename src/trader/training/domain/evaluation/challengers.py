@@ -135,13 +135,13 @@ _PARAMETER_MANIFEST = ChallengerParameterManifest(
 )
 
 
-def challenger_registry() -> tuple[ChallengerSpecification, ...]:
+def ChallengerRegistry() -> tuple[ChallengerSpecification, ...]:
     """Return the fixed immutable five-variant family in manifest order."""
 
     return _CHALLENGERS
 
 
-def challenger_parameter_manifest() -> ChallengerParameterManifest:
+def BuildChallengerParameterManifest() -> ChallengerParameterManifest:
     """Return every frozen threshold and version that identifies a challenger replay."""
 
     return _PARAMETER_MANIFEST
@@ -202,7 +202,7 @@ class ContinuousEntryAssessment:
             raise ValueError("critical-missing continuous entry cannot manufacture a score")
 
 
-def assess_continuous_entry(inputs: ContinuousEntryInputs) -> ContinuousEntryAssessment:
+def AssessContinuousEntry(inputs: ContinuousEntryInputs) -> ContinuousEntryAssessment:
     """Apply the frozen centered piecewise memberships to both entry shapes."""
 
     pullback = _pullback_score(inputs)
@@ -301,7 +301,7 @@ class HeatWeakStructureAssessment:
             raise ValueError("heat/weak-structure observe state must match its reasons")
 
 
-def assess_heat_weak_structure(
+def AssessHeatWeakStructure(
     board: ResearchBoard,
     inputs: HeatWeakStructureInputs,
 ) -> HeatWeakStructureAssessment:
@@ -366,8 +366,8 @@ __all__ = [
     "HeatWeakStructureAssessment",
     "HeatWeakStructureInputs",
     "ChallengerParameterManifest",
-    "assess_continuous_entry",
-    "assess_heat_weak_structure",
-    "challenger_parameter_manifest",
-    "challenger_registry",
+    "AssessContinuousEntry",
+    "AssessHeatWeakStructure",
+    "BuildChallengerParameterManifest",
+    "ChallengerRegistry",
 ]

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from trader.training.application.baseline_identity_audit import BaselineIdentityAuditService
-from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, source_hash
+from trader.training.domain.evaluation.baseline_identity import BaselineIdentityClaim, SourceHash
 
 
 @dataclass(frozen=True)
@@ -11,7 +11,7 @@ class _Evidence:
     live_identity_available: bool = True
 
     def baseline_identity_claims(self) -> tuple[BaselineIdentityClaim, ...]:
-        return (BaselineIdentityClaim("model", "v1", "v1", "fixture", source_hash("fixture")),)
+        return (BaselineIdentityClaim("model", "v1", "v1", "fixture", SourceHash("fixture")),)
 
 
 def test_audit_service_only_projects_typed_evidence() -> None:

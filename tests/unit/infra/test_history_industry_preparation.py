@@ -11,16 +11,16 @@ from trader.download.infra import baostock_sync_supplier as supplier_module
 from trader.download.infra.baostock_gateway import BaoStockRowGateway
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_reference_files import history_reference_path
+from trader.download.infra.history_reference_files import HistoryReferencePath
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_sync_runner import RunHistorySync
 
 
 @pytest.fixture
 def industry_source(monkeypatch):
     sdk = _IndustrySdk()
-    monkeypatch.setattr(supplier_module, "load_baostock_sdk", lambda: sdk)
+    monkeypatch.setattr(supplier_module, "LoadBaostockSdk", lambda: sdk)
     gateway = BaoStockRowGateway(sdk)
     requests = []
 
@@ -55,7 +55,7 @@ def test_real_request_wrapper_has_one_start_and_completion_per_industry_date(tmp
     from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 
     sdk = _IndustrySdk()
-    monkeypatch.setattr(supplier_module, "load_baostock_sdk", lambda: sdk)
+    monkeypatch.setattr(supplier_module, "LoadBaostockSdk", lambda: sdk)
     gateway = BaoStockRowGateway(sdk)
 
     def request_once(self, command, state, attempt, timeout):
@@ -118,11 +118,11 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
     prices.dates = dates
     with supplier_module.BaoStockHistorySupplier(config) as source:
         router = HistorySupplierRouter(source, prices, lambda: UNIVERSE, StSource(), cache)
-        assert run_history_sync(config, router, clock=lambda: NOW).state == "completed"
+        assert RunHistorySync(config, router, clock=lambda: NOW).state == "completed"
         control = HistoryControlIndex(config.archive_root / "control.sqlite3")
         snapshot = control.load_published_state().snapshot
         identity = control.read_source(snapshot.source_identity_hash)
-        path = history_reference_path(config.archive_root, identity.supplier_contract[12:76])
+        path = HistoryReferencePath(config.archive_root, identity.supplier_contract[12:76])
         original = path.read_bytes()
         if damage == "missing":
             path.unlink()
@@ -130,7 +130,7 @@ def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tm
             path.write_text("{}")
         requests.clear()
         prices.calls.clear()
-        assert run_history_sync(config, router, clock=lambda: NOW).state == "already_current"
+        assert RunHistorySync(config, router, clock=lambda: NOW).state == "already_current"
     assert requests == [] and prices.calls == []
     assert path.read_bytes() == original
     assert control.load_published_state().snapshot == snapshot

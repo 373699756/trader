@@ -29,20 +29,20 @@ from trader.download.domain.history_control import HistoryActiveSnapshot, Histor
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.training.infra.history.history_training_due import (
+    EvaluateHistoryTrainingDue,
     HistoryTrainingDueQuery,
     _revised_dates_since_bundle,
-    evaluate_history_training_due,
 )
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
 from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
@@ -102,7 +102,7 @@ class _Supplier:
     def fetch_tencent_window(self, security, dates):
         return PublishedHistoryWindow(
             security.code,
-            tuple(project_history_cell(cell) for cell in self.fetch_code(security, dates).batch.cells),
+            tuple(ProjectHistoryCell(cell) for cell in self.fetch_code(security, dates).batch.cells),
         )
 
     def fetch_baostock_raw(self, security, dates):
@@ -123,7 +123,7 @@ def prepared_history(tmp_path_factory: pytest.TempPathFactory):
         if dates not in seeds:
             seed = tmp_path_factory.mktemp("published-history") / "history"
             configuration = HistorySyncConfiguration(seed, sessions=len(dates), reread_sessions=2, minimum_free_bytes=0)
-            result = run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW)
+            result = RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW)
             assert result.state == "completed"
             seeds[dates] = seed, result
         seed, result = seeds[dates]
@@ -409,7 +409,7 @@ def test_training_due_uses_the_active_snapshot_label_cutoff_and_marks_initial(tm
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(archive_root, dates)
 
-    evaluation = evaluate_history_training_due(
+    evaluation = EvaluateHistoryTrainingDue(
         HistoryTrainingDueQuery(archive_root, tmp_path / "train", NOW, V3_TRAINING_PROFILE)
     )
 
@@ -438,11 +438,11 @@ def test_training_due_expands_revision_cache_invalidation_to_the_selected_profil
 
     monkeypatch.setattr(
         due_module,
-        "calculate_history_training_cache_invalidation_dates",
+        "CalculateHistoryTrainingCacheInvalidationDates",
         calculate_invalidation,
     )
 
-    evaluation = evaluate_history_training_due(
+    evaluation = EvaluateHistoryTrainingDue(
         HistoryTrainingDueQuery(archive_root, tmp_path / "train", NOW, V2_TRAINING_PROFILE)
     )
 
@@ -457,7 +457,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     archive_root = tmp_path / "history"
     configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
     first_dates = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
-    run_history_sync(configuration, _Supplier(first_dates), clock=lambda: NOW)
+    RunHistorySync(configuration, _Supplier(first_dates), clock=lambda: NOW)
     baseline = HistoryControlIndex(archive_root / "control.sqlite3").load_state().active_snapshot
     assert baseline is not None
     contract_hash = "9" * 64
@@ -473,10 +473,10 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
         "c" * 64,
     )
     later_dates = (*first_dates, date(2026, 9, 10))
-    run_history_sync(configuration, _Supplier(later_dates), clock=lambda: NOW)
+    RunHistorySync(configuration, _Supplier(later_dates), clock=lambda: NOW)
     monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _profile, _strategy: (bundle, False))
 
-    evaluation = evaluate_history_training_due(
+    evaluation = EvaluateHistoryTrainingDue(
         HistoryTrainingDueQuery(
             archive_root,
             tmp_path / "train",

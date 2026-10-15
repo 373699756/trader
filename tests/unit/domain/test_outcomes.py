@@ -9,8 +9,8 @@ import pytest
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.evaluation import (
     CanonicalOutcomeEvaluator,
+    EvaluateOutcome,
     OutcomeEvaluationRequest,
-    evaluate_outcome,
 )
 from trader.training.domain.evaluation.models import (
     BenchmarkConstituentReturn,
@@ -18,10 +18,10 @@ from trader.training.domain.evaluation.models import (
     EntryDayPriceWindow,
     OutcomeBar,
     OutcomeExitStatus,
+    OutcomeHorizons,
     OutcomePrice,
     OutcomeTarget,
     OutcomeTradingStatus,
-    outcome_horizons,
 )
 
 
@@ -30,7 +30,7 @@ def _evaluate_outcome(target: OutcomeTarget, bars: tuple[OutcomeBar, ...], **kwa
         target,
         entry_at=datetime.fromisoformat(target.recommend_date + "T15:00:00").replace(tzinfo=ZoneInfo("Asia/Shanghai")),
     )
-    return evaluate_outcome(OutcomeEvaluationRequest(target=target, bars=bars, **kwargs))
+    return EvaluateOutcome(OutcomeEvaluationRequest(target=target, bars=bars, **kwargs))
 
 
 def test_mae_includes_verified_entry_day_window_and_never_becomes_positive() -> None:
@@ -38,13 +38,13 @@ def test_mae_includes_verified_entry_day_window_and_never_becomes_positive() -> 
     target = OutcomeTarget("snapshot", Strategy.TOMORROW, "2026-07-20", "600001", 10.0, 2.0, entry_at=entry)
     bars = (_bar("2026-07-20", 10, 11, 8, 10), _bar("2026-07-21", 11, 12, 10.5, 11))
     request = OutcomeEvaluationRequest(target, bars, 1, (0.0,), datetime(2026, 7, 21, 15, tzinfo=entry.tzinfo))
-    assert evaluate_outcome(request).quality_reason == "entry_day_price_window_missing"
+    assert EvaluateOutcome(request).quality_reason == "entry_day_price_window_missing"
     evidence = EntryDayPriceWindow(entry, entry.replace(hour=15, minute=0), 9.5, "minute-fixture")
-    outcome = evaluate_outcome(replace(request, entry_day_window=evidence))
+    outcome = EvaluateOutcome(replace(request, entry_day_window=evidence))
     assert outcome.mae_pct == pytest.approx(-5)
     assert outcome.mae_atr == pytest.approx(-2.5)
     assert outcome.minimum_qfq_low == 9.5  # Never use the whole entry-day low of 8.
-    positive = evaluate_outcome(replace(request, target=replace(target, entry_at=evidence.end_at)))
+    positive = EvaluateOutcome(replace(request, target=replace(target, entry_at=evidence.end_at)))
     assert positive.mae_pct == 0
     assert positive.mae_atr == 0
 
@@ -141,7 +141,7 @@ def test_d25_contract_includes_t4_and_canonical_evaluator_is_cost_parameterized(
         for cost in (0.20, 0.50, 1.00)
     )
 
-    assert outcome_horizons(Strategy.D25) == (2, 3, 4, 5)
+    assert OutcomeHorizons(Strategy.D25) == (2, 3, 4, 5)
     assert tuple(item.net_excess_return_pct for item in results) == pytest.approx((3.8, 3.5, 3.0))
 
 
@@ -191,7 +191,7 @@ def test_canonical_d25_aggregate_requires_exact_four_complete_horizons() -> None
                 settled_at=datetime(2026, 7, 25, 8, tzinfo=timezone.utc),
             )
         )
-        for horizon in outcome_horizons(Strategy.D25)
+        for horizon in OutcomeHorizons(Strategy.D25)
     )
 
     assert evaluator.d25_aggregate(outcomes) == pytest.approx(3.3)

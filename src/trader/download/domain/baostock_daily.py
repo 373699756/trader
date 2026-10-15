@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, Protocol
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 BAOSTOCK_RESEARCH_IDENTITY = "baostock_daily_core"
 BAOSTOCK_SOURCE_CUTOFF = date(2026, 8, 31)
@@ -42,7 +42,7 @@ class DailyTradingState(Protocol):
     def trading_status(self) -> BaoStockTradingStatus: ...
 
 
-def validate_daily_side_values(
+def ValidateDailySideValues(
     adjustment: BaoStockAdjustment,
     trading_status: BaoStockTradingStatus,
     prices: tuple[float | None, ...],
@@ -50,11 +50,11 @@ def validate_daily_side_values(
     raw_values: tuple[float | None, float | None, float | None],
 ) -> None:
     """Shared numeric qualification for supplier and published daily facts."""
-    validate_daily_prices(adjustment, trading_status, prices, flows)
-    validate_daily_raw_fields(adjustment, trading_status, raw_values, require_raw_fields=False)
+    ValidateDailyPrices(adjustment, trading_status, prices, flows)
+    ValidateDailyRawFields(adjustment, trading_status, raw_values, require_raw_fields=False)
 
 
-def validate_daily_prices(
+def ValidateDailyPrices(
     adjustment: BaoStockAdjustment,
     trading_status: BaoStockTradingStatus,
     prices: tuple[float | None, ...],
@@ -71,7 +71,7 @@ def validate_daily_prices(
         raise ValueError("BaoStock active daily side requires complete OHLCV and amount")
 
 
-def validate_daily_raw_fields(
+def ValidateDailyRawFields(
     adjustment: BaoStockAdjustment,
     trading_status: BaoStockTradingStatus,
     raw_values: tuple[float | None, float | None, float | None],
@@ -113,7 +113,7 @@ class BaoStockDailySpec:
             raise ValueError("BaoStock daily identity is invalid")
         if self.production_authority or self.point_in_time_parity:
             raise ValueError("BaoStock daily data cannot authorize production or point-in-time parity")
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
     @property
     def authoritative(self) -> bool:
@@ -139,7 +139,7 @@ class BaoStockSecurity:
             raise ValueError("BaoStock security source version is required")
         object.__setattr__(self, "name", self.name.strip())
         object.__setattr__(self, "source_version", self.source_version.strip())
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
     @property
     def source_code(self) -> str:
@@ -160,7 +160,7 @@ class BaoStockCalendar:
         if self.schema_version != BAOSTOCK_CALENDAR_SCHEMA:
             raise ValueError("BaoStock calendar schema is invalid")
         object.__setattr__(self, "open_dates", values)
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
     def expected_dates(self, security: BaoStockSecurity) -> tuple[date, ...]:
         return tuple(
@@ -190,14 +190,14 @@ class BaoStockDailySide:
     def __post_init__(self) -> None:
         if _CODE.fullmatch(self.code) is None:
             raise ValueError("BaoStock daily side identity is invalid")
-        validate_daily_side_values(
+        ValidateDailySideValues(
             self.adjustment,
             self.trading_status,
             (self.open_price, self.high_price, self.low_price, self.close_price),
             (self.volume, self.amount),
             (self.preclose, self.pct_change, self.turnover),
         )
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
@@ -220,11 +220,11 @@ class BaoStockDailyCell:
         expected = (
             "tencent_inferred_suspended"
             if self.status == "tencent_inferred_suspended" and self.unadjusted is None and self.qfq is None
-            else daily_cell_status(self.unadjusted, self.qfq)
+            else DailyCellStatus(self.unadjusted, self.qfq)
         )
         if self.status != expected:
             raise ValueError("BaoStock daily cell status does not match its sides")
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
     @property
     def obtained(self) -> bool:
@@ -258,7 +258,7 @@ class BaoStockCodeBatch:
             raise ValueError("BaoStock code batch failure reason is invalid")
         object.__setattr__(self, "cells", cells)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
@@ -274,7 +274,7 @@ class BaoStockDailyFact:
             raise ValueError("BaoStock daily fact identity is invalid")
         if not isinstance(self.is_st, bool) or self.schema_version != BAOSTOCK_DAILY_FACT_SCHEMA:
             raise ValueError("BaoStock daily fact payload is invalid")
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
@@ -298,7 +298,7 @@ class BaoStockIndustryInterval:
             raise ValueError("BaoStock industry interval is invalid")
         object.__setattr__(self, "industry", self.industry.strip())
         object.__setattr__(self, "classification", self.classification.strip())
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
@@ -317,7 +317,7 @@ class BaoStockCodeDownload:
         ):
             raise ValueError("BaoStock code download facts do not match its daily batch")
         object.__setattr__(self, "daily_facts", facts)
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
@@ -363,7 +363,7 @@ class BaoStockDailyJoinRequest:
         object.__setattr__(self, "expected_dates", expected)
 
 
-def join_baostock_daily_sides(
+def JoinBaostockDailySides(
     request: BaoStockDailyJoinRequest,
     unadjusted: tuple[BaoStockDailySide, ...],
     qfq: tuple[BaoStockDailySide, ...],
@@ -379,7 +379,7 @@ def join_baostock_daily_sides(
         BaoStockDailyCell(
             request.code,
             day,
-            daily_cell_status(raw_by_date.get(day), qfq_by_date.get(day)),
+            DailyCellStatus(raw_by_date.get(day), qfq_by_date.get(day)),
             raw_by_date.get(day),
             qfq_by_date.get(day),
         )
@@ -415,7 +415,7 @@ def _index_sides(
     return indexed, duplicates
 
 
-def daily_cell_status(
+def DailyCellStatus(
     unadjusted: DailyTradingState | None,
     qfq: DailyTradingState | None,
 ) -> BaoStockCellStatus:
@@ -446,7 +446,7 @@ class BaoStockSourceVersions:
         if len({name for name, _ in dependencies}) != len(dependencies):
             raise ValueError("BaoStock dependency versions must be unique")
         object.__setattr__(self, "dependency_versions", dependencies)
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
@@ -466,7 +466,7 @@ class BaoStockTrainingLabelContract:
             raise ValueError("BaoStock training label costs are fixed")
         if not self.label_pending_required or self.schema_version != "pre_cost_next_day_excess_label":
             raise ValueError("BaoStock training label contract is invalid")
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)
@@ -499,7 +499,7 @@ class BaoStockTrainingSplit:
             raise ValueError("BaoStock training split cannot open holdouts or authorize production")
         if self.schema_version != "baostock_training_split":
             raise ValueError("BaoStock training split schema is invalid")
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 def _validate_training_split_dates(value: BaoStockTrainingSplit) -> None:
@@ -526,7 +526,7 @@ def _validate_training_split_dates(value: BaoStockTrainingSplit) -> None:
         raise ValueError("BaoStock training development sub-splits are invalid")
 
 
-def build_baostock_training_split(
+def BuildBaostockTrainingSplit(
     dates: tuple[date, ...],
     *,
     parent_manifest_hash: str,
@@ -598,10 +598,10 @@ __all__ = [
     "BaoStockTrainingRow",
     "BaoStockTrainingSplit",
     "DailyTradingState",
-    "build_baostock_training_split",
-    "daily_cell_status",
-    "join_baostock_daily_sides",
-    "validate_daily_side_values",
-    "validate_daily_prices",
-    "validate_daily_raw_fields",
+    "BuildBaostockTrainingSplit",
+    "DailyCellStatus",
+    "JoinBaostockDailySides",
+    "ValidateDailySideValues",
+    "ValidateDailyPrices",
+    "ValidateDailyRawFields",
 ]

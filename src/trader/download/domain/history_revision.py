@@ -12,7 +12,7 @@ from trader.download.domain.baostock_daily import (
     BaoStockDailyCell,
     BaoStockTrainingRow,
 )
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 MAX_HISTORY_TRAINING_WINDOW_SESSIONS = 251
 
@@ -41,9 +41,9 @@ class HistoryRevision:
             raise ValueError("history monthly revision industry facts are invalid")
         object.__setattr__(self, "industry", industry)
         object.__setattr__(self, "industry_classification", classification)
-        revision_id = canonical_digest((self.board, self.cell))
+        revision_id = CanonicalDigest((self.board, self.cell))
         object.__setattr__(self, "revision_id", revision_id)
-        object.__setattr__(self, "content_hash", canonical_digest((self.first_seen_sequence, self.board, self.cell)))
+        object.__setattr__(self, "content_hash", CanonicalDigest((self.first_seen_sequence, self.board, self.cell)))
 
     @property
     def code(self) -> str:

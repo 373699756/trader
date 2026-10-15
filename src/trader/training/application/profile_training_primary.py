@@ -28,7 +28,7 @@ class TrainV2UseCase(Generic[_ResultT]):
         return self.runner(history_root, train_root, progress=progress)
 
 
-def train_v2(
+def TrainV2(
     runner: TrainingRunnerPort[_ResultT],
     history_root: Path,
     train_root: Path,
@@ -42,4 +42,4 @@ def train_v2(
     )
 
 
-__all__ = ["TrainV2UseCase", "train_v2"]
+__all__ = ["TrainV2UseCase", "TrainV2"]

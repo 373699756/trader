@@ -18,23 +18,23 @@ from pathlib import Path
 from typing import cast
 
 from trader.http_api.route_services import UnifiedWebServices
-from trader.infra.cache_contracts import canonical_json_bytes
+from trader.infra.cache_contracts import CanonicalJsonBytes
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.settings import load_runtime_settings, load_strategy_settings
+from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.settings.models import PerformanceBudgetSettings
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
     SCORED_STRATEGIES,
+    BuildCandidatePlans,
     CandidatePlanningContext,
     CandidatePlanSet,
-    build_candidate_plans,
 )
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+    BuildScoredHybrid,
+    BuildScoredLocal,
     ScoredLocalProjection,
     ScoredProjectionInputs,
-    build_scored_hybrid,
-    build_scored_local,
 )
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
@@ -60,31 +60,31 @@ from trader.recommendation.domain.publication.decision_identity import (
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.domain.scoring.scoring import score_board_strategy
+from trader.recommendation.domain.scoring.scoring import ScoreBoardStrategy
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidatePlan,
     ScoredCandidateStageCounts,
 )
-from trader.recommendation.infra.normalization.columnar import ColumnarQuoteBatch, targeted_market_changes
+from trader.recommendation.infra.normalization.columnar import ColumnarQuoteBatch, TargetedMarketChanges
 from trader.recommendation.infra.normalization.merge import (
+    MergeMarketObservations,
     MergeObservationLimits,
-    merge_market_observations,
-    observation_from_quote,
-    overlay_canonical_snapshot,
+    ObservationFromQuote,
+    OverlayCanonicalSnapshot,
 )
-from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote
+from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput
 from trader.recommendation.infra.policy_settings import _recommendation_policy
-from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.application.scoring_hot_path_baseline import (
+    BuildScoringHotPathBaseline,
     ScoringHotPathBaseline,
     ScoringHotPathEquivalence,
     ScoringHotPathLatency,
     ScoringInputEpoch,
-    build_scoring_hot_path_baseline,
 )
-from trader.web import create_app
+from trader.web import CreateApp
 
 
 @dataclass(frozen=True)
@@ -100,7 +100,7 @@ class _CandidateUnionFixture:
     quotes: tuple[MarketQuote, ...]
 
 
-def build_parser() -> argparse.ArgumentParser:
+def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output", type=Path)
@@ -108,14 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run(
+def Run(
     config_path: Path,
     *,
     baseline_path: Path | None = None,
     scoring_profile: ScoringProfileId | None = None,
 ) -> dict[str, object]:
-    settings = load_runtime_settings(config_path)
-    strategy_settings = load_strategy_settings(
+    settings = LoadRuntimeSettings(config_path)
+    strategy_settings = LoadStrategySettings(
         settings.strategy_config_path,
         scoring_profile=scoring_profile,
     )
@@ -125,11 +125,11 @@ def run(
         settings.config_version,
         _recommendation_policy(strategy_settings),
         _model_scoring_router(
-            load_scoring_profile(
+            LoadScoringProfile(
                 strategy_settings.scoring_profile,
                 training_root=settings.project_root / "data" / "train",
             ),
-            load_execution_cost_policy(config_path.parent),
+            LoadExecutionCostPolicy(config_path.parent),
         ),
     )
     worst_case_plans = _worst_case_candidate_plans(budgets.workload.market_rows, market_quotes[0].received_time)
@@ -232,9 +232,9 @@ def _model_scoring_router(profile: LoadedScoringProfile, cost_policy: ExecutionC
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    report = run(args.config.resolve(), baseline_path=args.baseline.resolve() if args.baseline else None)
+def Main(argv: list[str] | None = None) -> int:
+    args = BuildParser().parse_args(argv)
+    report = Run(args.config.resolve(), baseline_path=args.baseline.resolve() if args.baseline else None)
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if args.output is not None:
         args.output.write_text(f"{payload}\n", encoding="utf-8")
@@ -254,7 +254,7 @@ def _operations(
     model_scoring = context.model_scoring
     observed_at = market_quotes[0].received_time
     observations = _complete_realtime_observations(market_quotes, observed_at)
-    merged = merge_market_observations(observations, merge_epoch="performance:market", observed_at=observed_at)
+    merged = MergeMarketObservations(observations, merge_epoch="performance:market", observed_at=observed_at)
     changed_quotes = tuple(
         replace(
             quote,
@@ -266,19 +266,19 @@ def _operations(
         for quote in market_quotes[:18]
     )
     changed_at = observed_at + timedelta(milliseconds=1)
-    overlay_snapshot = merge_market_observations(
+    overlay_snapshot = MergeMarketObservations(
         tuple(
-            observation_from_quote(quote, source="performance_overlay", observed_at=changed_at)
+            ObservationFromQuote(quote, source="performance_overlay", observed_at=changed_at)
             for quote in changed_quotes
         ),
         observed_at=changed_at,
         limits=MergeObservationLimits(targeted_codes=tuple(quote.code for quote in changed_quotes)),
         merge_epoch="performance:market",
     )
-    committed_overlay = overlay_canonical_snapshot(merged, overlay_snapshot, merge_epoch="performance:overlay")
-    candidate_union_snapshot = merge_market_observations(
+    committed_overlay = OverlayCanonicalSnapshot(merged, overlay_snapshot, merge_epoch="performance:overlay")
+    candidate_union_snapshot = MergeMarketObservations(
         tuple(
-            observation_from_quote(
+            ObservationFromQuote(
                 replace(
                     quote,
                     source_time=changed_at,
@@ -316,7 +316,7 @@ def _operations(
         data_version="performance-candidate-data",
         market_features=candidates,
     )
-    local_projection = build_scored_local(
+    local_projection = BuildScoredLocal(
         tomorrow_input,
         policy,
         sequence=1,
@@ -327,7 +327,7 @@ def _operations(
     overlay_commit = _overlay_cas_operation(candidates, observed_at)
 
     def tomorrow_projection() -> object:
-        return build_scored_local(
+        return BuildScoredLocal(
             tomorrow_input,
             policy,
             sequence=1,
@@ -335,7 +335,7 @@ def _operations(
         )
 
     def candidate_projection() -> object:
-        return build_scored_local(
+        return BuildScoredLocal(
             candidate_input,
             policy,
             sequence=1,
@@ -346,7 +346,7 @@ def _operations(
         board_policy = policy.board_policy(strategy, item.quote.board)
         if board_policy is None:
             raise ValueError(f"missing board policy for {strategy.value}/{item.quote.board.value}")
-        return score_board_strategy(item, board_policy)
+        return ScoreBoardStrategy(item, board_policy)
 
     def candidate_preselection() -> object:
         """Exercise both production planners against the complete market population."""
@@ -355,7 +355,7 @@ def _operations(
         if observations:
             observations = ()
             gc.collect()
-        return build_candidate_plans(
+        return BuildCandidatePlans(
             market_features,
             None,
             CandidatePlanningContext(
@@ -370,11 +370,11 @@ def _operations(
     def candidate_union_projection() -> object:
         if len(candidate_union_fixture.plans.physical_union()) != len(candidate_union_fixture.quotes):
             raise ValueError("candidate union fixture identity mismatch")
-        return overlay_canonical_snapshot(merged, candidate_union_snapshot, merge_epoch="performance:candidate")
+        return OverlayCanonicalSnapshot(merged, candidate_union_snapshot, merge_epoch="performance:candidate")
 
     operations: dict[str, Callable[[], object]] = {
-        "market_normalization": lambda: tuple(build_market_quote(item) for item in market_inputs),
-        "market_merge": lambda: merge_market_observations(
+        "market_normalization": lambda: tuple(BuildMarketQuote(item) for item in market_inputs),
+        "market_merge": lambda: MergeMarketObservations(
             observations, merge_epoch="performance:market", observed_at=observed_at
         ),
         "canonical_snapshot": lambda: ColumnarQuoteBatch.from_snapshot(
@@ -383,8 +383,8 @@ def _operations(
             schema_version="performance-market",
         ),
         "targeted_overlay_commit": lambda: (
-            overlay_canonical_snapshot(merged, overlay_snapshot, merge_epoch="performance:overlay"),
-            targeted_market_changes(merged, committed_overlay, tuple(quote.code for quote in changed_quotes)),
+            OverlayCanonicalSnapshot(merged, overlay_snapshot, merge_epoch="performance:overlay"),
+            TargetedMarketChanges(merged, committed_overlay, tuple(quote.code for quote in changed_quotes)),
             overlay_commit(),
         ),
         "board_preselection": candidate_preselection,
@@ -403,7 +403,7 @@ def _operations(
         )[:6],
         "board_ready_to_draft": candidate_projection,
         "quote_to_draft": tomorrow_projection,
-        "deepseek_to_hybrid": lambda: build_scored_hybrid(
+        "deepseek_to_hybrid": lambda: BuildScoredHybrid(
             local_projection,
             policy,
             reviews,
@@ -470,9 +470,9 @@ def _api_operations(
     )
     if not index.publish_scored(decision, overlay, expected_version=None).accepted:
         raise RuntimeError("performance decision setup failed")
-    stream.publish_committed(build_decision_committed(decision))
+    stream.publish_committed(BuildDecisionCommitted(decision))
     queries = UnifiedDecisionQueries(index, drafts, _EmptyHistory(), _FixedClock(observed_at))
-    app = create_app(
+    app = CreateApp(
         services=UnifiedWebServices(
             queries,
             stream,
@@ -487,7 +487,7 @@ def _api_operations(
     client = app.test_client()
     path = "/api/decisions/tomorrow/current"
     etag = client.get(path).headers["ETag"]
-    event = build_decision_committed(decision)
+    event = BuildDecisionCommitted(decision)
     return {
         "sse_publish": lambda: stream.publish_committed(event),
         "snapshot_api": lambda: client.get(path),
@@ -614,7 +614,7 @@ def _fixtures(
 ) -> tuple[tuple[MarketQuoteInput, ...], tuple[MarketQuote, ...], tuple[FeatureSnapshot, ...]]:
     now = datetime(2026, 8, 25, 10, 0, tzinfo=SHANGHAI)
     market = tuple(_quote_input(index, now) for index in range(budgets.workload.market_rows))
-    quotes = tuple(_complete_quote(build_market_quote(item), now) for item in market)
+    quotes = tuple(_complete_quote(BuildMarketQuote(item), now) for item in market)
     candidate_indexes = (
         *range(0, 120),
         *range(2500, 2620),
@@ -728,7 +728,7 @@ def _complete_realtime_observations(
 
     observations: list[SourceObservation] = []
     for quote in quotes:
-        base = observation_from_quote(quote, source="tencent_market", observed_at=observed_at)
+        base = ObservationFromQuote(quote, source="tencent_market", observed_at=observed_at)
         fields = {name: base.fields[name] for name in _COMPLETE_REALTIME_FIELDS}
         for source in ("tencent_market", "sina"):
             data_version = f"{source}:{quote.data_version}"
@@ -738,7 +738,7 @@ def _complete_realtime_observations(
                     source=source,
                     data_version=data_version,
                     fields=fields,
-                    payload_hash=hashlib.sha256(canonical_json_bytes(fields)).hexdigest(),
+                    payload_hash=hashlib.sha256(CanonicalJsonBytes(fields)).hexdigest(),
                 )
             )
     return tuple(observations)
@@ -883,7 +883,7 @@ def _hot_path_baseline(  # noqa: PLR0913
             "freeze_boundary",
         )
     )
-    return build_scoring_hot_path_baseline(
+    return BuildScoringHotPathBaseline(
         epochs,
         latencies=latencies,
         formal_current_decision_count=3,
@@ -1131,4 +1131,4 @@ _FEATURE_VALUES = {
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(Main())

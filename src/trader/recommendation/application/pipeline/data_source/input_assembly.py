@@ -13,7 +13,7 @@ from trader.recommendation.application.ports.runtime import (
     DecisionUnavailableError,
     PipelineTaskRequest,
 )
-from trader.recommendation.application.runtime.cadence import task_execution_budget_seconds
+from trader.recommendation.application.runtime.cadence import TaskExecutionBudgetSeconds
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionQuote
@@ -23,23 +23,23 @@ if TYPE_CHECKING:
     from trader.recommendation.application.ports.scoring_inputs import InputBatch
 
 
-def quote_order(feature: FeatureSnapshot) -> tuple[datetime, datetime, str]:
+def QuoteOrder(feature: FeatureSnapshot) -> tuple[datetime, datetime, str]:
     quote = feature.quote
     return quote.source_time, quote.received_time, quote.data_version
 
 
-def selected_quote_features(batch: InputBatch, selected_codes: Collection[str]) -> dict[str, FeatureSnapshot]:
+def SelectedQuoteFeatures(batch: InputBatch, selected_codes: Collection[str]) -> dict[str, FeatureSnapshot]:
     features_by_code: dict[str, FeatureSnapshot] = {}
     for feature in (*batch.market_features, *batch.candidate_features):
         if feature.quote.code not in selected_codes:
             continue
         current = features_by_code.get(feature.quote.code)
-        if current is None or quote_order(feature) > quote_order(current):
+        if current is None or QuoteOrder(feature) > QuoteOrder(current):
             features_by_code[feature.quote.code] = feature
     return features_by_code
 
 
-def overlay_observed_at(request: CycleRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:
+def OverlayObservedAt(request: CycleRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:
     target_zone = request.observed_at.tzinfo
     if target_zone is None:
         raise DecisionUnavailableError("overlay_request_time_unavailable")
@@ -54,7 +54,7 @@ def overlay_observed_at(request: CycleRequest, features: tuple[FeatureSnapshot, 
     return observed_at
 
 
-def merge_overlay_quote(quotes: dict[str, DecisionQuote], feature: FeatureSnapshot, observed_at: datetime) -> bool:
+def MergeOverlayQuote(quotes: dict[str, DecisionQuote], feature: FeatureSnapshot, observed_at: datetime) -> bool:
     quote = feature.quote
     if quote.price is None or quote.price <= 0.0 or quote.source_time > observed_at:
         return False
@@ -81,12 +81,12 @@ def merge_overlay_quote(quotes: dict[str, DecisionQuote], feature: FeatureSnapsh
     return True
 
 
-def task_deadline(request: PipelineTaskRequest) -> datetime | None:
-    seconds = task_execution_budget_seconds(request.task)
+def TaskDeadline(request: PipelineTaskRequest) -> datetime | None:
+    seconds = TaskExecutionBudgetSeconds(request.task)
     return request.observed_at + timedelta(seconds=seconds) if seconds is not None else None
 
 
-def candidate_batch_is_complete(
+def CandidateBatchIsComplete(
     requested: Mapping[Strategy, tuple[str, ...]],
     features: Mapping[Strategy, tuple[FeatureSnapshot, ...]],
 ) -> bool:
@@ -98,12 +98,12 @@ def candidate_batch_is_complete(
     )
 
 
-def require_codes(codes: tuple[str, ...], error_code: str) -> None:
+def RequireCodes(codes: tuple[str, ...], error_code: str) -> None:
     if not codes:
         raise DataRefreshUnavailableError(error_code)
 
 
-def refresh_completed_at(request: PipelineTaskRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:
+def RefreshCompletedAt(request: PipelineTaskRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:
     values = (
         request.observed_at,
         *(feature.observed_at for feature in features),
@@ -114,7 +114,7 @@ def refresh_completed_at(request: PipelineTaskRequest, features: tuple[FeatureSn
     return max(value.astimezone(SHANGHAI) for value in values)
 
 
-def decision_observed_at(batch: InputBatch) -> datetime:
+def DecisionObservedAt(batch: InputBatch) -> datetime:
     target_zone = batch.request.observed_at.tzinfo
     if target_zone is None:
         raise ValueError("decision request time must be timezone-aware")
@@ -128,11 +128,11 @@ def decision_observed_at(batch: InputBatch) -> datetime:
     return max(value.astimezone(target_zone) for value in values)
 
 
-def model_scoring_context(request: CycleRequest, batch: InputBatch, now: datetime) -> ModelScoringContext:
+def BuildModelScoringContext(request: CycleRequest, batch: InputBatch, now: datetime) -> ModelScoringContext:
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("model scoring clock must be timezone-aware")
     local_now = now.astimezone(SHANGHAI)
-    input_at = decision_observed_at(batch).astimezone(SHANGHAI)
+    input_at = DecisionObservedAt(batch).astimezone(SHANGHAI)
     input_age_seconds = max(0.0, (local_now - input_at).total_seconds())
     if request.phase == "close_fallback":
         return ModelScoringContext(input_age_seconds=input_age_seconds)

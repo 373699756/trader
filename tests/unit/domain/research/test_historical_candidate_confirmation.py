@@ -3,13 +3,13 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.domain.evaluation.filter_recall_ablation import FilterAblationRow, run_filter_recall_ablation
+from trader.training.domain.evaluation.filter_recall_ablation import FilterAblationRow, RunFilterRecallAblation
 from trader.training.domain.evaluation.historical_candidate_confirmation import (
     CandidateConfirmationPlan,
     CandidateConfirmationSeries,
-    confirm_rule_candidates,
+    ConfirmRuleCandidates,
 )
-from trader.training.domain.evaluation.preregistered_rule_candidate import preregister_rule_candidates
+from trader.training.domain.evaluation.preregistered_rule_candidate import PreregisterRuleCandidates
 
 
 def test_confirmation_plan_rejects_invalid_statistics() -> None:
@@ -42,7 +42,7 @@ def test_confirmation_keeps_terminal_holdout_closed_and_joint_family():
         )
         for index, day in enumerate(dates)
     )
-    family = preregister_rule_candidates(run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates))
+    family = PreregisterRuleCandidates(RunFilterRecallAblation(rows, strategy="tomorrow", development_dates=dates))
     series = tuple(
         CandidateConfirmationSeries(
             candidate.candidate_id,
@@ -63,7 +63,7 @@ def test_confirmation_keeps_terminal_holdout_closed_and_joint_family():
         for item in series
         if item.candidate_id in {family.candidates[0].candidate_id, selected_candidate_id}
     )
-    report = confirm_rule_candidates(
+    report = ConfirmRuleCandidates(
         family,
         series,
         confirmation_series,
@@ -95,7 +95,7 @@ def test_confirmation_rejects_positive_increment_with_negative_absolute_returns(
         )
         for index, day in enumerate(dates)
     )
-    family = preregister_rule_candidates(run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates))
+    family = PreregisterRuleCandidates(RunFilterRecallAblation(rows, strategy="tomorrow", development_dates=dates))
     series = tuple(
         CandidateConfirmationSeries(
             candidate.candidate_id,
@@ -117,7 +117,7 @@ def test_confirmation_rejects_positive_increment_with_negative_absolute_returns(
         for item in series
         if item.candidate_id in {family.candidates[0].candidate_id, selected_candidate_id}
     )
-    report = confirm_rule_candidates(
+    report = ConfirmRuleCandidates(
         family,
         series,
         confirmation_series,
@@ -149,7 +149,7 @@ def test_confirmation_retains_additional_filter_candidates_in_the_joint_holm_fam
         )
         for index, day in enumerate(dates)
     )
-    family = preregister_rule_candidates(run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates))
+    family = PreregisterRuleCandidates(RunFilterRecallAblation(rows, strategy="tomorrow", development_dates=dates))
     family_series = tuple(
         CandidateConfirmationSeries(
             candidate.candidate_id,
@@ -181,7 +181,7 @@ def test_confirmation_retains_additional_filter_candidates_in_the_joint_holm_fam
         for item in family_series
         if item.candidate_id in {family.candidates[0].candidate_id, selected_candidate_id}
     )
-    report = confirm_rule_candidates(
+    report = ConfirmRuleCandidates(
         family,
         family_series,
         confirmation_series,

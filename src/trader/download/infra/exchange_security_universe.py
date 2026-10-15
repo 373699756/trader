@@ -9,7 +9,7 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.infra.market_data.observations import ListingFetcher
 
 
-def load_current_a_share_universe(
+def LoadCurrentAShareUniverse(
     sse_fetcher: ListingFetcher, szse_fetcher: ListingFetcher, timeout_seconds: float
 ) -> tuple[BaoStockSecurity, ...]:
     listings = tuple(sse_fetcher(timeout_seconds)) + tuple(szse_fetcher(timeout_seconds))
@@ -28,7 +28,7 @@ def load_current_a_share_universe(
     )
 
 
-def select_st_eligible_universe(
+def SelectStEligibleUniverse(
     universe: tuple[BaoStockSecurity, ...], evidence: tuple[HistoryStEvidence, ...]
 ) -> tuple[BaoStockSecurity, ...]:
     """Apply the one historical-ST rule to either independent download population."""
@@ -43,4 +43,4 @@ def select_st_eligible_universe(
     return tuple(security for security in universe if security.code in eligible)
 
 
-__all__ = ["load_current_a_share_universe", "select_st_eligible_universe"]
+__all__ = ["LoadCurrentAShareUniverse", "SelectStEligibleUniverse"]

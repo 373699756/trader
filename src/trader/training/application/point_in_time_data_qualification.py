@@ -14,11 +14,11 @@ from trader.training.domain.evaluation.historical_industry_facts import (
     HistoricalIndustrySourceAudit,
 )
 from trader.training.domain.evaluation.point_in_time_data_qualification import (
+    BuildPointInTimeDataQualification,
     DailyHistoryQualification,
     HistoricalIndustryQualification,
     HistoricalMinuteQualification,
     PointInTimeDataQualificationReport,
-    build_point_in_time_data_qualification,
 )
 
 
@@ -37,10 +37,10 @@ class QualifyPointInTimeData:
         archive = self._history()
         industry = self._industry.audit(required_sample_codes=300, tushare_access_points=0)
         sources = self._probe.run(code=code, historical_anchor_date=historical_anchor_date)
-        return assemble_point_in_time_data_qualification(archive, sources, industry)
+        return AssemblePointInTimeDataQualification(archive, sources, industry)
 
 
-def assemble_point_in_time_data_qualification(
+def AssemblePointInTimeDataQualification(
     archive: HistorySnapshotStatus,
     source_capability: H1CapabilityAuditReport,
     industry_report: HistoricalIndustryDatasetReport,
@@ -74,7 +74,7 @@ def assemble_point_in_time_data_qualification(
     )
     if not minute_probes:
         raise ValueError("historical minute capability evidence is missing")
-    return build_point_in_time_data_qualification(daily, industries, minute_probes)
+    return BuildPointInTimeDataQualification(daily, industries, minute_probes)
 
 
 def _industry_qualification(
@@ -136,4 +136,4 @@ def _minute_qualification(probe: H1CapabilityProbe) -> HistoricalMinuteQualifica
     )
 
 
-__all__ = ["assemble_point_in_time_data_qualification"]
+__all__ = ["AssemblePointInTimeDataQualification"]

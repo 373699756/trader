@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from typing import TypeVar, cast
 
 from trader.recommendation.application.pipeline.static_standardize.static_feature_builder import (
+    AffectedFeatureStages,
+    BuildFeatureComputationPlan,
     FeatureComputationPlan,
     FeatureFactRevision,
     FeatureFactValue,
-    affected_feature_stages,
-    build_feature_computation_plan,
 )
 from trader.recommendation.application.ports.loaded_profile import (
     LoadedScoringProfile,
@@ -30,9 +30,9 @@ from trader.recommendation.application.ports.loaded_profile import (
     ModelScoringDeadlineError,
     ScoringHeadRuntimeStatus,
 )
-from trader.recommendation.application.runtime.schedule import shanghai_now
-from trader.recommendation.domain.candidate.filters import board_for_snapshot
-from trader.recommendation.domain.market.factors import round_score
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.domain.candidate.filters import BoardForSnapshot
+from trader.recommendation.domain.market.factors import RoundScore
 from trader.recommendation.domain.market.feature_contracts import (
     FEATURE_SPEC_CATALOG,
     TOMORROW_MODEL_FEATURE_MANIFEST,
@@ -41,8 +41,8 @@ from trader.recommendation.domain.market.feature_contracts import (
 )
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.scoring.residualization import ExposureContract, residualize_exposure
-from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
+from trader.recommendation.domain.scoring.residualization import ExposureContract, ResidualizeExposure
+from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
 
 _AMOUNT_FIELD = "qfq_average_amount_20d"
@@ -329,7 +329,7 @@ class ProductionModelScoringService:
             self._runtime_features.computation_plan.required_fact_ids,
         )
         previous = self._state
-        invalidation = affected_feature_stages(
+        invalidation = AffectedFeatureStages(
             self._runtime_features.computation_plan,
             previous.fact_revisions if previous is not None else None,
             revisions,
@@ -516,7 +516,7 @@ def _score_predictions(
 ) -> ModelScoreBatch:
     if not predictions:
         return ModelScoreBatch(model_version, {}, (), missing_codes)
-    amihud_ranks = percentile_ranks(cost_inputs)
+    amihud_ranks = PercentileRanks(cost_inputs)
     costs = tuple(cost_policy.estimate(rank) for rank in amihud_ranks)
     utilities = tuple(
         prediction.predicted_excess_return - cost for prediction, cost in zip(predictions, costs, strict=True)
@@ -536,7 +536,7 @@ def _score_predictions(
         cost_pct = cost * 100.0
         net_pct = utility * 100.0
         diagnostics[prediction.code] = ModelDiagnostics(
-            signal_score=round_score(score),
+            signal_score=RoundScore(score),
             predicted_excess_return_pct=predicted_pct,
             estimated_cost_pct=cost_pct,
             predicted_net_excess_pct=net_pct,
@@ -578,7 +578,7 @@ def _residualize_rows(
             residuals.append(())
             continue
         residuals.append(
-            residualize_exposure(
+            ResidualizeExposure(
                 tuple(cast(float, value) for value in values),
                 tuple(item.board for item in rows),
                 tuple(item.average_amount_20d for item in rows),
@@ -623,7 +623,7 @@ def _fact_revisions(
 
 
 def _relative_prediction_scores(values: tuple[float, ...]) -> tuple[float, ...]:
-    return tuple(100.0 * rank for rank in percentile_ranks(values))
+    return tuple(100.0 * rank for rank in PercentileRanks(values))
 
 
 def _model_feature_vector(
@@ -653,7 +653,7 @@ def _raw_row(
     feature: FeatureSnapshot,
     contract: _ModelRowContract,
 ) -> _RawRow | None:
-    board = board_for_snapshot(feature)
+    board = BoardForSnapshot(feature)
     if board not in {Board.MAIN, Board.CHINEXT, Board.STAR}:
         return None
     return_values = tuple(
@@ -680,7 +680,7 @@ def _raw_row(
     if feature.history_days < contract.history_required_sessions or amount <= 0.0 or amihud < 0.0:
         return None
     model_industry = feature.model_industry
-    if model_industry is not None and model_industry.effective_date > shanghai_now(feature.observed_at).date():
+    if model_industry is not None and model_industry.effective_date > ShanghaiNow(feature.observed_at).date():
         model_industry = None
     industry = (
         model_industry.industry_id.strip()
@@ -729,7 +729,7 @@ def _runtime_feature_contract(profile: LoadedScoringProfile) -> _RuntimeFeatureC
         momentum_horizons = _DEFAULT_MOMENTUM_HORIZONS
         market_state_horizons = ()
     return _RuntimeFeatureContract(
-        build_feature_computation_plan(manifest, catalog),
+        BuildFeatureComputationPlan(manifest, catalog),
         _DEFAULT_RETURN_HORIZONS,
         momentum_horizons,
         market_state_horizons,

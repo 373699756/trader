@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.training.domain.evaluation.filter_recall_ablation import (
     ABLATION_RULES,
     FilterAblationRow,
@@ -188,7 +188,7 @@ class RuleCandidateEvaluationReport:
         object.__setattr__(self, "content_hash", _hash(self))
 
 
-def preregister_rule_candidates(
+def PreregisterRuleCandidates(
     report: FilterRecallAblationReport,
     *,
     removed_components: tuple[str, ...] = (),
@@ -241,7 +241,7 @@ def preregister_rule_candidates(
     )
 
 
-def evaluate_rule_candidate(
+def EvaluateRuleCandidate(
     candidate: PreregisteredRuleCandidate,
     rows: tuple[FilterAblationRow, ...],
     *,
@@ -305,17 +305,17 @@ def evaluate_rule_candidate(
     )
 
 
-def evaluate_rule_candidate_family(
+def EvaluateRuleCandidateFamily(
     family: PreregisteredRuleCandidateFamily,
     rows: tuple[FilterAblationRow, ...],
 ) -> RuleCandidateEvaluationReport:
     if family.confirmation_locked:
         raise ValueError("preregistered rule candidate family cannot be reevaluated after confirmation is locked")
     metrics = tuple(
-        evaluate_rule_candidate(candidate, rows, evaluation_dates=family.development_dates)
+        EvaluateRuleCandidate(candidate, rows, evaluation_dates=family.development_dates)
         for candidate in family.candidates
     )
-    selected = choose_development_candidate(metrics)
+    selected = ChooseDevelopmentCandidate(metrics)
     if not any(item.evaluated_rows for item in metrics):
         status: Literal["candidate_family_sealed", "historical_rejected", "historical_data_insufficient"] = (
             "historical_data_insufficient"
@@ -330,7 +330,7 @@ def evaluate_rule_candidate_family(
     )
 
 
-def choose_development_candidate(metrics: tuple[RuleCandidateMetrics, ...]) -> str | None:
+def ChooseDevelopmentCandidate(metrics: tuple[RuleCandidateMetrics, ...]) -> str | None:
     """Choose a sole candidate only when it clears fixed risk and concentration gates."""
 
     if not metrics or metrics[0].candidate_id == "":
@@ -445,7 +445,7 @@ def _positive_concentration(rows: tuple[FilterAblationRow, ...]) -> tuple[float,
 
 
 def _hash(value: object) -> str:
-    return canonical_digest(value)
+    return CanonicalDigest(value)
 
 
 __all__ = [
@@ -454,8 +454,8 @@ __all__ = [
     "PreregisteredRuleCandidateFamily",
     "RuleCandidateMetrics",
     "RuleCandidateEvaluationReport",
-    "choose_development_candidate",
-    "evaluate_rule_candidate",
-    "evaluate_rule_candidate_family",
-    "preregister_rule_candidates",
+    "ChooseDevelopmentCandidate",
+    "EvaluateRuleCandidate",
+    "EvaluateRuleCandidateFamily",
+    "PreregisterRuleCandidates",
 ]

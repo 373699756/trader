@@ -22,11 +22,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from trader.download.domain.history_sync import BAOSTOCK_MIN_QUERY_INTERVAL_SECONDS  # noqa: E402
 from trader.download.infra.baostock_session import (  # noqa: E402
     BaoStockSessionSdkPort,
-    load_baostock_sdk,
-    login_baostock,
-    logout_baostock,
+    LoadBaostockSdk,
+    LoginBaostock,
+    LogoutBaostock,
 )
-from trader.infra.settings import load_runtime_settings  # noqa: E402
+from trader.infra.settings import LoadRuntimeSettings  # noqa: E402
 
 _DAILY_FIELDS = "date,code,adjustflag,tradestatus"
 _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
@@ -141,8 +141,8 @@ def _probe_baostock_in_process(code: str, *, days: int, today: date | None = Non
     sdk = None
     try:
         with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            sdk = load_baostock_sdk()
-            login_baostock(sdk)
+            sdk = LoadBaostockSdk()
+            LoginBaostock(sdk)
             raw = _query_summary(sdk, source_code, start, end, adjustflag="3")
             qfq = _query_summary(sdk, source_code, start, end, adjustflag="2")
     except Exception as exc:  # third-party SDK raises inconsistent exception types
@@ -150,7 +150,7 @@ def _probe_baostock_in_process(code: str, *, days: int, today: date | None = Non
     finally:
         if sdk is not None:
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                logout_baostock(sdk)
+                LogoutBaostock(sdk)
     raw_count, raw_flag, includes_status, latest = raw
     qfq_count, qfq_flag, _, _ = qfq
     passed = raw_count > 0 and qfq_count > 0 and raw_flag == "3" and qfq_flag == "2" and includes_status
@@ -305,7 +305,7 @@ def main() -> int:
     args = _parser().parse_args()
     try:
         _validate(args)
-        settings = load_runtime_settings(Path(args.runtime_config).expanduser().resolve())
+        settings = LoadRuntimeSettings(Path(args.runtime_config).expanduser().resolve())
         report = build_report(
             args,
             tushare_points=settings.market_data.tushare.points,

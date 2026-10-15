@@ -7,15 +7,15 @@ from collections.abc import Callable
 from threading import Lock
 
 from trader.download.application.progress_message import (
+    FormatProgressField,
+    HighestProgressLevel,
     ProgressLevel,
     ProgressMessage,
-    highest_progress_level,
-    progress_field,
-    progress_number,
+    ProgressNumber,
 )
 from trader.download.application.stock_download_progress import (
+    FormatStockDownloadProgress,
     StockDownloadProgress,
-    format_stock_download_progress,
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_supplier_failure import HISTORY_SUPPLIER_PENDING_REASONS
@@ -114,9 +114,9 @@ def _summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.pipeline is not None:
         pipeline = progress.pipeline
         return (
-            f"网络 {progress_number(pipeline.downloaded_codes)}/{progress_number(progress.total_units)}",
-            f"落库 {progress_number(progress.completed_units)}/{progress_number(progress.total_units)}",
-            f"待写 {progress_number(pipeline.queued_codes)}",
+            f"网络 {ProgressNumber(pipeline.downloaded_codes)}/{ProgressNumber(progress.total_units)}",
+            f"落库 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
+            f"待写 {ProgressNumber(pipeline.queued_codes)}",
             f"下载 {_format_duration(pipeline.download_seconds)}",
             f"落库耗时 {_format_duration(pipeline.write_seconds)}",
             f"回压 {_format_duration(pipeline.backpressure_seconds)}",
@@ -130,31 +130,31 @@ def _download_summary_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if progress.cache_hit is not None:
         parts: tuple[str, ...] = ("缓存复用" if progress.cache_hit else "供应商查询",)
         if progress.industry_missing_codes is not None:
-            parts += (f"缺行业 {progress_number(progress.industry_missing_codes)} 股",)
+            parts += (f"缺行业 {ProgressNumber(progress.industry_missing_codes)} 股",)
         return parts
     if progress.tencent_summary is not None:
         summary = progress.tencent_summary
         return (
-            f"完整 {progress_number(summary.succeeded_codes)} 股",
-            f"部分 {progress_number(summary.partial_codes)} 股",
-            f"失败 {progress_number(summary.failed_codes)} 股",
-            f"其中待重试 {progress_number(summary.pending_codes)} 股",
-            f"其中本地复用 {progress_number(summary.reused_codes)} 股",
-            f"重叠冲突 {progress_number(summary.overlap_conflicts)} 股",
-            f"其它失败 {progress_number(summary.other_failures)} 股",
+            f"完整 {ProgressNumber(summary.succeeded_codes)} 股",
+            f"部分 {ProgressNumber(summary.partial_codes)} 股",
+            f"失败 {ProgressNumber(summary.failed_codes)} 股",
+            f"其中待重试 {ProgressNumber(summary.pending_codes)} 股",
+            f"其中本地复用 {ProgressNumber(summary.reused_codes)} 股",
+            f"重叠冲突 {ProgressNumber(summary.overlap_conflicts)} 股",
+            f"其它失败 {ProgressNumber(summary.other_failures)} 股",
         )
     if progress.gap_summary is not None:
         gap_summary = progress.gap_summary
         return (
-            f"价格对待补 {progress_number(gap_summary.price_pair_cells)} 股日",
-            f"本轮Tencent失败 {progress_number(gap_summary.failed_codes)} 股",
+            f"价格对待补 {ProgressNumber(gap_summary.price_pair_cells)} 股日",
+            f"本轮Tencent失败 {ProgressNumber(gap_summary.failed_codes)} 股",
         )
     if progress.st_summary is not None:
         st_summary = progress.st_summary
         return (
-            f"合格 {progress_number(st_summary.clear)}",
-            f"曾ST排除 {progress_number(st_summary.ever_st)}",
-            f"未知排除 {progress_number(st_summary.unknown)}",
+            f"合格 {ProgressNumber(st_summary.clear)}",
+            f"曾ST排除 {ProgressNumber(st_summary.ever_st)}",
+            f"未知排除 {ProgressNumber(st_summary.unknown)}",
         )
     return _reuse_summary_parts(progress)
 
@@ -176,9 +176,9 @@ def _price_coverage_parts(progress: HistorySyncProgress) -> tuple[str, ...]:
     if coverage is None:
         return ()
     return (
-        f"raw {progress_number(coverage.raw)}/{progress_number(coverage.expected)}",
-        f"qfq {progress_number(coverage.qfq)}/{progress_number(coverage.expected)}",
-        f"配对 {progress_number(coverage.paired)}/{progress_number(coverage.expected)}",
+        f"raw {ProgressNumber(coverage.raw)}/{ProgressNumber(coverage.expected)}",
+        f"qfq {ProgressNumber(coverage.qfq)}/{ProgressNumber(coverage.expected)}",
+        f"配对 {ProgressNumber(coverage.paired)}/{ProgressNumber(coverage.expected)}",
     )
 
 
@@ -220,7 +220,7 @@ class StderrHistorySyncProgress:
             and progress.failure_detail is None
         ):
             message = self._stock_download_line(progress, now)
-            self._observed_level = highest_progress_level(
+            self._observed_level = HighestProgressLevel(
                 self._observed_level, *(field.level for field in message.fields)
             )
             self._output(message)
@@ -233,11 +233,11 @@ class StderrHistorySyncProgress:
                 label = "本月耗时" if monthly else "阶段耗时"
             parts.append(f"{label} {_format_duration(now - self._phase_started[phase_key])}")
         level = _progress_level(progress)
-        self._observed_level = highest_progress_level(self._observed_level, level)
+        self._observed_level = HighestProgressLevel(self._observed_level, level)
         self._output(
             ProgressMessage(
                 tuple(
-                    progress_field(
+                    FormatProgressField(
                         part,
                         14 if index == 1 else 0,
                         level=level
@@ -270,16 +270,16 @@ class StderrHistorySyncProgress:
         phase_key = (progress.stage, None)
         pipeline = progress.pipeline
         extra = (
-            f"网络 {progress_number(pipeline.downloaded_codes if pipeline else None)}/{progress_number(progress.total_units)}",
-            f"落库 {progress_number(progress.completed_units)}/{progress_number(progress.total_units)}",
-            f"待写 {progress_number(pipeline.queued_codes if pipeline else None)}",
+            f"网络 {ProgressNumber(pipeline.downloaded_codes if pipeline else None)}/{ProgressNumber(progress.total_units)}",
+            f"落库 {ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}",
+            f"待写 {ProgressNumber(pipeline.queued_codes if pipeline else None)}",
             f"下载 {_format_duration(pipeline.download_seconds) if pipeline else '--:--:--'}",
             f"落库耗时 {_format_duration(pipeline.write_seconds) if pipeline else '--:--:--'}",
             f"回压 {_format_duration(pipeline.backpressure_seconds) if pipeline else '--:--:--'}",
             f"总计 {_format_duration(now - self._phase_started[phase_key])}",
             *_reuse_summary_parts(progress),
         )
-        return format_stock_download_progress(
+        return FormatStockDownloadProgress(
             max(0.0, now - self._started_at),
             StockDownloadProgress(
                 command="download",
@@ -357,7 +357,7 @@ class StderrHistorySyncProgress:
         ]
         if progress.stage in _COUNT_STAGES and progress.failure_detail is None:
             parts.append(
-                f"{progress_number(progress.completed_units)}/{progress_number(progress.total_units)}"
+                f"{ProgressNumber(progress.completed_units)}/{ProgressNumber(progress.total_units)}"
                 if progress.stage == "tencent_history"
                 else _format_count(progress.completed_units, progress.total_units)
             )
@@ -416,7 +416,7 @@ class StderrHistorySyncProgress:
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:
         parts = self._result_parts(status)
-        level = highest_progress_level(_maintenance_result_level(status), self._observed_level)
+        level = HighestProgressLevel(_maintenance_result_level(status), self._observed_level)
         if status.state in {"completed", "already_current"} and not status.unresolved_price_cells:
             if level is ProgressLevel.ERROR:
                 parts.append("本轮有失败记录")
@@ -425,7 +425,7 @@ class StderrHistorySyncProgress:
         self._output(
             ProgressMessage(
                 tuple(
-                    progress_field(
+                    FormatProgressField(
                         part,
                         level=level
                         if index == 1
@@ -446,7 +446,7 @@ class StderrHistorySyncProgress:
 
 def _format_count(completed: int, total: int) -> str:
     percent = 100.0 if total == 0 else completed / total * 100.0
-    return f"{progress_number(completed)}/{progress_number(total)} ({percent:6.2f}%)"
+    return f"{ProgressNumber(completed)}/{ProgressNumber(total)} ({percent:6.2f}%)"
 
 
 def _progress_level(progress: HistorySyncProgress) -> ProgressLevel:

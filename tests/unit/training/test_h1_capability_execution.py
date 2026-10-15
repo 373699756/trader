@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from trader.entrypoints.cli import main as cli_main
+from trader.entrypoints.cli import Main as cli_main
 from trader.training.infra.research.capability_http import BoundedCapabilitySession
-from trader.training.infra.research.capability_http import request_params as _request_params
+from trader.training.infra.research.capability_http import RequestParams as _request_params
 
 
 def main(argv, *, session_factory, monkeypatch):

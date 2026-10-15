@@ -5,8 +5,8 @@ from tests.unit.application.test_decision_queries import _Repository
 from tests.unit.application.test_recommendation_boundaries import _features, _runtime_policy
 from tests.unit.application.test_tomorrow_projection import _native_input
 from tests.unit.domain.test_decision_identity import NOW, decision
-from trader.http_api.response.decision_projection import serialize_event
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.http_api.response.decision_projection import SerializeEvent
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
@@ -15,7 +15,7 @@ from trader.recommendation.application.pipeline.local_score.base_scoring import 
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionOverlay,
-    formal_scored_decision,
+    FormalScoredDecision,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -42,7 +42,7 @@ def test_scoring_publication_get_and_sse_do_not_compute_content_hash(monkeypatch
     assert index.publish(current, expected_version=None).accepted
     queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock(current.observed_at))
     view = queries.current(Strategy.TOMORROW)
-    patch = serialize_event(UnifiedDecisionEventStream().publish_committed(build_decision_committed(current)))
+    patch = SerializeEvent(UnifiedDecisionEventStream().publish_committed(BuildDecisionCommitted(current)))
     assert view.decision_version == current.version
     assert view.content_hash is None
     assert patch["snapshot_id"] == view.decision_version
@@ -74,7 +74,7 @@ def test_formal_projection_changes_etag_without_a_content_digest(monkeypatch):
     assert index.publish(current, expected_version=None).accepted
     queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), _Repository(), _Clock(current.observed_at))
     live = queries.current(current.strategy)
-    record = CommittedDecisionRecord(formal_scored_decision(current), NOW.replace(hour=15, minute=0), "scheduled")
+    record = CommittedDecisionRecord(FormalScoredDecision(current), NOW.replace(hour=15, minute=0), "scheduled")
     assert index.restore_formal(record)
     queries = UnifiedDecisionQueries(
         index, UnifiedDecisionDraftIndex(), _Repository(record), _Clock(record.committed_at)

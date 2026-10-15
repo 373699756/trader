@@ -22,9 +22,9 @@ from trader.recommendation.domain.market.epochs import (
 )
 from trader.recommendation.domain.market.models import Evidence, FeatureSnapshot, LiveQuote, MarketQuote
 from trader.recommendation.domain.market.research import (
+    DeriveCorporateRiskFeatures,
+    ResearchComponentsFromObservation,
     ResearchObservation,
-    derive_corporate_risk_features,
-    research_components_from_observation,
 )
 
 
@@ -42,7 +42,7 @@ class FeatureCalculationService(FeatureCalculationPort):
     """Assemble scored features from one coherent data-plane snapshot."""
 
     def calculate(self, snapshot: MarketDataPlaneSnapshot) -> tuple[FeatureSnapshot, ...]:
-        return assemble_scored_features(snapshot)
+        return AssembleScoredFeatures(snapshot)
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ class _AssemblyContext:
     merge_epoch: str
 
 
-def assemble_scored_features(snapshot: MarketDataPlaneSnapshot) -> tuple[FeatureSnapshot, ...]:
+def AssembleScoredFeatures(snapshot: MarketDataPlaneSnapshot) -> tuple[FeatureSnapshot, ...]:
     """Merge market, candidate and research epochs into immutable features."""
 
     context = _assembly_context(snapshot)
@@ -130,7 +130,7 @@ def _assemble_feature(context: _AssemblyContext, code: str) -> FeatureSnapshot:
         missing_fields=tuple(sorted(missing_fields)),
         missing_reasons=missing_reasons,
         evidence=_unique_evidence(evidence),
-        research_components=research_components_from_observation(research),
+        research_components=ResearchComponentsFromObservation(research),
         merge_epoch=context.merge_epoch,
     )
 
@@ -166,7 +166,7 @@ def _apply_research_risk_values(
     research: ResearchObservation,
     observed_at: datetime,
 ) -> None:
-    current = derive_corporate_risk_features(
+    current = DeriveCorporateRiskFeatures(
         research.corporate_risk_facts,
         observed_at,
         history_complete=research.corporate_risk_history_complete,
@@ -236,5 +236,5 @@ __all__ = [
     "FeatureCalculationPort",
     "FeatureCalculationService",
     "ScoredSelectionNotReadyError",
-    "assemble_scored_features",
+    "AssembleScoredFeatures",
 ]

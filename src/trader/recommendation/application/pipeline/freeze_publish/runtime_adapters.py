@@ -10,7 +10,7 @@ from typing import Literal
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import ScoredFreezeCoordinator
 from trader.recommendation.application.pipeline.local_score.local_decision_builder import LocalDecisionBuilder
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
-from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import normalize_scored_review_times
+from trader.recommendation.application.pipeline.risk_review.deepseek_evidence_gate import NormalizeScoredReviewTimes
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionPort, ScoreFusionService
 from trader.recommendation.application.ports.deepseek import DeepSeekReviewUnavailableError, TomorrowDeepSeekReviewPort
 from trader.recommendation.application.ports.runtime import (
@@ -75,7 +75,7 @@ class DeepSeekAdapter(DeepSeekUpgradePort):
                 "deepseek_manifest_mismatch"
                 if not manifests_match
                 else "deepseek_review_time_invalid"
-                if normalize_scored_review_times(reviews, deadline) is None
+                if NormalizeScoredReviewTimes(reviews, deadline) is None
                 else None
             )
         except (DeepSeekReviewUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:

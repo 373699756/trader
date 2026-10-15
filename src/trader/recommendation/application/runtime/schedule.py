@@ -70,16 +70,16 @@ class ScheduleDecision:
     freeze_strategies: tuple[str, ...]
 
 
-def shanghai_now(value: datetime) -> datetime:
+def ShanghaiNow(value: datetime) -> datetime:
     if value.tzinfo is None:
         raise ValueError("business clock must be timezone-aware")
     return value.astimezone(SHANGHAI)
 
 
-def phase_at(value: datetime, *, is_trading_day: bool) -> MarketPhase:
+def PhaseAt(value: datetime, *, is_trading_day: bool) -> MarketPhase:
     if not is_trading_day:
         return MarketPhase.CLOSED
-    current = shanghai_now(value).time().replace(tzinfo=None)
+    current = ShanghaiNow(value).time().replace(tzinfo=None)
     phase = MarketPhase.AFTER_CLOSE if current >= time(15, 0) else MarketPhase.CLOSED
     for start, end, candidate in _TRADING_PHASE_RANGES:
         if start <= current < end:
@@ -88,8 +88,8 @@ def phase_at(value: datetime, *, is_trading_day: bool) -> MarketPhase:
     return phase
 
 
-def decision_at(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
-    phase = phase_at(value, is_trading_day=is_trading_day)
+def DecisionAt(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
+    phase = PhaseAt(value, is_trading_day=is_trading_day)
     return ScheduleDecision(
         phase=phase,
         should_refresh_market=phase
@@ -125,34 +125,34 @@ def decision_at(value: datetime, *, is_trading_day: bool) -> ScheduleDecision:
     )
 
 
-def trade_date_at(value: datetime) -> date:
-    return shanghai_now(value).date()
+def TradeDateAt(value: datetime) -> date:
+    return ShanghaiNow(value).date()
 
 
-def freeze_due_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
+def FreezeDueAt(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
     if not is_trading_day:
         return ()
-    current = shanghai_now(value).time().replace(tzinfo=None)
+    current = ShanghaiNow(value).time().replace(tzinfo=None)
     if current >= FREEZE_TIME:
         return ("tomorrow", "d25")
     return ()
 
 
-def startup_freeze_strategies(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
+def StartupFreezeStrategies(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
     """Return checkpoint-eligible freezes for initialization before close fallback."""
 
     if not is_trading_day:
         return ()
-    current = shanghai_now(value).time().replace(tzinfo=None)
+    current = ShanghaiNow(value).time().replace(tzinfo=None)
     if current >= FREEZE_TIME:
         return ("tomorrow", "d25")
     return ()
 
 
-def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint | None:
+def SchedulePointAt(value: datetime, *, is_trading_day: bool) -> SchedulePoint | None:
     if not is_trading_day:
         return None
-    current = shanghai_now(value).time().replace(tzinfo=None)
+    current = ShanghaiNow(value).time().replace(tzinfo=None)
     points = {
         time(14, 48): SchedulePoint.DEEPSEEK_CUTOFF,
         time(14, 59, 20): SchedulePoint.AFTERNOON_CHECKPOINT,
@@ -162,8 +162,8 @@ def schedule_point_at(value: datetime, *, is_trading_day: bool) -> SchedulePoint
     return points.get(current.replace(microsecond=0))
 
 
-def seconds_until_next_schedule_boundary(value: datetime, *, maximum_seconds: float) -> float:
-    local = shanghai_now(value)
+def SecondsUntilNextScheduleBoundary(value: datetime, *, maximum_seconds: float) -> float:
+    local = ShanghaiNow(value)
     upcoming = (
         local.replace(
             hour=boundary.hour,
@@ -180,7 +180,7 @@ def seconds_until_next_schedule_boundary(value: datetime, *, maximum_seconds: fl
 
 
 def _freeze_at(value: datetime, *, is_trading_day: bool) -> tuple[str, ...]:
-    point = schedule_point_at(value, is_trading_day=is_trading_day)
+    point = SchedulePointAt(value, is_trading_day=is_trading_day)
     if point is SchedulePoint.AFTERNOON_FREEZE:
         return ("tomorrow", "d25")
     return ()
@@ -191,12 +191,12 @@ __all__ = [
     "SHANGHAI",
     "SchedulePoint",
     "ScheduleDecision",
-    "decision_at",
-    "freeze_due_at",
-    "phase_at",
-    "schedule_point_at",
-    "seconds_until_next_schedule_boundary",
-    "shanghai_now",
-    "startup_freeze_strategies",
-    "trade_date_at",
+    "DecisionAt",
+    "FreezeDueAt",
+    "PhaseAt",
+    "SchedulePointAt",
+    "SecondsUntilNextScheduleBoundary",
+    "ShanghaiNow",
+    "StartupFreezeStrategies",
+    "TradeDateAt",
 ]

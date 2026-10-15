@@ -5,8 +5,8 @@ from trader.training.application.historical_residual_ledger import HistoricalRes
 from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
+    JoinPredictionOutcome,
     ResidualJoinKey,
-    join_prediction_outcome,
 )
 
 _HASH_A = "a" * 64
@@ -29,7 +29,7 @@ class _LedgerPort:
             (item.key, item.parent_split_hash): item for item in self.outcomes if item.label_status == "matured"
         }
         return tuple(
-            join_prediction_outcome(item, outcome)
+            JoinPredictionOutcome(item, outcome)
             for item in self.predictions
             if item.key.strategy == strategy
             and item.parent_split_hash == parent_split_hash

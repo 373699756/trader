@@ -46,7 +46,7 @@ class BoundedCapabilitySession:
         referer = "https://quote.eastmoney.com/" if "eastmoney" in url else "https://gu.qq.com/"
         with self._session.get(
             url,
-            params=request_params(params),
+            params=RequestParams(params),
             timeout=min(timeout, self._timeout_seconds, remaining),
             headers={"Referer": referer},
             stream=True,
@@ -67,7 +67,7 @@ class BoundedCapabilitySession:
             return CapabilitySourceResponse(bytes(body))
 
 
-def request_params(params: dict[str, object]) -> dict[str, str | tuple[str, ...]]:
+def RequestParams(params: dict[str, object]) -> dict[str, str | tuple[str, ...]]:
     normalized: dict[str, str | tuple[str, ...]] = {}
     for key, value in params.items():
         if isinstance(value, str):

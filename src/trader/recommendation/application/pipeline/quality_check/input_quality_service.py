@@ -10,20 +10,20 @@ from datetime import datetime
 from types import MappingProxyType
 from typing import Literal
 
-from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import dynamic_source_health
+from trader.recommendation.application.pipeline.dynamic_market.market_snapshot_service import DynamicSourceHealth
 from trader.recommendation.application.pipeline.stage_output import (
+    MeasuredOutput,
     PipelineStageOutput,
-    measured_output,
-    require_previous_stage,
-    stage_output,
+    RequirePreviousStage,
+    StageOutput,
 )
 from trader.recommendation.application.ports.scoring import ScoredNativeInput
 from trader.recommendation.domain.candidate.filters import (
+    ApplyFilters,
+    BoardForSnapshot,
     FilterSeverity,
     HardFilterPolicy,
-    apply_filters,
-    board_for_snapshot,
-    level_two_filter_rules,
+    LevelTwoFilterRules,
 )
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate, StageState
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
@@ -54,12 +54,12 @@ class QualityScoringBatch:
     native_input: ScoredNativeInput
 
     def __post_init__(self) -> None:
-        require_previous_stage(self.output, PipelineStage.LOCAL_SCORE)
+        RequirePreviousStage(self.output, PipelineStage.LOCAL_SCORE)
         if any(item not in self.native_input.candidate_features for item in self.output.records):
             raise ValueError("quality scoring records must belong to the native candidate batch")
 
 
-def prepare_native_quality_batch(
+def PrepareNativeQualityBatch(
     native_input: ScoredNativeInput,
     hard_filter: HardFilterPolicy,
     minimum_history_sessions: int,
@@ -68,17 +68,17 @@ def prepare_native_quality_batch(
     """Assess an explicit native/replay candidate batch through the production quality owner."""
     started = monotonic()
     by_code = {item.quote.code: item for item in native_input.candidate_features}
-    candidates = stage_output(
+    candidates = StageOutput(
         PipelineStage.CANDIDATE_POOL,
         tuple(SelectedCandidateInput(code, by_code.get(code)) for code in native_input.requested_codes),
         input_batch_id=native_input.input_version,
         as_of=native_input.evaluated_at,
         input_count=len(native_input.requested_codes),
-        source_health=dynamic_source_health(native_input.candidate_features, native_input.evaluated_at),
+        source_health=DynamicSourceHealth(native_input.candidate_features, native_input.evaluated_at),
         latency_ms=0,
     )
-    quality = measured_output(
-        assess_candidate_input_stage(
+    quality = MeasuredOutput(
+        AssessCandidateInputStage(
             candidates,
             as_of=native_input.evaluated_at,
             minimum_history_sessions=minimum_history_sessions,
@@ -207,7 +207,7 @@ class ScoredInputQualityOptions:
     preselection_transient_invalid: bool = False
 
 
-def assess_scored_input_quality(
+def AssessScoredInputQuality(
     native_input: ScoredNativeInput,
     selection: ScoredSelectionResult,
     options: ScoredInputQualityOptions | None = None,
@@ -341,11 +341,11 @@ def assess_scored_input_quality(
     )
 
 
-def has_transient_candidate_gap(plan: ScoredCandidatePlan) -> bool:
-    return any(has_transient_evaluation_gap(item) for item in plan.evaluations)
+def HasTransientCandidateGap(plan: ScoredCandidatePlan) -> bool:
+    return any(HasTransientEvaluationGap(item) for item in plan.evaluations)
 
 
-def has_transient_evaluation_gap(evaluation: ScoredStockEvaluation) -> bool:
+def HasTransientEvaluationGap(evaluation: ScoredStockEvaluation) -> bool:
     return bool(
         (
             evaluation.disposition is not ScoredDisposition.REJECT
@@ -375,7 +375,7 @@ def _security_master_complete(feature: FeatureSnapshot | None) -> bool:
     if feature is None:
         return False
     quote = feature.quote
-    return board_for_snapshot(feature) is not Board.UNSUPPORTED and not _SECURITY_IDENTITY_RESTRICTIONS.intersection(
+    return BoardForSnapshot(feature) is not Board.UNSUPPORTED and not _SECURITY_IDENTITY_RESTRICTIONS.intersection(
         quote.execution_restrictions
     )
 
@@ -387,7 +387,7 @@ def _history_complete(feature: FeatureSnapshot | None, *, minimum_history_sessio
     return amount_median is not None and math.isfinite(amount_median) and amount_median > 0.0
 
 
-def assess_candidate_input_stage(
+def AssessCandidateInputStage(
     source: PipelineStageOutput[SelectedCandidateInput],
     *,
     as_of: datetime,
@@ -396,10 +396,10 @@ def assess_candidate_input_stage(
     hard_filter: HardFilterPolicy | None = None,
 ) -> PipelineStageOutput[FeatureSnapshot]:
     """Assess the actual directed input for the selected reserve, including missing quotes."""
-    require_previous_stage(source, PipelineStage.QUALITY_CHECK)
+    RequirePreviousStage(source, PipelineStage.QUALITY_CHECK)
     validation_rules = tuple(
         rule
-        for rule in level_two_filter_rules(max_age_seconds=30.0, policy=hard_filter)
+        for rule in LevelTwoFilterRules(max_age_seconds=30.0, policy=hard_filter)
         if rule.severity is FilterSeverity.DEFERRED
     )
     accepted: list[FeatureSnapshot] = []
@@ -407,7 +407,7 @@ def assess_candidate_input_stage(
     diagnostic: Counter[str] = Counter()
     for selected in source.records:
         feature = selected.features
-        invalid = apply_filters(feature, validation_rules, now=as_of).deferred if feature is not None else ()
+        invalid = ApplyFilters(feature, validation_rules, now=as_of).deferred if feature is not None else ()
         if feature is None:
             pending["candidate_quotes_pending"] += 1
         elif invalid:
@@ -425,8 +425,8 @@ def assess_candidate_input_stage(
         StageReasonAggregate(code, code.replace("_", " "), count, Severity.WARNING)
         for code, count in sorted((pending + diagnostic).items())
     )
-    health = dynamic_source_health(tuple(item.features for item in source.records if item.features is not None), as_of)
-    output = stage_output(
+    health = DynamicSourceHealth(tuple(item.features for item in source.records if item.features is not None), as_of)
+    output = StageOutput(
         PipelineStage.QUALITY_CHECK,
         accepted,
         input_batch_id=source.snapshot.output_batch_id,
@@ -445,7 +445,7 @@ def assess_candidate_input_stage(
 __all__ = [
     "ScoredInputQuality",
     "ScoredInputQualityStatus",
-    "assess_candidate_input_stage",
-    "assess_scored_input_quality",
-    "has_transient_candidate_gap",
+    "AssessCandidateInputStage",
+    "AssessScoredInputQuality",
+    "HasTransientCandidateGap",
 ]

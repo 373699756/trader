@@ -146,7 +146,7 @@ def _require_unique_reason_codes(reasons: tuple[StageReasonAggregate, ...]) -> N
         raise ValueError("pipeline reason codes must be unique")
 
 
-def validate_stage_batch_continuity(stages: tuple[PipelineStageSnapshot, ...]) -> None:
+def ValidateStageBatchContinuity(stages: tuple[PipelineStageSnapshot, ...]) -> None:
     """Reject a stage list whose immutable handoff identities do not line up."""
     if tuple(item.stage for item in stages) != PIPELINE_STAGES:
         raise ValueError("pipeline stage snapshots must contain all stages in order")
@@ -304,7 +304,7 @@ class RecommendationPipelineStatus:
         if keys != PIPELINE_STAGE_ORDER or self.current_stage not in keys:
             raise ValueError("recommendation pipeline stages are invalid")
         if self.stage_snapshots:
-            validate_stage_batch_continuity(self.stage_snapshots)
+            ValidateStageBatchContinuity(self.stage_snapshots)
 
     def stage(self, key: PipelineStageKey) -> PipelineStageStatus:
         return next(item for item in self.stages if item.key == key)
@@ -321,7 +321,7 @@ __all__ = [
     "PipelineStage",
     "PipelineStageKey",
     "PipelineStageSnapshot",
-    "validate_stage_batch_continuity",
+    "ValidateStageBatchContinuity",
     "PipelineStageState",
     "PipelineStageStatus",
     "RecommendationPipelineStatus",

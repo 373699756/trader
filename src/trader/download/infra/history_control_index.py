@@ -550,7 +550,7 @@ def _populate_rebuilt_reminders(
         repository.save_reminder(reminder)
 
 
-def inspect_history_disk(
+def InspectHistoryDisk(
     path: Path,
     requirement: HistoryDiskRequirement,
     *,
@@ -913,5 +913,5 @@ __all__ = [
     "HistoryDiskPreflightStatus",
     "HistoryMaintenanceAlreadyRunningError",
     "HistoryMaintenanceLock",
-    "inspect_history_disk",
+    "InspectHistoryDisk",
 ]

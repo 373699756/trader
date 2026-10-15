@@ -31,38 +31,38 @@ from trader.download.domain.history_sync import (
     HistorySyncProgressStage,
     HistoryTwoStageSupplier,
 )
-from trader.download.domain.security_eligibility import is_st_security_name
+from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
     HistoryMaintenanceAlreadyRunningError,
     HistoryMaintenanceLock,
-    inspect_history_disk,
+    InspectHistoryDisk,
 )
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_flow import HistoryDownloadFlow, HistoryDownloadResources
 from trader.download.infra.history_download_index import HistoryDownloadBatch, HistoryDownloadIndex, HistoryDownloadTask
 from trader.download.infra.history_reference_files import (
-    history_reference_path,
-    read_bound_history_reference,
-    write_history_reference,
+    HistoryReferencePath,
+    ReadBoundHistoryReference,
+    WriteHistoryReference,
 )
-from trader.download.infra.history_snapshot_publication import HistoryPublication, publish_history_snapshot
+from trader.download.infra.history_snapshot_publication import HistoryPublication, PublishHistorySnapshot
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_storage_profile import (
+    ChooseHistoryWriteTuning,
+    ClassifyHistoryStorage,
     HistoryStorageKind,
     HistoryWriteTuning,
-    classify_history_storage,
-    history_write_tuning,
 )
 from trader.download.infra.history_sync_failure import (
+    HistoryFailureCode,
+    HistoryFailureDetail,
     HistorySyncFailureError,
-    history_failure_code,
-    history_failure_detail,
 )
-from trader.infra.serialization.canonical_codec import canonical_digest
-from trader.infra.workers import WorkerExecutor, injected_executor
-from trader.training.infra.history.history_training_due import HistoryTrainingDueQuery, evaluate_history_training_due
+from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.workers import InjectedExecutor, WorkerExecutor
+from trader.training.infra.history.history_training_due import EvaluateHistoryTrainingDue, HistoryTrainingDueQuery
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 Clock: TypeAlias = Callable[[], datetime]
@@ -162,9 +162,7 @@ class _HistorySync:
         self.control.save_source(source)
         self.control.save_calendar(calendar)
         self.control.save_universe(universe)
-        write_history_reference(
-            history_reference_path(self.configuration.archive_root, reference.content_hash), reference
-        )
+        WriteHistoryReference(HistoryReferencePath(self.configuration.archive_root, reference.content_hash), reference)
         batch = HistoryDownloadBatch(
             active.sequence + 1 if active else 1,
             source.content_hash,
@@ -200,13 +198,13 @@ class _HistorySync:
         if tuple(item.code for item in universe.securities) != tuple(item.code for item in current_universe.securities):
             raise RuntimeError("history_resume_codes_changed")
         for previous_security, current_security in zip(universe.securities, current_universe.securities, strict=True):
-            if is_st_security_name(current_security.name) or is_st_security_name(previous_security.name):
+            if IsStSecurityName(current_security.name) or IsStSecurityName(previous_security.name):
                 raise RuntimeError("history_resume_st_conflict")
             if replace(previous_security, name=current_security.name) != current_security:
                 raise RuntimeError("history_resume_security_changed")
         if (source.source, source.dataset) != (current_source.source, current_source.dataset):
             raise RuntimeError("history_resume_source_changed")
-        reference = read_bound_history_reference(self.configuration.archive_root, source.supplier_contract)
+        reference = ReadBoundHistoryReference(self.configuration.archive_root, source.supplier_contract)
         if (
             source.supplier_contract.rsplit("_", 1)[-1] != current_source.supplier_contract.rsplit("_", 1)[-1]
             or universe.securities != current_universe.securities
@@ -219,8 +217,8 @@ class _HistorySync:
             self.control.save_source(current_source)
             self.control.save_calendar(current_calendar)
             self.control.save_universe(current_universe)
-            write_history_reference(
-                history_reference_path(self.configuration.archive_root, reference.content_hash), reference
+            WriteHistoryReference(
+                HistoryReferencePath(self.configuration.archive_root, reference.content_hash), reference
             )
             current = HistoryDownloadBatch(
                 pending.sequence,
@@ -235,10 +233,10 @@ class _HistorySync:
 
     def _repair_reference(self, source: HistorySourceIdentity, reference: HistoryReferenceSnapshot) -> None:
         try:
-            read_bound_history_reference(self.configuration.archive_root, source.supplier_contract)
+            ReadBoundHistoryReference(self.configuration.archive_root, source.supplier_contract)
         except (OSError, ValueError):
-            write_history_reference(
-                history_reference_path(self.configuration.archive_root, reference.content_hash), reference
+            WriteHistoryReference(
+                HistoryReferencePath(self.configuration.archive_root, reference.content_hash), reference
             )
 
     def _download(self, inputs: _BatchInput, active: HistoryActiveSnapshot | None) -> HistoryActiveSnapshot:
@@ -257,7 +255,7 @@ class _HistorySync:
                 self.index,
                 self.executor,
                 self.writer,
-                self.write_tuning or history_write_tuning(self.storage_kind, fresh=inputs.fresh),
+                self.write_tuning or ChooseHistoryWriteTuning(self.storage_kind, fresh=inputs.fresh),
                 self.cancel,
                 self.progress,
             )
@@ -286,7 +284,7 @@ class _HistorySync:
         )
         total = len(inputs.context.universe)
         _publish_progress(self.progress, "publishing_snapshot", "started")
-        publish_history_snapshot(
+        PublishHistorySnapshot(
             self.control,
             HistoryPublication(
                 root,
@@ -308,7 +306,7 @@ class _HistorySync:
         return snapshot
 
 
-def run_history_sync(  # noqa: PLR0913 - explicit external resource injection preserves the public entrypoint
+def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection preserves the public entrypoint
     configuration: HistorySyncConfiguration,
     supplier: HistoryTwoStageSupplier,
     *,
@@ -329,7 +327,7 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
     _publish_progress(progress, "initializing", "started")
     try:
         with HistoryMaintenanceLock(configuration.archive_root / ".maintenance.lock"):
-            storage_kind = classify_history_storage(configuration.archive_root)
+            storage_kind = ClassifyHistoryStorage(configuration.archive_root)
             _publish_progress(progress, "storage_profile", "completed", current_item=storage_kind)
             if not (configuration.archive_root / "control.sqlite3").exists() and any(
                 (configuration.archive_root / "partitions").glob("*/*.sqlite3")
@@ -343,8 +341,8 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
                 observed_at,
                 cancel,
                 progress,
-                worker_pool or injected_executor(None),
-                writer_pool or injected_executor(None),
+                worker_pool or InjectedExecutor(None),
+                writer_pool or InjectedExecutor(None),
                 control,
                 index,
                 storage_kind,
@@ -357,8 +355,8 @@ def run_history_sync(  # noqa: PLR0913 - explicit external resource injection pr
             "already_running", "history_maintenance_running", configuration, _safe_active(control), observed_at
         )
     except (OSError, RuntimeError, sqlite3.Error, TypeError, ValueError) as exc:
-        reason = history_failure_code(exc)
-        detail = history_failure_detail(exc)
+        reason = HistoryFailureCode(exc)
+        detail = HistoryFailureDetail(exc)
         if progress is not None:
             try:
                 progress.publish(
@@ -406,7 +404,7 @@ def _download_tasks(
 
 
 def _has_sufficient_disk(root: Path, minimum_free_bytes: int) -> bool:
-    return inspect_history_disk(root, HistoryDiskRequirement(minimum_free_bytes, 0, 0, 0)).sufficient
+    return InspectHistoryDisk(root, HistoryDiskRequirement(minimum_free_bytes, 0, 0, 0)).sufficient
 
 
 def _control_identities(
@@ -417,7 +415,7 @@ def _control_identities(
     reference = HistoryReferenceSnapshot(
         tuple(item.code for item in context.universe), context.industry_intervals, context.st_evidence
     )
-    supplier_contract = f"history_ref_{reference.content_hash}_{canonical_digest(context.source_versions)[:16]}"
+    supplier_contract = f"history_ref_{reference.content_hash}_{CanonicalDigest(context.source_versions)[:16]}"
     source = HistorySourceIdentity("tencent_baostock", "history_daily", supplier_contract[:128], observed)
     calendar = HistoryCalendarIdentity(context.calendar.open_dates, source.content_hash)
     universe = HistoryUniverseIdentity(
@@ -501,7 +499,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     due = None
     reference_ready = snapshot is not None and _has_industry_reference(root, snapshot)
     if reference_ready:
-        due = evaluate_history_training_due(
+        due = EvaluateHistoryTrainingDue(
             HistoryTrainingDueQuery(root, configuration.training_root / "v3", observed_at, V3_TRAINING_PROFILE)
         )
     due_state = (
@@ -529,9 +527,9 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
 def _has_industry_reference(root: Path, snapshot: HistoryActiveSnapshot) -> bool:
     try:
         source = HistoryControlIndex(root / "control.sqlite3").read_source(snapshot.source_identity_hash)
-        return bool(read_bound_history_reference(root, source.supplier_contract).industry_intervals)
+        return bool(ReadBoundHistoryReference(root, source.supplier_contract).industry_intervals)
     except (HistoryControlError, OSError, ValueError):
         return False
 
 
-__all__ = ["run_history_sync"]
+__all__ = ["RunHistorySync"]

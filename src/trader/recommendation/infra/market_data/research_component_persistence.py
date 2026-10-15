@@ -18,9 +18,9 @@ from trader.recommendation.application.ports.data_plane_records import (
     SourceCursorRecord,
 )
 from trader.recommendation.domain.market.research import (
+    CorporateRiskFactsFromAnnouncements,
     ResearchAnnouncement,
     ResearchObservation,
-    corporate_risk_facts_from_announcements,
 )
 from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_ANNOUNCEMENT_PREFIX,
@@ -37,8 +37,8 @@ from trader.recommendation.infra.market_data.market_feature_cache_entries import
 from trader.recommendation.infra.market_data.research_load_status import (
     RESEARCH_COMPONENT_IDS,
     ResearchComponentStatus,
+    ResearchComponentStatuses,
     ResearchLoaderStatus,
-    research_component_statuses,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,12 +90,12 @@ class _ResearchLoaderStatusState(_ResearchComponentPersistenceState, Protocol):
     _monotonic: Callable[[], float]
 
 
-def component_statuses_for_code(
+def ComponentStatusesForCode(
     state: _ResearchComponentPersistenceState,
     code: str,
     observation: ResearchObservation,
 ) -> tuple[ResearchComponentStatus, ...]:
-    computed = research_component_statuses(observation)
+    computed = ResearchComponentStatuses(observation)
     restored = state._component_statuses.get(code, {})
     if not restored:
         return computed
@@ -104,7 +104,7 @@ def component_statuses_for_code(
     )
 
 
-def recover_research_component_statuses(
+def RecoverResearchComponentStatuses(
     state: _ResearchComponentPersistenceState,
     data_plane: _ResearchDataPlane,
 ) -> None:
@@ -144,14 +144,14 @@ def recover_research_component_statuses(
     _recover_cninfo_observations(state, data_plane, cninfo_announcements)
 
 
-def persist_research_component_statuses(
+def PersistResearchComponentStatuses(
     state: _ResearchComponentPersistenceState,
     data_plane: _ResearchDataPlane,
     code: str,
     observed_at: datetime,
     observation: ResearchObservation,
 ) -> None:
-    component_statuses = research_component_statuses(observation)
+    component_statuses = ResearchComponentStatuses(observation)
     source_time = _research_source_time(observation) or observed_at
     if source_time > observed_at:
         source_time = observed_at
@@ -260,7 +260,7 @@ def _recover_cninfo_observations(
     restored: dict[tuple[str, bool], _ResearchEntry] = {}
     for code, announcements in announcements_by_code.items():
         ordered = tuple(sorted(announcements, key=lambda item: (item.published_at, item.announcement_id)))
-        facts = corporate_risk_facts_from_announcements(ordered)
+        facts = CorporateRiskFactsFromAnnouncements(ordered)
         observation = ResearchObservation(
             announcements=ordered,
             announcements_available=True,
@@ -301,11 +301,11 @@ def _cninfo_evidence_version(code: str, announcements: tuple[ResearchAnnouncemen
     return f"cninfo-risk-evidence:{code}:{coordinates!r}"
 
 
-def loader_status(state: _ResearchLoaderStatusState) -> ResearchLoaderStatus:
+def LoaderStatus(state: _ResearchLoaderStatusState) -> ResearchLoaderStatus:
     with state._lock:
         observations = tuple(entry.observation for (code, structured), entry in state._entries.items() if structured)
         coverage = tuple(
-            _coverage_from_statuses(component_statuses_for_code(state, code, entry.observation))
+            _coverage_from_statuses(ComponentStatusesForCode(state, code, entry.observation))
             for (code, structured), entry in state._entries.items()
             if structured
         )

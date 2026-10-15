@@ -24,17 +24,17 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
 from trader.download.domain.history_tail import HistoryTailRequest, HistoryTailWindow
 from trader.download.domain.published_history import (
+    ProjectHistoryCell,
     PublishedHistoryManifest,
     PublishedHistoryWindow,
-    project_history_cell,
 )
-from trader.infra.market_data.history.history import build_history_context
-from trader.recommendation.domain.market.history_tail import HistoryQuality, plan_history_tail
+from trader.infra.market_data.history.history import BuildHistoryContext
+from trader.recommendation.domain.market.history_tail import HistoryQuality, PlanHistoryTail
 from trader.recommendation.infra.market_data.history_tail_recovery import (
     CandidateHistoryTailRecovery,
     HistoryTailDependencies,
 )
-from trader.recommendation.infra.market_data.published_history_bars import qfq_bars
+from trader.recommendation.infra.market_data.published_history_bars import QfqBars
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 NOW = datetime(2026, 7, 16, 10, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -90,7 +90,7 @@ class _Archive:
 
     @staticmethod
     def window(code: str, dates: tuple[date, ...]) -> PublishedHistoryWindow:
-        return PublishedHistoryWindow(code, tuple(project_history_cell(_cell(code, day)) for day in dates))
+        return PublishedHistoryWindow(code, tuple(ProjectHistoryCell(_cell(code, day)) for day in dates))
 
 
 class _Supplier:
@@ -161,7 +161,7 @@ def test_weekly_history_tail_recomputes_the_full_profile_without_writing_archive
     assert len(supplier.calls[0].dates) == gap + 3
     assert supplier.calls[0].dates[-1] < NOW.date()
     completed = tuple(day for day in CALENDAR if day < NOW.date())[-sessions:]
-    expected = build_history_context(qfq_bars(archive.window("600001", completed)), lookback_sessions=sessions)
+    expected = BuildHistoryContext(QfqBars(archive.window("600001", completed)), lookback_sessions=sessions)
     assert history.summaries(loaded, NOW)["600001"] == expected
     assert history.summaries(loaded, NOW)["600001"] != original_entries["600001"].context
     assert archive.current == original_manifest
@@ -279,14 +279,14 @@ def test_old_base_and_unverifiable_calendar_never_trigger_a_long_download():
     assert supplier.calls == []
     assert dict(history.status().tail.quality_counts)[HistoryQuality.HISTORY_STALE] == 1
     with pytest.raises(ValueError, match="calendar_unverifiable"):
-        plan_history_tail((date(2026, 7, 13),), date(2026, 7, 13), NOW.date())
+        PlanHistoryTail((date(2026, 7, 13),), date(2026, 7, 13), NOW.date())
 
 
 def test_weekend_and_exchange_holiday_do_not_count_as_missing_sessions():
     friday = date(2026, 4, 30)
     holiday = date(2026, 5, 5)
-    assert plan_history_tail(CALENDAR, friday, holiday).missing_dates == ()
-    assert plan_history_tail(CALENDAR, date(2026, 7, 17), date(2026, 7, 19)).missing_dates == ()
+    assert PlanHistoryTail(CALENDAR, friday, holiday).missing_dates == ()
+    assert PlanHistoryTail(CALENDAR, date(2026, 7, 17), date(2026, 7, 19)).missing_dates == ()
 
 
 def test_cached_candidate_reads_never_fetch_calendar_or_supplier(monkeypatch):

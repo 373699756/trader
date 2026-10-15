@@ -14,11 +14,11 @@ from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
     HistoricalPredictionRecord,
     JoinedHistoricalResidual,
+    JoinPredictionOutcome,
     ResidualAnchor,
     ResidualFilterState,
     ResidualJoinKey,
     ResidualLabelStatus,
-    join_prediction_outcome,
 )
 
 
@@ -94,7 +94,7 @@ class SQLiteHistoricalResidualLedger:
         for prediction in self.read_predictions(strategy, parent_split_hash):
             joined_outcome = outcome_by_identity.get(_prediction_outcome_identity(prediction))
             if joined_outcome is not None and joined_outcome.label_status == "matured":
-                joined.append(join_prediction_outcome(prediction, joined_outcome))
+                joined.append(JoinPredictionOutcome(prediction, joined_outcome))
         return tuple(joined)
 
     def read_predictions(

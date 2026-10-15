@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from trader.recommendation.application.pipeline.static_standardize.static_feature_builder import (
+    AffectedFeatureStages,
+    BuildFeatureComputationPlan,
     FeatureFactRevision,
-    affected_feature_stages,
-    build_feature_computation_plan,
 )
 from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
@@ -12,7 +12,7 @@ from trader.recommendation.domain.market.feature_contracts import (
 
 
 def test_raw_alpha_computation_plan_groups_calculators_in_dependency_order() -> None:
-    plan = build_feature_computation_plan(TOMORROW_RAW_ALPHA_FEATURE_MANIFEST)
+    plan = BuildFeatureComputationPlan(TOMORROW_RAW_ALPHA_FEATURE_MANIFEST)
 
     assert tuple(stage.calculator_group for stage in plan.stages) == ("daily_return", "skip_recent_momentum")
     assert plan.output_names == TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.names
@@ -28,7 +28,7 @@ def test_raw_alpha_computation_plan_groups_calculators_in_dependency_order() -> 
 
 
 def test_model_plan_resolves_raw_features_before_cross_section_residuals() -> None:
-    plan = build_feature_computation_plan(TOMORROW_MODEL_FEATURE_MANIFEST)
+    plan = BuildFeatureComputationPlan(TOMORROW_MODEL_FEATURE_MANIFEST)
 
     assert tuple(stage.calculator_group for stage in plan.stages) == (
         "daily_return",
@@ -46,15 +46,15 @@ def test_model_plan_resolves_raw_features_before_cross_section_residuals() -> No
 
 
 def test_fact_revisions_invalidate_only_transitively_dependent_groups() -> None:
-    plan = build_feature_computation_plan(TOMORROW_MODEL_FEATURE_MANIFEST)
+    plan = BuildFeatureComputationPlan(TOMORROW_MODEL_FEATURE_MANIFEST)
     baseline = tuple(FeatureFactRevision(fact_id, "same") for fact_id in plan.required_fact_ids)
     current_close_changed = tuple(
         FeatureFactRevision(item.fact_id, "changed" if item.fact_id == "qfq_close_current" else item.revision)
         for item in baseline
     )
 
-    unchanged = affected_feature_stages(plan, baseline, baseline)
-    changed = affected_feature_stages(plan, baseline, current_close_changed)
+    unchanged = AffectedFeatureStages(plan, baseline, baseline)
+    changed = AffectedFeatureStages(plan, baseline, current_close_changed)
 
     assert unchanged.affected_groups == ()
     assert changed.dirty_fact_ids == ("qfq_close_current",)
@@ -62,14 +62,14 @@ def test_fact_revisions_invalidate_only_transitively_dependent_groups() -> None:
 
 
 def test_shared_lag_revision_invalidates_momentum_and_its_residual_dependents() -> None:
-    plan = build_feature_computation_plan(TOMORROW_MODEL_FEATURE_MANIFEST)
+    plan = BuildFeatureComputationPlan(TOMORROW_MODEL_FEATURE_MANIFEST)
     baseline = tuple(FeatureFactRevision(fact_id, "same") for fact_id in plan.required_fact_ids)
     changed = tuple(
         FeatureFactRevision(item.fact_id, "changed" if item.fact_id == "qfq_close_lag_5" else item.revision)
         for item in baseline
     )
 
-    invalidation = affected_feature_stages(plan, baseline, changed)
+    invalidation = AffectedFeatureStages(plan, baseline, changed)
 
     assert invalidation.affected_groups == (
         "daily_return",

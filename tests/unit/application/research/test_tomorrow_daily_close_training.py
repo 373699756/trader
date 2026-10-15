@@ -6,20 +6,20 @@ from datetime import date, timedelta
 import pytest
 
 from trader.training.application.tomorrow_daily_close_training import (
+    BuildFeatureDataset,
     CandidateModelSnapshot,
     DailyCloseSourceSample,
     ModelDependencyVersion,
+    SelectMatureFoldTrainingRows,
+    SelectMatureTrainingRows,
     StockResidualCorrection,
     StratumCorrection,
     ValidationMetrics,
     ValidationReport,
-    build_feature_dataset,
-    select_mature_fold_training_rows,
-    select_mature_training_rows,
 )
 from trader.training.domain.evaluation.tomorrow_daily_close import (
-    build_expanding_walk_forward,
-    split_complete_trading_dates,
+    BuildExpandingWalkForward,
+    SplitCompleteTradingDates,
 )
 
 _HASH_A = "a" * 64
@@ -57,7 +57,7 @@ def test_dataset_rejects_incomplete_or_failed_hard_filter_samples_and_records_co
         _sample(first, 3, hard_filter_passed=False),
     )
 
-    dataset = build_feature_dataset(
+    dataset = BuildFeatureDataset(
         source,
         feature_names=_FEATURES,
         feature_units=_UNITS,
@@ -77,7 +77,7 @@ def test_manifest_keeps_a_complete_trading_day_when_its_whole_population_is_reje
     first = date(2024, 1, 2)
     second = date(2024, 1, 3)
 
-    dataset = build_feature_dataset(
+    dataset = BuildFeatureDataset(
         (_sample(first, 1), _sample(second, 2, evidence_complete=False)),
         feature_names=_FEATURES,
         feature_units=_UNITS,
@@ -91,24 +91,24 @@ def test_manifest_keeps_a_complete_trading_day_when_its_whole_population_is_reje
 
 def test_fold_training_rows_exclude_labels_not_mature_before_validation_start() -> None:
     days = tuple(date(2024, 1, 1) + timedelta(days=index) for index in range(260))
-    dataset = build_feature_dataset(
+    dataset = BuildFeatureDataset(
         tuple(_sample(day, index) for index, day in enumerate(days)),
         feature_names=_FEATURES,
         feature_units=_UNITS,
         source_archive_hash=_HASH_A,
         filter_spec_hash=_HASH_B,
     )
-    split = split_complete_trading_dates(days)
-    first_fold = build_expanding_walk_forward(split.development_dates)[0]
+    split = SplitCompleteTradingDates(days)
+    first_fold = BuildExpandingWalkForward(split.development_dates)[0]
 
-    training_rows = select_mature_fold_training_rows(dataset, first_fold)
+    training_rows = SelectMatureFoldTrainingRows(dataset, first_fold)
 
     assert training_rows
     assert all(row.trade_date in first_fold.training_dates for row in training_rows)
     assert all(row.label_maturity_date < first_fold.validation_dates[0] for row in training_rows)
     assert max(row.trade_date for row in training_rows) < max(first_fold.training_dates)
 
-    confirmation_rows = select_mature_training_rows(
+    confirmation_rows = SelectMatureTrainingRows(
         dataset,
         split.development_dates,
         prediction_start=split.confirmation_dates[0],

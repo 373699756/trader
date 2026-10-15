@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 
 _IDENTITY = re.compile(r"^[a-z0-9_]{1,64}$")
 
@@ -46,7 +46,7 @@ class HistoricalScreeningSpec:
             raise ValueError("historical screening cost is invalid")
         if self.promotion_authority:
             raise ValueError("retrospective historical screening cannot have promotion authority")
-        object.__setattr__(self, "content_hash", canonical_digest(self))
+        object.__setattr__(self, "content_hash", CanonicalDigest(self))
 
 
 @dataclass(frozen=True)

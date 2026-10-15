@@ -18,9 +18,9 @@ from trader.training.domain.evaluation.h1_point_in_time import (
 from trader.training.domain.evaluation.historical_label import (
     H1CoverageMetadata,
     HistoricalLabelPreregistrationBatch,
-    preregister_historical_labels,
+    PreregisterHistoricalLabels,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -52,7 +52,7 @@ class HistoricalResidualLedgerTerminal:
         if self.schema_version != "historical_prediction_residual_ledger_terminal":
             raise ValueError("historical residual terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -89,7 +89,7 @@ class TomorrowDailyCloseModelSelectionTerminal:
         if self.schema_version != "tomorrow_daily_close_model_selection_terminal":
             raise ValueError("daily-close model selection terminal schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,7 @@ class H1ResearchCompletion:
         if self.schema_version != "h1_research_completion":
             raise ValueError("H1 research completion schema is invalid")
         object.__setattr__(self, "residual_ledgers", ledgers)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     def to_development_handoff(
         self,
@@ -154,14 +154,14 @@ class H1ResearchCompletion:
         )
 
 
-def complete_h1_research(
+def CompleteH1Research(
     *,
     capability: H1CapabilityAuditReport,
     metadata: tuple[H1CoverageMetadata, ...],
 ) -> H1ResearchCompletion:
     if any(item.state != "historical_data_insufficient" for item in capability.strategies):
         raise ValueError("H1 research insufficient closure cannot replace a coverage-capable research execution")
-    labels = preregister_historical_labels(metadata)
+    labels = PreregisterHistoricalLabels(metadata)
     if any(item.status != "historical_data_insufficient" for item in labels.strategies):
         raise ValueError("H1 research insufficient closure requires insufficient H1 metadata for every strategy")
     capability_by_strategy = {item.strategy: item for item in capability.strategies}
@@ -206,5 +206,5 @@ __all__ = [
     "H1ResearchCompletion",
     "HistoricalResidualLedgerTerminal",
     "TomorrowDailyCloseModelSelectionTerminal",
-    "complete_h1_research",
+    "CompleteH1Research",
 ]

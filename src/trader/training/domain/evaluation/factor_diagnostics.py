@@ -6,7 +6,7 @@ import math
 from collections import defaultdict
 
 
-def population_pearson(pairs: tuple[tuple[float, float], ...]) -> float | None:
+def PopulationPearson(pairs: tuple[tuple[float, float], ...]) -> float | None:
     """Return population Pearson correlation, preserving unknown small samples."""
 
     if len(pairs) < 5:
@@ -22,7 +22,7 @@ def population_pearson(pairs: tuple[tuple[float, float], ...]) -> float | None:
     return covariance / math.sqrt(left_variance * right_variance)
 
 
-def information_coefficient_ratio(values: tuple[float | None, ...]) -> float | None:
+def InformationCoefficientRatio(values: tuple[float | None, ...]) -> float | None:
     """Return unannualized mean IC divided by its sample standard deviation."""
 
     known = tuple(value for value in values if value is not None)
@@ -36,7 +36,7 @@ def information_coefficient_ratio(values: tuple[float | None, ...]) -> float | N
     return mean / math.sqrt(variance)
 
 
-def monotonicity(
+def Monotonicity(
     quintiles: tuple[float | None, float | None, float | None, float | None, float | None],
 ) -> tuple[float | None, float | None]:
     """Return adjacent non-decreasing share and Q5-minus-Q1."""
@@ -49,7 +49,7 @@ def monotonicity(
     return sum(adjacent) / len(adjacent), known[-1] - known[0]
 
 
-def top_bucket_turnover(previous: tuple[str, ...], current: tuple[str, ...]) -> float | None:
+def TopBucketTurnover(previous: tuple[str, ...], current: tuple[str, ...]) -> float | None:
     """Return symmetric replacement share between two non-empty top buckets."""
 
     if not previous or not current:
@@ -60,7 +60,7 @@ def top_bucket_turnover(previous: tuple[str, ...], current: tuple[str, ...]) -> 
     return 1.0 - overlap / max(len(previous), len(current))
 
 
-def factor_concentration(contributions: tuple[tuple[str, float], ...]) -> tuple[float | None, float | None]:
+def FactorConcentration(contributions: tuple[tuple[str, float], ...]) -> tuple[float | None, float | None]:
     """Aggregate positive Q5 contributions by stock and return max/top-five shares."""
 
     if any(not code for code, _value in contributions):
@@ -87,9 +87,9 @@ def _finite(values: tuple[float, ...]) -> None:
 
 
 __all__ = [
-    "factor_concentration",
-    "information_coefficient_ratio",
-    "monotonicity",
-    "population_pearson",
-    "top_bucket_turnover",
+    "FactorConcentration",
+    "InformationCoefficientRatio",
+    "Monotonicity",
+    "PopulationPearson",
+    "TopBucketTurnover",
 ]

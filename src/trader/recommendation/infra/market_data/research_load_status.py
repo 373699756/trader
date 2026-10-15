@@ -9,9 +9,9 @@ from typing import Final
 
 from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
+    ResearchComponentsFromObservation,
     ResearchComponentStatus,
     ResearchObservation,
-    research_components_from_observation,
 )
 
 RESEARCH_COMPONENT_IDS: Final[tuple[str, ...]] = (
@@ -59,8 +59,8 @@ class ResearchLoadReport:
     deadline_reached: bool = False
 
 
-def research_component_statuses(observation: ResearchObservation) -> tuple[ResearchComponentStatus, ...]:
-    components = research_components_from_observation(observation)
+def ResearchComponentStatuses(observation: ResearchObservation) -> tuple[ResearchComponentStatus, ...]:
+    components = ResearchComponentsFromObservation(observation)
     penalty_status: ResearchComponentStatus = (
         "known_risk" if any(fact.category is not None for fact in observation.corporate_risk_facts) else "unknown"
     )
@@ -91,10 +91,10 @@ def research_component_statuses(observation: ResearchObservation) -> tuple[Resea
     )
 
 
-def research_component_coverage(
+def ResearchComponentCoverage(
     observation: ResearchObservation,
 ) -> tuple[bool, bool, bool, bool]:
-    coverage = research_component_statuses(observation)
+    coverage = ResearchComponentStatuses(observation)
     return (
         coverage[0] in {"known_clear", "known_risk"},
         coverage[1] in {"known_clear", "known_risk"},
@@ -106,5 +106,5 @@ def research_component_coverage(
 __all__ = [
     "ResearchLoaderStatus",
     "ResearchLoadReport",
-    "research_component_coverage",
+    "ResearchComponentCoverage",
 ]

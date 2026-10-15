@@ -37,7 +37,7 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
             sample_database_peak_bytes=1234,
         )
 
-    monkeypatch.setattr(check_tomorrow_training_memory, "run_repack_v3_training", train)
+    monkeypatch.setattr(check_tomorrow_training_memory, "RunRepackV3Training", train)
     monkeypatch.setattr(check_tomorrow_training_memory, "_peak_rss_bytes", lambda: 100)
     monkeypatch.setattr(check_tomorrow_training_memory.os, "nice", lambda _increment: None)
     history = tmp_path / "history"

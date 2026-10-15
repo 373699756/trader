@@ -14,19 +14,19 @@ from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary, HistorySyncConfiguration
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow
-from trader.download.domain.security_eligibility import is_st_security_name
+from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_reference_files import (
     HistoryReferenceIndex,
-    history_reference_path,
-    history_st_evidence_path,
-    read_history_reference,
-    write_history_reference,
+    HistoryReferencePath,
+    HistoryStEvidencePath,
+    ReadHistoryReference,
+    WriteHistoryReference,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-from trader.download.infra.history_st_source import HistoryStNameSource, parse_name_history_st
+from trader.download.infra.history_st_source import HistoryStNameSource, ParseNameHistorySt
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_sync_runner import RunHistorySync
 
 
 @pytest.mark.parametrize(
@@ -40,7 +40,7 @@ from trader.download.infra.history_sync_runner import run_history_sync
 )
 def test_name_history_keeps_delisted_st_names(names, expected):
     html = f'<td>证券简称更名历史：</td><td colspan="3">{names}</td>'
-    assert parse_name_history_st("600848", "上海临港", date(2026, 10, 9), html).status == expected
+    assert ParseNameHistorySt("600848", "上海临港", date(2026, 10, 9), html).status == expected
 
 
 @pytest.mark.parametrize(
@@ -49,14 +49,14 @@ def test_name_history_keeps_delisted_st_names(names, expected):
 )
 def test_missing_name_history_never_means_clear(text):
     with pytest.raises(ValueError):
-        parse_name_history_st("600848", "上海临港", date(2026, 10, 9), text)
+        ParseNameHistorySt("600848", "上海临港", date(2026, 10, 9), text)
 
 
 @pytest.mark.parametrize((("current_name", "expected")), (("青岛特锐", "clear"), ("*ST测试", "ever_st")))
 def test_explicit_empty_name_history_uses_the_official_current_name(current_name, expected):
     html = '<td>证券简称更名历史：</td><td colspan="3"></td>'
 
-    assert parse_name_history_st("300001", current_name, date(2026, 10, 10), html).status == expected
+    assert ParseNameHistorySt("300001", current_name, date(2026, 10, 10), html).status == expected
 
 
 @pytest.mark.parametrize(
@@ -64,7 +64,7 @@ def test_explicit_empty_name_history_uses_the_official_current_name(current_name
     (("ST豆神", True), ("*ST仕净", True), ("ＳＴ公司", True), ("S*ST公司", True), ("正常公司", False)),
 )
 def test_st_name_rule_normalizes_current_and_historical_evidence(name, expected):
-    assert is_st_security_name(name) is expected
+    assert IsStSecurityName(name) is expected
 
 
 def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(tmp_path):
@@ -84,7 +84,7 @@ def test_st_filter_removes_all_history_for_ever_st_and_unknown_before_baseline(t
 
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     baseline, prices = RecordingBaseline(dates), Prices()
-    result = run_history_sync(
+    result = RunHistorySync(
         config,
         HistorySupplierRouter(baseline, prices, lambda: _current_universe("600001", "600002", "600003"), MixedSt()),
         clock=lambda: NOW,
@@ -113,7 +113,7 @@ def test_unknown_tencent_date_breaks_training_window_and_is_refetched(tmp_path):
             )
 
     config = HistorySyncConfiguration(tmp_path, sessions=125, minimum_free_bytes=0)
-    result = run_history_sync(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
+    result = RunHistorySync(config, Sparse(dates, industry="bank"), clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 1
     control = HistoryControlIndex(tmp_path / "control.sqlite3")
     snapshot = control.load_state().active_snapshot
@@ -122,7 +122,7 @@ def test_unknown_tencent_date_breaks_training_window_and_is_refetched(tmp_path):
     assert next(row for row in rows if row.trade_date == gap).point is None
     assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
     resumed = FakeSupplier(dates, industry="bank")
-    result = run_history_sync(config, resumed, clock=lambda: NOW)
+    result = RunHistorySync(config, resumed, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 0
     assert resumed.calls == [("600001", (gap, *dates[-5:]))]
     assert reader.read_day(gap, snapshot)[0].cell.status == "unknown_missing"
@@ -140,10 +140,10 @@ def test_tencent_missing_dates_publish_without_baostock_recovery(tmp_path):
 
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     supplier = Missing(dates)
-    first = run_history_sync(config, supplier, clock=lambda: NOW)
+    first = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert first.state == "completed" and first.unresolved_price_cells == 4
     assert "baostock_prices" not in supplier.events
-    second = run_history_sync(config, supplier, clock=lambda: NOW)
+    second = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert second.state == "completed" and second.unresolved_price_cells == 4
 
 
@@ -158,8 +158,8 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
         (HistoryStEvidence(code, date(2026, 10, 9), "clear"),),
     )
     path = tmp_path / "reference.json"
-    write_history_reference(path, reference)
-    assert read_history_reference(path) == reference
+    WriteHistoryReference(path, reference)
+    assert ReadHistoryReference(path) == reference
     payload = json.loads(path.read_text())
     assert payload["st_statuses"] == {code: ["2026-10-09", "clear"]}
     assert payload["industries"][code] == [
@@ -170,7 +170,7 @@ def test_reference_files_validate_hash_and_preserve_dated_industries(tmp_path):
     payload["eligible_codes"] = ["600002"]
     path.write_text(json.dumps(payload))
     with pytest.raises(ValueError):
-        read_history_reference(path)
+        ReadHistoryReference(path)
 
 
 def test_reference_index_requires_a_continuous_industry_window() -> None:
@@ -200,11 +200,11 @@ def test_reference_index_requires_a_continuous_industry_window() -> None:
 def test_generated_st_evidence_uses_the_injected_reference_root(tmp_path):
     reference_root = tmp_path / "data" / "reference"
 
-    assert history_st_evidence_path(reference_root) == reference_root / "historical_st.json"
+    assert HistoryStEvidencePath(reference_root) == reference_root / "historical_st.json"
 
 
 def test_st_checkpoints_cache_clear_and_permanently_keep_ever_st(tmp_path):
-    from trader.infra.workers import injected_executor
+    from trader.infra.workers import InjectedExecutor
 
     calls = []
 
@@ -226,7 +226,7 @@ def test_st_checkpoints_cache_clear_and_permanently_keep_ever_st(tmp_path):
     source = HistoryStNameSource(
         tmp_path / "st.json",
         lambda: nullcontext(SimpleNamespace(get=get)),
-        injected_executor(None),
+        InjectedExecutor(None),
         lambda: False,
         report=lambda *_: None,
     )
@@ -244,12 +244,12 @@ def test_missing_reference_fails_closed_for_training(tmp_path):
 
     dates = tuple(date(2026, 7, 1) + timedelta(days=i) for i in range(65))
     config = HistorySyncConfiguration(tmp_path, sessions=65, minimum_free_bytes=0)
-    assert run_history_sync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
     snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_published_state().snapshot
     reader = HistorySnapshotReader(tmp_path)
     assert tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
     source = HistoryControlIndex(tmp_path / "control.sqlite3").read_source(snapshot.source_identity_hash)
-    history_reference_path(tmp_path, source.supplier_contract[12:76]).unlink()
+    HistoryReferencePath(tmp_path, source.supplier_contract[12:76]).unlink()
     with pytest.raises(HistorySnapshotReadError, match="history_reference_unavailable"):
         tuple(reader.iter_training_rows(snapshot, dates, {"600001"}))
 
@@ -266,7 +266,7 @@ def test_tencent_missing_dates_publish_sparse_rows_for_every_stock(tmp_path):
 
     config = HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0)
     supplier = Missing(dates)
-    result = run_history_sync(config, supplier, clock=lambda: NOW)
+    result = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 4
     assert supplier.calls == []
     snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
@@ -399,26 +399,26 @@ def test_st_checks_refill_available_worker_without_waiting_for_slowest_stock(tmp
 
 @pytest.mark.parametrize("damage", ("missing", "tampered"))
 def test_sync_restores_bound_reference_without_redownloading_prices(tmp_path, damage):
-    from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
+    from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
 
     root = tmp_path / "baostock"
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     supplier = FakeSupplier(dates, industry="bank")
     config = HistorySyncConfiguration(root, sessions=2, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "completed"
     snapshot = HistoryControlIndex(root / "control.sqlite3").load_published_state().snapshot
     HistorySnapshotReader(root).reference_index(snapshot)
     source = HistoryControlIndex(root / "control.sqlite3").read_source(snapshot.source_identity_hash)
-    path = history_reference_path(root, source.supplier_contract[12:76])
+    path = HistoryReferencePath(root, source.supplier_contract[12:76])
     if damage == "missing":
         path.unlink()
     else:
         path.write_text("{}")
-    assert inspect_history_snapshot(root, verify_partitions=True).reason == "history_reference_unavailable"
+    assert InspectHistorySnapshot(root, verify_partitions=True).reason == "history_reference_unavailable"
     supplier.calls.clear()
-    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "already_current"
+    assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "already_current"
     assert supplier.calls == []
-    assert inspect_history_snapshot(root, verify_partitions=True).state == "active"
+    assert InspectHistorySnapshot(root, verify_partitions=True).state == "active"
 
 
 def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
@@ -427,7 +427,7 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
 
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     config = HistorySyncConfiguration(tmp_path / "baostock", sessions=2, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, FakeSupplier(dates, industry="bank"), clock=lambda: NOW).state == "completed"
 
     class Excluding(FakeSupplier):
         def load_context(self, as_of, sessions):
@@ -442,7 +442,7 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
                 source_versions=replace(context.source_versions, dependency_versions=(HISTORY_UNIVERSE_CONTRACT,)),
             )
 
-    assert run_history_sync(config, Excluding(dates, industry="bank"), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, Excluding(dates, industry="bank"), clock=lambda: NOW).state == "completed"
     snapshot = HistoryControlIndex(config.archive_root / "control.sqlite3").load_published_state().snapshot
     reader = HistorySnapshotReader(config.archive_root)
     assert {item.code for item in reader.read_day(dates[0], snapshot)} == {"600001"}

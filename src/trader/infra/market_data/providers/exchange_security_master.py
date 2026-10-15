@@ -226,7 +226,7 @@ def _to_observation(
     )
 
 
-def fetch_sse_listings(
+def FetchSseListings(
     timeout_seconds: float, *, get: OfficialGetFunction
 ) -> tuple[observations.ExchangeSecurityMasterListing, ...]:
     headers = {
@@ -282,7 +282,7 @@ def fetch_sse_listings(
     return tuple(listings)
 
 
-def fetch_szse_listings(
+def FetchSzseListings(
     timeout_seconds: float, *, get: OfficialGetFunction
 ) -> tuple[observations.ExchangeSecurityMasterListing, ...]:
     response = _official_get(

@@ -10,7 +10,7 @@ from trader.training.application.shadow_model_ports import (
     ShadowFitResult,
     ShadowModelFamily,
 )
-from trader.training.domain.evaluation.shadow_calibration import fit_logistic_model, fit_ridge_model
+from trader.training.domain.evaluation.shadow_calibration import FitLogisticModel, FitRidgeModel
 
 
 class LinearShadowTrainer:
@@ -20,9 +20,9 @@ class LinearShadowTrainer:
 
     def fit_predict(self, request: ShadowFitRequest) -> ShadowFitResult:
         model = (
-            fit_ridge_model(request.train_x, request.train_y, ridge=1e-3)
+            FitRidgeModel(request.train_x, request.train_y, ridge=1e-3)
             if request.objective == "net_excess"
-            else fit_logistic_model(request.train_x, request.train_y, ridge=1e-3)
+            else FitLogisticModel(request.train_x, request.train_y, ridge=1e-3)
         )
         payload = {
             "family": self.model_family,

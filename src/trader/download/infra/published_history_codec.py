@@ -11,7 +11,7 @@ from trader.download.domain.baostock_daily import BaoStockAdjustment, BaoStockCe
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide
 
 
-def encode_published_history_cell(cell: PublishedHistoryCell) -> str:
+def EncodePublishedHistoryCell(cell: PublishedHistoryCell) -> str:
     return json.dumps(
         {
             "code": cell.code,
@@ -27,14 +27,14 @@ def encode_published_history_cell(cell: PublishedHistoryCell) -> str:
     )
 
 
-def decode_published_history_cell_payload(code: str, trade_date: str, payload: str) -> PublishedHistoryCell:
+def DecodePublishedHistoryCellPayload(code: str, trade_date: str, payload: str) -> PublishedHistoryCell:
     value = json.loads(payload)
     if not isinstance(value, dict) or value.get("code") != code or value.get("trade_date") != trade_date:
         raise ValueError("published history cell payload identity is invalid")
-    return decode_published_history_cell((trade_date, code, payload))
+    return DecodePublishedHistoryCell((trade_date, code, payload))
 
 
-def decode_published_history_cell(row: tuple[object, ...]) -> PublishedHistoryCell:
+def DecodePublishedHistoryCell(row: tuple[object, ...]) -> PublishedHistoryCell:
     """The SQL projection excludes industry/ST and all full-revision hashing."""
     if len(row) != 3:
         raise ValueError("published daily row shape is invalid")

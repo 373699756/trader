@@ -6,9 +6,9 @@ from datetime import date
 from typing import Protocol
 
 from trader.training.domain.tomorrow_training_input import (
+    EvaluateTomorrowTrainingInput,
     FrozenDailyInputDescriptor,
     TomorrowTrainingInputCompatibility,
-    evaluate_tomorrow_training_input,
 )
 
 
@@ -16,7 +16,7 @@ class TomorrowFrozenDailyInputPort(Protocol):
     def describe_frozen_daily_input(self) -> FrozenDailyInputDescriptor: ...
 
 
-def verify_tomorrow_training_input_port(
+def VerifyTomorrowTrainingInputPort(
     port: TomorrowFrozenDailyInputPort,
     *,
     expected_manifest_hash: str,
@@ -24,11 +24,11 @@ def verify_tomorrow_training_input_port(
 ) -> TomorrowTrainingInputCompatibility:
     """Bind B's compatibility result to one frozen A manifest."""
 
-    return evaluate_tomorrow_training_input(
+    return EvaluateTomorrowTrainingInput(
         port.describe_frozen_daily_input(),
         expected_manifest_hash=expected_manifest_hash,
         expected_source_cutoff=expected_source_cutoff,
     )
 
 
-__all__ = ["TomorrowFrozenDailyInputPort", "verify_tomorrow_training_input_port"]
+__all__ = ["TomorrowFrozenDailyInputPort", "VerifyTomorrowTrainingInputPort"]

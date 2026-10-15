@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
-from trader.recommendation.application.pipeline.freeze_publish.current_publisher import publish_current_snapshot
+from trader.recommendation.application.pipeline.freeze_publish.current_publisher import PublishCurrentSnapshot
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionCommitted,
 )
@@ -23,13 +23,13 @@ from trader.recommendation.application.runtime.latest_wins import (
 )
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import (
-    shanghai_now,
+    ShanghaiNow,
 )
 from trader.recommendation.application.runtime.schedule_requests import (
-    failure_code,
-    validate_cycle_identity,
+    FailureCode,
+    ValidateCycleIdentity,
 )
-from trader.recommendation.application.runtime.trading_session import StaleSessionError, session_guard
+from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     ScoredDecision,
@@ -74,7 +74,7 @@ class RecommendationCycleExecutor:
 
     def execute(self, request: CycleRequest) -> None:
         try:
-            with session_guard(request.session):
+            with SessionGuard(request.session):
                 pass
             self._execute(request)
         except StaleSessionError:
@@ -122,7 +122,7 @@ class RecommendationCycleExecutor:
         request: CycleRequest,
     ) -> bool:
         started_at = time.perf_counter()
-        with session_guard(request.session):
+        with SessionGuard(request.session):
             published = self._publish(local, hybrid=False)
             if published and request.session is not None:
                 request.session.remember(local.version)
@@ -143,13 +143,13 @@ class RecommendationCycleExecutor:
         if request.phase == "close_fallback":
             self._close_control.freeze_close_fallback(request, local, recovery_path="close_rebuild")
             return
-        review_now = shanghai_now(self._dependencies.clock.now())
+        review_now = ShanghaiNow(self._dependencies.clock.now())
         if request.allow_review and not defer_initial_review and review_now < request.review_deadline:
             self._hooks.hybrid_lane(request.strategy).offer(HybridUpgradeRequest(local, request))
 
     def _observe_research(self, local: ScoredDecision, request: CycleRequest) -> bool:
         try:
-            with session_guard(request.session):
+            with SessionGuard(request.session):
                 return self._research.observe(
                     self._dependencies.decisions.research_intent(local),
                     request,
@@ -157,16 +157,16 @@ class RecommendationCycleExecutor:
         except StaleSessionError:
             raise
         except (RuntimeError, TypeError, ValueError) as exc:
-            self._hooks.failure("research", failure_code(exc, "research_intent_failed"), request.strategy)
+            self._hooks.failure("research", FailureCode(exc, "research_intent_failed"), request.strategy)
             return False
 
     def upgrade(self, request: HybridUpgradeRequest) -> None:
         if self._hooks.hybrid_lane(request.cycle.strategy).is_superseded(request):
             return
-        if shanghai_now(self._dependencies.clock.now()) >= request.cycle.review_deadline:
+        if ShanghaiNow(self._dependencies.clock.now()) >= request.cycle.review_deadline:
             return
         try:
-            with session_guard(request.cycle.session):
+            with SessionGuard(request.cycle.session):
                 pass
             self._upgrade_hybrid(request.local, request.cycle)
         except StaleSessionError:
@@ -179,8 +179,8 @@ class RecommendationCycleExecutor:
         try:
             self._dependencies.data.refresh(request)
         except DataRefreshUnavailableError as exc:
-            with session_guard(request.session):
-                self._hooks.failure("refresh", failure_code(exc, "refresh_unavailable"), request.strategy)
+            with SessionGuard(request.session):
+                self._hooks.failure("refresh", FailureCode(exc, "refresh_unavailable"), request.strategy)
             return False
         return True
 
@@ -200,17 +200,17 @@ class RecommendationCycleExecutor:
         try:
             local = self._dependencies.decisions.build_local(request)
             if local is not None:
-                validate_cycle_identity(request, local)
+                ValidateCycleIdentity(request, local)
         except DecisionUnavailableError as exc:
-            with session_guard(request.session):
-                self._hooks.failure("decision", failure_code(exc, "decision_unavailable"), request.strategy)
+            with SessionGuard(request.session):
+                self._hooks.failure("decision", FailureCode(exc, "decision_unavailable"), request.strategy)
             return None
         return local
 
     def _publish(self, identity: DecisionIdentity, *, hybrid: bool) -> bool:
         expected = self._dependencies.index.snapshot(identity.strategy).current
         try:
-            published = publish_current_snapshot(
+            published = PublishCurrentSnapshot(
                 self._dependencies.index,
                 self._dependencies.decisions,
                 identity,
@@ -218,7 +218,7 @@ class RecommendationCycleExecutor:
                 publication_io=self._dependencies.publication_io,
             )
         except DecisionUnavailableError as exc:
-            self._hooks.failure("decision", failure_code(exc, "decision_quote_unavailable"), identity.strategy)
+            self._hooks.failure("decision", FailureCode(exc, "decision_quote_unavailable"), identity.strategy)
             return False
         if not published.accepted:
             self._hooks.rejected(published.reason, identity.strategy)
@@ -230,18 +230,18 @@ class RecommendationCycleExecutor:
         try:
             hybrid = self._dependencies.reviews.build_hybrid(local, request)
         except ReviewUnavailableError as exc:
-            with session_guard(request.session):
-                self._hooks.failure("review", failure_code(exc, "review_unavailable"), request.strategy)
+            with SessionGuard(request.session):
+                self._hooks.failure("review", FailureCode(exc, "review_unavailable"), request.strategy)
             return
         if hybrid is None:
             return
         try:
-            validate_cycle_identity(request, hybrid)
+            ValidateCycleIdentity(request, hybrid)
         except DecisionUnavailableError:
             self._hooks.failure("review", "review_identity_mismatch", request.strategy)
             return
         upgrade = HybridUpgradeRequest(local, request)
-        with session_guard(request.session):
+        with SessionGuard(request.session):
             published = self._hooks.hybrid_lane(request.strategy).execute_if_current(
                 upgrade,
                 lambda: self._publish(hybrid, hybrid=True),

@@ -34,9 +34,9 @@ class HistorySyncGateway:
         clock: Callable[[], datetime] | None = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> HistoryMaintenanceStatus:
-        from trader.download.infra.history_sync_runner import run_history_sync
+        from trader.download.infra.history_sync_runner import RunHistorySync
 
-        return run_history_sync(
+        return RunHistorySync(
             configuration,
             supplier,
             progress=progress,

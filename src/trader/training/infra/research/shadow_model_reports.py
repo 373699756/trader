@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.infra.serialization.canonical import canonical_json_text, content_hash
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.canonical import CanonicalJsonText, ContentHash
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.shadow_model_report import (
     ShadowFoldRecord,
     ShadowModelReport,
@@ -26,14 +26,14 @@ class ShadowModelReportIndex:
         window = f"{report.training_window_start.isoformat()}_{report.training_window_end.isoformat()}"
         path = self._root / report.spec_hash / window / "shadow-report.json"
         expected = _report_payload(report)
-        if content_hash(expected) != report.content_hash:
+        if ContentHash(expected) != report.content_hash:
             raise ShadowModelReportConflictError("shadow report hash or schema is invalid")
         if path.exists():
             _verify(path, report.content_hash, expected)
             return report.content_hash
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {**expected, "content_hash": report.content_hash}
-        publish_immutable(path, canonical_json_text(payload))
+        PublishImmutable(path, CanonicalJsonText(payload))
         _verify(path, report.content_hash, expected)
         return report.content_hash
 
@@ -46,7 +46,7 @@ def _verify(path: Path, expected_hash: str, expected_payload: dict[str, object])
         persisted_hash = raw.pop("content_hash")
         if not isinstance(persisted_hash, str) or persisted_hash != expected_hash:
             raise ValueError("shadow artifact identity mismatch")
-        if content_hash(raw) != persisted_hash or raw != json.loads(canonical_json_text(expected_payload)):
+        if ContentHash(raw) != persisted_hash or raw != json.loads(CanonicalJsonText(expected_payload)):
             raise ValueError("shadow artifact payload mismatch")
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ShadowModelReportConflictError("shadow report hash or schema is invalid") from exc

@@ -3,19 +3,19 @@
 from pathlib import Path
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
-from trader.training.infra.engine import ProfileTrainingRequest, TrainingRunResult, run_profile_training
+from trader.training.infra.engine import ProfileTrainingRequest, RunProfileTraining, TrainingRunResult
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
 
-def run_v2_training(
+def RunV2Training(
     history_root: Path,
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
-    return run_profile_training(
+    return RunProfileTraining(
         ProfileTrainingRequest(
             history_root,
             train_root,
@@ -27,4 +27,4 @@ def run_v2_training(
     )
 
 
-__all__ = ["run_v2_training"]
+__all__ = ["RunV2Training"]

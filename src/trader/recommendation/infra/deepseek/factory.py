@@ -9,7 +9,7 @@ from __future__ import annotations
 from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekCompletionClient
 
 
-def create_deepseek_client(*, provider: str = "http") -> DeepSeekCompletionClient:
+def CreateDeepseekClient(*, provider: str = "http") -> DeepSeekCompletionClient:
     """Create a DeepSeek client by provider.
 
     Args:
@@ -27,4 +27,4 @@ def create_deepseek_client(*, provider: str = "http") -> DeepSeekCompletionClien
     raise ValueError(f"Unknown DeepSeek provider '{provider}'")
 
 
-__all__ = ["create_deepseek_client"]
+__all__ = ["CreateDeepseekClient"]

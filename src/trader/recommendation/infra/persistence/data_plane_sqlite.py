@@ -11,7 +11,7 @@ SCHEMA_VERSION = 3
 SCHEMA_META_KEY = "schema_version"
 
 
-def connect(database_path: Path) -> sqlite3.Connection:
+def Connect(database_path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(database_path, timeout=10.0)
     try:
         connection.row_factory = sqlite3.Row
@@ -24,8 +24,8 @@ def connect(database_path: Path) -> sqlite3.Connection:
 
 
 @contextmanager
-def connection_scope(database_path: Path) -> Iterator[sqlite3.Connection]:
-    connection = connect(database_path)
+def ConnectionScope(database_path: Path) -> Iterator[sqlite3.Connection]:
+    connection = Connect(database_path)
     try:
         with connection:
             yield connection
@@ -33,9 +33,9 @@ def connection_scope(database_path: Path) -> Iterator[sqlite3.Connection]:
         connection.close()
 
 
-def initialize_database(database_path: Path) -> None:
+def InitializeDatabase(database_path: Path) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    with connection_scope(database_path) as connection:
+    with ConnectionScope(database_path) as connection:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.executescript(
             """
@@ -194,7 +194,7 @@ def initialize_database(database_path: Path) -> None:
             );
             """
         )
-        apply_migrations(connection)
+        ApplyMigrations(connection)
         if _current_schema_version(connection) < SCHEMA_VERSION:
             connection.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
@@ -207,7 +207,7 @@ def initialize_database(database_path: Path) -> None:
             )
 
 
-def apply_migrations(connection: sqlite3.Connection) -> None:
+def ApplyMigrations(connection: sqlite3.Connection) -> None:
     """Apply migrations for all known schema versions in order."""
     current = _current_schema_version(connection)
     for version in sorted(MIGRATIONS):
@@ -316,4 +316,4 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
 }
 
 
-__all__ = ["SCHEMA_VERSION", "apply_migrations", "connection_scope", "connect", "initialize_database"]
+__all__ = ["SCHEMA_VERSION", "ApplyMigrations", "ConnectionScope", "Connect", "InitializeDatabase"]

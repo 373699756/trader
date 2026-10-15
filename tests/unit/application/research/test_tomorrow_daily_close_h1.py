@@ -4,11 +4,11 @@ from datetime import date, datetime, time, timedelta
 import pytest
 
 from trader.training.application.tomorrow_daily_close_h1 import (
+    AttachMaturedDailyCloseLabels,
+    BuildH1DailyCloseFeatures,
     TomorrowDailyCloseH1Observation,
-    attach_matured_daily_close_labels,
-    build_h1_daily_close_features,
 )
-from trader.training.application.tomorrow_daily_close_training import build_feature_dataset
+from trader.training.application.tomorrow_daily_close_training import BuildFeatureDataset
 from trader.training.domain.evaluation.h1_point_in_time import SHANGHAI, H1PointInTimeRecord
 from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar
 
@@ -56,9 +56,9 @@ def _observations(days: int = 90) -> tuple[TomorrowDailyCloseH1Observation, ...]
 def test_h1_adapter_freezes_six_features_before_attaching_next_day_labels() -> None:
     observations = _observations()
 
-    batch = build_h1_daily_close_features(observations)
-    samples = attach_matured_daily_close_labels(batch, observations)
-    dataset = build_feature_dataset(
+    batch = BuildH1DailyCloseFeatures(observations)
+    samples = AttachMaturedDailyCloseLabels(batch, observations)
+    dataset = BuildFeatureDataset(
         samples,
         feature_names=batch.feature_names,
         feature_units=batch.feature_units,
@@ -85,7 +85,7 @@ def test_h1_adapter_freezes_six_features_before_attaching_next_day_labels() -> N
 
 def test_future_bar_changes_do_not_change_an_already_frozen_feature_row() -> None:
     observations = _observations()
-    original = build_h1_daily_close_features(observations)
+    original = BuildH1DailyCloseFeatures(observations)
     target = original.rows[0]
     last = observations[-1]
     changed_bar = replace(
@@ -94,7 +94,7 @@ def test_future_bar_changes_do_not_change_an_already_frozen_feature_row() -> Non
         high=last.record.daily_bar.high + 5.0,
     )
     changed_record = replace(last.record, daily_bar=changed_bar, anchor_price=changed_bar.close)
-    changed = build_h1_daily_close_features((*observations[:-1], replace(last, record=changed_record)))
+    changed = BuildH1DailyCloseFeatures((*observations[:-1], replace(last, record=changed_record)))
     replayed_target = next(
         row for row in changed.rows if row.trade_date == target.trade_date and row.code == target.code
     )
@@ -109,9 +109,9 @@ def test_incomplete_point_in_time_filter_evidence_never_enters_training_dataset(
     observations[target_index] = replace(
         observations[target_index], hard_filter_evidence_complete=False, filter_evidence_hash=None
     )
-    batch = build_h1_daily_close_features(tuple(observations))
-    samples = attach_matured_daily_close_labels(batch, tuple(observations))
-    dataset = build_feature_dataset(
+    batch = BuildH1DailyCloseFeatures(tuple(observations))
+    samples = AttachMaturedDailyCloseLabels(batch, tuple(observations))
+    dataset = BuildFeatureDataset(
         samples,
         feature_names=batch.feature_names,
         feature_units=batch.feature_units,

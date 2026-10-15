@@ -5,12 +5,12 @@ import pytest
 from trader.training.domain.evaluation.filter_recall_ablation import (
     FilterAblationRow,
     FilterScoreComponent,
-    run_filter_recall_ablation,
+    RunFilterRecallAblation,
 )
 from trader.training.domain.evaluation.preregistered_rule_candidate import (
+    EvaluateRuleCandidate,
     PreregisteredRuleCandidate,
-    evaluate_rule_candidate,
-    preregister_rule_candidates,
+    PreregisterRuleCandidates,
 )
 
 
@@ -39,8 +39,8 @@ def _rows():
 def test_ablation_preserves_controls_and_is_hash_stable():
     rows = _rows()
     dates = tuple(row.trade_date for row in rows)
-    first = run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates)
-    second = run_filter_recall_ablation(rows, strategy="tomorrow", development_dates=dates)
+    first = RunFilterRecallAblation(rows, strategy="tomorrow", development_dates=dates)
+    second = RunFilterRecallAblation(rows, strategy="tomorrow", development_dates=dates)
     assert first.content_hash == second.content_hash
     assert first.baseline_recall == 0.9
     assert first.production_authority is False
@@ -55,14 +55,14 @@ def test_ablation_preserves_controls_and_is_hash_stable():
 
 
 def test_transparent_family_contains_control_and_never_authorizes_production():
-    report = run_filter_recall_ablation(
+    report = RunFilterRecallAblation(
         _rows(), strategy="tomorrow", development_dates=tuple(row.trade_date for row in _rows())
     )
-    family = preregister_rule_candidates(report)
+    family = PreregisterRuleCandidates(report)
     assert family.candidates[0].change_kind == "control"
     assert len(family.candidates) <= 8
     assert family.production_authority is False
-    assert evaluate_rule_candidate(family.candidates[0], _rows()).candidate_id.endswith("control")
+    assert EvaluateRuleCandidate(family.candidates[0], _rows()).candidate_id.endswith("control")
 
 
 def test_candidate_missing_and_unknown_score_are_not_conflated_with_zero():
@@ -85,9 +85,7 @@ def test_candidate_missing_and_unknown_score_are_not_conflated_with_zero():
 
 def test_ablation_report_rejects_unknown_terminal_status():
     rows = _rows()
-    report = run_filter_recall_ablation(
-        rows, strategy="tomorrow", development_dates=tuple(row.trade_date for row in rows)
-    )
+    report = RunFilterRecallAblation(rows, strategy="tomorrow", development_dates=tuple(row.trade_date for row in rows))
 
     with pytest.raises(ValueError, match="terminal status"):
         type(report)(
@@ -119,7 +117,7 @@ def test_severe_loss_interception_and_resource_savings_use_fixed_population():
             "scoring_rows": 1,
         }
     )
-    report = run_filter_recall_ablation(
+    report = RunFilterRecallAblation(
         tuple(rows), strategy="tomorrow", development_dates=tuple(row.trade_date for row in rows)
     )
     evidence = next(item for item in report.contributions if item.rule == "evidence")
@@ -141,7 +139,7 @@ def test_severe_loss_guard_uses_point_in_time_risk_not_outcome_label():
     )
     candidate = PreregisteredRuleCandidate("tomorrow_cost_guard", "tomorrow", "cost_guard", severe_loss_guard=0.10)
 
-    metrics = evaluate_rule_candidate(candidate, tuple(rows))
+    metrics = EvaluateRuleCandidate(candidate, tuple(rows))
 
     assert metrics.evaluated_rows == 1
     assert metrics.severe_loss_rate == 1.0
@@ -176,5 +174,5 @@ def test_removed_component_recomputes_and_renormalizes_candidate_score():
         removed_component="weak",
     )
 
-    assert evaluate_rule_candidate(control, (row,)).evaluated_rows == 0
-    assert evaluate_rule_candidate(candidate, (row,)).evaluated_rows == 1
+    assert EvaluateRuleCandidate(control, (row,)).evaluated_rows == 0
+    assert EvaluateRuleCandidate(candidate, (row,)).evaluated_rows == 1

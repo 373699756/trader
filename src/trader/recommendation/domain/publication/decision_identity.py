@@ -10,7 +10,7 @@ from functools import cached_property
 from typing import Literal, TypeAlias
 from zoneinfo import ZoneInfo
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot, RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
@@ -405,7 +405,7 @@ class CommittedDecisionRecord:
 
     @cached_property
     def payload_hash(self) -> str:
-        return _hash(committed_record_identity_payload(self))
+        return _hash(CommittedRecordIdentityPayload(self))
 
     version: str = field(init=False)
 
@@ -434,19 +434,19 @@ class CommittedDecisionRecord:
         return self.decision.trade_date
 
 
-def identity_codes(identity: DecisionIdentity) -> frozenset[str]:
+def IdentityCodes(identity: DecisionIdentity) -> frozenset[str]:
     if isinstance(identity, ScoredDecision):
         return frozenset(item.code for item in identity.items if item.selected)
     return frozenset(item.code for item in identity.items)
 
 
-def scored_top_six(items: tuple[DecisionItem, ...]) -> tuple[DecisionItem, ...]:
+def ScoredTopSix(items: tuple[DecisionItem, ...]) -> tuple[DecisionItem, ...]:
     """Return the stable, score-ranked research six from one decision."""
 
     return tuple(sorted(items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:6])
 
 
-def formal_scored_decision(
+def FormalScoredDecision(
     decision: ScoredDecision,
     *,
     degraded_reasons: tuple[str, ...] = (),
@@ -454,7 +454,7 @@ def formal_scored_decision(
 ) -> ScoredDecision:
     """Project an accepted scored identity to its immutable six-row close form."""
 
-    official_items = scored_top_six(decision.items)
+    official_items = ScoredTopSix(decision.items)
     return ScoredDecision(
         strategy=decision.strategy,
         trade_date=decision.trade_date,
@@ -534,11 +534,11 @@ def _pipeline_payload(pipeline: RecommendationPipelineStatus) -> dict[str, _Json
     }
     # Absence is part of legacy identities: never rehash old records by adding an empty audit.
     if pipeline.stage_snapshots:
-        payload["stage_snapshots"] = [pipeline_snapshot_identity_payload(stage) for stage in pipeline.stage_snapshots]
+        payload["stage_snapshots"] = [PipelineSnapshotIdentityPayload(stage) for stage in pipeline.stage_snapshots]
     return payload
 
 
-def pipeline_snapshot_identity_payload(stage: PipelineStageSnapshot) -> dict[str, _Json]:
+def PipelineSnapshotIdentityPayload(stage: PipelineStageSnapshot) -> dict[str, _Json]:
     """Canonical aggregate audit fields; no unselected stock identities."""
     health = stage.source_health
     return {
@@ -569,7 +569,7 @@ def pipeline_snapshot_identity_payload(stage: PipelineStageSnapshot) -> dict[str
     }
 
 
-def committed_record_identity_payload(record: CommittedDecisionRecord) -> dict[str, _Json]:
+def CommittedRecordIdentityPayload(record: CommittedDecisionRecord) -> dict[str, _Json]:
     """Return the explicit current-schema material shared by identity hashing and persistence."""
 
     return {
@@ -800,7 +800,7 @@ def _require_shanghai(value: datetime, label: str) -> None:
 
 
 def _hash(payload: dict[str, _Json]) -> str:
-    return canonical_digest(payload)
+    return CanonicalDigest(payload)
 
 
 def _display_text(value: str, label: str) -> str:
@@ -840,8 +840,8 @@ __all__ = [
     "LongProjectionItem",
     "ScoredDecision",
     "SelectionDiagnostics",
-    "committed_record_identity_payload",
-    "formal_scored_decision",
-    "identity_codes",
-    "scored_top_six",
+    "CommittedRecordIdentityPayload",
+    "FormalScoredDecision",
+    "IdentityCodes",
+    "ScoredTopSix",
 ]

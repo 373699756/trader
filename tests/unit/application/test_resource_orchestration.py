@@ -5,8 +5,8 @@ from dataclasses import dataclass
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport, ShutdownStep
 from trader.recommendation.application.runtime.resource_orchestration import (
     ApplicationResources,
-    start_application_resources,
-    stop_application_resources,
+    StartApplicationResources,
+    StopApplicationResources,
 )
 
 
@@ -95,8 +95,8 @@ def test_quote_pool_is_started_before_supervisor_and_stopped_after_source_lanes(
         market_cache=_Cache(events),
     )
 
-    assert start_application_resources(resources, timeout_seconds=1.0) is True
-    stop_application_resources(resources, deadline=ShutdownDeadline.start(1.0))
+    assert StartApplicationResources(resources, timeout_seconds=1.0) is True
+    StopApplicationResources(resources, deadline=ShutdownDeadline.start(1.0))
 
     assert events[:5] == [
         "start:data",
@@ -122,6 +122,6 @@ def test_quote_pool_is_rolled_back_when_supervisor_does_not_start() -> None:
         market_cache=_Cache(events),
     )
 
-    assert start_application_resources(resources, timeout_seconds=1.0) is False
+    assert StartApplicationResources(resources, timeout_seconds=1.0) is False
     assert "stop:quote:True" in events
     assert "stop:market-quote:True" in events

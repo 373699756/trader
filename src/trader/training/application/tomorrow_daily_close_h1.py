@@ -12,12 +12,12 @@ from datetime import date
 from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
+    CalculateTomorrowQfqAlpha,
     QfqPriceAnchors,
-    calculate_tomorrow_qfq_alpha,
 )
 from trader.training.application.tomorrow_daily_close_training import DailyCloseBoard, DailyCloseSourceSample
 from trader.training.domain.evaluation.h1_point_in_time import H1PointInTimeRecord
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _COSTS = (0.002, 0.005, 0.01)
@@ -70,7 +70,7 @@ class TomorrowDailyCloseH1FeatureRow:
             raise ValueError("Tomorrow H1 daily-close filter evidence is inconsistent")
         if self.schema_version != "tomorrow_h1_daily_close_feature_row":
             raise ValueError("Tomorrow H1 daily-close feature row schema is invalid")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -98,10 +98,10 @@ class TomorrowDailyCloseH1FeatureBatch:
         if self.schema_version != "tomorrow_h1_daily_close_feature_batch" or self.production_authority:
             raise ValueError("Tomorrow H1 feature batch cannot authorize production")
         object.__setattr__(self, "rows", ordered)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
-def build_h1_daily_close_features(
+def BuildH1DailyCloseFeatures(
     observations: tuple[TomorrowDailyCloseH1Observation, ...],
 ) -> TomorrowDailyCloseH1FeatureBatch:
     ordered = tuple(sorted(observations, key=lambda item: (item.record.trade_date, item.record.code)))
@@ -128,7 +128,7 @@ def build_h1_daily_close_features(
         closes = tuple(item.record.daily_bar.close for item in history)
         amounts = tuple(item.record.daily_bar.amount for item in history[-20:])
         raw_vector = TOMORROW_RAW_ALPHA_FEATURE_MANIFEST.bind(
-            calculate_tomorrow_qfq_alpha(
+            CalculateTomorrowQfqAlpha(
                 QfqPriceAnchors(
                     closes[-1],
                     tuple((horizon, closes[-horizon - 1]) for horizon in (1, 3, 5, 20, 40, 60)),
@@ -158,11 +158,11 @@ def build_h1_daily_close_features(
             )
     return TomorrowDailyCloseH1FeatureBatch(
         tuple(rows),
-        canonical_research_hash(tuple(item.record.content_hash for item in ordered)),
+        CanonicalResearchHash(tuple(item.record.content_hash for item in ordered)),
     )
 
 
-def attach_matured_daily_close_labels(
+def AttachMaturedDailyCloseLabels(
     feature_batch: TomorrowDailyCloseH1FeatureBatch,
     observations: tuple[TomorrowDailyCloseH1Observation, ...],
 ) -> tuple[DailyCloseSourceSample, ...]:
@@ -212,7 +212,7 @@ def attach_matured_daily_close_labels(
                 hard_filter_passed=row.hard_filter_passed,
                 hard_filter_evidence_complete=row.hard_filter_evidence_complete,
                 filter_evidence_hash=row.filter_evidence_hash,
-                source_row_hash=canonical_research_hash(
+                source_row_hash=CanonicalResearchHash(
                     {
                         "feature_hash": row.content_hash,
                         "label_record_hash": following_for_label.record.content_hash,
@@ -263,6 +263,6 @@ __all__ = [
     "TomorrowDailyCloseH1FeatureBatch",
     "TomorrowDailyCloseH1FeatureRow",
     "TomorrowDailyCloseH1Observation",
-    "attach_matured_daily_close_labels",
-    "build_h1_daily_close_features",
+    "AttachMaturedDailyCloseLabels",
+    "BuildH1DailyCloseFeatures",
 ]

@@ -16,11 +16,11 @@ if TYPE_CHECKING:
 
 from trader.infra.cache_contracts import (
     BoundedCache,
+    BuildCacheIdentity,
     CacheIdentity,
     CacheIdentitySpec,
     CacheRequestKey,
     CacheStatus,
-    build_cache_identity,
 )
 from trader.recommendation.domain.evidence.review import DeepSeekReview
 from trader.recommendation.domain.market.models import FeatureSnapshot
@@ -251,7 +251,7 @@ class ReviewCache:
             self._seen_codes.popitem(last=False)
 
     def _raw_identity(self, key: str | CacheRequestKey, candidate: FeatureSnapshot) -> CacheIdentity:
-        return build_cache_identity(
+        return BuildCacheIdentity(
             CacheIdentitySpec(
                 dataset="raw_deepseek_review",
                 source="deepseek:raw",
@@ -266,7 +266,7 @@ class ReviewCache:
         )
 
     def _fusion_identity(self, key: str | CacheRequestKey) -> CacheIdentity:
-        return build_cache_identity(
+        return BuildCacheIdentity(
             CacheIdentitySpec(
                 dataset="strategy_deepseek_review",
                 source="deepseek:fusion",
@@ -281,7 +281,7 @@ class ReviewCache:
         )
 
     def _seen_identity(self, code: str, trade_date: str) -> CacheIdentity:
-        return build_cache_identity(
+        return BuildCacheIdentity(
             CacheIdentitySpec(
                 dataset="deepseek_seen_codes",
                 source="deepseek:seen",

@@ -64,7 +64,7 @@ class PlattCalibrator:
         return tuple(_sigmoid(self.intercept + self.slope * _logit(value)) for value in probabilities)
 
 
-def fit_ridge_model(
+def FitRidgeModel(
     rows: tuple[tuple[float, ...], ...],
     targets: tuple[float, ...],
     *,
@@ -87,7 +87,7 @@ def fit_ridge_model(
     return LinearModel(intercept, coefficients)
 
 
-def fit_logistic_model(
+def FitLogisticModel(
     rows: tuple[tuple[float, ...], ...],
     targets: tuple[float, ...],
     *,
@@ -133,7 +133,7 @@ def fit_logistic_model(
     return LinearModel(parameters[0], tuple(parameters[1:]), logistic=True)
 
 
-def fit_affine_calibrator(raw: tuple[float, ...], targets: tuple[float, ...]) -> AffineCalibrator:
+def FitAffineCalibrator(raw: tuple[float, ...], targets: tuple[float, ...]) -> AffineCalibrator:
     _paired(raw, targets, "affine calibration")
     raw_mean = fmean(raw)
     target_mean = fmean(targets)
@@ -145,7 +145,7 @@ def fit_affine_calibrator(raw: tuple[float, ...], targets: tuple[float, ...]) ->
     return AffineCalibrator(target_mean - slope * raw_mean, slope)
 
 
-def fit_platt_calibrator(probabilities: tuple[float, ...], targets: tuple[float, ...]) -> PlattCalibrator:
+def FitPlattCalibrator(probabilities: tuple[float, ...], targets: tuple[float, ...]) -> PlattCalibrator:
     _paired(probabilities, targets, "Platt calibration")
     _probabilities(probabilities)
     if any(target not in {0.0, 1.0} for target in targets):
@@ -155,7 +155,7 @@ def fit_platt_calibrator(probabilities: tuple[float, ...], targets: tuple[float,
         constant = (positives + 1.0) / (len(targets) + 2.0)
         return PlattCalibrator(_logit(constant), 0.0, constant)
     logits = tuple((_logit(value),) for value in probabilities)
-    model = fit_logistic_model(logits, targets, ridge=1e-3)
+    model = FitLogisticModel(logits, targets, ridge=1e-3)
     return PlattCalibrator(model.intercept, model.coefficients[0])
 
 
@@ -232,8 +232,8 @@ __all__ = [
     "AffineCalibrator",
     "LinearModel",
     "PlattCalibrator",
-    "fit_affine_calibrator",
-    "fit_logistic_model",
-    "fit_platt_calibrator",
-    "fit_ridge_model",
+    "FitAffineCalibrator",
+    "FitLogisticModel",
+    "FitPlattCalibrator",
+    "FitRidgeModel",
 ]

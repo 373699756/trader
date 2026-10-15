@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
-from trader.training.infra.research.identity_codec import research_json
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
+from trader.training.infra.research.identity_codec import ResearchJson
 from trader.training.infra.research.terminal_holdout_reports import (
+    DecodeTerminalHoldoutReport,
+    EncodeTerminalHoldoutReport,
     TerminalHoldoutReportConflictError,
-    decode_terminal_holdout_report,
-    encode_terminal_holdout_report,
 )
 
 
@@ -30,7 +30,7 @@ class CrossStrategyConclusionReportIndex:
             return existing
         payload = _encode_conclusion(conclusion)
         payload["content_hash"] = conclusion.content_hash
-        if not publish_immutable(path, research_json(payload)):
+        if not PublishImmutable(path, ResearchJson(payload)):
             existing = self.verify()
             if existing.content_hash != conclusion.content_hash:
                 raise TerminalHoldoutReportConflictError("cross-strategy conclusion identity conflict")
@@ -44,7 +44,7 @@ class CrossStrategyConclusionReportIndex:
             if not isinstance(raw, dict):
                 raise TypeError("cross-strategy conclusion is not an object")
             persisted_hash = raw.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("cross-strategy conclusion hash mismatch")
             conclusion = _decode_conclusion(raw)
             if conclusion.content_hash != persisted_hash:
@@ -56,8 +56,8 @@ class CrossStrategyConclusionReportIndex:
 
 def _encode_conclusion(conclusion: CrossStrategyConclusion) -> dict[str, object]:
     return {
-        "tomorrow": encode_terminal_holdout_report(conclusion.tomorrow),
-        "d25": encode_terminal_holdout_report(conclusion.d25),
+        "tomorrow": EncodeTerminalHoldoutReport(conclusion.tomorrow),
+        "d25": EncodeTerminalHoldoutReport(conclusion.d25),
         "status": conclusion.status,
         "report_hashes": [[strategy, report_hash] for strategy, report_hash in conclusion.report_hashes],
         "production_authority": conclusion.production_authority,
@@ -86,8 +86,8 @@ def _decode_conclusion(raw: dict[str, object]) -> CrossStrategyConclusion:
     if not isinstance(schema, str):
         raise TypeError("cross-strategy schema version is invalid")
     return CrossStrategyConclusion(
-        tomorrow=decode_terminal_holdout_report(tomorrow_raw),
-        d25=decode_terminal_holdout_report(d25_raw),
+        tomorrow=DecodeTerminalHoldoutReport(tomorrow_raw),
+        d25=DecodeTerminalHoldoutReport(d25_raw),
         status=status,  # type: ignore[arg-type]
         report_hashes=report_hashes,
         production_authority=authority,

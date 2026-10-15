@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from trader.recommendation.domain.market.models import Evidence
-from trader.recommendation.domain.market.news import NewsSignalPolicy, derive_news_signals
+from trader.recommendation.domain.market.news import DeriveNewsSignals, NewsSignalPolicy
 
 NOW = datetime.fromisoformat("2026-07-16T10:00:00+08:00")
 POLICY = NewsSignalPolicy(
@@ -21,7 +21,7 @@ POLICY = NewsSignalPolicy(
 
 def test_news_signals_use_keyword_majority_and_newest_valid_evidence() -> None:
     positive = _evidence("positive", "公司拟回购并增持股份", NOW - timedelta(minutes=30))
-    signals = derive_news_signals(
+    signals = DeriveNewsSignals(
         (
             positive,
             positive,
@@ -37,7 +37,7 @@ def test_news_signals_use_keyword_majority_and_newest_valid_evidence() -> None:
 
 
 def test_news_freshness_declines_linearly_between_one_and_seventy_two_hours() -> None:
-    signals = derive_news_signals(
+    signals = DeriveNewsSignals(
         (_evidence("midpoint", "公司中标项目", NOW - timedelta(hours=36.5)),),
         observed_at=NOW,
         policy=POLICY,
@@ -46,7 +46,7 @@ def test_news_freshness_declines_linearly_between_one_and_seventy_two_hours() ->
     assert signals.sentiment_score == pytest.approx(75.0)
     assert signals.freshness_score == pytest.approx(50.0)
 
-    boundary = derive_news_signals(
+    boundary = DeriveNewsSignals(
         (_evidence("boundary", "公司中标项目", NOW - timedelta(hours=72)),),
         observed_at=NOW,
         policy=POLICY,
@@ -56,7 +56,7 @@ def test_news_freshness_declines_linearly_between_one_and_seventy_two_hours() ->
 
 
 def test_news_signals_ignore_non_news_invalid_future_and_expired_evidence() -> None:
-    signals = derive_news_signals(
+    signals = DeriveNewsSignals(
         (
             _evidence("announcement", "公司回购", NOW, evidence_type="announcement"),
             _evidence("empty", "", NOW),

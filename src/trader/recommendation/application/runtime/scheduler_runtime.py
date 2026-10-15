@@ -14,8 +14,8 @@ from trader.recommendation.application.pipeline.freeze_publish.decision_events i
 )
 from trader.recommendation.application.pipeline.freeze_publish.overlay_publisher import DecisionOverlayRefresher
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import (
+    ObservePublicationIo,
     PublicationIoTarget,
-    observe_publication_io,
 )
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
@@ -45,31 +45,31 @@ from trader.recommendation.application.runtime.runtime_dependencies import Runti
 from trader.recommendation.application.runtime.runtime_issues import RuntimeIssue, RuntimeIssueIndex
 from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
+    DecisionAt,
     MarketPhase,
     ScheduleDecision,
     SchedulePoint,
-    decision_at,
-    shanghai_now,
+    ShanghaiNow,
 )
 from trader.recommendation.application.runtime.schedule_requests import (
-    cycle_correlation_id,
-    cycle_order_key,
-    cycle_phase,
-    failure_code,
-    pipeline_lane,
-    pipeline_task_correlation_id,
-    pipeline_task_order_key,
-    research_input_version,
+    CycleCorrelationId,
+    CycleOrderKey,
+    CyclePhase,
+    FailureCode,
+    PipelineLane,
+    PipelineTaskCorrelationId,
+    PipelineTaskOrderKey,
+    ResearchInputVersion,
 )
 from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
-from trader.recommendation.application.runtime.trading_session import StaleSessionError, TradingSession, session_guard
+from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError, TradingSession
 from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
+    IdentityCodes,
     LongProjection,
     ScoredDecision,
-    identity_codes,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -122,7 +122,7 @@ class SchedulerRuntime:
             dependencies.index,
             dependencies.decisions,
             dependencies.publish_overlay,
-            failure_code,
+            FailureCode,
         )
         self._research = dependencies.research_factory(self._on_research_result)
         self._config_version = config_version
@@ -140,10 +140,10 @@ class SchedulerRuntime:
             strategy: LatestWinsWorker(
                 f"trader-{strategy.value}",
                 lambda request: self._cycles.execute(request),
-                order_key=cycle_order_key,
+                order_key=CycleOrderKey,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
-                    cycle_correlation_id,
+                    CycleCorrelationId,
                     lambda request: f"score:{request.strategy.value}",
                 ),
             )
@@ -156,7 +156,7 @@ class SchedulerRuntime:
                 order_key=_hybrid_order_key,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
-                    lambda request: f"hybrid:{cycle_correlation_id(request.cycle)}",
+                    lambda request: f"hybrid:{CycleCorrelationId(request.cycle)}",
                     lambda request: f"hybrid:{request.cycle.strategy.value}",
                 ),
             )
@@ -166,10 +166,10 @@ class SchedulerRuntime:
             task: LatestWinsWorker(
                 f"trader-task-{task.value}",
                 self._process_pipeline_task,
-                order_key=pipeline_task_order_key,
+                order_key=PipelineTaskOrderKey,
                 telemetry=LatestWinsTelemetry(
                     dependencies.latency,
-                    pipeline_task_correlation_id,
+                    PipelineTaskCorrelationId,
                     lambda request: f"data:{request.task.value}",
                 ),
             )
@@ -279,7 +279,7 @@ class SchedulerRuntime:
         with self._lock:
             if not self._running:
                 return 30.0
-        observed_at = shanghai_now(at or self._dependencies.clock.now())
+        observed_at = ShanghaiNow(at or self._dependencies.clock.now())
         session = self._session.capture()
         if session.generation != self._planned_generation:
             self._dependencies.cadence.rotate_session(observed_at, reason=self._session.status().discontinuity_reason)
@@ -295,7 +295,7 @@ class SchedulerRuntime:
             self._phase = (
                 batch.tasks[0].phase
                 if batch.tasks
-                else decision_at(
+                else DecisionAt(
                     observed_at,
                     is_trading_day=is_trading_day,
                 ).phase
@@ -303,11 +303,11 @@ class SchedulerRuntime:
         for scheduled in batch.tasks:
             if not self._periodic_task_inflight(scheduled):
                 self._dispatch_pipeline_task(replace(scheduled, session=session))
-        phase = decision_at(observed_at, is_trading_day=is_trading_day).phase
+        phase = DecisionAt(observed_at, is_trading_day=is_trading_day).phase
         try:
             self._research.offer_due(observed_at, phase, is_trading_day=is_trading_day)
         except (RuntimeError, TypeError, ValueError) as exc:
-            self._record_failure("research", failure_code(exc, "research_offer_failed"), None)
+            self._record_failure("research", FailureCode(exc, "research_offer_failed"), None)
         return batch.next_delay_seconds
 
     def _calendar_decision(self, observed_at: datetime) -> tuple[bool | None, float]:
@@ -394,7 +394,7 @@ class SchedulerRuntime:
             accepted = True
             completed_immediately = True
         else:
-            offer = self._task_lanes[pipeline_lane(scheduled.task)].offer(scheduled)
+            offer = self._task_lanes[PipelineLane(scheduled.task)].offer(scheduled)
             accepted = offer is not LatestWinsOffer.REJECTED
         if not accepted:
             self._dependencies.cadence.record_submission(scheduled, accepted=False, at=scheduled.scheduled_at)
@@ -419,17 +419,17 @@ class SchedulerRuntime:
         lane = (
             self._lanes[Strategy.LONG].status()
             if scheduled.task is PipelineTask.LONG_QUOTES
-            else self._task_lanes[pipeline_lane(scheduled.task)].status()
+            else self._task_lanes[PipelineLane(scheduled.task)].status()
         )
         return lane.running or lane.pending
 
     def _submit_scoring(self, scheduled: ScheduledPipelineTask) -> bool:
-        decision = decision_at(scheduled.scheduled_at, is_trading_day=True)
+        decision = DecisionAt(scheduled.scheduled_at, is_trading_day=True)
         accepted = False
         for strategy in self._due_strategies(decision, None, scheduled.scheduled_at):
             if strategy is Strategy.LONG:
                 continue
-            phase = cycle_phase(strategy, decision.phase)
+            phase = CyclePhase(strategy, decision.phase)
             request = replace(
                 self._scheduled_request(strategy, scheduled.scheduled_at, phase), session=scheduled.session
             )
@@ -448,14 +448,14 @@ class SchedulerRuntime:
         if request.trade_date != session.trade_date:
             return LatestWinsOffer.REJECTED
         try:
-            with session_guard(request.session):
+            with SessionGuard(request.session):
                 return self._lanes[request.strategy].offer(request)
         except StaleSessionError:
             return LatestWinsOffer.REJECTED
 
     def _process_pipeline_task(self, scheduled: ScheduledPipelineTask) -> None:
         try:
-            with session_guard(scheduled.session):
+            with SessionGuard(scheduled.session):
                 pass
             self._execute_pipeline_task(scheduled)
         except StaleSessionError:
@@ -468,18 +468,18 @@ class SchedulerRuntime:
         selected_codes = self._selected_overlay_codes() if scheduled.task is PipelineTask.TOPK_QUOTES else ()
         request = PipelineTaskRequest(
             scheduled.task,
-            shanghai_now(self._dependencies.clock.now()),
+            ShanghaiNow(self._dependencies.clock.now()),
             selected_codes,
             session=scheduled.session,
         )
         try:
             outcome = self._dependencies.data.refresh_task(request)
         except DataRefreshUnavailableError as exc:
-            with session_guard(scheduled.session):
-                self._record_failure("refresh", failure_code(exc, "refresh_unavailable"))
+            with SessionGuard(scheduled.session):
+                self._record_failure("refresh", FailureCode(exc, "refresh_unavailable"))
                 self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
             return
-        with session_guard(scheduled.session):
+        with SessionGuard(scheduled.session):
             self._after_successful_data_refresh(scheduled, outcome)
             self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
 
@@ -504,7 +504,7 @@ class SchedulerRuntime:
             self._trigger_scoring_after_input()
 
     def _trigger_scoring_after_input(self) -> None:
-        completed_at = shanghai_now(self._dependencies.clock.now())
+        completed_at = ShanghaiNow(self._dependencies.clock.now())
         is_trading_day, _retry_delay = self._calendar_decision(completed_at)
         if is_trading_day is None:
             return
@@ -525,7 +525,7 @@ class SchedulerRuntime:
         self._dependencies.cadence.record_results(
             scheduled,
             {"-": result},
-            at=shanghai_now(self._dependencies.clock.now()),
+            at=ShanghaiNow(self._dependencies.clock.now()),
         )
 
     def _selected_overlay_codes(self) -> tuple[str, ...]:
@@ -534,7 +534,7 @@ class SchedulerRuntime:
             snapshot = self._dependencies.index.snapshot(strategy)
             identity = snapshot.formal.decision if snapshot.formal is not None else snapshot.current
             if isinstance(identity, ScoredDecision):
-                codes.extend(identity_codes(identity))
+                codes.extend(IdentityCodes(identity))
         return tuple(dict.fromkeys(codes))
 
     def _refresh_selected_overlays(self, scheduled: ScheduledPipelineTask) -> None:
@@ -693,15 +693,15 @@ class SchedulerRuntime:
         with self._lock:
             if not self._running:
                 return
-        completed_at = shanghai_now(result.completed_at or self._dependencies.clock.now())
+        completed_at = ShanghaiNow(result.completed_at or self._dependencies.clock.now())
         is_trading_day, _retry_delay = self._calendar_decision(completed_at)
         if is_trading_day is None:
             return
-        schedule = decision_at(completed_at, is_trading_day=is_trading_day)
+        schedule = DecisionAt(completed_at, is_trading_day=is_trading_day)
         if not schedule.should_score:
             return
         strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
-        risk_version = research_input_version(result)
+        risk_version = ResearchInputVersion(result)
         for strategy in strategies:
             current = self._dependencies.index.snapshot(strategy).current
             if not isinstance(current, ScoredDecision) or current.trade_date != completed_at.date():
@@ -729,7 +729,7 @@ class SchedulerRuntime:
         if event is not None:
             try:
                 assert isinstance(identity, ScoredDecision)
-                with observe_publication_io(
+                with ObservePublicationIo(
                     self._dependencies.publication_io, "decision_event", PublicationIoTarget.decision(identity)
                 ) as receipt:
                     self._dependencies.publish_decision(event)
@@ -743,7 +743,7 @@ class SchedulerRuntime:
             )
         if observation is not None:
             assert isinstance(identity, ScoredDecision)
-            with observe_publication_io(
+            with ObservePublicationIo(
                 self._dependencies.publication_io, "observer_enqueue", PublicationIoTarget.decision(identity)
             ) as receipt:
                 offered = self._dependencies.observer.offer(observation)
@@ -830,7 +830,7 @@ class SchedulerRuntime:
             self._resolve_issues_locked(strategy=strategy, stages=frozenset({stage}))
 
     def _record_failure(self, stage: str, code: str, strategy: Strategy | None = None) -> None:
-        occurred_at = shanghai_now(self._dependencies.clock.now())
+        occurred_at = ShanghaiNow(self._dependencies.clock.now())
         with self._lock:
             if stage == "refresh":
                 self._refresh_failure_count += 1
@@ -860,14 +860,14 @@ class SchedulerRuntime:
         stages: frozenset[str] | None = None,
     ) -> None:
         self._issues.resolve(
-            shanghai_now(self._dependencies.clock.now()),
+            ShanghaiNow(self._dependencies.clock.now()),
             strategy=strategy,
             stages=stages,
         )
 
 
 def _hybrid_order_key(request: HybridUpgradeRequest) -> int:
-    return cycle_order_key(request.cycle)
+    return CycleOrderKey(request.cycle)
 
 
 __all__ = ["RuntimeIssue", "SchedulerRuntimeStatus", "SchedulerRuntime"]

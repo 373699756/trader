@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from trader.recommendation.domain.publication.models import Strategy
 
 
-def outcome_horizons(strategy: Strategy) -> tuple[int, ...]:
+def OutcomeHorizons(strategy: Strategy) -> tuple[int, ...]:
     if strategy is Strategy.TOMORROW:
         return (1,)
     if strategy is Strategy.D25:
@@ -106,7 +106,7 @@ class OutcomeTarget:
         pending = tuple(sorted(set(supplied)))
         if supplied != pending:
             raise ValueError("pending outcome horizons must be sorted and unique")
-        if any(horizon not in outcome_horizons(self.strategy) for horizon in pending):
+        if any(horizon not in OutcomeHorizons(self.strategy) for horizon in pending):
             raise ValueError("pending outcome horizons are incompatible with strategy")
         object.__setattr__(self, "pending_horizons", pending)
 
@@ -161,7 +161,7 @@ class RecommendationOutcome:
     schema_identity: str = "recommendation_outcome_qfq_tradability_cost20bp"
 
     def __post_init__(self) -> None:
-        if self.horizon not in outcome_horizons(self.strategy):
+        if self.horizon not in OutcomeHorizons(self.strategy):
             raise ValueError("recommendation outcome horizon is incompatible with strategy")
         if self.status not in {"complete", "benchmark_missing", "insufficient_data"}:
             raise ValueError("recommendation outcome status is invalid")
@@ -205,5 +205,5 @@ __all__ = [
     "OutcomeTarget",
     "OutcomeTradingStatus",
     "RecommendationOutcome",
-    "outcome_horizons",
+    "OutcomeHorizons",
 ]

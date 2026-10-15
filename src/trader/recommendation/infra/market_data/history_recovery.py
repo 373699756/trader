@@ -16,11 +16,11 @@ from typing import Protocol
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import (
     BoundedExecutor,
+    InjectedExecutor,
+    SubmitOrReject,
     WorkerResourceRejectedError,
-    injected_executor,
-    submit_or_reject,
 )
-from trader.recommendation.application.runtime.schedule import SHANGHAI, shanghai_now
+from trader.recommendation.application.runtime.schedule import SHANGHAI, ShanghaiNow
 
 
 class HistorySource(Protocol):
@@ -101,7 +101,7 @@ class HistoryRecovery:
     ) -> Mapping[str, tuple[DailyBar, ...]]:
         requested = tuple(dict.fromkeys(code for code in codes if code.strip()))
         started = self._monotonic_clock()
-        observed_on = shanghai_now(self._wall_clock()).date()
+        observed_on = ShanghaiNow(self._wall_clock()).date()
         identities = {code: _RecoveryIdentity(code, days, observed_on) for code in requested}
         budget = self._batch_timeout_seconds
         if deadline is not None:
@@ -131,7 +131,7 @@ class HistoryRecovery:
         dispatched: dict[Future[tuple[str, tuple[DailyBar, ...], str]], str] = {}
         try:
             if selected and self._remaining_seconds(monotonic_deadline) > 0.0:
-                pool = injected_executor(self._worker_pool)
+                pool = InjectedExecutor(self._worker_pool)
                 for offset in range(0, len(selected), self._workers):
                     if self._remaining_seconds(monotonic_deadline) <= 0.0:
                         last_error = "history_recovery_deadline_exceeded"
@@ -144,7 +144,7 @@ class HistoryRecovery:
                         with self._lock:
                             self._attempt_sequence += 1
                             self._attempt_order[code] = self._attempt_sequence
-                        future = submit_or_reject(pool, self._recover_one, code, days, monotonic_deadline)
+                        future = SubmitOrReject(pool, self._recover_one, code, days, monotonic_deadline)
                         futures[future] = code
                         dispatched[future] = code
                     completed: set[Future[tuple[str, tuple[DailyBar, ...], str]]] = set()
@@ -248,7 +248,7 @@ class HistoryRecovery:
         if any(item.adjustment is not PriceAdjustment.QFQ for item in ordered):
             return ()
         dates = tuple(date.fromisoformat(item.trade_date) for item in ordered)
-        if len(set(dates)) != len(dates) or any(day > shanghai_now(self._wall_clock()).date() for day in dates):
+        if len(set(dates)) != len(dates) or any(day > ShanghaiNow(self._wall_clock()).date() for day in dates):
             return ()
         for item in ordered:
             prices = (item.open_price, item.close, item.low, item.high)

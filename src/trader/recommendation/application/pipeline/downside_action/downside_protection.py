@@ -6,7 +6,7 @@ from typing import Protocol
 
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.models import Strategy
-from trader.recommendation.domain.risk.downside import DownsideAssessment, assess_downside
+from trader.recommendation.domain.risk.downside import AssessDownside, DownsideAssessment
 
 
 class RiskControlPort(Protocol):
@@ -19,7 +19,7 @@ class RiskControlService(RiskControlPort):
     """Stateless adapter around the domain downside rules."""
 
     def assess(self, features: FeatureSnapshot, strategy: Strategy) -> DownsideAssessment:
-        return assess_downside(features, strategy)
+        return AssessDownside(features, strategy)
 
 
 __all__ = ["RiskControlPort", "RiskControlService"]

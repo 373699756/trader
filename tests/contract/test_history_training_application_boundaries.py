@@ -13,8 +13,8 @@ _SHARED_CAPABILITIES = {
         "WorkerExecutor",
         "ManagedWorkerExecutor",
         "WorkerResourceRejectedError",
-        "submit_or_reject",
-        "submit_with_backpressure",
+        "SubmitOrReject",
+        "SubmitWithBackpressure",
     },
     "trader.infra.shutdown": {"ShutdownDeadline", "ShutdownStep"},
 }
@@ -60,8 +60,8 @@ def application_import_violations(source: str, business: str) -> list[str]:
 @pytest.mark.parametrize(
     ("source", "rejected"),
     (
-        ("from trader.infra.workers import WorkerExecutor, ManagedWorkerExecutor, submit_or_reject", False),
-        ("from trader.infra.workers import submit_with_backpressure, WorkerResourceRejectedError", False),
+        ("from trader.infra.workers import WorkerExecutor, ManagedWorkerExecutor, SubmitOrReject", False),
+        ("from trader.infra.workers import SubmitWithBackpressure, WorkerResourceRejectedError", False),
         ("from trader.infra.shutdown import ShutdownDeadline, ShutdownStep", False),
         ("from trader.infra.workers import BoundedExecutor", True),
         ("from trader.infra.workers import *", True),
@@ -120,7 +120,7 @@ def test_entrypoints_route_download_and_training_through_application_use_cases()
     download_commands = (ROOT / "src" / "trader" / "download" / "entrypoints" / "commands.py").read_text(
         encoding="utf-8"
     )
-    assert "execute_history_download" in download_commands
+    assert "ExecuteHistoryDownload" in download_commands
     assert "DownloadHistoryUseCase" in (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
     assert "TrainV2UseCase" in commands
     assert "TrainV3UseCase" in commands

@@ -9,8 +9,8 @@ from functools import partial
 
 from flask import Blueprint, Flask, Response, jsonify, render_template, request
 
-from trader.http_api.decision_sse import decision_event_response
-from trader.http_api.response.decision_projection import serialize_decision_view, serialize_error
+from trader.http_api.decision_sse import DecisionEventResponse
+from trader.http_api.response.decision_projection import SerializeDecisionView, SerializeError
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebServices
 from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedSubscriberLimitError
@@ -40,7 +40,7 @@ _DEEPSEEK_ZERO_CALL_REASONS = frozenset(
 )
 
 
-def register_routes(app: Flask, services: WebServices | None) -> None:
+def RegisterRoutes(app: Flask, services: WebServices | None) -> None:
     app.register_blueprint(_create_product_blueprint(services))
 
 
@@ -210,7 +210,7 @@ def _events(services: WebServices | None) -> RouteResponse:
         subscription = lane.events.open_subscription(cursor)
     except UnifiedSubscriberLimitError:
         return _error("stream_capacity", "event stream connection limit reached", 503)
-    return decision_event_response(
+    return DecisionEventResponse(
         lane.events,
         subscription,
         heartbeat_seconds=lane.config.heartbeat_seconds,
@@ -222,7 +222,7 @@ def _view_response(view: DecisionView, *, profile_id: str | None = None) -> Resp
         response = Response(status=304)
         response.set_etag(view.etag)
         return response
-    payload = serialize_decision_view(view)
+    payload = SerializeDecisionView(view)
     if profile_id is not None:
         payload["scoring_profile"] = profile_id
     response = jsonify(payload)
@@ -814,7 +814,7 @@ def _not_ready() -> tuple[Response, int]:
 
 
 def _error(code: str, message: str, status_code: int) -> tuple[Response, int]:
-    return jsonify(serialize_error(code, message)), status_code
+    return jsonify(SerializeError(code, message)), status_code
 
 
-__all__ = ["register_routes"]
+__all__ = ["RegisterRoutes"]

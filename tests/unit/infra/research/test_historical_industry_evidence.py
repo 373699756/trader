@@ -20,7 +20,7 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
-from trader.training.infra.research.historical_industry_evidence import audit_published_historical_industry_facts
+from trader.training.infra.research.historical_industry_evidence import AuditPublishedHistoricalIndustryFacts
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -98,7 +98,7 @@ def test_monthly_source_audit_covers_three_boards_and_keeps_missing_query_time_f
     cells = tuple(cell for security in context.universe for cell in supplier.fetch_code(security, dates).batch.cells)
     publish_history_fixture(root, context, cells, NOW)
 
-    report = audit_published_historical_industry_facts(tmp_path / "history", tushare_access_points=120)
+    report = AuditPublishedHistoricalIndustryFacts(tmp_path / "history", tushare_access_points=120)
 
     baostock, tushare = report.sources
     assert report.daily_manifest_hash == baostock.contract.source_version

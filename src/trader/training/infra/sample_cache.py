@@ -7,7 +7,7 @@ import logging
 import os
 from pathlib import Path
 
-from trader.infra.atomic_files.json import atomic_read_json, atomic_write_json
+from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 from trader.training.infra.sample_repository import SQLiteTrainingSampleRepository
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,13 +40,13 @@ class TrainingSampleCache:
         samples.require_split_hash(self.split_hash)
         with self.path.open("rb") as handle:
             os.fsync(handle.fileno())
-        atomic_write_json(self.manifest, {"identity": self.identity, "sha256": _digest(self.path)})
+        AtomicWriteJson(self.manifest, {"identity": self.identity, "sha256": _digest(self.path)})
 
     def _matches(self) -> bool:
         if not self.manifest.is_file() or not self.path.is_file():
             return False
         try:
-            value = atomic_read_json(self.manifest)
+            value = AtomicReadJson(self.manifest)
             return (
                 isinstance(value, dict)
                 and value.get("identity") == self.identity
@@ -66,7 +66,7 @@ class TrainingSampleCache:
             path.unlink(missing_ok=True)
 
 
-def sample_cache_bytes(cache: TrainingSampleCache | None) -> int:
+def SampleCacheBytes(cache: TrainingSampleCache | None) -> int:
     if cache is None:
         return 0
     try:

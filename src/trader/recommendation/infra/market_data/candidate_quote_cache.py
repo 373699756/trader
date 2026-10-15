@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from typing_extensions import Unpack
 
 from trader.infra.market_data.history.history import DailyBar
-from trader.recommendation.application.runtime.schedule import shanghai_now
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,
@@ -182,7 +182,7 @@ class QuoteCache:
                 model_industry=(
                     reference
                     if (reference := references.get(feature.quote.code)) is not None
-                    and reference.effective_date <= shanghai_now(feature.observed_at).date()
+                    and reference.effective_date <= ShanghaiNow(feature.observed_at).date()
                     else None
                 ),
             )

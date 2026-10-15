@@ -13,7 +13,7 @@ from trader.training.domain.evaluation.h1_point_in_time import (
     H1CoverageState,
     ResearchStrategy,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _STRATEGY_ORDER = {"tomorrow": 0, "d25": 1}
@@ -48,7 +48,7 @@ class H1CoverageMetadata:
         _strict_dates(self.common_trading_dates)
         if self.common_trading_dates and self.common_trading_dates[-1] > self.source_cutoff:
             raise ValueError("historical label dates exceed source cutoff")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -102,7 +102,7 @@ class HistoricalLabelContract:
             "benchmark_market_data",
         ):
             raise ValueError("historical label parity dimensions are invalid")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -137,9 +137,9 @@ class HistoricalTemporalSplit:
             raise ValueError("historical label split date bounds are inconsistent")
         if len(self.terminal_holdout_dates) < _MINIMUM_TERMINAL_DAYS:
             raise ValueError("historical label terminal holdout must retain at least 200 dates")
-        if self.date_set_hash != canonical_research_hash(self.all_dates):
+        if self.date_set_hash != CanonicalResearchHash(self.all_dates):
             raise ValueError("historical label date set hash is invalid")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def all_dates(self) -> tuple[date, ...]:
@@ -196,7 +196,7 @@ class HistoricalLabelPreregistration:
         if self.schema_version != "historical_label_preregistration":
             raise ValueError("historical label preregistration schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -213,10 +213,10 @@ class HistoricalLabelPreregistrationBatch:
         if self.schema_version != "historical_label_preregistration_batch" or self.production_authority:
             raise ValueError("historical label batch cannot authorize production")
         object.__setattr__(self, "strategies", ordered)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
-def preregister_historical_label(metadata: H1CoverageMetadata) -> HistoricalLabelPreregistration:
+def PreregisterHistoricalLabel(metadata: H1CoverageMetadata) -> HistoricalLabelPreregistration:
     label = _label_contract(metadata.strategy)
     reasons: list[str] = []
     if metadata.coverage_state != "coverage_ready":
@@ -240,12 +240,12 @@ def preregister_historical_label(metadata: H1CoverageMetadata) -> HistoricalLabe
     )
 
 
-def preregister_historical_labels(
+def PreregisterHistoricalLabels(
     metadata: tuple[H1CoverageMetadata, ...],
 ) -> HistoricalLabelPreregistrationBatch:
     if len(metadata) != 2 or len({item.strategy for item in metadata}) != 2:
         raise ValueError("historical label metadata requires each strategy exactly once")
-    return HistoricalLabelPreregistrationBatch(tuple(preregister_historical_label(item) for item in metadata))
+    return HistoricalLabelPreregistrationBatch(tuple(PreregisterHistoricalLabel(item) for item in metadata))
 
 
 def _split(dates: tuple[date, ...]) -> HistoricalTemporalSplit:
@@ -259,7 +259,7 @@ def _split(dates: tuple[date, ...]) -> HistoricalTemporalSplit:
         terminal_holdout_dates=dates[second_boundary:],
         first_trade_date=dates[0],
         last_trade_date=dates[-1],
-        date_set_hash=canonical_research_hash(dates),
+        date_set_hash=CanonicalResearchHash(dates),
     )
     if split.all_dates != dates:
         raise ValueError("historical label split must retain every date exactly once")
@@ -332,6 +332,6 @@ __all__ = [
     "HistoricalLabelPreregistration",
     "HistoricalLabelPreregistrationBatch",
     "HistoricalTemporalSplit",
-    "preregister_historical_label",
-    "preregister_historical_labels",
+    "PreregisterHistoricalLabel",
+    "PreregisterHistoricalLabels",
 ]

@@ -18,9 +18,9 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
-from trader.download.infra.history_snapshot_inspection import inspect_history_snapshot
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
+from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
+from trader.download.infra.history_sync_runner import RunHistorySync
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -74,7 +74,7 @@ class _Supplier:
 
     def fetch_tencent_window(self, security, dates):
         return PublishedHistoryWindow(
-            security.code, tuple(project_history_cell(cell) for cell in self.fetch_code(security, dates).batch.cells)
+            security.code, tuple(ProjectHistoryCell(cell) for cell in self.fetch_code(security, dates).batch.cells)
         )
 
     def fetch_baostock_raw(self, security, dates):
@@ -87,7 +87,7 @@ class _Supplier:
 def test_missing_archive_is_read_only_and_reports_the_current_snapshot_boundary(tmp_path: Path) -> None:
     root = tmp_path / "history"
 
-    status = inspect_history_snapshot(root)
+    status = InspectHistorySnapshot(root)
 
     assert status.state == "unavailable"
     assert status.reason == "history_snapshot_unavailable"
@@ -100,9 +100,9 @@ def test_active_monthly_snapshot_projects_typed_counts_and_optional_full_verific
     root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
-    status = inspect_history_snapshot(root, verify_partitions=True)
+    status = InspectHistorySnapshot(root, verify_partitions=True)
 
     assert status.state == "active"
     assert status.calendar_sessions == 3
@@ -118,9 +118,9 @@ def test_legacy_nested_archive_is_not_discovered(tmp_path: Path) -> None:
     legacy_root = tmp_path / "history" / "baostock"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(legacy_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
-    status = inspect_history_snapshot(tmp_path / "history")
+    status = InspectHistorySnapshot(tmp_path / "history")
 
     assert status.state == "unavailable"
     assert status.reason == "history_snapshot_unavailable"
@@ -130,13 +130,13 @@ def test_partition_tamper_fails_closed_without_losing_the_snapshot_identity(tmp_
     root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     configuration = HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
-    active = inspect_history_snapshot(root)
+    assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
+    active = InspectHistorySnapshot(root)
     partition = next((root / "partitions").glob("*/*.sqlite3"))
     with sqlite3.connect(partition) as connection:
         connection.execute("UPDATE daily_records SET content_hash=?", ("0" * 64,))
 
-    verified = inspect_history_snapshot(root, verify_partitions=True)
+    verified = InspectHistorySnapshot(root, verify_partitions=True)
 
     assert active.state == "active"
     assert verified.state == "invalid"

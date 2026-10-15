@@ -16,13 +16,13 @@ from trader.recommendation.domain.selection.execution_cost import ExecutionCost,
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeEventFact
 from trader.training.domain.evaluation.risk_cost_population import RiskCostResearchIdentity
 from trader.training.domain.evaluation.risk_cost_uncertainty import (
+    BuildSelectionUtility,
     DeepSeekResearchReview,
     RiskCostUncertaintyReport,
     RiskCostUncertaintySample,
-    build_selection_utility,
 )
 from trader.training.domain.evaluation.risk_cost_uncertainty import (
-    evaluate_risk_cost_uncertainty as evaluate_bound_risk_cost,
+    EvaluateRiskCostUncertainty as evaluate_bound_risk_cost,
 )
 
 
@@ -100,7 +100,7 @@ def test_signal_risk_cost_and_research_utility_keep_units_and_ownership_separate
     review = DeepSeekResearchReview("failed", None, 0.0, False, (), "看多，不应产生扣分")
     sample = _sample("600001", signal_score=90.0, actual_net=0.01, severe=False, review=review)
 
-    utility = build_selection_utility(sample.alpha, sample.risk, sample.cost)
+    utility = BuildSelectionUtility(sample.alpha, sample.risk, sample.cost)
 
     assert sample.alpha.signal_score == 90.0
     assert sample.risk.penalty_points == 10.0
@@ -298,7 +298,7 @@ def test_fixed_fusion_uses_decimal_half_up_without_a_second_local_risk_deduction
 
     report = evaluate_risk_cost_uncertainty("c" * 64, "d" * 64, (row,))
 
-    assert build_selection_utility(row.alpha, row.risk, row.cost).local_score == 47.79
+    assert BuildSelectionUtility(row.alpha, row.risk, row.cost).local_score == 47.79
     decision = next(item for item in report.decisions if item.arm == "fixed_68_32")
     # 47.79 * 0.68 + 77.03125 * 0.32 = 57.1472; use an exact half-cent next.
     tied = replace(row, deepseek=replace(review, score=77.024375))

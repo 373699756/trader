@@ -19,8 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.infra.market_data.providers.tushare import TushareClient  # noqa: E402
-from trader.infra.market_data.providers.tushare_records import build_tushare_sdk  # noqa: E402
-from trader.infra.settings import load_runtime_settings  # noqa: E402
+from trader.infra.market_data.providers.tushare_records import BuildTushareSdk  # noqa: E402
+from trader.infra.settings import LoadRuntimeSettings  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_RUNTIME_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
@@ -46,11 +46,11 @@ def _validate(args: argparse.Namespace) -> tuple[str, ...]:
 
 
 def _report(args: argparse.Namespace, codes: tuple[str, ...]) -> dict[str, object]:
-    settings = load_runtime_settings(Path(args.runtime_config).expanduser().resolve())
+    settings = LoadRuntimeSettings(Path(args.runtime_config).expanduser().resolve())
     configured = settings.market_data.tushare
     now = datetime.now(_SHANGHAI)
     client = TushareClient(
-        sdk_factory=partial(build_tushare_sdk, session_factory=requests.Session),
+        sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
         token=configured.token if configured.enabled else "",
         points=configured.points,
         timeout_seconds=configured.timeout_seconds,

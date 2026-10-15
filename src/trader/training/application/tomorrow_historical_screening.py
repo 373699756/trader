@@ -11,7 +11,7 @@ from datetime import date
 from typing import Literal, Protocol
 
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
-from trader.recommendation.domain.scoring.utility_scoring import percentile_ranks
+from trader.recommendation.domain.scoring.utility_scoring import PercentileRanks
 from trader.training.application.historical_screening import (
     HistoricalScreeningSnapshotManifest,
     HistoricalScreeningSnapshotStatus,
@@ -21,17 +21,17 @@ from trader.training.application.tomorrow_historical_report import (
     TomorrowHistoricalReport,
 )
 from trader.training.domain.evaluation.baseline import (
-    mean_rank_ic,
-    population_spearman,
-    quantile_bucket,
-    stock_net_contribution,
+    MeanRankIc,
+    PopulationSpearman,
+    QuantileBucket,
+    StockNetContribution,
 )
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC, HistoricalScreeningSpec
 from trader.training.domain.evaluation.paired_statistics import (
+    PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
-    paired_moving_block_statistics,
 )
-from trader.training.domain.evaluation.research_identity import research_rows_hash
+from trader.training.domain.evaluation.research_identity import ResearchRowsHash
 from trader.training.domain.evaluation.tomorrow_historical import (
     TOMORROW_HISTORICAL_SPEC,
     TomorrowHistoricalCandidate,
@@ -274,7 +274,7 @@ def _evaluate(
     bottom_values: list[float] = []
     for trade_date in sorted(grouped):
         population = tuple(sorted(grouped[trade_date], key=lambda item: item[0].code))
-        amihud_ranks = percentile_ranks(tuple(item[0].amihud_20d for item in population))
+        amihud_ranks = PercentileRanks(tuple(item[0].amihud_20d for item in population))
         candidates = tuple(
             (
                 prediction - spec.cost_rates[0] * (1.0 + amihud_ranks[index]),
@@ -306,8 +306,8 @@ def _evaluate(
         previous_candidate = candidate_codes
         previous_baseline = baseline_codes
         score_pairs = tuple((prediction, row.gross_excess_return) for row, prediction, _value in population)
-        rank_ics.append(population_spearman(score_pairs))
-        buckets = quantile_bucket(tuple((row.code, prediction) for row, prediction, _value in population))
+        rank_ics.append(PopulationSpearman(score_pairs))
+        buckets = QuantileBucket(tuple((row.code, prediction) for row, prediction, _value in population))
         for row, _prediction, _value in population:
             net = row.gross_excess_return - spec.cost_rates[0]
             if buckets[row.code] == 5:
@@ -315,7 +315,7 @@ def _evaluate(
             elif buckets[row.code] == 1:
                 bottom_values.append(net)
     daily_increments = tuple(_daily_increment(selected_rows, value) for value in spec.cost_rates)
-    bootstrap = paired_moving_block_statistics(
+    bootstrap = PairedMovingBlockStatistics(
         daily_increments[0],
         plan=PreregisteredBootstrapPlan(
             identity=spec.research_identity,
@@ -342,7 +342,7 @@ def _evaluate(
         baseline_severe_loss_rate=baseline_severe,
         candidate_severe_loss_rate=candidate_severe,
         turnover_increase=candidate_turnover - baseline_turnover,
-        mean_rank_ic=mean_rank_ic(tuple(rank_ics)),
+        mean_rank_ic=MeanRankIc(tuple(rank_ics)),
         top_bottom_quintile_spread=_mean(tuple(top_values)) - _mean(tuple(bottom_values)),
         maximum_stock_positive_fraction=concentration[0],
         top_five_positive_fraction=concentration[1],
@@ -387,10 +387,10 @@ def _select_baseline(
 def _daily_increment(rows: list[_SelectionRow], cost_rate: float) -> tuple[float, ...]:
     values: dict[date, float] = defaultdict(float)
     for item in rows:
-        candidate = stock_net_contribution(
+        candidate = StockNetContribution(
             item.candidate_weight, item.row.gross_excess_return, item.candidate_turnover, cost_rate
         )
-        baseline = stock_net_contribution(
+        baseline = StockNetContribution(
             item.baseline_weight, item.row.gross_excess_return, item.baseline_turnover, cost_rate
         )
         values[item.row.trade_date] += candidate - baseline
@@ -426,11 +426,9 @@ def _weighted_average(rows: list[_SelectionRow], track: Literal["candidate", "ba
 def _positive_concentration(rows: list[_SelectionRow], cost_rate: float) -> tuple[float | None, float | None]:
     contributions: dict[str, float] = defaultdict(float)
     for item in rows:
-        contributions[item.row.code] += stock_net_contribution(
+        contributions[item.row.code] += StockNetContribution(
             item.candidate_weight, item.row.gross_excess_return, item.candidate_turnover, cost_rate
-        ) - stock_net_contribution(
-            item.baseline_weight, item.row.gross_excess_return, item.baseline_turnover, cost_rate
-        )
+        ) - StockNetContribution(item.baseline_weight, item.row.gross_excess_return, item.baseline_turnover, cost_rate)
     positive = sorted((value for value in contributions.values() if value > 0.0), reverse=True)
     denominator = math.fsum(positive)
     if denominator <= 0.0:
@@ -483,7 +481,7 @@ def _gate_failures(metrics: TomorrowHistoricalGateMetrics, spec: TomorrowHistori
 
 
 def _rows_hash(rows: tuple[TomorrowHistoricalRow, ...]) -> str:
-    return research_rows_hash(rows)
+    return ResearchRowsHash(rows)
 
 
 def _mean(values: tuple[float, ...]) -> float:

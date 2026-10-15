@@ -10,8 +10,8 @@ from pathlib import Path
 from flask import Flask, Response, abort, request
 
 from trader.http_api.route_services import WebServices
-from trader.http_api.routes.page_routes import register_routes
-from trader.web.static_assets import web_asset
+from trader.http_api.routes.page_routes import RegisterRoutes
+from trader.web.static_assets import WebAsset
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,7 @@ class _StaticAsset:
     etag: str
 
 
-def create_app(
+def CreateApp(
     *,
     services: WebServices | None = None,
 ) -> Flask:
@@ -32,9 +32,9 @@ def create_app(
         endpoint="static",
         view_func=lambda filename: _static_response(assets, filename),
     )
-    app.add_template_global(web_asset, "web_asset")
+    app.add_template_global(WebAsset, "web_asset")
     app.jinja_env.get_template("index.html")
-    register_routes(app, services)
+    RegisterRoutes(app, services)
     return app
 
 
@@ -64,4 +64,4 @@ def _static_response(assets: dict[str, _StaticAsset], filename: str) -> Response
     return response
 
 
-__all__ = ["create_app"]
+__all__ = ["CreateApp"]

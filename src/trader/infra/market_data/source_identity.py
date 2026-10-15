@@ -15,12 +15,12 @@ _SOURCE_PRIORITY = {
 
 
 @lru_cache(maxsize=32)
-def source_name(source: str) -> str:
+def SourceName(source: str) -> str:
     return source.strip().lower().split("_", 1)[0].split("-", 1)[0]
 
 
-def source_priority(source: str) -> int:
-    return _SOURCE_PRIORITY.get(source_name(source), 0)
+def SourcePriority(source: str) -> int:
+    return _SOURCE_PRIORITY.get(SourceName(source), 0)
 
 
-__all__ = ["source_name", "source_priority"]
+__all__ = ["SourceName", "SourcePriority"]

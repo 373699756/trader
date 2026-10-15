@@ -19,18 +19,18 @@ from trader.download.domain.history_control import (
 )
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_revision import HistoryRevision
-from trader.download.domain.published_history import project_history_cell
+from trader.download.domain.published_history import ProjectHistoryCell
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.download.infra.history_reference_files import (
-    history_reference_path,
-    write_history_reference,
+    HistoryReferencePath,
+    WriteHistoryReference,
 )
 from trader.download.infra.history_snapshot_reader import (
     HistoryPartitionRevisionComparison,
     HistorySnapshotReader,
     HistorySnapshotReadError,
-    route_history_months,
+    RouteHistoryMonths,
 )
 
 
@@ -118,7 +118,7 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         tuple(BaoStockIndustryInterval(code, date(2000, 1, 1), None, "bank", "sw") for code in codes),
         tuple(HistoryStEvidence(code, max(row.trade_date for row in rows), "clear") for code in codes),
     )
-    write_history_reference(history_reference_path(root, reference.content_hash), reference)
+    WriteHistoryReference(HistoryReferencePath(root, reference.content_hash), reference)
     source = HistorySourceIdentity(
         "tencent",
         "history_daily",
@@ -146,7 +146,7 @@ def test_history_reader_routes_single_day_code_window_and_cross_month_training_r
     snapshot = _build_snapshot(root, rows)
     archive = HistorySnapshotReader(root)
 
-    assert route_history_months(dates[0], dates[-1]) == ((2026, 8), (2026, 9), (2026, 10))
+    assert RouteHistoryMonths(dates[0], dates[-1]) == ((2026, 8), (2026, 9), (2026, 10))
     assert tuple(row.code for row in archive.read_day(dates[31], snapshot)) == ("600001", "600002")
     code_rows = archive.read_code_window("600001", dates[-61:], snapshot)
     assert tuple(row.trade_date for row in code_rows) == dates[-61:]
@@ -192,7 +192,7 @@ def test_history_reader_streams_2000_sessions_without_directory_scan_or_unbounde
     training_rows = tuple(archive.iter_training_rows(snapshot, dates, {"600001"}))
 
     assert tuple(replayed_rows) == rows
-    assert len(snapshot.partitions) == len(route_history_months(dates[0], dates[-1]))
+    assert len(snapshot.partitions) == len(RouteHistoryMonths(dates[0], dates[-1]))
     assert len(training_rows) == 2000
     assert training_rows[-1].trade_date == dates[-1]
     assert all(row.point is not None for row in training_rows)
@@ -340,7 +340,7 @@ def test_published_daily_projection_preserves_facts_without_revision_decode(tmp_
     ordered = tuple(sorted(rows, key=lambda row: (row.trade_date, row.code, row.first_seen_sequence, row.revision_id)))
     snapshot = replace(_build_snapshot(root, ordered), sequence=2)
     reader = HistorySnapshotReader(root)
-    expected = tuple(project_history_cell(row.cell) for row in reader.read_code_window("600001", dates, snapshot))
+    expected = tuple(ProjectHistoryCell(row.cell) for row in reader.read_code_window("600001", dates, snapshot))
 
     def unexpected_revision_decode(_row):
         pytest.fail("published daily projection must not decode or hash complete revisions")
@@ -410,9 +410,9 @@ def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp
     reader = HistorySnapshotReader(root)
     old_reference = HistoryMonthPrices(root / snapshot.partitions[0].relative_path, 2026, 9).seal(1)
     old_snapshot = replace(snapshot, sequence=1, partitions=(old_reference,))
-    assert reader.read_published_code_window("600001", (day,), old_snapshot) == (project_history_cell(original.cell),)
+    assert reader.read_published_code_window("600001", (day,), old_snapshot) == (ProjectHistoryCell(original.cell),)
     current = replace(snapshot, sequence=2)
-    assert reader.read_published_code_window("600001", (day,), current) == (project_history_cell(revised.cell),)
+    assert reader.read_published_code_window("600001", (day,), current) == (ProjectHistoryCell(revised.cell),)
     assert len(calls) == 2
     invalid = replace(current, partitions=(replace(current.partitions[0], logical_hash="f" * 64),))
     with pytest.raises(HistorySnapshotReadError):

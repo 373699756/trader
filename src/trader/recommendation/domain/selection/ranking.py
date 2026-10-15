@@ -90,7 +90,7 @@ class _SelectionState:
     competition_counts: Counter[tuple[Board, str]] = field(default_factory=Counter)
 
 
-def action_for(
+def ActionFor(
     recommendation: Recommendation,
     policy: ActionPolicy,
 ) -> tuple[RecommendationAction, str]:
@@ -138,15 +138,15 @@ def _action_blocker(
     return next(((action, reason) for blocked, action, reason in checks if blocked), None)
 
 
-def select_top_k(
+def SelectTopK(
     recommendations: Iterable[Recommendation],
     policy: PortfolioSelectionPolicy,
 ) -> tuple[Recommendation, ...]:
-    selected, _skips = select_top_k_with_audit(recommendations, policy)
+    selected, _skips = SelectTopKWithAudit(recommendations, policy)
     return selected
 
 
-def select_top_k_with_audit(
+def SelectTopKWithAudit(
     recommendations: Iterable[Recommendation],
     policy: PortfolioSelectionPolicy,
 ) -> tuple[tuple[Recommendation, ...], tuple[SelectionSkip, ...]]:
@@ -243,7 +243,7 @@ def _selection_skip(item: Recommendation, global_rank: int, reason: str, limit: 
     )
 
 
-def minimum_selection_score(
+def MinimumSelectionScore(
     strategy: Strategy,
     thresholds: Mapping[str, float],
     *,
@@ -277,8 +277,8 @@ __all__ = [
     "ActionPolicy",
     "CORE_FIELDS",
     "PortfolioSelectionPolicy",
-    "action_for",
-    "minimum_selection_score",
-    "select_top_k",
-    "select_top_k_with_audit",
+    "ActionFor",
+    "MinimumSelectionScore",
+    "SelectTopK",
+    "SelectTopKWithAudit",
 ]

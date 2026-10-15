@@ -41,7 +41,7 @@ class TraceIndexSummary:
     legacy_retained: int
 
 
-def partition_date(path: Path) -> date | None:
+def PartitionDate(path: Path) -> date | None:
     try:
         return date.fromisoformat(path.stem)
     except ValueError:
@@ -49,7 +49,7 @@ def partition_date(path: Path) -> date | None:
 
 
 @contextmanager
-def connection(database: Path, *, write: bool) -> Iterator[sqlite3.Connection]:
+def Connection(database: Path, *, write: bool) -> Iterator[sqlite3.Connection]:
     target = str(database) if write else f"file:{database.resolve()}?mode=ro"
     conn = sqlite3.connect(target, timeout=5.0, uri=not write)
     conn.row_factory = sqlite3.Row
@@ -61,16 +61,16 @@ def connection(database: Path, *, write: bool) -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
-def initialize_database(database: Path, initialized: set[Path]) -> None:
+def InitializeDatabase(database: Path, initialized: set[Path]) -> None:
     if database in initialized:
         return
     database.parent.mkdir(parents=True, exist_ok=True)
-    with connection(database, write=True) as conn:
+    with Connection(database, write=True) as conn:
         conn.executescript(SCHEMA)
     initialized.add(database)
 
 
-def quarantine_row(conn: sqlite3.Connection, decision_version: str, reason: str) -> None:
+def QuarantineRow(conn: sqlite3.Connection, decision_version: str, reason: str) -> None:
     conn.execute(
         """
         INSERT OR REPLACE INTO committed_event_quarantine (
@@ -84,4 +84,4 @@ def quarantine_row(conn: sqlite3.Connection, decision_version: str, reason: str)
     conn.execute("DELETE FROM committed_events WHERE decision_version = ?", (decision_version,))
 
 
-__all__ = ["TraceIndexSummary", "SCHEMA", "connection", "initialize_database", "partition_date", "quarantine_row"]
+__all__ = ["TraceIndexSummary", "SCHEMA", "Connection", "InitializeDatabase", "PartitionDate", "QuarantineRow"]

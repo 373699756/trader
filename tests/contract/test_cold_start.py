@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.training.infra.profile.v3.test_profile import _publish
-from trader.bootstrap import build_profiled_system, build_system
+from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.domain.publication.models import Strategy
@@ -32,7 +32,7 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
     started = []
     monkeypatch.setattr(threading.Thread, "start", lambda thread: started.append(thread.name))
 
-    system = build_profiled_system(config) if profile == "both" else build_system(config, scoring_profile=profile)
+    system = BuildProfiledSystem(config) if profile == "both" else BuildSystem(config, scoring_profile=profile)
 
     client = system.app.test_client()
     assert client.get("/").status_code == 200
@@ -63,7 +63,7 @@ def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, cap
             profile=V3_TRAINING_PROFILE,
             profile_owned=True,
         )
-    system = build_profiled_system(config)
+    system = BuildProfiledSystem(config)
     client = system.app.test_client()
 
     for profile, active in (("v2", False), ("v3", True)):
@@ -77,14 +77,14 @@ def test_partial_profile_disables_both_heads_and_corruption_is_not_swallowed(tmp
     config = _empty_config(tmp_path)
     contract = V3_TRAINING_PROFILE.heads[0]
     _publish(tmp_path / "data/train", contract, "one-head", profile=V3_TRAINING_PROFILE, profile_owned=True)
-    system = build_system(config, scoring_profile="v3")
+    system = BuildSystem(config, scoring_profile="v3")
     scoring = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
     assert all(head["active"] is False for head in scoring["heads"].values())
 
     pointer = tmp_path / "data/train/v3" / contract.directory_name / "active-bundle.json"
     pointer.write_text("{}", encoding="utf-8")
     with pytest.raises(RuntimeError, match="models are invalid"):
-        build_system(config, scoring_profile="v3")
+        BuildSystem(config, scoring_profile="v3")
 
 
 @pytest.mark.parametrize("profile,sessions", (("v2", 251), ("v3", 61)))

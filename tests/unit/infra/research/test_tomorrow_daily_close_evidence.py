@@ -7,6 +7,7 @@ from datetime import date
 import pytest
 
 from trader.training.application.tomorrow_daily_close_training import (
+    BuildFeatureDataset,
     CandidateModelSnapshot,
     DailyCloseSourceSample,
     ModelDependencyVersion,
@@ -14,7 +15,6 @@ from trader.training.application.tomorrow_daily_close_training import (
     StratumCorrection,
     ValidationMetrics,
     ValidationReport,
-    build_feature_dataset,
 )
 from trader.training.infra.research.tomorrow_daily_close_evidence import (
     TomorrowDailyCloseEvidenceCodec,
@@ -77,7 +77,7 @@ def test_json_codec_round_trips_each_base_model_kind_and_shrinkage_contract(base
 
 def test_json_codec_round_trips_manifest_feature_dataset_and_validation_report() -> None:
     day = date(2024, 1, 2)
-    dataset = build_feature_dataset(
+    dataset = BuildFeatureDataset(
         (
             DailyCloseSourceSample(
                 trade_date=day,
@@ -129,8 +129,8 @@ def test_json_codec_rejects_content_tampering_and_unknown_fields() -> None:
     payload = json.loads(TomorrowDailyCloseEvidenceCodec.encode(_artifact()))
     payload["unexpected"] = True
     payload_without_hash = {key: value for key, value in payload.items() if key != "content_hash"}
-    from trader.training.domain.evaluation.research_identity import canonical_research_hash
+    from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
-    payload["content_hash"] = canonical_research_hash(payload_without_hash)
+    payload["content_hash"] = CanonicalResearchHash(payload_without_hash)
     with pytest.raises(TomorrowDailyCloseEvidenceError, match="schema"):
         TomorrowDailyCloseEvidenceCodec.decode_candidate_model(json.dumps(payload))

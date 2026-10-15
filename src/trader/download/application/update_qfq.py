@@ -13,20 +13,20 @@ from typing import Literal, Protocol
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import (
     QfqDownloadProgress,
+    QfqFailureCode,
+    QfqMessage,
     QfqStockFeedback,
-    qfq_failure_code,
-    qfq_message,
 )
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import (
+    CompletedDailyCutoff,
+    MergeDailyTail,
     QfqUpdateResult,
     QfqWindowSnapshot,
-    completed_daily_cutoff,
-    merge_daily_tail,
 )
-from trader.infra.workers import WorkerExecutor, WorkerResourceRejectedError, submit_with_backpressure
+from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
 
 
 class QfqPairPublicationError(RuntimeError):
@@ -117,7 +117,7 @@ class UpdateQfqWindows:
             count += 1
             if count % 64 == 0:
                 self.report(
-                    qfq_message(
+                    QfqMessage(
                         self.monotonic() - started,
                         "历史提取",
                         f"已处理 {count} 只 | 变更文件 {len(changed)}",
@@ -127,17 +127,17 @@ class UpdateQfqWindows:
 
     def execute(self, observed_at: datetime) -> QfqUpdateResult:
         started = self.monotonic()
-        self.report(qfq_message(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
+        self.report(QfqMessage(0, "准备", "正在加载沪深股票名单和 Tencent 交易日历"))
         try:
-            context = self.supplier.load_qfq_context(completed_daily_cutoff(observed_at), 251)
+            context = self.supplier.load_qfq_context(CompletedDailyCutoff(observed_at), 251)
         except (RuntimeError, OSError, ValueError) as exc:
             cancelled = self.cancel_requested()
             stage = "已取消" if cancelled else "准备失败"
             self.report(
-                qfq_message(
+                QfqMessage(
                     self.monotonic() - started,
                     stage,
-                    qfq_failure_code(exc),
+                    QfqFailureCode(exc),
                     level=ProgressLevel.WARNING if cancelled else ProgressLevel.ERROR,
                 )
             )
@@ -338,7 +338,7 @@ class UpdateQfqWindows:
 
     def _submit(self, job: _DownloadJob) -> Future[PublishedHistoryWindow]:
         if self.worker_pool is not None:
-            return submit_with_backpressure(self.worker_pool, self._download, job)
+            return SubmitWithBackpressure(self.worker_pool, self._download, job)
         future: Future[PublishedHistoryWindow] = Future()
         try:
             future.set_result(self._download(job))
@@ -424,7 +424,7 @@ class UpdateQfqWindows:
         if job.previous.cells and len(missing) <= 5:
             count = max(3, len(missing) + 3)
             tail = self._fetch(job.security, job.dates[-count:])
-            merged = merge_daily_tail(job.previous, tail, job.dates)
+            merged = MergeDailyTail(job.previous, tail, job.dates)
             if merged is not None and tuple(cell.trade_date for cell in merged.cells) == job.dates:
                 window = merged
         if window is None:

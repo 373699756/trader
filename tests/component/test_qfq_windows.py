@@ -28,14 +28,14 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import (
+    ProjectHistoryCell,
     PublishedHistoryWindow,
-    project_history_cell,
 )
 from trader.download.domain.qfq_window import (
+    CompletedDailyCutoff,
     QfqPendingReason,
     QfqUpdateResult,
     QfqWindowIncompleteError,
-    completed_daily_cutoff,
 )
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
@@ -43,14 +43,14 @@ from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
-from trader.download.infra.terminal_progress import TerminalDownloadProgress, render_progress
+from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 from trader.entrypoints import cli
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 
 def _plain_feedback(message: ProgressMessage) -> str:
     # Existing behavior assertions ignore padding; separate terminal tests check exact cell positions.
-    line = re.sub(r" +", " ", render_progress(message))
+    line = re.sub(r" +", " ", RenderProgress(message))
     return re.sub(r" */ *", "/", re.sub(r"([（(]) +", r"\1", line))
 
 
@@ -86,7 +86,7 @@ def _cell(code: str, day: date, *, price: float = 10.0) -> BaoStockDailyCell:
 
 
 def _window(code: str = "600001", days: tuple[date, ...] = DAYS, *, price: float = 10.0) -> PublishedHistoryWindow:
-    return PublishedHistoryWindow(code, tuple(project_history_cell(_cell(code, day, price=price)) for day in days))
+    return PublishedHistoryWindow(code, tuple(ProjectHistoryCell(_cell(code, day, price=price)) for day in days))
 
 
 def _fingerprints(root: Path) -> dict[str, tuple[str, int]]:
@@ -241,11 +241,11 @@ def test_large_local_shard_keeps_primary_key_queries_without_splitting(tmp_path)
 
 
 def test_legacy_layout_fails_explicitly_without_hidden_reads(tmp_path) -> None:
-    from trader.infra.atomic_files.json import atomic_write_json
+    from trader.infra.atomic_files.json import AtomicWriteJson
 
     root = tmp_path / "v2"
     root.mkdir()
-    atomic_write_json(root / "index.json", {"600001": "09375.sqlite3"})
+    AtomicWriteJson(root / "index.json", {"600001": "09375.sqlite3"})
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
     with pytest.raises(RuntimeError, match="requires_migration"):
         cache.read_code("600001")
@@ -323,7 +323,7 @@ def test_checkpoint_restart_preserves_all_codes_and_failed_write_does_not_advanc
     def fail(*_args):
         raise OSError("write failed")
 
-    monkeypatch.setattr("trader.download.infra.qfq_checkpoint.atomic_write_json", fail)
+    monkeypatch.setattr("trader.download.infra.qfq_checkpoint.AtomicWriteJson", fail)
     with pytest.raises(OSError):
         checkpoint.confirm_many(DAYS[-1], ("600003",), "fixture")
     assert not checkpoint.completed(DAYS[-1], "600003", "fixture")
@@ -352,7 +352,7 @@ class Supplier:
         if self.fail:
             raise QfqWindowIncompleteError(dates, dates)
         cells = tuple(_cell(security.code, day, price=11.0 if self.conflict else 10.0) for day in dates)
-        return PublishedHistoryWindow(security.code, tuple(project_history_cell(cell) for cell in cells))
+        return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in cells))
 
 
 def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
@@ -878,7 +878,7 @@ def test_qfq_composition_never_constructs_baostock_for_incomplete_tencent(tmp_pa
         lambda *_args, **_kwargs: pytest.fail("qfq must not construct BaoStock"),
     )
     with HistoryMaintenanceLock(tmp_path / "data/history/.maintenance.lock"):
-        result = bootstrap.execute_qfq_download(
+        result = bootstrap.ExecuteQfqDownload(
             tmp_path,
             reference_root=tmp_path / "data/reference",
             report=lambda _message: None,
@@ -926,9 +926,9 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     _install_download_config(tmp_path)
     monkeypatch.setattr(bootstrap, "SQLitePublishedHistorySnapshot", lambda _root: HistoryPublication())
     monkeypatch.setattr(bootstrap, "HistoryStNameSource", st_source)
-    monkeypatch.setattr(bootstrap, "load_current_a_share_universe", lambda *_args: (eligible, excluded))
+    monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: (eligible, excluded))
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
-    result = bootstrap.execute_qfq_download(
+    result = bootstrap.ExecuteQfqDownload(
         tmp_path,
         reference_root=tmp_path / "data/reference",
         report=lambda _message: None,
@@ -951,7 +951,7 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
     supplier = Tencent()
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: supplier)
     with HistoryMaintenanceLock(tmp_path / "data/qfq/.maintenance.lock"):
-        result = bootstrap.execute_qfq_download(
+        result = bootstrap.ExecuteQfqDownload(
             tmp_path,
             reference_root=tmp_path / "data/reference",
             report=lambda _message: None,
@@ -968,7 +968,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
 
     from tests.unit.infra.research.test_history_sync import FakeSupplier, _configuration
     from trader import bootstrap
-    from trader.download.infra.history_sync_runner import run_history_sync
+    from trader.download.infra.history_sync_runner import RunHistorySync
 
     barrier = threading.Barrier(2)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
@@ -989,13 +989,13 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     root = tmp_path / "data/history"
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(
-            bootstrap.execute_qfq_download,
+            bootstrap.ExecuteQfqDownload,
             tmp_path,
             reference_root=tmp_path / "data/reference",
             report=lambda _message: None,
             now=lambda: observed,
         )
-        history_result = run_history_sync(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
+        history_result = RunHistorySync(_configuration(root), History(DAYS[-3:]), clock=lambda: observed)
         qfq_result = pending.result(timeout=15)
 
     assert history_result.state == "completed" and history_result.active_snapshot_hash is not None
@@ -1378,15 +1378,15 @@ def test_hot_and_late_cold_start_daily_schedule(hour, minute) -> None:
 
     def update(cancel):
         assert not cancel()
-        cutoff = completed_daily_cutoff(now)
+        cutoff = CompletedDailyCutoff(now)
         calls.append(cutoff)
         return QfqUpdateResult(cutoff, 1)
 
     maintenance = QfqDailyMaintenance(update, now=lambda: now)
     assert maintenance.tick()
-    assert calls == [completed_daily_cutoff(now)]
+    assert calls == [CompletedDailyCutoff(now)]
     assert not maintenance.tick()
-    assert completed_daily_cutoff(now) == now.date() - timedelta(days=hour < 15 or (hour == 15 and minute < 10))
+    assert CompletedDailyCutoff(now) == now.date() - timedelta(days=hour < 15 or (hour == 15 and minute < 10))
 
 
 def test_retry_delay_completion_next_day_and_cold_missing_database() -> None:
@@ -1422,7 +1422,7 @@ def test_incomplete_previous_cutoff_retries_next_morning_before_new_cutoff() -> 
     calls: list[date] = []
 
     def update(_cancel):
-        cutoff = completed_daily_cutoff(now)
+        cutoff = CompletedDailyCutoff(now)
         calls.append(cutoff)
         return QfqUpdateResult(cutoff, 100, latest_missing_codes=50 if len(calls) == 1 else 0)
 
@@ -1445,7 +1445,7 @@ def test_completed_previous_cutoff_rechecks_when_next_morning_data_arrives() -> 
     calls: list[date] = []
 
     def update(_cancel):
-        cutoff = completed_daily_cutoff(now)
+        cutoff = CompletedDailyCutoff(now)
         calls.append(cutoff)
         return QfqUpdateResult(cutoff, 100, latest_missing_codes=1 if len(calls) == 1 else 0)
 
@@ -1578,11 +1578,11 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
 
     monkeypatch.setattr(
         cli,
-        "load_runtime_settings",
+        "LoadRuntimeSettings",
         lambda _path: SimpleNamespace(project_root=tmp_path, reference_dir=reference_root),
     )
-    monkeypatch.setattr("trader.bootstrap.execute_qfq_download", execute)
-    assert cli.main(["--config", str(tmp_path / "runtime.json"), "qfq_download"]) == exit_code
+    monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", execute)
+    assert cli.Main(["--config", str(tmp_path / "runtime.json"), "qfq_download"]) == exit_code
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert captured.err == "qfq fixture progress\n"
@@ -1593,7 +1593,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
     assert payload["failure_reason"] is None
     assert calls == [(tmp_path, reference_root)]
     with pytest.raises(SystemExit) as rejected:
-        cli.main(["--config", str(tmp_path / "runtime.json"), "qfq_download", "--profile", "v3"])
+        cli.Main(["--config", str(tmp_path / "runtime.json"), "qfq_download", "--profile", "v3"])
     assert rejected.value.code == 2
     assert calls == [(tmp_path, reference_root)]
 
@@ -1601,7 +1601,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
 def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:
     import threading
 
-    from trader.download.infra.qfq_progress import qfq_local_progress
+    from trader.download.infra.qfq_progress import QfqLocalProgress
 
     feedback = threading.Event()
     messages = []
@@ -1612,7 +1612,7 @@ def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:
         if " | qfq 历史提取 | 等待本地历史窗口" in message:
             feedback.set()
 
-    with qfq_local_progress(report, interval_seconds=0.01):
+    with QfqLocalProgress(report, interval_seconds=0.01):
         assert messages[0] == "00:00:00 | qfq 历史提取 | 开始"
         assert feedback.wait(2)
     assert messages[-1] == "00:00:00 | qfq 历史提取 | 完成"

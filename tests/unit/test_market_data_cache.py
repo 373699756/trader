@@ -12,12 +12,12 @@ from zoneinfo import ZoneInfo
 
 from trader.infra.cache import BoundedLruCache
 from trader.infra.cache_contracts import (
+    BuildCacheIdentity,
     CacheDatasetPolicy,
     CacheGroupPolicy,
     CacheIdentitySpec,
     CachePolicy,
-    build_cache_identity,
-    canonical_json_bytes,
+    CanonicalJsonBytes,
 )
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -88,7 +88,7 @@ def _policy(*, capacity: int = 2, group_bytes: int = 100_000) -> CachePolicy:
 
 
 def _identity(subject: str, *, dataset: str = "daily_history", phase: str = "morning_main"):
-    return build_cache_identity(
+    return BuildCacheIdentity(
         CacheIdentitySpec(
             dataset=dataset,
             source="eastmoney",
@@ -114,7 +114,7 @@ def test_canonical_json_bytes_preserves_the_frozen_wire_representation() -> None
         "enabled": True,
     }
 
-    assert canonical_json_bytes(payload) == (
+    assert CanonicalJsonBytes(payload) == (
         b'{"enabled":true,"record":{"measured_at":"2026-07-16T10:00:00+08:00",'
         b'"state":"ready","tags":["primary","secondary"],"value":"1.20"}}'
     )
@@ -122,7 +122,7 @@ def test_canonical_json_bytes_preserves_the_frozen_wire_representation() -> None
 
 def test_cache_identity_is_stable_and_slow_data_reuses_all_day_phase() -> None:
     first = _identity("600001", phase="morning_main")
-    second = build_cache_identity(
+    second = BuildCacheIdentity(
         CacheIdentitySpec(
             dataset="daily_history",
             source="eastmoney",
@@ -219,7 +219,7 @@ def test_pure_negative_cache_byte_estimate_contains_only_the_error_category() ->
     cache.put_negative(identity, error_code="timeout")
 
     status = cache.status().datasets["daily_history"]["eastmoney"]
-    expected = len(canonical_json_bytes(identity)) + len(canonical_json_bytes({"error_code": "timeout"}))
+    expected = len(CanonicalJsonBytes(identity)) + len(CanonicalJsonBytes({"error_code": "timeout"}))
     assert status.estimated_bytes == expected
 
 

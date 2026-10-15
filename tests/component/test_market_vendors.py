@@ -22,6 +22,7 @@ from tests.component.market_data_test_support import (
     MarketDataNoDataError,
     MarketQuote,
     PriceAdjustment,
+    Route,
     SinaClient,
     SourceLaneScheduler,
     StaticHistoryClient,
@@ -39,7 +40,6 @@ from tests.component.market_data_test_support import (
     pytest,
     replace,
     requests,
-    route,
     threading,
     time,
     timedelta,
@@ -744,7 +744,7 @@ def test_market_data_router_prefers_no_data_over_failures() -> None:
         return ()
 
     with pytest.raises(MarketDataNoDataError, match="insufficient rows") as exc_info:
-        route(
+        Route(
             (
                 VendorRoute(
                     "eastmoney",
@@ -765,7 +765,7 @@ def test_market_data_router_aggregates_required_failures() -> None:
         raise RuntimeError("offline")
 
     with pytest.raises(MarketDataFailedError, match=r"eastmoney: offline; sina: offline") as exc_info:
-        route(
+        Route(
             (
                 VendorRoute("eastmoney", failing, VendorSeverity.REQUIRED),
                 VendorRoute("sina", failing, VendorSeverity.REQUIRED),

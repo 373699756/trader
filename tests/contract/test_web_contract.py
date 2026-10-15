@@ -6,7 +6,7 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
-from trader.recommendation.application.pipeline.freeze_publish.decision_events import build_decision_committed
+from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
@@ -26,7 +26,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
-from trader.web import create_app
+from trader.web import CreateApp
 
 NOW = datetime(2026, 8, 11, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 PIPELINE_STAGE_KEYS = PIPELINE_STAGE_ORDER
@@ -121,7 +121,7 @@ def test_profiled_web_selects_v2_or_v3_while_long_remains_owned_by_v2() -> None:
         default_profile="v3",
         long_profile="v2",
     )
-    client = create_app(services=services).test_client()
+    client = CreateApp(services=services).test_client()
 
     assert client.get("/api/decisions/tomorrow/current").get_json()["scoring_profile"] == "v3"
     assert client.get("/api/decisions/tomorrow/current?profile=v2").get_json()["scoring_profile"] == "v2"
@@ -170,7 +170,7 @@ def test_root_injects_configured_web_snapshot_retention_margin() -> None:
         WebApiConfig(heartbeat_seconds=15, snapshot_retention_seconds=35),
     )
 
-    page = create_app(services=services).test_client().get("/").get_data(as_text=True)
+    page = CreateApp(services=services).test_client().get("/").get_data(as_text=True)
 
     assert 'name="trader-web-snapshot-retention-ms"' in page
     assert 'content="35000"' in page
@@ -190,7 +190,7 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
     )
     assert drafts.publish(draft).accepted
     queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), drafts, _Repository(), _Clock())
-    app = create_app(
+    app = CreateApp(
         services=UnifiedWebServices(
             queries,
             UnifiedDecisionEventStream(),
@@ -214,7 +214,7 @@ def test_not_ready_current_keeps_observation_draft_separate_and_private_from_sta
 
 def test_unified_sse_replays_cursor_and_status_exposes_stream_health() -> None:
     app, queries, stream = _app()
-    stream.publish_committed(build_decision_committed(_decision()))
+    stream.publish_committed(BuildDecisionCommitted(_decision()))
     client = app.test_client()
 
     response = client.get("/api/events", headers={"Last-Event-ID": "0"}, buffered=False)
@@ -742,7 +742,7 @@ def _app():
             ],
         },
     )
-    return create_app(services=services), queries, stream
+    return CreateApp(services=services), queries, stream
 
 
 def _decision() -> ScoredDecision:

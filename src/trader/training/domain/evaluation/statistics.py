@@ -8,10 +8,10 @@ from typing import cast
 
 from trader.training.domain.evaluation.challengers import ChallengerVariantId
 from trader.training.domain.evaluation.paired_statistics import (
+    FixedFamilyHolm,
+    PairedMovingBlockStatistics,
     PreregisteredBootstrapPlan,
-    fixed_family_holm,
-    paired_moving_block_statistics,
-    preregistered_seed,
+    PreregisteredSeed,
 )
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC, ScoringResearchSpec
 
@@ -56,7 +56,7 @@ class HolmDecision:
     rejected_null: bool
 
 
-def bootstrap_seed(
+def BootstrapSeed(
     variant_id: ChallengerVariantId,
     block_days: int,
     *,
@@ -66,10 +66,10 @@ def bootstrap_seed(
         raise ValueError("Stability analysis bootstrap requires a preregistered variant")
     if block_days not in BOOTSTRAP_BLOCK_DAYS:
         raise ValueError("Stability analysis bootstrap requires a preregistered block length")
-    return preregistered_seed(spec.research_identity, spec.bootstrap_master_seed, variant_id, block_days)
+    return PreregisteredSeed(spec.research_identity, spec.bootstrap_master_seed, variant_id, block_days)
 
 
-def paired_moving_block_bootstrap(
+def PairedMovingBlockBootstrap(
     values: tuple[float, ...],
     paired_metric: tuple[float, ...],
     variant_id: ChallengerVariantId,
@@ -80,7 +80,7 @@ def paired_moving_block_bootstrap(
     """Bootstrap two aligned daily metrics with identical non-circular block indices."""
 
     _validate_series(values, paired_metric)
-    result = paired_moving_block_statistics(
+    result = PairedMovingBlockStatistics(
         values,
         paired_metric=paired_metric,
         plan=PreregisteredBootstrapPlan(
@@ -109,7 +109,7 @@ def paired_moving_block_bootstrap(
     )
 
 
-def holm_step_down(
+def HolmStepDown(
     p_values: dict[ChallengerVariantId, float | None],
 ) -> tuple[HolmDecision, ...]:
     """Apply the fixed five-member Holm family without dropping invalid variants."""
@@ -120,7 +120,7 @@ def holm_step_down(
         if value is not None and (not math.isfinite(value) or not 0.0 <= value <= 1.0):
             raise ValueError("Stability analysis Holm p-values must be finite and in [0, 1]")
     generic_p_values: dict[str, float | None] = {str(key): value for key, value in p_values.items()}
-    decisions = fixed_family_holm(generic_p_values, family=VARIANT_FAMILY, alpha=HOLM_ALPHA)
+    decisions = FixedFamilyHolm(generic_p_values, family=VARIANT_FAMILY, alpha=HOLM_ALPHA)
     return tuple(
         HolmDecision(
             variant_id=cast(ChallengerVariantId, decision.challenger_id),
@@ -149,7 +149,7 @@ __all__ = [
     "VARIANT_FAMILY",
     "HolmDecision",
     "PairedBootstrapResult",
-    "bootstrap_seed",
-    "holm_step_down",
-    "paired_moving_block_bootstrap",
+    "BootstrapSeed",
+    "HolmStepDown",
+    "PairedMovingBlockBootstrap",
 ]

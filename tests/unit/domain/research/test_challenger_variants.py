@@ -6,17 +6,17 @@ import pytest
 
 from trader.training.domain.evaluation.challengers import (
     CHALLENGER_PARAMETER_SET_IDENTITY,
+    AssessContinuousEntry,
+    AssessHeatWeakStructure,
+    BuildChallengerParameterManifest,
+    ChallengerRegistry,
     ContinuousEntryInputs,
     HeatWeakStructureInputs,
-    assess_continuous_entry,
-    assess_heat_weak_structure,
-    challenger_parameter_manifest,
-    challenger_registry,
 )
 
 
 def test_challenger_registry_has_five_independent_immutable_variants() -> None:
-    variants = challenger_registry()
+    variants = ChallengerRegistry()
 
     assert tuple(item.variant_id for item in variants) == (
         "continuous_entry",
@@ -46,7 +46,7 @@ def test_challenger_registry_has_five_independent_immutable_variants() -> None:
 
 
 def test_r4_machine_manifest_contains_every_preregistered_endpoint() -> None:
-    manifest = challenger_parameter_manifest()
+    manifest = BuildChallengerParameterManifest()
 
     assert tuple(
         (item.name, item.direction, item.lower_endpoint, item.production_threshold, item.upper_endpoint)
@@ -77,7 +77,7 @@ def test_r4_machine_manifest_contains_every_preregistered_endpoint() -> None:
 
 
 def test_continuous_entry_uses_preregistered_centered_memberships() -> None:
-    pullback = assess_continuous_entry(
+    pullback = AssessContinuousEntry(
         ContinuousEntryInputs(
             price=10.0,
             ma5=10.0,
@@ -90,7 +90,7 @@ def test_continuous_entry_uses_preregistered_centered_memberships() -> None:
             close_location=70.0,
         )
     )
-    breakout = assess_continuous_entry(
+    breakout = AssessContinuousEntry(
         ContinuousEntryInputs(
             price=10.0,
             ma5=10.0,
@@ -113,7 +113,7 @@ def test_continuous_entry_uses_preregistered_centered_memberships() -> None:
 
 
 def test_continuous_entry_keeps_independent_required_fields_and_fails_closed() -> None:
-    complete_breakout = assess_continuous_entry(
+    complete_breakout = AssessContinuousEntry(
         ContinuousEntryInputs(
             price=10.1,
             ma5=None,
@@ -126,7 +126,7 @@ def test_continuous_entry_keeps_independent_required_fields_and_fails_closed() -
             close_location=80.0,
         )
     )
-    unknown_maximum = assess_continuous_entry(
+    unknown_maximum = AssessContinuousEntry(
         ContinuousEntryInputs(
             price=10.0,
             ma5=None,
@@ -151,7 +151,7 @@ def test_continuous_entry_keeps_independent_required_fields_and_fails_closed() -
     (("main", 6.0), ("main", 8.0), ("chinext", 12.0), ("star", 16.0)),
 )
 def test_heat_weak_structure_uses_inclusive_board_bands(board: str, change_pct: float) -> None:
-    assessment = assess_heat_weak_structure(
+    assessment = AssessHeatWeakStructure(
         board,
         HeatWeakStructureInputs(
             change_pct=change_pct,
@@ -167,7 +167,7 @@ def test_heat_weak_structure_uses_inclusive_board_bands(board: str, change_pct: 
 
 
 def test_heat_without_weak_structure_does_not_observe_and_hard_reject_identity_is_refused() -> None:
-    strong = assess_heat_weak_structure(
+    strong = AssessHeatWeakStructure(
         "main",
         HeatWeakStructureInputs(7.0, 80.0, 0.2, 1.0),
     )
@@ -175,4 +175,4 @@ def test_heat_without_weak_structure_does_not_observe_and_hard_reject_identity_i
     assert strong.force_observe_only is False
     assert strong.reasons == ()
     with pytest.raises(ValueError, match="hard heat cap"):
-        assess_heat_weak_structure("main", HeatWeakStructureInputs(8.01, 20.0, -1.0, 4.0))
+        AssessHeatWeakStructure("main", HeatWeakStructureInputs(8.01, 20.0, -1.0, 4.0))

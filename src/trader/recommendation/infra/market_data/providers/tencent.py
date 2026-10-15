@@ -10,23 +10,25 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import as_completed
 from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
+from typing import TypedDict
 from zoneinfo import ZoneInfo
 
 import requests
+from typing_extensions import NotRequired, Unpack
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import (
     BoundedExecutor,
-    injected_executor,
-    submit_or_reject,
+    InjectedExecutor,
+    SubmitOrReject,
 )
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.infra.market_data.outcome_history import pair_outcome_history
+from trader.recommendation.infra.market_data.outcome_history import PairOutcomeHistory
 from trader.recommendation.infra.normalization.quote import (
+    BuildMarketQuote,
     MarketQuoteInput,
-    build_market_quote,
-    normalize_quotes,
-    to_float,
+    NormalizeQuotes,
+    ToFloat,
 )
 from trader.training.domain.evaluation.models import OutcomeBar
 
@@ -41,23 +43,23 @@ _HISTORY_ENDPOINTS = {
 }
 
 
+class _TencentClientOptions(TypedDict):
+    timeout_seconds: float
+    session_factory: SessionFactory
+    worker_pool: BoundedExecutor | None
+    cancel_requested: NotRequired[Callable[[], bool]]
+    wall_clock: NotRequired[Callable[[], datetime]]
+    monotonic: NotRequired[Callable[[], float]]
+
+
 class TencentClient:
-    def __init__(
-        self,
-        *,
-        timeout_seconds: float,
-        session_factory: SessionFactory,
-        worker_pool: BoundedExecutor | None,
-        cancel_requested: Callable[[], bool] = lambda: False,
-        wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
-        monotonic: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._timeout_seconds = timeout_seconds
-        self._session_factory = session_factory
-        self._cancel_requested = cancel_requested
-        self._wall_clock = wall_clock
-        self._monotonic = monotonic
-        self._worker_pool = worker_pool
+    def __init__(self, **options: Unpack[_TencentClientOptions]) -> None:
+        self._timeout_seconds = options["timeout_seconds"]
+        self._session_factory = options["session_factory"]
+        self._cancel_requested = options.get("cancel_requested", lambda: False)
+        self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
+        self._monotonic = options.get("monotonic", time.monotonic)
+        self._worker_pool = options["worker_pool"]
 
     def fetch_quotes(
         self,
@@ -82,12 +84,12 @@ class TencentClient:
         )
         quotes: list[MarketQuote] = []
         failures: list[BaseException] = []
-        pool = injected_executor(self._worker_pool)
+        pool = InjectedExecutor(self._worker_pool)
         for offset in range(0, len(shards), _QUOTE_MAX_CONCURRENCY):
             self._ensure_running(monotonic_deadline, cancel_event)
             wave = shards[offset : offset + _QUOTE_MAX_CONCURRENCY]
             futures = {
-                submit_or_reject(
+                SubmitOrReject(
                     pool,
                     self._fetch_quote_shard,
                     shard,
@@ -162,7 +164,7 @@ class TencentClient:
             text = response.content.decode("gb18030", errors="replace")
         self._ensure_running(monotonic_deadline, cancel_event)
         received_at = received_at or self._wall_clock()
-        return normalize_quotes(
+        return NormalizeQuotes(
             (
                 {str(index): value for index, value in enumerate(payload.split("~"))}
                 for payload in re.findall(r'v_[^=]+="([^"]*)";', text)
@@ -206,7 +208,7 @@ class TencentClient:
         raw_rows = _raw_rows(raw_stock)
         if not isinstance(qfq_rows, list) or not isinstance(raw_rows, list):
             return ()
-        return pair_outcome_history(
+        return PairOutcomeHistory(
             _history_bars(qfq_rows, days=days, adjustment=PriceAdjustment.QFQ),
             _history_bars(raw_rows, days=days, adjustment=PriceAdjustment.RAW),
         )
@@ -305,24 +307,24 @@ def _parse_payload(fields: Mapping[str, object], received_at: datetime, requeste
         return None
     source_time = _timestamp(str(fields.get("30") or ""), received_at)
     transaction = str(fields.get("35") or "").split("/") if len(fields) > 35 else []
-    amount = to_float(transaction[2]) if len(transaction) >= 3 else None
-    price = to_float(fields.get("3"))
-    return build_market_quote(
+    amount = ToFloat(transaction[2]) if len(transaction) >= 3 else None
+    price = ToFloat(fields.get("3"))
+    return BuildMarketQuote(
         MarketQuoteInput(
             code=code,
             name=str(fields.get("1") or "").strip(),
             price=price,
-            previous_close=to_float(fields.get("4")),
-            open_price=to_float(fields.get("5")),
-            high=to_float(fields.get("33")),
-            low=to_float(fields.get("34")),
-            pct_change=to_float(fields.get("32")),
+            previous_close=ToFloat(fields.get("4")),
+            open_price=ToFloat(fields.get("5")),
+            high=ToFloat(fields.get("33")),
+            low=ToFloat(fields.get("34")),
+            pct_change=ToFloat(fields.get("32")),
             change_5m=None,
             speed=None,
-            volume_ratio=to_float(fields.get("49")),
-            turnover_rate=to_float(fields.get("38")),
+            volume_ratio=ToFloat(fields.get("49")),
+            turnover_rate=ToFloat(fields.get("38")),
             amount=amount,
-            amplitude=to_float(fields.get("43")),
+            amplitude=ToFloat(fields.get("43")),
             market_cap=_market_cap(fields.get("45")),
             industry="",
             source="tencent",
@@ -340,7 +342,7 @@ def _symbol(code: str) -> str:
 
 
 def _market_cap(raw: object) -> float | None:
-    value = to_float(raw)
+    value = ToFloat(raw)
     return value * 100_000_000.0 if value is not None and value > 0 else None
 
 
@@ -367,7 +369,7 @@ def _history_bars(
         except ValueError:
             continue
         open_price, close, high, low, volume, turnover_rate, amount = (
-            to_float(raw[index]) for index in (1, 2, 3, 4, 5, 7, 8)
+            ToFloat(raw[index]) for index in (1, 2, 3, 4, 5, 7, 8)
         )
         if (
             open_price is None
@@ -431,8 +433,8 @@ def _day_row_is_qfq_equivalent(raw: object) -> bool:
     if not isinstance(raw, list) or len(raw) < 11:
         return False
     corporate_action = raw[6]
-    first_adjustment = to_float(raw[9])
-    second_adjustment = to_float(raw[10])
+    first_adjustment = ToFloat(raw[9])
+    second_adjustment = ToFloat(raw[10])
     return (
         isinstance(corporate_action, Mapping)
         and not corporate_action

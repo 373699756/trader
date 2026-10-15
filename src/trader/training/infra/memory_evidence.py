@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from trader.infra.serialization.fields import is_sha256_text
+from trader.infra.serialization.fields import IsSha256Text
 from trader.training.application.tomorrow_training import TomorrowTrainingStage
 
 _TRAINING_STAGES: frozenset[str] = frozenset(
@@ -50,7 +50,7 @@ class TomorrowTrainingMemoryEvidence:
         if (
             self.training_status != "engineering_ready"
             or self.repeat_training_status != "engineering_ready"
-            or any(not is_sha256_text(value) for value in (self.training_input_hash, self.model_hash, self.report_hash))
+            or any(not IsSha256Text(value) for value in (self.training_input_hash, self.model_hash, self.report_hash))
             or self.peak_rss_bytes < 1
             or self.max_rss_bytes < 1
             or self.peak_rss_bytes > self.max_rss_bytes

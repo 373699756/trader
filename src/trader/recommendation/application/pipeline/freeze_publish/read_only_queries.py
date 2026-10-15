@@ -12,7 +12,7 @@ from typing import Literal, Protocol
 
 from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import (
     DecisionCoverage,
-    scored_decision_coverage,
+    ScoredDecisionCoverage,
 )
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import (
@@ -33,8 +33,8 @@ from trader.recommendation.domain.publication.decision_identity import (
     LongProjection,
     LongProjectionItem,
     ScoredDecision,
+    ScoredTopSix,
     SelectionDiagnostics,
-    scored_top_six,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -221,7 +221,7 @@ class UnifiedDecisionQueries:
         source = self._industry_classifications
         if source is None:
             return {}
-        codes = tuple(item.code for item in scored_top_six(decision.items) if not item.industry.strip())
+        codes = tuple(item.code for item in ScoredTopSix(decision.items) if not item.industry.strip())
         references = source.model_industries(codes) if codes else {}
         return {
             code: reference.industry_id
@@ -241,7 +241,7 @@ class UnifiedDecisionQueries:
             return _empty_view(strategy, trade_date, "history", "scored", "formal_decision_unavailable")
         decision = record.decision
         selected = tuple(item for item in decision.items if item.selected)
-        top = scored_top_six(decision.items)
+        top = ScoredTopSix(decision.items)
         codes = tuple(sorted({item.code for item in (*selected, *top)}))
         cached = self._cached_quotes.cached_quotes(codes) if self._cached_quotes is not None else {}
         anchors = {item.code: item.quote for item in (*selected, *top)}
@@ -322,7 +322,7 @@ def _current_draft(decision: ScoredDecision | None, strategy: Strategy, now: dat
 def _observation_draft(decision: ScoredDecision, classified_industries: Mapping[str, str]) -> DecisionDraftView:
     top_scores = tuple(
         replace(_scored_item(item, None, classified_industry=classified_industries.get(item.code)), rank=rank)
-        for rank, item in enumerate(scored_top_six(decision.items), start=1)
+        for rank, item in enumerate(ScoredTopSix(decision.items), start=1)
     )
     return DecisionDraftView(
         decision.version,
@@ -357,10 +357,10 @@ def _scored_view(decision: ScoredDecision, now: datetime, view_input: _ScoredVie
             ),
             rank=rank,
         )
-        for rank, item in enumerate(scored_top_six(decision.items), start=1)
+        for rank, item in enumerate(ScoredTopSix(decision.items), start=1)
     )
     items = top_scores
-    coverage = scored_decision_coverage(decision)
+    coverage = ScoredDecisionCoverage(decision)
     etag = _classified_etag(_etag(decision.version, view_input.overlay_version), view_input.classified_industries)
     if view == "history":
         quote_identity = [

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.tomorrow_daily_close import ExpandingWalkForwardFold
 
 DailyCloseBoard = Literal["main", "chinext", "star"]
@@ -135,7 +135,7 @@ class DatasetManifest:
             raise ValueError("daily-close manifest identity is invalid")
         if self.production_authority:
             raise ValueError("daily-close research manifest cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ class FeatureDataset:
         if self.production_authority:
             raise ValueError("daily-close feature dataset cannot authorize production")
         object.__setattr__(self, "rows", rows)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -224,7 +224,7 @@ class ValidationReport:
         if self.production_authority or self.automatic_model_update:
             raise ValueError("daily-close validation report cannot authorize production or automatic updates")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _validate_validation_report_identity(report: ValidationReport) -> None:
@@ -354,7 +354,7 @@ class CandidateModelSnapshot:
         object.__setattr__(self, "stratum_corrections", strata)
         object.__setattr__(self, "stock_residual_corrections", stocks)
         object.__setattr__(self, "dependencies", dependencies)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _validate_candidate_model_identity(model: CandidateModelSnapshot) -> int:
@@ -429,7 +429,7 @@ def _validate_candidate_model_metadata(model: CandidateModelSnapshot) -> None:
         raise ValueError("daily-close candidate model cannot authorize production or automatic updates")
 
 
-def build_feature_dataset(
+def BuildFeatureDataset(
     samples: tuple[DailyCloseSourceSample, ...],
     *,
     feature_names: tuple[str, ...],
@@ -482,16 +482,16 @@ def build_feature_dataset(
     return FeatureDataset(manifest=manifest, rows=admitted)
 
 
-def select_mature_fold_training_rows(
+def SelectMatureFoldTrainingRows(
     dataset: FeatureDataset,
     fold: ExpandingWalkForwardFold,
 ) -> tuple[DailyCloseFeatureRow, ...]:
     """Select only labels known strictly before a fold's first validation session."""
 
-    return select_mature_training_rows(dataset, fold.training_dates, prediction_start=fold.validation_dates[0])
+    return SelectMatureTrainingRows(dataset, fold.training_dates, prediction_start=fold.validation_dates[0])
 
 
-def select_mature_training_rows(
+def SelectMatureTrainingRows(
     dataset: FeatureDataset,
     training_dates: tuple[date, ...],
     *,
@@ -590,7 +590,7 @@ __all__ = [
     "StratumCorrection",
     "ValidationMetrics",
     "ValidationReport",
-    "build_feature_dataset",
-    "select_mature_fold_training_rows",
-    "select_mature_training_rows",
+    "BuildFeatureDataset",
+    "SelectMatureFoldTrainingRows",
+    "SelectMatureTrainingRows",
 ]

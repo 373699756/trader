@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 
 
 def qfq_window(code: str) -> PublishedHistoryWindow:
@@ -27,5 +27,5 @@ def qfq_window(code: str) -> PublishedHistoryWindow:
             "trading",
         )
         qfq = replace(raw, adjustment="qfq", preclose=None, pct_change=None, turnover=None)
-        cells.append(project_history_cell(BaoStockDailyCell(code, day, "complete", raw, qfq)))
+        cells.append(ProjectHistoryCell(BaoStockDailyCell(code, day, "complete", raw, qfq)))
     return PublishedHistoryWindow(code, tuple(cells))

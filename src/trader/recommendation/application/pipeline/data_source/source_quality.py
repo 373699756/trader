@@ -6,12 +6,12 @@ import re
 from collections.abc import Sequence
 from datetime import datetime
 
-from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, stage_output
+from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput, StageOutput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, SourceHealth, StageReasonAggregate
 from trader.recommendation.domain.market.models import FeatureSnapshot
 
 
-def uses_fallback(features: tuple[FeatureSnapshot, ...], *, expected_source: str | None) -> bool:
+def UsesFallback(features: tuple[FeatureSnapshot, ...], *, expected_source: str | None) -> bool:
     return any(
         (expected_source is not None and feature.quote.source != expected_source)
         or "market_data_degraded" in feature.quote.execution_restrictions
@@ -19,7 +19,7 @@ def uses_fallback(features: tuple[FeatureSnapshot, ...], *, expected_source: str
     )
 
 
-def failure_code(exc: BaseException) -> str:
+def FailureCode(exc: BaseException) -> str:
     value = str(exc).strip().lower()
     if re.fullmatch(r"[a-z0-9_]{1,64}", value) is not None:
         return value
@@ -27,13 +27,13 @@ def failure_code(exc: BaseException) -> str:
     return "".join((f"_{character.lower()}" if character.isupper() else character) for character in name).lstrip("_")
 
 
-def decision_failure_code(exc: BaseException) -> str:
+def DecisionFailureCode(exc: BaseException) -> str:
     if str(exc) == "scored native input cannot contain future features":
         return "future_input_time"
-    return failure_code(exc)
+    return FailureCode(exc)
 
 
-def build_source_stage_output(
+def BuildSourceStageOutput(
     records: Sequence[FeatureSnapshot],
     *,
     input_batch_id: str,
@@ -48,7 +48,7 @@ def build_source_stage_output(
     pending_count = expected_count - len(received) - failed_count
     if pending_count < 0:
         raise ValueError("source stage outcomes exceed the expected population")
-    return stage_output(
+    return StageOutput(
         PipelineStage.DATA_SOURCE,
         received,
         input_batch_id=input_batch_id,

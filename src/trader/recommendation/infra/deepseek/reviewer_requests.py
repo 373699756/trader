@@ -21,11 +21,11 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.challenger import (
     CHALLENGER_PROMPT_VERSION,
     CHALLENGER_SCHEMA_VERSION,
+    BuildChallengerMessages,
+    BuildChallengerRepairMessages,
     ChallengerReview,
-    build_challenger_messages,
-    build_challenger_repair_messages,
-    merge_challenger_review,
-    parse_challenger_reviews,
+    MergeChallengerReview,
+    ParseChallengerReviews,
 )
 from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekHttpResult
 from trader.recommendation.infra.deepseek.reviewer_context import ReviewerContext
@@ -44,13 +44,13 @@ from trader.recommendation.infra.deepseek.reviewer_selection import (
 from trader.recommendation.infra.deepseek.reviewer_status import ReviewerStatusTracker
 from trader.recommendation.infra.deepseek.schema import (
     RAW_FACTS_CACHE_GENERATION,
+    BuildMessages,
+    BuildRepairMessages,
+    ClassifyReview,
     DeepSeekSchemaError,
-    build_messages,
-    build_repair_messages,
-    classify_review,
-    parse_reviews,
-    review_cache_key,
-    strategy_review_cache_key,
+    ParseReviews,
+    ReviewCacheKey,
+    StrategyReviewCacheKey,
 )
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
@@ -141,7 +141,7 @@ class ReviewerRequestExecutor:
                         challenger_status="result_missing",
                     )
                     continue
-                merged = merge_challenger_review(results[candidate.quote.code], challenge, candidate)
+                merged = MergeChallengerReview(results[candidate.quote.code], challenge, candidate)
                 classified = self.classify(
                     replace(
                         merged,
@@ -185,7 +185,7 @@ class ReviewerRequestExecutor:
         *,
         phase: str,
     ) -> CacheRequestKey:
-        primary_key = review_cache_key(
+        primary_key = ReviewCacheKey(
             candidate,
             model=self._settings.model,
             generation=RAW_FACTS_CACHE_GENERATION,
@@ -193,7 +193,7 @@ class ReviewerRequestExecutor:
             thinking_mode=_thinking_mode(self._client, self._settings.model),
             reasoning_effort=None,
         )
-        challenger_identity = review_cache_key(
+        challenger_identity = ReviewCacheKey(
             candidate,
             model=self._settings.challenger_model,
             generation=phase,
@@ -221,7 +221,7 @@ class ReviewerRequestExecutor:
             base_url=self._settings.base_url,
             api_key=self._settings.api_key,
             model=self._settings.challenger_model,
-            messages=build_challenger_messages(candidates, primary_reviews),
+            messages=BuildChallengerMessages(candidates, primary_reviews),
             timeout_seconds=self._settings.timeout_seconds,
             max_tokens=self._settings.max_tokens,
             reserve_attempt=tracker.reserve,
@@ -237,7 +237,7 @@ class ReviewerRequestExecutor:
             base_url=self._settings.base_url,
             api_key=self._settings.api_key,
             model=self._settings.challenger_model,
-            messages=build_challenger_repair_messages(
+            messages=BuildChallengerRepairMessages(
                 candidates,
                 primary_reviews,
                 response.content,
@@ -268,7 +268,7 @@ class ReviewerRequestExecutor:
             base_url=self._settings.base_url,
             api_key=self._settings.api_key,
             model=self._settings.model,
-            messages=build_messages(candidates),
+            messages=BuildMessages(candidates),
             timeout_seconds=self._settings.timeout_seconds,
             max_tokens=self._settings.max_tokens,
             reserve_attempt=tracker.reserve,
@@ -285,7 +285,7 @@ class ReviewerRequestExecutor:
             base_url=self._settings.base_url,
             api_key=self._settings.api_key,
             model=self._settings.model,
-            messages=build_repair_messages(candidates, response.content, error),
+            messages=BuildRepairMessages(candidates, response.content, error),
             timeout_seconds=self._settings.timeout_seconds,
             max_tokens=self._settings.max_tokens,
             reserve_attempt=tracker.reserve,
@@ -324,7 +324,7 @@ class ReviewerRequestExecutor:
             )
 
     def classify(self, review: DeepSeekReview, strategy: Strategy) -> DeepSeekReview:
-        return classify_review(
+        return ClassifyReview(
             review,
             dimension_weights=self._dimension_weights[strategy],
             confidence_coverage_min=self._confidence_coverage_min,
@@ -339,7 +339,7 @@ class ReviewerRequestExecutor:
         challenger_identity: str | CacheRequestKey = "",
         challenger_status: str = "not_run",
     ) -> CacheRequestKey:
-        return strategy_review_cache_key(
+        return StrategyReviewCacheKey(
             raw_key,
             strategy=strategy,
             strategy_version=self._strategy_version,
@@ -361,7 +361,7 @@ def _parse_challenger_response(
     if response.finish_reason == "length":
         return None, "finish_reason_length"
     try:
-        return parse_challenger_reviews(response.content, candidates, completed_at), ""
+        return ParseChallengerReviews(response.content, candidates, completed_at), ""
     except ValueError as exc:
         return None, str(exc)
 
@@ -376,6 +376,6 @@ def _parse_primary_response(
     if response.finish_reason == "length":
         return None, "finish_reason_length"
     try:
-        return parse_reviews(response.content, candidates, completed_at), ""
+        return ParseReviews(response.content, candidates, completed_at), ""
     except DeepSeekSchemaError as exc:
         return None, str(exc)

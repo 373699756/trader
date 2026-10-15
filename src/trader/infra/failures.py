@@ -45,7 +45,7 @@ class AdapterFailure:
     detail: str
 
 
-def classify_adapter_failure(
+def ClassifyAdapterFailure(
     error: BaseException,
     *,
     provider: str,
@@ -95,4 +95,4 @@ def _message_failure_code(message: str, class_name: str) -> AdapterFailureCode:
     return code
 
 
-__all__ = ["AdapterFailure", "AdapterFailureCode", "classify_adapter_failure"]
+__all__ = ["AdapterFailure", "AdapterFailureCode", "ClassifyAdapterFailure"]

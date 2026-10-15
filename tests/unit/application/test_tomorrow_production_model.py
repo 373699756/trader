@@ -26,7 +26,7 @@ from trader.recommendation.domain.scoring.residualization import (
     TRAINED_HEAD_EXPOSURE_CONTRACT,
 )
 from trader.recommendation.domain.selection.execution_cost import ExecutionCostPolicy
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 
 NOW = datetime(2026, 8, 31, 14, 50, tzinfo=ZoneInfo("Asia/Shanghai"))
@@ -276,7 +276,7 @@ def test_current_shared_training_bundles_score_all_default_v2_heads(tmp_path, ap
             profile=V2_TRAINING_PROFILE,
             profile_owned=True,
         )
-    profile = load_scoring_profile("v2", training_root=training_root)
+    profile = LoadScoringProfile("v2", training_root=training_root)
     industries = set.intersection(*(set(head.predictor.industry_ids) for head in profile.heads.values()))
     industry = sorted(industries)[0]
     features: list[FeatureSnapshot] = []

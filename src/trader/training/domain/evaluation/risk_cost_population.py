@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeDatasetReport, PointInTimeDatasetRow
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 if TYPE_CHECKING:
     from trader.training.domain.evaluation.risk_cost_uncertainty import RiskCostUncertaintySample
@@ -43,7 +43,7 @@ class RiskCostResearchIdentity:
         object.__setattr__(self, "dates", dates)
 
 
-def bind_risk_cost_population(
+def BindRiskCostPopulation(
     dataset: PointInTimeDatasetReport,
     partition: RiskCostResearchPartition,
     profile_id: ScoringProfileId,
@@ -74,12 +74,12 @@ def bind_risk_cost_population(
     )
 
 
-def validate_risk_cost_samples(
+def ValidateRiskCostSamples(
     dataset: PointInTimeDatasetReport,
     identity: RiskCostResearchIdentity,
     samples: tuple[RiskCostUncertaintySample, ...],
 ) -> None:
-    expected_identity = bind_risk_cost_population(
+    expected_identity = BindRiskCostPopulation(
         dataset, identity.partition, identity.profile_id, identity.model_id, identity.model_artifact_hash
     )
     if identity != expected_identity:
@@ -105,7 +105,7 @@ def _validate_parent_row(
         sample.dataset_row_hash != row.content_hash
         or sample.board != row.board.value
         or sample.industry != row.industry
-        or sample.alpha.feature_vector_hash != canonical_research_hash(row.feature_vector)
+        or sample.alpha.feature_vector_hash != CanonicalResearchHash(row.feature_vector)
         or sample.alpha.model_hash != identity.model_artifact_hash
         or sample.alpha.model_id != identity.model_id
         or sample.alpha.profile_id != identity.profile_id
@@ -155,6 +155,6 @@ def _parent_outcome(row: PointInTimeDatasetRow) -> tuple[float, bool]:
 __all__ = [
     "RiskCostResearchIdentity",
     "RiskCostResearchPartition",
-    "bind_risk_cost_population",
-    "validate_risk_cost_samples",
+    "BindRiskCostPopulation",
+    "ValidateRiskCostSamples",
 ]

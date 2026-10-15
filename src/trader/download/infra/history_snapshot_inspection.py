@@ -18,7 +18,7 @@ from trader.download.infra.history_month_partition import (
     HistoryMonthPartitionError,
     HistoryMonthPrices,
 )
-from trader.download.infra.history_reference_files import read_bound_history_reference
+from trader.download.infra.history_reference_files import ReadBoundHistoryReference
 
 
 class HistorySnapshotInspectionError(RuntimeError):
@@ -34,24 +34,24 @@ class ActiveHistorySnapshot:
     universe: HistoryUniverseIdentity
 
 
-def inspect_history_snapshot(root: Path, *, verify_partitions: bool = False) -> HistorySnapshotStatus:
+def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False) -> HistorySnapshotStatus:
     history_root = root
     if not (history_root / "control.sqlite3").is_file():
         return _unavailable()
     try:
-        active = load_active_history_snapshot(history_root)
+        active = LoadActiveHistorySnapshot(history_root)
     except HistorySnapshotInspectionError as exc:
         reason = str(exc)
         return _unavailable() if reason == "history_snapshot_unavailable" else _invalid(reason)
     if verify_partitions:
         try:
-            verify_active_history_snapshot(active)
+            VerifyActiveHistorySnapshot(active)
         except HistorySnapshotInspectionError as exc:
             return _status(active, "invalid", str(exc))
     return _status(active, "active", None)
 
 
-def load_active_history_snapshot(root: Path) -> ActiveHistorySnapshot:
+def LoadActiveHistorySnapshot(root: Path) -> ActiveHistorySnapshot:
     history_root = root
     control_path = history_root / "control.sqlite3"
     if not control_path.is_file():
@@ -63,7 +63,7 @@ def load_active_history_snapshot(root: Path) -> ActiveHistorySnapshot:
     if state is None:
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
-        reference = read_bound_history_reference(history_root, state.source.supplier_contract)
+        reference = ReadBoundHistoryReference(history_root, state.source.supplier_contract)
         if set(reference.eligible_codes) != {item.code for item in state.universe.securities}:
             raise ValueError("history reference universe conflict")
     except (OSError, ValueError) as exc:
@@ -71,9 +71,9 @@ def load_active_history_snapshot(root: Path) -> ActiveHistorySnapshot:
     return ActiveHistorySnapshot(history_root, state.snapshot, state.source, state.calendar, state.universe)
 
 
-def verify_active_history_snapshot(active: ActiveHistorySnapshot) -> None:
+def VerifyActiveHistorySnapshot(active: ActiveHistorySnapshot) -> None:
     try:
-        read_bound_history_reference(active.root, active.source.supplier_contract)
+        ReadBoundHistoryReference(active.root, active.source.supplier_contract)
     except (OSError, ValueError) as exc:
         raise HistorySnapshotInspectionError("history_reference_unavailable") from exc
     try:
@@ -112,7 +112,7 @@ def _status(
 __all__ = [
     "ActiveHistorySnapshot",
     "HistorySnapshotInspectionError",
-    "inspect_history_snapshot",
-    "load_active_history_snapshot",
-    "verify_active_history_snapshot",
+    "InspectHistorySnapshot",
+    "LoadActiveHistorySnapshot",
+    "VerifyActiveHistorySnapshot",
 ]

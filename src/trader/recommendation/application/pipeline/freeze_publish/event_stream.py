@@ -11,7 +11,7 @@ from typing import Literal
 
 from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import (
     DecisionCoverage,
-    scored_decision_coverage,
+    ScoredDecisionCoverage,
 )
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import DecisionCommitted
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
@@ -20,8 +20,8 @@ from trader.recommendation.domain.publication.decision_identity import (
     DecisionOverlay,
     DecisionQuote,
     LongProjection,
+    ScoredTopSix,
     SelectionDiagnostics,
-    scored_top_six,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -130,7 +130,7 @@ class UnifiedDecisionEventStream:
         decision = event.projection
         replacement = None
         if decision is not None:
-            top_scores = scored_top_six(decision.items)
+            top_scores = ScoredTopSix(decision.items)
             selected = top_scores
             replacement = DecisionReplacementPatch(
                 event.projection_version or event.decision_version,
@@ -138,7 +138,7 @@ class UnifiedDecisionEventStream:
                 decision.strategy_version,
                 decision.input_versions,
                 decision.stage,
-                scored_decision_coverage(decision),
+                ScoredDecisionCoverage(decision),
                 decision.selection_diagnostics,
                 decision.degraded_reasons,
                 selected,

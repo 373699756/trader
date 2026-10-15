@@ -25,7 +25,7 @@ from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices
-from trader.download.infra.history_reference_files import history_reference_path, write_history_reference
+from trader.download.infra.history_reference_files import HistoryReferencePath, WriteHistoryReference
 
 
 def publish_history_fixture(
@@ -61,7 +61,7 @@ def publish_history_fixture(
         prices.initialize()
         prices.save_revisions(tuple(revisions))
         partitions.append(prices.seal())
-    write_history_reference(history_reference_path(root, reference.content_hash), reference)
+    WriteHistoryReference(HistoryReferencePath(root, reference.content_hash), reference)
     control = HistoryControlIndex(root / "control.sqlite3")
     control.initialize()
     control.save_source(source)

@@ -231,7 +231,7 @@ class FeatureEnvelopeOptions:
     feature_snapshot_version: str | None = None
 
 
-def market_changes(
+def MarketChanges(
     previous: ColumnarQuoteBatch | None,
     current: ColumnarQuoteBatch,
 ) -> NormalizedMarketChangeSet:
@@ -285,7 +285,7 @@ def market_changes(
     )
 
 
-def targeted_market_changes(
+def TargetedMarketChanges(
     previous: CanonicalMarketSnapshot | None,
     current: CanonicalMarketSnapshot,
     codes: Iterable[str],
@@ -546,6 +546,6 @@ __all__ = [
     "ColumnarResearchBatch",
     "FeatureEnvelopeOptions",
     "NormalizedMarketChangeSet",
-    "market_changes",
-    "targeted_market_changes",
+    "MarketChanges",
+    "TargetedMarketChanges",
 ]

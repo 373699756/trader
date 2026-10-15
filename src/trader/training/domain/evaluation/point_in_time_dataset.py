@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from trader.recommendation.domain.market.feature_contracts import FeatureVector
 from trader.recommendation.domain.market.models import Board
 from trader.training.domain.evaluation.models import RecommendationOutcome
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 PointInTimeDatasetState = Literal["historical_point_in_time_parity", "historical_data_insufficient"]
 PointInTimePartitionName = Literal["training", "early_stopping", "calibration", "confirmation"]
@@ -90,8 +90,8 @@ class PointInTimeDateSplit:
             strict=True,
         ):
             object.__setattr__(self, name, group)
-        object.__setattr__(self, "date_set_hash", canonical_research_hash(combined))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "date_set_hash", CanonicalResearchHash(combined))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def development_dates(self) -> tuple[date, ...]:
@@ -238,7 +238,7 @@ class PointInTimeDatasetRow:
         object.__setattr__(self, "event_facts", facts)
         object.__setattr__(self, "rejection_reasons", reasons)
         object.__setattr__(self, "outcomes", outcomes)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
     @property
     def label_complete(self) -> bool:
@@ -312,7 +312,7 @@ class PointInTimeBoardPopulation:
     def __post_init__(self) -> None:
         if self.board is Board.UNSUPPORTED or not self.population_version or self.eligible_rows < 1:
             raise ValueError("point-in-time board population identity is invalid")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -358,7 +358,7 @@ class PointInTimeDayDataset:
             raise ValueError("point-in-time day board population counts are inconsistent")
         object.__setattr__(self, "rows", rows)
         object.__setattr__(self, "board_populations", populations)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -379,7 +379,7 @@ class PointInTimePartitionManifest:
             raise ValueError("point-in-time partition identity is invalid")
         object.__setattr__(self, "dates", dates)
         object.__setattr__(self, "day_hashes", tuple(self.day_hashes))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -433,7 +433,7 @@ class PointInTimeDatasetManifest:
         if self.schema_version != "point_in_time_dataset_manifest":
             raise ValueError("point-in-time dataset manifest schema is invalid")
         object.__setattr__(self, "partitions", partitions)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -489,7 +489,7 @@ class PointInTimeDatasetReport:
             raise ValueError("point-in-time dataset report schema is invalid")
         object.__setattr__(self, "days", days)
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _require_shanghai(value: datetime, field_name: str) -> None:

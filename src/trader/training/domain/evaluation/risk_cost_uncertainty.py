@@ -11,15 +11,15 @@ from decimal import Decimal
 from statistics import fmean
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
-from trader.recommendation.domain.market.factors import round_score
+from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.market.factors import RoundScore
 from trader.recommendation.domain.risk.decision import RiskDecision
 from trader.recommendation.domain.scoring.alpha import AlphaScore
 from trader.recommendation.domain.selection.execution_cost import ExecutionCost
 from trader.training.domain.evaluation.constrained_oracle import (
+    ConstrainedOracle,
     ConstrainedOracleCandidate,
     ConstrainedOraclePolicy,
-    constrained_oracle,
 )
 from trader.training.domain.evaluation.historical import SUPPORTED_RESEARCH_BOARDS, ResearchBoard
 from trader.training.domain.evaluation.point_in_time_dataset import PointInTimeEventFact
@@ -147,7 +147,7 @@ class SelectionUtility:
             raise ValueError("selection utility severe-loss probability is invalid")
 
 
-def build_selection_utility(alpha: AlphaScore, risk: RiskDecision, cost: ExecutionCost) -> SelectionUtility:
+def BuildSelectionUtility(alpha: AlphaScore, risk: RiskDecision, cost: ExecutionCost) -> SelectionUtility:
     if len({alpha.code, risk.code, cost.code}) != 1:
         raise ValueError("selection utility component codes must match")
     uncertainty_values = (
@@ -160,7 +160,7 @@ def build_selection_utility(alpha: AlphaScore, risk: RiskDecision, cost: Executi
     net = alpha.predicted_excess_return - cost.estimated_round_trip_return
     return SelectionUtility(
         alpha.code,
-        round_score(Decimal(str(alpha.signal_score)) - Decimal(str(risk.penalty_points))),
+        RoundScore(Decimal(str(alpha.signal_score)) - Decimal(str(risk.penalty_points))),
         net,
         risk.uncertainty.severe_loss_probability,
         uncertainty,
@@ -483,7 +483,7 @@ def _validate_blocked_report(
         raise ValueError("blocked risk-cost report cannot claim bound research identity")
 
 
-def evaluate_risk_cost_uncertainty(
+def EvaluateRiskCostUncertainty(
     parent_report_hash: str,
     model_artifact_hash: str,
     samples: tuple[RiskCostUncertaintySample, ...],
@@ -519,7 +519,7 @@ def evaluate_risk_cost_uncertainty(
     )
 
 
-def insufficient_risk_cost_uncertainty_report(
+def InsufficientRiskCostUncertaintyReport(
     parent_report_hash: str,
     model_artifact_hash: str | None,
     reasons: tuple[str, ...],
@@ -546,7 +546,7 @@ def _decisions(samples: tuple[RiskCostUncertaintySample, ...]) -> tuple[DeepSeek
         defaultdict(list)
     )
     for sample in samples:
-        utility = build_selection_utility(sample.alpha, sample.risk, sample.cost)
+        utility = BuildSelectionUtility(sample.alpha, sample.risk, sample.cost)
         for arm in _ARMS:
             score, veto, applied = _arm_result(sample, utility, arm)
             by_day[(sample.trade_date, arm)].append((sample, score, veto, applied))
@@ -575,7 +575,7 @@ def _arm_result(
     assert review.score is not None
     local_weight = 0.68
     deepseek_weight = 0.32
-    score = round_score(
+    score = RoundScore(
         Decimal(str(utility.local_score)) * Decimal(str(local_weight))
         + Decimal(str(review.score)) * Decimal(str(deepseek_weight))
         - Decimal(str(review.structured_risk_penalty))
@@ -589,12 +589,12 @@ def _select(
     eligible = [
         (sample, score)
         for sample, score, veto, _applied in rows
-        if not veto and build_selection_utility(sample.alpha, sample.risk, sample.cost).eligible
+        if not veto and BuildSelectionUtility(sample.alpha, sample.risk, sample.cost).eligible
     ]
     eligible.sort(
         key=lambda item: (
             -item[1],
-            -build_selection_utility(item[0].alpha, item[0].risk, item[0].cost).expected_net_excess_return,
+            -BuildSelectionUtility(item[0].alpha, item[0].risk, item[0].cost).expected_net_excess_return,
             item[0].risk.uncertainty.severe_loss_probability
             if item[0].risk.uncertainty.severe_loss_probability is not None
             else 1.0,
@@ -779,9 +779,9 @@ def _daily_oracle(samples: tuple[RiskCostUncertaintySample, ...], cost_bps: int 
             sample.actual_net_excess_return if cost_bps is None else sample.actual_alpha_return - cost_bps / 10_000,
         )
         for sample in samples
-        if build_selection_utility(sample.alpha, sample.risk, sample.cost).eligible
+        if BuildSelectionUtility(sample.alpha, sample.risk, sample.cost).eligible
     )
-    return constrained_oracle(candidates, _SELECTION_POLICY).net_return_sum
+    return ConstrainedOracle(candidates, _SELECTION_POLICY).net_return_sum
 
 
 def _validate_cost_scenarios(samples: tuple[RiskCostUncertaintySample, ...]) -> None:
@@ -867,7 +867,7 @@ def _content_hash(report: RiskCostUncertaintyReport) -> str:
         "terminal_holdout_opened": report.terminal_holdout_opened,
         "automatic_model_update": report.automatic_model_update,
     }
-    return canonical_digest(payload)
+    return CanonicalDigest(payload)
 
 
 def _sample_evidence_hash(samples: tuple[RiskCostUncertaintySample, ...]) -> str:
@@ -923,7 +923,7 @@ def _sample_evidence_hash(samples: tuple[RiskCostUncertaintySample, ...]) -> str
         }
         for sample in samples
     )
-    return canonical_digest(payload)
+    return CanonicalDigest(payload)
 
 
 def _uncertainty_evidence_payload(risk: RiskDecision) -> dict[str, float | tuple[float, float] | None]:
@@ -1038,7 +1038,7 @@ __all__ = [
     "SelectionUtility",
     "UncertaintyBucketMetrics",
     "UncertaintyCalibrationMetrics",
-    "build_selection_utility",
-    "evaluate_risk_cost_uncertainty",
-    "insufficient_risk_cost_uncertainty_report",
+    "BuildSelectionUtility",
+    "EvaluateRiskCostUncertainty",
+    "InsufficientRiskCostUncertaintyReport",
 ]

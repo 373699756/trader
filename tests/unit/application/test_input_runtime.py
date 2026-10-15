@@ -12,9 +12,9 @@ from tests.unit.application.cycle_fixture import CycleFixture, CycleFixtureDepen
 from tests.unit.application.pipeline_helpers import observed_market_batch
 from tests.unit.domain.test_decision_identity import decision
 from trader.bootstrap import _recommendation_policy
-from trader.infra.settings import load_strategy_settings
+from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
-    model_scoring_context as _model_scoring_context,
+    BuildModelScoringContext as _model_scoring_context,
 )
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.ports.runtime import (
@@ -1751,4 +1751,4 @@ def test_unexpected_shared_input_failure_releases_single_flight_owner(
 
 
 def _policy():
-    return _recommendation_policy(load_strategy_settings(PROJECT_ROOT / "config" / "strategy.json"))
+    return _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))

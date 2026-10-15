@@ -25,11 +25,11 @@ from trader.download.infra.history_control_index import (
 from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.download.infra.history_partition_repack_codec import (
     HistoryPartitionRepackCodecError,
-    read_history_partition_repack_activation_journal,
-    read_history_partition_repack_build_state,
-    read_tomorrow_training_memory_evidence,
-    write_history_partition_repack_activation_journal,
-    write_history_partition_repack_build_state,
+    ReadHistoryPartitionRepackActivationJournal,
+    ReadHistoryPartitionRepackBuildState,
+    ReadTomorrowTrainingMemoryEvidence,
+    WriteHistoryPartitionRepackActivationJournal,
+    WriteHistoryPartitionRepackBuildState,
 )
 from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackAction,
@@ -42,13 +42,13 @@ from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackStatus,
 )
 from trader.download.infra.history_reference_files import (
-    history_reference_path,
-    read_bound_history_reference,
-    write_history_reference,
+    HistoryReferencePath,
+    ReadBoundHistoryReference,
+    WriteHistoryReference,
 )
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.model_bundles.bundle_repository import inspect_active_head_bundle
+from trader.training.infra.model_bundles.bundle_repository import InspectActiveHeadBundle
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]
@@ -156,14 +156,14 @@ class HistoryPartitionRepackCoordinator:
                     state,
                     partitions=tuple(sorted((*state.partitions, evidence), key=lambda item: item.relative_path)),
                 )
-                write_history_partition_repack_build_state(layout.state_path, state)
+                WriteHistoryPartitionRepackBuildState(layout.state_path, state)
                 self._publish_progress(len(state.partitions), state.expected_partition_count, reference.relative_path)
             _require_source_unchanged(layout.source_root, state)
             _require_size_gate(state, self._requirements)
             target_snapshot = _build_target_control(layout, context, state)
             self._inject("target_control_built")
             state = replace(state, target_snapshot_hash=target_snapshot.content_hash, completed=True)
-            write_history_partition_repack_build_state(layout.state_path, state)
+            WriteHistoryPartitionRepackBuildState(layout.state_path, state)
             _verify_completed_target(layout.target_root, state)
             self._inject("build_completed")
             return _status("build", "completed", state)
@@ -171,7 +171,7 @@ class HistoryPartitionRepackCoordinator:
     def activate(self) -> HistoryPartitionRepackStatus:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = read_history_partition_repack_build_state(layout.state_path)
+            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
             _require_completed_state(state, layout)
             existing = _optional_journal(layout.journal_path)
             if existing is not None and existing.state not in {"rolled_back", "finalized"}:
@@ -193,7 +193,7 @@ class HistoryPartitionRepackCoordinator:
                 state.source_snapshot_hash,
                 cast(str, state.target_snapshot_hash),
             )
-            write_history_partition_repack_activation_journal(layout.journal_path, journal)
+            WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
             self._inject("prepared")
             journal = self._move_and_commit(
                 layout.source_root / _PARTITIONS_NAME,
@@ -221,16 +221,16 @@ class HistoryPartitionRepackCoordinator:
             )
             _require_stable_target(layout, state, full_hash=False)
             journal = replace(journal, state="verified")
-            write_history_partition_repack_activation_journal(layout.journal_path, journal)
+            WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
             self._inject("verified")
             return _activation_status("activate", "verified", state)
 
     def rollback(self) -> HistoryPartitionRepackStatus:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = read_history_partition_repack_build_state(layout.state_path)
+            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
             _require_completed_state(state, layout)
-            journal = read_history_partition_repack_activation_journal(layout.journal_path)
+            journal = ReadHistoryPartitionRepackActivationJournal(layout.journal_path)
             _require_journal_layout(journal, layout, state)
             if journal.state == "finalized":
                 raise HistoryPartitionRepackError("finalized history repack cannot be rolled back")
@@ -243,9 +243,9 @@ class HistoryPartitionRepackCoordinator:
     def finalize(self, training_root: Path, memory_evidence_path: Path) -> HistoryPartitionRepackStatus:
         layout = self._layout
         with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = read_history_partition_repack_build_state(layout.state_path)
+            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
             _require_completed_state(state, layout)
-            journal = read_history_partition_repack_activation_journal(layout.journal_path)
+            journal = ReadHistoryPartitionRepackActivationJournal(layout.journal_path)
             _require_journal_layout(journal, layout, state)
             if journal.state == "finalized":
                 return _activation_status("finalize", "finalized", state)
@@ -254,12 +254,12 @@ class HistoryPartitionRepackCoordinator:
             _require_stable_target(layout, state, full_hash=False)
             from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
-            bundle = inspect_active_head_bundle(
+            bundle = InspectActiveHeadBundle(
                 training_root.resolve() / "v3" / "tomorrow",
                 Strategy.TOMORROW,
                 V3_TRAINING_PROFILE,
             )
-            evidence = read_tomorrow_training_memory_evidence(memory_evidence_path.resolve())
+            evidence = ReadTomorrowTrainingMemoryEvidence(memory_evidence_path.resolve())
             if (
                 bundle.training_input_hash != state.target_snapshot_hash
                 or evidence.training_input_hash != state.target_snapshot_hash
@@ -272,14 +272,14 @@ class HistoryPartitionRepackCoordinator:
             shutil.rmtree(layout.backup_root)
             _fsync_directory(layout.backup_root.parent)
             journal = replace(journal, state="finalized")
-            write_history_partition_repack_activation_journal(layout.journal_path, journal)
+            WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
             self._inject("finalized")
             return _activation_status("finalize", "finalized", state, released)
 
     def _load_or_create_build_state(self, context: _SourceContext) -> HistoryPartitionRepackBuildState:
         layout = self._layout
         if layout.state_path.exists():
-            state = read_history_partition_repack_build_state(layout.state_path)
+            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
             _require_state_source(state, layout, context, self._requirements)
             return state
         if layout.target_root.exists() and any(layout.target_root.iterdir()):
@@ -300,7 +300,7 @@ class HistoryPartitionRepackCoordinator:
             self._requirements.target_page_size,
             (),
         )
-        write_history_partition_repack_build_state(layout.state_path, state)
+        WriteHistoryPartitionRepackBuildState(layout.state_path, state)
         self._inject("build_prepared")
         return state
 
@@ -332,7 +332,7 @@ class HistoryPartitionRepackCoordinator:
         _fsync_directory(destination.parent)
         self._inject(f"{next_state}_moved")
         updated = replace(journal, state=next_state)
-        write_history_partition_repack_activation_journal(self._layout.journal_path, updated)
+        WriteHistoryPartitionRepackActivationJournal(self._layout.journal_path, updated)
         self._inject(next_state)
         return updated
 
@@ -344,7 +344,7 @@ class HistoryPartitionRepackCoordinator:
         _require_journal_layout(journal, self._layout, state)
         if _stable_target_matches(self._layout, state, full_hash=False):
             recovered = replace(journal, state="verified")
-            write_history_partition_repack_activation_journal(self._layout.journal_path, recovered)
+            WriteHistoryPartitionRepackActivationJournal(self._layout.journal_path, recovered)
             return recovered
         return self._restore_source_snapshot(journal, state)
 
@@ -365,7 +365,7 @@ class HistoryPartitionRepackCoordinator:
             layout.backup_root.rmdir()
             _fsync_directory(layout.backup_root.parent)
         recovered = replace(journal, state="rolled_back")
-        write_history_partition_repack_activation_journal(layout.journal_path, recovered)
+        WriteHistoryPartitionRepackActivationJournal(layout.journal_path, recovered)
         self._inject("rolled_back")
         return recovered
 
@@ -374,7 +374,7 @@ class HistoryPartitionRepackCoordinator:
             self._progress(completed, total, current)
 
 
-def require_history_partition_repack_inactive(archive_root: Path) -> None:
+def RequireHistoryPartitionRepackInactive(archive_root: Path) -> None:
     """Fail normal history work while a conventional repack activation is fenced."""
 
     root = archive_root.expanduser().resolve()
@@ -433,7 +433,7 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
         state,
         active,
         files,
-        canonical_digest(files),
+        CanonicalDigest(files),
         sum(item.size_bytes for item in files if item.relative_path != _CONTROL_NAME),
         len(universe.securities),
         len(calendar.open_dates),
@@ -664,8 +664,8 @@ def _build_target_control(
 ) -> HistoryActiveSnapshot:
     for source in context.control_state.sources:
         if source.supplier_contract.startswith("history_ref_"):
-            reference = read_bound_history_reference(layout.source_root, source.supplier_contract)
-            write_history_reference(history_reference_path(layout.target_root, reference.content_hash), reference)
+            reference = ReadBoundHistoryReference(layout.source_root, source.supplier_contract)
+            WriteHistoryReference(HistoryReferencePath(layout.target_root, reference.content_hash), reference)
     target_control = layout.target_root / _CONTROL_NAME
     temporary = target_control.with_name(f".{_CONTROL_NAME}.repack.pending")
     _remove_sqlite_files(temporary)
@@ -770,7 +770,7 @@ def _require_no_activation_fence(path: Path) -> None:
     if not path.exists():
         return
     try:
-        journal = read_history_partition_repack_activation_journal(path)
+        journal = ReadHistoryPartitionRepackActivationJournal(path)
     except HistoryPartitionRepackCodecError as exc:
         raise HistoryPartitionRepackFenceError("history_archive_repack_activation_pending") from exc
     if journal.fenced:
@@ -778,7 +778,7 @@ def _require_no_activation_fence(path: Path) -> None:
 
 
 def _optional_journal(path: Path) -> HistoryPartitionRepackActivationJournal | None:
-    return read_history_partition_repack_activation_journal(path) if path.exists() else None
+    return ReadHistoryPartitionRepackActivationJournal(path) if path.exists() else None
 
 
 def _require_stable_snapshot(root: Path, expected_hash: str) -> None:
@@ -1023,5 +1023,5 @@ __all__ = [
     "HistoryPartitionRepackCoordinator",
     "HistoryPartitionRepackError",
     "HistoryPartitionRepackFenceError",
-    "require_history_partition_repack_inactive",
+    "RequireHistoryPartitionRepackInactive",
 ]

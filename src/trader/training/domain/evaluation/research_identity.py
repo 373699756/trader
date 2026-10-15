@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Iterable
 
-from trader.infra.serialization.canonical_codec import CanonicalExclusion, canonical_digest, canonical_text
+from trader.infra.serialization.canonical_codec import CanonicalDigest, CanonicalExclusion, CanonicalText
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC
 
 RESEARCH_IDENTITY_EXCLUSION = CanonicalExclusion(
@@ -13,16 +13,16 @@ RESEARCH_IDENTITY_EXCLUSION = CanonicalExclusion(
 )
 
 
-def canonical_research_hash(value: object) -> str:
-    return canonical_digest(value, exclusion=RESEARCH_IDENTITY_EXCLUSION)
+def CanonicalResearchHash(value: object) -> str:
+    return CanonicalDigest(value, exclusion=RESEARCH_IDENTITY_EXCLUSION)
 
 
-def research_rows_hash(rows: Iterable[object]) -> str:
+def ResearchRowsHash(rows: Iterable[object]) -> str:
     digest = hashlib.sha256()
     for row in rows:
-        digest.update(canonical_text(row, exclusion=RESEARCH_IDENTITY_EXCLUSION).encode())
+        digest.update(CanonicalText(row, exclusion=RESEARCH_IDENTITY_EXCLUSION).encode())
         digest.update(b"\n")
     return digest.hexdigest()
 
 
-__all__ = ["RESEARCH_IDENTITY_EXCLUSION", "canonical_research_hash", "research_rows_hash"]
+__all__ = ["RESEARCH_IDENTITY_EXCLUSION", "CanonicalResearchHash", "ResearchRowsHash"]

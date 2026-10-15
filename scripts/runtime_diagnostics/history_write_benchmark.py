@@ -28,13 +28,13 @@ from trader.download.domain.baostock_daily import (
 )
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncProgress
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
-from trader.download.infra.download_settings import load_history_sync_configuration
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_storage_profile import (
+    ClassifyHistoryStorage,
     HistoryWriteTuning,
-    classify_history_storage,
 )
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_sync_runner import RunHistorySync
 
 from .reporting import emit_report
 
@@ -61,7 +61,7 @@ class _FixtureSupplier:
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
         self.requests.append(len(dates))
         cells = self.fetch_baostock_prices(security, dates).batch.cells
-        return PublishedHistoryWindow(security.code, tuple(project_history_cell(cell) for cell in cells))
+        return PublishedHistoryWindow(security.code, tuple(ProjectHistoryCell(cell) for cell in cells))
 
     def fetch_baostock_prices(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
         cells = []
@@ -125,7 +125,7 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
         root = Path(scratch) / "history"
         project_root = Path(__file__).resolve().parents[2]
         config = replace(
-            load_history_sync_configuration(project_root, Path(scratch) / "reference"),
+            LoadHistorySyncConfiguration(project_root, Path(scratch) / "reference"),
             archive_root=root,
             sessions=sessions,
             reread_sessions=min(5, sessions),
@@ -138,7 +138,7 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
             now = datetime.combine(supplier.days[-1], daytime(20, 30), ZoneInfo("Asia/Shanghai"))
             started, written = time.monotonic(), _write_bytes()
             stage_times = _StageTimes()
-            result = run_history_sync(config, supplier, clock=_clock(now), write_tuning=tuning, progress=stage_times)
+            result = RunHistorySync(config, supplier, clock=_clock(now), write_tuning=tuning, progress=stage_times)
             rows = 0
             for path in root.glob("partitions/*/[0-9][0-9].sqlite3"):
                 with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
@@ -158,7 +158,7 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
                     "phase_seconds": stage_times.summary(),
                 }
             )
-        storage_kind = classify_history_storage(root)
+        storage_kind = ClassifyHistoryStorage(root)
     return {
         "schema_version": "history-write-benchmark",
         "status": "passed"

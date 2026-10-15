@@ -10,7 +10,7 @@ from datetime import date
 from typing import Literal
 
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 ResidualAnchor = Literal["15:00"]
 ResidualFilterState = Literal["passed", "observe_only", "not_ready"]
@@ -64,7 +64,7 @@ class HistoricalPredictionRecord:
             raise ValueError("historical prediction cannot select an ineligible row")
         if self.schema_version != "historical_prediction_record" or self.production_authority:
             raise ValueError("historical prediction cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 def _validate_prediction_identity(record: HistoricalPredictionRecord) -> None:
@@ -145,7 +145,7 @@ class HistoricalOutcomeRecord:
             raise ValueError("historical outcome label status is invalid")
         if self.schema_version != "historical_outcome_record" or self.production_authority:
             raise ValueError("historical outcome cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -173,7 +173,7 @@ class JoinedHistoricalResidual:
             raise ValueError("historical residual prediction error is inconsistent")
         if self.schema_version != "historical_joined_residual" or self.production_authority:
             raise ValueError("historical residual cannot authorize production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -206,10 +206,10 @@ class HistoricalResidualSummary:
             raise ValueError("historical residual direction hit rate is invalid")
         if self.terminal_holdout_opened or self.production_authority:
             raise ValueError("historical residual summary cannot open holdout or production")
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
-def join_prediction_outcome(
+def JoinPredictionOutcome(
     prediction: HistoricalPredictionRecord,
     outcome: HistoricalOutcomeRecord,
 ) -> JoinedHistoricalResidual:
@@ -226,7 +226,7 @@ def join_prediction_outcome(
     )
 
 
-def summarize_residuals(rows: tuple[JoinedHistoricalResidual, ...]) -> HistoricalResidualSummary:
+def SummarizeResiduals(rows: tuple[JoinedHistoricalResidual, ...]) -> HistoricalResidualSummary:
     if not rows:
         raise ValueError("historical residual summary requires matured rows")
     parents = {row.prediction.parent_split_hash for row in rows}
@@ -284,6 +284,6 @@ __all__ = [
     "ResidualFilterState",
     "ResidualJoinKey",
     "ResidualLabelStatus",
-    "join_prediction_outcome",
-    "summarize_residuals",
+    "JoinPredictionOutcome",
+    "SummarizeResiduals",
 ]

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Generic, TypeVar, cast
 
-from trader.infra.failures import classify_adapter_failure
+from trader.infra.failures import ClassifyAdapterFailure
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.application.ports.market_data import MarketDataNoDataError
 from trader.recommendation.domain.market.models import (
@@ -18,8 +18,8 @@ from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome, VendorResult, VendorSeverity
-from trader.recommendation.infra.normalization.merge import overlay_canonical_snapshot, subset_canonical_snapshot
-from trader.recommendation.infra.normalization.merge_quote import source_name, source_priority
+from trader.recommendation.infra.normalization.merge import OverlayCanonicalSnapshot, SubsetCanonicalSnapshot
+from trader.recommendation.infra.normalization.merge_quote import SourceName, SourcePriority
 from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
 _T = TypeVar("_T")
@@ -196,7 +196,7 @@ def _before_deadline(now: datetime, deadline: datetime | None) -> bool:
 def _cache_error_code(exc: Exception) -> str:
     if isinstance(exc, MarketDataNoDataError):
         return "no_data"
-    failure = classify_adapter_failure(exc, provider="market", operation="source_fetch")
+    failure = ClassifyAdapterFailure(exc, provider="market", operation="source_fetch")
     return "late" if failure.code.value == "deadline" else failure.code.value
 
 
@@ -210,8 +210,8 @@ def _observation_version(observation: SourceObservation) -> tuple[datetime, date
 
 
 def _reference_replaces(current: SourceObservation, incoming: SourceObservation) -> bool:
-    current_priority = source_priority(current.source)
-    incoming_priority = source_priority(incoming.source)
+    current_priority = SourcePriority(current.source)
+    incoming_priority = SourcePriority(incoming.source)
     if current_priority != incoming_priority:
         return incoming_priority > current_priority
     current_order = (current.source_time, current.received_at, current.data_version)
@@ -236,8 +236,8 @@ def _preserve_newer_quotes(
     overlay_codes = _newer_previous_quote_codes(current, previous)
     if not overlay_codes:
         return current
-    overlay = subset_canonical_snapshot(previous, overlay_codes)
-    return overlay_canonical_snapshot(current, replace(overlay, degraded_reasons=()), merge_epoch=merge_epoch)
+    overlay = SubsetCanonicalSnapshot(previous, overlay_codes)
+    return OverlayCanonicalSnapshot(current, replace(overlay, degraded_reasons=()), merge_epoch=merge_epoch)
 
 
 def _newer_previous_quote_codes(
@@ -254,8 +254,8 @@ def _newer_previous_quote_codes(
 
 
 def _previous_quote_is_newer(previous: MarketQuote, current: MarketQuote) -> bool:
-    previous_source = source_name(previous.source)
-    current_source = source_name(current.source)
+    previous_source = SourceName(previous.source)
+    current_source = SourceName(current.source)
     if previous_source != current_source and {previous_source, current_source} <= _FULL_MARKET_QUOTE_SOURCES:
         previous_time = (previous.received_time, previous.source_time)
         current_time = (current.received_time, current.source_time)
@@ -266,8 +266,8 @@ def _previous_quote_is_newer(previous: MarketQuote, current: MarketQuote) -> boo
         return previous_time > current_time
     if previous_source == current_source:
         return previous.data_version > current.data_version
-    return (source_priority(previous_source), previous_source) > (
-        source_priority(current_source),
+    return (SourcePriority(previous_source), previous_source) > (
+        SourcePriority(current_source),
         current_source,
     )
 

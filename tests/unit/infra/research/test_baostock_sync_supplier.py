@@ -433,8 +433,8 @@ def test_worker_context_keeps_official_universe_without_querying_stock_basic(mon
     connection = Connection()
     rate_limited_sdk = supplier_module._RateLimitedSdk
     monkeypatch.setattr(supplier_module, "_silence_vendor_output", lambda: None)
-    monkeypatch.setattr(supplier_module, "load_baostock_sdk", Sdk)
-    monkeypatch.setattr(supplier_module, "baostock_dependency_versions", lambda: ())
+    monkeypatch.setattr(supplier_module, "LoadBaostockSdk", Sdk)
+    monkeypatch.setattr(supplier_module, "BaostockDependencyVersions", lambda: ())
     monkeypatch.setattr(
         supplier_module,
         "_RateLimitedSdk",

@@ -13,15 +13,15 @@ from datetime import datetime
 from typing import Protocol
 
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
+    BuildCandidatePlans,
     CandidatePlanningContext,
     CandidatePlanSet,
     CandidateRefreshPlan,
-    build_candidate_plans,
-    refresh_candidate_reserves,
+    RefreshCandidateReserves,
 )
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pipeline import (
     CandidatePipelineResult,
-    execute_candidate_pipeline,
+    ExecuteCandidatePipeline,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.pipeline.stage_output import PipelineStageOutput
@@ -90,7 +90,7 @@ class CandidateFilteringService(CandidateFilteringPort):
         monotonic: Callable[[], float],
         apply_model_eligibility: bool = True,
     ) -> CandidatePipelineResult:
-        return execute_candidate_pipeline(
+        return ExecuteCandidatePipeline(
             source,
             CandidatePlanningContext(
                 evaluated_at,
@@ -112,7 +112,7 @@ class CandidateFilteringService(CandidateFilteringPort):
         data_version: str,
         apply_model_eligibility: bool = True,
     ) -> CandidatePlanSet:
-        return build_candidate_plans(
+        return BuildCandidatePlans(
             population,
             candidate_features,
             CandidatePlanningContext(
@@ -135,7 +135,7 @@ class CandidateFilteringService(CandidateFilteringPort):
         refresh_quotes: Callable[[tuple[str, ...]], Sequence[FeatureSnapshot]],
         can_refill: Callable[[], bool],
     ) -> CandidateRefreshPlan:
-        return refresh_candidate_reserves(
+        return RefreshCandidateReserves(
             population,
             initial_plans,
             CandidatePlanningContext(

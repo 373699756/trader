@@ -23,7 +23,7 @@ class HistoryWriteTuning:
             raise ValueError("history write tuning exceeds bounded capacity")
 
 
-def classify_history_storage(root: Path) -> HistoryStorageKind:
+def ClassifyHistoryStorage(root: Path) -> HistoryStorageKind:
     """Classify the device containing root, including a not-yet-created root."""
     try:
         target = root.resolve()
@@ -43,10 +43,10 @@ def classify_history_storage(root: Path) -> HistoryStorageKind:
     return "unknown"
 
 
-def history_write_tuning(kind: HistoryStorageKind, *, fresh: bool) -> HistoryWriteTuning:
+def ChooseHistoryWriteTuning(kind: HistoryStorageKind, *, fresh: bool) -> HistoryWriteTuning:
     if kind == "hdd" and fresh:
         return HistoryWriteTuning(flush_codes=8, flush_cells=16384)
     return HistoryWriteTuning(flush_codes=16, flush_cells=8192)
 
 
-__all__ = ["HistoryStorageKind", "HistoryWriteTuning", "classify_history_storage", "history_write_tuning"]
+__all__ = ["HistoryStorageKind", "HistoryWriteTuning", "ClassifyHistoryStorage", "ChooseHistoryWriteTuning"]

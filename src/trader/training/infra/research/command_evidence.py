@@ -12,7 +12,7 @@ from trader.training.infra.research.cross_strategy_conclusion_reports import Cro
 from trader.training.infra.research.d25_terminal_holdout_reports import D25TerminalHoldoutReportIndex
 from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityEvidenceIndex
 from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionEvidenceFiles
-from trader.training.infra.research.historical_industry_evidence import audit_published_historical_industry_facts
+from trader.training.infra.research.historical_industry_evidence import AuditPublishedHistoricalIndustryFacts
 from trader.training.infra.research.historical_label_evidence import HistoricalLabelEvidenceIndex
 from trader.training.infra.research.tomorrow_point_in_time_holdout_reports import (
     TomorrowPointInTimeHoldoutReportIndex,
@@ -24,7 +24,7 @@ class HistoricalIndustryEvidenceReader:
         self._root = root
 
     def audit(self, *, required_sample_codes: int, tushare_access_points: int) -> HistoricalIndustryDatasetReport:
-        return audit_published_historical_industry_facts(
+        return AuditPublishedHistoricalIndustryFacts(
             self._root, required_sample_codes=required_sample_codes, tushare_access_points=tushare_access_points
         )
 

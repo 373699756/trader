@@ -12,7 +12,7 @@ from trader.download.application.read_published_history import ReadPublishedHist
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.infra.workers import BoundedExecutor
-from trader.recommendation.application.pipeline.data_source.source_quality import failure_code
+from trader.recommendation.application.pipeline.data_source.source_quality import FailureCode
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
@@ -49,7 +49,7 @@ from trader.recommendation.domain.publication.decision_identity import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.status_projection import runtime_status
+from trader.recommendation.infra.status_projection import RuntimeStatus
 
 
 class TradingCalendar:
@@ -312,7 +312,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
     from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
     from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import UnifiedDecisionQueries
     from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
-    from trader.web import create_app
+    from trader.web import CreateApp
 
     clock = FixedClock(NOW)
     tracker = PublicationIoTracker(now=clock.now, monotonic=lambda: 1.0)
@@ -370,13 +370,13 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
     else:
         assert published and index.snapshot(Strategy.TOMORROW).current == candidate
         operation = "decision_event" if failure == "event" else "observer_enqueue"
-    payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
+    payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["health"]["issue_count"] > 0
     repository = SQLiteDecisionRecords(tmp_path)
     repository.initialize()
     queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), repository, clock)
     stream = UnifiedDecisionEventStream()
-    client = create_app(services=UnifiedWebServices(queries, stream, lambda: payload)).test_client()
+    client = CreateApp(services=UnifiedWebServices(queries, stream, lambda: payload)).test_client()
     response = client.get("/api/status").get_json()
     receipt = next(item for item in response["scheduler"]["publication_io"] if item["operation"] == operation)
     assert receipt["input_count"] == receipt["failed_count"] == 1
@@ -936,7 +936,7 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
             def status():
                 return {"status": "ready", "budget": {"limit": 168, "used": 0, "remaining": 168}}
 
-        payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
+        payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
         assert payload["health"] == {"level": "degraded", "issue_count": 1}
         assert payload["scheduler"]["calendar"] == {  # type: ignore[index]
             "generation": 1,
@@ -1352,7 +1352,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
                         try:
                             history.load(("600001",), deadline=request.observed_at + timedelta(seconds=20))
                         except MarketDataUnavailableError as exc:
-                            raise DataRefreshUnavailableError(failure_code(exc)) from exc
+                            raise DataRefreshUnavailableError(FailureCode(exc)) from exc
                     raise DataRefreshUnavailableError("controlled_close_source_failure")
             return outcome
 
@@ -2107,7 +2107,7 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
         def status(self):
             return {"status": "ready", "budget": {"limit": 168, "used": 0, "remaining": 168}}
 
-    payload = runtime_status(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
+    payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["degraded_reasons"] == ["tomorrow:refresh:source_unavailable"]
     assert payload["health"] == {"level": "degraded", "issue_count": 1}
     assert payload["recent_errors"] == [

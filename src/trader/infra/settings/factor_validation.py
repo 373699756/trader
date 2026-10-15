@@ -13,23 +13,23 @@ if TYPE_CHECKING:
 
 from trader.infra.settings.models import FactorDefinition, StrategySettings
 from trader.infra.settings.parser import (
+    Boolean as _boolean,
+)
+from trader.infra.settings.parser import (
     ConfigurationError,
 )
 from trader.infra.settings.parser import (
-    boolean as _boolean,
+    Integer as _integer,
 )
 from trader.infra.settings.parser import (
-    integer as _integer,
+    Number as _number,
+)
+from trader.infra.settings.parser import RequireExactKeys as _require_exact_keys
+from trader.infra.settings.parser import (
+    RequireMapping as _mapping,
 )
 from trader.infra.settings.parser import (
-    mapping as _mapping,
-)
-from trader.infra.settings.parser import (
-    number as _number,
-)
-from trader.infra.settings.parser import require_exact_keys as _require_exact_keys
-from trader.infra.settings.parser import (
-    text as _text,
+    Text as _text,
 )
 from trader.recommendation.infra.normalization.features import FEATURE_SCHEMA_ID, FEATURE_SCHEMA_NAMES
 

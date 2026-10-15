@@ -6,14 +6,14 @@ import pytest
 
 from trader.recommendation.application.runtime.schedule import (
     SHANGHAI,
+    DecisionAt,
+    FreezeDueAt,
     MarketPhase,
+    PhaseAt,
     SchedulePoint,
-    decision_at,
-    freeze_due_at,
-    phase_at,
-    schedule_point_at,
-    seconds_until_next_schedule_boundary,
-    startup_freeze_strategies,
+    SchedulePointAt,
+    SecondsUntilNextScheduleBoundary,
+    StartupFreezeStrategies,
 )
 
 
@@ -39,32 +39,32 @@ from trader.recommendation.application.runtime.schedule import (
 )
 def test_phase_boundaries_are_left_closed(clock, expected) -> None:
     at = datetime.fromisoformat(f"2026-07-16T{clock}").replace(tzinfo=SHANGHAI)
-    assert phase_at(at, is_trading_day=True) is expected
+    assert PhaseAt(at, is_trading_day=True) is expected
 
 
 def test_freeze_decisions_are_exact_windows() -> None:
     midday = datetime(2026, 7, 16, 11, 20, tzinfo=SHANGHAI)
     afternoon = datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI)
 
-    assert decision_at(midday, is_trading_day=True).freeze_strategies == ()
-    assert decision_at(afternoon, is_trading_day=True).freeze_strategies == ("tomorrow", "d25")
-    assert decision_at(midday, is_trading_day=False).freeze_strategies == ()
+    assert DecisionAt(midday, is_trading_day=True).freeze_strategies == ()
+    assert DecisionAt(afternoon, is_trading_day=True).freeze_strategies == ("tomorrow", "d25")
+    assert DecisionAt(midday, is_trading_day=False).freeze_strategies == ()
 
 
 def test_freeze_due_survives_a_missed_exact_window() -> None:
     midday = datetime(2026, 7, 16, 13, 0, tzinfo=SHANGHAI)
     after_freeze = datetime(2026, 7, 16, 15, 0, tzinfo=SHANGHAI)
 
-    assert decision_at(midday, is_trading_day=True).freeze_strategies == ()
-    assert freeze_due_at(midday, is_trading_day=True) == ()
-    assert freeze_due_at(after_freeze, is_trading_day=True) == ("tomorrow", "d25")
-    assert freeze_due_at(after_freeze, is_trading_day=False) == ()
+    assert DecisionAt(midday, is_trading_day=True).freeze_strategies == ()
+    assert FreezeDueAt(midday, is_trading_day=True) == ()
+    assert FreezeDueAt(after_freeze, is_trading_day=True) == ("tomorrow", "d25")
+    assert FreezeDueAt(after_freeze, is_trading_day=False) == ()
 
 
 def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
     before_afternoon_cutoff = datetime(2026, 7, 16, 14, 45, 59, tzinfo=SHANGHAI)
 
-    assert seconds_until_next_schedule_boundary(before_afternoon_cutoff, maximum_seconds=60) == 1
+    assert SecondsUntilNextScheduleBoundary(before_afternoon_cutoff, maximum_seconds=60) == 1
 
 
 @pytest.mark.parametrize(
@@ -79,17 +79,17 @@ def test_scheduler_wakes_at_deepseek_submission_cutoffs() -> None:
 )
 def test_final_schedule_points_match_the_freeze_acceptance_window(clock, point) -> None:
     at = datetime.fromisoformat(f"2026-07-16T{clock}").replace(tzinfo=SHANGHAI)
-    assert schedule_point_at(at, is_trading_day=True) is point
+    assert SchedulePointAt(at, is_trading_day=True) is point
 
 
 def test_deepseek_cutoff_keeps_local_scoring_open_without_model_review() -> None:
     cutoff = datetime(2026, 7, 16, 14, 59, 20, tzinfo=SHANGHAI)
 
-    decision = decision_at(cutoff, is_trading_day=True)
+    decision = DecisionAt(cutoff, is_trading_day=True)
 
     assert decision.should_score is True
     assert decision.should_review is False
-    assert seconds_until_next_schedule_boundary(cutoff.replace(second=19), maximum_seconds=60) == 1
+    assert SecondsUntilNextScheduleBoundary(cutoff.replace(second=19), maximum_seconds=60) == 1
 
 
 @pytest.mark.parametrize(
@@ -107,5 +107,5 @@ def test_deepseek_cutoff_keeps_local_scoring_open_without_model_review() -> None
 def test_cold_start_freeze_recovery_only_includes_scored_strategies(clock: str, expected: tuple[str, ...]) -> None:
     started_at = datetime.fromisoformat(f"2026-07-16T{clock}").replace(tzinfo=SHANGHAI)
 
-    assert startup_freeze_strategies(started_at, is_trading_day=True) == expected
-    assert startup_freeze_strategies(started_at, is_trading_day=False) == ()
+    assert StartupFreezeStrategies(started_at, is_trading_day=True) == expected
+    assert StartupFreezeStrategies(started_at, is_trading_day=False) == ()

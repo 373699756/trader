@@ -20,7 +20,7 @@ def _require_raw_overlap(previous: BaoStockDailyCell, incoming: BaoStockDailyCel
         _require_raw_prices(before, after)
 
 
-def qualify_price_overlap(
+def QualifyPriceOverlap(
     cells: tuple[BaoStockDailyCell, ...], previous: tuple[BaoStockDailyCell, ...], *, full_window: bool
 ) -> tuple[BaoStockDailyCell, ...]:
     """Check raw anchors but preserve the entire previously qualified daily pair."""
@@ -53,7 +53,7 @@ def qualify_price_overlap(
     return tuple(result)
 
 
-def qualify_history_pairs(
+def QualifyHistoryPairs(
     code: str,
     dates: tuple[date, ...],
     tencent: PublishedHistoryWindow,

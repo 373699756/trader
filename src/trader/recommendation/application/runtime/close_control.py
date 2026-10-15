@@ -27,12 +27,12 @@ from trader.recommendation.application.runtime.latest_wins import (
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import (
     SchedulePoint,
-    shanghai_now,
+    ShanghaiNow,
 )
 from trader.recommendation.application.runtime.schedule_requests import (
-    failure_code,
+    FailureCode,
 )
-from trader.recommendation.application.runtime.trading_session import StaleSessionError, session_guard
+from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError
 from trader.recommendation.domain.publication.decision_identity import (
     ScoredDecision,
 )
@@ -78,16 +78,16 @@ class CloseControlCoordinator:
             try:
                 outcome = self._dependencies.data.refresh_task(
                     PipelineTaskRequest(
-                        PipelineTask.CLOSE_QUOTES, shanghai_now(self._dependencies.clock.now()), (), scheduled.session
+                        PipelineTask.CLOSE_QUOTES, ShanghaiNow(self._dependencies.clock.now()), (), scheduled.session
                     )
                 )
                 if outcome.completed_at.date() != at.date():
                     raise DataRefreshUnavailableError("close_input_trade_date_mismatch")
             except DataRefreshUnavailableError as exc:
-                self._hooks.failure("refresh", failure_code(exc, "refresh_unavailable"), None)
+                self._hooks.failure("refresh", FailureCode(exc, "refresh_unavailable"), None)
                 self._hooks.pipeline_result(scheduled, SchedulePointResult.RETRY)
                 return
-            with session_guard(scheduled.session), self._lock:
+            with SessionGuard(scheduled.session), self._lock:
                 self._close_input = outcome
         # Reconcile authoritative formal/control state on later ticks; handoff is not completion.
         with self._lock:
@@ -116,7 +116,7 @@ class CloseControlCoordinator:
     ) -> None:
         native_version = dict(current.input_versions).get("native", current.version)
         try:
-            with session_guard(request.session):
+            with SessionGuard(request.session):
                 self._dependencies.freezes.freeze_close_fallback(
                     request.strategy,
                     request.observed_at,
@@ -179,7 +179,7 @@ class CloseControlCoordinator:
     ) -> None:
         success = False
         try:
-            with session_guard(scheduled.session):
+            with SessionGuard(scheduled.session):
                 current = self._dependencies.index.snapshot(strategy).current
                 if (
                     scheduled.session is not None
@@ -191,7 +191,7 @@ class CloseControlCoordinator:
         except StaleSessionError:
             return
         except FreezeUnavailableError as exc:
-            self._hooks.failure("checkpoint", failure_code(exc, "checkpoint_unavailable"), strategy)
+            self._hooks.failure("checkpoint", FailureCode(exc, "checkpoint_unavailable"), strategy)
         except Exception as exc:
             self._hooks.failure("checkpoint", f"checkpoint_unexpected:{type(exc).__name__}", strategy)
         else:
@@ -201,13 +201,13 @@ class CloseControlCoordinator:
         finally:
             self._finish_control(key, success=success)
             try:
-                with session_guard(scheduled.session):
+                with SessionGuard(scheduled.session):
                     self._dependencies.cadence.record_point_result(
                         at.date().isoformat(),
                         scheduled.schedule_point or SchedulePoint.AFTERNOON_CHECKPOINT,
                         strategy.value,
                         SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY,
-                        at=shanghai_now(self._dependencies.clock.now()),
+                        at=ShanghaiNow(self._dependencies.clock.now()),
                     )
             except StaleSessionError:
                 pass
@@ -222,7 +222,7 @@ class CloseControlCoordinator:
         success = False
         missed = False
         try:
-            with session_guard(scheduled.session):
+            with SessionGuard(scheduled.session):
                 current = self._dependencies.index.snapshot(strategy).current
                 if (
                     scheduled.session is not None
@@ -247,7 +247,7 @@ class CloseControlCoordinator:
         finally:
             self._finish_control(key, success=success)
             try:
-                with session_guard(scheduled.session):
+                with SessionGuard(scheduled.session):
                     self._dependencies.cadence.record_point_result(
                         at.date().isoformat(),
                         scheduled.schedule_point or SchedulePoint.AFTERNOON_FREEZE,
@@ -255,7 +255,7 @@ class CloseControlCoordinator:
                         SchedulePointResult.MISSED
                         if missed
                         else (SchedulePointResult.COMPLETED if success else SchedulePointResult.RETRY),
-                        at=shanghai_now(self._dependencies.clock.now()),
+                        at=ShanghaiNow(self._dependencies.clock.now()),
                     )
             except StaleSessionError:
                 pass
@@ -290,7 +290,7 @@ class CloseControlCoordinator:
                         SchedulePoint.CLOSE_QUOTES,
                         "-",
                         SchedulePointResult.COMPLETED,
-                        at=shanghai_now(self._dependencies.clock.now()),
+                        at=ShanghaiNow(self._dependencies.clock.now()),
                     )
 
     def _reserve_control(self, key: str) -> bool:

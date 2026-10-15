@@ -15,10 +15,10 @@ from trader.training.application.tomorrow_feature_contracts import (
     TomorrowPointInTimeFeatureBatch,
 )
 from trader.training.domain.evaluation.tomorrow_features import (
+    BuildTomorrowStockFeatures,
     DailyFeaturePoint,
     IntradayFeaturePoint,
     TomorrowFeatureStockInput,
-    build_tomorrow_stock_features,
 )
 
 
@@ -67,7 +67,7 @@ class TomorrowPointInTimeFeatureBuilder:
             observed_at=summary.observed_at,
             input_hash=summary.input_hash,
             context_hash=contexts.content_hash,
-            rows=build_tomorrow_stock_features(tuple(stocks)),
+            rows=BuildTomorrowStockFeatures(tuple(stocks)),
         )
 
 

@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from trader.download.application.progress_message import ProgressField, ProgressLevel, ProgressMessage, display_width
+from trader.download.application.progress_message import DisplayWidth, ProgressField, ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import QfqDownloadProgress
-from trader.download.application.stock_download_progress import StockDownloadProgress, format_stock_download_progress
+from trader.download.application.stock_download_progress import FormatStockDownloadProgress, StockDownloadProgress
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_price_coverage import HistoryPriceCoverage
@@ -21,7 +21,7 @@ from trader.download.domain.history_sync import (
     HistoryTencentSummary,
 )
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.terminal_progress import TerminalDownloadProgress, render_progress
+from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 
 
 def _compact_log(value: str) -> str:
@@ -436,14 +436,14 @@ def test_stock_fields_remain_compact_across_names_and_counts(name, result, actua
         missing_dates=(date(2026, 10, 12),),
         reason="a_long_failure_reason",
     )
-    message = format_stock_download_progress(0, progress)
-    plain = render_progress(message)
-    assert display_width(message.fields[3].text) == display_width("股票 688058 ") + 8
+    message = FormatStockDownloadProgress(0, progress)
+    plain = RenderProgress(message)
+    assert DisplayWidth(message.fields[3].text) == DisplayWidth("股票 688058 ") + 8
     assert not re.search(r" {2,}\|", plain.replace(message.fields[3].text, "股票"))
     assert "raw " in plain and "qfq " in plain and "完整配对 " in plain
     assert "\n" not in plain and "\t" not in plain
     assert plain.index("原因") < plain.index("缺失日期")
-    if name is not None and display_width(name) > 8:
+    if name is not None and DisplayWidth(name) > 8:
         assert "…" in plain and f"完整名称 {name}" in plain
 
 
@@ -459,9 +459,9 @@ def test_stock_fields_remain_compact_across_names_and_counts(name, result, actua
     ),
 )
 def test_color_preserves_exact_plain_layout_and_resets_each_field(result, missing, escape) -> None:
-    message = format_stock_download_progress(1, _stock_progress(result=result, missing=missing))
-    plain = render_progress(message)
-    colored = render_progress(message, color=True)
+    message = FormatStockDownloadProgress(1, _stock_progress(result=result, missing=missing))
+    plain = RenderProgress(message)
+    colored = RenderProgress(message, color=True)
     assert re.sub(r"\x1b\[[0-9;]*m", "", colored) == plain
     assert colored.count("\x1b[0m") == len(re.findall(r"\x1b\[3[123]m", colored))
     if escape:
@@ -499,20 +499,20 @@ def test_terminal_color_policy_and_single_write(monkeypatch, tty, no_color, term
     monkeypatch.setenv("TERM", term)
     stream = _Terminal(tty)
     report = TerminalDownloadProgress(stream)
-    report(format_stock_download_progress(0, _stock_progress()))
+    report(FormatStockDownloadProgress(0, _stock_progress()))
     assert ("\x1b[32m" in stream.getvalue()) is expected
     assert stream.writes == 1 and stream.getvalue().count("\n") == 1
 
 
 def test_untrusted_fields_cannot_inject_ansi_newlines_or_columns() -> None:
-    message = format_stock_download_progress(
+    message = FormatStockDownloadProgress(
         0,
         _stock_progress(
             name="宝\n兰\t德|\x1b[31m",
             reason="bad\rreason|\x1b]0;title\x07",
         ),
     )
-    line = render_progress(message)
+    line = RenderProgress(message)
     assert line.count("|") == 10
     assert all(char not in line for char in ("\x1b", "\n", "\r", "\t", "\x07"))
     assert "title" not in line and "[31m" not in line
@@ -569,20 +569,20 @@ def test_qfq_write_failure_is_red_but_retry_stays_yellow(monkeypatch) -> None:
 
 
 def test_terminal_also_sanitizes_direct_message_fields() -> None:
-    assert render_progress(ProgressMessage((ProgressField("unsafe\n|\x1b[31m"),))) == "unsafe"
+    assert RenderProgress(ProgressMessage((ProgressField("unsafe\n|\x1b[31m"),))) == "unsafe"
 
 
 def test_empty_population_and_large_numbers_are_never_truncated() -> None:
-    empty = format_stock_download_progress(0, _stock_progress(total=0, completed=0, target=0, raw=0, qfq=0, paired=0))
-    assert "100.00%" in render_progress(empty)
-    large = format_stock_download_progress(360000, _stock_progress(total=1000000, completed=1000000))
-    assert "1000000/1000000" in render_progress(large)
-    assert render_progress(large).startswith("100:00:00")
+    empty = FormatStockDownloadProgress(0, _stock_progress(total=0, completed=0, target=0, raw=0, qfq=0, paired=0))
+    assert "100.00%" in RenderProgress(empty)
+    large = FormatStockDownloadProgress(360000, _stock_progress(total=1000000, completed=1000000))
+    assert "1000000/1000000" in RenderProgress(large)
+    assert RenderProgress(large).startswith("100:00:00")
 
 
 def test_missing_dates_keep_bounded_preview_in_tail() -> None:
     dates = tuple(date(2026, 10, day) for day in range(1, 11))
-    line = render_progress(format_stock_download_progress(0, _stock_progress(missing=10, missing_dates=dates)))
+    line = RenderProgress(FormatStockDownloadProgress(0, _stock_progress(missing=10, missing_dates=dates)))
     assert "缺失日期 2026-10-01" in line and "等 10 个交易日" in line
     assert "2026-10-09" not in line and "2026-10-10" not in line
 
@@ -613,11 +613,11 @@ def test_history_summary_retains_partial_warning_without_changing_result(monkeyp
 
 
 def test_qfq_failed_local_extraction_never_reports_success() -> None:
-    from trader.download.infra.qfq_progress import qfq_local_progress
+    from trader.download.infra.qfq_progress import QfqLocalProgress
 
     messages = []
     with pytest.raises(OSError, match="disk_full"):
-        with qfq_local_progress(messages.append):
+        with QfqLocalProgress(messages.append):
             raise OSError("disk_full")
-    last = render_progress(messages[-1], color=True)
+    last = RenderProgress(messages[-1], color=True)
     assert "中断" in last and "完成" not in last and "\x1b[32m" not in last

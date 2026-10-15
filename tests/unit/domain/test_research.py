@@ -7,6 +7,10 @@ import pytest
 from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
+    CorporateRiskFactsFromAnnouncements,
+    DeriveCorporateRiskFeatures,
+    DeriveLongResearchFeatures,
+    DeriveMarketRegime,
     FeatureComponentWeightPolicy,
     FinancialReport,
     LongResearchInputs,
@@ -14,10 +18,6 @@ from trader.recommendation.domain.market.research import (
     MarketRegimePolicy,
     ResearchAnnouncement,
     ResearchObservation,
-    corporate_risk_facts_from_announcements,
-    derive_corporate_risk_features,
-    derive_long_research_features,
-    derive_market_regime,
 )
 
 NOW = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
@@ -26,10 +26,10 @@ NOW = datetime.fromisoformat("2026-07-16T14:50:00+08:00")
 def test_market_regime_uses_exact_configured_boundaries() -> None:
     policy = MarketRegimePolicy(risk_on_breadth_min=60.0, risk_off_breadth_max=40.0)
 
-    assert derive_market_regime(60.0, policy) == "risk_on"
-    assert derive_market_regime(40.0, policy) == "risk_off"
-    assert derive_market_regime(50.0, policy) == "neutral"
-    assert derive_market_regime(None, policy) == "neutral"
+    assert DeriveMarketRegime(60.0, policy) == "risk_on"
+    assert DeriveMarketRegime(40.0, policy) == "risk_off"
+    assert DeriveMarketRegime(50.0, policy) == "neutral"
+    assert DeriveMarketRegime(None, policy) == "neutral"
 
 
 def test_long_research_features_use_point_in_time_financial_and_event_inputs() -> None:
@@ -102,8 +102,8 @@ def test_long_research_composite_scores_consume_explicit_weight_policy() -> None
         announcements_available=True,
     )
     inputs = LongResearchInputs(20.0, 80.0, 60.0, 100.0)
-    baseline = derive_long_research_features(observation, inputs, _long_policy(), _feature_component_weights())
-    changed = derive_long_research_features(
+    baseline = DeriveLongResearchFeatures(observation, inputs, _long_policy(), _feature_component_weights())
+    changed = DeriveLongResearchFeatures(
         observation,
         inputs,
         _long_policy(),
@@ -222,7 +222,7 @@ def test_corporate_risk_history_applies_permanent_cooling_and_coverage_rules() -
         ),
     )
 
-    features = derive_corporate_risk_features(facts, NOW, history_complete=False)
+    features = DeriveCorporateRiskFeatures(facts, NOW, history_complete=False)
 
     assert features["financial_fraud_history"] == 1.0
     assert features["official_investigation_history"] == 0.0
@@ -246,7 +246,7 @@ def test_active_reduction_and_unresolved_investigation_are_hard_risk_facts() -> 
         ),
     )
 
-    features = derive_corporate_risk_features(facts, NOW, history_complete=True)
+    features = DeriveCorporateRiskFeatures(facts, NOW, history_complete=True)
 
     assert features["major_shareholder_reduction"] == 1.0
     assert features["official_investigation_history"] == 1.0
@@ -266,7 +266,7 @@ def test_only_strict_official_disclosure_titles_create_corporate_hard_risk_facts
         ResearchAnnouncement("公司不存在资金占用及违规担保的说明", NOW, "official:negative"),
     )
 
-    facts = corporate_risk_facts_from_announcements(announcements)
+    facts = CorporateRiskFactsFromAnnouncements(announcements)
 
     assert {fact.category for fact in facts} == {
         CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION,
@@ -308,7 +308,7 @@ def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -
         ),
     )
 
-    facts = corporate_risk_facts_from_announcements(announcements)
+    facts = CorporateRiskFactsFromAnnouncements(announcements)
 
     assert len(facts) == 2
     assert all(fact.resolved_at == NOW for fact in facts)
@@ -323,7 +323,7 @@ def _derive_long_research_features(
     low_drawdown_score: float | None,
     policy: LongResearchPolicy,
 ) -> dict[str, float | None]:
-    return derive_long_research_features(
+    return DeriveLongResearchFeatures(
         observation,
         LongResearchInputs(
             price=price,

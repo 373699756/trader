@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.domain.market.factors import clamp
+from trader.recommendation.domain.market.factors import Clamp
 from trader.recommendation.domain.market.models import Evidence
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -70,7 +70,7 @@ class TailSignals:
     valid_bar_count: int
 
 
-def derive_tail_signals(
+def DeriveTailSignals(
     bars: tuple[MinuteBar, ...],
     *,
     observed_at: datetime,
@@ -95,7 +95,7 @@ def derive_tail_signals(
         raw_return = (latest.close / reference_price - 1.0) * 100.0
         if math.isfinite(raw_return):
             return_pct = raw_return
-            return_score = clamp(50.0 + return_pct * policy.return_score_points_per_pct)
+            return_score = Clamp(50.0 + return_pct * policy.return_score_points_per_pct)
 
     volume_ratio: float | None = None
     volume_score: float | None = None
@@ -112,7 +112,7 @@ def derive_tail_signals(
             if baseline_mean is not None and baseline_mean > 0.0 and tail_mean is not None:
                 volume_ratio = tail_mean / baseline_mean
                 if math.isfinite(volume_ratio):
-                    volume_score = clamp(50.0 + (volume_ratio - 1.0) * policy.volume_score_points_per_ratio)
+                    volume_score = Clamp(50.0 + (volume_ratio - 1.0) * policy.volume_score_points_per_ratio)
                 else:
                     volume_ratio = None
 
@@ -135,7 +135,7 @@ def derive_tail_signals(
     )
 
 
-def tail_signal_evidence(code: str, signals: TailSignals) -> Evidence | None:
+def TailSignalEvidence(code: str, signals: TailSignals) -> Evidence | None:
     if signals.latest_at is None:
         return None
     title = (
@@ -224,6 +224,6 @@ __all__ = [
     "TAIL_SIGNAL_VALUE_FIELDS",
     "TailSignalPolicy",
     "TailSignals",
-    "derive_tail_signals",
-    "tail_signal_evidence",
+    "DeriveTailSignals",
+    "TailSignalEvidence",
 ]

@@ -9,7 +9,7 @@ from datetime import date
 from typing import Literal
 
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 TomorrowTrainingInputCompatibilityStatus = Literal["compatible", "incompatible"]
 
@@ -79,7 +79,7 @@ class FrozenDailyInputDescriptor:
         if not self.fields or len({field.name for field in self.fields}) != len(self.fields):
             raise ValueError("Tomorrow training input fields must be present and unique")
         object.__setattr__(self, "fields", tuple(sorted(self.fields)))
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
 @dataclass(frozen=True)
@@ -122,10 +122,10 @@ class TomorrowTrainingInputCompatibility:
         if self.schema_version != "tomorrow_training_input":
             raise ValueError("Tomorrow training input compatibility schema is invalid")
         object.__setattr__(self, "failure_reasons", reasons)
-        object.__setattr__(self, "content_hash", canonical_research_hash(self))
+        object.__setattr__(self, "content_hash", CanonicalResearchHash(self))
 
 
-def evaluate_tomorrow_training_input(
+def EvaluateTomorrowTrainingInput(
     descriptor: FrozenDailyInputDescriptor,
     *,
     expected_manifest_hash: str,
@@ -177,5 +177,5 @@ __all__ = [
     "TOMORROW_TRAINING_ALPHA_UNITS",
     "TomorrowTrainingInputCompatibility",
     "TomorrowTrainingInputCompatibilityStatus",
-    "evaluate_tomorrow_training_input",
+    "EvaluateTomorrowTrainingInput",
 ]

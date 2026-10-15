@@ -6,12 +6,12 @@ from datetime import date, timedelta
 import pytest
 
 from trader.training.domain.evaluation.limited_factor_family import (
+    BuildIntradayPriceVolumeFamilySpec,
+    EvaluateLimitedFactorFamily,
     FactorFamilyCandidateSeries,
+    InsufficientLimitedFactorFamilyReport,
     LimitedFactorCandidate,
     LimitedFactorFamilySpec,
-    build_intraday_price_volume_family_spec,
-    evaluate_limited_factor_family,
-    insufficient_limited_factor_family_report,
 )
 
 HASH = "a" * 64
@@ -65,7 +65,7 @@ def _series(**overrides: object) -> FactorFamilyCandidateSeries:
 
 
 def test_canonical_family_freezes_six_alpha_control_and_one_selected_intraday_candidate() -> None:
-    spec = build_intraday_price_volume_family_spec(
+    spec = BuildIntradayPriceVolumeFamilySpec(
         development_dates=DATES[:5],
         confirmation_dates=DATES[5:],
         bootstrap_repetitions=100,
@@ -79,7 +79,7 @@ def test_canonical_family_freezes_six_alpha_control_and_one_selected_intraday_ca
 
 
 def test_limited_factor_family_confirms_only_the_preregistered_candidate() -> None:
-    report = evaluate_limited_factor_family(
+    report = EvaluateLimitedFactorFamily(
         _spec(),
         dataset_report_hash=HASH,
         dataset_manifest_hash="b" * 64,
@@ -96,7 +96,7 @@ def test_limited_factor_family_confirms_only_the_preregistered_candidate() -> No
 
 
 def test_limited_factor_family_uses_only_the_sealed_confirmation_dates_for_gates() -> None:
-    report = evaluate_limited_factor_family(
+    report = EvaluateLimitedFactorFamily(
         _spec(),
         dataset_report_hash=HASH,
         dataset_manifest_hash="b" * 64,
@@ -123,7 +123,7 @@ def test_limited_factor_family_uses_only_the_sealed_confirmation_dates_for_gates
     ),
 )
 def test_limited_factor_family_rejects_failed_quality_or_risk_gates(overrides: dict[str, object], reason: str) -> None:
-    report = evaluate_limited_factor_family(
+    report = EvaluateLimitedFactorFamily(
         _spec(),
         dataset_report_hash=HASH,
         dataset_manifest_hash="b" * 64,
@@ -138,7 +138,7 @@ def test_limited_factor_family_rejects_failed_quality_or_risk_gates(overrides: d
 
 def test_limited_factor_family_rejects_unregistered_or_incomplete_evidence() -> None:
     with pytest.raises(ValueError, match="complete preregistered challenger family"):
-        evaluate_limited_factor_family(
+        EvaluateLimitedFactorFamily(
             replace(
                 _spec(),
                 candidates=(
@@ -155,7 +155,7 @@ def test_limited_factor_family_rejects_unregistered_or_incomplete_evidence() -> 
 
 
 def test_limited_factor_family_insufficient_report_has_no_partial_evidence() -> None:
-    report = insufficient_limited_factor_family_report(
+    report = InsufficientLimitedFactorFamilyReport(
         _spec(),
         dataset_report_hash=HASH,
         dataset_manifest_hash=None,

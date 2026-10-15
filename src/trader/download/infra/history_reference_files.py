@@ -14,14 +14,14 @@ from typing import Literal, cast
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_revision import HistoryRevision
-from trader.infra.atomic_files.json import atomic_read_json, atomic_write_json
+from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
 
 
-def history_st_evidence_path(reference_root: Path) -> Path:
+def HistoryStEvidencePath(reference_root: Path) -> Path:
     return reference_root / "historical_st.json"
 
 
-def history_reference_path(history_root: Path, digest: str) -> Path:
+def HistoryReferencePath(history_root: Path, digest: str) -> Path:
     return history_root / "references" / f"{digest}.json"
 
 
@@ -107,7 +107,7 @@ class HistoryReferenceIndex:
         return False
 
 
-def write_history_reference(path: Path, reference: HistoryReferenceSnapshot) -> None:
+def WriteHistoryReference(path: Path, reference: HistoryReferenceSnapshot) -> None:
     industries: dict[str, list[list[str | None]]] = defaultdict(list)
     for item in reference.industry_intervals:
         industries[item.code].append(
@@ -118,7 +118,7 @@ def write_history_reference(path: Path, reference: HistoryReferenceSnapshot) -> 
                 item.classification,
             ]
         )
-    atomic_write_json(
+    AtomicWriteJson(
         path,
         {
             "content_hash": reference.content_hash,
@@ -129,9 +129,9 @@ def write_history_reference(path: Path, reference: HistoryReferenceSnapshot) -> 
     )
 
 
-def read_history_reference(path: Path) -> HistoryReferenceSnapshot:
+def ReadHistoryReference(path: Path) -> HistoryReferenceSnapshot:
     try:
-        payload = atomic_read_json(path)
+        payload = AtomicReadJson(path)
         if not isinstance(payload, dict) or set(payload) != {
             "content_hash",
             "eligible_codes",
@@ -162,26 +162,26 @@ def read_history_reference(path: Path) -> HistoryReferenceSnapshot:
         raise ValueError("history reference file is invalid") from exc
 
 
-def read_bound_history_reference(root: Path, supplier_contract: str) -> HistoryReferenceSnapshot:
+def ReadBoundHistoryReference(root: Path, supplier_contract: str) -> HistoryReferenceSnapshot:
     if not supplier_contract.startswith("history_ref_"):
         raise ValueError("history reference contract requires rebuilding history")
     digest = supplier_contract[len("history_ref_") : len("history_ref_") + 64]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise ValueError("history reference identity is invalid")
-    reference = read_history_reference(history_reference_path(root, digest))
+    reference = ReadHistoryReference(HistoryReferencePath(root, digest))
     if reference.content_hash != digest:
         raise ValueError("history reference identity conflict")
     return reference
 
 
-def read_st_evidence(path: Path) -> tuple[HistoryStEvidence, ...]:
+def ReadStEvidence(path: Path) -> tuple[HistoryStEvidence, ...]:
     if not path.is_file():
         return ()
-    return _decode_st_rows(atomic_read_json(path))
+    return _decode_st_rows(AtomicReadJson(path))
 
 
-def write_st_evidence(path: Path, evidence: tuple[HistoryStEvidence, ...]) -> None:
-    atomic_write_json(path, {item.code: [item.checked_on.isoformat(), item.status] for item in evidence})
+def WriteStEvidence(path: Path, evidence: tuple[HistoryStEvidence, ...]) -> None:
+    AtomicWriteJson(path, {item.code: [item.checked_on.isoformat(), item.status] for item in evidence})
 
 
 def _decode_st_rows(value: object) -> tuple[HistoryStEvidence, ...]:
@@ -222,10 +222,10 @@ def _decode_industry(code: str, item: object) -> BaoStockIndustryInterval:
 
 __all__ = [
     "HistoryReferenceIndex",
-    "history_st_evidence_path",
-    "read_bound_history_reference",
-    "read_history_reference",
-    "read_st_evidence",
-    "write_history_reference",
-    "write_st_evidence",
+    "HistoryStEvidencePath",
+    "ReadBoundHistoryReference",
+    "ReadHistoryReference",
+    "ReadStEvidence",
+    "WriteHistoryReference",
+    "WriteStEvidence",
 ]

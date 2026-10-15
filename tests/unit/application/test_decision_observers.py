@@ -5,8 +5,8 @@ import threading
 from tests.unit.domain.test_decision_identity import decision
 from trader.infra.shutdown import ShutdownDeadline
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
+    BuildDecisionCommitted,
     DecisionObservation,
-    build_decision_committed,
 )
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 
@@ -29,7 +29,7 @@ def test_observer_is_bounded_non_blocking_and_isolates_consumer_failure() -> Non
         capacity=1,
         thread_name="test-observer",
     )
-    event = build_decision_committed(decision())
+    event = BuildDecisionCommitted(decision())
     observation = DecisionObservation(event, None)
     observer.start()
     assert observer.offer(observation)
@@ -57,7 +57,7 @@ def test_observer_shutdown_does_not_reset_the_shared_deadline() -> None:
 
     observer = AsyncDecisionObserver((blocked,), capacity=1, thread_name="test-observer-deadline")
     observer.start()
-    observer.offer(DecisionObservation(build_decision_committed(decision()), None))
+    observer.offer(DecisionObservation(BuildDecisionCommitted(decision()), None))
     assert entered.wait(timeout=1.0)
 
     try:

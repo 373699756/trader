@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.research import CorporateRiskCategory, ResearchObservation
 
@@ -193,7 +193,7 @@ class _FactEvidence:
     material: tuple[tuple[str, str], ...] = ()
 
 
-def resolve_issuer_eligibility(
+def ResolveIssuerEligibility(
     facts: tuple[IssuerEligibilityFact, ...],
     code: str,
     observed_at: datetime,
@@ -214,7 +214,7 @@ def resolve_issuer_eligibility(
     )
 
 
-def eligibility_facts_from_quote(
+def EligibilityFactsFromQuote(
     quote: MarketQuote,
     *,
     observed_at: datetime,
@@ -261,7 +261,7 @@ _PERMANENT_RISK_REASONS = {
 }
 
 
-def eligibility_facts_from_research(
+def EligibilityFactsFromResearch(
     code: str,
     observation: ResearchObservation,
 ) -> tuple[IssuerEligibilityFact, ...]:
@@ -296,7 +296,7 @@ def eligibility_facts_from_research(
     return tuple(sorted(facts))
 
 
-def manual_blacklist_fact(code: str, effective_at: datetime, config_hash: str) -> IssuerEligibilityFact:
+def ManualBlacklistFact(code: str, effective_at: datetime, config_hash: str) -> IssuerEligibilityFact:
     evidence_version = config_hash
     return _fact(
         code,
@@ -310,7 +310,7 @@ def manual_blacklist_fact(code: str, effective_at: datetime, config_hash: str) -
     )
 
 
-def issuer_eligibility_fact_hash(fact: IssuerEligibilityFact) -> str:
+def IssuerEligibilityFactHash(fact: IssuerEligibilityFact) -> str:
     return _sha256(
         {
             "code": fact.code,
@@ -350,7 +350,7 @@ def _fact(
 
 
 def _sha256(payload: dict[str, str]) -> str:
-    return canonical_digest(payload, ensure_ascii=False)
+    return CanonicalDigest(payload, ensure_ascii=False)
 
 
 __all__ = [
@@ -362,9 +362,9 @@ __all__ = [
     "IssuerEligibilityReasonCount",
     "IssuerEligibilitySnapshot",
     "IssuerEligibilityState",
-    "eligibility_facts_from_quote",
-    "eligibility_facts_from_research",
-    "issuer_eligibility_fact_hash",
-    "manual_blacklist_fact",
-    "resolve_issuer_eligibility",
+    "EligibilityFactsFromQuote",
+    "EligibilityFactsFromResearch",
+    "IssuerEligibilityFactHash",
+    "ManualBlacklistFact",
+    "ResolveIssuerEligibility",
 ]

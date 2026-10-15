@@ -14,7 +14,7 @@ from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_sync_runner import RunHistorySync
 
 
 @pytest.mark.parametrize("mode", ("complete", "missing", "pending", "invalid_qfq_price", "unclassified_failure"))
@@ -39,7 +39,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
 
     baseline = Baseline(days)
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    result = run_history_sync(
+    result = RunHistorySync(
         config, _router(baseline, PartialPrices()), clock=lambda: NOW, progress=StderrHistorySyncProgress()
     )
     assert result.state == "completed"
@@ -62,7 +62,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
     old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
     baseline.calls.clear()
     retry_prices = Prices()
-    retried = run_history_sync(config, _router(baseline, retry_prices), clock=lambda: NOW)
+    retried = RunHistorySync(config, _router(baseline, retry_prices), clock=lambda: NOW)
     assert retried.unresolved_price_cells == (2 if mode == "invalid_qfq_price" else 0)
     assert baseline.calls == []
     if mode in {"missing", "pending"}:

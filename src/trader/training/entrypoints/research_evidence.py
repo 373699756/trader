@@ -63,7 +63,7 @@ COMMAND_SCHEMAS = {
 }
 
 
-def add_research_evidence_parsers(subparsers: argparse._SubParsersAction) -> None:
+def AddResearchEvidenceParsers(subparsers: argparse._SubParsersAction) -> None:
     descriptions = (
         ("research-h1-capability", "Probe two suppliers and seal fail-closed H1 evidence outside the repository."),
         ("research-data-qualification", "Read archive evidence and probe two suppliers without archive writes."),
@@ -99,7 +99,7 @@ def add_research_evidence_parsers(subparsers: argparse._SubParsersAction) -> Non
             parser.add_argument("--include-details", action="store_true")
 
 
-def external_path(value: Path, *, repository_root: Path, option: str) -> Path:
+def ExternalPath(value: Path, *, repository_root: Path, option: str) -> Path:
     path = value.expanduser()
     if not path.is_absolute():
         raise ValueError(f"{option} must be an absolute repository-external path")
@@ -109,7 +109,7 @@ def external_path(value: Path, *, repository_root: Path, option: str) -> Path:
     return resolved
 
 
-def parse_evidence_command(args: argparse.Namespace, *, repository_root: Path) -> ResearchEvidenceCommand:
+def ParseEvidenceCommand(args: argparse.Namespace, *, repository_root: Path) -> ResearchEvidenceCommand:
     if args.command in {"research-h1-capability", "research-data-qualification"}:
         from trader.training.domain.evaluation.h1_point_in_time import H1_SOURCE_CUTOFF
 
@@ -120,7 +120,7 @@ def parse_evidence_command(args: argparse.Namespace, *, repository_root: Path) -
     if args.command == "research-h1-capability":
         return CapabilityCommand(
             args.h1_runtime_dir.expanduser().resolve(),
-            external_path(args.artifact_dir, repository_root=repository_root, option="--artifact-dir"),
+            ExternalPath(args.artifact_dir, repository_root=repository_root, option="--artifact-dir"),
             args.code,
             args.historical_anchor_date,
             _timeout(args.timeout_seconds),
@@ -139,10 +139,8 @@ def parse_evidence_command(args: argparse.Namespace, *, repository_root: Path) -
             args.history_root.expanduser().resolve(), args.required_sample_codes, args.tushare_access_points
         )
     if args.command == "research-terminal-holdout":
-        parent = external_path(
-            args.parent_artifact_dir, repository_root=repository_root, option="--parent-artifact-dir"
-        )
-        output = external_path(args.output_dir, repository_root=repository_root, option="--output-dir")
+        parent = ExternalPath(args.parent_artifact_dir, repository_root=repository_root, option="--parent-artifact-dir")
+        output = ExternalPath(args.output_dir, repository_root=repository_root, option="--output-dir")
         if parent == output or parent in output.parents or output in parent.parents:
             raise ValueError("terminal parent and output directories must be separate")
         return HoldoutCommand(parent, output)
@@ -155,23 +153,23 @@ def _timeout(value: float) -> float:
     return value
 
 
-def run_research_evidence(args: argparse.Namespace, *, repository_root: Path) -> int:
+def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path) -> int:
     import requests
 
-    from trader.bootstrap import execute_research_evidence
-    from trader.training.entrypoints.research_evidence_projection import project_evidence_result
+    from trader.bootstrap import ExecuteResearchEvidence
+    from trader.training.entrypoints.research_evidence_projection import ProjectEvidenceResult
 
     output: Path | None = None
     try:
         if args.output != "-":
-            output = external_path(Path(args.output), repository_root=repository_root, option="--output")
+            output = ExternalPath(Path(args.output), repository_root=repository_root, option="--output")
         include_details = args.command == "research-industry-audit" and args.include_details
         if include_details and output is None:
             raise ValueError("--include-details requires an external --output path")
-        command = parse_evidence_command(args, repository_root=repository_root)
+        command = ParseEvidenceCommand(args, repository_root=repository_root)
         _validate_output_separation(command, output)
-        report = execute_research_evidence(command)
-        payload, exit_code = project_evidence_result(report, include_details=include_details)
+        report = ExecuteResearchEvidence(command)
+        payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
         _write(payload, output)
         return exit_code
     except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:

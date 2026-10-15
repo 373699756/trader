@@ -50,7 +50,7 @@ def test_security_master_batch_uses_one_write_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data_plane = SQLiteDataPlane(tmp_path)
-    original_connection_scope = data_plane_sqlite.connection_scope
+    original_connection_scope = data_plane_sqlite.ConnectionScope
     connection_count = 0
 
     @contextmanager
@@ -60,7 +60,7 @@ def test_security_master_batch_uses_one_write_transaction(
         with original_connection_scope(database_path) as connection:
             yield connection
 
-    monkeypatch.setattr(data_plane_sqlite, "connection_scope", counting_connection_scope)
+    monkeypatch.setattr(data_plane_sqlite, "ConnectionScope", counting_connection_scope)
     records = tuple(
         _security_master_record(code, payload={"board": "main", "exchange": "sse"})
         for code in ("600001", "600002", "600003")
@@ -159,13 +159,13 @@ def test_formal_records_are_idempotent_for_same_payload_and_conflict_on_differen
     record = _security_master_record("600002", payload={"field": "formal"})
 
     data_plane.save_security_master_formal("freeze-2026-07-30", record)
-    with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
+    with data_plane_sqlite.ConnectionScope(_database_path(tmp_path)) as connection:
         connection.execute(
             "UPDATE security_master_formal SET status = 'staged' WHERE freeze_id = ? AND code = ?",
             ("freeze-2026-07-30", "600002"),
         )
     data_plane.save_security_master_formal("freeze-2026-07-30", record)
-    with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
+    with data_plane_sqlite.ConnectionScope(_database_path(tmp_path)) as connection:
         retried = connection.execute(
             "SELECT status FROM security_master_formal WHERE freeze_id = ? AND code = ?",
             ("freeze-2026-07-30", "600002"),
@@ -192,7 +192,7 @@ def test_load_verification_failure_quarantines_committed_row_and_returns_none(tm
     data_plane.save_security_master_recent(record)
     db = _database_path(tmp_path)
 
-    with data_plane_sqlite.connection_scope(db) as connection:
+    with data_plane_sqlite.ConnectionScope(db) as connection:
         connection.execute(
             "UPDATE security_master_recent SET payload = ?, payload_hash = ? WHERE code = ?",
             ('{"invalid": true', "000000000000000000000000000000000000000000000000000000000000000000", "600003"),
@@ -200,7 +200,7 @@ def test_load_verification_failure_quarantines_committed_row_and_returns_none(tm
 
     assert data_plane.load_security_master_recent("600003") is None
 
-    with data_plane_sqlite.connection_scope(db) as connection:
+    with data_plane_sqlite.ConnectionScope(db) as connection:
         row = connection.execute(
             "SELECT status, error FROM security_master_recent WHERE code = ?",
             ("600003",),
@@ -226,7 +226,7 @@ def test_recovery_promotes_staged_rows_and_quarantines_corrupted_committed_rows(
     )
     data_plane.save_security_master_recent(_security_master_record("600004", payload={"field": "to-corrupt"}))
 
-    with data_plane_sqlite.connection_scope(_database_path(tmp_path)) as connection:
+    with data_plane_sqlite.ConnectionScope(_database_path(tmp_path)) as connection:
         connection.execute(
             "UPDATE security_master_recent SET payload = ? WHERE code = ?",
             ('{"invalid": true', "600004"),
@@ -249,7 +249,7 @@ def _insert_staged_source_cursor_row(database: Path, *, cursor_name: str, payloa
     text = _canonical_json(payload)
     payload_bytes = text.encode()
     payload_hash = hashlib.sha256(payload_bytes).hexdigest()
-    with data_plane_sqlite.connection_scope(database) as connection:
+    with data_plane_sqlite.ConnectionScope(database) as connection:
         connection.execute(
             """
             INSERT INTO source_cursor_recent(

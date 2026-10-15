@@ -9,16 +9,16 @@ from typing import Literal
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
+    BuildDecisionCommitted,
     DecisionCommitted,
-    build_decision_committed,
 )
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionIdentity,
     DecisionOverlay,
+    FormalScoredDecision,
+    IdentityCodes,
     ScoredDecision,
-    formal_scored_decision,
-    identity_codes,
 )
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -95,7 +95,7 @@ class UnifiedDecisionIndex:
             overlay = self._overlays.get(identity.strategy)
             if overlay is not None and overlay.parent_version != identity.version:
                 self._overlays.pop(identity.strategy, None)
-            event = build_decision_committed(identity) if isinstance(identity, ScoredDecision) else None
+            event = BuildDecisionCommitted(identity) if isinstance(identity, ScoredDecision) else None
             return UnifiedDecisionPublishResult(True, "accepted", event)
 
     def publish_scored(
@@ -130,7 +130,7 @@ class UnifiedDecisionIndex:
             return UnifiedDecisionPublishResult(
                 True,
                 "accepted",
-                build_decision_committed(decision, projection_version=projection_version),
+                BuildDecisionCommitted(decision, projection_version=projection_version),
             )
 
     def publish_overlay(
@@ -308,7 +308,7 @@ class UnifiedDecisionIndex:
         degraded_reasons: tuple[str, ...] = (),
         input_versions: tuple[tuple[str, str], ...] = (),
     ) -> UnifiedDecisionSealResult:
-        formal = formal_scored_decision(
+        formal = FormalScoredDecision(
             decision,
             degraded_reasons=degraded_reasons,
             input_versions=input_versions,
@@ -372,7 +372,7 @@ def _overlay_rejection(
         rejection = "trade_date_mismatch"
     elif candidate.observed_at < current.observed_at:
         rejection = "stale_overlay"
-    elif any(quote.code not in identity_codes(current) for quote in candidate.quotes):
+    elif any(quote.code not in IdentityCodes(current) for quote in candidate.quotes):
         rejection = "quote_scope_mismatch"
     elif (existing.version if existing is not None else None) != expected_version:
         rejection = "overlay_cas_mismatch"
@@ -398,7 +398,7 @@ def _initial_overlay_rejection(decision: ScoredDecision, candidate: DecisionOver
         complete_anchors = tuple(anchor for anchor in anchors if anchor is not None)
         if len(complete_anchors) != len(anchors):
             rejection = "quote_anchor_missing"
-        elif frozenset(quote.code for quote in candidate.quotes) != identity_codes(decision):
+        elif frozenset(quote.code for quote in candidate.quotes) != IdentityCodes(decision):
             rejection = "quote_scope_mismatch"
         elif candidate.quotes != tuple(sorted(complete_anchors, key=lambda quote: quote.code)):
             rejection = "quote_identity_mismatch"

@@ -7,9 +7,9 @@ from trader.recommendation.domain.market.feature_contracts import (
     TOMORROW_MODEL_FEATURE_MANIFEST,
     TOMORROW_RAW_ALPHA_FEATURE_MANIFEST,
     TOMORROW_RESEARCH_FEATURE_MANIFEST,
+    CalculateTomorrowQfqAlpha,
     FeatureId,
     QfqPriceAnchors,
-    calculate_tomorrow_qfq_alpha,
 )
 
 
@@ -38,7 +38,7 @@ def test_catalog_owns_model_units_order_missing_policy_and_dependencies() -> Non
 
 
 def test_qfq_calculators_preserve_production_skip_five_semantics_and_missing_values() -> None:
-    values = calculate_tomorrow_qfq_alpha(
+    values = CalculateTomorrowQfqAlpha(
         QfqPriceAnchors(
             current_close=120.0,
             lagged_closes=((1, 100.0), (3, 80.0), (5, 60.0), (20, 50.0), (40, 40.0), (60, 30.0)),
@@ -54,11 +54,11 @@ def test_qfq_calculators_preserve_production_skip_five_semantics_and_missing_val
     assert by_name["qfq_momentum_40d_skip5"] == pytest.approx(0.5)
     assert by_name["qfq_momentum_60d_skip5"] == pytest.approx(1.0)
 
-    missing = calculate_tomorrow_qfq_alpha(QfqPriceAnchors(120.0, ((1, 100.0),)))
+    missing = CalculateTomorrowQfqAlpha(QfqPriceAnchors(120.0, ((1, 100.0),)))
     assert missing[0].value == pytest.approx(0.2)
     assert all(item.value is None for item in missing[1:])
 
-    invalid = calculate_tomorrow_qfq_alpha(QfqPriceAnchors(float("nan"), ((1, 100.0), (5, 0.0))))
+    invalid = CalculateTomorrowQfqAlpha(QfqPriceAnchors(float("nan"), ((1, 100.0), (5, 0.0))))
     assert all(item.value is None for item in invalid)
 
 

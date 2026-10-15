@@ -12,7 +12,7 @@ from tests.unit.domain.test_decision_identity import NOW, decision
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
-    formal_scored_decision,
+    FormalScoredDecision,
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.evaluation.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
@@ -137,7 +137,7 @@ def test_recommend_and_watch_outcomes_are_counted_separately_from_avoided_leader
         ),
         selection_diagnostics=None,
     )
-    formal = CommittedDecisionRecord(formal_scored_decision(current), NOW, "scheduled")
+    formal = CommittedDecisionRecord(FormalScoredDecision(current), NOW, "scheduled")
     repository = _repository(tmp_path, formal)
 
     assert {target.stock_code for target in repository.pending_outcome_targets(limit=10)} == {

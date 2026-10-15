@@ -9,9 +9,9 @@ from typing import Protocol
 
 from trader.recommendation.application.pipeline.downside_action.downside_protection import RiskControlPort
 from trader.recommendation.application.pipeline.final_selection.decision_projection import (
+    BuildScoredLocal,
     ScoredLocalProjection,
     ScoredProjectionInputs,
-    build_scored_local,
 )
 from trader.recommendation.application.pipeline.final_selection.grouped_ranking import RankingSelectionPort
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
@@ -62,7 +62,7 @@ class LocalScoringService(LocalScoringPort):
         context: LocalScoringContext | None = None,
     ) -> ScoredLocalProjection:
         context = context if context is not None else LocalScoringContext()
-        return build_scored_local(
+        return BuildScoredLocal(
             native_input,
             policy,
             sequence=sequence,

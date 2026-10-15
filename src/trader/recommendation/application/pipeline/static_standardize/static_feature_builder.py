@@ -59,7 +59,7 @@ class FeatureStageInvalidation:
     affected_groups: tuple[str, ...]
 
 
-def build_feature_computation_plan(
+def BuildFeatureComputationPlan(
     manifest: FeatureVectorManifest,
     catalog: FeatureSpecCatalog = FEATURE_SPEC_CATALOG,
 ) -> FeatureComputationPlan:
@@ -69,7 +69,7 @@ def build_feature_computation_plan(
     return FeatureComputationPlan(manifest, _group_stages(ordered_specs), tuple(item.value for item in facts))
 
 
-def affected_feature_stages(
+def AffectedFeatureStages(
     plan: FeatureComputationPlan,
     previous: tuple[FeatureFactRevision, ...] | None,
     current: tuple[FeatureFactRevision, ...],
@@ -160,6 +160,6 @@ __all__ = [
     "FeatureComputationPlan",
     "FeatureComputationStage",
     "FeatureStageInvalidation",
-    "affected_feature_stages",
-    "build_feature_computation_plan",
+    "AffectedFeatureStages",
+    "BuildFeatureComputationPlan",
 ]

@@ -40,7 +40,7 @@ class PipelineStageOutput(Generic[_RecordT]):
                 raise ValueError("business rejection count must match its stage")
 
 
-def stage_output(
+def StageOutput(
     stage: PipelineStage,
     records: Sequence[_RecordT],
     *,
@@ -82,7 +82,7 @@ def stage_output(
     return PipelineStageOutput(values, snapshot, rejections)
 
 
-def require_previous_stage(output: PipelineStageOutput[object], stage: PipelineStage) -> None:
+def RequirePreviousStage(output: PipelineStageOutput[object], stage: PipelineStage) -> None:
     expected = PIPELINE_STAGES.index(stage) - 1
     if expected < 0 or output.snapshot.stage is not PIPELINE_STAGES[expected]:
         raise ValueError("pipeline stage input does not come from the preceding stage")
@@ -106,7 +106,7 @@ def _state(
     return StageState.READY
 
 
-def measured_output(
+def MeasuredOutput(
     output: PipelineStageOutput[_RecordT],
     started: float,
     monotonic: Callable[[], float],
@@ -115,4 +115,4 @@ def measured_output(
     return replace(output, snapshot=replace(output.snapshot, latency_ms=max(0, int((monotonic() - started) * 1000))))
 
 
-__all__ = ["PipelineStageOutput", "require_previous_stage", "stage_output", "measured_output"]
+__all__ = ["PipelineStageOutput", "RequirePreviousStage", "StageOutput", "MeasuredOutput"]

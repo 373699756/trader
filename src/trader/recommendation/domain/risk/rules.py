@@ -46,7 +46,7 @@ class Rating(str, Enum):
     NEUTRAL = "neutral"
 
 
-def parse_rating(text: str, *, fallback: Rating = Rating.NEUTRAL) -> Rating:
+def ParseRating(text: str, *, fallback: Rating = Rating.NEUTRAL) -> Rating:
     """Parse a free-text rating string into a ``Rating`` enum.
 
     Only exact known labels are accepted; unknown or empty strings return
@@ -64,7 +64,7 @@ def parse_rating(text: str, *, fallback: Rating = Rating.NEUTRAL) -> Rating:
     return fallback
 
 
-def derive_local_risk_facts(
+def DeriveLocalRiskFacts(
     snapshot: FeatureSnapshot,
     observed_at: datetime,
     rules: Mapping[str, RiskRule],
@@ -92,7 +92,7 @@ def derive_local_risk_facts(
                 actual,
             )
         )
-    return deduplicate_risk_facts(facts, rules=rules)
+    return DeduplicateRiskFacts(facts, rules=rules)
 
 
 @dataclass(frozen=True)
@@ -111,12 +111,12 @@ class RiskMappingRequest:
         object.__setattr__(self, "evidence", tuple(self.evidence))
 
 
-def map_deepseek_risk_facts(request: RiskMappingRequest) -> tuple[tuple[RiskFact, ...], float, bool]:
+def MapDeepseekRiskFacts(request: RiskMappingRequest) -> tuple[tuple[RiskFact, ...], float, bool]:
     mapped: list[RiskFact] = []
     veto = False
     evidence_by_id = {item.evidence_id: item for item in request.evidence}
     for raw in request.raw_facts:
-        rule_code = deepseek_risk_rule_code(raw.risk_code, raw.severity)
+        rule_code = DeepseekRiskRuleCode(raw.risk_code, raw.severity)
         rule = request.rules.get(rule_code) if rule_code is not None else None
         if (
             rule is None
@@ -148,11 +148,11 @@ def map_deepseek_risk_facts(request: RiskMappingRequest) -> tuple[tuple[RiskFact
         )
         mapped.append(mapped_fact)
         veto = veto or mapped_fact.veto
-    deduplicated = deduplicate_risk_facts(mapped, rules=request.rules)
-    return deduplicated, aggregate_risk_penalty(deduplicated, cap=request.cap), veto
+    deduplicated = DeduplicateRiskFacts(mapped, rules=request.rules)
+    return deduplicated, AggregateRiskPenalty(deduplicated, cap=request.cap), veto
 
 
-def deepseek_risk_rule_code(risk_code: str, severity: str) -> str | None:
+def DeepseekRiskRuleCode(risk_code: str, severity: str) -> str | None:
     """Resolve a structured model fact to its authoritative local rule."""
     if risk_code not in DEEPSEEK_STRUCTURED_RISK_CODES:
         return None
@@ -188,7 +188,7 @@ def _evidence_is_valid(
     return True
 
 
-def deduplicate_risk_facts(
+def DeduplicateRiskFacts(
     facts: Iterable[RiskFact],
     *,
     rules: Mapping[str, RiskRule] | None = None,
@@ -211,7 +211,7 @@ def deduplicate_risk_facts(
     return tuple(sorted((*independent, *by_group.values()), key=lambda fact: (fact.risk_code, fact.risk_fact_id)))
 
 
-def aggregate_risk_penalty(facts: Iterable[RiskFact], *, cap: float) -> float:
+def AggregateRiskPenalty(facts: Iterable[RiskFact], *, cap: float) -> float:
     total = sum((max(Decimal("0"), Decimal(str(fact.penalty))) for fact in facts), Decimal("0"))
     return float(min(Decimal(str(cap)), total))
 
@@ -272,10 +272,10 @@ __all__ = [
     "DEEPSEEK_STRUCTURED_RISK_CODES",
     "Rating",
     "RiskMappingRequest",
-    "aggregate_risk_penalty",
-    "deduplicate_risk_facts",
-    "deepseek_risk_rule_code",
-    "derive_local_risk_facts",
-    "map_deepseek_risk_facts",
-    "parse_rating",
+    "AggregateRiskPenalty",
+    "DeduplicateRiskFacts",
+    "DeepseekRiskRuleCode",
+    "DeriveLocalRiskFacts",
+    "MapDeepseekRiskFacts",
+    "ParseRating",
 ]

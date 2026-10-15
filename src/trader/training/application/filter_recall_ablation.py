@@ -8,7 +8,7 @@ from datetime import date
 from trader.training.domain.evaluation.filter_recall_ablation import (
     FilterAblationRow,
     FilterRecallAblationReport,
-    run_filter_recall_ablation,
+    RunFilterRecallAblation,
 )
 
 
@@ -19,10 +19,8 @@ class FilterRecallAblationRequest:
     rows: tuple[FilterAblationRow, ...]
 
 
-def execute_filter_recall_ablation(request: FilterRecallAblationRequest) -> FilterRecallAblationReport:
-    return run_filter_recall_ablation(
-        request.rows, strategy=request.strategy, development_dates=request.development_dates
-    )
+def ExecuteFilterRecallAblation(request: FilterRecallAblationRequest) -> FilterRecallAblationReport:
+    return RunFilterRecallAblation(request.rows, strategy=request.strategy, development_dates=request.development_dates)
 
 
-__all__ = ["FilterRecallAblationRequest", "execute_filter_recall_ablation"]
+__all__ = ["FilterRecallAblationRequest", "ExecuteFilterRecallAblation"]

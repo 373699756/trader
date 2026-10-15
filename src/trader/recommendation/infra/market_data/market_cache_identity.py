@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import date, datetime
 from typing import ParamSpec, TypeVar
 
-from trader.infra.cache_contracts import CacheRequestKey, request_key
+from trader.infra.cache_contracts import CacheRequestKey, RequestKey
 from trader.infra.market_data.history.history import DailyBar
 from trader.recommendation.domain.market.models import (
     Evidence,
@@ -23,7 +23,7 @@ from trader.recommendation.domain.market.research import (
 )
 from trader.recommendation.domain.market.tail import MinuteBar
 from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
-from trader.recommendation.infra.normalization.merge_quote import source_name, source_priority
+from trader.recommendation.infra.normalization.merge_quote import SourceName, SourcePriority
 
 _P = ParamSpec("_P")
 _T = TypeVar("_T")
@@ -48,7 +48,7 @@ def _source_batch_identity(
         "observed_at": observed_at,
         "options": options,
     }
-    return request_key(payload)
+    return RequestKey(payload)
 
 
 def _history_preload_codes(quotes: Sequence[MarketQuote], limit: int) -> tuple[str, ...]:
@@ -143,11 +143,11 @@ def _add_action_restriction(
 
 
 def _quote_version(quote: MarketQuote) -> tuple[datetime, datetime, int, str, str]:
-    source = source_name(quote.source)
+    source = SourceName(quote.source)
     return (
         quote.source_time,
         quote.received_time,
-        source_priority(source),
+        SourcePriority(source),
         source,
         quote.data_version,
     )
@@ -463,7 +463,7 @@ def _deserialize_evidence(raw: Mapping[str, object]) -> Evidence:
         title=str(raw.get("title") or ""),
         source=str(raw.get("source") or ""),
         published_at=_as_aware_datetime(raw, "published_at"),
-        received_at=as_datetime(raw.get("received_at")),
+        received_at=AsDatetime(raw.get("received_at")),
         data_version=str(raw.get("data_version") or ""),
     )
 
@@ -478,7 +478,7 @@ def _as_aware_datetime(raw: Mapping[str, object], key: str) -> datetime:
     return value_datetime
 
 
-def as_datetime(raw: object) -> datetime | None:
+def AsDatetime(raw: object) -> datetime | None:
     if raw is None:
         return None
     if not isinstance(raw, str) or not raw:

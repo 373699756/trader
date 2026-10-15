@@ -10,7 +10,7 @@ from dataclasses import dataclass, replace
 from trader.recommendation.application.pipeline.final_selection.decision_projection import ScoredLocalProjection
 from trader.recommendation.application.pipeline.final_selection.scored_stage_chain import ScoredStageChain
 from trader.recommendation.application.pipeline.quality_check.input_quality_service import ScoredInputQuality
-from trader.recommendation.application.pipeline.stage_output import stage_output
+from trader.recommendation.application.pipeline.stage_output import StageOutput
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
@@ -23,7 +23,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PipelineStageState,
     PipelineStageStatus,
     RecommendationPipelineStatus,
-    validate_stage_batch_continuity,
+    ValidateStageBatchContinuity,
 )
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionItem, ScoredDecision
@@ -34,7 +34,7 @@ from trader.recommendation.domain.publication.models import (
 )
 from trader.recommendation.domain.selection.scored_selection import (
     ScoredCandidateStageCounts,
-    split_filter_reason_counts,
+    SplitFilterReasonCounts,
 )
 
 
@@ -44,7 +44,7 @@ class _PipelineCompletionOptions:
     candidate_score_threshold: float | None
 
 
-def build_supply_status(
+def BuildSupplyStatus(
     projection: ScoredLocalProjection,
     candidate_stage_counts: ScoredCandidateStageCounts | None = None,
     *,
@@ -80,7 +80,7 @@ def build_supply_status(
         stage_counts,
         _PipelineCompletionOptions(quote_eligible, candidate_score_threshold),
     )
-    snapshots = join_stage_snapshots(input_stages, (scored_stages or projection.stages).snapshots)
+    snapshots = JoinStageSnapshots(input_stages, (scored_stages or projection.stages).snapshots)
     pipeline = replace(pipeline, stage_snapshots=snapshots)
     reasons: Counter[str] = Counter()
     for item in evaluations:
@@ -123,16 +123,16 @@ def build_supply_status(
     )
 
 
-def join_stage_snapshots(
+def JoinStageSnapshots(
     first_nine: tuple[PipelineStageSnapshot, ...],
     scored: tuple[PipelineStageSnapshot, ...],
 ) -> tuple[PipelineStageSnapshot, ...]:
     snapshots = (*first_nine, *scored)
-    validate_stage_batch_continuity(snapshots)
+    ValidateStageBatchContinuity(snapshots)
     return snapshots
 
 
-def build_pending_stage_snapshots(
+def BuildPendingStageSnapshots(
     first_nine: tuple[PipelineStageSnapshot, ...],
 ) -> tuple[PipelineStageSnapshot, ...]:
     """Explicit unexecuted placeholders; never inferred from scoring submetrics."""
@@ -146,7 +146,7 @@ def build_pending_stage_snapshots(
     previous = first_nine[-1]
     snapshots = list(first_nine)
     for stage in PIPELINE_STAGES[9:]:
-        snapshot = stage_output(
+        snapshot = StageOutput(
             stage,
             (),
             input_batch_id=previous.output_batch_id,
@@ -161,7 +161,7 @@ def build_pending_stage_snapshots(
     return tuple(snapshots)
 
 
-def build_pending_pipeline(
+def BuildPendingPipeline(
     stage_counts: ScoredCandidateStageCounts,
     *,
     candidate_feature_count: int,
@@ -254,7 +254,7 @@ def build_pending_pipeline(
     )
 
 
-def update_supply_status_decision(
+def UpdateSupplyStatusDecision(
     current: InputQualityStatus,
     projection: ScoredLocalProjection,
     decision: ScoredDecision,
@@ -266,7 +266,7 @@ def update_supply_status_decision(
     if stage_counts is None:
         raise ValueError("decision update requires immutable candidate stage facts")
     refresh = current.pipeline.stage("candidate_refresh")
-    return build_supply_status(
+    return BuildSupplyStatus(
         projection,
         stage_counts,
         candidate_quote_eligible=refresh.output_count,
@@ -329,9 +329,7 @@ def _completed_pipeline(
     current_stage: PipelineStageKey = (
         "concentration" if decision.stage == "hybrid" or not projection.review_candidates else "deepseek_review"
     )
-    business_reason_counts, readiness_reason_counts = split_filter_reason_counts(
-        quality.population_filter_reason_counts
-    )
+    business_reason_counts, readiness_reason_counts = SplitFilterReasonCounts(quality.population_filter_reason_counts)
     input_readiness_state: PipelineStageState = "degraded" if readiness_reason_counts else "completed"
     candidate_refresh_state: PipelineStageState = (
         "degraded" if candidate_quote_eligible < stage_counts.candidate_limit_selected else "completed"
@@ -741,8 +739,8 @@ def _required_count(value: int | None) -> int:
 
 
 __all__ = [
-    "build_pending_stage_snapshots",
-    "build_pending_pipeline",
-    "build_supply_status",
-    "update_supply_status_decision",
+    "BuildPendingStageSnapshots",
+    "BuildPendingPipeline",
+    "BuildSupplyStatus",
+    "UpdateSupplyStatusDecision",
 ]

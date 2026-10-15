@@ -9,12 +9,12 @@ COMPRESSED_PAYLOAD_PREFIX = b"trader-zlib\x00"
 DEFAULT_DECODED_PAYLOAD_BYTES = 64 * 1024 * 1024
 
 
-def persisted_payload_bytes(payload: bytes) -> bytes:
+def PersistedPayloadBytes(payload: bytes) -> bytes:
     compressed = COMPRESSED_PAYLOAD_PREFIX + zlib.compress(payload, level=6)
     return compressed if len(compressed) < len(payload) else payload
 
 
-def decoded_payload_bytes(payload: bytes, *, maximum_bytes: int) -> bytes:
+def DecodedPayloadBytes(payload: bytes, *, maximum_bytes: int) -> bytes:
     if maximum_bytes < 1:
         raise ValueError("research trace decoded payload limit must be positive")
     if not payload.startswith(COMPRESSED_PAYLOAD_PREFIX):
@@ -32,14 +32,14 @@ def decoded_payload_bytes(payload: bytes, *, maximum_bytes: int) -> bytes:
     return decoded
 
 
-def sha256(payload: bytes) -> str:
+def Sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
 __all__ = [
     "COMPRESSED_PAYLOAD_PREFIX",
     "DEFAULT_DECODED_PAYLOAD_BYTES",
-    "decoded_payload_bytes",
-    "persisted_payload_bytes",
-    "sha256",
+    "DecodedPayloadBytes",
+    "PersistedPayloadBytes",
+    "Sha256",
 ]

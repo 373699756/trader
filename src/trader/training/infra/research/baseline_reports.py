@@ -7,16 +7,16 @@ from datetime import date
 from pathlib import Path
 from typing import Literal, cast
 
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.application.baseline_replay_report import (
     BaselineAggregateMetrics,
     BaselineDayMetrics,
     BaselineReportStatus,
     HistoricalBaselineReport,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.specification import HISTORICAL_RESEARCH_SPEC
-from trader.training.infra.research.identity_codec import research_json, research_value
+from trader.training.infra.research.identity_codec import ResearchJson, ResearchValue
 
 _REPORT_NAME = "historical-baseline-report.json"
 
@@ -39,11 +39,11 @@ class JsonBaselineReportIndex:
             if existing.report_hash != report.report_hash:
                 raise BaselineReportConflictError("Historical replay report identity conflict")
             return existing
-        payload = research_value(report)
+        payload = ResearchValue(report)
         if not isinstance(payload, dict):
             raise TypeError("Historical replay report payload must be an object")
         payload["report_hash"] = report.report_hash
-        if not publish_immutable(path, research_json(payload)):
+        if not PublishImmutable(path, ResearchJson(payload)):
             existing = self.verify()
             if existing.report_hash != report.report_hash:
                 raise BaselineReportConflictError("Historical replay report identity conflict")
@@ -57,7 +57,7 @@ class JsonBaselineReportIndex:
             if not isinstance(raw, dict):
                 raise TypeError("report payload is not an object")
             persisted_hash = raw.pop("report_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("report hash mismatch")
             report = _report_from_payload(raw)
         except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:

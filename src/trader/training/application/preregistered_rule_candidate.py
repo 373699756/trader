@@ -6,12 +6,12 @@ from dataclasses import dataclass
 
 from trader.training.domain.evaluation.filter_recall_ablation import FilterAblationRow, FilterRecallAblationReport
 from trader.training.domain.evaluation.preregistered_rule_candidate import (
-    PreregisteredRuleCandidateFamily,
-    RuleCandidateMetrics,
-    preregister_rule_candidates,
+    EvaluateRuleCandidateFamily as evaluate_family,
 )
 from trader.training.domain.evaluation.preregistered_rule_candidate import (
-    evaluate_rule_candidate_family as evaluate_family,
+    PreregisteredRuleCandidateFamily,
+    PreregisterRuleCandidates,
+    RuleCandidateMetrics,
 )
 
 
@@ -21,11 +21,11 @@ class RuleCandidateEvaluation:
     metrics: tuple[RuleCandidateMetrics, ...]
 
 
-def build_preregistered_rule_candidate_family(report: FilterRecallAblationReport) -> PreregisteredRuleCandidateFamily:
-    return preregister_rule_candidates(report)
+def BuildPreregisteredRuleCandidateFamily(report: FilterRecallAblationReport) -> PreregisteredRuleCandidateFamily:
+    return PreregisterRuleCandidates(report)
 
 
-def evaluate_rule_candidate_family(
+def EvaluateRuleCandidateFamily(
     family: PreregisteredRuleCandidateFamily, rows: tuple[FilterAblationRow, ...]
 ) -> RuleCandidateEvaluation:
     report = evaluate_family(family, rows)
@@ -34,6 +34,6 @@ def evaluate_rule_candidate_family(
 
 __all__ = [
     "RuleCandidateEvaluation",
-    "build_preregistered_rule_candidate_family",
-    "evaluate_rule_candidate_family",
+    "BuildPreregisteredRuleCandidateFamily",
+    "EvaluateRuleCandidateFamily",
 ]

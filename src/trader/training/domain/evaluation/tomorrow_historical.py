@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Literal
 
-from trader.infra.serialization.canonical_codec import canonical_digest
+from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.market.feature_contracts import TOMORROW_MODEL_FEATURE_MANIFEST
 from trader.training.domain.evaluation.historical_screening import HISTORICAL_SCREENING_SPEC
 
@@ -302,7 +302,7 @@ class TomorrowHistoricalSpec:
 
 
 def _canonical_hash(value: object) -> str:
-    return canonical_digest(value)
+    return CanonicalDigest(value)
 
 
 TOMORROW_HISTORICAL_SPEC = TomorrowHistoricalSpec(

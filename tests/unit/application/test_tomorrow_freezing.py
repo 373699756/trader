@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
-from trader.infra.settings import load_strategy_settings
+from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.freeze_coordinator import (
     DecisionRuntimeIdentity,
@@ -241,7 +241,7 @@ def test_close_fallback_admission_and_recovered_formal_reads(
 
 def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_path: Path) -> None:
     strategy_path = PROJECT_ROOT / "config" / "strategy.json"
-    baseline = load_strategy_settings(strategy_path)
+    baseline = LoadStrategySettings(strategy_path)
     config_root = tmp_path / "config"
     shutil.copytree(PROJECT_ROOT / "config", config_root)
     scoring_path = config_root / "scoring.json"
@@ -250,7 +250,7 @@ def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_p
     weights["ma20_60_position"] -= 0.01
     weights["ma_slope"] += 0.01
     scoring_path.write_text(json.dumps(raw), encoding="utf-8")
-    changed = load_strategy_settings(config_root / "strategy.json")
+    changed = LoadStrategySettings(config_root / "strategy.json")
     current = replace(decision(), strategy_version=baseline.strategy_version)
 
     baseline_identity = DecisionRuntimeIdentity(

@@ -5,7 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from trader.training.domain.evaluation.historical_label import H1CoverageMetadata, preregister_historical_labels
+from trader.training.domain.evaluation.historical_label import H1CoverageMetadata, PreregisterHistoricalLabels
 from trader.training.infra.research.historical_label_evidence import (
     HistoricalLabelEvidenceConflictError,
     HistoricalLabelEvidenceIndex,
@@ -18,7 +18,7 @@ def _batch():
         H1CoverageMetadata(strategy, "coverage_ready", dates, "a" * 64, "b" * 64, date(2026, 8, 31))
         for strategy in ("tomorrow", "d25")
     )
-    return preregister_historical_labels(metadata)
+    return PreregisterHistoricalLabels(metadata)
 
 
 def test_historical_label_artifact_archive_round_trips_idempotently(tmp_path) -> None:
@@ -36,7 +36,7 @@ def test_historical_label_artifact_archive_rejects_conflicts_and_tampering(tmp_p
     archive.write(batch)
     dates = tuple(date(2022, 1, 1) + timedelta(days=index) for index in range(1_000))
 
-    conflicting = preregister_historical_labels(
+    conflicting = PreregisterHistoricalLabels(
         tuple(
             H1CoverageMetadata(strategy, "coverage_ready", dates, "c" * 64, "b" * 64, date(2026, 8, 31))
             for strategy in ("tomorrow", "d25")

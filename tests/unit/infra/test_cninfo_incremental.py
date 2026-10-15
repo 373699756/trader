@@ -10,7 +10,7 @@ from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_COMPONENT_PREFIX,
     CNINFO_CURSOR_PREFIX,
     CninfoAnnouncementIncrementalSync,
-    parse_cninfo_announcement_rows,
+    ParseCninfoAnnouncementRows,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
@@ -27,8 +27,8 @@ def test_missing_announcement_id_uses_persistent_evidence_digest_once() -> None:
             {"title": "关于同时间其他事项的公告", "published_at": "2026-07-29 18:30:00"},
         )
     }
-    parsed, invalid = parse_cninfo_announcement_rows("600001", rows, OBSERVED_AT)
-    again, _ = parse_cninfo_announcement_rows("600001", rows, OBSERVED_AT)
+    parsed, invalid = ParseCninfoAnnouncementRows("600001", rows, OBSERVED_AT)
+    again, _ = ParseCninfoAnnouncementRows("600001", rows, OBSERVED_AT)
     assert invalid == 0
     assert len({item.announcement_id for item in parsed}) == 2
     assert parsed == again

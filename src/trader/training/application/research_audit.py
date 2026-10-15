@@ -14,7 +14,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
 from trader.recommendation.domain.publication.decision_identity import ScoredDecision
 from trader.recommendation.domain.publication.models import ScoredDisposition
 from trader.recommendation.domain.risk.scored_fusion import ScoredDecisionEntry
-from trader.recommendation.domain.scoring.scoring import candidate_fields
+from trader.recommendation.domain.scoring.scoring import CandidateFields
 
 LEGACY_RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit_legacy"
 RESEARCH_AUDIT_SCHEMA_VERSION = "committed_research_audit"
@@ -290,7 +290,7 @@ def _validate_population_evidence(
     population_codes = {item.code for item in population}
     if not passed_codes.issubset(population_codes):
         raise ValueError("research passed candidates must belong to the point-in-time population")
-    expected_hash = point_in_time_population_hash(population)
+    expected_hash = PointInTimePopulationHash(population)
     if audit.shadow_mode == "control_copy" and not population:
         raise ValueError("research local audit requires the complete point-in-time population")
     if audit.shadow_mode == "reused_facts" and population:
@@ -307,7 +307,7 @@ def _validate_population_evidence(
         raise ValueError("research population contains evidence after input_observed_at")
 
 
-def build_committed_research_audit(
+def BuildCommittedResearchAudit(
     projection: ScoredLocalProjection,
     committed: ScoredDecision,
 ) -> CommittedResearchAudit:
@@ -332,16 +332,16 @@ def build_committed_research_audit(
         shadow_mode="reused_facts" if committed.stage == "hybrid" else "control_copy",
         input_observed_at=projection.native_input.evaluated_at,
         point_in_time_population=population if committed.stage == "local" else (),
-        point_in_time_population_hash=point_in_time_population_hash(population),
+        point_in_time_population_hash=PointInTimePopulationHash(population),
     )
 
 
-def try_build_committed_research_audit(
+def TryBuildCommittedResearchAudit(
     projection: ScoredLocalProjection,
     committed: ScoredDecision,
 ) -> CommittedResearchAudit | None:
     try:
-        return build_committed_research_audit(projection, committed)
+        return BuildCommittedResearchAudit(projection, committed)
     except (TypeError, ValueError):
         return None
 
@@ -357,7 +357,7 @@ def _hard_filter_aggregates(projection: ScoredLocalProjection) -> tuple[tuple[st
 
 
 def _candidate_audits(projection: ScoredLocalProjection) -> tuple[ResearchCandidateAudit, ...]:
-    required = candidate_fields(projection.local.strategy)
+    required = CandidateFields(projection.local.strategy)
     result: list[ResearchCandidateAudit] = []
     for evaluation in projection.selection.evaluations:
         if evaluation.disposition is ScoredDisposition.REJECT:
@@ -531,7 +531,7 @@ def _population_audit_payload(item: ResearchPopulationAudit) -> dict[str, object
     }
 
 
-def point_in_time_population_hash(population: tuple[ResearchPopulationAudit, ...]) -> str:
+def PointInTimePopulationHash(population: tuple[ResearchPopulationAudit, ...]) -> str:
     payload = [_population_audit_payload(item) for item in population]
     return _sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode())
 
@@ -635,7 +635,7 @@ __all__ = [
     "ResearchDecisionSetAudit",
     "ResearchPopulationAudit",
     "ResearchRiskFactAudit",
-    "build_committed_research_audit",
-    "point_in_time_population_hash",
-    "try_build_committed_research_audit",
+    "BuildCommittedResearchAudit",
+    "PointInTimePopulationHash",
+    "TryBuildCommittedResearchAudit",
 ]

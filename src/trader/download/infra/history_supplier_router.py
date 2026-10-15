@@ -14,7 +14,7 @@ from trader.download.domain.history_price_qualification import (
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.exchange_security_universe import select_st_eligible_universe
+from trader.download.infra.exchange_security_universe import SelectStEligibleUniverse
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
@@ -39,7 +39,7 @@ class HistorySupplierRouter:
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         universe = self._load_universe()
         evidence = self._st_source.fetch(universe, as_of)
-        universe = select_st_eligible_universe(universe, evidence)
+        universe = SelectStEligibleUniverse(universe, evidence)
         price_context = self._prices.load_history_context(as_of, sessions, universe)
         try:
             context = self._baseline.load_industry_context(
@@ -69,10 +69,10 @@ class HistorySupplierRouter:
         )
 
     def fetch_tencent_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow:
-        return fetch_tencent_history_window(self._prices, security, dates, self._calendar)
+        return FetchTencentHistoryWindow(self._prices, security, dates, self._calendar)
 
 
-def fetch_tencent_history_window(
+def FetchTencentHistoryWindow(
     prices: TencentQfqSupplier, security: BaoStockSecurity, dates: tuple[date, ...], calendar: tuple[date, ...]
 ) -> PublishedHistoryWindow:
     if not dates or dates != tuple(sorted(set(dates))):

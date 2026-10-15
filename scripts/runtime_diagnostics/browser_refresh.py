@@ -29,7 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
-from trader.infra.settings import load_runtime_settings  # noqa: E402
+from trader.infra.settings import LoadRuntimeSettings  # noqa: E402
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
 from trader.infra.workers import BoundedExecutor  # noqa: E402
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import (  # noqa: E402
@@ -60,12 +60,12 @@ from trader.recommendation.application.ports.runtime import (  # noqa: E402
 )
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy  # noqa: E402
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies  # noqa: E402
-from trader.recommendation.application.runtime.schedule import phase_at, shanghai_now  # noqa: E402
+from trader.recommendation.application.runtime.schedule import PhaseAt, ShanghaiNow  # noqa: E402
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime  # noqa: E402
 from trader.recommendation.application.runtime.supervisor import (  # noqa: E402
     RuntimeSupervisor,
     RuntimeSupervisorConfig,
-    scheduler_interval_seconds,
+    SchedulerIntervalSeconds,
 )
 from trader.recommendation.domain.market.models import Board  # noqa: E402
 from trader.recommendation.domain.publication.decision_identity import (  # noqa: E402
@@ -78,7 +78,7 @@ from trader.recommendation.domain.publication.decision_identity import (  # noqa
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy  # noqa: E402
 from trader.training.application.research_audit import CommittedResearchAudit  # noqa: E402
-from trader.web import create_app  # noqa: E402
+from trader.web import CreateApp  # noqa: E402
 
 
 class _QuietRequestHandler(WSGIRequestHandler):
@@ -300,7 +300,7 @@ def _validate(args: argparse.Namespace) -> datetime:
         raise ValueError("--simulated-start must be an ISO datetime") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ValueError("--simulated-start must include a timezone offset")
-    normalized: datetime = shanghai_now(parsed)
+    normalized: datetime = ShanghaiNow(parsed)
     return normalized
 
 
@@ -526,7 +526,7 @@ def _run(
             raise RuntimeError("measurement overlay parent is unavailable")
         return events.publish_overlay(overlay, parent_version=current.version)
 
-    runtime_settings = load_runtime_settings(args.runtime_config)
+    runtime_settings = LoadRuntimeSettings(args.runtime_config)
     cadence = CadencePlanner(
         CadencePolicy.from_seconds(runtime_settings.pipeline.cadence_seconds),
         started_at=simulated_start,
@@ -562,7 +562,7 @@ def _run(
         RuntimeSupervisorConfig(
             now=clock.now,
             initializers=(),
-            interval_seconds=scheduler_interval_seconds,
+            interval_seconds=SchedulerIntervalSeconds,
             shutdown_timeout_seconds=5.0,
         ),
     )
@@ -573,7 +573,7 @@ def _run(
             "status": "running",
             "runtime_started": True,
             "runtime_version": "measurement",
-            "phase": phase_at(clock.now(), is_trading_day=True).value,
+            "phase": PhaseAt(clock.now(), is_trading_day=True).value,
             "health": {"level": "normal", "issue_count": 0},
             "deepseek_budget": {"used": 0, "remaining": 168, "planned_limit": 168},
             "market_data": {"active_source": "fixture", "candidate_quote_latest_source": "fixture"},
@@ -584,7 +584,7 @@ def _run(
     server = make_server(
         "127.0.0.1",
         app_port,
-        create_app(
+        CreateApp(
             services=UnifiedWebServices(
                 queries,
                 events,
@@ -790,7 +790,7 @@ def main() -> int:
     report: dict[str, object]
     try:
         simulated_start = _validate(args)
-        settings = load_runtime_settings(args.runtime_config)
+        settings = LoadRuntimeSettings(args.runtime_config)
         report = _run(
             args,
             simulated_start,

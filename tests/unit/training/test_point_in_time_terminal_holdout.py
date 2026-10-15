@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from trader.entrypoints.cli import main as cli_main
-from trader.training.application.h1_point_in_time_completion import complete_h1_research
+from trader.entrypoints.cli import Main as cli_main
+from trader.training.application.h1_point_in_time_completion import CompleteH1Research
 from trader.training.domain.evaluation.h1_point_in_time import (
+    BuildH1CapabilityAudit,
     H1CapabilityProbe,
     H1PointInTimeSpec,
-    build_h1_capability_audit,
 )
 from trader.training.infra.research.h1_point_in_time_capability import H1CapabilityEvidenceIndex
 from trader.training.infra.research.h1_point_in_time_completion import H1ResearchCompletionEvidenceFiles
@@ -24,7 +24,7 @@ def main(argv):
 
 
 def _seal_h1_research_parent(root):
-    capability = build_h1_capability_audit(
+    capability = BuildH1CapabilityAudit(
         (
             H1CapabilityProbe("tencent_qfq_daily", date(2024, 1, 9), False, "qfq", False, 640, 10, 100, 1.0),
             H1CapabilityProbe("eastmoney_historical_minute", None, False, "unsupported", False, 0, 0, 0, 0.0),
@@ -32,7 +32,7 @@ def _seal_h1_research_parent(root):
         probe_failures=("eastmoney_historical_minute_probe_failed",),
     )
     archive = SQLiteH1PointInTimeSnapshot(root / "archive")
-    completion = complete_h1_research(
+    completion = CompleteH1Research(
         capability=capability,
         metadata=tuple(archive.label_metadata(H1PointInTimeSpec(strategy)) for strategy in ("tomorrow", "d25")),
     )

@@ -10,47 +10,47 @@ from zoneinfo import ZoneInfo
 
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgressPort
-from trader.download.entrypoints.history_maintenance_projection import project_history_maintenance_status
+from trader.download.entrypoints.history_maintenance_projection import ProjectHistoryMaintenanceStatus
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
-from trader.download.infra.download_settings import load_history_sync_configuration
+from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 
 
-def run_download(repository_root: Path, config_path: Path) -> int:
+def RunDownload(repository_root: Path, config_path: Path) -> int:
     """Run zero-argument initial or incremental archive maintenance."""
 
-    from trader.bootstrap import execute_history_download
+    from trader.bootstrap import ExecuteHistoryDownload
 
-    configuration = history_sync_configuration(repository_root, config_path)
+    configuration = BuildHistorySyncConfiguration(repository_root, config_path)
     progress = StderrHistorySyncProgress()
-    status = execute_history_download(configuration, progress=progress)
+    status = ExecuteHistoryDownload(configuration, progress=progress)
     progress.publish_result(status)
-    print(json.dumps(project_history_maintenance_status(status), ensure_ascii=False, sort_keys=True))
+    print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True))
     return 0 if status.state in {"completed", "already_current"} else 1
 
 
-def history_sync_configuration(repository_root: Path, config_path: Path) -> HistorySyncConfiguration:
-    from trader.infra.settings import load_runtime_settings
+def BuildHistorySyncConfiguration(repository_root: Path, config_path: Path) -> HistorySyncConfiguration:
+    from trader.infra.settings import LoadRuntimeSettings
 
-    runtime = load_runtime_settings(config_path)
-    return load_history_sync_configuration(repository_root, runtime.reference_dir)
+    runtime = LoadRuntimeSettings(config_path)
+    return LoadHistorySyncConfiguration(repository_root, runtime.reference_dir)
 
 
-def run_download_command(command: str, *, config_path: Path | None = None) -> int:
+def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
     """Run one download-owned public command after root dispatch."""
 
     repository_root = _repository_root()
     if command == "download":
         if config_path is None:
             raise ValueError("download requires a runtime configuration path")
-        return run_download(repository_root, config_path)
+        return RunDownload(repository_root, config_path)
     if command == "history-automation-status":
-        from trader.download.entrypoints.history_automation_projection import project_history_automation_status
-        from trader.download.infra.history_automation_status import read_history_automation_status
+        from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationStatus
+        from trader.download.infra.history_automation_status import ReadHistoryAutomationStatus
 
-        automation_status = read_history_automation_status(repository_root / "data/history", _shanghai_now())
+        automation_status = ReadHistoryAutomationStatus(repository_root / "data/history", _shanghai_now())
         print(
             json.dumps(
-                project_history_automation_status(automation_status),
+                ProjectHistoryAutomationStatus(automation_status),
                 ensure_ascii=False,
                 sort_keys=True,
             )
@@ -58,22 +58,22 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         return 0
     if command != "scheduled-history-maintenance" or config_path is None:
         raise ValueError(f"unsupported download command: {command}")
-    from trader.bootstrap import execute_history_download
-    from trader.download.entrypoints.history_automation_projection import project_history_automation_run_status
+    from trader.bootstrap import ExecuteHistoryDownload
+    from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationRunStatus
     from trader.download.infra.history_maintenance_runner import (
         PlatformHistoryDesktopNotifier,
         RotatingHistoryAutomationLog,
-        run_scheduled_history_maintenance,
+        RunScheduledHistoryMaintenance,
     )
-    from trader.infra.settings import load_runtime_settings
+    from trader.infra.settings import LoadRuntimeSettings
 
-    runtime = load_runtime_settings(config_path)
+    runtime = LoadRuntimeSettings(config_path)
     observed_at = _shanghai_now()
-    configuration = history_sync_configuration(repository_root, config_path)
+    configuration = BuildHistorySyncConfiguration(repository_root, config_path)
     task_log = RotatingHistoryAutomationLog(runtime.runtime_dir / "logs/history-automation.log")
 
     def synchronize(progress: HistorySyncProgressPort | None) -> HistoryMaintenanceStatus:
-        return execute_history_download(
+        return ExecuteHistoryDownload(
             configuration,
             supplier_progress=task_log,
             clock=lambda: observed_at,
@@ -81,7 +81,7 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
         )
 
     try:
-        run_status = run_scheduled_history_maintenance(
+        run_status = RunScheduledHistoryMaintenance(
             configuration,
             synchronize,
             PlatformHistoryDesktopNotifier(),
@@ -98,7 +98,7 @@ def run_download_command(command: str, *, config_path: Path | None = None) -> in
             )
         print(
             json.dumps(
-                project_history_automation_run_status(run_status),
+                ProjectHistoryAutomationRunStatus(run_status),
                 ensure_ascii=False,
                 sort_keys=True,
             )
@@ -120,4 +120,4 @@ def _repository_root() -> Path:
     return Path("/__trader_source_not_found__")
 
 
-__all__ = ["history_sync_configuration", "run_download", "run_download_command"]
+__all__ = ["BuildHistorySyncConfiguration", "RunDownload", "RunDownloadCommand"]

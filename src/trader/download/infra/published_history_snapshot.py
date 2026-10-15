@@ -12,7 +12,7 @@ from trader.download.domain.published_history import PublishedHistoryManifest, P
 from trader.download.infra.history_snapshot_inspection import (
     ActiveHistorySnapshot,
     HistorySnapshotInspectionError,
-    load_active_history_snapshot,
+    LoadActiveHistorySnapshot,
 )
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader, HistorySnapshotReadError
 
@@ -28,7 +28,7 @@ class SQLitePublishedHistorySnapshot:
 
     def manifest(self) -> PublishedHistoryManifest | None:
         try:
-            archive = load_active_history_snapshot(self._root)
+            archive = LoadActiveHistorySnapshot(self._root)
         except HistorySnapshotInspectionError as exc:
             if str(exc) == "history_snapshot_unavailable":
                 return None
@@ -84,7 +84,7 @@ class SQLitePublishedHistorySnapshot:
 
     def _matching_snapshot(self, manifest: PublishedHistoryManifest) -> ActiveHistorySnapshot:
         try:
-            archive = load_active_history_snapshot(self._root)
+            archive = LoadActiveHistorySnapshot(self._root)
         except HistorySnapshotInspectionError as exc:
             raise PublishedHistoryReadError(str(exc)) from exc
         if archive.snapshot.content_hash != manifest.snapshot_hash:

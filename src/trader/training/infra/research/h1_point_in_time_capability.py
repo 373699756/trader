@@ -10,19 +10,19 @@ from typing import Protocol, cast
 
 import requests
 
-from trader.infra.serialization.canonical import canonical_json_text
-from trader.infra.serialization.fields import is_boolean, is_integer, is_text_sequence
-from trader.infra.serialization.sealing import publish_immutable
+from trader.infra.serialization.canonical import CanonicalJsonText
+from trader.infra.serialization.fields import IsBoolean, IsInteger, IsTextSequence
+from trader.infra.serialization.sealing import PublishImmutable
 from trader.training.domain.evaluation.h1_point_in_time import (
     H1_SOURCE_CUTOFF,
+    BuildH1CapabilityAudit,
     H1CapabilityAuditReport,
     H1CapabilityProbe,
     H1CapabilityStrategyStatus,
     H1CoverageState,
     ResearchStrategy,
-    build_h1_capability_audit,
 )
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
 class _Response(Protocol):
@@ -87,7 +87,7 @@ class FreeSourceH1CapabilityProbe:
         except (OSError, TypeError, ValueError, requests.RequestException):
             eastmoney_probe = _failed_probe("eastmoney_historical_minute")
             failures.append("eastmoney_historical_minute_probe_failed")
-        return build_h1_capability_audit(
+        return BuildH1CapabilityAudit(
             (tencent_probe, eastmoney_probe),
             probe_failures=tuple(failures),
         )
@@ -144,7 +144,7 @@ class H1CapabilityEvidenceIndex:
                 raise H1CapabilityEvidenceConflictError("H1 capability artifact identity conflict")
             return existing
         payload = _encode(report)
-        if publish_immutable(self._path, canonical_json_text(payload)):
+        if PublishImmutable(self._path, CanonicalJsonText(payload)):
             return self.verify()
         existing = self.verify()
         if existing.content_hash != report.content_hash:
@@ -157,7 +157,7 @@ class H1CapabilityEvidenceIndex:
             if not isinstance(raw, dict):
                 raise TypeError("H1 capability artifact must be an object")
             persisted_hash = raw.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("H1 capability artifact hash mismatch")
             report = _decode(cast(dict[str, object], raw))
             if report.content_hash != persisted_hash:
@@ -274,7 +274,7 @@ def _decode(raw: dict[str, object]) -> H1CapabilityAuditReport:
     if not isinstance(probes_raw, list) or not isinstance(strategies_raw, list):
         raise TypeError("H1 capability artifact collections are invalid")
     failures = raw["probe_failures"]
-    if not is_text_sequence(failures):
+    if not IsTextSequence(failures):
         raise TypeError("H1 capability probe failures are invalid")
     probes = tuple(_decode_probe(item) for item in probes_raw)
     strategies = tuple(_decode_strategy(item) for item in strategies_raw)
@@ -328,7 +328,7 @@ def _decode_strategy(raw: object) -> H1CapabilityStrategyStatus:
     if set(raw) != expected:
         raise ValueError("H1 capability strategy schema is invalid")
     reasons = raw["failure_reasons"]
-    if not is_text_sequence(reasons):
+    if not IsTextSequence(reasons):
         raise TypeError("H1 capability strategy reasons are invalid")
     return H1CapabilityStrategyStatus(
         cast(ResearchStrategy, _string(raw["strategy"])),
@@ -346,13 +346,13 @@ def _string(value: object) -> str:
 
 
 def _bool(value: object) -> bool:
-    if not is_boolean(value):
+    if not IsBoolean(value):
         raise TypeError("H1 capability field must be boolean")
     return value
 
 
 def _int(value: object) -> int:
-    if not is_integer(value):
+    if not IsInteger(value):
         raise TypeError("H1 capability field must be integer")
     return value
 

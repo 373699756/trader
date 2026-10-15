@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from trader.recommendation.domain.market.models import MarketQuote
 
 
-def extreme_structure_risks(
+def ExtremeStructureRisks(
     quote: MarketQuote,
     values: Mapping[str, float | None],
     observed_at: datetime,
@@ -104,4 +104,4 @@ def _nonnegative_finite(value: float | None) -> float | None:
     return parsed if parsed is not None and parsed >= 0.0 else None
 
 
-__all__ = ["extreme_structure_risks"]
+__all__ = ["ExtremeStructureRisks"]

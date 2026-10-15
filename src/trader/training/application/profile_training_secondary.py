@@ -28,7 +28,7 @@ class TrainV3UseCase(Generic[_ResultT]):
         return self.runner(history_root, train_root, progress=progress)
 
 
-def train_v3(
+def TrainV3(
     runner: TrainingRunnerPort[_ResultT],
     history_root: Path,
     train_root: Path,
@@ -42,4 +42,4 @@ def train_v3(
     )
 
 
-__all__ = ["TrainV3UseCase", "train_v3"]
+__all__ = ["TrainV3UseCase", "TrainV3"]

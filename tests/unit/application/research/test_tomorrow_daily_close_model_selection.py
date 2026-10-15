@@ -6,10 +6,10 @@ from trader.training.application.tomorrow_daily_close_model_selection import (
     DailyCloseModelSelectionService,
 )
 from trader.training.application.tomorrow_daily_close_training import (
+    BuildFeatureDataset,
     DailyCloseSourceSample,
-    build_feature_dataset,
 )
-from trader.training.domain.evaluation.tomorrow_daily_close import split_complete_trading_dates
+from trader.training.domain.evaluation.tomorrow_daily_close import SplitCompleteTradingDates
 
 _HASH_A = "a" * 64
 _HASH_B = "b" * 64
@@ -53,7 +53,7 @@ def _dataset():
         for index, day in enumerate(dates)
         for code_index in range(3)
     )
-    return build_feature_dataset(
+    return BuildFeatureDataset(
         samples,
         feature_names=("qfq_return_1d", "qfq_return_3d"),
         feature_units=("ratio", "ratio"),
@@ -64,7 +64,7 @@ def _dataset():
 
 def test_daily_close_model_selection_development_builds_fixed_five_candidate_oof_without_reserved_dates() -> None:
     dataset = _dataset()
-    split = split_complete_trading_dates(dataset.manifest.trading_dates)
+    split = SplitCompleteTradingDates(dataset.manifest.trading_dates)
 
     result = DailyCloseModelSelectionService(_FitPort(), DailyCloseCandidateEvaluator()).develop(dataset, split)
 
@@ -91,7 +91,7 @@ def test_daily_close_model_selection_development_builds_fixed_five_candidate_oof
 
 def test_daily_close_model_selection_freeze_refits_selected_pipeline_without_opening_reserved_dates() -> None:
     dataset = _dataset()
-    split = split_complete_trading_dates(dataset.manifest.trading_dates)
+    split = SplitCompleteTradingDates(dataset.manifest.trading_dates)
     trainer = DailyCloseModelSelectionService(_FitPort(), DailyCloseCandidateEvaluator())
     development = trainer.develop(dataset, split)
 

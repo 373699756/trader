@@ -23,7 +23,7 @@ from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.completion_client_contract import DeepSeekCompletionClient, DeepSeekHttpResult
 from trader.recommendation.infra.deepseek.schema import (
-    build_review_manifest_hash,
+    BuildReviewManifestHash,
 )
 
 _SUCCESSFUL_CANDIDATE_OUTCOMES = frozenset({ReviewOutcome.APPLIED, ReviewOutcome.ABSTAIN})
@@ -162,7 +162,7 @@ def _annotate_review(
         prompt_cache_miss_tokens=(
             prompt_cache_miss_tokens if prompt_cache_miss_tokens is not None else review.prompt_cache_miss_tokens
         ),
-        evidence_manifest_hash=review.evidence_manifest_hash or build_review_manifest_hash(candidate),
+        evidence_manifest_hash=review.evidence_manifest_hash or BuildReviewManifestHash(candidate),
     )
 
 

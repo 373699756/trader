@@ -6,15 +6,15 @@ import json
 from datetime import date
 from pathlib import Path
 
-from trader.infra.serialization.fields import is_text_sequence
-from trader.infra.serialization.sealing import publish_immutable
-from trader.training.domain.evaluation.research_identity import canonical_research_hash
+from trader.infra.serialization.fields import IsTextSequence
+from trader.infra.serialization.sealing import PublishImmutable
+from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 from trader.training.domain.evaluation.terminal_holdout import (
     TerminalHoldoutMetrics,
     TerminalHoldoutReport,
     TerminalStrategy,
 )
-from trader.training.infra.research.identity_codec import research_json
+from trader.training.infra.research.identity_codec import ResearchJson
 
 
 class TerminalHoldoutReportConflictError(RuntimeError):
@@ -35,9 +35,9 @@ class TerminalHoldoutReportIndex:
             if existing.content_hash != report.content_hash:
                 raise TerminalHoldoutReportConflictError("terminal holdout report identity conflict")
             return existing
-        payload = encode_terminal_holdout_report(report)
+        payload = EncodeTerminalHoldoutReport(report)
         payload["content_hash"] = report.content_hash
-        if not publish_immutable(path, research_json(payload)):
+        if not PublishImmutable(path, ResearchJson(payload)):
             existing = self.verify()
             if existing.content_hash != report.content_hash:
                 raise TerminalHoldoutReportConflictError("terminal holdout report identity conflict")
@@ -51,9 +51,9 @@ class TerminalHoldoutReportIndex:
             if not isinstance(raw, dict):
                 raise TypeError("terminal holdout report is not an object")
             persisted_hash = raw.pop("content_hash")
-            if not isinstance(persisted_hash, str) or canonical_research_hash(raw) != persisted_hash:
+            if not isinstance(persisted_hash, str) or CanonicalResearchHash(raw) != persisted_hash:
                 raise ValueError("terminal holdout report hash mismatch")
-            report = decode_terminal_holdout_report(raw)
+            report = DecodeTerminalHoldoutReport(raw)
             if report.content_hash != persisted_hash:
                 raise ValueError("terminal holdout report reconstructed hash mismatch")
             self._validate_strategy(report)
@@ -66,7 +66,7 @@ class TerminalHoldoutReportIndex:
             raise TerminalHoldoutReportConflictError("terminal holdout report strategy mismatch")
 
 
-def decode_terminal_holdout_report(raw: dict[str, object]) -> TerminalHoldoutReport:
+def DecodeTerminalHoldoutReport(raw: dict[str, object]) -> TerminalHoldoutReport:
     expected = {
         "strategy",
         "research_identity",
@@ -89,9 +89,9 @@ def decode_terminal_holdout_report(raw: dict[str, object]) -> TerminalHoldoutRep
     metrics = _decode_metrics(metrics_raw)
     dates_raw = raw["terminal_trade_dates"]
     reasons_raw = raw["failure_reasons"]
-    if not is_text_sequence(dates_raw):
+    if not IsTextSequence(dates_raw):
         raise TypeError("terminal holdout dates are invalid")
-    if not is_text_sequence(reasons_raw):
+    if not IsTextSequence(reasons_raw):
         raise TypeError("terminal holdout failure reasons are invalid")
     return TerminalHoldoutReport(
         strategy=raw["strategy"],  # type: ignore[arg-type]
@@ -109,7 +109,7 @@ def decode_terminal_holdout_report(raw: dict[str, object]) -> TerminalHoldoutRep
     )
 
 
-def encode_terminal_holdout_report(report: TerminalHoldoutReport) -> dict[str, object]:
+def EncodeTerminalHoldoutReport(report: TerminalHoldoutReport) -> dict[str, object]:
     metrics = report.metrics
     return {
         "strategy": report.strategy,
@@ -267,6 +267,6 @@ def _floats(value: object) -> tuple[float, ...]:
 __all__ = [
     "TerminalHoldoutReportConflictError",
     "TerminalHoldoutReportIndex",
-    "decode_terminal_holdout_report",
-    "encode_terminal_holdout_report",
+    "DecodeTerminalHoldoutReport",
+    "EncodeTerminalHoldoutReport",
 ]

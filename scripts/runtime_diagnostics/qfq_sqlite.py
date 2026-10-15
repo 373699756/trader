@@ -13,8 +13,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from trader.download.infra.qfq_layout_migration import build_qfq_layout, inspect_legacy_qfq, legacy_windows
-from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, SQLiteQfqWindowCache, qfq_shard_name
+from trader.download.infra.qfq_layout_migration import BuildQfqLayout, InspectLegacyQfq, LegacyWindows
+from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, QfqShardName, SQLiteQfqWindowCache
 
 from .reporting import emit_report
 
@@ -46,7 +46,7 @@ def _query(root, routing, codes):
 
 def _comparison(profile, target, codes, rounds):
     old_routing = dict(profile.membership)
-    new_routing = {code: qfq_shard_name(code) for code in codes}
+    new_routing = {code: QfqShardName(code) for code in codes}
     old_times = []
     new_times = []
     for round_number in range(rounds):
@@ -73,7 +73,7 @@ def _comparison(profile, target, codes, rounds):
 
 def _writes(profile, target):
     cache = SQLiteQfqWindowCache(target, profile.profile)
-    samples = tuple(legacy_windows(profile, tuple(code for code, _ in profile.membership[:20])))
+    samples = tuple(LegacyWindows(profile, tuple(code for code, _ in profile.membership[:20])))
     before = {path.name: (path.stat().st_mtime_ns, path.stat().st_size) for path in cache.root.glob("*.sqlite3")}
     started = time.monotonic()
     for window, source in samples:
@@ -124,9 +124,9 @@ def main() -> int:
             root = Path(scratch)
             target = root / "qfq"
             started = time.monotonic()
-            migration = build_qfq_layout(args.qfq_root, target, root / ".lock")
+            migration = BuildQfqLayout(args.qfq_root, target, root / ".lock")
             elapsed = time.monotonic() - started
-            profiles = inspect_legacy_qfq(args.qfq_root)
+            profiles = InspectLegacyQfq(args.qfq_root)
             workloads = []
             writes = []
             for profile in profiles:

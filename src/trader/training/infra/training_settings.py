@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from trader.infra.settings.parser import (
-    integer,
-    mapping,
-    number,
-    profile_mapping,
-    read_json_object,
-    require_exact_keys,
+    Integer,
+    Number,
+    ProfileMapping,
+    ReadJsonObject,
+    RequireExactKeys,
+    RequireMapping,
 )
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.infra.model_fitting import (
@@ -46,15 +46,15 @@ class ProfileTrainingSettings:
             raise ValueError("training input settings do not match the profile feature contract")
 
 
-def load_profile_training_settings(project_root: Path, profile_id: ScoringProfileId) -> ProfileTrainingSettings:
-    document = read_json_object(project_root / "config" / "training.json")
-    require_exact_keys(document, {"profiles"}, "training")
-    profile = profile_mapping(document.get("profiles"), profile_id, "training.profiles")
+def LoadProfileTrainingSettings(project_root: Path, profile_id: ScoringProfileId) -> ProfileTrainingSettings:
+    document = ReadJsonObject(project_root / "config" / "training.json")
+    RequireExactKeys(document, {"profiles"}, "training")
+    profile = ProfileMapping(document.get("profiles"), profile_id, "training.profiles")
     common_keys = {"fit_dates", "minimum_industry_training_rows"}
     if profile_id == "v2":
-        require_exact_keys(profile, common_keys | {"lightgbm"}, "training.v2")
-        model = mapping(profile, "lightgbm")
-        require_exact_keys(
+        RequireExactKeys(profile, common_keys | {"lightgbm"}, "training.v2")
+        model = RequireMapping(profile, "lightgbm")
+        RequireExactKeys(
             model,
             {
                 "learning_rate",
@@ -70,38 +70,38 @@ def load_profile_training_settings(project_root: Path, profile_id: ScoringProfil
             "training.v2.lightgbm",
         )
         fitting: ModelFittingParameters = LightGBMFittingParameters(
-            integer(profile, "minimum_industry_training_rows", minimum=1),
-            number(model, "learning_rate", minimum=0.000001),
-            integer(model, "max_depth", minimum=1),
-            integer(model, "num_leaves", minimum=2),
-            integer(model, "minimum_leaf_rows", minimum=1),
-            integer(model, "boosting_rounds", minimum=1),
-            integer(model, "early_stopping_rounds", minimum=1),
-            integer(model, "maximum_bins", minimum=2),
-            integer(model, "histogram_pool_mib", minimum=1),
-            integer(model, "seed", minimum=0),
+            Integer(profile, "minimum_industry_training_rows", minimum=1),
+            Number(model, "learning_rate", minimum=0.000001),
+            Integer(model, "max_depth", minimum=1),
+            Integer(model, "num_leaves", minimum=2),
+            Integer(model, "minimum_leaf_rows", minimum=1),
+            Integer(model, "boosting_rounds", minimum=1),
+            Integer(model, "early_stopping_rounds", minimum=1),
+            Integer(model, "maximum_bins", minimum=2),
+            Integer(model, "histogram_pool_mib", minimum=1),
+            Integer(model, "seed", minimum=0),
         )
     else:
-        require_exact_keys(profile, common_keys | {"ridge"}, "training.v3")
-        model = mapping(profile, "ridge")
-        require_exact_keys(model, {"penalty"}, "training.v3.ridge")
+        RequireExactKeys(profile, common_keys | {"ridge"}, "training.v3")
+        model = RequireMapping(profile, "ridge")
+        RequireExactKeys(model, {"penalty"}, "training.v3.ridge")
         fitting = RidgeFittingParameters(
-            integer(profile, "minimum_industry_training_rows", minimum=1),
-            number(model, "penalty", minimum=0.000001),
+            Integer(profile, "minimum_industry_training_rows", minimum=1),
+            Number(model, "penalty", minimum=0.000001),
         )
-    features = read_json_object(project_root / "config" / "features.json")
-    require_exact_keys(features, {"model_contracts", "factor_index", "factor_contract", "news_signal"}, "features")
-    inputs = profile_mapping(features.get("model_contracts"), profile_id, "features.model_contracts")
-    require_exact_keys(
+    features = ReadJsonObject(project_root / "config" / "features.json")
+    RequireExactKeys(features, {"model_contracts", "factor_index", "factor_contract", "news_signal"}, "features")
+    inputs = ProfileMapping(features.get("model_contracts"), profile_id, "features.model_contracts")
+    RequireExactKeys(
         inputs,
         {"history_sessions", "momentum_horizons", "market_state_momentum_horizons", "heads"},
         f"features.model_contracts.{profile_id}",
     )
-    heads = mapping(inputs, "heads")
-    require_exact_keys(heads, {"tomorrow", "d25"}, f"features.model_contracts.{profile_id}.heads")
+    heads = RequireMapping(inputs, "heads")
+    RequireExactKeys(heads, {"tomorrow", "d25"}, f"features.model_contracts.{profile_id}.heads")
     return ProfileTrainingSettings(
-        integer(profile, "fit_dates", minimum=1),
-        integer(inputs, "history_sessions", minimum=61),
+        Integer(profile, "fit_dates", minimum=1),
+        Integer(inputs, "history_sessions", minimum=61),
         _positive_integer_tuple(
             inputs.get("momentum_horizons"), f"features.model_contracts.{profile_id}.momentum_horizons"
         ),
@@ -136,4 +136,4 @@ def _feature_ids(raw: object, label: str) -> tuple[str, ...]:
     return values
 
 
-__all__ = ["ProfileTrainingSettings", "load_profile_training_settings"]
+__all__ = ["ProfileTrainingSettings", "LoadProfileTrainingSettings"]

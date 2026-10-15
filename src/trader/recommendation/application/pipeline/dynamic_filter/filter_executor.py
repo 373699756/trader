@@ -7,29 +7,29 @@ from dataclasses import dataclass
 from datetime import date, datetime
 
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_feature_builder import (
+    AssembleScoredFeatures,
     FeatureCalculationPort,
     FeatureCalculationService,
     ScoredSelectionNotReadyError,
-    assemble_scored_features,
 )
 from trader.recommendation.application.pipeline.dynamic_standardize.dynamic_normalization import (
-    normalize_candidate_discovery_population,
+    NormalizeCandidateDiscoveryPopulation,
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.ports.market_data import DataPlaneReadPort
 from trader.recommendation.domain.market.data_plane import MarketDataPlaneSnapshot
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
 from trader.recommendation.domain.publication.models import ScoredSelectionResult, Strategy
-from trader.recommendation.domain.selection.ranking import minimum_selection_score
+from trader.recommendation.domain.selection.ranking import MinimumSelectionScore
 from trader.recommendation.domain.selection.scored_selection import (
     BoardCrossSectionFallback,
+    FilterCandidateInputs,
     FilteredCandidateInputs,
+    PlanScoredCandidates,
     ScoredCandidatePlan,
     ScoredSelectionPolicy,
     ScoredSelectionRequest,
-    filter_candidate_inputs,
-    plan_scored_candidates,
-    select_scored,
+    SelectScored,
 )
 
 _SUPPORTED_BOARDS = (Board.MAIN, Board.CHINEXT, Board.STAR)
@@ -80,7 +80,7 @@ class ScoredSelectionUseCase:
         fallbacks: Mapping[Board, BoardCrossSectionFallback] | None = None,
     ) -> ScoredSelectionResult:
         snapshot = self._reader.snapshot()
-        return select_scored_snapshot(
+        return SelectScoredSnapshot(
             snapshot,
             self._policy,
             ScoredSelectionOptions(
@@ -93,7 +93,7 @@ class ScoredSelectionUseCase:
         )
 
 
-def select_scored_snapshot(
+def SelectScoredSnapshot(
     snapshot: MarketDataPlaneSnapshot,
     policy: RecommendationPolicy,
     options: ScoredSelectionOptions,
@@ -127,7 +127,7 @@ def select_scored_snapshot(
     merge_epochs = {feature.merge_epoch for feature in features}
     if len(merge_epochs) != 1:
         raise ScoredSelectionNotReadyError("feature_merge_epoch_mismatch")
-    return select_scored_features(
+    return SelectScoredFeatures(
         features,
         policy,
         options,
@@ -139,7 +139,7 @@ def select_scored_snapshot(
     )
 
 
-def select_scored_features(
+def SelectScoredFeatures(
     features: Sequence[FeatureSnapshot],
     policy: RecommendationPolicy,
     options: ScoredSelectionOptions,
@@ -149,7 +149,7 @@ def select_scored_features(
 ) -> ScoredSelectionResult:
     """Select scored candidates from an already coherent point-in-time population."""
 
-    return select_scored(
+    return SelectScored(
         _selection_request(
             features,
             policy,
@@ -160,7 +160,7 @@ def select_scored_features(
     )
 
 
-def plan_scored_feature_candidates(
+def PlanScoredFeatureCandidates(
     features: Sequence[FeatureSnapshot],
     policy: RecommendationPolicy,
     options: ScoredSelectionOptions,
@@ -168,16 +168,16 @@ def plan_scored_feature_candidates(
 ) -> ScoredCandidatePlan:
     """Build the strategy-owned eligible reserve before any board cap is applied."""
 
-    return plan_scored_candidates(_selection_request(features, policy, options, identity))
+    return PlanScoredCandidates(_selection_request(features, policy, options, identity))
 
 
-def filter_feature_candidates(
+def FilterFeatureCandidates(
     features: Sequence[FeatureSnapshot],
     policy: RecommendationPolicy,
     options: ScoredSelectionOptions,
     identity: ScoredSelectionIdentity,
 ) -> FilteredCandidateInputs:
-    return filter_candidate_inputs(_selection_request(features, policy, options, identity))
+    return FilterCandidateInputs(_selection_request(features, policy, options, identity))
 
 
 def _selection_request(
@@ -196,7 +196,7 @@ def _selection_request(
         raise ScoredSelectionNotReadyError("coherent_market_epoch_unavailable")
     population_evaluated_at = options.population_evaluated_at or evaluated_at
     if options.normalize_discovery_source_time:
-        population = normalize_candidate_discovery_population(population, population_evaluated_at)
+        population = NormalizeCandidateDiscoveryPopulation(population, population_evaluated_at)
     return ScoredSelectionRequest(
         features=population,
         evaluated_at=evaluated_at,
@@ -224,7 +224,7 @@ def _selection_policy(
         for board in _SUPPORTED_BOARDS
         if (board_policy := policy.board_policy(options.strategy, board)) is not None
     }
-    minimum_score = minimum_selection_score(
+    minimum_score = MinimumSelectionScore(
         options.strategy,
         policy.selection.thresholds,
         phase=options.phase,
@@ -248,8 +248,8 @@ __all__ = [
     "ScoredSelectionNotReadyError",
     "ScoredSelectionOptions",
     "ScoredSelectionUseCase",
-    "assemble_scored_features",
-    "plan_scored_feature_candidates",
-    "select_scored_features",
-    "select_scored_snapshot",
+    "AssembleScoredFeatures",
+    "PlanScoredFeatureCandidates",
+    "SelectScoredFeatures",
+    "SelectScoredSnapshot",
 ]

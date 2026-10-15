@@ -42,7 +42,7 @@ class ConstrainedOracleResult:
     selected_codes: tuple[str, ...]
 
 
-def constrained_oracle(
+def ConstrainedOracle(
     candidates: tuple[ConstrainedOracleCandidate, ...], policy: ConstrainedOraclePolicy
 ) -> ConstrainedOracleResult:
     if len({item.code for item in candidates}) != len(candidates):
@@ -95,4 +95,4 @@ def _industry_options(
     )
 
 
-__all__ = ["ConstrainedOracleCandidate", "ConstrainedOraclePolicy", "ConstrainedOracleResult", "constrained_oracle"]
+__all__ = ["ConstrainedOracleCandidate", "ConstrainedOraclePolicy", "ConstrainedOracleResult", "ConstrainedOracle"]

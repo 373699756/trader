@@ -21,7 +21,7 @@ from trader.training.application.shadow_model_report import (
 from trader.training.domain.evaluation.cost_aware_selection import (
     CostAwareCandidate,
     CostAwareSelectionPolicy,
-    select_cost_aware,
+    SelectCostAware,
 )
 
 _SELECTION_SPEC = {
@@ -60,7 +60,7 @@ class TomorrowCostAwareSelectionEvaluator:
                     incumbents: set[str] = set()
                     for prediction_date in prediction_dates:
                         predictions = tuple(groups[(horizon, window_mode, prediction_date)])
-                        result = select_cost_aware(
+                        result = SelectCostAware(
                             tuple(
                                 _candidate(prediction, model_family, prediction.code in incumbents and horizon == "d25")
                                 for prediction in predictions

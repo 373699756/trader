@@ -52,7 +52,7 @@ class _FitProgress:
     produced_units: int = 0
 
 
-def fit_industry_models(
+def FitIndustryModels(
     samples: SQLiteTrainingSampleRepository,
     split: BaoStockTrainingSplit,
     contract: TrainedHeadContract,
@@ -210,5 +210,5 @@ __all__ = [
     "LightGBMFittingParameters",
     "ModelFittingParameters",
     "RidgeFittingParameters",
-    "fit_industry_models",
+    "FitIndustryModels",
 ]

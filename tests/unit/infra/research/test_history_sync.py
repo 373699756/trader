@@ -19,21 +19,21 @@ from trader.download.domain.baostock_daily import (
     BaoStockSecurity,
     BaoStockSourceVersions,
 )
-from trader.download.domain.history_price_qualification import qualify_price_overlap
+from trader.download.domain.history_price_qualification import QualifyPriceOverlap
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import (
     HistorySupplierContext,
     HistorySyncConfiguration,
     HistorySyncProgress,
 )
-from trader.download.domain.published_history import PublishedHistoryWindow, project_history_cell
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra import history_sync_runner as history_sync_module
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_storage_profile import HistoryWriteTuning
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_sync_runner import RunHistorySync
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -127,14 +127,14 @@ class FakeSupplier:
             return PublishedHistoryWindow(
                 security.code,
                 tuple(
-                    project_history_cell(replace(cell, status="unknown_missing", unadjusted=None, qfq=None))
+                    ProjectHistoryCell(replace(cell, status="unknown_missing", unadjusted=None, qfq=None))
                     for cell in _download(security.code, dates).batch.cells
                 ),
             )
         shift = 1.0 if security.code == self.changed_qfq_code else 0.0
         return PublishedHistoryWindow(
             security.code,
-            tuple(project_history_cell(cell) for cell in _download(security.code, dates, shift).batch.cells),
+            tuple(ProjectHistoryCell(cell) for cell in _download(security.code, dates, shift).batch.cells),
         )
 
     def fetch_baostock_raw(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> BaoStockCodeDownload:
@@ -163,14 +163,14 @@ def test_retry_without_a_new_pair_preserves_existing_partial_fact(status):
         qfq=complete.qfq if status == "unadjusted_missing" else None,
     )
     unknown = BaoStockDailyCell("600001", day, "unknown_missing", None, None)
-    assert qualify_price_overlap((unknown,), (previous,), full_window=False) == (previous,)
+    assert QualifyPriceOverlap((unknown,), (previous,), full_window=False) == (previous,)
 
 
 def test_transient_month_reader_lock_allows_download_to_finish(tmp_path, monkeypatch):
     from trader.download.infra import history_sqlite_read_connection
 
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    assert run_history_sync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "completed"
     previous = _snapshot(tmp_path)
     original_connect = sqlite3.connect
     failed = False
@@ -202,7 +202,7 @@ def test_transient_month_reader_lock_allows_download_to_finish(tmp_path, monkeyp
 
     monkeypatch.setattr(history_sqlite_read_connection.sqlite3, "connect", connect)
     advanced = (*days[1:], date(2026, 9, 11))
-    result = run_history_sync(_configuration(tmp_path), FakeSupplier(advanced), clock=lambda: NOW + timedelta(days=1))
+    result = RunHistorySync(_configuration(tmp_path), FakeSupplier(advanced), clock=lambda: NOW + timedelta(days=1))
     assert failed and result.state == "completed" and result.unresolved_price_cells == 0
     assert _snapshot(tmp_path) != previous
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
@@ -222,7 +222,7 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(dates)
 
-    completed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    completed = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert supplier.events == ["tencent", "tencent"]
     state = HistoryControlIndex(tmp_path / "control.sqlite3").load_state()
     snapshot = state.active_snapshot
@@ -233,7 +233,7 @@ def test_initial_sync_publishes_verified_snapshot_and_same_cutoff_is_noop(
         "verify",
         classmethod(lambda _cls, _path, _reference, _progress=None: pytest.fail("routine sync reverified snapshot")),
     )
-    repeated = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    repeated = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
 
     assert completed.state == "completed"
     assert completed.data_cutoff == dates[-1]
@@ -254,14 +254,14 @@ def test_incremental_updates_only_new_days_and_keeps_cumulative_history(tmp_path
     supplier = FakeSupplier(days[:20])
     configuration = HistorySyncConfiguration(tmp_path, sessions=20, reread_sessions=5, minimum_free_bytes=0)
     first_now = NOW.replace(month=8, day=20)
-    first = run_history_sync(configuration, supplier, clock=lambda: first_now)
+    first = RunHistorySync(configuration, supplier, clock=lambda: first_now)
     assert first.state == "completed", first.reason
     old_snapshot = _snapshot(tmp_path)
     old_rows = HistorySnapshotReader(tmp_path).read_day(days[0], old_snapshot)
     supplier.calls.clear()
     new_now = first_now + timedelta(days=gap)
     supplier.dates = days[: 20 + gap]
-    result = run_history_sync(configuration, supplier, clock=lambda: new_now)
+    result = RunHistorySync(configuration, supplier, clock=lambda: new_now)
     assert result.state == "completed", result.reason
     assert len(supplier.calls) == 2
     assert all(len(requested) == gap + 5 for _, requested in supplier.calls)
@@ -289,7 +289,7 @@ def test_partial_tencent_pairs_are_committed_without_baostock(tmp_path):
             )
 
     supplier = Partial(days)
-    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 2
     assert supplier.events == ["tencent", "tencent"]
@@ -309,13 +309,13 @@ def test_tencent_request_failure_publishes_explicit_gaps_and_next_run_repairs(tm
             return super().fetch_tencent_window(security, dates)
 
     supplier = FailingTencent(days, fail_code="600001")
-    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 3
     assert "baostock_prices" not in supplier.events
     supplier.fail_code = None
     supplier.calls.clear()
-    repaired = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    repaired = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert repaired.state == "completed", repaired.reason
     assert repaired.unresolved_price_cells == 0
     assert [code for code, _ in supplier.calls] == ["600001"]
@@ -324,18 +324,18 @@ def test_tencent_request_failure_publishes_explicit_gaps_and_next_run_repairs(tm
 def test_publication_failure_resumes_without_redownloading(tmp_path, monkeypatch):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(days)
-    original = history_sync_module.publish_history_snapshot
+    original = history_sync_module.PublishHistorySnapshot
 
     def fail(*args):
         raise OSError("disk_full")
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail)
-    failed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
+    failed = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert failed.state == "failed"
     assert HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot is None
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", original)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", original)
     supplier.calls.clear()
-    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert not supplier.calls
 
@@ -350,13 +350,13 @@ def test_unpublished_gap_repair_resumes_same_sequence_without_changing_complete_
             return super().fetch_tencent_window(security, dates)
 
     supplier = PendingSupplier(days, fail_code="600001")
-    original_publish = history_sync_module.publish_history_snapshot
+    original_publish = history_sync_module.PublishHistorySnapshot
 
     def fail_publish(*args):
         raise OSError("publication_failed")
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail_publish)
-    first = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail_publish)
+    first = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert first.state == "failed"
     assert HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot is None
     assert HistoryDownloadIndex(tmp_path / "control.sqlite3").gaps("600001") == days
@@ -365,8 +365,8 @@ def test_unpublished_gap_repair_resumes_same_sequence_without_changing_complete_
     complete_before = month.read_code("600002", days[0], days[-1], snapshot_sequence=1)
 
     supplier.fail_code = None
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", original_publish)
-    resumed = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", original_publish)
+    resumed = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
 
     assert resumed.state == "completed", resumed.reason
     assert resumed.active_snapshot_hash is not None
@@ -414,26 +414,26 @@ def test_pending_batch_replaces_incomplete_day_before_first_publication(tmp_path
 
     root = tmp_path / "resumed"
     supplier = PartialFirstRun(days)
-    publish = history_sync_module.publish_history_snapshot
+    publish = history_sync_module.PublishHistorySnapshot
 
     def interrupt_publication(*_args):
         raise OSError("fixture_publication_interrupted")
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", interrupt_publication)
-    assert run_history_sync(configuration(root), supplier, clock=lambda: NOW).state == "failed"
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", interrupt_publication)
+    assert RunHistorySync(configuration(root), supplier, clock=lambda: NOW).state == "failed"
     assert HistoryControlIndex(root / "control.sqlite3").load_state().active_snapshot is None
     assert len(HistoryDownloadIndex(root / "control.sqlite3").gaps("600001")) == 1
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", publish)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", publish)
     supplier.partial = False
     supplier.calls.clear()
-    resumed = run_history_sync(configuration(root), supplier, clock=lambda: NOW)
+    resumed = RunHistorySync(configuration(root), supplier, clock=lambda: NOW)
     assert resumed.state == "completed" and resumed.unresolved_price_cells == 0
     assert supplier.calls == [("600001", (days[0], *days[-5:]))]
     active = _snapshot(root)
     assert len(HistorySnapshotReader(root).read_day(days[0], active)) == 2
     clean = tmp_path / "clean"
-    assert run_history_sync(configuration(clean), FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(configuration(clean), FakeSupplier(days), clock=lambda: NOW).state == "completed"
     assert active.content_hash == _snapshot(clean).content_hash
 
 
@@ -448,10 +448,10 @@ def test_new_process_reuses_committed_months_before_progress_update(tmp_path, mo
         raise OSError("checkpoint_failed")
 
     monkeypatch.setattr(HistoryDownloadIndex, "finish", fail)
-    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "failed"
+    assert RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "failed"
     monkeypatch.setattr(HistoryDownloadIndex, "finish", original)
     supplier.calls.clear()
-    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert not supplier.calls
 
@@ -464,7 +464,7 @@ def test_database_write_failure_is_fatal_not_baostock_retry(tmp_path, monkeypatc
         raise OSError("disk_full")
 
     monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", fail)
-    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "failed"
     assert "baostock_prices" not in supplier.events
 
@@ -479,7 +479,7 @@ def test_failure_reports_actual_boundary_without_payload_and_preserves_snapshot(
 
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     config = _configuration(tmp_path)
-    assert run_history_sync(config, FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, FakeSupplier(days), clock=lambda: NOW).state == "completed"
     previous = _snapshot(tmp_path)
 
     def fail(*args):
@@ -503,7 +503,7 @@ def test_failure_reports_actual_boundary_without_payload_and_preserves_snapshot(
     reporter = StderrHistorySyncProgress(monotonic=lambda: 0)
     reporter.publish(HistorySyncProgress("tencent_history", "completed", 1, 2, "600361"))
     advanced = FakeSupplier((*days[1:], date(2026, 9, 11)))
-    result = run_history_sync(config, advanced, clock=lambda: NOW + timedelta(days=1), progress=reporter)
+    result = RunHistorySync(config, advanced, clock=lambda: NOW + timedelta(days=1), progress=reporter)
     reporter.publish_result(result)
     assert result.state == "failed" and result.reason == "history_sqlite_failed"
     assert _snapshot(tmp_path) == previous
@@ -524,7 +524,7 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
     from trader.download.infra.history_month_partition import HistoryMonthPartitionError
 
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    assert run_history_sync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "completed"
     snapshot = _snapshot(tmp_path)
     path = tmp_path / "partitions/2026/09.sqlite3"
     month = HistoryMonthPrices(path, 2026, 9)
@@ -549,7 +549,7 @@ def test_old_database_format_is_rejected_without_conversion(tmp_path):
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE metadata(singleton INTEGER PRIMARY KEY,schema_identity TEXT)")
         connection.execute("INSERT INTO metadata VALUES(1,'history_control')")
-    result = run_history_sync(
+    result = RunHistorySync(
         _configuration(tmp_path),
         FakeSupplier((date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))),
         clock=lambda: NOW,
@@ -572,10 +572,10 @@ def test_cross_month_interruption_only_requests_missing_dates_and_five_anchors(t
         return original(self, values, **kwargs)
 
     monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", interrupt_september)
-    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "cancelled"
+    assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "cancelled"
     monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", original)
     supplier.calls.clear()
-    resumed = run_history_sync(config, supplier, clock=lambda: NOW)
+    resumed = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert resumed.state == "completed", resumed.reason
     assert len(supplier.calls) == 2
     assert all(dates == days[-9:] for _, dates in supplier.calls)
@@ -592,16 +592,16 @@ def test_resume_finishes_old_cutoff_then_updates_to_current_cutoff(tmp_path, mon
     days = tuple(date(2026, 9, 1) + timedelta(days=i) for i in range(10))
     supplier = Dated(days)
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    original = history_sync_module.publish_history_snapshot
+    original = history_sync_module.PublishHistorySnapshot
 
     def fail(*args):
         raise OSError("interrupted_publication")
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail)
-    assert run_history_sync(config, supplier, clock=lambda: NOW.replace(day=3)).state == "failed"
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", original)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
+    assert RunHistorySync(config, supplier, clock=lambda: NOW.replace(day=3)).state == "failed"
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", original)
     supplier.calls.clear()
-    result = run_history_sync(config, supplier, clock=lambda: NOW)
+    result = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert result.data_cutoff == days[-1]
     assert len(supplier.calls) == 2
@@ -613,7 +613,7 @@ def test_missing_control_with_existing_month_prices_requires_rebuild(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_bytes(b"existing prices")
     supplier = FakeSupplier((date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10)))
-    result = run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW)
+    result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.reason == "history_format_requires_rebuild"
     assert not supplier.calls
     assert path.read_bytes() == b"existing prices"
@@ -622,13 +622,13 @@ def test_missing_control_with_existing_month_prices_requires_rebuild(tmp_path):
 def test_changed_reference_keeps_old_snapshot_readable_without_price_requests(tmp_path):
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(days, industry="old_industry")
-    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
     old = _snapshot(tmp_path)
     reader = HistorySnapshotReader(tmp_path)
     previous = reader.read_day(days[-1], old)
     supplier.industry = "new_industry"
     supplier.calls.clear()
-    assert run_history_sync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
     current = _snapshot(tmp_path)
     assert not supplier.calls
     assert old.partitions == current.partitions
@@ -650,19 +650,19 @@ def test_pending_batch_rebinds_versions_and_names_without_redownloading(tmp_path
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     supplier = FakeSupplier(days)
     config = _configuration(tmp_path)
-    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "completed"
     old = _snapshot(tmp_path)
     reader = HistorySnapshotReader(tmp_path)
     old_rows = reader.read_day(days[-1], old)
     supplier.dates = (*days[1:], date(2026, 9, 11))
-    original = history_sync_module.publish_history_snapshot
+    original = history_sync_module.PublishHistorySnapshot
 
     def fail(*args):
         raise OSError("interrupted_publication")
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
     now = NOW + timedelta(days=1)
-    assert run_history_sync(config, supplier, clock=lambda: now).state == "failed"
+    assert RunHistorySync(config, supplier, clock=lambda: now).state == "failed"
     index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
     pending = index.pending(old.sequence)
     tasks = index.tasks()
@@ -675,7 +675,7 @@ def test_pending_batch_rebinds_versions_and_names_without_redownloading(tmp_path
 
     changed = Changed(supplier.dates)
     # A second interruption after rebinding must leave the active snapshot and tasks intact.
-    assert run_history_sync(config, changed, clock=lambda: now).state == "failed"
+    assert RunHistorySync(config, changed, clock=lambda: now).state == "failed"
     rebound = index.pending(old.sequence)
     assert pending is not None and rebound is not None
     assert rebound.sequence == pending.sequence and rebound.cutoff == pending.cutoff
@@ -684,8 +684,8 @@ def test_pending_batch_rebinds_versions_and_names_without_redownloading(tmp_path
     assert _snapshot(tmp_path) == old
     assert reader.read_day(days[-1], old) == old_rows
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", original)
-    result = run_history_sync(config, changed, clock=lambda: now)
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", original)
+    result = RunHistorySync(config, changed, clock=lambda: now)
     assert result.state == "completed", result.reason
     assert result.data_cutoff == supplier.dates[-1]
     assert not changed.calls
@@ -712,7 +712,7 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
 
     monkeypatch.setattr(HistoryDownloadIndex, "finish", interrupt_after_confirmation)
     tuning = HistoryWriteTuning(1, 3, max_codes=1, max_cells=3)
-    result = run_history_sync(config, FakeSupplier(days), clock=lambda: NOW, write_tuning=tuning)
+    result = RunHistorySync(config, FakeSupplier(days), clock=lambda: NOW, write_tuning=tuning)
     assert result.state == "cancelled"
     index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
     assert [task.tencent_done for task in index.tasks()] == [True, False]
@@ -736,11 +736,11 @@ def test_changed_environment_resumes_only_unconfirmed_stock(tmp_path, monkeypatc
         raise OSError("interrupted_before_rebind")
 
     monkeypatch.setattr(HistoryDownloadIndex, "rebind_context", interrupted_rebind)
-    assert run_history_sync(config, supplier, clock=lambda: NOW).state == "failed"
+    assert RunHistorySync(config, supplier, clock=lambda: NOW).state == "failed"
     assert index.pending(0) == previous and index.tasks() == tasks
     assert not supplier.calls
     monkeypatch.setattr(HistoryDownloadIndex, "rebind_context", original_rebind)
-    result = run_history_sync(config, supplier, clock=lambda: NOW)
+    result = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert result.state == "completed", result.reason
     assert supplier.calls == [("600002", days)]
     assert len(HistorySnapshotReader(tmp_path).read_day(days[-1], _snapshot(tmp_path))) == 2
@@ -763,8 +763,8 @@ def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monke
     def fail(*args):
         raise OSError("interrupted_publication")
 
-    monkeypatch.setattr(history_sync_module, "publish_history_snapshot", fail)
-    assert run_history_sync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "failed"
+    monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", fail)
+    assert RunHistorySync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "failed"
     index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
     pending, tasks = index.pending(0), index.tasks()
 
@@ -786,7 +786,7 @@ def test_pending_batch_still_rejects_changed_dates_or_securities(tmp_path, monke
             return replace(context, universe=(replace(first, **{change: replacements[change]}), second))
 
     changed = Changed(days)
-    result = run_history_sync(_configuration(tmp_path), changed, clock=lambda: NOW)
+    result = RunHistorySync(_configuration(tmp_path), changed, clock=lambda: NOW)
     assert result.reason == reason
     assert not changed.calls
     assert index.pending(0) == pending and index.tasks() == tasks

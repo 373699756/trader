@@ -17,6 +17,7 @@ from tests.component.market_data_test_support import (
     FailingIntradayClient,
     FakeSession,
     FeatureBuilder,
+    LoadRuntimeSettings,
     MutableMonotonic,
     Path,
     PriceAdjustment,
@@ -28,7 +29,6 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
     _tail_minute_bars,
-    load_runtime_settings,
     pytest,
     replace,
     threading,
@@ -93,7 +93,7 @@ def test_intraday_tail_has_a_lane_independent_from_full_market_refresh() -> None
 
 
 def test_expired_unified_intraday_cache_triggers_a_new_physical_load() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,
@@ -486,7 +486,7 @@ def test_intraday_lane_queue_wait_cannot_restart_request_deadline(monkeypatch) -
 
 
 def test_timed_out_intraday_lane_cannot_mutate_caller_restrictions_after_return() -> None:
-    runtime = load_runtime_settings(Path(__file__).parents[2] / "config" / "runtime.json")
+    runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     measured_at = AFTERNOON + timedelta(seconds=91)
     cache: BoundedLruCache[object] = BoundedLruCache(
         runtime.market_data.cache_policy,

@@ -24,7 +24,7 @@ class HistoryTailPlan:
     quality: HistoryQuality
 
 
-def plan_history_tail(open_dates: tuple[date, ...], latest: date, observed_on: date) -> HistoryTailPlan:
+def PlanHistoryTail(open_dates: tuple[date, ...], latest: date, observed_on: date) -> HistoryTailPlan:
     # A live quote is not a completed daily bar. Same-day publication, when
     # already present in published history, is accepted separately by its caller.
     completed = tuple(day for day in open_dates if day < observed_on)
@@ -43,7 +43,7 @@ def plan_history_tail(open_dates: tuple[date, ...], latest: date, observed_on: d
     return HistoryTailPlan(expected, missing, quality)
 
 
-def validate_tail_overlap(
+def ValidateTailOverlap(
     original: tuple[PublishedHistoryCell, ...],
     recovered: tuple[PublishedHistoryCell, ...],
 ) -> HistoryQuality:

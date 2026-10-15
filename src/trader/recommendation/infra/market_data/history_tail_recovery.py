@@ -13,19 +13,19 @@ from trader.download.application.fetch_history_tail import FetchHistoryTailUseCa
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.history_tail import HistoryTailRequest
 from trader.download.domain.published_history import (
+    ProjectHistoryCell,
     PublishedHistoryManifest,
     PublishedHistoryWindow,
-    project_history_cell,
 )
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.history_tail import (
     HistoryQuality,
     HistoryTailPlan,
-    plan_history_tail,
-    validate_tail_overlap,
+    PlanHistoryTail,
+    ValidateTailOverlap,
 )
-from trader.recommendation.infra.market_data.published_history_bars import daily_bar
+from trader.recommendation.infra.market_data.published_history_bars import ProjectPublishedDailyBar
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,7 +111,7 @@ class CandidateHistoryTailRecovery:
     def plan(self, latest: date, observed_at: datetime) -> HistoryTailPlan:
         with self._lock:
             dates = self._calendar_dates
-        return plan_history_tail(dates, latest, observed_at.astimezone(SHANGHAI).date())
+        return PlanHistoryTail(dates, latest, observed_at.astimezone(SHANGHAI).date())
 
     def cached(
         self, codes: Sequence[str], manifest: PublishedHistoryManifest, sessions: int, observed_at: datetime
@@ -264,11 +264,9 @@ class CandidateHistoryTailRecovery:
             raise TimeoutError("history_tail_deadline")
         tail = self._supplier.fetch(request, deadline=deadline)
         self._require_snapshot(manifest)
-        recovered = tuple(project_history_cell(cell) for cell in tail.cells)
+        recovered = tuple(ProjectHistoryCell(cell) for cell in tail.cells)
         quality = (
-            validate_tail_overlap(overlap, recovered)
-            if tail.source == "baostock"
-            else HistoryQuality.ADJUSTMENT_CONFLICT
+            ValidateTailOverlap(overlap, recovered) if tail.source == "baostock" else HistoryQuality.ADJUSTMENT_CONFLICT
         )
         if quality is not HistoryQuality.FULL_HISTORY_READY:
             return _Result((), quality, self._monotonic() + 60.0)
@@ -276,7 +274,9 @@ class CandidateHistoryTailRecovery:
         selected = merged[-sessions:]
         with self._lock:
             expected_dates = tuple(day for day in self._calendar_dates if day <= plan.expected_date)[-sessions:]
-        bars = tuple(bar for cell in selected if (bar := daily_bar(cell, PriceAdjustment.QFQ)) is not None)
+        bars = tuple(
+            bar for cell in selected if (bar := ProjectPublishedDailyBar(cell, PriceAdjustment.QFQ)) is not None
+        )
         if len(bars) != sessions or tuple(cell.trade_date for cell in selected) != expected_dates:
             return _Result((), HistoryQuality.HISTORY_UNAVAILABLE, self._monotonic() + 60.0)
         return _Result(bars, HistoryQuality.FULL_HISTORY_READY, self._monotonic() + 900.0)

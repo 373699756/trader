@@ -17,16 +17,16 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryGapSummary, HistorySyncConfiguration, HistorySyncProgress
-from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistoryWindow, project_history_cell
+from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryCell, PublishedHistoryWindow
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
-from trader.download.infra.history_sync_runner import run_history_sync
+from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
-from trader.training.infra.research.historical_industry_evidence import audit_published_historical_industry_facts
+from trader.training.infra.research.historical_industry_evidence import AuditPublishedHistoricalIndustryFacts
 
 
 class Baseline(FakeSupplier):
@@ -65,7 +65,7 @@ class Prices:
         self.calls.append(dates)
         cells = []
         for value in _download(security.code, dates, qfq_shift=self.shift).batch.cells:
-            cell = project_history_cell(value)
+            cell = ProjectHistoryCell(value)
             raw = replace(cell.unadjusted, preclose=None, pct_change=None, turnover=None)
             if self.conflict:
                 raw = replace(raw, close_price=raw.close_price + 1)
@@ -174,7 +174,7 @@ def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) ->
     assert context.calendar.open_dates == dates
     assert context.universe == universe
     assert context.industry_intervals == ()
-    result = run_history_sync(
+    result = RunHistorySync(
         HistorySyncConfiguration(tmp_path, sessions=len(dates), reread_sessions=2, minimum_free_bytes=0),
         router,
         clock=lambda: NOW,
@@ -212,12 +212,12 @@ def test_tencent_first_fetches_one_whole_window(count):
 def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, incoming):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
     before = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], before)
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline = Baseline(new_dates)
-    result = run_history_sync(
+    result = RunHistorySync(
         config,
         _router(baseline, Prices(shift=1.0, missing=incoming == "missing", conflict=incoming == "raw")),
         clock=lambda: NOW,
@@ -242,7 +242,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
 
 
 def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypatch):
-    from trader.bootstrap import execute_history_download
+    from trader.bootstrap import ExecuteHistoryDownload
 
     dates = (date(2026, 9, 8), date(2026, 9, 9))
     baseline = Baseline(dates)
@@ -265,10 +265,10 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     monkeypatch.setattr("trader.bootstrap.TencentQfqSupplier", lambda _dependencies: Prices())
     monkeypatch.setattr("trader.bootstrap.HistoryStNameSource", lambda *_args, **_kwargs: StSource())
     monkeypatch.setattr(
-        "trader.bootstrap.load_current_a_share_universe",
+        "trader.bootstrap.LoadCurrentAShareUniverse",
         lambda *_args: _current_universe("600001", "600002"),
     )
-    result = execute_history_download(
+    result = ExecuteHistoryDownload(
         HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0),
         clock=lambda: NOW,
     )
@@ -287,10 +287,10 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
 def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline, prices = Baseline(new_dates), Prices()
-    result = run_history_sync(config, _router(baseline, prices), clock=lambda: NOW)
+    result = RunHistorySync(config, _router(baseline, prices), clock=lambda: NOW)
     assert result.state == "completed"
     assert prices.calls == [new_dates, new_dates]
     assert baseline.calls == []
@@ -304,12 +304,12 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     config = HistorySyncConfiguration(tmp_path / "baostock", sessions=61, reread_sessions=2, minimum_free_bytes=0)
     full = _current_universe("600001", "600002")
     assert (
-        run_history_sync(config, _router(Baseline(dates, industry="银行"), Prices(), full), clock=lambda: NOW).state
+        RunHistorySync(config, _router(Baseline(dates, industry="银行"), Prices(), full), clock=lambda: NOW).state
         == "completed"
     )
 
     current = _current_universe("600001")
-    result = run_history_sync(config, _router(Baseline(dates, industry="银行"), Prices(), current), clock=lambda: NOW)
+    result = RunHistorySync(config, _router(Baseline(dates, industry="银行"), Prices(), current), clock=lambda: NOW)
 
     assert result.state == "completed"
     archive = SQLitePublishedHistorySnapshot(config.archive_root)
@@ -330,7 +330,7 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     training_rows = tuple(training.iter_training_rows(frozenset(dates)))
     assert len(training_rows) == len(dates)
     assert {row.code for row in training_rows} == {"600001"}
-    industry_report = audit_published_historical_industry_facts(config.archive_root)
+    industry_report = AuditPublishedHistoricalIndustryFacts(config.archive_root)
     assert industry_report.sources[0].sampled_codes == 1
     assert len(industry_report.merged_fact_hashes) == 1
 
@@ -338,14 +338,14 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
 def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
     dates = tuple(date(2026, 10, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(config, Baseline(dates), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, Baseline(dates), clock=lambda: NOW).state == "completed"
 
     class Regressed(Baseline):
         def load_context(self, as_of, sessions, *, universe=None, industry_cache=None):
             context = super().load_context(as_of, sessions, universe=universe)
             return replace(context, universe=(context.universe[0],))
 
-    result = run_history_sync(config, Regressed(dates), clock=lambda: NOW)
+    result = RunHistorySync(config, Regressed(dates), clock=lambda: NOW)
 
     assert result.state == "failed"
     assert result.reason == "supplier_universe_regressed"
@@ -355,7 +355,7 @@ def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
 def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failure) -> None:
     dates = tuple(date(2026, 10, 7) + timedelta(days=i) for i in range(3))
     config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
-    assert run_history_sync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
+    assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
     control = HistoryControlIndex(tmp_path / "control.sqlite3")
     before = control.load_state().active_snapshot
 
@@ -367,9 +367,7 @@ def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failu
             raise AssertionError("BaoStock must not replace an unavailable official universe")
 
     baseline, prices = NoContext(dates), Prices()
-    result = run_history_sync(
-        config, HistorySupplierRouter(baseline, prices, unavailable, StSource()), clock=lambda: NOW
-    )
+    result = RunHistorySync(config, HistorySupplierRouter(baseline, prices, unavailable, StSource()), clock=lambda: NOW)
 
     assert result.state == "failed"
     assert control.load_state().active_snapshot == before
@@ -402,17 +400,17 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
 def test_gap_longer_than_reread_window_includes_published_qfq_anchor(tmp_path):
     dates = tuple(date(2026, 8, 25) + timedelta(days=i) for i in range(10))
     config = HistorySyncConfiguration(tmp_path, sessions=10, reread_sessions=2, minimum_free_bytes=0)
-    first = run_history_sync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW)
+    first = RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW)
     assert first.state == "completed"
     shifted = tuple(day + timedelta(days=6) for day in dates)
     prices = Prices()
-    result = run_history_sync(config, _router(Baseline(shifted), prices), clock=lambda: NOW)
+    result = RunHistorySync(config, _router(Baseline(shifted), prices), clock=lambda: NOW)
     assert result.state == "completed"
     assert prices.calls == [shifted[-8:], shifted[-8:]]
 
 
 def test_only_explicit_baseline_suspension_can_qualify_missing_tencent_prices():
-    from trader.download.domain.history_price_qualification import qualify_history_pairs
+    from trader.download.domain.history_price_qualification import QualifyHistoryPairs
 
     day = date(2026, 9, 9)
     baseline = Baseline((day,))
@@ -445,13 +443,13 @@ def test_only_explicit_baseline_suspension_can_qualify_missing_tencent_prices():
     )
     qfq = replace(raw, adjustment="qfq", preclose=None, pct_change=None, turnover=None)
     suspended = replace(evidence.batch.cells[0], qfq=qfq, status="supplier_marked_suspended")
-    value = qualify_history_pairs(security.code, (day,), missing, (suspended,))
+    value = QualifyHistoryPairs(security.code, (day,), missing, (suspended,))
     assert value[0].status == "supplier_marked_suspended"
-    existing = PublishedHistoryWindow(security.code, (project_history_cell(suspended),))
-    assert qualify_history_pairs(security.code, (day,), existing) == (suspended,)
-    assert qualify_history_pairs(security.code, (day,), missing)[0].status == "unknown_missing"
+    existing = PublishedHistoryWindow(security.code, (ProjectHistoryCell(suspended),))
+    assert QualifyHistoryPairs(security.code, (day,), existing) == (suspended,)
+    assert QualifyHistoryPairs(security.code, (day,), missing)[0].status == "unknown_missing"
     with pytest.raises(RuntimeError, match="anchor_missing"):
-        qualify_history_pairs(security.code, (day,), Prices().fetch_window(security, (day,)), (suspended,))
+        QualifyHistoryPairs(security.code, (day,), Prices().fetch_window(security, (day,)), (suspended,))
 
 
 def test_partial_whole_window_is_returned_once_for_baostock_supplement():

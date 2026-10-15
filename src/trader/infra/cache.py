@@ -19,8 +19,8 @@ from trader.infra.cache_contracts import (
     CachePolicy,
     CacheStats,
     CacheStatus,
-    canonical_json_bytes,
-    freeze_cache_value,
+    CanonicalJsonBytes,
+    FreezeCacheValue,
 )
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 
@@ -131,7 +131,7 @@ class BoundedLruCache(Generic[_T]):
         if not data_version.strip():
             raise ValueError("cache data_version must not be empty")
         _require_aware(source_time, "cache source_time")
-        frozen = freeze_cache_value(value)
+        frozen = FreezeCacheValue(value)
         estimated_bytes = self._estimate_entry(identity, frozen, data_version, source_time, None)
         entry = CacheEntry(
             frozen,
@@ -485,7 +485,7 @@ class BoundedLruCache(Generic[_T]):
                 "error_code": error_code,
             }
         )
-        return len(canonical_json_bytes(identity)) + len(canonical_json_bytes(payload))
+        return len(CanonicalJsonBytes(identity)) + len(CanonicalJsonBytes(payload))
 
     def _dataset_policy(self, identity: CacheIdentity) -> CacheDatasetPolicy:
         try:
