@@ -339,11 +339,19 @@
       els.observationStageList.innerHTML = '<div class="observation-stage-empty">长期固定观察池不经过荐股评分链路</div>';
       return;
     }
+    const list = els.observationStageList;
+    const selection = typeof window.getSelection === "function" ? window.getSelection() : null;
+    if (selection && !selection.isCollapsed && typeof list.contains === "function"
+      && list.contains(selection.anchorNode) && list.contains(selection.focusNode)) return;
+    const expanded = new Set(typeof list.querySelectorAll === "function"
+      ? Array.from(list.querySelectorAll(".observation-stage.is-expanded"), (stage) => stage.dataset.stageKeys)
+      : []);
     const stages = displayObservationStages(stageSnapshots) || _pendingObservationStages(pipeline);
     const visibleIssues = Array.isArray(issues) ? issues : [];
-    els.observationStageList.innerHTML = stages.map((stage, index) => {
+    const markup = stages.map((stage, index) => {
       const [stageKeys, label, isFilter] = OBSERVATION_STAGE_DEFINITIONS[index];
       const stageKey = stageKeys.join("+");
+      const isExpanded = expanded.has(stageKey);
       const input = finiteNonNegativeInteger(stage && stage.input_count);
       const output = finiteNonNegativeInteger(stage && stage.output_count);
       const rejected = finiteNonNegativeInteger(stage && stage.rejected_count) || 0;
@@ -367,8 +375,9 @@
         : `待就绪 ${displayCount(pending + failed)}`;
       const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
       const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKeys.includes("final_selection") ? publicationIoMarkup(publicationReceipts) : ""}`;
-      return `<article class="observation-stage" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}" data-stage-toggle="true" tabindex="0" role="button" aria-expanded="false"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span><div class="observation-stage-detail">${detailMarkup}</div></div></article>`;
+      return `<article class="observation-stage${isExpanded ? " is-expanded" : ""}" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><button class="observation-stage-toggle" type="button" data-stage-toggle="true" aria-expanded="${isExpanded}" aria-controls="observation-stage-detail-${index}"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span></button><div id="observation-stage-detail-${index}" class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");
+    if (list.innerHTML !== markup) list.innerHTML = markup;
   }
 
   function _pendingObservationStages(pipeline) {

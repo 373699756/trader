@@ -156,10 +156,6 @@
       });
     });
     els.observationStageList.addEventListener("click", toggleObservationStage);
-    els.observationStageList.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      toggleObservationStage(event);
-    });
     els.drawerClose.addEventListener("click", closeDrawer);
     els.drawerBackdrop.addEventListener("click", () => {
       closeDrawer();
@@ -182,12 +178,11 @@
   }
 
   function toggleObservationStage(event) {
-    if (event.target.closest(".publication-version-detail")) return;
-    const stage = event.target.closest("[data-stage-toggle]");
-    if (!stage || !els.observationStageList.contains(stage)) return;
-    if (event.type === "keydown") event.preventDefault();
+    const button = event.target.closest("button[data-stage-toggle]");
+    if (!button || !els.observationStageList.contains(button)) return;
+    const stage = button.closest(".observation-stage");
     const expanded = stage.classList.toggle("is-expanded");
-    stage.setAttribute("aria-expanded", String(expanded));
+    button.setAttribute("aria-expanded", String(expanded));
   }
   async function initializeStrategy() {
     const selectionId = state.selectionSequence;

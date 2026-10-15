@@ -190,6 +190,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
             "avoided scored rows",
         )
         avoided = _six_seat_snapshot(base)
+        observation_copy = _observation_copyability(base)
         viewports = [_viewport(base, output_dir, width, height) for width, height in VIEWPORTS]
         _execute(base, 'document.querySelector(".strategy-tab[data-strategy=long]").click(); return true;')
         _wait(
@@ -227,6 +228,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
             and avoided.get("ranks") == [1, 2]
             and avoided.get("tiers") == ["回避", "回避"]
             and avoided.get("six_seat_meta") == "推荐 0 · 关注 0 · 回避 2"
+            and observation_copy.get("passed") is True
             and profile_switch == {"selected": "v3", "before_date": True, "rows": 2}
             and all(_viewport_passed(viewport) for viewport in viewports)
             and isinstance(long_state, dict)
@@ -241,6 +243,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
             "browser": browser_name,
             "snapshots": snapshots,
             "avoided": avoided,
+            "observation_copy": observation_copy,
             "profile_switch": profile_switch,
             "long": long_state,
             "viewports": viewports,
@@ -331,6 +334,41 @@ def _six_seat_snapshot(base: str | _ChromeSession) -> dict[str, object]:
     )
     if not isinstance(result, dict):
         raise RuntimeError("browser six-seat snapshot must be an object")
+    return result
+
+
+def _observation_copyability(base: str | _ChromeSession) -> dict[str, object]:
+    result = _execute(
+        base,
+        """
+        document.querySelector('#errorDetailsButton').click();
+        const list = document.querySelector('#observationStageList');
+        const stage = Array.from(list.querySelectorAll('.observation-stage'))
+          .find((item) => item.querySelector('.observation-stage-detail')?.textContent.trim());
+        if (!stage) return {passed: false, reason: 'no_stage_detail'};
+        const button = stage.querySelector('button[data-stage-toggle]');
+        const detail = stage.querySelector('.observation-stage-detail');
+        button.click();
+        const range = document.createRange();
+        range.selectNodeContents(detail);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        const selected = selection.toString().trim();
+        detail.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+        const stillExpanded = stage.classList.contains('is-expanded');
+        window.TraderStatusView.renderObservationStages({observationStageList: list}, [], null, false, []);
+        const preserved = stage.isConnected && selection.toString().trim() === selected;
+        selection.removeAllRanges();
+        document.querySelector('#observationDrawerClose').click();
+        return {passed: button.tagName === 'BUTTON' && !button.contains(detail)
+          && getComputedStyle(detail).userSelect === 'text'
+          && selected.length > 0 && stillExpanded && preserved,
+          selected_length: selected.length, still_expanded: stillExpanded, preserved};
+        """,
+    )
+    if not isinstance(result, dict):
+        raise RuntimeError("browser observation copyability result must be an object")
     return result
 
 

@@ -669,6 +669,18 @@ tbody tr.is-unavailable td.negative {
   min-width: 0;
 }
 
+.observation-stage-toggle {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .observation-stage-main strong,
 .observation-stage-main span,
 .observation-stage-main small {
@@ -679,7 +691,7 @@ tbody tr.is-unavailable td.negative {
 .observation-stage-main strong { color: var(--text); font-size: 12px; line-height: 17px; letter-spacing: 0; }
 .observation-stage-main span { color: var(--muted); font-size: 10px; line-height: 15px; }
 .observation-stage-main strong { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.observation-stage-detail { display: none; }
+.observation-stage-detail { display: none; user-select: text; cursor: text; }
 .observation-stage.is-expanded .observation-stage-detail { display: block; }
 .observation-stage-chevron {
   width: 7px;

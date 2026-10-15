@@ -413,6 +413,10 @@ assert.strictEqual(
 );
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级稳定过滤"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
+assert.match(canonicalObservationElements.observationStageList.innerHTML,
+  /<button class="observation-stage-toggle"[^>]*aria-expanded="false"[^>]*>[\s\S]*?<\/button><div id="observation-stage-detail-0" class="observation-stage-detail">/);
+assert.doesNotMatch(canonicalObservationElements.observationStageList.innerHTML,
+  /<article[^>]*role="button"/);
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("320 → 129 · 淘汰 124 · 待补充 66 · 失败 1"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("静态数据准备"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("动态数据准备"));
@@ -433,6 +437,20 @@ state.renderObservationStages(
 assert(combinedObservationElements.observationStageList.innerHTML.includes("静态数据准备"));
 assert(combinedObservationElements.observationStageList.innerHTML.includes("360 → 0"));
 assert(combinedObservationElements.observationStageList.innerHTML.includes("动态数据准备"));
+const selectableObservationElements = summaryFixture();
+state.renderObservationStages(selectableObservationElements, null, null, false, []);
+selectableObservationElements.observationStageList.querySelectorAll = () => [
+  { dataset: { stageKeys: "dynamic_filter" } },
+];
+state.renderObservationStages(selectableObservationElements, null, null, false, []);
+assert.match(selectableObservationElements.observationStageList.innerHTML,
+  /class="observation-stage is-expanded"[^>]*data-stage-keys="dynamic_filter"[\s\S]*?aria-expanded="true"/);
+const selectedMarkup = selectableObservationElements.observationStageList.innerHTML;
+selectableObservationElements.observationStageList.contains = () => true;
+sandbox.window.getSelection = () => ({ isCollapsed: false, anchorNode: {}, focusNode: {} });
+state.renderObservationStages(selectableObservationElements, [], null, false, []);
+assert.strictEqual(selectableObservationElements.observationStageList.innerHTML, selectedMarkup);
+delete sandbox.window.getSelection;
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("TopK、集中度、冻结与发布"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("择优入选、分散限制、冻结与发布"));
 assert(!canonicalObservationElements.observationStageList.innerHTML.includes("动态采集与清洗"));
