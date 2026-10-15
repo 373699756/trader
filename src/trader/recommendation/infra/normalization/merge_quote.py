@@ -126,7 +126,7 @@ def _verify_prices(
     deviation = _maximum_price_deviation(prices)
     verified = deviation is None or deviation <= 0.5
     if not verified and targeted:
-        tencent = next((price for observation, price in prices if source_name(observation.source) == "tencent"), None)
+        tencent = next((price for observation, price in prices if observation.source == "tencent"), None)
         full_market_prices = [
             price
             for observation, price in prices

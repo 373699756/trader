@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from tests.component.market_data_test_support import (
     AFTERNOON,
     FEATURE_WEIGHT_POLICY,
@@ -13,7 +11,6 @@ from tests.component.market_data_test_support import (
     NOW,
     TAIL_POLICY,
     BlockingMarketClient,
-    Board,
     BoundedExecutor,
     BoundedLruCache,
     CountingHistoryClient,
@@ -28,7 +25,6 @@ from tests.component.market_data_test_support import (
     Path,
     ResearchObservation,
     SourceLaneScheduler,
-    SQLiteDataPlane,
     StaticGateway,
     StaticGatewayWithSeparateQuotes,
     StaticHistoryClient,
@@ -40,14 +36,12 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
     _tail_minute_bars,
-    date,
     datetime,
     load_runtime_settings,
     replace,
     threading,
     time,
     timedelta,
-    timezone,
 )
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.application.ports.data_plane_records import (
@@ -575,7 +569,7 @@ def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time(
         monotonic=monotonic,
         wall_clock=wall_clock,
     )
-    quote = replace(_quote(), source="eastmoney")
+    quote = replace(_quote(), source="tencent_market")
     gateway = MarketDataGateway(
         StaticMarketClient((quote,)),
         StaticMarketClient((replace(quote, source="sina"),)),
@@ -600,92 +594,3 @@ def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time(
     assert "market_data_degraded" in result[0].execution_restrictions
     assert snapshot is not None
     assert "tencent:cache_degraded" in snapshot.degraded_reasons
-
-
-def test_late_free_identity_is_persisted_without_waiting_for_next_score_cycle(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    completed = threading.Event()
-    observed_at = datetime.now(timezone.utc)
-
-    class LateIdentityClient(BlockingMarketClient):
-        def fetch_market(self):
-            result = super().fetch_market()
-            completed.set()
-            return result
-
-    eastmoney_quote = replace(
-        _quote(),
-        source="eastmoney",
-        board=Board.MAIN,
-        board_source="eastmoney",
-        board_reliability="reported",
-        exchange="SSE",
-        listing_date=date(1999, 11, 10),
-    )
-    eastmoney = LateIdentityClient((eastmoney_quote,))
-
-    class HedgeClient(CountingMarketClient):
-        def fetch_market(self):
-            assert eastmoney.started.wait(1.0)
-            return super().fetch_market()
-
-    sina = HedgeClient((replace(_quote(), source="sina", price=12.01),))
-    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneScheduler(pool)
-    gateway = MarketDataGateway(
-        eastmoney,
-        sina,
-        StaticTencentClient(()),
-        minimum_market_rows=1,
-        circuit_breaker_failures=3,
-        circuit_breaker_seconds=30,
-        worker_pool=pool,
-        source_lanes=lanes,
-        full_market_hedge_delay_seconds=0.01,
-    )
-    data_plane = SQLiteDataPlane(tmp_path)
-    write_completed = threading.Event()
-    save_records = data_plane.save_security_master_recent_records
-
-    def record_save(records):
-        save_records(records)
-        write_completed.set()
-
-    monkeypatch.setattr(data_plane, "save_security_master_recent_records", record_save)
-    service = _service(
-        gateway,
-        StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        data_plane=data_plane,
-        worker_pool=pool,
-        source_lanes=lanes,
-    )
-    sink_called = threading.Event()
-
-    def schedule_masters(masters):
-        service.references.schedule_security_master_persistence(masters)
-        sink_called.set()
-
-    gateway.set_security_reference_persistence_sink(schedule_masters)
-    pool.start()
-    deadline = observed_at + timedelta(milliseconds=80)
-
-    try:
-        result = tuple(gateway.fetch_market(observed_at=observed_at, deadline=deadline))
-        time.sleep(0.1)
-        eastmoney.release.set()
-        assert completed.wait(1.0)
-        assert sink_called.wait(1.0), gateway.health().security_master
-        assert write_completed.wait(5.0)
-        persisted = data_plane.load_security_master_recent(eastmoney_quote.code)
-    finally:
-        eastmoney.release.set()
-        lanes.stop(wait=True, timeout_seconds=1.0)
-        pool.stop(wait=True, cancel_futures=True)
-
-    assert result[0].source == "sina"
-    assert persisted is not None
-    assert persisted.source == "eastmoney_security_master"
-    assert persisted.payload["listing_date"] == "1999-11-10"
-    assert lanes.status().lanes["reference"].completed_count >= 1

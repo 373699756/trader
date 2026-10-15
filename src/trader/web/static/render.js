@@ -11,6 +11,7 @@
     unavailable: "行情暂不可用",
     long_watchlist: "长期观察名单",
     tencent: "腾讯行情",
+    tencent_market: "腾讯行情",
     eastmoney: "东方财富",
     sina: "新浪行情",
     tushare: "专业行情",
@@ -600,7 +601,7 @@
       if (BOARD_LABELS[prefix] && DEGRADED_REASON_LABELS[suffix]) {
         return `${BOARD_LABELS[prefix]}：${DEGRADED_REASON_LABELS[suffix]}`;
       }
-      if (["eastmoney", "sina", "tencent", "tushare", "akshare"].includes(prefix)) {
+      if (["eastmoney", "sina", "tencent", "tencent_market", "tushare", "akshare"].includes(prefix)) {
         return "行情数据源暂不可用";
       }
     }

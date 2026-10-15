@@ -151,7 +151,7 @@ def test_shared_technical_primitives_have_one_infra_owner() -> None:
         "BoundedLruCache": SOURCE_ROOT / "infra/cache.py",
         "BoundedExecutor": SOURCE_ROOT / "infra/workers.py",
         "ProcessLock": SOURCE_ROOT / "infra/process_lock.py",
-        "RuntimeWorkerResources": SOURCE_ROOT / "bootstrap.py",
+        "RuntimeWorkerResources": SOURCE_ROOT / "recommendation/infra/runtime/application_system.py",
         "ShutdownDeadline": SOURCE_ROOT / "infra/shutdown.py",
     }
     assert all(path.is_file() for path in owners.values())

@@ -61,6 +61,7 @@ class ApplicationResources:
     source_lanes: SourceLaneResource
     data_pool: PoolResource
     quote_pool: PoolResource
+    market_quote_pool: PoolResource
     research_pool: PoolResource
     auxiliary_runtimes: tuple[AuxiliaryRuntimeResource, ...]
     market_cache: CacheResource
@@ -71,6 +72,7 @@ class _StartedResources:
     auxiliary: tuple[AuxiliaryRuntimeResource, ...]
     data_pool: bool
     quote_pool: bool
+    market_quote_pool: bool
     research_pool: bool
 
 
@@ -82,11 +84,13 @@ def start_application_resources(
     supervisor = resources.supervisor
     data_pool = resources.data_pool
     quote_pool = resources.quote_pool
+    market_quote_pool = resources.market_quote_pool
     research_pool = resources.research_pool
     auxiliary_runtimes = resources.auxiliary_runtimes
     auxiliary_started: list[AuxiliaryRuntimeResource] = []
     data_started = False
     quote_started = False
+    market_quote_started = False
     research_started = False
     try:
         for runtime in auxiliary_runtimes:
@@ -94,6 +98,7 @@ def start_application_resources(
                 auxiliary_started.append(runtime)
         data_started = data_pool.start()
         quote_started = quote_pool.start()
+        market_quote_started = market_quote_pool.start()
         research_started = research_pool.start()
         started = supervisor.start()
     except BaseException:
@@ -104,6 +109,7 @@ def start_application_resources(
                 tuple(auxiliary_started),
                 data_started,
                 quote_started,
+                market_quote_started,
                 research_started,
             ),
             deadline,
@@ -111,7 +117,7 @@ def start_application_resources(
         raise
     if started:
         return True
-    if not any((research_started, quote_started, data_started, bool(auxiliary_started))):
+    if not any((research_started, market_quote_started, quote_started, data_started, bool(auxiliary_started))):
         return False
     deadline = ShutdownDeadline.start(timeout_seconds)
     _stop_started_resources(
@@ -120,6 +126,7 @@ def start_application_resources(
             tuple(auxiliary_started),
             data_started,
             quote_started,
+            market_quote_started,
             research_started,
         ),
         deadline,
@@ -138,6 +145,8 @@ def _stop_started_resources(
         resources.data_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
     if started.quote_pool:
         resources.quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+    if started.market_quote_pool:
+        resources.market_quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
     for runtime in reversed(started.auxiliary):
         runtime.stop(wait=True, deadline=deadline)
 
@@ -151,6 +160,7 @@ def stop_application_resources(
     source_lanes = resources.source_lanes
     data_pool = resources.data_pool
     quote_pool = resources.quote_pool
+    market_quote_pool = resources.market_quote_pool
     research_pool = resources.research_pool
     auxiliary_runtimes = resources.auxiliary_runtimes
     market_cache = resources.market_cache
@@ -163,6 +173,7 @@ def stop_application_resources(
     steps.extend(source_lanes.stop(wait=True, deadline=deadline))
     steps.append(data_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     steps.append(quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
+    steps.append(market_quote_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     steps.append(research_pool.stop(wait=True, cancel_futures=True, deadline=deadline))
     for runtime in auxiliary_runtimes:
         steps.append(runtime.stop(wait=True, deadline=deadline))

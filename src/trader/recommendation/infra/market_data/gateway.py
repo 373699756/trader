@@ -74,7 +74,7 @@ from trader.recommendation.infra.normalization.merge import (
     observation_from_quote,
     overlay_canonical_snapshot,
 )
-from trader.recommendation.infra.normalization.merge_quote import rejection_reason, source_name
+from trader.recommendation.infra.normalization.merge_quote import rejection_reason
 
 _TARGET_QUOTE_MAX_COMMIT_RESERVE_SECONDS = 0.2
 _TARGET_QUOTE_MIN_TRANSPORT_TIMEOUT_SECONDS = 0.05
@@ -122,13 +122,13 @@ class _TargetQuoteRequest:
 class MarketDataGateway:
     def __init__(
         self,
-        eastmoney: FullMarketSource,
+        tencent_market: FullMarketSource,
         sina: FullMarketSource,
         tencent: CandidateQuoteSource,
         **options: Unpack[_GatewayOptions],
     ) -> None:
         self._versions = InputVersionClock()
-        self._eastmoney = eastmoney
+        self._tencent_market = tencent_market
         self._sina = sina
         self._tencent = tencent
         self._minimum_market_rows = options["minimum_market_rows"]
@@ -140,13 +140,17 @@ class MarketDataGateway:
         self._source_contracts = dict(
             options.get("source_contracts")
             or {
-                "eastmoney": "eastmoney-component",
+                "tencent_market": "tencent-market-component",
                 "sina": "sina-component",
                 "tencent": "tencent-component",
             }
         )
         self._source_contracts.setdefault(
             "tencent_long",
+            self._source_contracts.get("tencent", "tencent-component"),
+        )
+        self._source_contracts.setdefault(
+            "tencent_market",
             self._source_contracts.get("tencent", "tencent-component"),
         )
         self._config_version = options.get("config_version", "component-default")
@@ -158,7 +162,7 @@ class MarketDataGateway:
         self._candidate_fetch_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._states = {
-            "eastmoney": _CircuitState(),
+            "tencent_market": _CircuitState(),
             "sina": _CircuitState(),
             "tencent": _CircuitState(),
             "tencent_long": _CircuitState(),
@@ -182,7 +186,7 @@ class MarketDataGateway:
         self._conflict_count = 0
         self._sources = MarketSourceCoordinator(
             MarketSourceDependencies(
-                eastmoney=eastmoney,
+                tencent_market=tencent_market,
                 sina=sina,
                 minimum_market_rows=self._minimum_market_rows,
                 worker_pool=self._worker_pool,
@@ -339,7 +343,7 @@ class MarketDataGateway:
                 self._latest_changes = market_changes(self._latest_batch, columnar)
                 self._latest_batch = columnar
             self._latest_by_code = {quote.code: quote for quote in commit_snapshot.quotes}
-            self._latest_source = "eastmoney+sina" if len(successes) == 2 else outcome.vendor
+            self._latest_source = "tencent+sina" if len(successes) == 2 else outcome.vendor
             self._last_route_outcome = outcome
             self._merge_count += 1
             self._conflict_count += len(commit_snapshot.conflicts)
@@ -502,14 +506,12 @@ class MarketDataGateway:
                 return tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
         with self._state_lock:
             baseline = tuple(self._latest_by_code[code] for code in codes if code in self._latest_by_code)
-            refreshed_sources = {
-                (observation.subject_key, source_name(observation.source)) for observation in observations
-            }
+            refreshed_sources = {(observation.subject_key, observation.source) for observation in observations}
             raw_baseline = tuple(
                 observation
                 for code in normalized_codes
                 for observation in self._latest_observations.get(code, {}).values()
-                if (observation.subject_key, source_name(observation.source)) not in refreshed_sources
+                if (observation.subject_key, observation.source) not in refreshed_sources
             )
             references = tuple(
                 observation

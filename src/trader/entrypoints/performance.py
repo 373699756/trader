@@ -728,9 +728,9 @@ def _complete_realtime_observations(
 
     observations: list[SourceObservation] = []
     for quote in quotes:
-        base = observation_from_quote(quote, source="eastmoney", observed_at=observed_at)
+        base = observation_from_quote(quote, source="tencent_market", observed_at=observed_at)
         fields = {name: base.fields[name] for name in _COMPLETE_REALTIME_FIELDS}
-        for source in ("eastmoney", "sina"):
+        for source in ("tencent_market", "sina"):
             data_version = f"{source}:{quote.data_version}"
             observations.append(
                 replace(

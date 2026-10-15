@@ -410,7 +410,7 @@ def test_full_market_source_lane_deadline_returns_before_blocked_source_io() -> 
 
     assert elapsed < 0.5
     assert gateway.canonical_snapshot() is None
-    source_health = gateway.health().sources["eastmoney"]
+    source_health = gateway.health().sources["tencent_market"]
     assert source_health.success_count == 0
     assert source_health.error_count == 1
     assert source_health.timeout_count == 1

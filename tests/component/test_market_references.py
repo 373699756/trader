@@ -859,16 +859,8 @@ def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit(
     assert second[0].execution_restrictions == ()
 
 
-def test_gateway_retains_free_security_master_when_realtime_source_falls_back() -> None:
-    eastmoney_quote = replace(
-        _quote(),
-        source="eastmoney",
-        board=Board.MAIN,
-        board_source="eastmoney",
-        board_reliability="reported",
-        exchange="SSE",
-        listing_date=date(1999, 11, 10),
-    )
+def test_gateway_retains_official_security_master_when_realtime_source_falls_back() -> None:
+    market_quote = replace(_quote(), source="tencent")
     second_observed_at = NOW + timedelta(seconds=1)
     sina_quote = replace(
         _quote(),
@@ -878,13 +870,31 @@ def test_gateway_retains_free_security_master_when_realtime_source_falls_back() 
         data_version="sina-history",
     )
     gateway = MarketDataGateway(
-        SequenceMarketClient(((eastmoney_quote,), RuntimeError("eastmoney offline"))),
+        SequenceMarketClient(((market_quote,), RuntimeError("tencent offline"))),
         SequenceMarketClient(((sina_quote,),)),
         StaticTencentClient(()),
         minimum_market_rows=1,
         circuit_breaker_failures=3,
         circuit_breaker_seconds=30,
         wall_clock=lambda: second_observed_at,
+    )
+    gateway.update_reference_observations(
+        (
+            SourceObservation(
+                source="exchange",
+                subject_key="600001",
+                observed_at=NOW,
+                source_time=NOW,
+                received_at=NOW,
+                effective_at=NOW,
+                data_version="official-master",
+                fields={"board": "main", "exchange": "SSE", "listing_date": "1999-11-10"},
+                missing_reasons={},
+                payload_hash="official-master",
+                status="success",
+                error_code=None,
+            ),
+        )
     )
 
     first = tuple(gateway.fetch_market(observed_at=NOW))
@@ -893,15 +903,15 @@ def test_gateway_retains_free_security_master_when_realtime_source_falls_back() 
     assert first[0].listing_date == date(1999, 11, 10)
     assert second[0].source == "sina"
     assert second[0].board is Board.MAIN
-    assert second[0].board_source == "eastmoney"
-    assert second[0].board_reliability == "reported"
+    assert second[0].board_source == "exchange"
+    assert second[0].board_reliability == "verified"
     assert second[0].exchange == "SSE"
     assert second[0].listing_date == date(1999, 11, 10)
 
 
-def test_newer_sparse_free_identity_cannot_delete_existing_listing_fields() -> None:
+def test_newer_sparse_official_identity_cannot_delete_existing_listing_fields() -> None:
     gateway = MarketDataGateway(
-        StaticMarketClient((replace(_quote(), source="eastmoney"),)),
+        StaticMarketClient((replace(_quote(), source="tencent"),)),
         StaticMarketClient((replace(_quote(), source="sina"),)),
         StaticTencentClient(()),
         minimum_market_rows=1,
@@ -911,13 +921,13 @@ def test_newer_sparse_free_identity_cannot_delete_existing_listing_fields() -> N
         wall_clock=lambda: NOW,
     )
     rich = SourceObservation(
-        source="eastmoney_security_master",
+        source="exchange",
         subject_key="600001",
         observed_at=NOW - timedelta(seconds=1),
         source_time=NOW - timedelta(seconds=1),
         received_at=NOW - timedelta(seconds=1),
         effective_at=NOW - timedelta(seconds=1),
-        data_version="eastmoney-master-rich",
+        data_version="exchange-master-rich",
         fields={"board": "main", "exchange": "SSE", "listing_date": "2020-01-02"},
         missing_reasons={},
         payload_hash="rich-master",
@@ -930,7 +940,7 @@ def test_newer_sparse_free_identity_cannot_delete_existing_listing_fields() -> N
         source_time=NOW,
         received_at=NOW,
         effective_at=NOW,
-        data_version="eastmoney-master-sparse",
+        data_version="exchange-master-sparse",
         fields={"board": "main", "exchange": "SSE"},
         payload_hash="sparse-master",
     )
@@ -938,10 +948,12 @@ def test_newer_sparse_free_identity_cannot_delete_existing_listing_fields() -> N
     gateway.update_reference_observations((rich,))
     gateway.update_reference_observations((sparse,))
     reference = gateway.reference_observations(("600001",))[0]
-    quote = gateway.fetch_market(observed_at=NOW)[0]
+    quotes = gateway.fetch_market(observed_at=NOW)
+    assert quotes
+    quote = quotes[0]
     security_master = gateway.health().security_master
 
-    assert reference.data_version == "eastmoney-master-sparse"
+    assert reference.data_version == "exchange-master-sparse"
     assert reference.fields["listing_date"] == "2020-01-02"
     assert reference.fields["listing_age_sessions"] == 3.0
     assert quote.listing_date == date(2020, 1, 2)

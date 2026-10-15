@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
+from trader.infra.atomic_files.json import RuntimeJsonWriter
 from trader.infra.cache import BoundedLruCache
 from trader.infra.settings import LongWatchlist, RuntimeSettings, StrategySettings
 from trader.infra.shutdown import ShutdownDeadline, ShutdownReport
@@ -34,6 +35,22 @@ ApplicationT = TypeVar("ApplicationT")
 
 
 @dataclass(frozen=True)
+class RuntimeWorkerResources:
+    """Worker and cache resources assembled by the composition root."""
+
+    control_pool: BoundedExecutor
+    data_pool: BoundedExecutor
+    quote_pool: BoundedExecutor
+    market_quote_pool: BoundedExecutor
+    research_pool: BoundedExecutor
+    company_research_pool: BoundedExecutor
+    persistence_pool: BoundedExecutor
+    source_lanes: SourceLaneScheduler
+    json_writer: RuntimeJsonWriter
+    market_cache: BoundedLruCache[object]
+
+
+@dataclass(frozen=True)
 class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, WebServicesT, ApplicationT]):
     settings: RuntimeSettings
     strategy: StrategySettings
@@ -47,6 +64,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, 
     source_lanes: SourceLaneScheduler
     data_pool: BoundedExecutor
     quote_pool: BoundedExecutor
+    market_quote_pool: BoundedExecutor
     long_runtime: LongRuntime
     decision_queries: UnifiedDecisionQueries
     decision_events: UnifiedDecisionEventStream
@@ -68,6 +86,7 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, 
             self.source_lanes,
             self.data_pool,
             self.quote_pool,
+            self.market_quote_pool,
             self.research_pool,
             (self.long_runtime, self.history_observer, self.qfq_maintenance),
             self.market_cache,
@@ -83,4 +102,4 @@ class ApplicationSystem(Generic[ResearchTraceT, OutcomeEvidenceT, MaintenanceT, 
         return stop_application_resources(self._application_resources(), deadline=shared)
 
 
-__all__ = ["ApplicationSystem"]
+__all__ = ["ApplicationSystem", "RuntimeWorkerResources"]

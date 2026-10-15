@@ -89,6 +89,7 @@ def test_quote_pool_is_started_before_supervisor_and_stopped_after_source_lanes(
         source_lanes=_SourceLanes(events),
         data_pool=_Pool("data", events),
         quote_pool=_Pool("quote", events),
+        market_quote_pool=_Pool("market-quote", events),
         research_pool=_Pool("research", events),
         auxiliary_runtimes=(),
         market_cache=_Cache(events),
@@ -97,13 +98,15 @@ def test_quote_pool_is_started_before_supervisor_and_stopped_after_source_lanes(
     assert start_application_resources(resources, timeout_seconds=1.0) is True
     stop_application_resources(resources, deadline=ShutdownDeadline.start(1.0))
 
-    assert events[:4] == [
+    assert events[:5] == [
         "start:data",
         "start:quote",
+        "start:market-quote",
         "start:research",
         "start:supervisor",
     ]
     assert events.index("stop:source-lanes:True") < events.index("stop:quote:True")
+    assert events.index("stop:source-lanes:True") < events.index("stop:market-quote:True")
 
 
 def test_quote_pool_is_rolled_back_when_supervisor_does_not_start() -> None:
@@ -113,6 +116,7 @@ def test_quote_pool_is_rolled_back_when_supervisor_does_not_start() -> None:
         source_lanes=_SourceLanes(events),
         data_pool=_Pool("data", events),
         quote_pool=_Pool("quote", events),
+        market_quote_pool=_Pool("market-quote", events),
         research_pool=_Pool("research", events),
         auxiliary_runtimes=(),
         market_cache=_Cache(events),
@@ -120,3 +124,4 @@ def test_quote_pool_is_rolled_back_when_supervisor_does_not_start() -> None:
 
     assert start_application_resources(resources, timeout_seconds=1.0) is False
     assert "stop:quote:True" in events
+    assert "stop:market-quote:True" in events

@@ -1,13 +1,9 @@
-"""Eastmoney full-market quote, daily-history and targeted minute adapters."""
+"""Eastmoney daily-history and targeted minute adapters."""
 
 from __future__ import annotations
 
-import math
-import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import Future, wait
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
 
@@ -17,15 +13,10 @@ if TYPE_CHECKING:
 import requests
 
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
-from trader.infra.workers import BoundedExecutor, injected_executor, submit_or_reject
-from trader.recommendation.domain.candidate.filters import board_for_code
-from trader.recommendation.domain.market.models import Board, MarketQuote
+from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.tail import MinuteBar
 from trader.recommendation.infra.market_data.outcome_history import pair_outcome_history
 from trader.recommendation.infra.normalization.quote import (
-    MarketQuoteInput,
-    build_market_quote,
-    normalize_quotes,
     to_float,
 )
 from trader.training.domain.evaluation.models import OutcomeBar
@@ -39,19 +30,9 @@ class JsonResponse(Protocol):
 
 SessionFactory = Callable[[], requests.Session]
 
-FIELDS = "f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13,f14,f15,f16,f17,f18,f20,f21,f22,f23,f24,f25,f26,f100"
-HOSTS = ("82.push2.eastmoney.com", "push2.eastmoney.com", "7.push2.eastmoney.com")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ROUNDS = 2
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-
-
-@dataclass(frozen=True)
-class _EastmoneyRequest:
-    request_rounds: int = _REQUEST_ROUNDS
-    session: requests.Session | None = None
-    deadline: datetime | None = None
-    cancel_event: threading.Event | None = None
 
 
 class _EastmoneyRequiredOptions(TypedDict):
@@ -61,8 +42,6 @@ class _EastmoneyRequiredOptions(TypedDict):
 
 
 class _EastmoneyOptionalOptions(TypedDict, total=False):
-    workers: int
-    page_size: int
     cancel_requested: Callable[[], bool]
     wall_clock: Callable[[], datetime]
 
@@ -77,61 +56,10 @@ class EastmoneyClient:
         **options: Unpack[_EastmoneyOptions],
     ) -> None:
         self._timeout_seconds = options["timeout_seconds"]
-        self._workers = max(1, options.get("workers", 6))
-        self._page_size = max(100, options.get("page_size", 500))
         self._worker_pool = options["worker_pool"]
         self._session_factory = options["session_factory"]
         self._cancel_requested = options.get("cancel_requested", lambda: False)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
-
-    def fetch_market(
-        self,
-        now: datetime | None = None,
-        *,
-        deadline: datetime | None = None,
-        cancel_event: threading.Event | None = None,
-    ) -> tuple[MarketQuote, ...]:
-        self._ensure_running(deadline, cancel_event)
-        with self._session_factory() as session:
-            first = self._fetch_page(1, session=session, deadline=deadline, cancel_event=cancel_event)
-            data = _object_mapping(first.get("data"))
-            first_rows = _object_rows(data.get("diff"))
-            if not first_rows:
-                raise RuntimeError("eastmoney returned an empty first page")
-            total = int(to_float(data.get("total")) or len(first_rows))
-            page_count = max(1, math.ceil(total / self._page_size))
-            pages: dict[int, list[Mapping[str, object]]] = {1: first_rows}
-            if page_count > 1:
-                remaining: list[tuple[int, Mapping[str, object]]] = []
-                pool = injected_executor(self._worker_pool)
-                for offset in range(2, page_count + 1, self._workers):
-                    futures: dict[Future[Mapping[str, object]], int] = {}
-                    try:
-                        for page in range(offset, min(page_count + 1, offset + self._workers)):
-                            future = submit_or_reject(
-                                pool,
-                                self._fetch_page,
-                                page,
-                                session=session,
-                                deadline=deadline,
-                                cancel_event=cancel_event,
-                            )
-                            futures[future] = page
-                    finally:
-                        wait(futures)
-                    remaining.extend((page, future.result()) for future, page in futures.items())
-                for page, payload in remaining:
-                    rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
-                    if not rows:
-                        raise RuntimeError(f"eastmoney page {page} was empty")
-                    pages[page] = rows
-        raw_rows = [row for page in sorted(pages) for row in pages[page]]
-        received_at = now or self._wall_clock()
-        quotes = normalize_quotes(raw_rows, received_at, normalizer=_quote_from_row)
-        unique_codes = {quote.code for quote in quotes}
-        if len(unique_codes) < total:
-            raise RuntimeError(f"eastmoney quote coverage is incomplete: {len(quotes)}/{total}")
-        return quotes
 
     def fetch_history(self, code: str, *, days: int = 90, now: datetime | None = None) -> tuple[DailyBar, ...]:
         return self._fetch_daily_history(code, days=days, now=now, adjustment=PriceAdjustment.QFQ)
@@ -170,7 +98,7 @@ class EastmoneyClient:
                 "beg": start.strftime("%Y%m%d"),
                 "end": end.strftime("%Y%m%d"),
             },
-            request=_EastmoneyRequest(request_rounds=1),
+            request_rounds=1,
         )
         klines = _object_mapping(payload.get("data")).get("klines")
         if not isinstance(klines, list):
@@ -202,13 +130,6 @@ class EastmoneyClient:
             )
         return tuple(bars[-days:])
 
-    def probe_market(self) -> None:
-        with self._session_factory() as session:
-            payload = self._fetch_page(1, session=session)
-        rows = _object_rows(_object_mapping(payload.get("data")).get("diff"))
-        if not rows:
-            raise RuntimeError("eastmoney recovery probe returned no rows")
-
     def fetch_intraday_minutes(self, code: str, *, now: datetime | None = None) -> tuple[MinuteBar, ...]:
         observed_at = now or self._wall_clock()
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
@@ -225,7 +146,7 @@ class EastmoneyClient:
                 "iscr": "0",
                 "secid": _secid(code),
             },
-            request=_EastmoneyRequest(request_rounds=1),
+            request_rounds=1,
         )
         trends = _object_mapping(payload.get("data")).get("trends")
         if not isinstance(trends, list):
@@ -260,64 +181,22 @@ class EastmoneyClient:
             )
         return tuple(bars)
 
-    def _fetch_page(
-        self,
-        page: int,
-        *,
-        session: requests.Session | None = None,
-        deadline: datetime | None = None,
-        cancel_event: threading.Event | None = None,
-    ) -> Mapping[str, object]:
-        return self._get(
-            HOSTS,
-            "/api/qt/clist/get",
-            {
-                "pn": str(page),
-                "pz": str(self._page_size),
-                "po": "1",
-                "np": "1",
-                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                "fltt": "2",
-                "invt": "2",
-                "fid": "f12",
-                "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81 s:2048",
-                "fields": FIELDS,
-            },
-            request=_EastmoneyRequest(
-                session=session,
-                deadline=deadline,
-                cancel_event=cancel_event,
-            ),
-        )
-
     def _get(
         self,
         hosts: Sequence[str],
         path: str,
         params: Mapping[str, str],
         *,
-        request: _EastmoneyRequest | None = None,
+        request_rounds: int = _REQUEST_ROUNDS,
     ) -> Mapping[str, object]:
-        request = request or _EastmoneyRequest()
         last_error: Exception | None = None
         headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-        for _round in range(max(1, request.request_rounds)):
+        for _round in range(max(1, request_rounds)):
             for host in hosts:
-                self._ensure_running(request.deadline, request.cancel_event)
+                self._ensure_running()
                 try:
-                    if request.session is None:
-                        with self._session_factory() as request_session:
-                            response = request_session.get(
-                                f"https://{host}{path}",
-                                params=dict(params),
-                                headers=headers,
-                                timeout=self._timeout_seconds,
-                                proxies=_DIRECT_PROXIES,
-                            )
-                            response.raise_for_status()
-                            payload = response.json()
-                    else:
-                        response = request.session.get(
+                    with self._session_factory() as request_session:
+                        response = request_session.get(
                             f"https://{host}{path}",
                             params=dict(params),
                             headers=headers,
@@ -329,98 +208,17 @@ class EastmoneyClient:
                 except (requests.RequestException, ValueError, OSError) as exc:
                     last_error = exc
                     continue
-                self._ensure_running(request.deadline, request.cancel_event)
+                self._ensure_running()
                 if isinstance(payload, dict) and payload.get("data"):
                     return payload
                 last_error = RuntimeError("eastmoney returned empty data")
         raise RuntimeError(f"eastmoney request failed: {last_error}") from last_error
 
-    def _ensure_running(
-        self,
-        deadline: datetime | None = None,
-        cancel_event: threading.Event | None = None,
-    ) -> None:
+    def _ensure_running(self) -> None:
         if self._worker_pool is not None and not self._worker_pool.is_running():
             raise RuntimeError("eastmoney worker executor stopped")
         if self._cancel_requested():
             raise RuntimeError("eastmoney source lane stopped")
-        if cancel_event is not None and cancel_event.is_set():
-            raise RuntimeError("eastmoney hedge cancelled")
-        if deadline is not None and self._wall_clock() >= deadline:
-            raise RuntimeError("eastmoney deadline exceeded")
-
-
-def _quote_from_row(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:
-    code = str(row.get("f12") or "").strip()
-    if len(code) != 6 or not code.isdigit():
-        return None
-    name = str(row.get("f14") or "").strip()
-    price = to_float(row.get("f2"))
-    high = to_float(row.get("f15"))
-    low = to_float(row.get("f16"))
-    pct_change = to_float(row.get("f3"))
-    board = board_for_code(code)
-    is_one_price_limit = bool(
-        price
-        and high
-        and low
-        and abs(high - low) < 1e-9
-        and pct_change is not None
-        and abs(pct_change) >= (19.5 if code.startswith(("300", "301", "688", "689")) else 9.5)
-    )
-    return build_market_quote(
-        MarketQuoteInput(
-            code=code,
-            name=name,
-            price=price,
-            previous_close=to_float(row.get("f18")),
-            open_price=to_float(row.get("f17")),
-            high=high,
-            low=low,
-            pct_change=pct_change,
-            change_5m=to_float(row.get("f11")),
-            speed=to_float(row.get("f22")),
-            volume_ratio=to_float(row.get("f10")),
-            turnover_rate=to_float(row.get("f8")),
-            amount=to_float(row.get("f6")),
-            amplitude=to_float(row.get("f7")),
-            market_cap=to_float(row.get("f20")),
-            industry=str(row.get("f100") or "").strip(),
-            source="eastmoney",
-            source_time=received_at,
-            received_time=received_at,
-            data_version=f"eastmoney:{int(received_at.timestamp())}",
-            board=board,
-            board_source="eastmoney" if board is not Board.UNSUPPORTED else "",
-            board_reliability="reported" if board is not Board.UNSUPPORTED else "unknown",
-            exchange=_exchange(row.get("f13"), code),
-            listing_date=_listing_date(row.get("f26"), received_at),
-            is_st="ST" in name.upper() or "退" in name,
-            is_suspended=price is None or price <= 0,
-            is_one_price_limit=is_one_price_limit,
-        )
-    )
-
-
-def _exchange(raw_market: object, code: str) -> str:
-    market = to_float(raw_market)
-    if market == 1.0:
-        return "SSE"
-    if market == 0.0:
-        return "SZSE"
-    return "SSE" if code.startswith(("5", "6", "9")) else "SZSE"
-
-
-def _listing_date(raw: object, received_at: datetime) -> date | None:
-    value = to_float(raw)
-    if value is None:
-        return None
-    text = f"{int(value):08d}"
-    try:
-        parsed = datetime.strptime(text, "%Y%m%d").date()
-    except ValueError:
-        return None
-    return parsed if parsed <= received_at.astimezone(_SHANGHAI).date() else None
 
 
 def _secid(code: str) -> str:

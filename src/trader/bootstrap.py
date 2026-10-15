@@ -146,7 +146,7 @@ from trader.recommendation.infra.market_data.market_task_runner import MarketTas
 from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
-from trader.recommendation.infra.market_data.providers.tencent import TencentClient
+from trader.recommendation.infra.market_data.providers.tencent import TencentClient, TencentFullMarketSource
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
@@ -163,7 +163,7 @@ from trader.recommendation.infra.policy_settings import (
     _long_item_definitions,
     _recommendation_policy,
 )
-from trader.recommendation.infra.runtime.application_system import ApplicationSystem
+from trader.recommendation.infra.runtime.application_system import ApplicationSystem, RuntimeWorkerResources
 from trader.recommendation.infra.runtime.initialization import (
     fixed_cache_ttl as _fixed_cache_ttl,
 )
@@ -423,21 +423,6 @@ def execute_research_evidence(command: ResearchEvidenceCommand) -> ResearchEvide
                 probe,
             ).execute(code=command.code, historical_anchor_date=command.anchor_date)
     raise TypeError("unsupported research evidence command")
-
-
-@dataclass(frozen=True)
-class RuntimeWorkerResources:
-    """Resources assembled here; source lanes belong to recommendation."""
-
-    control_pool: BoundedExecutor
-    data_pool: BoundedExecutor
-    quote_pool: BoundedExecutor
-    research_pool: BoundedExecutor
-    company_research_pool: BoundedExecutor
-    persistence_pool: BoundedExecutor
-    source_lanes: SourceLaneScheduler
-    json_writer: RuntimeJsonWriter
-    market_cache: BoundedLruCache[object]
 
 
 @dataclass(frozen=True)
@@ -729,6 +714,7 @@ def build_system(
         source_lanes=workers.source_lanes,
         data_pool=workers.data_pool,
         quote_pool=workers.quote_pool,
+        market_quote_pool=workers.market_quote_pool,
         long_runtime=publication.long_runtime,
         decision_queries=publication.decision_queries,
         decision_events=publication.decision_events,
@@ -799,6 +785,11 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         queue_capacity=4,
         thread_name_prefix="candidate-quotes",
     )
+    market_quote_pool = BoundedExecutor(
+        worker_count=3,
+        queue_capacity=3,
+        thread_name_prefix="market-quotes",
+    )
     research_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
         queue_capacity=settings.market_data.candidate_pool_size,
@@ -824,6 +815,7 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         control_pool=control_pool,
         data_pool=data_pool,
         quote_pool=quote_pool,
+        market_quote_pool=market_quote_pool,
         research_pool=research_pool,
         company_research_pool=company_research_pool,
         persistence_pool=persistence_pool,
@@ -848,18 +840,9 @@ def _build_market_data(
     data_pool = workers.data_pool
     source_lanes = workers.source_lanes
     market_cache = workers.market_cache
-    eastmoney = EastmoneyClient(
-        session_factory=requests.Session,
-        timeout_seconds=settings.market_data.eastmoney_timeout_seconds,
-        workers=settings.pipeline.market_workers,
-        worker_pool=workers.quote_pool,
-        cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
-        wall_clock=now,
-    )
     intraday_client = EastmoneyClient(
         session_factory=requests.Session,
         timeout_seconds=settings.market_data.candidate_timeout_seconds,
-        workers=settings.pipeline.market_workers,
         worker_pool=workers.quote_pool,
         cancel_requested=lambda: source_lanes.is_stopped("eastmoney"),
         wall_clock=now,
@@ -878,8 +861,21 @@ def _build_market_data(
         wall_clock=now,
         worker_pool=workers.quote_pool,
     )
+
+    def official_quote_codes() -> tuple[str, ...]:
+        snapshot = references.static_reference().reference
+        return tuple(issuer.code for issuer in snapshot.records) if snapshot is not None else ()
+
+    tencent_market_client = TencentClient(
+        session_factory=requests.Session,
+        timeout_seconds=settings.market_data.candidate_timeout_seconds,
+        cancel_requested=lambda: source_lanes.is_stopped("tencent_market"),
+        wall_clock=now,
+        worker_pool=workers.market_quote_pool,
+    )
+    tencent_market = TencentFullMarketSource(tencent_market_client, official_quote_codes)
     gateway = MarketDataGateway(
-        eastmoney,
+        tencent_market,
         sina,
         tencent,
         minimum_market_rows=settings.market_data.minimum_market_rows,
@@ -887,7 +883,7 @@ def _build_market_data(
         circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
         full_market_hedge_delay_seconds=settings.market_data.full_market_hedge_delay_seconds,
         full_market_fetchers={
-            "eastmoney": lambda deadline, cancel_event: eastmoney.fetch_market(
+            "tencent_market": lambda deadline, cancel_event: tencent_market.fetch_market(
                 deadline=deadline,
                 cancel_event=cancel_event,
             ),
@@ -897,7 +893,7 @@ def _build_market_data(
             ),
         },
         recovery_probes={
-            "eastmoney": eastmoney.probe_market,
+            "tencent_market": tencent_market.probe_market,
             "sina": sina.probe_market,
         },
         worker_pool=data_pool,

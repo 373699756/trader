@@ -1,11 +1,14 @@
-"""Tencent targeted quote adapter for candidates and displayed TopK rows."""
+"""Tencent full-market and targeted quote adapter."""
 
 from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import as_completed
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -47,11 +50,13 @@ class TencentClient:
         worker_pool: BoundedExecutor | None,
         cancel_requested: Callable[[], bool] = lambda: False,
         wall_clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._session_factory = session_factory
         self._cancel_requested = cancel_requested
         self._wall_clock = wall_clock
+        self._monotonic = monotonic
         self._worker_pool = worker_pool
 
     def fetch_quotes(
@@ -60,11 +65,18 @@ class TencentClient:
         now: datetime | None = None,
         *,
         timeout_seconds: float | None = None,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[MarketQuote, ...]:
         normalized = tuple(sorted({code for code in codes if len(code) == 6 and code.isdigit()}))
         if not normalized:
             return ()
-        self._ensure_running()
+        monotonic_deadline = (
+            self._monotonic() + max(0.0, (deadline - self._wall_clock()).total_seconds())
+            if deadline is not None
+            else None
+        )
+        self._ensure_running(monotonic_deadline, cancel_event)
         shards = tuple(
             normalized[offset : offset + _QUOTE_SHARD_SIZE] for offset in range(0, len(normalized), _QUOTE_SHARD_SIZE)
         )
@@ -72,6 +84,7 @@ class TencentClient:
         failures: list[BaseException] = []
         pool = injected_executor(self._worker_pool)
         for offset in range(0, len(shards), _QUOTE_MAX_CONCURRENCY):
+            self._ensure_running(monotonic_deadline, cancel_event)
             wave = shards[offset : offset + _QUOTE_MAX_CONCURRENCY]
             futures = {
                 submit_or_reject(
@@ -80,6 +93,8 @@ class TencentClient:
                     shard,
                     now,
                     timeout_seconds,
+                    monotonic_deadline,
+                    cancel_event,
                 ): shard
                 for shard in wave
             }
@@ -88,34 +103,64 @@ class TencentClient:
                     quotes.extend(future.result())
                 except (OSError, RuntimeError, requests.RequestException) as exc:
                     failures.append(exc)
-        self._ensure_running()
+        self._ensure_running(monotonic_deadline, cancel_event)
         if not quotes:
             if failures:
                 raise RuntimeError("all Tencent quote shards failed") from failures[0]
             raise RuntimeError("tencent returned no usable candidate quotes")
         return tuple(sorted(quotes, key=lambda quote: quote.code))
 
+    def fetch_market(
+        self,
+        codes: Sequence[str],
+        *,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[MarketQuote, ...]:
+        requested = tuple(sorted(set(codes)))
+        if not requested:
+            raise RuntimeError("official market universe is unavailable")
+        quotes = self.fetch_quotes(requested, deadline=deadline, cancel_event=cancel_event)
+        if len({quote.code for quote in quotes}) < len(requested) * 0.99:
+            raise RuntimeError("tencent full-market quote coverage is incomplete")
+        completed_at = self._wall_clock()
+        return tuple(
+            replace(
+                quote,
+                source_time=completed_at,
+                received_time=completed_at,
+                data_version=f"tencent-market:{int(completed_at.timestamp())}",
+            )
+            for quote in quotes
+        )
+
     def _fetch_quote_shard(
         self,
         codes: tuple[str, ...],
         received_at: datetime | None,
         timeout_seconds: float | None,
+        monotonic_deadline: float | None,
+        cancel_event: threading.Event | None,
     ) -> tuple[MarketQuote, ...]:
-        self._ensure_running()
+        self._ensure_running(monotonic_deadline, cancel_event)
+        remaining = monotonic_deadline - self._monotonic() if monotonic_deadline is not None else None
+        request_timeout = self._timeout_seconds
+        if timeout_seconds is not None:
+            request_timeout = min(request_timeout, max(0.05, timeout_seconds))
+        if remaining is not None:
+            if remaining <= 0:
+                raise RuntimeError("tencent deadline exceeded")
+            request_timeout = min(request_timeout, remaining)
         with self._session_factory() as session:
             response = session.get(
                 "https://qt.gtimg.cn/q=" + ",".join(_symbol(code) for code in codes),
                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-                timeout=(
-                    self._timeout_seconds
-                    if timeout_seconds is None
-                    else min(self._timeout_seconds, max(0.05, timeout_seconds))
-                ),
+                timeout=request_timeout,
                 proxies=_DIRECT_PROXIES,
             )
             response.raise_for_status()
             text = response.content.decode("gb18030", errors="replace")
-        self._ensure_running()
+        self._ensure_running(monotonic_deadline, cancel_event)
         received_at = received_at or self._wall_clock()
         return normalize_quotes(
             (
@@ -210,11 +255,44 @@ class TencentClient:
         data = payload.get("data") if isinstance(payload, Mapping) else None
         return data.get(symbol) if isinstance(data, Mapping) else None
 
-    def _ensure_running(self) -> None:
+    def _ensure_running(
+        self,
+        monotonic_deadline: float | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
         if self._worker_pool is not None and not self._worker_pool.is_running():
             raise RuntimeError("tencent worker executor stopped")
         if self._cancel_requested():
             raise RuntimeError("tencent source lane stopped")
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("tencent hedge cancelled")
+        if monotonic_deadline is not None and self._monotonic() >= monotonic_deadline:
+            raise RuntimeError("tencent deadline exceeded")
+
+
+class TencentFullMarketSource:
+    """Bind the official stock population to Tencent's code-based quote API."""
+
+    def __init__(self, client: TencentClient, universe_codes: Callable[[], Sequence[str]]) -> None:
+        self._client = client
+        self._universe_codes = universe_codes
+
+    def fetch_market(
+        self,
+        *,
+        deadline: datetime | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[MarketQuote, ...]:
+        return self._client.fetch_market(
+            self._universe_codes(),
+            deadline=deadline,
+            cancel_event=cancel_event,
+        )
+
+    def probe_market(self) -> None:
+        codes = tuple(self._universe_codes()[:3])
+        if not codes or not self._client.fetch_quotes(codes):
+            raise RuntimeError("tencent recovery probe returned no quotes")
 
 
 def _parse_payload(fields: Mapping[str, object], received_at: datetime, requested: set[str]) -> MarketQuote | None:
@@ -363,4 +441,4 @@ def _day_row_is_qfq_equivalent(raw: object) -> bool:
     )
 
 
-__all__ = ["TencentClient"]
+__all__ = ["TencentClient", "TencentFullMarketSource"]

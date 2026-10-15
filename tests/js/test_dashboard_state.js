@@ -1517,11 +1517,11 @@ assert.match(
       amount: 900000000,
       turnover_rate: 2.5,
       market_cap: 120000000000,
-      source: "eastmoney+sina",
+      source: "tencent+sina",
       source_time: "2026-07-24T14:50:00+08:00",
     },
   ], { strategy: "long" }),
-  /东方财富 · 新浪行情/,
+  /腾讯行情 · 新浪行情/,
 );
 assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("chokepoint"), "卡脖子行业");
 assert.strictEqual(sandbox.window.TraderLongGroups.scopeLabel("future_growth"), "高成长赛道");

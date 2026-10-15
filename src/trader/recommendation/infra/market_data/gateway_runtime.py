@@ -23,7 +23,7 @@ from trader.recommendation.infra.normalization.merge_quote import source_name, s
 from trader.recommendation.infra.normalization.observation_ties import ObservationFacts
 
 _T = TypeVar("_T")
-_FULL_MARKET_QUOTE_SOURCES = frozenset({"eastmoney", "sina"})
+_FULL_MARKET_QUOTE_SOURCES = frozenset({"tencent", "sina"})
 
 
 @dataclass
@@ -108,14 +108,14 @@ def _parallel_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
         for result in results
     )
     if successes:
-        vendor = "eastmoney" if any(result.name == "eastmoney" for result in successes) else successes[0].name
+        vendor = successes[0].name
         expected_skips = {"hedge_not_needed", "hedge_cancelled"}
         degraded = any(result.status != "success" and result.error not in expected_skips for result in results)
         fallback_reason = None
         if vendor == "sina":
-            eastmoney = next((result for result in results if result.name == "eastmoney"), None)
+            primary = next((result for result in results if result.name == "tencent_market"), None)
             fallback_reason = (
-                "hedge_delay" if eastmoney is not None and eastmoney.error == "hedge_inflight" else "primary_failed"
+                "hedge_delay" if primary is not None and primary.error == "hedge_inflight" else "primary_failed"
             )
         return RouteOutcome(
             result=tuple(observation for result in successes for observation in result.observations),

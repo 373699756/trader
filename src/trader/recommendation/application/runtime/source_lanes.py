@@ -27,6 +27,7 @@ _SOURCE_NAMES = (
     "baostock_reference",
     "sina",
     "tencent",
+    "tencent_market",
     "tencent_topk",
     "tushare",
     "akshare",

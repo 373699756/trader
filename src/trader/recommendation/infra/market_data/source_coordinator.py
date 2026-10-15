@@ -45,7 +45,7 @@ from trader.recommendation.infra.normalization.merge import observation_from_quo
 
 @dataclass(frozen=True)
 class MarketSourceDependencies:
-    eastmoney: FullMarketSource
+    tencent_market: FullMarketSource
     sina: FullMarketSource
     minimum_market_rows: int
     worker_pool: BoundedExecutor | None
@@ -127,7 +127,7 @@ class MarketSourceTelemetry(Protocol):
 
 class MarketSourceCoordinator:
     def __init__(self, dependencies: MarketSourceDependencies, telemetry: MarketSourceTelemetry) -> None:
-        self._eastmoney = dependencies.eastmoney
+        self._tencent_market = dependencies.tencent_market
         self._sina = dependencies.sina
         self._minimum_market_rows = dependencies.minimum_market_rows
         self._worker_pool = dependencies.worker_pool
@@ -150,9 +150,9 @@ class MarketSourceCoordinator:
         force: bool,
         deadline: datetime | None,
     ) -> tuple[_SourceFetch, ...]:
-        cancellation = {"eastmoney": threading.Event(), "sina": threading.Event()}
+        cancellation = {"tencent_market": threading.Event(), "sina": threading.Event()}
         fetchers = {
-            "eastmoney": self._full_market_fetcher("eastmoney", deadline, cancellation["eastmoney"]),
+            "tencent_market": self._full_market_fetcher("tencent_market", deadline, cancellation["tencent_market"]),
             "sina": self._full_market_fetcher("sina", deadline, cancellation["sina"]),
         }
         context = _MarketRouteContext(observed_at, force, deadline, cancellation, fetchers)
@@ -165,8 +165,8 @@ class MarketSourceCoordinator:
         context: _MarketRouteContext,
     ) -> tuple[_SourceFetch, ...]:
         primary = self._market_source_result(
-            "eastmoney",
-            context.fetchers["eastmoney"],
+            "tencent_market",
+            context.fetchers["tencent_market"],
             context.observed_at,
             force=context.force,
             deadline=context.deadline,
@@ -187,8 +187,8 @@ class MarketSourceCoordinator:
         context: _MarketRouteContext,
     ) -> tuple[_SourceFetch, ...]:
         primary_future = self._submit_market_source(
-            "eastmoney",
-            context.fetchers["eastmoney"],
+            "tencent_market",
+            context.fetchers["tencent_market"],
             context.observed_at,
             force=context.force,
             deadline=context.deadline,
@@ -216,10 +216,10 @@ class MarketSourceCoordinator:
         except FutureTimeoutError:
             return None
         except SourceRequestSupersededError:
-            self._telemetry.record_superseded("eastmoney")
-            return _SourceFetch("eastmoney", "skipped", error="superseded", skipped=True)
+            self._telemetry.record_superseded("tencent_market")
+            return _SourceFetch("tencent_market", "skipped", error="superseded", skipped=True)
         except Exception as exc:
-            return _SourceFetch("eastmoney", "failed", error=_cache_error_code(exc))
+            return _SourceFetch("tencent_market", "failed", error=_cache_error_code(exc))
 
     def _await_hedged_result(
         self,
@@ -228,10 +228,10 @@ class MarketSourceCoordinator:
         fallback_future: Future[_SourceFetch],
         primary: _SourceFetch | None,
     ) -> tuple[_SourceFetch, ...]:
-        results = {} if primary is None else {"eastmoney": primary}
+        results = {} if primary is None else {"tencent_market": primary}
         pending: dict[str, Future[_SourceFetch]] = {"sina": fallback_future}
         if primary is None:
-            pending["eastmoney"] = primary_future
+            pending["tencent_market"] = primary_future
         while pending:
             remaining = self._remaining_seconds(context.deadline)
             if remaining == 0.0:
@@ -251,7 +251,7 @@ class MarketSourceCoordinator:
             if future.cancel():
                 self._telemetry.record_deadline(source)
             results[source] = _SourceFetch(source, "failed", error="deadline")
-        return tuple(results.get(source, _missing_hedge_result(source)) for source in ("eastmoney", "sina"))
+        return tuple(results.get(source, _missing_hedge_result(source)) for source in ("tencent_market", "sina"))
 
     def _consume_completed_hedge(
         self,
@@ -260,7 +260,7 @@ class MarketSourceCoordinator:
         pending: dict[str, Future[_SourceFetch]],
         results: dict[str, _SourceFetch],
     ) -> tuple[_SourceFetch, ...] | None:
-        for source in ("eastmoney", "sina"):
+        for source in ("tencent_market", "sina"):
             future = pending.get(source)
             if future is None or future not in done:
                 continue
@@ -280,7 +280,7 @@ class MarketSourceCoordinator:
                     skipped=True,
                 )
                 pending.pop(loser)
-            return tuple(results.get(name, _missing_hedge_result(name)) for name in ("eastmoney", "sina"))
+            return tuple(results.get(name, _missing_hedge_result(name)) for name in ("tencent_market", "sina"))
         return None
 
     def _submit_market_source(
@@ -342,7 +342,7 @@ class MarketSourceCoordinator:
         deadline: datetime | None,
         cancellation: threading.Event,
     ) -> Callable[[], Sequence[MarketQuote]]:
-        client = self._eastmoney if source == "eastmoney" else self._sina
+        client = self._tencent_market if source == "tencent_market" else self._sina
         fetcher = self._full_market_fetchers.get(source)
         if fetcher is not None:
             return lambda: fetcher(deadline, cancellation)

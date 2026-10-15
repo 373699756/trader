@@ -39,7 +39,7 @@ _QUOTE_FIELDS = (
     "is_blacklisted",
     "has_major_regulatory_risk",
 )
-_SOURCE_PRIORITY = {"sina": 1, "eastmoney": 2}
+_SOURCE_PRIORITY = {"sina": 1, "tencent": 2}
 _RULE_EFFECTIVE_DATE = date(2023, 8, 28)
 _DEGRADED_RESTRICTIONS = ("board_identity_degraded", "missing_listing_date")
 _FIELD_SOURCE_TEMPLATES = {
@@ -236,7 +236,7 @@ def _merge_complete_realtime(
         }
         for source in _SOURCE_PRIORITY
     }
-    if not source_codes["eastmoney"] or source_codes["eastmoney"] != source_codes["sina"]:
+    if not source_codes["tencent"] or source_codes["tencent"] != source_codes["sina"]:
         return None
     identities = {(observation.subject_key, source) for observation, source in zip(observations, sources, strict=True)}
     if len(identities) != len(observations):

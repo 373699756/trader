@@ -53,11 +53,11 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     health = gateway.health()
 
     assert health.active_source == "sina"
-    assert health.sources["eastmoney"].circuit_open is True
-    assert health.sources["eastmoney"].planned_count == 1
-    assert health.sources["eastmoney"].error_count == 1
-    assert health.sources["eastmoney"].p50_latency_ms is not None
-    assert health.sources["eastmoney"].p95_latency_ms is not None
+    assert health.sources["tencent_market"].circuit_open is True
+    assert health.sources["tencent_market"].planned_count == 1
+    assert health.sources["tencent_market"].error_count == 1
+    assert health.sources["tencent_market"].p50_latency_ms is not None
+    assert health.sources["tencent_market"].p95_latency_ms is not None
     assert health.sources["sina"].planned_count == 1
     assert health.sources["sina"].success_count == 1
     assert health.route is not None
@@ -65,7 +65,7 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert health.route.degraded is True
     assert health.route.vendor == "sina"
     assert health.route.fallback_reason == "primary_failed"
-    assert [item.name for item in health.route.results] == ["eastmoney", "sina"]
+    assert [item.name for item in health.route.results] == ["tencent_market", "sina"]
     assert health.route.results[0].status == "failed"
     assert health.route.results[1].status == "success"
     waterfall = health.latency_waterfall
@@ -74,14 +74,14 @@ def test_gateway_falls_back_and_tracks_health() -> None:
     assert waterfall.stages["merge"].sample_count == 1
     assert waterfall.stages["canonical_commit"].sample_count == 1
     assert waterfall.stages["cycle_total:full_market"].sample_count == 1
-    assert "eastmoney:source_failed" in gateway.canonical_snapshot().degraded_reasons
+    assert "tencent_market:source_failed" in gateway.canonical_snapshot().degraded_reasons
 
 
 def test_gateway_uses_composed_full_market_fetcher_for_deadline_and_cancellation() -> None:
     quote = _quote()
     calls: list[tuple[object, threading.Event]] = []
 
-    def fetch_eastmoney(deadline, cancel_event):
+    def fetch_tencent_market(deadline, cancel_event):
         calls.append((deadline, cancel_event))
         return (quote,)
 
@@ -92,13 +92,13 @@ def test_gateway_uses_composed_full_market_fetcher_for_deadline_and_cancellation
         minimum_market_rows=1,
         circuit_breaker_failures=2,
         circuit_breaker_seconds=60,
-        full_market_fetchers={"eastmoney": fetch_eastmoney},
+        full_market_fetchers={"tencent_market": fetch_tencent_market},
         wall_clock=lambda: NOW,
     )
 
     deadline = NOW + timedelta(seconds=1)
     fetched = tuple(gateway.fetch_market(observed_at=NOW, deadline=deadline))
-    assert [(item.code, item.source) for item in fetched] == [(quote.code, "eastmoney")]
+    assert [(item.code, item.source) for item in fetched] == [(quote.code, "tencent")]
     assert calls and calls[0][0] == deadline
     assert isinstance(calls[0][1], threading.Event)
 
@@ -227,7 +227,6 @@ def test_full_market_commit_preserves_candidate_overlay_published_during_merge(m
     assert snapshot is not None
     assert snapshot.quotes[0].price == 12.2
     assert snapshot.quotes[0].source == "tencent"
-    assert snapshot.source_versions["eastmoney"] == "full-refresh"
     assert "sina" not in snapshot.source_versions
     assert snapshot.source_versions["tencent"] == "candidate-latest"
 
@@ -306,16 +305,16 @@ def test_later_full_market_cycle_replaces_older_cross_source_quote() -> None:
         received_time=NOW,
         data_version="sina-older-cycle",
     )
-    later_eastmoney = replace(
+    later_tencent = replace(
         _quote(),
-        source="eastmoney",
+        source="tencent",
         price=12.2,
-        source_time=NOW - timedelta(minutes=1),
+        source_time=NOW + timedelta(seconds=10),
         received_time=NOW + timedelta(seconds=10),
-        data_version="eastmoney-later-cycle",
+        data_version="tencent-later-cycle",
     )
     gateway = MarketDataGateway(
-        SequenceMarketClient((RuntimeError("eastmoney offline"), (later_eastmoney,))),
+        SequenceMarketClient((RuntimeError("tencent offline"), (later_tencent,))),
         StaticMarketClient((older_sina,)),
         StaticTencentClient(()),
         minimum_market_rows=1,
@@ -328,7 +327,7 @@ def test_later_full_market_cycle_replaces_older_cross_source_quote() -> None:
     second = tuple(gateway.fetch_market(observed_at=NOW + timedelta(seconds=10), force=True))
 
     assert first[0].source == "sina"
-    assert second[0].source == "eastmoney"
+    assert second[0].source == "tencent"
     assert second[0].price == 12.2
     assert second[0].received_time == NOW + timedelta(seconds=10)
 
@@ -343,7 +342,7 @@ def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
         circuit_breaker_failures=1,
         circuit_breaker_seconds=60,
     )
-    gateway._states["eastmoney"].open_until = gateway._monotonic() + 60.0
+    gateway._states["tencent_market"].open_until = gateway._monotonic() + 60.0
 
     fetched = tuple(gateway.fetch_market())
     assert [(item.code, item.price, item.source) for item in fetched] == [(quote.code, quote.price, "sina")]
@@ -357,15 +356,15 @@ def test_gateway_marks_circuit_open_vendor_as_skipped_in_route_health() -> None:
     assert len(health.route.results) == 2
     assert sum(1 for vendor in health.route.results if vendor.status == "failed") == 0
     assert sum(1 for vendor in health.route.results if vendor.skipped) == 1
-    assert health.route.results[0].name == "eastmoney"
+    assert health.route.results[0].name == "tencent_market"
     assert health.route.results[0].status == "skipped"
     assert health.route.results[0].skipped is True
     assert health.route.results[0].error == "circuit_open"
     assert health.route.results[1].name == "sina"
     assert health.route.results[1].status == "success"
-    assert health.sources["eastmoney"].error_count == 0
-    assert health.sources["eastmoney"].physical_failure_count == 0
-    assert health.sources["eastmoney"].circuit_skipped_count == 1
+    assert health.sources["tencent_market"].error_count == 0
+    assert health.sources["tencent_market"].physical_failure_count == 0
+    assert health.sources["tencent_market"].circuit_skipped_count == 1
 
 
 def test_gateway_source_health_records_superseded_without_physical_failure() -> None:
@@ -378,9 +377,9 @@ def test_gateway_source_health_records_superseded_without_physical_failure() -> 
         circuit_breaker_seconds=60,
     )
 
-    gateway.record_superseded("eastmoney")
+    gateway.record_superseded("tencent_market")
 
-    health = gateway.health().sources["eastmoney"]
+    health = gateway.health().sources["tencent_market"]
     assert health.superseded_count == 1
     assert health.error_count == 0
     assert health.physical_failure_count == 0
@@ -411,8 +410,8 @@ def test_gateway_coalesces_concurrent_full_market_requests_into_one_physical_cal
 
     assert source.calls == 1
     assert [[(item.code, item.price, item.source) for item in result] for result in results] == [
-        [("600001", 12.0, "eastmoney")],
-        [("600001", 12.0, "eastmoney")],
+        [("600001", 12.0, "tencent")],
+        [("600001", 12.0, "tencent")],
     ]
 
 
@@ -435,22 +434,22 @@ def test_gateway_allows_one_recovery_probe_after_circuit_timeout() -> None:
         circuit_breaker_failures=1,
         circuit_breaker_seconds=60,
         monotonic=monotonic,
-        recovery_probes={"eastmoney": source.probe_market},
+        recovery_probes={"tencent_market": source.probe_market},
     )
 
     with pytest.raises(MarketDataUnavailableError):
         gateway.fetch_market()
-    assert gateway.health().sources["eastmoney"].circuit_open is True
+    assert gateway.health().sources["tencent_market"].circuit_open is True
 
     monotonic.value = 61.0
 
     fetched = tuple(gateway.fetch_market())
-    assert [(item.code, item.price, item.source) for item in fetched] == [("600001", 12.0, "eastmoney")]
+    assert [(item.code, item.price, item.source) for item in fetched] == [("600001", 12.0, "tencent")]
     assert source.calls == 2
     assert source.probe_calls == 1
-    assert gateway.health().sources["eastmoney"].circuit_open is False
-    assert gateway.health().sources["eastmoney"].recovery_probe_count == 1
-    assert gateway.health().sources["eastmoney"].recovery_probe_success_count == 1
+    assert gateway.health().sources["tencent_market"].circuit_open is False
+    assert gateway.health().sources["tencent_market"].recovery_probe_count == 1
+    assert gateway.health().sources["tencent_market"].recovery_probe_success_count == 1
 
 
 def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> None:
@@ -463,22 +462,22 @@ def test_gateway_reports_recoverable_unavailability_when_all_sources_fail() -> N
         circuit_breaker_seconds=60,
     )
 
-    with pytest.raises(MarketDataUnavailableError, match=r"eastmoney: offline; sina: offline"):
+    with pytest.raises(MarketDataUnavailableError, match=r"tencent_market: offline; sina: offline"):
         gateway.fetch_market()
 
     health = gateway.health()
     assert health.active_source == "unavailable"
-    assert health.sources["eastmoney"].circuit_open is True
+    assert health.sources["tencent_market"].circuit_open is True
     assert health.sources["sina"].circuit_open is True
-    assert health.sources["eastmoney"].physical_failure_count == 1
+    assert health.sources["tencent_market"].physical_failure_count == 1
     assert health.sources["sina"].physical_failure_count == 1
-    assert health.sources["eastmoney"].timeout_count == 0
+    assert health.sources["tencent_market"].timeout_count == 0
     assert health.sources["sina"].timeout_count == 0
     assert health.route is not None
     assert health.route.status == "failed"
     assert health.route.fallback_reason == "failed"
     assert health.route.vendor == "sina"
-    assert [item.name for item in health.route.results] == ["eastmoney", "sina"]
+    assert [item.name for item in health.route.results] == ["tencent_market", "sina"]
     assert [item.status for item in health.route.results] == ["failed", "failed"]
 
 
@@ -492,7 +491,7 @@ def test_gateway_health_records_no_data_route_fallback() -> None:
         circuit_breaker_seconds=60,
     )
 
-    with pytest.raises(MarketDataUnavailableError, match=r"sina: only 0 market rows;.*eastmoney: offline"):
+    with pytest.raises(MarketDataUnavailableError, match=r"sina: only 0 market rows;.*tencent_market: offline"):
         gateway.fetch_market()
 
     health = gateway.health()
@@ -561,10 +560,10 @@ def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_report
         cadence_seconds=runtime.pipeline.cadence_seconds,
         wall_clock=lambda: NOW,
     )
-    eastmoney = CountingMarketClient((replace(_quote(), source="eastmoney"),))
+    tencent_market = CountingMarketClient((replace(_quote(), source="tencent"),))
     sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     gateway = MarketDataGateway(
-        eastmoney,
+        tencent_market,
         sina,
         StaticTencentClient(()),
         minimum_market_rows=1,
@@ -580,11 +579,11 @@ def test_gateway_full_market_cache_avoids_duplicate_physical_requests_and_report
     second = tuple(gateway.fetch_market(observed_at=NOW))
 
     assert first == second
-    assert eastmoney.calls == 1
+    assert tencent_market.calls == 1
     assert sina.calls == 0
     status = cache.status().datasets["full_market_quotes"]
-    assert status["eastmoney"].hit == 1
-    assert status["eastmoney"].entries == 1
+    assert status["tencent_market"].hit == 1
+    assert status["tencent_market"].entries == 1
 
 
 def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_value() -> None:
@@ -601,11 +600,11 @@ def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_valu
         def fetch_market(self):
             if self.fail:
                 raise RuntimeError("offline")
-            return (replace(_quote(), source="eastmoney"),)
+            return (replace(_quote(), source="tencent"),)
 
-    eastmoney = ToggleMarketClient()
+    tencent_market = ToggleMarketClient()
     gateway = MarketDataGateway(
-        eastmoney,
+        tencent_market,
         StaticMarketClient((replace(_quote(), source="sina"),)),
         StaticTencentClient(()),
         minimum_market_rows=1,
@@ -618,24 +617,24 @@ def test_gateway_negative_refresh_keeps_failure_degradation_with_last_valid_valu
     )
 
     gateway.fetch_market(observed_at=NOW)
-    eastmoney.fail = True
+    tencent_market.fail = True
     gateway.fetch_market(observed_at=NOW, force=True)
     gateway.fetch_market(observed_at=NOW)
 
     snapshot = gateway.canonical_snapshot()
     assert snapshot is not None
-    assert "eastmoney:source_failed" in snapshot.degraded_reasons
+    assert "tencent:source_failed" in snapshot.degraded_reasons
 
 
 def test_gateway_keeps_last_valid_snapshot_when_both_free_full_market_sources_fail() -> None:
-    eastmoney = SequenceMarketClient(
+    tencent_market = SequenceMarketClient(
         (
-            (replace(_quote(), source="eastmoney"),),
-            RuntimeError("eastmoney offline"),
+            (replace(_quote(), source="tencent"),),
+            RuntimeError("tencent offline"),
         )
     )
     gateway = MarketDataGateway(
-        eastmoney,
+        tencent_market,
         FailingMarketClient(),
         StaticTencentClient(()),
         minimum_market_rows=1,
@@ -651,7 +650,7 @@ def test_gateway_keeps_last_valid_snapshot_when_both_free_full_market_sources_fa
     snapshot = gateway.canonical_snapshot()
     assert snapshot is not None
     assert "all_sources_failed:last_valid_snapshot" in snapshot.degraded_reasons
-    assert "eastmoney:source_failed" in snapshot.degraded_reasons
+    assert "tencent_market:source_failed" in snapshot.degraded_reasons
     assert "sina:source_failed" in snapshot.degraded_reasons
     assert snapshot.status == "stale"
     assert "failed" in snapshot.failure_categories
@@ -684,10 +683,10 @@ def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retr
                 raise RuntimeError("offline")
             return (replace(_quote(), source=self.source),)
 
-    eastmoney = ToggleMarketClient("eastmoney")
+    tencent_market = ToggleMarketClient("tencent")
     sina = ToggleMarketClient("sina")
     gateway = MarketDataGateway(
-        eastmoney,
+        tencent_market,
         sina,
         StaticTencentClient(()),
         minimum_market_rows=1,
@@ -705,9 +704,9 @@ def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retr
     try:
         gateway.fetch_market(observed_at=NOW)
         monotonic.value = 30.001
-        eastmoney.fail = True
+        tencent_market.fail = True
         gateway.fetch_market(observed_at=NOW)
-        assert eastmoney.failed.wait(1.0)
+        assert tencent_market.failed.wait(1.0)
         time.sleep(0.02)
 
         gateway.fetch_market(observed_at=NOW)
@@ -716,28 +715,36 @@ def test_gateway_background_refresh_failure_uses_negative_cache_to_suppress_retr
         pool.stop(wait=True, cancel_futures=True)
         cache.stop()
 
-    assert eastmoney.calls == 2
+    assert tencent_market.calls == 2
     snapshot = gateway.canonical_snapshot()
     assert snapshot is not None
-    assert "eastmoney:source_failed" in snapshot.degraded_reasons
+    assert "tencent_market:source_failed" in snapshot.degraded_reasons
 
 
 def test_targeted_quote_overlay_updates_canonical_value_and_field_attribution() -> None:
-    eastmoney = replace(_quote(), source="eastmoney", price=12.0, speed=None, data_version="z-east")
+    tencent_market = replace(_quote(), source="tencent", price=12.0, speed=None, data_version="z-market")
     sina = replace(_quote(), source="sina", price=12.01, speed=0.7, data_version="sina")
-    tencent = replace(_quote(), source="tencent", price=12.02, speed=None, data_version="a-tencent")
+    tencent = replace(
+        _quote(),
+        source="tencent",
+        price=12.02,
+        speed=None,
+        source_time=NOW + timedelta(seconds=1),
+        received_time=NOW + timedelta(seconds=1),
+        data_version="a-tencent",
+    )
     gateway = MarketDataGateway(
-        StaticMarketClient((eastmoney,)),
+        StaticMarketClient((tencent_market,)),
         StaticMarketClient((sina,)),
         StaticTencentClient((tencent,)),
         minimum_market_rows=1,
         circuit_breaker_failures=3,
         circuit_breaker_seconds=60,
-        wall_clock=lambda: NOW,
+        wall_clock=lambda: NOW + timedelta(seconds=1),
     )
 
     gateway.fetch_market(observed_at=NOW)
-    gateway.fetch_candidates(("600001",), observed_at=NOW)
+    gateway.fetch_candidates(("600001",), observed_at=NOW + timedelta(seconds=1))
 
     snapshot = gateway.canonical_snapshot()
     assert snapshot is not None

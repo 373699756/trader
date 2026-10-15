@@ -439,7 +439,11 @@ def _validate_observation_consistency(
     accepted: list[SourceObservation] = []
     reasons: set[str] = set()
     for subject, items in grouped.items():
-        realtime_items = [item for item in items if item.source.strip().lower() in {"eastmoney", "sina", "tencent"}]
+        realtime_items = [
+            item
+            for item in items
+            if source_name(item.source) in {"eastmoney", "sina", "tencent"} and "price" in item.fields
+        ]
         consistency_items = realtime_items or items
         inconsistent = False
         if len({item.trade_date for item in consistency_items}) > 1:

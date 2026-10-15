@@ -100,7 +100,7 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkey
         "is_blacklisted": False,
         "has_major_regulatory_risk": False,
     }
-    eastmoney = replace(_observation("eastmoney"), fields=complete_fields)
+    tencent = replace(_observation("tencent_market"), fields=complete_fields)
     sina = replace(
         _observation("sina", price=10.04),
         fields={**complete_fields, "price": 10.04},
@@ -111,26 +111,26 @@ def test_complete_realtime_columnar_projection_matches_scalar_field_merge(monkey
 
     monkeypatch.setattr(columnar_merge_module.pl, "DataFrame", reject_intermediate_frame)
 
-    projection = try_merge_complete_realtime((sina, eastmoney))
+    projection = try_merge_complete_realtime((sina, tencent))
     expected_quote, expected_sources, expected_conflicts = merge_code(
         "600001",
-        (sina, eastmoney),
+        (sina, tencent),
         targeted=False,
     )
 
     assert projection is not None
     assert projection.quotes == (expected_quote,)
     assert projection.field_sources == {"600001": expected_sources}
-    assert projection.source_versions == {"eastmoney": "eastmoney-source", "sina": "sina-source"}
+    assert projection.source_versions == {"tencent": "tencent_market-source", "sina": "sina-source"}
     assert projection.conflicts == tuple(sorted(expected_conflicts))
-    assert try_merge_complete_realtime((eastmoney, replace(sina, fields={"price": 10.04}))) is None
-    assert try_merge_complete_realtime((replace(eastmoney, fields={**complete_fields, "price": "10.0"}), sina)) is None
-    assert try_merge_complete_realtime((eastmoney, replace(sina, status="failed", error_code="offline"))) is None
+    assert try_merge_complete_realtime((tencent, replace(sina, fields={"price": 10.04}))) is None
+    assert try_merge_complete_realtime((replace(tencent, fields={**complete_fields, "price": "10.0"}), sina)) is None
+    assert try_merge_complete_realtime((tencent, replace(sina, status="failed", error_code="offline"))) is None
 
 
 def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkeypatch) -> None:
     complete_fields = {
-        **_observation("eastmoney").fields,
+        **_observation("tencent_market").fields,
         "change_5m": 0.2,
         "speed": 0.3,
         "volume_ratio": 1.4,
@@ -143,7 +143,7 @@ def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkey
         "is_blacklisted": False,
         "has_major_regulatory_risk": False,
     }
-    eastmoney = replace(_observation("eastmoney"), fields=complete_fields)
+    tencent = replace(_observation("tencent_market"), fields=complete_fields)
     sina = replace(_observation("sina", price=10.04), fields={**complete_fields, "price": 10.04})
 
     def fail_winner_projection(*_args, **_kwargs):
@@ -151,7 +151,7 @@ def test_columnar_merge_failure_uses_scalar_projection_and_marks_degraded(monkey
 
     monkeypatch.setattr(columnar_merge_module, "_winner_indexes", fail_winner_projection)
 
-    snapshot = merge_market_observations((sina, eastmoney), observed_at=NOW, merge_epoch="fixture:1")
+    snapshot = merge_market_observations((sina, tencent), observed_at=NOW, merge_epoch="fixture:1")
 
     assert snapshot.quotes[0].price == 10.0
     assert "columnar_merge_failed" in snapshot.degraded_reasons

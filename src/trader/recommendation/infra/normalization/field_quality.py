@@ -134,8 +134,11 @@ def field_order(
 
     normalized_source = normalize_source(observation.source)
     source_rank = source_priority(normalized_source)
-    if field in REALTIME_FIELDS and normalized_source == "tencent" and not targeted:
-        source_rank = 0
+    if field in REALTIME_FIELDS and normalized_source == "tencent":
+        if observation.source == "tencent_market" and targeted:
+            source_rank = 2
+        elif observation.source != "tencent_market" and not targeted:
+            source_rank = 0
     return (
         observation.source_time,
         observation.received_at,
