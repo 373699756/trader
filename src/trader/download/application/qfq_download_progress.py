@@ -78,6 +78,7 @@ class QfqDownloadProgress:
     skipped: int = 0
     not_applicable: int = 0
     no_trade_data: int = 0
+    latest_missing: int = 0
     rows: int = 0
     errors: int = 0
     changed: set[str] = field(default_factory=set)
@@ -196,28 +197,13 @@ class QfqDownloadProgress:
     def finish(
         self, cancelled: bool, *, failure_reason: Literal["qfq_worker_unavailable"] | None = None
     ) -> QfqUpdateResult:
-        stage = "已取消" if cancelled else ("结束（仍有待重试）" if self.pending or failure_reason else "完成")
-        level = (
-            ProgressLevel.ERROR
-            if self.errors or failure_reason
-            else ProgressLevel.WARNING
-            if cancelled or self.pending
-            else ProgressLevel.SUCCESS
-        )
         # Unsubmitted stocks remain retryable, distinct from an attempted supplier failure.
         unfinished = self.total - self.processed if cancelled or failure_reason else 0
         if unfinished:
             self._add_pending_reason(
                 "cancelled_before_processing" if cancelled else "worker_unavailable_before_processing", unfinished
             )
-        if self.pending_reasons:
-            self.publish(
-                "待重试原因",
-                " | ".join(f"{item.reason} {progress_number(item.count)} 股" for item in self.pending_reasons),
-                level=level,
-            )
-        self.summary(stage, level=level)
-        return QfqUpdateResult(
+        result = QfqUpdateResult(
             self.day,
             self.completed,
             self.pending + unfinished,
@@ -227,4 +213,29 @@ class QfqDownloadProgress:
             "cancelled" if cancelled else failure_reason,
             self.pending_reasons,
             self.no_trade_data,
+            self.latest_missing,
         )
+        stage = (
+            "已取消"
+            if cancelled
+            else "结束（仍有待重试）"
+            if self.pending or failure_reason
+            else "结束（最近日待核）"
+            if result.needs_retry
+            else "完成"
+        )
+        level = (
+            ProgressLevel.ERROR
+            if self.errors or failure_reason
+            else ProgressLevel.WARNING
+            if cancelled or result.needs_retry
+            else ProgressLevel.SUCCESS
+        )
+        if self.pending_reasons:
+            self.publish(
+                "待重试原因",
+                " | ".join(f"{item.reason} {progress_number(item.count)} 股" for item in self.pending_reasons),
+                level=level,
+            )
+        self.summary(stage, level=level)
+        return result

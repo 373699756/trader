@@ -22,7 +22,6 @@ class QfqDailyMaintenance:
         *,
         now: Callable[[], datetime],
         monotonic: Callable[[], float] = time.monotonic,
-        needs_initialization: Callable[[], bool] = lambda: False,
         enabled: bool = True,
     ) -> None:
         self._update = update
@@ -31,9 +30,10 @@ class QfqDailyMaintenance:
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
-        self._completed_day: date | None = None
+        self._completed_cutoff: date | None = None
+        self._completed_on: date | None = None
+        self._retry_cutoff: date | None = None
         self._next_retry = 0.0
-        self._needs_initialization = needs_initialization
         self._enabled = enabled
 
     def start(self) -> bool:
@@ -66,20 +66,19 @@ class QfqDailyMaintenance:
         if self._cancel.is_set():
             return False
         now = self._now()
-        day = now.date()
-        if (
-            (completed_daily_cutoff(now) != day and not self._needs_initialization())
-            or self._completed_day == day
-            or self._monotonic() < self._next_retry
+        cutoff = completed_daily_cutoff(now)
+        if (self._completed_cutoff == cutoff and self._completed_on == now.date()) or (
+            self._retry_cutoff == cutoff and self._monotonic() < self._next_retry
         ):
             return False
         try:
             result = self._update(self._cancel.is_set)
-            if not result.pending_codes and result.failure_reason is None and not self._cancel.is_set():
-                if completed_daily_cutoff(now) == day:
-                    self._completed_day = day
+            if not result.needs_retry and not self._cancel.is_set():
+                self._completed_cutoff = cutoff
+                self._completed_on = now.date()
         except (RuntimeError, OSError, ValueError, sqlite3.Error) as exc:
             _LOGGER.warning("qfq maintenance failed: %s", type(exc).__name__)
+        self._retry_cutoff = cutoff
         self._next_retry = self._monotonic() + 1800.0
         return True
 

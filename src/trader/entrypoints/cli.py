@@ -197,6 +197,7 @@ def _run_history_maintenance_command(
                     "completed_codes": result.completed_codes,
                     "pending_codes": result.pending_codes,
                     "no_trade_data_codes": result.no_trade_data_codes,
+                    "latest_missing_codes": result.latest_missing_codes,
                     "changed_files": result.changed_files,
                     "changed_rows": result.changed_rows,
                     "skipped_codes": result.skipped_codes,
@@ -208,7 +209,7 @@ def _run_history_maintenance_command(
                 ensure_ascii=False,
             )
         )
-        return 0 if not result.pending_codes and result.failure_reason is None else 1
+        return 1 if result.needs_retry else 0
     if command == "download":
         if profile is not None:
             parser.error("download does not accept --profile")

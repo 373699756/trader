@@ -217,6 +217,7 @@ class UpdateQfqWindows:
             and bool(dates)
             and v2_state is not None
             and bool(v2_state.dates)
+            and v2_state.dates[-1] == dates[-1]
             and v3_state is not None
             and v3_state.dates == tuple(day for day in v2_state.dates if day >= dates[-min(61, len(dates))])
         ):
@@ -378,6 +379,8 @@ class UpdateQfqWindows:
     @staticmethod
     def _record_completed(progress: QfqDownloadProgress, job: _DownloadJob, window: PublishedHistoryWindow) -> None:
         paired = sum(cell.status == "complete" for cell in window.cells)
+        if window.cells[-1].status != "complete":
+            progress.latest_missing += 1
         progress.record_stock(
             job.security,
             QfqStockFeedback(

@@ -678,9 +678,6 @@ def build_system(
             settings.project_root, reference_root=settings.reference_dir, cancel_requested=cancel, now=now
         ),
         now=ShanghaiClock(now).now,
-        needs_initialization=lambda: any(
-            not SQLiteQfqWindowCache(settings.project_root / "data/qfq", profile).codes() for profile in ("v2", "v3")
-        ),
         enabled=owns_shared_runtime,
     )
     supervisor = RuntimeSupervisor(

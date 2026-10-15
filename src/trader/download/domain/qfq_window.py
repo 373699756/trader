@@ -64,6 +64,12 @@ class QfqUpdateResult:
     failure_reason: str | None = None
     pending_reasons: tuple[QfqPendingReason, ...] = ()
     no_trade_data_codes: int = 0
+    latest_missing_codes: int = 0
+
+    @property
+    def needs_retry(self) -> bool:
+        widespread_missing = self.latest_missing_codes >= max(20, (self.completed_codes + 99) // 100)
+        return self.pending_codes > 0 or self.failure_reason is not None or widespread_missing
 
 
 def completed_daily_cutoff(observed_at: datetime) -> date:

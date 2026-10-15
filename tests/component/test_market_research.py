@@ -51,6 +51,8 @@ from tests.component.market_data_test_support import (
     timedelta,
     timezone,
 )
+from trader.recommendation.application.ports.runtime import RefreshOutcome
+from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 
@@ -179,7 +181,17 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
     assert cached_batch.static_stages[1].reasons[0].code == "static_baseline_reused"
 
     service.refresh_candidate_quotes(("600001", "600002"), NOW)
-    service.refresh_market_news(("600001", "600002"), NOW)
+    news_result = service.refresh_market_news(("600001", "600002"), NOW)
+    assert len(news_result.data_version) == len("research-batch:") + 64
+    assert news_result.completed_at is not None and news_result.completed_at.tzinfo == _SHANGHAI
+    RefreshOutcome(
+        PipelineTask.MARKET_NEWS,
+        bool(news_result.changed_codes),
+        news_result.data_version,
+        news_result.changed_codes,
+        news_result.completed_at or NOW,
+        False,
+    )
     service.refresh_stock_risk(("600001", "600002"), NOW)
     service.refresh_intraday_tail(("600001", "600002"), NOW)
     service.refresh_long_quotes(("600001", "600002"), NOW)

@@ -399,6 +399,58 @@ def test_inferred_suspension_keeps_only_tencent_real_bars_without_backfill(tmp_p
     assert len(supplier.calls) == 1
 
 
+def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_up(tmp_path) -> None:
+    class LateDailySupplier(Supplier):
+        latest_missing = True
+
+        def fetch_window(self, security, dates):
+            window = super().fetch_window(security, dates)
+            if not self.latest_missing:
+                return window
+            return replace(
+                window,
+                cells=tuple(
+                    replace(cell, status="tencent_inferred_suspended", unadjusted=None, qfq=None)
+                    if cell.trade_date == DAYS[-1]
+                    else cell
+                    for cell in window.cells
+                ),
+            )
+
+    supplier = LateDailySupplier(days=DAYS)
+    updater = _updater(tmp_path, supplier)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    first = updater.execute(observed)
+    assert first.completed_codes == 1 and first.pending_codes == 0
+    assert first.latest_missing_codes == 1
+    assert not first.needs_retry
+    source = updater.v2.inspect_windows(frozenset(("600001",))).states[0].source
+    assert updater.resume.completed(DAYS[-1], "600001", source)
+    assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-2]
+    next_morning = datetime.combine(DAYS[-1] + timedelta(days=1), datetime.min.time(), tzinfo=SHANGHAI).replace(
+        hour=9, minute=30
+    )
+    projection = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(updater.v2),
+        lookback_sessions=251,
+        open_dates=lambda: (*DAYS, next_morning.date()),
+    )
+    assert projection.refresh()
+    assert not projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
+
+    supplier.latest_missing = False
+    second = updater.execute(observed)
+    assert second.completed_codes == 1 and second.skipped_codes == 0
+    assert second.latest_missing_codes == 0
+    assert not second.needs_retry
+    assert second.changed_rows > 0
+    assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-1]
+    assert updater.v3.read_code("600001").cells[-1].trade_date == DAYS[-1]
+    assert projection.refresh()
+    assert "600001" in projection.cached(("600001",), fresh_only=True, observed_at=next_morning)
+    assert updater.execute(observed).skipped_codes == 1
+
+
 def test_all_inferred_suspension_is_reported_without_empty_window_or_retry(tmp_path):
     class SuspendedSupplier(Supplier):
         def fetch_window(self, security, dates):
@@ -1319,23 +1371,22 @@ def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path
     assert messages[-1] == "00:00:03 | qfq 准备失败 | RuntimeError"
 
 
-@pytest.mark.parametrize(
-    "hour,minute,due", ((8, 0, False), (12, 0, False), (15, 9, False), (15, 10, True), (21, 0, True))
-)
-def test_hot_and_late_cold_start_daily_schedule(hour, minute, due) -> None:
+@pytest.mark.parametrize("hour,minute", ((8, 0), (12, 0), (15, 9), (15, 10), (21, 0)))
+def test_hot_and_late_cold_start_daily_schedule(hour, minute) -> None:
     now = datetime(2026, 10, 9, hour, minute, tzinfo=SHANGHAI)
     calls = []
 
     def update(cancel):
         assert not cancel()
-        calls.append(now)
-        return QfqUpdateResult(now.date(), 1)
+        cutoff = completed_daily_cutoff(now)
+        calls.append(cutoff)
+        return QfqUpdateResult(cutoff, 1)
 
     maintenance = QfqDailyMaintenance(update, now=lambda: now)
-    assert maintenance.tick() is due
-    assert len(calls) == int(due)
+    assert maintenance.tick()
+    assert calls == [completed_daily_cutoff(now)]
     assert not maintenance.tick()
-    assert completed_daily_cutoff(now) == now.date() - timedelta(days=not due)
+    assert completed_daily_cutoff(now) == now.date() - timedelta(days=hour < 15 or (hour == 15 and minute < 10))
 
 
 def test_retry_delay_completion_next_day_and_cold_missing_database() -> None:
@@ -1359,10 +1410,60 @@ def test_retry_delay_completion_next_day_and_cold_missing_database() -> None:
     now += timedelta(days=1)
     assert maintenance.tick()
     now = now.replace(hour=8)
-    cold = QfqDailyMaintenance(update, now=lambda: now, needs_initialization=lambda: True)
+    cold = QfqDailyMaintenance(update, now=lambda: now)
     assert cold.tick()
     result = cold.stop(wait=True)
     assert result.completed
+
+
+def test_incomplete_previous_cutoff_retries_next_morning_before_new_cutoff() -> None:
+    now = datetime(2026, 10, 14, 16, 0, tzinfo=SHANGHAI)
+    elapsed = 0.0
+    calls: list[date] = []
+
+    def update(_cancel):
+        cutoff = completed_daily_cutoff(now)
+        calls.append(cutoff)
+        return QfqUpdateResult(cutoff, 100, latest_missing_codes=50 if len(calls) == 1 else 0)
+
+    maintenance = QfqDailyMaintenance(update, now=lambda: now, monotonic=lambda: elapsed)
+    assert maintenance.tick()
+    now = datetime(2026, 10, 15, 9, 30, tzinfo=SHANGHAI)
+    elapsed = 1800.0
+    assert maintenance.tick()
+    assert calls == [date(2026, 10, 14), date(2026, 10, 14)]
+    assert not maintenance.tick()
+    now = now.replace(hour=15, minute=10)
+    elapsed = 1801.0
+    assert maintenance.tick()
+    assert calls[-1] == date(2026, 10, 15)
+
+
+def test_completed_previous_cutoff_rechecks_when_next_morning_data_arrives() -> None:
+    now = datetime(2026, 10, 14, 16, 0, tzinfo=SHANGHAI)
+    elapsed = 0.0
+    calls: list[date] = []
+
+    def update(_cancel):
+        cutoff = completed_daily_cutoff(now)
+        calls.append(cutoff)
+        return QfqUpdateResult(cutoff, 100, latest_missing_codes=1 if len(calls) == 1 else 0)
+
+    maintenance = QfqDailyMaintenance(update, now=lambda: now, monotonic=lambda: elapsed)
+    assert maintenance.tick()
+    assert not maintenance.tick()
+    now = datetime(2026, 10, 15, 9, 30, tzinfo=SHANGHAI)
+    elapsed = 1800.0
+    assert maintenance.tick()
+    assert calls == [date(2026, 10, 14), date(2026, 10, 14)]
+    assert not maintenance.tick()
+
+
+def test_latest_day_missing_retries_only_when_the_batch_gap_is_widespread() -> None:
+    assert not QfqUpdateResult(DAYS[-1], 4401, latest_missing_codes=44).needs_retry
+    assert QfqUpdateResult(DAYS[-1], 4401, latest_missing_codes=45).needs_retry
+    assert QfqUpdateResult(DAYS[-1], 100, latest_missing_codes=20).needs_retry
+    assert not QfqUpdateResult(DAYS[-1], 100, latest_missing_codes=19).needs_retry
 
 
 def test_online_projection_matches_full_history_and_keeps_settlement_independent(tmp_path) -> None:
@@ -1450,9 +1551,12 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
     assert len(updater.v3.read_code("600001").cells) == 61
 
 
-@pytest.mark.parametrize("pending,no_trade_data,exit_code", ((0, 0, 0), (2, 0, 1), (0, 1, 0)))
+@pytest.mark.parametrize(
+    "pending,no_trade_data,latest_missing,exit_code",
+    ((0, 0, 0, 0), (2, 0, 0, 1), (0, 1, 0, 0), (0, 0, 20, 1)),
+)
 def test_qfq_cli_is_zero_argument_and_reports_pending(
-    tmp_path, monkeypatch, capsys, pending, no_trade_data, exit_code
+    tmp_path, monkeypatch, capsys, pending, no_trade_data, latest_missing, exit_code
 ) -> None:
     calls = []
 
@@ -1465,9 +1569,11 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
         TerminalDownloadProgress()(ProgressMessage((ProgressField("qfq fixture progress"),)))
         return QfqUpdateResult(
             DAYS[-1],
+            completed_codes=100,
             pending_codes=pending,
             pending_reasons=(QfqPendingReason("qfq_window_incomplete", pending),) if pending else (),
             no_trade_data_codes=no_trade_data,
+            latest_missing_codes=latest_missing,
         )
 
     monkeypatch.setattr(
@@ -1482,6 +1588,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
     assert captured.err == "qfq fixture progress\n"
     assert payload["pending_codes"] == pending
     assert payload["no_trade_data_codes"] == no_trade_data
+    assert payload["latest_missing_codes"] == latest_missing
     assert payload["pending_reasons"] == ([{"reason": "qfq_window_incomplete", "count": pending}] if pending else [])
     assert payload["failure_reason"] is None
     assert calls == [(tmp_path, reference_root)]

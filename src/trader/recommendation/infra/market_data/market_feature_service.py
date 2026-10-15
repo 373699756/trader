@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from trader.infra.serialization.canonical import content_hash
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.ports.eligibility import IssuerEligibilityPort
 from trader.recommendation.application.ports.json_values import JsonObject
@@ -549,6 +550,8 @@ def _research_refresh_result(
     *,
     require_structured: bool,
 ) -> ResearchRefreshResult:
+    if any(value.tzinfo is None or value.utcoffset() is None for value in (started_at, completed_at)):
+        raise ValueError("research refresh timestamps must be timezone-aware")
     observations = report.observations
     deferred = set(report.deferred_codes)
     failed = tuple(
@@ -570,9 +573,8 @@ def _research_refresh_result(
     else:
         covered = completed
         partial = ()
-    data_version = (
-        f"research-batch:{tuple((code, _research_data_version(observations[code])) for code in sorted(observations))!r}"
-    )
+    identity_fields = tuple((code, _research_data_version(observations[code])) for code in sorted(observations))
+    data_version = f"research-batch:{content_hash(identity_fields)}"
     return ResearchRefreshResult(
         requested_codes=requested,
         completed_codes=completed,
@@ -582,8 +584,8 @@ def _research_refresh_result(
         deferred_codes=report.deferred_codes,
         covered_codes=covered,
         data_version=data_version,
-        started_at=started_at,
-        completed_at=completed_at,
+        started_at=started_at.astimezone(SHANGHAI),
+        completed_at=completed_at.astimezone(SHANGHAI),
         deadline_reached=report.deadline_reached,
     )
 
