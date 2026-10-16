@@ -254,10 +254,10 @@
   }
 
   const OBSERVATION_STAGE_DEFINITIONS = Object.freeze([
-    [["data_source"], "数据源", false],
-    [["static_market", "static_standardize"], "静态数据准备", false],
-    [["static_filter"], "一级稳定过滤", true],
-    [["dynamic_market", "dynamic_standardize"], "动态数据准备", false],
+    [["data_source"], "官方证券名单（本地）", false],
+    [["static_market", "static_standardize"], "一级数据与ST资格准备", false],
+    [["static_filter"], "ST预筛与一级资格复核", true],
+    [["dynamic_market", "dynamic_standardize"], "腾讯行情采集与标准化", false],
     [["dynamic_filter"], "二级动态过滤", true],
     [["candidate_pool"], "候选生成", false],
     [["quality_check"], "质量评估", false],
@@ -373,7 +373,9 @@
       const disposition = isFilter
         ? `淘汰 ${displayCount(rejected)} · 待补充 ${displayCount(pending)} · 失败 ${displayCount(failed)}`
         : `待就绪 ${displayCount(pending + failed)}`;
-      const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${output == null ? "—" : displayCount(output)} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
+      const outputLabel = stageKeys.includes("quality_check") && state === "not_ready" && pending > 0 && output === 0
+        ? "待补充" : output == null ? "—" : displayCount(output);
+      const detail = `${stageStateLabel(state)} · ${input == null ? "—" : displayCount(input)} → ${outputLabel} · ${disposition} · 耗时 ${duration ? formatDurationHms(duration / 1000) : "—"}`;
       const detailMarkup = `${facetText ? `<small class="observation-stage-facets">处理结果：${escapeHtml(facetText)}</small>` : ""}${reasonText ? `<small>${isFilter ? "过滤与待补充原因" : "说明与原因"}：${escapeHtml(reasonText)}</small>` : ""}${stageIssues.length ? `<div class="observation-stage-errors">${stageErrorMarkup(stageIssues)}</div>` : ""}${stageKeys.includes("final_selection") ? publicationIoMarkup(publicationReceipts) : ""}`;
       return `<article class="observation-stage${isExpanded ? " is-expanded" : ""}" data-state="${escapeHtml(state)}" data-stage-keys="${escapeHtml(stageKey)}"><div class="observation-stage-index">${String(index + 1).padStart(2, "0")}</div><div class="observation-stage-main"><button class="observation-stage-toggle" type="button" data-stage-toggle="true" aria-expanded="${isExpanded}" aria-controls="observation-stage-detail-${index}"><strong>${escapeHtml(label)}<i class="observation-stage-chevron" aria-hidden="true"></i></strong><span>${escapeHtml(detail)}</span></button><div id="observation-stage-detail-${index}" class="observation-stage-detail">${detailMarkup}</div></div></article>`;
     }).join("");

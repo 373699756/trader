@@ -23,7 +23,6 @@ from tests.component.market_data_test_support import (
     FeatureBuilder,
     FinancialReport,
     LoadRuntimeSettings,
-    MarketDataDeadlineExceededError,
     PartiallyBlockingStructuredResearchClient,
     Path,
     PersistResearchComponentStatuses,
@@ -281,8 +280,9 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
 
     started = time.monotonic()
     try:
-        with pytest.raises(MarketDataDeadlineExceededError):
-            service.refresh_market_news(("600001",), NOW, deadline=deadline)
+        result = service.refresh_market_news(("600001",), NOW, deadline=deadline)
+        assert result.deadline_reached
+        assert result.deferred_codes == ("600001",)
         elapsed = time.monotonic() - started
     finally:
         research.release.set()

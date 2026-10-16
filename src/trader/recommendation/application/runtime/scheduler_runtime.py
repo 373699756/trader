@@ -433,6 +433,10 @@ class SchedulerRuntime:
     def _periodic_task_inflight(self, scheduled: ScheduledPipelineTask) -> bool:
         if scheduled.task not in PERIODIC_TASKS or scheduled.schedule_point is not None:
             return False
+        if scheduled.task is PipelineTask.FULL_MARKET:
+            candidate = self._task_lanes[PipelineTask.CANDIDATE_QUOTES].status()
+            if candidate.running or candidate.pending:
+                return True
         lane = (
             self._lanes[Strategy.LONG].status()
             if scheduled.task is PipelineTask.LONG_QUOTES

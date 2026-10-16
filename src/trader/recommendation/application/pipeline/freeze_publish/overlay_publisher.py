@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -17,6 +19,7 @@ from trader.recommendation.domain.publication.decision_identity import DecisionO
 from trader.recommendation.domain.publication.models import Strategy
 
 FailureCodeMapper = Callable[[BaseException, str], str]
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -51,6 +54,16 @@ class DecisionOverlayRefresher:
             overlay = self.decisions.refreshed_overlay(current, request, snapshot.overlay)
         except DecisionUnavailableError as exc:
             return OverlayRefreshOutcome(strategy, "failed", self.failure_code(exc, "overlay_unavailable"))
+        except ValueError as exc:
+            boundary = traceback.extract_tb(exc.__traceback__, limit=-1)
+            if boundary:
+                _LOGGER.warning(
+                    "overlay refresh rejected: strategy=%s boundary=%s:%s",
+                    strategy.value,
+                    boundary[0].name,
+                    boundary[0].lineno,
+                )
+            return OverlayRefreshOutcome(strategy, "failed", self.failure_code(exc, "overlay_invalid_quote"))
         if overlay is None:
             return OverlayRefreshOutcome(strategy, "succeeded")
         with SessionGuard(request.session):

@@ -239,6 +239,8 @@ class MarketInputCoordinator(DataRefreshPort):
         self._latest_topk_quotes: TopKQuoteBatch | None = None
         self._market_version = "market:unavailable"
         self._candidate_version = "candidate:unavailable"
+        self._candidate_market_version = "market:unavailable"
+        self._candidate_refresh_pending = True
         self._research_version = "research:initial"
         self._intraday_version = "intraday:initial"
         self._market_quote_versions: dict[str, MarketQuote] = {}
@@ -337,24 +339,24 @@ class MarketInputCoordinator(DataRefreshPort):
             self._candidate_outputs = dict(candidate_pipeline.candidates)
             self._latest_requested_codes = requested
             self._candidate_plans = candidate_plans
-            self._strategy_requested_codes = {
-                strategy: candidate_plans.strategy_codes(strategy) for strategy in SCORED_STRATEGIES
-            }
-            self._strategy_candidate_features = {strategy: () for strategy in SCORED_STRATEGIES}
-            self._strategy_preselection_transient_invalid = {strategy: False for strategy in SCORED_STRATEGIES}
+            self._candidate_refresh_pending = True
             self._market_version = data_version
             self._market_quote_versions = quote_versions
-            self._record_pending_quality_locked(
-                _PendingQualityContext(
-                    request.observed_at,
-                    len(features),
-                    candidate_plans,
-                    {strategy: 0 for strategy in SCORED_STRATEGIES},
-                    "candidate_quotes_pending",
-                    apply_model_eligibility,
-                    issuer_eligibility,
+            if self._candidate_market_version == "market:unavailable":
+                self._strategy_requested_codes = {
+                    strategy: candidate_plans.strategy_codes(strategy) for strategy in SCORED_STRATEGIES
+                }
+                self._record_pending_quality_locked(
+                    _PendingQualityContext(
+                        request.observed_at,
+                        len(features),
+                        candidate_plans,
+                        {strategy: 0 for strategy in SCORED_STRATEGIES},
+                        "candidate_quotes_pending",
+                        apply_model_eligibility,
+                        issuer_eligibility,
+                    )
                 )
-            )
         return RefreshOutcome(
             request.task,
             changed,
@@ -433,9 +435,11 @@ class MarketInputCoordinator(DataRefreshPort):
         with SessionGuard(request.session), self._lock:
             if candidate_pipeline is not self._candidate_pipeline:
                 raise DataRefreshUnavailableError("candidate_population_superseded")
-            changed = data_version != self._candidate_version
+            changed = data_version != self._candidate_version or market_version != self._candidate_market_version
             changed_codes = _changed_version_codes(self._candidate_quote_versions, quote_versions)
             self._candidate_version = data_version
+            self._candidate_market_version = market_version
+            self._candidate_refresh_pending = False
             self._candidate_quote_versions = quote_versions
             if changed:
                 self._invalidate_scoring_locked()
@@ -704,6 +708,8 @@ class MarketInputCoordinator(DataRefreshPort):
 
     def _cached_input(self, request: CycleRequest) -> _SharedInputBatch:
         with SessionGuard(request.session), self._lock:
+            if self._candidate_refresh_pending and request.phase != "close_fallback":
+                raise DataRefreshUnavailableError("candidate_quotes_pending")
             market_features = self._latest_market_features
             issuer_eligibility = self._issuer_eligibility
             input_stages, candidate_stage = self._observed_input_locked(request.strategy)
@@ -728,7 +734,7 @@ class MarketInputCoordinator(DataRefreshPort):
             requested,
             scoring_batch.features,
             candidate_plans.plans[request.strategy].stage_counts,
-            len(candidate_features),
+            len(scoring_batch.features) if request.phase == "close_fallback" else len(candidate_features),
             preselection_transient_invalid,
             issuer_eligibility,
             input_stages,

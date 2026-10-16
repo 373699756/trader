@@ -865,7 +865,13 @@ def _build_market_data(
 
     def official_quote_codes() -> tuple[str, ...]:
         snapshot = references.static_reference().reference
-        return tuple(issuer.code for issuer in snapshot.records) if snapshot is not None else ()
+        if snapshot is None:
+            return ()
+        codes = eligibility.filter_codes(tuple(issuer.code for issuer in snapshot.records), now())
+        historical_st = history_cache.historical_st_eligibility()
+        if historical_st.status == "ready":
+            return tuple(code for code in codes if historical_st.eligible(code))
+        return codes
 
     tencent_market_client = TencentClient(
         session_factory=requests.Session,

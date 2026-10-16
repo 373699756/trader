@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -218,6 +218,10 @@ def test_history_uses_only_newer_today_cached_quote_and_updates_projection() -> 
     assert after.items[0].anchor_to_now_pct == pytest.approx((11.0 / 10.25 - 1) * 100)
     assert after.etag != before.etag
     assert after.decision_version == before.decision_version
+    cached.quote = replace(cached.quote, source_time=NOW.astimezone(timezone.utc))
+    utc_source = queries.history(Strategy.TOMORROW, record.trade_date)
+    assert utc_source.items[0].price == 11.0
+    assert utc_source.items[0].quote_time == NOW
     cached.quote = replace(
         cached.quote,
         source_time=datetime(2026, 8, 10, 14, 30, tzinfo=SHANGHAI),

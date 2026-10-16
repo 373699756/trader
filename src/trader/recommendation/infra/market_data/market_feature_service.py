@@ -14,7 +14,6 @@ from trader.recommendation.application.ports.eligibility import IssuerEligibilit
 from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.application.ports.market_data import (
     FullMarketFeatureBatch,
-    MarketDataDeadlineExceededError,
     MarketDataUnavailableError,
     MarketSnapshotMetadata,
 )
@@ -383,8 +382,6 @@ class MarketFeatureService:
             force=True,
             deadline=deadline,
         )
-        if report.deadline_reached and report.deferred_codes:
-            raise MarketDataDeadlineExceededError("research preload exceeded its batch deadline")
         return _research_refresh_result(
             requested,
             report,

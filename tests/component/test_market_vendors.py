@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from zoneinfo import ZoneInfo
+
 from tests.component.market_data_test_support import (
     FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
@@ -128,6 +130,23 @@ def test_tencent_normalizes_targeted_quote() -> None:
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
     assert session.calls[0][1]["timeout"] == 0.75
     assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+
+
+def test_tencent_quote_without_supplier_timestamp_uses_shanghai_fallback() -> None:
+    fields = [""] * 50
+    fields[1:5] = ["测试股份", "600001", "12.00", "11.65"]
+    body = f'v_sh600001="{"~".join(fields)}";'.encode("gb18030")
+    client = TencentClient(
+        worker_pool=None,
+        timeout_seconds=2,
+        session_factory=lambda: FakeSession([body]),
+        wall_clock=lambda: NOW.astimezone(timezone.utc),
+    )
+
+    quote = client.fetch_quotes(("600001",))[0]
+
+    assert quote.source_time == NOW
+    assert quote.source_time.tzinfo == ZoneInfo("Asia/Shanghai")
 
 
 def test_tencent_full_market_rejects_partial_coverage_and_preserves_targeted_partial_results() -> None:

@@ -1055,6 +1055,11 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
         )
         assert candidate_lane.running
         assert not candidate_lane.pending
+        assert runtime._periodic_task_inflight(  # noqa: SLF001 - verifies the shared market/candidate wave boundary
+            ScheduledPipelineTask(
+                PipelineTask.FULL_MARKET, observed_at + timedelta(seconds=10), MarketPhase.MORNING_MAIN
+            )
+        )
         assert not decisions.build_started.wait(0.2)
         assert index.snapshot(Strategy.TOMORROW).current is None
 

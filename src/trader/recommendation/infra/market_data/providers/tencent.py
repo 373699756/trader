@@ -350,7 +350,7 @@ def _timestamp(raw: str, fallback: datetime) -> datetime:
     try:
         parsed = datetime.strptime(raw.strip(), "%Y%m%d%H%M%S")
     except ValueError:
-        return fallback
+        return fallback.astimezone(_SHANGHAI)
     return parsed.replace(tzinfo=_SHANGHAI)
 
 

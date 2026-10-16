@@ -21,6 +21,7 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 )
 from trader.recommendation.application.ports.clock import Clock
 from trader.recommendation.application.ports.decision_records import DecisionRecordError
+from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.evidence.pipeline import RecommendationPipelineStatus
 from trader.recommendation.domain.market.models import MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.market.research import ResearchComponentCoverage
@@ -249,14 +250,17 @@ class UnifiedDecisionQueries:
         for code, quote in cached.items():
             anchor = anchors.get(code)
             price = quote.price
+            if quote.source_time.tzinfo is None or quote.source_time.utcoffset() is None:
+                continue
+            source_time = quote.source_time.astimezone(SHANGHAI)
             if (
                 anchor is None
                 or price is None
                 or not math.isfinite(price)
                 or price <= 0
-                or quote.source_time <= anchor.source_time
-                or quote.source_time.date() != now.date()
-                or quote.source_time > now
+                or source_time <= anchor.source_time
+                or source_time.date() != now.date()
+                or source_time > now
             ):
                 continue
             quotes[code] = DecisionQuote(
@@ -267,7 +271,7 @@ class UnifiedDecisionQueries:
                 quote.turnover_rate,
                 quote.market_cap,
                 quote.source,
-                quote.source_time,
+                source_time,
                 quote.data_version,
             )
         view = _scored_view(decision, now, _ScoredViewInput("history", quotes, None, record))

@@ -102,7 +102,7 @@ class SchedulePointState:
 def TaskExecutionBudgetSeconds(task: PipelineTask) -> float | None:
     return {
         PipelineTask.FULL_MARKET: 20.0,
-        PipelineTask.CANDIDATE_QUOTES: 3.0,
+        PipelineTask.CANDIDATE_QUOTES: 15.0,
         PipelineTask.TOPK_QUOTES: 2.0,
         PipelineTask.INTRADAY_TAIL: 3.0,
         PipelineTask.LONG_QUOTES: 3.0,

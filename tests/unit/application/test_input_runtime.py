@@ -16,6 +16,7 @@ from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.application.pipeline.data_source.input_assembly import (
     BuildModelScoringContext as _model_scoring_context,
 )
+from trader.recommendation.application.pipeline.data_source.input_assembly import MergeOverlayQuote
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
@@ -45,6 +46,15 @@ def _pipeline_facet(status, stage_key: str, facet_key: str) -> int:
 
 
 TEST_NOW = datetime(2026, 8, 12, 14, 0, tzinfo=SHANGHAI)
+
+
+def test_overlay_quote_normalizes_aware_utc_supplier_time(application_feature_factory) -> None:
+    feature = application_feature_factory("600001", TEST_NOW)
+    feature = replace(feature, quote=replace(feature.quote, source_time=TEST_NOW.astimezone(timezone.utc)))
+    quotes = {}
+
+    assert MergeOverlayQuote(quotes, feature, TEST_NOW)
+    assert quotes["600001"].source_time.tzinfo == SHANGHAI
 
 
 class _Market:
@@ -1732,10 +1742,34 @@ def test_research_intent_prioritizes_published_output_before_bounded_candidates(
     next_refresh = observed_at + timedelta(seconds=10)
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, next_refresh))
     pending = next(item for item in adapter.data.input_quality_status() if item.strategy is Strategy.TOMORROW)
-    assert pending.primary_blocker == "candidate_quotes_pending"
-    assert pending.stage_snapshots[4].as_of == next_refresh
-    assert pending.stage_snapshots[4].output_batch_id != status.stage_snapshots[4].output_batch_id
+    assert pending is status
+    with pytest.raises(DataRefreshUnavailableError, match="candidate_quotes_pending"):
+        adapter.data.refresh(_request(next_refresh, phase="afternoon"))
+    assert pending.stage_snapshots[4].as_of == observed_at
+    assert pending.stage_snapshots[4].output_batch_id == status.stage_snapshots[4].output_batch_id
     assert adapter.decisions.projection(decision.version).local is decision
+
+
+def test_close_fallback_can_use_sealed_market_quotes_before_candidate_refresh(application_feature_factory) -> None:
+    observed_at = datetime(2026, 8, 12, 15, 0, 10, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    market = _Market((feature,))
+    adapter = build_cycle_fixture(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(now=lambda: observed_at),
+    )
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CLOSE_QUOTES, observed_at))
+    request = _request(observed_at, phase="close_fallback")
+
+    adapter.data.refresh(request)
+    batch = adapter.data.batch(request)
+
+    assert batch is not None
+    assert batch.requested_codes == ("600001",)
+    assert batch.candidate_quote_eligible == len(batch.candidate_features)
+    assert market.candidate_quote_refresh_count == 0
 
 
 def test_candidate_refresh_rejects_results_from_a_superseded_observed_population(application_feature_factory) -> None:

@@ -16,9 +16,10 @@ const statusHealthPath = path.join(path.dirname(dashboardPath), "status_health.j
 const errorDrawerPath = path.join(path.dirname(dashboardPath), "error_drawer.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
-assert(statusViewSource.includes('[["static_filter"], "一级稳定过滤", true]'));
+assert(statusViewSource.includes('[["static_filter"], "ST预筛与一级资格复核", true]'));
 assert(statusViewSource.includes('[["dynamic_filter"], "二级动态过滤", true]'));
 assert(!statusViewSource.includes('["一级稳定过滤", ["dynamic_filter"]]'));
+assert(statusViewSource.includes('stageKeys.includes("quality_check") && state === "not_ready"'));
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
 const streamPath = path.join(path.dirname(dashboardPath), "dashboard_stream.js");
 const streamSource = fs.readFileSync(streamPath, "utf8");
@@ -411,15 +412,15 @@ assert.strictEqual(
   (canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length,
   12,
 );
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级稳定过滤"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("ST预筛与一级资格复核"));
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
 assert.match(canonicalObservationElements.observationStageList.innerHTML,
   /<button class="observation-stage-toggle"[^>]*aria-expanded="false"[^>]*>[\s\S]*?<\/button><div id="observation-stage-detail-0" class="observation-stage-detail">/);
 assert.doesNotMatch(canonicalObservationElements.observationStageList.innerHTML,
   /<article[^>]*role="button"/);
 assert(canonicalObservationElements.observationStageList.innerHTML.includes("320 → 129 · 淘汰 124 · 待补充 66 · 失败 1"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("静态数据准备"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("动态数据准备"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级数据与ST资格准备"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("腾讯行情采集与标准化"));
 const combinedObservationElements = summaryFixture();
 state.renderObservationStages(
   combinedObservationElements,
@@ -434,9 +435,24 @@ state.renderObservationStages(
   false,
   [],
 );
-assert(combinedObservationElements.observationStageList.innerHTML.includes("静态数据准备"));
+assert(combinedObservationElements.observationStageList.innerHTML.includes("一级数据与ST资格准备"));
 assert(combinedObservationElements.observationStageList.innerHTML.includes("360 → 0"));
-assert(combinedObservationElements.observationStageList.innerHTML.includes("动态数据准备"));
+assert(combinedObservationElements.observationStageList.innerHTML.includes("腾讯行情采集与标准化"));
+const pendingQualityElements = summaryFixture();
+state.renderObservationStages(
+  pendingQualityElements,
+  Array.from({ length: 14 }, (_value, index) => ({
+    stage: ["data_source", "static_market", "static_standardize", "static_filter",
+      "dynamic_market", "dynamic_standardize", "dynamic_filter", "candidate_pool",
+      "quality_check", "local_score", "risk_review", "score_merge", "downside_action", "final_selection"][index],
+    state: index === 8 ? "not_ready" : "ready",
+    input_count: index === 8 ? 360 : 100,
+    output_count: index === 8 ? 0 : 100,
+    pending_count: index === 8 ? 360 : 0,
+    rejected_count: 0, failed_count: 0, reasons: [],
+  })), null, false, [],
+);
+assert(pendingQualityElements.observationStageList.innerHTML.includes("360 → 待补充"));
 const selectableObservationElements = summaryFixture();
 state.renderObservationStages(selectableObservationElements, null, null, false, []);
 selectableObservationElements.observationStageList.querySelectorAll = () => [

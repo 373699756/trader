@@ -32,7 +32,6 @@ from trader.download.domain.published_history import (
     PublishedHistoryWindow,
 )
 from trader.download.domain.qfq_window import (
-    CompletedDailyCutoff,
     QfqPendingReason,
     QfqUpdateResult,
     QfqWindowIncompleteError,
@@ -1371,92 +1370,62 @@ def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path
     assert messages[-1] == "00:00:03 | qfq 准备失败 | RuntimeError"
 
 
-@pytest.mark.parametrize("hour,minute", ((8, 0), (12, 0), (15, 9), (15, 10), (21, 0)))
-def test_hot_and_late_cold_start_daily_schedule(hour, minute) -> None:
-    now = datetime(2026, 10, 9, hour, minute, tzinfo=SHANGHAI)
-    calls = []
+def test_running_service_updates_only_once_at_1510_even_after_failure() -> None:
+    now = datetime(2026, 10, 9, 15, 9, tzinfo=SHANGHAI)
+    calls: list[date] = []
 
     def update(cancel):
         assert not cancel()
-        cutoff = CompletedDailyCutoff(now)
-        calls.append(cutoff)
-        return QfqUpdateResult(cutoff, 1)
+        calls.append(now.date())
+        return QfqUpdateResult(now.date(), pending_codes=1)
 
     maintenance = QfqDailyMaintenance(update, now=lambda: now)
-    assert maintenance.tick()
-    assert calls == [CompletedDailyCutoff(now)]
     assert not maintenance.tick()
-    assert CompletedDailyCutoff(now) == now.date() - timedelta(days=hour < 15 or (hour == 15 and minute < 10))
+    now = now.replace(minute=10)
+    assert maintenance.tick()
+    assert not maintenance.tick()
+    now = now.replace(minute=40)
+    assert not maintenance.tick()
+    now += timedelta(days=1)
+    now = now.replace(hour=9)
+    assert not maintenance.tick()
+    now = now.replace(hour=15, minute=10)
+    assert maintenance.tick()
+    assert calls == [date(2026, 10, 9), date(2026, 10, 10)]
 
 
-def test_retry_delay_completion_next_day_and_cold_missing_database() -> None:
-    now = datetime(2026, 10, 9, 15, 10, tzinfo=SHANGHAI)
-    elapsed = 0.0
+@pytest.mark.parametrize("hour,minute", ((8, 0), (12, 0), (15, 10), (15, 11), (21, 0)))
+def test_cold_start_never_catches_up_same_day(hour, minute) -> None:
+    now = datetime(2026, 10, 9, hour, minute, tzinfo=SHANGHAI)
     calls = 0
 
     def update(_cancel):
         nonlocal calls
         calls += 1
-        return QfqUpdateResult(now.date(), pending_codes=int(calls == 1))
+        return QfqUpdateResult(now.date(), 1)
 
-    maintenance = QfqDailyMaintenance(update, now=lambda: now, monotonic=lambda: elapsed)
-    assert maintenance.tick()
-    elapsed = 1799
+    maintenance = QfqDailyMaintenance(update, now=lambda: now)
     assert not maintenance.tick()
-    elapsed = 1800
-    assert maintenance.tick()
-    elapsed = 4000
+    if hour >= 15 and minute >= 10:
+        now = now.replace(hour=15, minute=10)
+        assert not maintenance.tick()
+    assert calls == 0
+
+
+def test_start_after_1510_does_not_run_until_next_day() -> None:
+    now = datetime(2026, 10, 9, 16, 0, tzinfo=SHANGHAI)
+    calls: list[date] = []
+
+    def update(_cancel):
+        calls.append(now.date())
+        return QfqUpdateResult(now.date(), 1)
+
+    maintenance = QfqDailyMaintenance(update, now=lambda: now)
     assert not maintenance.tick()
     now += timedelta(days=1)
-    assert maintenance.tick()
-    now = now.replace(hour=8)
-    cold = QfqDailyMaintenance(update, now=lambda: now)
-    assert cold.tick()
-    result = cold.stop(wait=True)
-    assert result.completed
-
-
-def test_incomplete_previous_cutoff_retries_next_morning_before_new_cutoff() -> None:
-    now = datetime(2026, 10, 14, 16, 0, tzinfo=SHANGHAI)
-    elapsed = 0.0
-    calls: list[date] = []
-
-    def update(_cancel):
-        cutoff = CompletedDailyCutoff(now)
-        calls.append(cutoff)
-        return QfqUpdateResult(cutoff, 100, latest_missing_codes=50 if len(calls) == 1 else 0)
-
-    maintenance = QfqDailyMaintenance(update, now=lambda: now, monotonic=lambda: elapsed)
-    assert maintenance.tick()
-    now = datetime(2026, 10, 15, 9, 30, tzinfo=SHANGHAI)
-    elapsed = 1800.0
-    assert maintenance.tick()
-    assert calls == [date(2026, 10, 14), date(2026, 10, 14)]
-    assert not maintenance.tick()
     now = now.replace(hour=15, minute=10)
-    elapsed = 1801.0
     assert maintenance.tick()
-    assert calls[-1] == date(2026, 10, 15)
-
-
-def test_completed_previous_cutoff_rechecks_when_next_morning_data_arrives() -> None:
-    now = datetime(2026, 10, 14, 16, 0, tzinfo=SHANGHAI)
-    elapsed = 0.0
-    calls: list[date] = []
-
-    def update(_cancel):
-        cutoff = CompletedDailyCutoff(now)
-        calls.append(cutoff)
-        return QfqUpdateResult(cutoff, 100, latest_missing_codes=1 if len(calls) == 1 else 0)
-
-    maintenance = QfqDailyMaintenance(update, now=lambda: now, monotonic=lambda: elapsed)
-    assert maintenance.tick()
-    assert not maintenance.tick()
-    now = datetime(2026, 10, 15, 9, 30, tzinfo=SHANGHAI)
-    elapsed = 1800.0
-    assert maintenance.tick()
-    assert calls == [date(2026, 10, 14), date(2026, 10, 14)]
-    assert not maintenance.tick()
+    assert calls == [date(2026, 10, 10)]
 
 
 def test_latest_day_missing_retries_only_when_the_batch_gap_is_widespread() -> None:

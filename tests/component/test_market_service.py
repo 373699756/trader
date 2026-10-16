@@ -585,7 +585,7 @@ def test_degraded_candidate_cache_is_observe_only_without_rewriting_source_time(
     )
     gateway.fetch_market(observed_at=NOW)
     gateway.fetch_candidates(("600001",), observed_at=NOW)
-    monotonic.value = 15.001
+    monotonic.value = 30.001
 
     result = gateway.fetch_candidates(("600001",), observed_at=wall_clock())
 

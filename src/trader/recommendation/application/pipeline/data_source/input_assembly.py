@@ -56,7 +56,10 @@ def OverlayObservedAt(request: CycleRequest, features: tuple[FeatureSnapshot, ..
 
 def MergeOverlayQuote(quotes: dict[str, DecisionQuote], feature: FeatureSnapshot, observed_at: datetime) -> bool:
     quote = feature.quote
-    if quote.price is None or quote.price <= 0.0 or quote.source_time > observed_at:
+    if quote.source_time.tzinfo is None or quote.source_time.utcoffset() is None:
+        return False
+    source_time = quote.source_time.astimezone(SHANGHAI)
+    if quote.price is None or quote.price <= 0.0 or source_time > observed_at:
         return False
     candidate = DecisionQuote(
         code=quote.code,
@@ -66,7 +69,7 @@ def MergeOverlayQuote(quotes: dict[str, DecisionQuote], feature: FeatureSnapshot
         turnover_rate=quote.turnover_rate,
         market_cap=quote.market_cap,
         source=quote.source,
-        source_time=quote.source_time,
+        source_time=source_time,
         data_version=quote.data_version,
     )
     existing = quotes.get(quote.code)
