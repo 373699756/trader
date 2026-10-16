@@ -144,7 +144,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         "tushare",
         "cache_policy",
     }
-    market_keys.update({"sina_timeout_seconds", "full_market_hedge_delay_seconds"})
+    market_keys.update({"sina_timeout_seconds", "full_market_primary_timeout_seconds"})
     _require_exact_keys(market_raw, market_keys, "market_data")
     _require_exact_keys(
         deepseek_raw,
@@ -233,11 +233,11 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         market_data=MarketDataSettings(
             eastmoney_timeout_seconds=_number(market_raw, "eastmoney_timeout_seconds", minimum=0.1),
             sina_timeout_seconds=_number(market_raw, "sina_timeout_seconds", minimum=0.1),
-            full_market_hedge_delay_seconds=_number(
+            full_market_primary_timeout_seconds=_number(
                 market_raw,
-                "full_market_hedge_delay_seconds",
+                "full_market_primary_timeout_seconds",
                 minimum=0.05,
-                maximum=5.0,
+                maximum=120.0,
             ),
             candidate_timeout_seconds=_number(market_raw, "candidate_timeout_seconds", minimum=0.1),
             research_timeout_seconds=_number(

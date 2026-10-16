@@ -11,12 +11,14 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
 from zoneinfo import ZoneInfo
 
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
-from trader.infra.market_data.history.history import DailyBar, HistoryContext, build_history_context
+from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.settings import load_runtime_settings, load_strategy_settings
+from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
+from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
@@ -24,16 +26,19 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
 )
 from trader.recommendation.application.pipeline.policy import RecommendationPolicy
 from trader.recommendation.application.ports.data_plane_records import SecurityMasterRecord
+from trader.recommendation.application.ports.loaded_profile import ModelPredictorPort
+from trader.recommendation.domain.market.industry import QuoteWithIndustry
 from trader.recommendation.domain.market.models import FeatureSnapshot, ModelIndustryReference
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.infra.market_data.published_history_bars import qfq_bars
+from trader.recommendation.infra.market_data.local_industry_source import LocalIndustrySource
+from trader.recommendation.infra.market_data.published_history_bars import QfqBars
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.data_plane_codec import row_to_record
+from trader.recommendation.infra.persistence.data_plane_codec import RowToRecord
 from trader.recommendation.infra.policy_settings import _recommendation_policy
-from trader.recommendation.infra.scoring.cost_settings import load_execution_cost_policy
-from trader.recommendation.infra.scoring.profile_factory import load_scoring_profile
-from trader.training.infra.training_settings import load_profile_training_settings
+from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
+from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
+from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 
 @dataclass(frozen=True)
@@ -42,9 +47,21 @@ class FixedReferences:
     model_industries: Mapping[str, ModelIndustryReference]
     open_dates: tuple[date, ...]
     versions: tuple[str, ...]
+    industry_read_ms: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "model_industries", MappingProxyType(dict(self.model_industries)))
+
+
+@dataclass(frozen=True)
+class ActiveModelHead:
+    strategy: Strategy
+    feature_ids: tuple[str, ...]
+    requires_industry: bool
+
+    def __post_init__(self) -> None:
+        if not self.feature_ids or len(set(self.feature_ids)) != len(self.feature_ids):
+            raise ValueError("active model feature identities are invalid")
 
 
 @dataclass(frozen=True)
@@ -53,6 +70,7 @@ class FactorInputs:
     policy: RecommendationPolicy
     builder: FeatureBuilder
     models: ModelScoringRouter
+    model_heads: tuple[ActiveModelHead, ...]
     histories: Mapping[str, tuple[DailyBar, ...]]
     contexts: Mapping[str, HistoryContext]
     snapshot_hash: str
@@ -61,7 +79,7 @@ class FactorInputs:
     history_sessions: int
 
 
-def read_references(runtime_dir: Path, at: datetime) -> FixedReferences:
+def ReadReferences(runtime_dir: Path, at: datetime, industry_database: Path | None = None) -> FixedReferences:
     """Do not use SQLiteDataPlane.load: it initializes its active database."""
     database = runtime_dir / "market-data/market-data.sqlite3"
     observations: list[SourceObservation] = []
@@ -70,7 +88,7 @@ def read_references(runtime_dir: Path, at: datetime) -> FixedReferences:
         with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as connection:
             connection.row_factory = sqlite3.Row
             for row in connection.execute("SELECT * FROM security_master_recent WHERE status='committed'"):
-                record = row_to_record("security_master_recent", row)
+                record = RowToRecord("security_master_recent", row)
                 if not isinstance(record, SecurityMasterRecord):
                     raise TypeError("unexpected reference record")
                 if record.observed_at > at or record.source_time > at:
@@ -96,21 +114,17 @@ def read_references(runtime_dir: Path, at: datetime) -> FixedReferences:
                         error_code=None,
                     )
                 )
-                names = (
-                    "model_industry",
-                    "model_industry_classification",
-                    "model_industry_effective_date",
-                    "model_industry_source",
-                    "model_industry_data_version",
-                )
-                values = tuple(record.payload.get(key) for key in names)
-                if all(isinstance(value, str) and value for value in values):
-                    industry, classification, effective, source, version = (str(value) for value in values)
-                    effective_date = date.fromisoformat(effective)
-                    if effective_date <= at.date():
-                        industries[record.code] = ModelIndustryReference(
-                            industry, classification, effective_date, source, version
-                        )
+    industry_started = time.monotonic()
+    if industry_database is not None:
+        for item in LocalIndustrySource(industry_database, BaoStockIndustryClient()).load_cached(at):
+            industry_fields = item.fields
+            industries[item.subject_key] = ModelIndustryReference(
+                str(industry_fields["model_industry"]),
+                str(industry_fields["model_industry_classification"]),
+                date.fromisoformat(str(industry_fields["model_industry_effective_date"])),
+                str(industry_fields["model_industry_source"]),
+                str(industry_fields["model_industry_data_version"]),
+            )
     calendar_path = runtime_dir / "calendar.json"
     calendar = json.loads(calendar_path.read_text()) if calendar_path.is_file() else {}
     open_dates = tuple(sorted(date.fromisoformat(item) for item in calendar.get("dates", [])))
@@ -119,29 +133,40 @@ def read_references(runtime_dir: Path, at: datetime) -> FixedReferences:
         MappingProxyType(industries),
         open_dates,
         tuple(sorted({item.data_version for item in observations})),
+        (time.monotonic() - industry_started) * 1000 if industry_database is not None else 0.0,
     )
 
 
-def load_factor_inputs(
+def LoadFactorInputs(
     config: Path, qfq_root: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime
 ) -> FactorInputs:
     started = time.monotonic()
-    settings = load_runtime_settings(config)
-    strategy = load_strategy_settings(settings.strategy_config_path, scoring_profile=profile)
-    training = load_profile_training_settings(settings.project_root, profile)
+    settings = LoadRuntimeSettings(config)
+    strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile)
+    training = LoadProfileTrainingSettings(settings.project_root, profile)
     cache = SQLiteQfqWindowCache(qfq_root, profile)
     manifest = cache.manifest()
     if manifest is None:
         raise RuntimeError("qfq_snapshot_unavailable")
     windows = cache.read_codes(codes)
-    histories = {window.code: history_at_cut(qfq_bars(window), at) for window in windows}
+    histories = {window.code: HistoryAtCut(QfqBars(window), at) for window in windows}
     verified = cache.manifest()
     if verified is None or verified.snapshot_hash != manifest.snapshot_hash:
         raise RuntimeError("qfq_snapshot_changed")
     read_ms = (time.monotonic() - started) * 1000
     started = time.monotonic()
-    loaded = load_scoring_profile(profile, training_root=settings.project_root / "data/train")
-    cost = load_execution_cost_policy(config.parent)
+    loaded = LoadScoringProfile(profile, training_root=settings.project_root / "data/train")
+    model_heads = tuple(
+        ActiveModelHead(
+            strategy=target,
+            feature_ids=cast(ModelPredictorPort, loaded.heads[target].predictor).feature_ids,
+            requires_industry=cast(
+                ModelPredictorPort, loaded.heads[target].predictor
+            ).exposure_contract.requires_industry,
+        )
+        for target in (Strategy.TOMORROW, Strategy.D25)
+    )
+    cost = LoadExecutionCostPolicy(config.parent)
     shared = SharedModelFeatureCache()
     models = ModelScoringRouter(
         profile,
@@ -153,9 +178,7 @@ def load_factor_inputs(
     model_ms = (time.monotonic() - started) * 1000
     history_sessions = max(models.history_required_sessions(target) for target in (Strategy.TOMORROW, Strategy.D25))
     started = time.monotonic()
-    contexts = {
-        code: build_history_context(bars, lookback_sessions=history_sessions) for code, bars in histories.items()
-    }
+    contexts = {code: BuildHistoryContext(bars, lookback_sessions=history_sessions) for code, bars in histories.items()}
     context_ms = (time.monotonic() - started) * 1000
     builder = FeatureBuilder(
         strategy.news_signal,
@@ -166,26 +189,38 @@ def load_factor_inputs(
         model_momentum_horizons=training.momentum_horizons,
     )
     return FactorInputs(
-        profile,
-        _recommendation_policy(strategy),
-        builder,
-        models,
-        MappingProxyType(histories),
-        MappingProxyType(contexts),
-        manifest.snapshot_hash,
-        settings.config_version + ":" + strategy.strategy_version,
-        MappingProxyType({"qfq_read_validate": read_ms, "history_context_build": context_ms, "model_load": model_ms}),
-        history_sessions,
+        profile=profile,
+        policy=_recommendation_policy(strategy),
+        builder=builder,
+        models=models,
+        model_heads=model_heads,
+        histories=MappingProxyType(histories),
+        contexts=MappingProxyType(contexts),
+        snapshot_hash=manifest.snapshot_hash,
+        config_version=settings.config_version + ":" + strategy.strategy_version,
+        preparation_ms=MappingProxyType(
+            {"qfq_read_validate": read_ms, "history_context_build": context_ms, "model_load": model_ms}
+        ),
+        history_sessions=history_sessions,
     )
 
 
-def attach_model_industries(
+def AttachModelIndustries(
     features: tuple[FeatureSnapshot, ...], references: FixedReferences
 ) -> tuple[FeatureSnapshot, ...]:
-    return tuple(replace(item, model_industry=references.model_industries.get(item.quote.code)) for item in features)
+    return tuple(
+        replace(
+            item,
+            quote=QuoteWithIndustry(
+                item.quote, references.model_industries.get(item.quote.code), item.observed_at.date()
+            ),
+            model_industry=references.model_industries.get(item.quote.code),
+        )
+        for item in features
+    )
 
 
-def history_at_cut(bars: tuple[DailyBar, ...], at: datetime) -> tuple[DailyBar, ...]:
+def HistoryAtCut(bars: tuple[DailyBar, ...], at: datetime) -> tuple[DailyBar, ...]:
     """Match published-history admission: today's completed bar is usable after 15:00."""
     local = at.astimezone(ZoneInfo("Asia/Shanghai"))
     today = local.date().isoformat()
@@ -193,10 +228,11 @@ def history_at_cut(bars: tuple[DailyBar, ...], at: datetime) -> tuple[DailyBar, 
 
 
 __all__ = [
+    "ActiveModelHead",
     "FixedReferences",
     "FactorInputs",
-    "read_references",
-    "load_factor_inputs",
-    "attach_model_industries",
-    "history_at_cut",
+    "ReadReferences",
+    "LoadFactorInputs",
+    "AttachModelIndustries",
+    "HistoryAtCut",
 ]

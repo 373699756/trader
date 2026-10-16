@@ -14,7 +14,6 @@ from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth
 from trader.recommendation.application.runtime.source_lanes import SourceRequestSupersededError
 from trader.recommendation.domain.market.models import ModelIndustryReference
-from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.market_cache_identity import _source_batch_identity
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
 from trader.recommendation.infra.market_data.provider_ports import ModelIndustrySource
@@ -26,10 +25,9 @@ _SOURCE_LANE = "baostock_reference"
 
 @dataclass(frozen=True)
 class ModelIndustryReferenceDependencies:
-    gateway: MarketDataGateway
     runner: MarketTaskRunner
     client: ModelIndustrySource | None
-    persistence_sink: Callable[[Sequence[SourceObservation]], None]
+    cache_reader: Callable[[datetime], tuple[SourceObservation, ...]] | None = None
 
 
 class ModelIndustryReferenceLoader:
@@ -41,10 +39,9 @@ class ModelIndustryReferenceLoader:
         retry_seconds: float,
         monotonic: Callable[[], float],
     ) -> None:
-        self._gateway = dependencies.gateway
         self._runner = dependencies.runner
         self._client = dependencies.client
-        self._persistence_sink = dependencies.persistence_sink
+        self._cache_reader = dependencies.cache_reader
         self._refresh_ttl_seconds = refresh_ttl_seconds
         self._retry_seconds = retry_seconds
         self._monotonic = monotonic
@@ -53,10 +50,25 @@ class ModelIndustryReferenceLoader:
         self._next_refresh_at = 0.0
         self._reference_rows = 0
         self._data_version = ""
+        self._references: Mapping[str, ModelIndustryReference] = {}
+
+    def load_cached(self, observed_at: datetime) -> None:
+        reader = self._cache_reader
+        if reader is None:
+            return
+        try:
+            observations = reader(observed_at)
+        except RuntimeError as exc:
+            _LOGGER.warning("current industry cache read failed: %s", type(exc).__name__)
+            return
+        if observations:
+            self.recover(observations)
 
     def schedule(self, observed_at: datetime, *, force: bool) -> None:
         if self._client is None:
             return
+        if not self._references:
+            self.load_cached(observed_at)
         with self._lock:
             now = self._monotonic()
             if self._refresh_inflight or (not force and now < self._next_refresh_at):
@@ -84,13 +96,9 @@ class ModelIndustryReferenceLoader:
         if client is None:
             return 0
         observations = client.fetch(observed_at)
-        self._gateway.update_reference_observations(observations)
-        merged = self._gateway.reference_observations(tuple(item.subject_key for item in observations))
-        self._persistence_sink(merged)
-        latest = max(observations, key=lambda item: (item.source_time, item.data_version))
-        with self._lock:
-            self._reference_rows = len(observations)
-            self._data_version = latest.data_version
+        if not observations:
+            raise ValueError("model_industry_reference_empty")
+        self.recover(observations)
         return len(observations)
 
     def _observe_refresh(self, future: Future[int]) -> None:
@@ -116,13 +124,15 @@ class ModelIndustryReferenceLoader:
         references = self._project(observations)
         with self._lock:
             self._reference_rows = len(references)
+            self._references = references
             self._data_version = max(
                 (reference.data_version for reference in references.values()),
                 default="",
             )
 
     def references(self, codes: Sequence[str]) -> Mapping[str, ModelIndustryReference]:
-        return self._project(self._gateway.reference_observations(codes))
+        with self._lock:
+            return {code: self._references[code] for code in codes if code in self._references}
 
     def _project(
         self,

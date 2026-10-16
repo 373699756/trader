@@ -41,9 +41,9 @@ from trader.recommendation.infra.market_data.gateway_runtime import (
     _cache_error_code,
     _CircuitState,
     _elapsed,
+    _market_route_error_message,
+    _market_route_outcome,
     _observation_version,
-    _parallel_error_message,
-    _parallel_route_outcome,
     _percentile,
     _preserve_newer_quotes,
     _reference_replaces,
@@ -96,7 +96,7 @@ class _GatewayOptionalOptions(TypedDict, total=False):
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
     latency: LatencyWaterfall
-    full_market_hedge_delay_seconds: float
+    full_market_primary_timeout_seconds: float
     listing_open_dates: Callable[[], Sequence[date]]
     full_market_fetchers: Mapping[str, FullMarketFetcher]
     recovery_probes: Mapping[str, Callable[[], None]]
@@ -197,7 +197,7 @@ class MarketDataGateway:
                 schema_version=self._schema_version,
                 monotonic=self._monotonic,
                 wall_clock=self._wall_clock,
-                full_market_hedge_delay_seconds=options.get("full_market_hedge_delay_seconds", 1.0),
+                full_market_primary_timeout_seconds=options.get("full_market_primary_timeout_seconds", 12.0),
                 full_market_observation_sink=self._promote_full_market_security_references,
                 full_market_fetchers=options.get("full_market_fetchers"),
             ),
@@ -282,7 +282,7 @@ class MarketDataGateway:
     ) -> Sequence[MarketQuote]:
         results = self._sources.fetch_market_sources(observed_at, force=force, deadline=deadline)
         successes = tuple(result for result in results if result.status == "success")
-        outcome = _parallel_route_outcome(results)
+        outcome = _market_route_outcome(results)
         completed_at = max(observed_at, self._wall_clock())
         if deadline is not None and completed_at >= deadline:
             with self._state_lock:
@@ -302,7 +302,7 @@ class MarketDataGateway:
                     )
             if cached:
                 return cached
-            raise MarketDataUnavailableError("market data unavailable: " + _parallel_error_message(results))
+            raise MarketDataUnavailableError("market data unavailable: " + _market_route_error_message(results))
         observations = tuple(observation for result in successes for observation in result.observations)
         observed_codes = {observation.subject_key for observation in observations}
         security_references = SecurityReferenceObservations(observations)

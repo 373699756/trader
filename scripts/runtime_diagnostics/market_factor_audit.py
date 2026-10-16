@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from trader.recommendation.domain.market.factors import PRODUCTION_FACTOR_IDS
@@ -13,13 +13,26 @@ from trader.recommendation.domain.market.models import Board, FeatureSnapshot, M
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.scoring import (
     BoardCrossSectionRequest,
-    build_board_cross_section,
-    candidate_fields,
+    BuildBoardCrossSection,
+    CandidateFields,
 )
-from trader.recommendation.infra.normalization.merge import observation_from_quote
+from trader.recommendation.infra.normalization.merge import ObservationFromQuote
 
 from .market_factor_inputs import FactorInputs
 
+CORE_QUOTE_FIELDS = ("price", "pct_change", "amount")
+SCORING_QUOTE_FIELDS = (
+    *CORE_QUOTE_FIELDS,
+    "high",
+    "low",
+    "turnover_rate",
+    "amplitude",
+)
+REQUIRED_DECISION_QUOTE_FIELDS = SCORING_QUOTE_FIELDS
+DERIVABLE_QUOTE_FIELDS = ("volume_ratio",)
+OPTIONAL_FALLBACK_QUOTE_FIELDS = ("market_cap",)
+VALIDATION_QUOTE_FIELDS = ("previous_close", "open_price")
+IGNORED_REALTIME_FIELDS = ("speed", "change_5m")
 QUOTE_FIELDS = (
     "price",
     "previous_close",
@@ -32,11 +45,7 @@ QUOTE_FIELDS = (
     "volume_ratio",
     "market_cap",
     "amplitude",
-    "speed",
-    "change_5m",
-    "industry",
 )
-CORE_QUOTE_FIELDS = ("price", "previous_close", "open_price", "high", "low", "pct_change", "amount")
 _POSITIVE = frozenset({"price", "previous_close", "open_price", "high", "low", "amount", "market_cap"})
 _NONNEGATIVE = frozenset({"turnover_rate", "volume_ratio", "amplitude"})
 _RESEARCH = frozenset(
@@ -64,7 +73,7 @@ _RESEARCH = frozenset(
 _MINUTES = frozenset({"tail_return_30m", "tail_return_30m_pct", "tail_volume_ratio", "tail_volume_ratio_raw"})
 
 
-def valid_quote_value(name: str, value: object) -> bool:
+def ValidQuoteValue(name: str, value: object) -> bool:
     if name == "industry":
         return isinstance(value, str) and bool(value.strip())
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value):
@@ -74,28 +83,32 @@ def valid_quote_value(name: str, value: object) -> bool:
     return name not in _NONNEGATIVE or value >= 0
 
 
-def quote_audit(quotes: Sequence[MarketQuote], requested: tuple[str, ...], at: datetime) -> dict[str, object]:
+def QuoteAudit(quotes: Sequence[MarketQuote], requested: tuple[str, ...], at: datetime) -> dict[str, object]:
     allowed = set(requested)
     by_code = {quote.code: quote for quote in quotes if quote.code in allowed}
     rows = {
-        code: observation_from_quote(quote, source=quote.source, observed_at=at).fields
-        for code, quote in by_code.items()
+        code: ObservationFromQuote(quote, source=quote.source, observed_at=at).fields for code, quote in by_code.items()
     }
     total = len(requested)
     fields = []
     for name in QUOTE_FIELDS:
-        valid = sum(valid_quote_value(name, row.get(name)) for row in rows.values())
+        valid = sum(ValidQuoteValue(name, row.get(name)) for row in rows.values())
         fields.append(
             {
                 "field": name,
                 "required_quote_input": name in CORE_QUOTE_FIELDS,
+                "scoring_input": name in SCORING_QUOTE_FIELDS,
+                "decision_input": name in REQUIRED_DECISION_QUOTE_FIELDS,
+                "derivable_input": name in DERIVABLE_QUOTE_FIELDS,
+                "optional_fallback_input": name in OPTIONAL_FALLBACK_QUOTE_FIELDS,
+                "validation_input": name in VALIDATION_QUOTE_FIELDS,
                 "valid": valid,
                 "missing_or_invalid": total - valid,
                 "denominator": total,
                 "coverage": valid / total if total else None,
             }
         )
-    valid_core = sum(all(valid_quote_value(name, row.get(name)) for name in CORE_QUOTE_FIELDS) for row in rows.values())
+    valid_core = sum(all(ValidQuoteValue(name, row.get(name)) for name in CORE_QUOTE_FIELDS) for row in rows.values())
     # Tencent falls back to received_at on an invalid vendor timestamp. Such
     # rows cannot establish source freshness; other adapters expose no vendor time.
     genuine_times = [
@@ -120,17 +133,29 @@ def quote_audit(quotes: Sequence[MarketQuote], requested: tuple[str, ...], at: d
     }
 
 
-def missing_quote_codes(quotes: Sequence[MarketQuote], requested: tuple[str, ...], at: datetime) -> tuple[str, ...]:
-    rows = {quote.code: observation_from_quote(quote, source=quote.source, observed_at=at).fields for quote in quotes}
+def MissingQuoteCodes(quotes: Sequence[MarketQuote], requested: tuple[str, ...], at: datetime) -> tuple[str, ...]:
+    rows = {quote.code: ObservationFromQuote(quote, source=quote.source, observed_at=at).fields for quote in quotes}
     return tuple(
         code
         for code in requested
         if code not in rows
-        or any(not valid_quote_value(name, rows[code].get(name)) for name in QUOTE_FIELDS if name != "industry")
+        or any(not ValidQuoteValue(name, rows[code].get(name)) for name in REQUIRED_DECISION_QUOTE_FIELDS)
     )
 
 
-def factor_audit(
+def QuoteFieldsComplete(audit: Mapping[str, object], required: tuple[str, ...]) -> bool:
+    rows = audit.get("fields")
+    if not isinstance(rows, list):
+        return False
+    missing = {
+        str(row.get("field")): row.get("missing_or_invalid")
+        for row in rows
+        if isinstance(row, dict) and isinstance(row.get("field"), str)
+    }
+    return all(missing.get(field) == 0 for field in required)
+
+
+def FactorAudit(
     features: Sequence[FeatureSnapshot], inputs: FactorInputs, requested: tuple[str, ...]
 ) -> dict[str, object]:
     denominator = len(requested)
@@ -141,20 +166,20 @@ def factor_audit(
     features = tuple(
         item
         for board in (Board.MAIN, Board.CHINEXT, Board.STAR)
-        for item in build_board_cross_section(
+        for item in BuildBoardCrossSection(
             BoardCrossSectionRequest(
                 features,
                 board,
-                "factor_audit",
+                "FactorAudit",
                 features[0].observed_at.date().isoformat() if features else "unknown",
-                "factor_audit",
-                "factor_audit",
+                "FactorAudit",
+                "FactorAudit",
             )
         ).features
     )
     consumers: dict[str, set[str]] = {}
     for strategy in (Strategy.TOMORROW, Strategy.D25):
-        for name in candidate_fields(strategy):
+        for name in CandidateFields(strategy):
             consumers.setdefault(name, set()).add(strategy.value + ":candidate")
         for weights in inputs.policy.local_component_weights[strategy].values():
             for name, weight in weights.items():
@@ -198,11 +223,13 @@ def factor_audit(
     catalog = V2_FEATURE_SPEC_CATALOG if inputs.profile == "v2" else FEATURE_SPEC_CATALOG
     models = []
     for strategy in (Strategy.TOMORROW, Strategy.D25):
+        head = next(item for item in inputs.model_heads if item.strategy is strategy)
         models.append(
             {
                 "strategy": strategy.value,
                 "history_required_sessions": inputs.models.history_required_sessions(strategy),
                 "input_eligible": sum(inputs.models.is_input_eligible(strategy, item) for item in features),
+                "requires_model_industry": head.requires_industry,
                 "feature_contract": [
                     {
                         "field": spec.feature_id.value,
@@ -211,7 +238,7 @@ def factor_audit(
                         "missing_policy": spec.missing_policy,
                         "calculator_group": spec.calculator_group,
                     }
-                    for spec in catalog.specs
+                    for spec in (catalog.require(feature_id) for feature_id in head.feature_ids)
                 ],
             }
         )
@@ -236,8 +263,15 @@ def factor_audit(
 __all__ = [
     "QUOTE_FIELDS",
     "CORE_QUOTE_FIELDS",
-    "valid_quote_value",
-    "quote_audit",
-    "missing_quote_codes",
-    "factor_audit",
+    "SCORING_QUOTE_FIELDS",
+    "REQUIRED_DECISION_QUOTE_FIELDS",
+    "DERIVABLE_QUOTE_FIELDS",
+    "OPTIONAL_FALLBACK_QUOTE_FIELDS",
+    "VALIDATION_QUOTE_FIELDS",
+    "IGNORED_REALTIME_FIELDS",
+    "ValidQuoteValue",
+    "QuoteAudit",
+    "QuoteFieldsComplete",
+    "MissingQuoteCodes",
+    "FactorAudit",
 ]

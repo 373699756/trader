@@ -1,18 +1,15 @@
-"""Persistent validated historical query evidence, never a published industry mapping."""
+"""Historical interval projection of the shared industry query database."""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-import sqlite3
-from collections.abc import Iterator
-from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
+from trader.infra.dated_query_cache import SQLiteDatedQueryCache
 
 _LOGGER = logging.getLogger(__name__)
 _CONTRACT = "baostock_dated_industry_queries"
@@ -24,44 +21,17 @@ class HistoryIndustryQueryCache:
 
     path: Path
 
-    @contextmanager
-    def _connection(self, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
-        target = f"file:{self.path.as_posix()}?mode=ro" if read_only else str(self.path)
-        try:
-            with closing(sqlite3.connect(target, uri=read_only, timeout=5)) as connection:
-                yield connection
-        except sqlite3.Error as exc:
-            raise RuntimeError("industry_query_cache_unavailable") from exc
-
     def prepare(self, source: str, dates: tuple[date, ...]) -> None:
         if not source or not dates or len(dates) > 64 or len(set(dates)) != len(dates):
             raise ValueError("industry_cache_dates_invalid")
-        if self.path.is_symlink() or self.path.parent.is_symlink():
-            raise ValueError("industry_cache_path_unsafe")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connection() as connection, connection:
-            connection.execute("PRAGMA synchronous=FULL")
-            connection.executescript(
-                "BEGIN IMMEDIATE; CREATE TABLE IF NOT EXISTS queries ("
-                "day TEXT PRIMARY KEY, source TEXT NOT NULL, observed_on TEXT NOT NULL, "
-                "payload TEXT NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID;"
-            )
+        SQLiteDatedQueryCache(self.path, _CONTRACT).prepare()
 
     def read(self, source: str, day: date, as_of: date) -> tuple[BaoStockIndustryInterval, ...] | None:
-        with self._connection(read_only=True) as connection:
-            row = connection.execute(
-                "SELECT source,observed_on,payload,digest FROM queries WHERE day=?", (day.isoformat(),)
-            ).fetchone()
-        if row is None or row[0] != source:
+        query = SQLiteDatedQueryCache(self.path, _CONTRACT).read(day, as_of, source=source)
+        if query is None:
             return None
         try:
-            observed = date.fromisoformat(row[1])
-            # A validated historical query does not expire, but cannot travel back in time.
-            if not day <= observed <= as_of:
-                return None
-            if row[3] != _digest(source, day, observed, row[2]):
-                raise ValueError("industry_cache_hash_mismatch")
-            return _decode(row[2], day)
+            return _decode(query.payload, day)
         except (TypeError, ValueError):
             _LOGGER.warning("industry_query_cache_invalid_requery day=%s", day)
             return None
@@ -77,18 +47,7 @@ class HistoryIndustryQueryCache:
         _decode(payload, day)
         if as_of < day:
             raise ValueError("industry_cache_observation_invalid")
-        with self._connection() as connection, connection:
-            connection.execute("PRAGMA synchronous=FULL")
-            connection.execute(
-                "INSERT OR REPLACE INTO queries VALUES (?,?,?,?,?)",
-                (day.isoformat(), source, as_of.isoformat(), payload, _digest(source, day, as_of, payload)),
-            )
-
-
-def _digest(source: str, day: date, observed: date, payload: str) -> str:
-    return hashlib.sha256(
-        json.dumps((_CONTRACT, source, day.isoformat(), observed.isoformat(), payload)).encode()
-    ).hexdigest()
+        SQLiteDatedQueryCache(self.path, _CONTRACT).save(source, day, as_of, payload)
 
 
 def _decode(payload: str, day: date) -> tuple[BaoStockIndustryInterval, ...]:

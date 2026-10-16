@@ -137,6 +137,7 @@ from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
+from trader.recommendation.infra.market_data.local_industry_source import LocalIndustrySource
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth, MarketDataHealthDependencies
 from trader.recommendation.infra.market_data.market_feature_service import (
     MarketFeatureDependencies,
@@ -881,7 +882,7 @@ def _build_market_data(
         minimum_market_rows=settings.market_data.minimum_market_rows,
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
         circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
-        full_market_hedge_delay_seconds=settings.market_data.full_market_hedge_delay_seconds,
+        full_market_primary_timeout_seconds=settings.market_data.full_market_primary_timeout_seconds,
         full_market_fetchers={
             "tencent_market": lambda deadline, cancel_event: tencent_market.fetch_market(
                 deadline=deadline,
@@ -961,6 +962,10 @@ def _build_market_data(
         outcome_history=published_history,
         open_dates=calendar.open_dates,
     )
+    industry_source = LocalIndustrySource(
+        settings.reference_dir / "industry_queries.sqlite3",
+        BaoStockIndustryClient(),
+    )
     references = ReferenceLoader(
         gateway,
         runner,
@@ -971,7 +976,8 @@ def _build_market_data(
             timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
             wall_clock=now,
         ),
-        model_industry_client=BaoStockIndustryClient(),
+        model_industry_client=industry_source,
+        model_industry_cache_reader=industry_source.load_cached,
         security_master_refresh_ttl_seconds=_fixed_cache_ttl(settings, "security_master_calendar"),
         security_master_retry_seconds=(
             settings.market_data.cache_policy.datasets["security_master_calendar"].negative_ttl_seconds
@@ -979,6 +985,7 @@ def _build_market_data(
         data_plane=data_plane,
         monotonic=time.monotonic,
     )
+    references.load_model_industry_cache(now())
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
     reference_root = settings.reference_dir
     eligibility = SQLiteIssuerEligibilityIndex(reference_root, read_only=not context.owns_shared_runtime)

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, wait
+from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol, cast
 
 from trader.infra.cache_contracts import (
@@ -56,7 +56,7 @@ class MarketSourceDependencies:
     schema_version: str
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
-    full_market_hedge_delay_seconds: float
+    full_market_primary_timeout_seconds: float
     full_market_observation_sink: Callable[[Sequence[SourceObservation]], None] | None = None
     full_market_fetchers: Mapping[str, FullMarketFetcher] | None = None
 
@@ -73,6 +73,7 @@ class SourceObservationRequest:
     deadline: datetime | None
     minimum_rows: int
     bypass_cache: bool = False
+    cancellation: threading.Event | None = None
 
 
 @dataclass(frozen=True)
@@ -138,7 +139,7 @@ class MarketSourceCoordinator:
         self._schema_version = dependencies.schema_version
         self._monotonic = dependencies.monotonic
         self._wall_clock = dependencies.wall_clock
-        self._full_market_hedge_delay_seconds = dependencies.full_market_hedge_delay_seconds
+        self._primary_timeout_seconds = dependencies.full_market_primary_timeout_seconds
         self._full_market_observation_sink = dependencies.full_market_observation_sink
         self._full_market_fetchers = dict(dependencies.full_market_fetchers or {})
         self._telemetry = telemetry
@@ -156,140 +157,46 @@ class MarketSourceCoordinator:
             "sina": self._full_market_fetcher("sina", deadline, cancellation["sina"]),
         }
         context = _MarketRouteContext(observed_at, force, deadline, cancellation, fetchers)
-        if self._source_lanes is None:
-            return self._fetch_market_without_lanes(context)
-        return self._fetch_hedged_market_sources(context)
+        return self._fetch_primary_then_backup(context)
 
-    def _fetch_market_without_lanes(
+    def _fetch_primary_then_backup(
         self,
         context: _MarketRouteContext,
     ) -> tuple[_SourceFetch, ...]:
-        primary = self._market_source_result(
-            "tencent_market",
-            context.fetchers["tencent_market"],
-            context.observed_at,
-            force=context.force,
-            deadline=context.deadline,
-        )
+        primary_deadline = self._wall_clock() + timedelta(seconds=self._primary_timeout_seconds)
+        if context.deadline is not None:
+            primary_deadline = min(primary_deadline, context.deadline)
+        primary = self._route_source("tencent_market", context, deadline=primary_deadline)
         if primary.status == "success":
-            return (primary, _SourceFetch("sina", "skipped", error="hedge_not_needed", skipped=True))
-        fallback = self._market_source_result(
-            "sina",
-            context.fetchers["sina"],
-            context.observed_at,
-            force=context.force,
-            deadline=context.deadline,
-        )
-        return (primary, fallback)
+            return (primary, _SourceFetch("sina", "skipped", error="backup_not_needed", skipped=True))
+        if self._remaining_seconds(context.deadline) == 0.0:
+            return (primary, _SourceFetch("sina", "skipped", error="deadline", skipped=True))
+        return (primary, self._route_source("sina", context))
 
-    def _fetch_hedged_market_sources(
-        self,
-        context: _MarketRouteContext,
-    ) -> tuple[_SourceFetch, ...]:
-        primary_future = self._submit_market_source(
-            "tencent_market",
-            context.fetchers["tencent_market"],
-            context.observed_at,
-            force=context.force,
-            deadline=context.deadline,
-        )
-        primary = self._await_primary_hedge(primary_future, context.deadline)
-        if primary is not None and primary.status == "success":
-            return (primary, _SourceFetch("sina", "skipped", error="hedge_not_needed", skipped=True))
-        fallback_future = self._submit_market_source(
-            "sina",
-            context.fetchers["sina"],
-            context.observed_at,
-            force=context.force,
-            deadline=context.deadline,
-        )
-        return self._await_hedged_result(context, primary_future, fallback_future, primary)
-
-    def _await_primary_hedge(
-        self,
-        primary_future: Future[_SourceFetch],
-        deadline: datetime | None,
-    ) -> _SourceFetch | None:
-        hedge_wait = self._remaining_seconds(deadline, cap=self._full_market_hedge_delay_seconds)
+    def _route_source(
+        self, source: str, context: _MarketRouteContext, *, deadline: datetime | None = None
+    ) -> _SourceFetch:
+        deadline = deadline or context.deadline
+        if self._source_lanes is None:
+            return self._market_source_result(source, context, deadline)
+        future = self._submit_market_source(source, context, deadline)
         try:
-            return primary_future.result(timeout=hedge_wait)
+            return future.result(timeout=self._remaining_seconds(deadline))
         except FutureTimeoutError:
-            return None
-        except SourceRequestSupersededError:
-            self._telemetry.record_superseded("tencent_market")
-            return _SourceFetch("tencent_market", "skipped", error="superseded", skipped=True)
-        except Exception as exc:
-            return _SourceFetch("tencent_market", "failed", error=_cache_error_code(exc))
-
-    def _await_hedged_result(
-        self,
-        context: _MarketRouteContext,
-        primary_future: Future[_SourceFetch],
-        fallback_future: Future[_SourceFetch],
-        primary: _SourceFetch | None,
-    ) -> tuple[_SourceFetch, ...]:
-        results = {} if primary is None else {"tencent_market": primary}
-        pending: dict[str, Future[_SourceFetch]] = {"sina": fallback_future}
-        if primary is None:
-            pending["tencent_market"] = primary_future
-        while pending:
-            remaining = self._remaining_seconds(context.deadline)
-            if remaining == 0.0:
-                break
-            done, _not_done = wait(
-                tuple(pending.values()),
-                timeout=remaining,
-                return_when=FIRST_COMPLETED,
-            )
-            if not done:
-                break
-            completed = self._consume_completed_hedge(context, done, pending, results)
-            if completed is not None:
-                return completed
-        for source, future in pending.items():
             context.cancellation[source].set()
-            if future.cancel():
-                self._telemetry.record_deadline(source)
-            results[source] = _SourceFetch(source, "failed", error="deadline")
-        return tuple(results.get(source, _missing_hedge_result(source)) for source in ("tencent_market", "sina"))
-
-    def _consume_completed_hedge(
-        self,
-        context: _MarketRouteContext,
-        done: set[Future[_SourceFetch]],
-        pending: dict[str, Future[_SourceFetch]],
-        results: dict[str, _SourceFetch],
-    ) -> tuple[_SourceFetch, ...] | None:
-        for source in ("tencent_market", "sina"):
-            future = pending.get(source)
-            if future is None or future not in done:
-                continue
-            result = self._resolve_market_future(source, future)
-            results[source] = result
-            pending.pop(source)
-            if result.status != "success":
-                continue
-            for loser, loser_future in tuple(pending.items()):
-                cancelled = loser_future.cancel()
-                if cancelled:
-                    context.cancellation[loser].set()
-                results[loser] = _SourceFetch(
-                    loser,
-                    "skipped",
-                    error="hedge_cancelled" if cancelled else "hedge_inflight",
-                    skipped=True,
-                )
-                pending.pop(loser)
-            return tuple(results.get(name, _missing_hedge_result(name)) for name in ("tencent_market", "sina"))
-        return None
+            future.cancel()
+            self._telemetry.record_deadline(source)
+            return _SourceFetch(source, "failed", error="deadline")
+        except SourceRequestSupersededError:
+            self._telemetry.record_superseded(source)
+            return _SourceFetch(source, "skipped", error="superseded", skipped=True)
+        except Exception as exc:
+            return _SourceFetch(source, "failed", error=_cache_error_code(exc))
 
     def _submit_market_source(
         self,
         source: str,
-        fetcher: Callable[[], Sequence[MarketQuote]],
-        observed_at: datetime,
-        *,
-        force: bool,
+        context: _MarketRouteContext,
         deadline: datetime | None,
     ) -> Future[_SourceFetch]:
         assert self._source_lanes is not None
@@ -300,41 +207,25 @@ class MarketSourceCoordinator:
                 source,
                 "market",
                 request,
-                observed_at,
-                force,
+                context.observed_at,
+                context.force,
                 deadline,
             )
         )
         return self._source_lanes.submit(
             source,
             identity,
-            observed_at,
+            context.observed_at,
             self._market_source_result,
             source,
-            fetcher,
-            observed_at,
-            force=force,
-            deadline=deadline,
+            context,
+            deadline,
         )
 
-    def _resolve_market_future(
-        self,
-        source: str,
-        future: Future[_SourceFetch],
-    ) -> _SourceFetch:
-        try:
-            return future.result()
-        except SourceRequestSupersededError:
-            self._telemetry.record_superseded(source)
-            return _SourceFetch(source, "skipped", error="superseded", skipped=True)
-        except Exception as exc:
-            return _SourceFetch(source, "failed", error=_cache_error_code(exc))
-
-    def _remaining_seconds(self, deadline: datetime | None, *, cap: float | None = None) -> float | None:
+    def _remaining_seconds(self, deadline: datetime | None) -> float | None:
         if deadline is None:
-            return cap
-        remaining = max(0.0, (deadline - self._wall_clock()).total_seconds())
-        return remaining if cap is None else min(remaining, cap)
+            return None
+        return max(0.0, (deadline - self._wall_clock()).total_seconds())
 
     def _full_market_fetcher(
         self,
@@ -351,10 +242,7 @@ class MarketSourceCoordinator:
     def _market_source_result(
         self,
         source: str,
-        fetcher: Callable[[], Sequence[MarketQuote]],
-        observed_at: datetime,
-        *,
-        force: bool,
+        context: _MarketRouteContext,
         deadline: datetime | None,
     ) -> _SourceFetch:
         started = self._monotonic()
@@ -365,11 +253,12 @@ class MarketSourceCoordinator:
                     "full_market_quotes",
                     "market",
                     {"universe": "ashare", "fields": ["realtime_quote"]},
-                    fetcher,
-                    observed_at,
-                    force,
+                    context.fetchers[source],
+                    context.observed_at,
+                    context.force,
                     deadline,
                     self._minimum_market_rows,
+                    cancellation=context.cancellation[source],
                 )
             )
         except MarketDataNoDataError as exc:
@@ -398,7 +287,8 @@ class MarketSourceCoordinator:
         observed_at = request.observed_at
         self._telemetry.record_planned(source)
         if not _before_deadline(self._wall_clock(), request.deadline):
-            self._telemetry.record_deadline(source)
+            if request.cancellation is None or not request.cancellation.is_set():
+                self._telemetry.record_deadline(source)
             raise MarketDataFailedError(source, "late")
         identity = self._cache_identity(
             request.dataset,
@@ -409,28 +299,7 @@ class MarketSourceCoordinator:
         )
 
         def load() -> tuple[SourceObservation, ...]:
-            quotes, started = self._telemetry.fetch_physical(source, request.fetcher, request.minimum_rows)
-            completed_at = max(observed_at, self._wall_clock())
-            normalization_started = self._monotonic()
-            observations = tuple(
-                ObservationFromQuote(quote, source=source, observed_at=completed_at) for quote in quotes
-            )
-            self._telemetry.record_local_latency(
-                "normalization",
-                _elapsed(normalization_started, self._monotonic()),
-            )
-            if request.dataset == "full_market_quotes" and self._full_market_observation_sink is not None:
-                self._full_market_observation_sink(observations)
-            if request.deadline is not None and completed_at >= request.deadline:
-                self._telemetry.record_fetch_result(source, False, started, "deadline")
-                raise MarketDataFailedError(source, "late")
-            if self._cache is not None and not request.bypass_cache:
-                source_time = max(observation.source_time for observation in observations)
-                data_version = max(observation.data_version for observation in observations)
-                self._cache.put(identity, observations, data_version=data_version, source_time=source_time)
-            self._telemetry.record_fetch_result(source, True, started, "")
-            self._telemetry.record_source_time(source, max(observation.source_time for observation in observations))
-            return observations
+            return self._load_source_observations(request, identity)
 
         if self._cache is not None and not request.force and not request.bypass_cache:
             cached = self._cached_source_observations(identity, request)
@@ -451,6 +320,32 @@ class MarketSourceCoordinator:
             ):
                 self._cache.put_negative(identity, error_code=_cache_error_code(exc))
             raise
+
+    def _load_source_observations(
+        self, request: SourceObservationRequest, identity: CacheIdentity
+    ) -> tuple[SourceObservation, ...]:
+        source = request.source
+        quotes, started = self._telemetry.fetch_physical(source, request.fetcher, request.minimum_rows)
+        completed_at = max(request.observed_at, self._wall_clock())
+        normalization_started = self._monotonic()
+        observations = tuple(ObservationFromQuote(quote, source=source, observed_at=completed_at) for quote in quotes)
+        self._telemetry.record_local_latency(
+            "normalization",
+            _elapsed(normalization_started, self._monotonic()),
+        )
+        if request.deadline is not None and completed_at >= request.deadline:
+            if request.cancellation is None or not request.cancellation.is_set():
+                self._telemetry.record_fetch_result(source, False, started, "deadline")
+            raise MarketDataFailedError(source, "late")
+        if request.dataset == "full_market_quotes" and self._full_market_observation_sink is not None:
+            self._full_market_observation_sink(observations)
+        if self._cache is not None and not request.bypass_cache:
+            source_time = max(observation.source_time for observation in observations)
+            data_version = max(observation.data_version for observation in observations)
+            self._cache.put(identity, observations, data_version=data_version, source_time=source_time)
+        self._telemetry.record_fetch_result(source, True, started, "")
+        self._telemetry.record_source_time(source, max(observation.source_time for observation in observations))
+        return observations
 
     def _cached_source_observations(
         self,
@@ -620,10 +515,6 @@ def _mark_observations_degraded(
         )
         for observation in observations
     )
-
-
-def _missing_hedge_result(source: str) -> _SourceFetch:
-    return _SourceFetch(source, "skipped", error="hedge_not_needed", skipped=True)
 
 
 __all__ = ["MarketSourceCoordinator", "MarketSourceDependencies", "MarketSourceTelemetry"]

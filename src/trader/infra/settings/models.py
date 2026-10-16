@@ -43,7 +43,7 @@ class PipelineSettings:
 class MarketDataSettings:
     eastmoney_timeout_seconds: float
     sina_timeout_seconds: float
-    full_market_hedge_delay_seconds: float
+    full_market_primary_timeout_seconds: float
     candidate_timeout_seconds: float
     research_timeout_seconds: float
     minimum_market_rows: int

@@ -128,7 +128,7 @@ def test_configuration_contract_is_valid() -> None:
     assert runtime.market_data.research_timeout_seconds == 8
     assert runtime.market_data.eastmoney_timeout_seconds == 8
     assert runtime.market_data.sina_timeout_seconds == 8
-    assert runtime.market_data.full_market_hedge_delay_seconds == 1
+    assert runtime.market_data.full_market_primary_timeout_seconds == 12
     assert runtime.pipeline.market_workers == 5
     assert runtime.api.web_snapshot_retention_seconds == 35
     assert runtime.market_data.tushare.timeout_seconds == 8

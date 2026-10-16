@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
+from typing import cast
 
 import requests
 
@@ -25,7 +26,7 @@ class AuxiliaryInputs:
     report: tuple[dict[str, object], ...]
 
 
-def probe_auxiliary(
+def ProbeAuxiliary(
     codes: tuple[str, ...], at: datetime, policy: LongResearchPolicy, timeout: float, pool: BoundedExecutor
 ) -> AuxiliaryInputs:
     """Three board samples, at most 12 research requests per code; no cache writes."""
@@ -37,21 +38,21 @@ def probe_auxiliary(
         deadline = started + 20.0
         requests_made = 0
 
-        def bounded_get(url: str, **kwargs: object) -> AkshareHttpResponse:
+        def bounded_get(url: str, _deadline: float = deadline, **kwargs: object) -> AkshareHttpResponse:
             nonlocal requests_made
-            remaining = deadline - time.monotonic()
+            remaining = _deadline - time.monotonic()
             if remaining <= 0 or requests_made >= 12:
                 raise requests.Timeout("diagnostic_auxiliary_budget")
             requests_made += 1
             kwargs["timeout"] = min(timeout, remaining)
-            transport: AkshareGetFunction = requests.get
+            transport = cast(AkshareGetFunction, requests.get)
             return transport(url, **kwargs)
 
         client = AkshareResearchClient(
             get=bounded_get,
             timeout_seconds=timeout,
             long_research_policy=policy,
-            cancel_requested=lambda: time.monotonic() >= deadline,
+            cancel_requested=lambda limit=deadline: time.monotonic() >= limit,
         )
         observation = client.fetch_snapshot(code, observed_at=at)
         research[code] = observation
@@ -92,4 +93,4 @@ def probe_auxiliary(
     return AuxiliaryInputs(MappingProxyType(research), MappingProxyType(minutes), tuple(reports))
 
 
-__all__ = ["AuxiliaryInputs", "probe_auxiliary"]
+__all__ = ["AuxiliaryInputs", "ProbeAuxiliary"]

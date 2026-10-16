@@ -36,7 +36,7 @@ from trader.recommendation.infra.market_data.market_data_health import MarketDat
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 
-def test_current_model_industry_enriches_features_without_replacing_display_sector() -> None:
+def test_current_model_industry_enriches_features_and_replaces_display_sector() -> None:
     client = BaoStockIndustryClient(
         fetch_rows=lambda _date, _timeout: (
             BaoStockIndustryRow("sh.600001", "J66货币金融服务", "证监会行业分类", "2026-07-10"),
@@ -54,7 +54,7 @@ def test_current_model_industry_enriches_features_without_replacing_display_sect
     service.schedule_reference_data((), NOW, security_master_codes=("600001",))
     feature = service.fetch_market_features(NOW, force=True)[0]
 
-    assert feature.quote.industry == "银行板块"
+    assert feature.quote.industry == "J66货币金融服务"
     assert feature.model_industry is not None
     assert feature.model_industry.industry_id == "J66货币金融服务"
     assert service.health()["sources"]["baostock_industry"]["snapshot_rows"] == 1

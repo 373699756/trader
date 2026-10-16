@@ -92,7 +92,7 @@ class _SingleFlight(Generic[_T]):
         return result
 
 
-def _parallel_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
+def _market_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
     successes = [result for result in results if result.status == "success"]
     no_data = any(result.status == "no_data" for result in results)
     route_results = tuple(
@@ -109,14 +109,11 @@ def _parallel_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
     )
     if successes:
         vendor = successes[0].name
-        expected_skips = {"hedge_not_needed", "hedge_cancelled"}
+        expected_skips = {"backup_not_needed", "deadline"}
         degraded = any(result.status != "success" and result.error not in expected_skips for result in results)
         fallback_reason = None
         if vendor == "sina":
-            primary = next((result for result in results if result.name == "tencent_market"), None)
-            fallback_reason = (
-                "hedge_delay" if primary is not None and primary.error == "hedge_inflight" else "primary_failed"
-            )
+            fallback_reason = "primary_failed"
         return RouteOutcome(
             result=tuple(observation for result in successes for observation in result.observations),
             vendor=vendor,
@@ -135,7 +132,7 @@ def _parallel_route_outcome(results: Sequence[_SourceFetch]) -> RouteOutcome:
     )
 
 
-def _parallel_error_message(results: Sequence[_SourceFetch]) -> str:
+def _market_route_error_message(results: Sequence[_SourceFetch]) -> str:
     no_data = [result for result in results if result.status == "no_data"]
     failures = [result for result in results if result.status != "no_data"]
     if no_data:
@@ -151,7 +148,7 @@ def _source_degraded_reasons(results: Sequence[_SourceFetch]) -> set[str]:
     for result in results:
         if result.status == "success":
             continue
-        if result.error in {"hedge_not_needed", "hedge_cancelled"}:
+        if result.skipped and result.error in {"backup_not_needed", "deadline"}:
             continue
         error = result.error.lower()
         if result.status == "no_data":
@@ -164,8 +161,6 @@ def _source_degraded_reasons(results: Sequence[_SourceFetch]) -> set[str]:
             code = "circuit_open"
         elif result.skipped and "superseded" in error:
             code = "superseded"
-        elif result.skipped and "hedge_inflight" in error:
-            code = "hedge_delay"
         else:
             code = "source_failed"
         reasons.add(f"{result.name}:{code}")
@@ -280,8 +275,8 @@ __all__ = [
     "_cache_error_code",
     "_elapsed",
     "_observation_version",
-    "_parallel_error_message",
-    "_parallel_route_outcome",
+    "_market_route_error_message",
+    "_market_route_outcome",
     "_percentile",
     "_preserve_newer_quotes",
     "_reference_replaces",

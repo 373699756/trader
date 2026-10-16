@@ -2,7 +2,7 @@
   "market_data": {
     "eastmoney_timeout_seconds": 8,
     "sina_timeout_seconds": 8,
-    "full_market_hedge_delay_seconds": 1,
+    "full_market_primary_timeout_seconds": 12,
     "candidate_timeout_seconds": 3,
     "research_timeout_seconds": 8,
     "minimum_market_rows": 1000,
@@ -12,7 +12,7 @@
     "circuit_breaker_seconds": 30,
     "source_contracts": {
       "eastmoney": "eastmoney_quote_security_master",
-      "sina": "sina_quote_hedged",
+      "sina": "sina_quote_backup",
       "tencent": "tencent_quote",
       "tushare": "tushare_sdk_120_point_daily_audit",
       "akshare": "akshare_research_component_cache"

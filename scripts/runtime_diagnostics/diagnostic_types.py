@@ -1,0 +1,117 @@
+"""Shared immutable value types for the unified runtime diagnostic entrypoint."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+Profile = Literal[
+    "web",
+    "history",
+    "security-master",
+    "tencent",
+    "tushare",
+    "history-daily-capability",
+    "baostock-concurrency",
+    "baostock-qfq-shadow",
+    "tencent-download",
+    "tencent-history-window",
+    "history-sqlite",
+    "history-source-compare",
+    "market-factor-compare",
+    "history-write",
+    "history-space",
+    "history-industry",
+    "qfq-sqlite",
+    "research",
+    "long-watchlist",
+    "browser",
+    "performance",
+    "runtime",
+    "sources",
+    "live",
+    "full",
+]
+CheckStatus = Literal["passed", "degraded", "failed"]
+HistorySource = Literal["composite", "tencent", "eastmoney"]
+TencentHistoryHost = Literal["proxy", "direct"]
+
+
+@dataclass(frozen=True)
+class DiagnosticOptions:
+    profile: Profile
+    base_url: str
+    runtime_config: Path
+    codes: tuple[str, ...]
+    web_samples: int
+    web_interval_seconds: float
+    source_samples: int
+    source_interval_seconds: float
+    history_workers: int
+    history_days: int
+    history_source: HistorySource
+    tencent_history_host: TencentHistoryHost
+    web_timeout_seconds: float
+    source_timeout_seconds: float
+    browser_duration_seconds: float
+    browser_minimum_updates: int
+    command_timeout_seconds: float
+    history_root: Path
+    sqlite_page_sample_count: int
+    sqlite_query_rounds: int
+    sqlite_revision_write_sample_count: int
+    baostock_serial_only: bool = False
+    baostock_intervals: tuple[float, ...] = (2.0,)
+    baostock_sizes: tuple[int, ...] = (10, 50, 100)
+    baostock_rounds: int = 1
+    long_watchlist: Path = PROJECT_ROOT / "config/long_watchlist.json"
+    long_evidence_output: Path | None = None
+    long_evidence_cache: tuple[Path, ...] = (
+        PROJECT_ROOT / ".runtime/trader/evidence_cache",
+        PROJECT_ROOT / ".runtime/v2/evidence_cache",
+    )
+    eligibility_evidence: tuple[Path, ...] = ()
+    download_sizes: tuple[int, ...] = (10, 50, 100)
+    qfq_root: Path = PROJECT_ROOT / "data/qfq"
+    market_sources: tuple[str, ...] = ("tencent", "eastmoney", "sina", "baostock")
+    market_profiles: tuple[str, ...] = ("v2", "v3")
+    market_sizes: tuple[int, ...] = (120, 720, 0)
+    market_mode: str = "all"
+    market_batch_seconds: float = 30.0
+    market_source_loop_seconds: float = 120.0
+    market_task_seconds: float = 600.0
+    output_format: str = "json"
+
+
+@dataclass(frozen=True)
+class DiagnosticCommand:
+    name: str
+    argv: tuple[str, ...]
+    timeout_seconds: float
+
+
+@dataclass(frozen=True)
+class DiagnosticResult:
+    name: str
+    return_code: int
+    duration_ms: float
+    payload: Mapping[str, object] | None
+    error_code: str | None
+
+
+Runner = Callable[[DiagnosticCommand], DiagnosticResult]
+
+__all__ = [
+    "CheckStatus",
+    "DiagnosticCommand",
+    "DiagnosticOptions",
+    "DiagnosticResult",
+    "HistorySource",
+    "Profile",
+    "Runner",
+    "TencentHistoryHost",
+]

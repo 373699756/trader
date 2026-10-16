@@ -170,7 +170,7 @@ def test_reference_loader_recover_restores_security_master_and_calendar_cursor(t
     assert all(item.fields["is_open"] is True for item in gateway.reference_observations[1])
     assert service.references._next_calendar_start(date(2026, 7, 10)) == date(2026, 7, 15)
     assert service.references._next_calendar_start(date(2026, 7, 20)) == date(2026, 7, 20)
-    assert service.references.model_industry_reference_rows() == 1
+    assert service.references.model_industry_reference_rows() == 0
 
 
 def test_reference_loader_persists_full_market_free_security_master_once_per_payload(tmp_path: Path) -> None:

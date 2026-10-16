@@ -11,35 +11,35 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.infra.workers import BoundedExecutor, submit_or_reject
+from trader.infra.workers import BoundedExecutor, SubmitOrReject
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.infra.normalization.quote import MarketQuoteInput, build_market_quote, to_float
+from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput, ToFloat
 
-_FIELDS = "f2,f3,f6,f7,f8,f10,f11,f12,f14,f15,f16,f17,f18,f20,f22,f100"
+_FIELDS = "f2,f3,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f100"
 _PAGE_SIZE = 100
 
 
-def parse_quote(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:
+def ParseQuote(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:
     code = str(row.get("f12") or "")
     if len(code) != 6 or not code.isdigit():
         return None
-    return build_market_quote(
+    return BuildMarketQuote(
         MarketQuoteInput(
             code=code,
             name=str(row.get("f14") or ""),
-            price=to_float(row.get("f2")),
-            previous_close=to_float(row.get("f18")),
-            open_price=to_float(row.get("f17")),
-            high=to_float(row.get("f15")),
-            low=to_float(row.get("f16")),
-            pct_change=to_float(row.get("f3")),
-            change_5m=to_float(row.get("f11")),
-            speed=to_float(row.get("f22")),
-            volume_ratio=to_float(row.get("f10")),
-            turnover_rate=to_float(row.get("f8")),
-            amount=to_float(row.get("f6")),
-            amplitude=to_float(row.get("f7")),
-            market_cap=to_float(row.get("f20")),
+            price=ToFloat(row.get("f2")),
+            previous_close=ToFloat(row.get("f18")),
+            open_price=ToFloat(row.get("f17")),
+            high=ToFloat(row.get("f15")),
+            low=ToFloat(row.get("f16")),
+            pct_change=ToFloat(row.get("f3")),
+            change_5m=ToFloat(row.get("f11")),
+            speed=ToFloat(row.get("f22")),
+            volume_ratio=ToFloat(row.get("f10")),
+            turnover_rate=ToFloat(row.get("f8")),
+            amount=ToFloat(row.get("f6")),
+            amplitude=ToFloat(row.get("f7")),
+            market_cap=ToFloat(row.get("f20")),
             industry=str(row.get("f100") or ""),
             source="eastmoney",
             source_time=received_at,
@@ -82,7 +82,7 @@ def _page(number: int, timeout: float, deadline: float) -> tuple[tuple[MarketQuo
                 raise ValueError("eastmoney malformed page")
             at = datetime.now(ZoneInfo("Asia/Shanghai"))
             quotes = tuple(
-                quote for row in data["diff"] if isinstance(row, dict) and (quote := parse_quote(row, at)) is not None
+                quote for row in data["diff"] if isinstance(row, dict) and (quote := ParseQuote(row, at)) is not None
             )
             return quotes, int(data.get("total", 0))
         except (requests.RequestException, OSError, ValueError) as exc:
@@ -90,7 +90,7 @@ def _page(number: int, timeout: float, deadline: float) -> tuple[tuple[MarketQuo
     raise RuntimeError("eastmoney diagnostic request failed") from last_error
 
 
-def fetch_eastmoney_quotes(timeout: float, deadline: float, pool: BoundedExecutor) -> tuple[MarketQuote, ...]:
+def FetchEastmoneyQuotes(timeout: float, deadline: float, pool: BoundedExecutor) -> tuple[MarketQuote, ...]:
     first, total = _page(1, timeout, deadline)
     pages = math.ceil(total / _PAGE_SIZE)
     if not first or not 1 <= pages <= 64:
@@ -98,7 +98,7 @@ def fetch_eastmoney_quotes(timeout: float, deadline: float, pool: BoundedExecuto
     quotes = list(first)
     for start in range(2, pages + 1, 6):
         futures = [
-            submit_or_reject(pool, _page, page, timeout, deadline) for page in range(start, min(start + 6, pages + 1))
+            SubmitOrReject(pool, _page, page, timeout, deadline) for page in range(start, min(start + 6, pages + 1))
         ]
         try:
             for future in as_completed(futures, timeout=max(0.001, deadline - time.monotonic())):
@@ -114,4 +114,4 @@ def fetch_eastmoney_quotes(timeout: float, deadline: float, pool: BoundedExecuto
     return tuple(quotes)
 
 
-__all__ = ["parse_quote", "fetch_eastmoney_quotes"]
+__all__ = ["ParseQuote", "FetchEastmoneyQuotes"]

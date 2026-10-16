@@ -454,7 +454,7 @@ def test_candidate_source_lane_deadline_returns_baseline_and_discards_late_quote
     assert gateway.canonical_snapshot().observed_at == baseline_observed_at
 
 
-def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due() -> None:
+def test_source_lane_waits_for_primary_refresh_without_starting_backup() -> None:
     runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     monotonic = MutableMonotonic()
     cache: BoundedLruCache[object] = BoundedLruCache(
@@ -497,7 +497,7 @@ def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due(
         config_version=runtime.config_version,
         monotonic=monotonic,
         wall_clock=lambda: NOW,
-        full_market_hedge_delay_seconds=0.01,
+        full_market_primary_timeout_seconds=0.5,
     )
     pool.start()
     completed = threading.Event()
@@ -518,7 +518,7 @@ def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due(
         caller = threading.Thread(target=fetch_again)
         caller.start()
         assert eastmoney.refresh_started.wait(1.0)
-        assert sina.refresh_started.wait(1.0)
+        assert not sina.refresh_started.wait(0.05)
         assert not completed.wait(0.05)
     finally:
         eastmoney.release_refresh.set()
@@ -532,6 +532,6 @@ def test_source_lane_waits_for_hedged_physical_refresh_when_market_cache_is_due(
     assert errors == []
     assert results[0][0].price == 12.0
     assert eastmoney.calls == 2
-    assert sina.calls == 1
+    assert sina.calls == 0
     assert lanes.status().lanes["eastmoney"].superseded_count == 0
     assert lanes.status().lanes["sina"].superseded_count == 0

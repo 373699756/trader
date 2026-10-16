@@ -5,51 +5,36 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 from zoneinfo import ZoneInfo
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from scripts.runtime_diagnostics.diagnostic_types import (  # noqa: E402
+    CheckStatus,
+    DiagnosticCommand,
+    DiagnosticOptions,
+    DiagnosticResult,
+    Profile,
+    Runner,
+)
+from scripts.runtime_diagnostics.market_factor_budget import (  # noqa: E402
+    MARKET_SOURCE_LOOP_LIMIT_SECONDS,
+    MARKET_TASK_LIMIT_SECONDS,
+)
+from scripts.runtime_diagnostics.market_factor_text import RenderMarketFactorText  # noqa: E402
+
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
-_QUOTE_SOURCES = ("tencent", "eastmoney", "sina")
-
-Profile = Literal[
-    "web",
-    "history",
-    "security-master",
-    "tencent",
-    "tushare",
-    "history-daily-capability",
-    "baostock-concurrency",
-    "baostock-qfq-shadow",
-    "tencent-download",
-    "tencent-history-window",
-    "history-sqlite",
-    "history-source-compare",
-    "market-factor-compare",
-    "history-write",
-    "history-space",
-    "history-industry",
-    "qfq-sqlite",
-    "research",
-    "long-watchlist",
-    "browser",
-    "performance",
-    "runtime",
-    "sources",
-    "live",
-    "full",
-]
-CheckStatus = Literal["passed", "degraded", "failed"]
-HistorySource = Literal["composite", "tencent", "eastmoney"]
-TencentHistoryHost = Literal["proxy", "direct"]
+_MARKET_SOURCES = ("tencent", "eastmoney", "sina", "baostock")
 
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "web": ("web_health",),
@@ -102,68 +87,6 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
 }
 
 
-@dataclass(frozen=True)
-class DiagnosticOptions:
-    profile: Profile
-    base_url: str
-    runtime_config: Path
-    codes: tuple[str, ...]
-    web_samples: int
-    web_interval_seconds: float
-    source_samples: int
-    source_interval_seconds: float
-    history_workers: int
-    history_days: int
-    history_source: HistorySource
-    tencent_history_host: TencentHistoryHost
-    web_timeout_seconds: float
-    source_timeout_seconds: float
-    browser_duration_seconds: float
-    browser_minimum_updates: int
-    command_timeout_seconds: float
-    history_root: Path
-    sqlite_page_sample_count: int
-    sqlite_query_rounds: int
-    sqlite_revision_write_sample_count: int
-    baostock_serial_only: bool = False
-    baostock_intervals: tuple[float, ...] = (2.0,)
-    baostock_sizes: tuple[int, ...] = (10, 50, 100)
-    baostock_rounds: int = 1
-    long_watchlist: Path = PROJECT_ROOT / "config/long_watchlist.json"
-    long_evidence_output: Path | None = None
-    long_evidence_cache: tuple[Path, ...] = (
-        PROJECT_ROOT / ".runtime/trader/evidence_cache",
-        PROJECT_ROOT / ".runtime/v2/evidence_cache",
-    )
-    eligibility_evidence: tuple[Path, ...] = ()
-    download_sizes: tuple[int, ...] = (10, 50, 100)
-    qfq_root: Path = PROJECT_ROOT / "data/qfq"
-    market_sources: tuple[str, ...] = ("tencent", "eastmoney", "sina")
-    market_profiles: tuple[str, ...] = ("v2", "v3")
-    market_sizes: tuple[int, ...] = (120, 720, 0)
-    market_mode: str = "all"
-    market_batch_seconds: float = 30.0
-
-
-@dataclass(frozen=True)
-class DiagnosticCommand:
-    name: str
-    argv: tuple[str, ...]
-    timeout_seconds: float
-
-
-@dataclass(frozen=True)
-class DiagnosticResult:
-    name: str
-    return_code: int
-    duration_ms: float
-    payload: Mapping[str, object] | None
-    error_code: str | None
-
-
-Runner = Callable[[DiagnosticCommand], DiagnosticResult]
-
-
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -181,11 +104,23 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
     parser.add_argument("--qfq-root", type=Path, default=PROJECT_ROOT / "data/qfq")
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
-    parser.add_argument("--market-sources", nargs="+", choices=_QUOTE_SOURCES, default=_QUOTE_SOURCES)
+    parser.add_argument("--market-sources", nargs="+", choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
     parser.add_argument("--market-profiles", nargs="+", choices=("v2", "v3"), default=("v2", "v3"))
     parser.add_argument("--market-sizes", nargs="+", type=int, choices=(0, 120, 720), default=(120, 720, 0))
     parser.add_argument("--market-mode", choices=("single", "combined", "all"), default="all")
     parser.add_argument("--market-batch-seconds", type=float, default=30)
+    parser.add_argument(
+        "--market-source-loop-seconds",
+        type=float,
+        default=MARKET_SOURCE_LOOP_LIMIT_SECONDS,
+        help="cumulative test budget per market source, capped at 120 seconds",
+    )
+    parser.add_argument(
+        "--market-task-seconds",
+        type=float,
+        default=MARKET_TASK_LIMIT_SECONDS,
+        help="hard market comparison task budget, capped at 600 seconds",
+    )
     parser.add_argument(
         "--codes",
         nargs="+",
@@ -195,7 +130,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--web-samples", type=int, default=3, help="Web status/current sample rounds")
     parser.add_argument("--web-interval-seconds", type=float, default=2.0, help="delay between Web samples")
     parser.add_argument("--source-samples", type=int, default=1, help="history and Tencent source sample rounds")
-    parser.add_argument("--source-interval-seconds", type=float, default=1.0, help="delay between Tencent samples")
+    parser.add_argument("--source-interval-seconds", type=float, default=1.0, help="delay between source route samples")
     parser.add_argument("--history-workers", type=int, default=5, help="history requests per bounded worker wave")
     parser.add_argument(
         "--history-days",
@@ -248,7 +183,13 @@ def _parser() -> argparse.ArgumentParser:
         default=512,
         help="rows copied into the disposable revision batch-write probe",
     )
-    parser.add_argument("--output", default="-", help="combined JSON output path outside the repository, or -")
+    parser.add_argument("--output", default="-", help="report output path outside the repository, or -")
+    parser.add_argument(
+        "--format",
+        choices=("auto", "json", "text"),
+        default="auto",
+        help="market-factor-compare defaults to terminal text when --output is -; other cases default to JSON",
+    )
     parser.add_argument("--long-watchlist", type=Path, default=PROJECT_ROOT / "config/long_watchlist.json")
     parser.add_argument("--long-evidence-output", type=Path, help="stock evidence report outside the repository")
     parser.add_argument(
@@ -304,12 +245,32 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
     _validate_baostock_options(args)
     if len(args.download_sizes) > 3 or any(not 1 <= size <= 100 for size in args.download_sizes):
         raise ValueError("--download-sizes accepts up to three sizes within 1..100")
+    if len(set(args.market_sources)) != len(args.market_sources):
+        raise ValueError("--market-sources must be distinct")
+    if args.market_mode != "single" and "tencent" not in args.market_sources:
+        raise ValueError("combined market comparisons require Tencent as the full-market primary")
+    if not math.isfinite(args.market_batch_seconds) or not 0 < args.market_batch_seconds <= 120:
+        raise ValueError("--market-batch-seconds must be within 0..120")
+    if (
+        not math.isfinite(args.market_source_loop_seconds)
+        or not 0 < args.market_source_loop_seconds <= MARKET_SOURCE_LOOP_LIMIT_SECONDS
+    ):
+        raise ValueError("--market-source-loop-seconds must be within 0..120")
+    if not math.isfinite(args.market_task_seconds) or not 0 < args.market_task_seconds <= MARKET_TASK_LIMIT_SECONDS:
+        raise ValueError("--market-task-seconds must be within 0..600")
     long_evidence_output = (
         _external_path(args.long_evidence_output, "--long-evidence-output") if args.long_evidence_output else None
     )
     output = args.output
     if output != "-":
         output = str(_external_path(Path(output), "--output"))
+    output_format = (
+        "text" if args.format == "auto" and args.profile == "market-factor-compare" and output == "-" else args.format
+    )
+    if output_format == "auto":
+        output_format = "json"
+    if output_format == "text" and args.profile != "market-factor-compare":
+        raise ValueError("--format text is only available for market-factor-compare")
     return (
         DiagnosticOptions(
             profile=args.profile,
@@ -354,6 +315,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             market_sizes=tuple(args.market_sizes),
             market_mode=args.market_mode,
             market_batch_seconds=args.market_batch_seconds,
+            market_source_loop_seconds=args.market_source_loop_seconds,
+            market_task_seconds=args.market_task_seconds,
+            output_format=output_format,
         ),
         output,
     )
@@ -696,8 +660,10 @@ def build_commands(
             + ("--mode", options.market_mode, "--rounds", str(options.source_samples))
             + ("--interval-seconds", str(options.source_interval_seconds))
             + ("--timeout-seconds", str(options.source_timeout_seconds))
-            + ("--batch-seconds", str(options.market_batch_seconds)),
-            common_timeout,
+            + ("--batch-seconds", str(options.market_batch_seconds))
+            + ("--source-loop-seconds", str(options.market_source_loop_seconds))
+            + ("--task-seconds", str(options.market_task_seconds)),
+            min(common_timeout, options.market_task_seconds),
         ),
     }
     return tuple(commands[name] for name in _PROFILE_CHECKS[options.profile])
@@ -944,6 +910,15 @@ def _history_sqlite_performance_details(
     payload["summary"] = _mapping(source.get("summary"))
 
 
+def _market_factor_compare_details(
+    _result: DiagnosticResult,
+    source: Mapping[str, object],
+    payload: dict[str, object],
+) -> None:
+    payload["summary"] = _mapping(source.get("summary"))
+    payload["findings"] = _bounded_findings(source.get("findings"))
+
+
 def _baostock_qfq_shadow_details(
     _result: DiagnosticResult,
     source: Mapping[str, object],
@@ -1055,7 +1030,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "baostock_concurrency": _baostock_concurrency_details,
     "history_sqlite_performance": _history_sqlite_performance_details,
     "history_source_compare": _history_sqlite_performance_details,
-    "market_factor_compare": _history_sqlite_performance_details,
+    "market_factor_compare": _market_factor_compare_details,
     "history_write_benchmark": _history_sqlite_performance_details,
     "history_space": _history_sqlite_performance_details,
     "history_industry": _history_sqlite_performance_details,
@@ -1168,8 +1143,12 @@ def _safe_nonnegative_int(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
-def _write_report(report: Mapping[str, object], output: str) -> None:
-    rendered = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+def _write_report(report: Mapping[str, object], output: str, output_format: str) -> None:
+    rendered = (
+        RenderMarketFactorText(report)
+        if output_format == "text"
+        else json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+    )
     if output == "-":
         sys.stdout.write(rendered)
         return
@@ -1181,8 +1160,11 @@ def _write_report(report: Mapping[str, object], output: str) -> None:
 def main() -> int:
     parser = _parser()
     args = parser.parse_args()
+    output = args.output
+    output_format = "json"
     try:
         options, output = _validate(args)
+        output_format = options.output_format
         report = run_diagnostics(options.profile, build_commands(options))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         output = args.output if args.output == "-" else "-"
@@ -1191,7 +1173,7 @@ def main() -> int:
             "status": "failed",
             "error": type(exc).__name__,
         }
-    _write_report(report, output)
+    _write_report(report, output, output_format)
     return 0 if report.get("status") in {"passed", "degraded"} else 1
 
 

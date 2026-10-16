@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from trader.infra.market_data.history.history import DailyBar
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
+from trader.recommendation.domain.market.industry import QuoteWithIndustry
 from trader.recommendation.domain.market.models import (
     CrossSectionStats,
     FeatureSnapshot,
@@ -118,8 +119,9 @@ class QuoteCache:
             cross_section_reference = self._cross_section_reference
             cross_section_normalization_reference = self._cross_section_normalization_reference
         history_summaries = self._history.summaries(histories, observed_at)
+        local_quotes = self._with_industry_quotes(quotes, observed_at)
         features = self._feature_builder.build(
-            quotes,
+            local_quotes,
             histories,
             observed_at,
             cross_section_reference=cross_section_reference,
@@ -147,7 +149,7 @@ class QuoteCache:
         return _apply_action_restrictions(
             self._with_model_industries(
                 self._feature_builder.build(
-                    quotes,
+                    self._with_industry_quotes(quotes, observed_at),
                     histories,
                     observed_at,
                     history_summaries=self._history.summaries(histories, observed_at),
@@ -171,6 +173,11 @@ class QuoteCache:
             return self._with_model_industries(cached)
         return None
 
+    def _with_industry_quotes(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> tuple[MarketQuote, ...]:
+        references = self._references.model_industries(tuple(quote.code for quote in quotes))
+        day = ShanghaiNow(observed_at).date()
+        return tuple(QuoteWithIndustry(quote, references.get(quote.code), day) for quote in quotes)
+
     def _with_model_industries(
         self,
         features: Sequence[FeatureSnapshot],
@@ -179,6 +186,9 @@ class QuoteCache:
         return tuple(
             replace(
                 feature,
+                quote=QuoteWithIndustry(
+                    feature.quote, references.get(feature.quote.code), ShanghaiNow(feature.observed_at).date()
+                ),
                 model_industry=(
                     reference
                     if (reference := references.get(feature.quote.code)) is not None

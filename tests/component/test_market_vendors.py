@@ -774,7 +774,7 @@ def test_market_data_router_aggregates_required_failures() -> None:
     assert str(exc_info.value).startswith("sina: ")
 
 
-def test_gateway_primary_success_does_not_start_sina_hedge() -> None:
+def test_gateway_primary_success_does_not_start_sina_backup() -> None:
     eastmoney = CountingMarketClient((replace(_quote(), source="eastmoney"),))
     sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
@@ -789,7 +789,7 @@ def test_gateway_primary_success_does_not_start_sina_hedge() -> None:
         circuit_breaker_seconds=60,
         worker_pool=pool,
         source_lanes=lanes,
-        full_market_hedge_delay_seconds=0.05,
+        full_market_primary_timeout_seconds=0.05,
         wall_clock=lambda: NOW,
     )
 
@@ -804,10 +804,10 @@ def test_gateway_primary_success_does_not_start_sina_hedge() -> None:
     assert sina.calls == 0
     assert gateway.health().merge_count == 1
     assert gateway.health().route is not None
-    assert gateway.health().route.results[1].error == "hedge_not_needed"
+    assert gateway.health().route.results[1].error == "backup_not_needed"
 
 
-def test_gateway_starts_sina_after_hedge_delay_and_returns_without_waiting_for_slow_primary() -> None:
+def test_gateway_starts_sina_after_primary_timeout_without_waiting_for_slow_primary() -> None:
     eastmoney = BlockingMarketClient((replace(_quote(), source="eastmoney"),))
     sina = CountingMarketClient((replace(_quote(), source="sina", price=12.01),))
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
@@ -822,7 +822,7 @@ def test_gateway_starts_sina_after_hedge_delay_and_returns_without_waiting_for_s
         circuit_breaker_seconds=30,
         worker_pool=pool,
         source_lanes=lanes,
-        full_market_hedge_delay_seconds=0.01,
+        full_market_primary_timeout_seconds=0.02,
     )
 
     started = time.monotonic()
@@ -845,12 +845,12 @@ def test_gateway_starts_sina_after_hedge_delay_and_returns_without_waiting_for_s
     assert sina.calls == 1
     assert gateway.health().route is not None
     assert gateway.health().route.vendor == "sina"
-    assert gateway.health().route.fallback_reason == "hedge_delay"
-    assert "tencent_market:hedge_delay" in gateway.canonical_snapshot().degraded_reasons
+    assert gateway.health().route.fallback_reason == "primary_failed"
+    assert "tencent_market:late" in gateway.canonical_snapshot().degraded_reasons
     assert "eastmoney:source_failed" not in gateway.canonical_snapshot().degraded_reasons
 
 
-def test_late_primary_hedge_does_not_overwrite_sina_quote() -> None:
+def test_late_primary_does_not_overwrite_sina_backup_quote() -> None:
     completed = threading.Event()
 
     class LateMarketClient(BlockingMarketClient):
@@ -874,10 +874,10 @@ def test_late_primary_hedge_does_not_overwrite_sina_quote() -> None:
         circuit_breaker_seconds=30,
         worker_pool=pool,
         source_lanes=lanes,
-        full_market_hedge_delay_seconds=0.01,
+        full_market_primary_timeout_seconds=0.02,
     )
     observed_at = datetime.now(timezone.utc)
-    deadline = observed_at + timedelta(seconds=0.08)
+    deadline = observed_at + timedelta(seconds=0.5)
 
     try:
         result = tuple(gateway.fetch_market(observed_at=observed_at, deadline=deadline))

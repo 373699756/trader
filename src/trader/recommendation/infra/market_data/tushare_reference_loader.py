@@ -124,6 +124,7 @@ class ReferenceLoader:
         *,
         security_master_client: SecurityMasterSource | None = None,
         model_industry_client: ModelIndustrySource | None = None,
+        model_industry_cache_reader: Callable[[datetime], tuple[SourceObservation, ...]] | None = None,
         security_master_refresh_ttl_seconds: float = 86_400.0,
         security_master_retry_seconds: float = 300.0,
         data_plane: _ReferenceDataPlane | None = None,
@@ -152,15 +153,17 @@ class ReferenceLoader:
         self._security_master: StaticMarketReference | None = None
         self._model_industries = ModelIndustryReferenceLoader(
             ModelIndustryReferenceDependencies(
-                gateway,
                 runner,
                 model_industry_client,
-                self.schedule_security_master_persistence,
+                model_industry_cache_reader,
             ),
             refresh_ttl_seconds=self._security_master_refresh_ttl_seconds,
             retry_seconds=self._security_master_retry_seconds,
             monotonic=monotonic,
         )
+
+    def load_model_industry_cache(self, observed_at: datetime) -> None:
+        self._model_industries.load_cached(observed_at)
 
     def schedule_reference_data(
         self,
@@ -494,7 +497,6 @@ class ReferenceLoader:
                 )
             restored_masters = tuple(self._to_reference_observation(record) for record in masters)
             self._gateway.update_reference_observations(restored_masters)
-            self._model_industries.recover(restored_masters)
         cursors = self._data_plane.load_source_cursor_recent_records(cursor_names=(_TRADING_CALENDAR_CURSOR_NAME,))
         if cursors:
             calendar_record = cursors[-1]
