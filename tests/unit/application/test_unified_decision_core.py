@@ -11,10 +11,11 @@ from trader.recommendation.application.pipeline.freeze_publish.snapshot_publishe
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionOverlay,
     DecisionQuote,
+    DisplayQuoteCodes,
     LongProjection,
     LongProjectionItem,
 )
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
 
 def test_unified_index_allows_one_concurrent_expected_version_winner() -> None:
@@ -176,6 +177,61 @@ def test_invalid_initial_overlay_leaves_previous_identity_and_overlay_unchanged(
 
     assert result.reason == "quote_identity_mismatch"
     assert index.snapshot(local.strategy) == before
+
+
+def test_paired_scored_publish_changes_both_strategies_or_neither() -> None:
+    index = UnifiedDecisionIndex()
+    first = (decision(Strategy.TOMORROW), decision(Strategy.D25))
+    first_overlays = tuple(
+        DecisionOverlay(item.strategy, item.trade_date, item.version, NOW, (item.items[0].quote,), sequence=1)
+        for item in first
+    )
+    initial = index.publish_scored_pair(first, first_overlays, (None, None))
+    assert initial.accepted and len(initial.events) == 2
+    assert all(index.snapshot(item.strategy).current == item for item in first)
+
+    next_pair = (decision(Strategy.TOMORROW, sequence=3), decision(Strategy.D25, sequence=3))
+    next_overlays = tuple(
+        DecisionOverlay(item.strategy, item.trade_date, item.version, NOW, (item.items[0].quote,), sequence=2)
+        for item in next_pair
+    )
+    rejected = index.publish_scored_pair(next_pair, next_overlays, (first[0].version, "wrong-version"))
+    assert not rejected.accepted and rejected.reason == "cas_mismatch"
+    assert all(index.snapshot(item.strategy).current == item for item in first)
+
+    accepted = index.publish_scored_pair(next_pair, next_overlays, (first[0].version, first[1].version))
+    assert accepted.accepted and len(accepted.events) == 2
+    assert all(index.snapshot(item.strategy).current == item for item in next_pair)
+
+
+def test_visible_unselected_six_seat_quote_can_refresh_without_changing_score() -> None:
+    index = UnifiedDecisionIndex()
+    initial = decision()
+    extra = replace(
+        initial.items[0],
+        code="600002",
+        selected=False,
+        rank=0,
+        selection_rank=0,
+        action=RecommendationAction.UNAVAILABLE,
+        quote=replace(initial.items[0].quote, code="600002"),
+    )
+    current = replace(initial, items=(*initial.items, extra))
+    assert DisplayQuoteCodes(current) == {"600001", "600002"}
+    assert index.publish_scored(
+        current,
+        DecisionOverlay(
+            current.strategy, current.trade_date, current.version, NOW, (current.items[0].quote,), sequence=1
+        ),
+        expected_version=None,
+    ).accepted
+    new_quote = replace(extra.quote, price=11.0, pct_change=2.0)
+    overlay = DecisionOverlay(current.strategy, current.trade_date, current.version, NOW, (new_quote,), sequence=2)
+    prior = index.snapshot(current.strategy)
+    assert prior.overlay is not None
+    assert index.publish_overlay(overlay, expected_version=prior.overlay.version).accepted
+    assert index.snapshot(current.strategy).current == current
+    assert index.snapshot(current.strategy).overlay.quotes[0].pct_change == 2.0
 
 
 def _quote() -> DecisionQuote:

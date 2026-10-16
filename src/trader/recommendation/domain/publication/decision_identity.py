@@ -446,6 +446,12 @@ def ScoredTopSix(items: tuple[DecisionItem, ...]) -> tuple[DecisionItem, ...]:
     return tuple(sorted(items, key=lambda item: (-item.final_score, -item.local_score, item.code))[:6])
 
 
+def DisplayQuoteCodes(decision: ScoredDecision) -> frozenset[str]:
+    """Return the scored codes visible in the current six-seat table."""
+
+    return frozenset(item.code for item in ScoredTopSix(decision.items))
+
+
 def FormalScoredDecision(
     decision: ScoredDecision,
     *,
@@ -842,6 +848,7 @@ __all__ = [
     "SelectionDiagnostics",
     "CommittedRecordIdentityPayload",
     "FormalScoredDecision",
+    "DisplayQuoteCodes",
     "IdentityCodes",
     "ScoredTopSix",
 ]

@@ -34,7 +34,7 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -230,6 +230,36 @@ def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_chan
     assert first.changed_codes == ("600001",)
     assert second.changed is False
     assert second.data_version == first.data_version
+
+
+def test_scoring_epoch_stays_stable_across_strategy_specific_native_batches(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    feature = application_feature_factory("600001", observed_at)
+    market = _Market((replace(feature, quote=replace(feature.quote, board=Board.MAIN)),))
+    adapter = build_cycle_fixture(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+    _prime_scoring_cache(adapter, observed_at)
+    shared_epoch = adapter.data.scoring_epoch()
+
+    adapter.data.refresh(_request(observed_at, strategy=Strategy.TOMORROW))
+    adapter.data.refresh(_request(observed_at, strategy=Strategy.D25))
+    assert adapter.data.scoring_epoch() == shared_epoch
+
+    market._features = (
+        replace(
+            market._features[0],
+            quote=replace(market._features[0].quote, price=(market._features[0].quote.price or 10.0) + 1.0),
+        ),
+    )
+    changed = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    assert changed.changed
+    assert adapter.data.scoring_epoch() != shared_epoch
 
 
 def test_refresh_outcome_normalizes_later_utc_completion_to_shanghai(
@@ -549,7 +579,8 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
 ) -> None:
     observed_at = datetime(2026, 8, 12, 15, 5, tzinfo=SHANGHAI)
     feature = application_feature_factory("600001", observed_at)
-    market = _Market((feature,))
+    visible_unselected_feature = application_feature_factory("600002", observed_at)
+    market = _Market((feature, visible_unselected_feature))
     adapter = build_cycle_fixture(
         market,
         config_version="test-config",
@@ -564,7 +595,18 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
         source,
         trade_date=observed_at.date(),
         observed_at=frozen_at,
-        items=(replace(source.items[0], quote=replace(anchor, source_time=frozen_at)),),
+        items=(
+            replace(source.items[0], quote=replace(anchor, source_time=frozen_at)),
+            replace(
+                source.items[0],
+                code="600002",
+                selected=False,
+                rank=0,
+                selection_rank=0,
+                action=RecommendationAction.UNAVAILABLE,
+                quote=replace(anchor, code="600002", source_time=frozen_at),
+            ),
+        ),
     )
     frozen_quote = frozen.items[0].quote
     assert frozen_quote is not None
@@ -573,7 +615,7 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
     )
     request = _request(observed_at, strategy=Strategy.TOMORROW, phase="quote_overlay")
 
-    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.TOPK_QUOTES, observed_at, ("600001",)))
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.TOPK_QUOTES, observed_at, ("600001", "600002")))
     overlay = adapter.decisions.refreshed_overlay(frozen, request, previous)
 
     assert overlay is not None
@@ -581,7 +623,10 @@ def test_topk_overlay_batch_is_independent_from_full_market_and_scoring_cache(
     assert market.topk_quote_refresh_count == 1
     assert market.candidate_quote_refresh_count == 0
     assert market.candidate_reads == []
-    assert overlay.quotes[0].data_version == feature.quote.data_version
+    assert {quote.code: quote.data_version for quote in overlay.quotes} == {
+        "600001": feature.quote.data_version,
+        "600002": visible_unselected_feature.quote.data_version,
+    }
 
 
 def test_full_market_acquisition_exposes_pending_funnel_without_treating_unknown_stages_as_business_zero(

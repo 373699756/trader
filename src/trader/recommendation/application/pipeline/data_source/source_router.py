@@ -796,7 +796,13 @@ class MarketInputCoordinator(DataRefreshPort):
             self._latest_requested_codes,
             tuple((strategy.value, self._strategy_requested_codes[strategy]) for strategy in SCORED_STRATEGIES),
         )
-        return self._versions.accept("input", versions)
+        return self._versions.accept("input:tail" if include_intraday_tail else "input:base", versions)
+
+    def scoring_epoch(self) -> str:
+        """Identify the complete shared source cut used by both scored strategies."""
+
+        with self._lock:
+            return self._scoring_epoch_locked(include_intraday_tail=True)
 
     def _invalidate_scoring_locked(self) -> None:
         self._score_feature_batches.clear()

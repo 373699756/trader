@@ -22,6 +22,14 @@ _MARKET_FIELD_LABELS: Mapping[str, str] = {
     "industry": "行情行业",
     "model_industry": "证监会模型行业",
 }
+_MODEL_REASON_LABELS: Mapping[str, str] = {
+    "eligible": "合格",
+    "qfq_window_missing": "无qfq窗口",
+    "qfq_window_short": "qfq交易日不足",
+    "quote_or_feature_missing": "报价或特征缺失",
+    "model_industry_missing": "模型行业缺失",
+    "model_fields_or_industry_invalid": "模型字段或行业无效",
+}
 
 
 def _mapping(value: object) -> Mapping[str, object]:
@@ -195,6 +203,16 @@ def RenderMarketFactorText(report: Mapping[str, object]) -> str:
             f"采集至合并校验完成 {_timing_text(timings.get('market_data_ready_ms'))}"
         )
         lines.append(f"    纯网络调度耗时：{_timing_text(timings.get('acquisition_ms'))}")
+        lines.append(
+            f"    输入封口耗时：{_timing_text(timings.get('input_seal_ms'))}；"
+            f"本地评分诊断：{_timing_text(timings.get('scoring_ms'))}；"
+            f"诊断总耗时：{_timing_text(timings.get('total_ms'))}"
+        )
+        lines.append(
+            f"    连续交易={route.get('continuous_trading_rounds')}/{route.get('measured_rounds')}轮；"
+            f"完整评分输入={route.get('complete_scoring_input_rounds')}/{route.get('measured_rounds')}轮，"
+            f"合格输入封口耗时 {_timing_text(route.get('complete_scoring_input_timings_ms'))}"
+        )
         lines.append(f"    来源时间跨度：{_span_text(route.get('source_time_span_seconds'))}")
         lines.extend(_field_coverage_text(route.get("fields")))
     recommended = _mapping(summary.get("recommended_plan"))
@@ -216,11 +234,30 @@ def RenderMarketFactorText(report: Mapping[str, object]) -> str:
         if not isinstance(item, dict):
             continue
         missing = _mapping(item.get("independent_missing_fields"))
+        qfq = _mapping(item.get("qfq"))
         lines.append(
-            f"  {item.get('profile')}：本地qfq合格最好={_mapping(item.get('qfq')).get('complete_rows_best')}只；"
+            f"  {item.get('profile')}：本地qfq完整窗最好={qfq.get('complete_rows_best')}只，"
+            f"无窗口={qfq.get('missing_rows')}只，仅少1日={qfq.get('one_session_short_rows')}只；"
             f"分钟缺失={_field_names(missing.get('intraday_minutes'))}；"
             f"研究缺失={_field_names(missing.get('research_reference'))}"
         )
+        missing_codes = _list(qfq.get("missing_codes"))
+        short_windows = _mapping(qfq.get("short_windows"))
+        if missing_codes or short_windows:
+            lines.append(
+                f"    qfq缺窗代码：{','.join(str(code) for code in missing_codes[:20]) or '无'}"
+                f"{'…' if len(missing_codes) > 20 else ''}；"
+                f"短窗代码/根数：{','.join(f'{code}/{length}' for code, length in list(short_windows.items())[:20]) or '无'}"
+                f"{'…' if len(short_windows) > 20 else ''}"
+            )
+        for strategy, counts in _mapping(item.get("model_input_reason_counts")).items():
+            details = "，".join(
+                f"{_MODEL_REASON_LABELS.get(reason, reason)}={count}只"
+                for reason, count in _mapping(counts).items()
+                if isinstance(count, int) and count > 0
+            )
+            lines.append(f"    {strategy}模型输入原因：{details or '无样本'}")
+    lines.append("注：诊断总耗时不含真实服务的原子发布、SSE与浏览器渲染，不能当作完整T1到Web周期。")
     return "\n".join(lines) + "\n"
 
 

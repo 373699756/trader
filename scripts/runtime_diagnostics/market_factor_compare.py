@@ -548,6 +548,11 @@ def SummarizeRoutes(samples: Sequence[Mapping[str, object]], profile: str) -> li
                     for row in measured
                     if isinstance(row.get("quotes"), dict)
                 ),
+                "complete_scoring_input_rounds": sum(row.get("input_qualified") is True for row in measured),
+                "continuous_trading_rounds": sum(row.get("market_session") == "continuous_trading" for row in measured),
+                "complete_scoring_input_timings_ms": summarize_latency_ms(
+                    [float(str(row["input_seal_ms"])) for row in measured if row.get("input_qualified") is True]
+                ),
                 "model_industry_rows_best": model_industry_rows_best,
                 "model_industry_coverage_best": (
                     round(model_industry_rows_best / requested_population, 4) if requested_population else 0.0
@@ -697,15 +702,21 @@ def SummarizeScoringProfiles(
                 elif owner == "qfq_and_quote_or_cross_section":
                     market_qfq_gap_count += 1
         models: dict[str, int] = {}
+        model_reasons: dict[str, dict[str, int]] = {}
         for factors in factor_rows:
             values = factors.get("models")
             if not isinstance(values, list):
                 continue
             for model in values:
                 if isinstance(model, dict) and isinstance(model.get("strategy"), str):
-                    models[model["strategy"]] = max(
-                        models.get(model["strategy"], 0), int(str(model.get("input_eligible", 0)))
-                    )
+                    eligible = int(str(model.get("input_eligible", 0)))
+                    best = models.get(model["strategy"], -1)
+                    models[model["strategy"]] = max(models.get(model["strategy"], 0), eligible)
+                    reasons = model.get("input_reason_counts")
+                    if isinstance(reasons, dict) and eligible > best:
+                        model_reasons[model["strategy"]] = {
+                            str(reason): int(str(count)) for reason, count in reasons.items()
+                        }
         results.append(
             {
                 "profile": profile,
@@ -717,10 +728,16 @@ def SummarizeScoringProfiles(
                     "complete_rows_best": max(
                         (int(str(factors.get("qfq_complete_rows", 0))) for factors in factor_rows), default=0
                     ),
+                    "missing_rows": factor_rows[0].get("qfq_missing_rows") if factor_rows else None,
+                    "missing_codes": factor_rows[0].get("qfq_missing_codes") if factor_rows else None,
+                    "one_session_short_rows": factor_rows[0].get("qfq_one_session_short_rows") if factor_rows else None,
+                    "length_distribution": factor_rows[0].get("qfq_length_distribution") if factor_rows else None,
+                    "short_windows": factor_rows[0].get("qfq_short_windows") if factor_rows else None,
                 },
                 "independent_missing_fields": {owner: sorted(fields) for owner, fields in missing_by_owner.items()},
                 "market_or_qfq_factor_gap_occurrences": market_qfq_gap_count,
                 "model_input_eligible_best": models,
+                "model_input_reason_counts": model_reasons,
             }
         )
     return results

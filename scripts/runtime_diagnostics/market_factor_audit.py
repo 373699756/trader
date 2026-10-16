@@ -221,14 +221,34 @@ def FactorAudit(
             }
         )
     catalog = V2_FEATURE_SPEC_CATALOG if inputs.profile == "v2" else FEATURE_SPEC_CATALOG
+    features_by_code = {item.quote.code: item for item in features}
     models = []
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         head = next(item for item in inputs.model_heads if item.strategy is strategy)
+        required_sessions = inputs.models.history_required_sessions(strategy)
+        input_reasons: Counter[str] = Counter()
+        for code in requested:
+            history_rows = len(inputs.histories.get(code, ()))
+            feature = features_by_code.get(code)
+            if history_rows == 0:
+                reason = "qfq_window_missing"
+            elif history_rows < required_sessions:
+                reason = "qfq_window_short"
+            elif feature is None:
+                reason = "quote_or_feature_missing"
+            elif head.requires_industry and feature.model_industry is None:
+                reason = "model_industry_missing"
+            elif not inputs.models.is_input_eligible(strategy, feature):
+                reason = "model_fields_or_industry_invalid"
+            else:
+                reason = "eligible"
+            input_reasons[reason] += 1
         models.append(
             {
                 "strategy": strategy.value,
-                "history_required_sessions": inputs.models.history_required_sessions(strategy),
+                "history_required_sessions": required_sessions,
                 "input_eligible": sum(inputs.models.is_input_eligible(strategy, item) for item in features),
+                "input_reason_counts": dict(input_reasons),
                 "requires_model_industry": head.requires_industry,
                 "feature_contract": [
                     {
@@ -249,11 +269,17 @@ def FactorAudit(
         "models": models,
         "qfq_complete_rows": sum(len(inputs.histories.get(code, ())) >= inputs.history_sessions for code in requested),
         "qfq_missing_rows": sum(not inputs.histories.get(code) for code in requested),
+        "qfq_missing_codes": [code for code in requested if not inputs.histories.get(code)],
         "qfq_required_sessions": inputs.history_sessions,
         "qfq_one_session_short_rows": sum(
             len(inputs.histories.get(code, ())) == inputs.history_sessions - 1 for code in requested
         ),
         "qfq_length_distribution": dict(Counter(str(len(inputs.histories.get(code, ()))) for code in requested)),
+        "qfq_short_windows": {
+            code: len(inputs.histories.get(code, ()))
+            for code in requested
+            if 0 < len(inputs.histories.get(code, ())) < inputs.history_sessions
+        },
         "model_industry_rows": sum(item.model_industry is not None for item in features),
         "research_note": "Research/minute network probes cover three board samples only; absent inputs remain missing",
         "value_coverage_note": "Derived default risk indicators are not proof of complete issuer evidence; inspect research auxiliary coverage separately",

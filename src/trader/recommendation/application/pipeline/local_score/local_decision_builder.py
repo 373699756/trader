@@ -59,6 +59,7 @@ from trader.recommendation.application.ports.scoring_inputs import AcceptedScori
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DecisionOverlay,
+    DisplayQuoteCodes,
     IdentityCodes,
     ScoredDecision,
 )
@@ -274,7 +275,11 @@ class LocalDecisionBuilder(DecisionBuilderPort):
             if batch is None:
                 return None
             features_by_code = _selected_quote_features(batch, IdentityCodes(decision))
-        selected_codes = frozenset(IdentityCodes(decision))
+        selected_codes = (
+            IdentityCodes(decision) | DisplayQuoteCodes(decision)
+            if request.phase == "quote_overlay"
+            else IdentityCodes(decision)
+        )
         features_by_code = {code: feature for code, feature in features_by_code.items() if code in selected_codes}
         observed_at = _overlay_observed_at(request, tuple(features_by_code.values()))
         if previous is not None and previous.observed_at > observed_at:

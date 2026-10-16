@@ -50,10 +50,10 @@
       },
       "score": {
         "warmup": 10,
-        "morning_main": 3,
-        "morning_late": 5,
-        "afternoon": 5,
-        "final_review": 3,
+        "morning_main": 10,
+        "morning_late": 10,
+        "afternoon": 10,
+        "final_review": 10,
         "final_window": 1
       },
       "industry_heat": {

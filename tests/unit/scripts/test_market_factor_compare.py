@@ -148,8 +148,14 @@ def test_factor_audit_counts_only_requested_histories_and_derived_local_factors(
     fields = {item["field"]: item for item in report["fields"]}
     assert report["qfq_complete_rows"] == 1
     assert report["qfq_missing_rows"] == 1
+    assert report["qfq_missing_codes"] == ["600002"]
     assert report["qfq_length_distribution"] == {"61": 1, "0": 1}
     assert report["qfq_one_session_short_rows"] == 0
+    assert report["qfq_short_windows"] == {}
+    assert all(
+        model["input_reason_counts"] == {"model_industry_missing": 1, "qfq_window_missing": 1}
+        for model in report["models"]
+    )
     assert fields["amount_shock_score"]["valid"] == 1
     assert fields["amount_shock_score"]["missing"] == 1
     model_fields = {
@@ -427,6 +433,7 @@ def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> No
     assert summary["recommended_plan"]["selected_route"] == "tencent"
     assert summary["recommended_plan"]["unresolved_source_inputs"] == []
     assert summary["recommended_plan"]["all_source_owned_inputs_complete"] is True
+    assert summary["route_results"][0]["complete_scoring_input_rounds"] == 0
     assert summary["input_owners"]["required_realtime_fields"] == [
         "price",
         "pct_change",
@@ -465,6 +472,8 @@ def test_compact_result_omits_raw_samples_and_preserves_bounded_findings() -> No
     rendered = RenderMarketFactorText(report)
     assert "一、单源结果" in rendered
     assert "采集至合并校验完成" in rendered
+    assert "完整评分输入=0/1轮" in rendered
+    assert "诊断总耗时" in rendered
     assert '"source_results"' not in rendered
 
 

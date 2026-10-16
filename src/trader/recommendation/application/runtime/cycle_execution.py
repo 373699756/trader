@@ -5,7 +5,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 
-from trader.recommendation.application.pipeline.freeze_publish.current_publisher import PublishCurrentSnapshot
+from trader.recommendation.application.pipeline.freeze_publish.current_publisher import (
+    PublishCurrentPair,
+    PublishCurrentSnapshot,
+)
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     DecisionCommitted,
 )
@@ -79,6 +82,74 @@ class RecommendationCycleExecutor:
             self._execute(request)
         except StaleSessionError:
             return
+
+    def execute_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> None:
+        """Publish one local Tomorrow/D25 wave only after both inputs are ready."""
+
+        if (requests[0].strategy, requests[1].strategy) != (Strategy.TOMORROW, Strategy.D25):
+            raise ValueError("paired cycle requires tomorrow and d25")
+        try:
+            with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
+                pass
+            decisions = self._build_pair(requests)
+            if decisions is None or not self._publish_local_pair(requests, decisions):
+                return
+            for request, local in zip(requests, decisions, strict=True):
+                self._continue_after_local_publish(request, local, self._hooks.local_lane(request.strategy))
+        except StaleSessionError:
+            return
+
+    def _build_pair(self, requests: tuple[CycleRequest, CycleRequest]) -> tuple[ScoredDecision, ScoredDecision] | None:
+        started_at = time.perf_counter()
+        shared_epoch = self._dependencies.data.scoring_epoch()
+        if not all(self._prepare_cycle_data(request) for request in requests):
+            return None
+        if self._dependencies.data.scoring_epoch() != shared_epoch:
+            self._hooks.failure("decision", "paired_input_epoch_mismatch", None)
+            return None
+        self._record_latency("scoring_data_prepare", started_at)
+        started_at = time.perf_counter()
+        tomorrow = self._build_local(requests[0])
+        if not isinstance(tomorrow, ScoredDecision):
+            return None
+        d25 = self._build_local(requests[1])
+        if not isinstance(d25, ScoredDecision):
+            return None
+        self._record_latency("local_scoring", started_at)
+        return tomorrow, d25
+
+    def _publish_local_pair(
+        self,
+        requests: tuple[CycleRequest, CycleRequest],
+        decisions: tuple[ScoredDecision, ScoredDecision],
+    ) -> bool:
+        expected = tuple(
+            current.version if current is not None else None
+            for current in (self._dependencies.index.snapshot(item.strategy).current for item in decisions)
+        )
+        try:
+            with SessionGuard(requests[0].session), SessionGuard(requests[1].session):
+                result = PublishCurrentPair(
+                    self._dependencies.index,
+                    self._dependencies.decisions,
+                    decisions,
+                    expected_versions=(expected[0], expected[1]),
+                    publication_io=self._dependencies.publication_io,
+                )
+                if result.accepted:
+                    for request, local in zip(requests, decisions, strict=True):
+                        if request.session is not None:
+                            request.session.remember(local.version)
+        except DecisionUnavailableError as exc:
+            self._hooks.failure("decision", FailureCode(exc, "decision_quote_unavailable"), None)
+            return False
+        if not result.accepted:
+            for request in requests:
+                self._hooks.rejected(result.reason, request.strategy)
+            return False
+        for local, event in zip(decisions, result.events, strict=True):
+            self._hooks.published(False, event, local)
+        return True
 
     def _execute(self, request: CycleRequest) -> None:
         lane = self._hooks.local_lane(request.strategy)

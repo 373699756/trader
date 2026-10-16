@@ -2138,5 +2138,7 @@ assert(streamSource.includes("const FALLBACK_POLL_MS = 3000;"), "disconnect poll
 const overlayPatchBody = source.match(/function applyOverlayPatch\(patch\) \{([\s\S]*?)\n  \}\n\n  function requestRecommendationResync/);
 assert(overlayPatchBody, "overlay patch function must remain inspectable");
 assert(!overlayPatchBody[1].includes("renderPayload(state.payload)"), "overlay patches must not rebuild the full table");
+assert(overlayPatchBody[1].includes("top_scores: (state.payload.top_scores || []).map(updateQuotedItem)"),
+  "overlay patches must update visible six-seat quote details without changing score identity");
 
 console.log("dashboard state contract passed");

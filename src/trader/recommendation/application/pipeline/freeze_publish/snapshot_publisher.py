@@ -16,6 +16,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionIdentity,
     DecisionOverlay,
+    DisplayQuoteCodes,
     FormalScoredDecision,
     IdentityCodes,
     ScoredDecision,
@@ -28,6 +29,13 @@ class UnifiedDecisionPublishResult:
     accepted: bool
     reason: str
     event: DecisionCommitted | None = None
+
+
+@dataclass(frozen=True)
+class UnifiedPairedPublishResult:
+    accepted: bool
+    reason: str
+    events: tuple[DecisionCommitted, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,8 +67,18 @@ class _UnifiedDecisionSeal:
     source: Literal["current", "checkpoint", "explicit"]
 
 
+@dataclass(frozen=True)
+class _ScoredPublishCheck:
+    current: DecisionIdentity | None
+    seal: _UnifiedDecisionSeal | None
+    closed: tuple[date, datetime] | None
+    decision: ScoredDecision
+    overlay: DecisionOverlay
+    expected_version: str | None
+
+
 class UnifiedDecisionIndex:
-    """Per-strategy expected-version CAS with no cross-strategy mutable state."""
+    """Expected-version CAS for scored currents, overlays, and formal records."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -109,15 +127,16 @@ class UnifiedDecisionIndex:
 
         with self._lock:
             current = self._current.get(decision.strategy)
-            seal = self._seals.get(decision.strategy)
-            if seal is not None and seal.decision.trade_date == decision.trade_date:
-                return UnifiedDecisionPublishResult(False, "freeze_sealed")
-            closed = self._closed.get(decision.strategy)
-            if closed is not None and closed[0] == decision.trade_date:
-                return UnifiedDecisionPublishResult(False, "freeze_closed")
-            rejection = _identity_rejection(current, decision, expected_version)
-            if rejection is None:
-                rejection = _initial_overlay_rejection(decision, initial_overlay)
+            rejection = _scored_rejection(
+                _ScoredPublishCheck(
+                    current,
+                    self._seals.get(decision.strategy),
+                    self._closed.get(decision.strategy),
+                    decision,
+                    initial_overlay,
+                    expected_version,
+                )
+            )
             if rejection is not None:
                 return UnifiedDecisionPublishResult(False, rejection)
             self._current[decision.strategy] = decision
@@ -132,6 +151,46 @@ class UnifiedDecisionIndex:
                 "accepted",
                 BuildDecisionCommitted(decision, projection_version=projection_version),
             )
+
+    def publish_scored_pair(
+        self,
+        decisions: tuple[ScoredDecision, ScoredDecision],
+        overlays: tuple[DecisionOverlay, DecisionOverlay],
+        expected_versions: tuple[str | None, str | None],
+    ) -> UnifiedPairedPublishResult:
+        """Validate both scored currents before changing either strategy."""
+
+        if tuple(decision.strategy for decision in decisions) != (Strategy.TOMORROW, Strategy.D25):
+            raise ValueError("paired publication requires tomorrow and d25 in order")
+        if decisions[0].trade_date != decisions[1].trade_date:
+            raise ValueError("paired publication requires one trade date")
+        with self._lock:
+            for decision, overlay, expected_version in zip(decisions, overlays, expected_versions, strict=True):
+                rejection = _scored_rejection(
+                    _ScoredPublishCheck(
+                        self._current.get(decision.strategy),
+                        self._seals.get(decision.strategy),
+                        self._closed.get(decision.strategy),
+                        decision,
+                        overlay,
+                        expected_version,
+                    )
+                )
+                if rejection is not None:
+                    return UnifiedPairedPublishResult(False, rejection)
+            events = tuple(
+                BuildDecisionCommitted(decision, projection_version=f"{decision.version}+{overlay.version}")
+                for decision, overlay in zip(decisions, overlays, strict=True)
+            )
+            for decision, overlay in zip(decisions, overlays, strict=True):
+                current = self._current.get(decision.strategy)
+                self._current[decision.strategy] = decision
+                self._overlays[decision.strategy] = overlay
+                if current is not None and decision.trade_date > current.trade_date:
+                    self._seals.pop(decision.strategy, None)
+                    self._formal.pop(decision.strategy, None)
+                    self._closed.pop(decision.strategy, None)
+            return UnifiedPairedPublishResult(True, "accepted", (events[0], events[1]))
 
     def publish_overlay(
         self,
@@ -359,6 +418,16 @@ def _hybrid_parent_rejection(
     return None
 
 
+def _scored_rejection(check: _ScoredPublishCheck) -> str | None:
+    if check.seal is not None and check.seal.decision.trade_date == check.decision.trade_date:
+        return "freeze_sealed"
+    if check.closed is not None and check.closed[0] == check.decision.trade_date:
+        return "freeze_closed"
+    return _identity_rejection(check.current, check.decision, check.expected_version) or _initial_overlay_rejection(
+        check.decision, check.overlay
+    )
+
+
 def _overlay_rejection(
     current: DecisionIdentity | None,
     existing: DecisionOverlay | None,
@@ -372,7 +441,12 @@ def _overlay_rejection(
         rejection = "trade_date_mismatch"
     elif candidate.observed_at < current.observed_at:
         rejection = "stale_overlay"
-    elif any(quote.code not in IdentityCodes(current) for quote in candidate.quotes):
+    elif any(
+        quote.code
+        not in IdentityCodes(current)
+        | (DisplayQuoteCodes(current) if isinstance(current, ScoredDecision) else frozenset())
+        for quote in candidate.quotes
+    ):
         rejection = "quote_scope_mismatch"
     elif (existing.version if existing is not None else None) != expected_version:
         rejection = "overlay_cas_mismatch"
@@ -408,6 +482,7 @@ def _initial_overlay_rejection(decision: ScoredDecision, candidate: DecisionOver
 __all__ = [
     "UnifiedDecisionIndex",
     "UnifiedDecisionPublishResult",
+    "UnifiedPairedPublishResult",
     "UnifiedDecisionSealResult",
     "UnifiedDecisionSnapshot",
     "UnifiedOverlayPublishResult",

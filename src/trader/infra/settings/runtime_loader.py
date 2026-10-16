@@ -553,10 +553,10 @@ def _validate_cadence_settings(
         },
         "score": {
             "warmup": 10.0,
-            "morning_main": 3.0,
-            "morning_late": 5.0,
-            "afternoon": 5.0,
-            "final_review": 3.0,
+            "morning_main": 10.0,
+            "morning_late": 10.0,
+            "afternoon": 10.0,
+            "final_review": 10.0,
             "final_window": 1.0,
         },
         "industry_heat": {

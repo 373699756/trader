@@ -143,6 +143,9 @@ class _RecordingData:
             False,
         )
 
+    def scoring_epoch(self) -> str:
+        return "measurement:fixed-input"
+
     def snapshot(self) -> list[dict[str, object]]:
         with self._lock:
             return [dict(call) for call in self._calls]
@@ -638,6 +641,7 @@ def _run(
             f'document.querySelector(".strategy-tab[data-strategy={target_strategy.value}]").click(); return true;',
         )
         code = target_codes[target_strategy]
+        price_cell_index = 2 if target_strategy is Strategy.LONG else 3
         _wait(
             lambda: bool(
                 _execute(base, f"return document.querySelector('#tableBody tr[data-code=\"{code}\"]') !== null;")
@@ -648,11 +652,11 @@ def _run(
             f"""
             window.__intervalRecords = [];
             const initialRow = document.querySelector('#tableBody tr[data-code="{code}"]');
-            window.__intervalLast = initialRow.cells[2].textContent.trim();
+            window.__intervalLast = initialRow.cells[{price_cell_index}].textContent.trim();
             window.__intervalObserver = new MutationObserver(() => {{
               const row = document.querySelector('#tableBody tr[data-code="{code}"]');
               if (!row) return;
-              const price = row.cells[2].textContent.trim();
+              const price = row.cells[{price_cell_index}].textContent.trim();
               if (price === window.__intervalLast) return;
               window.__intervalLast = price;
               window.__intervalRecords.push({{epochMs: Date.now(), perfMs: performance.now(), price}});

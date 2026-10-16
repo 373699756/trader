@@ -47,7 +47,7 @@ from trader.recommendation.domain.publication.decision_identity import (
     LongProjectionItem,
     ScoredDecision,
 )
-from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.status_projection import RuntimeStatus
 
@@ -77,6 +77,9 @@ class DataRefresh:
     def refresh(self, request: CycleRequest) -> None:
         self.calls.append(request.strategy)
         self.requests.append(request)
+
+    def scoring_epoch(self) -> str:
+        return "test:shared_input"
 
     def refresh_task(self, request) -> RefreshOutcome:
         self.task_requests.append(request)
@@ -611,6 +614,16 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
             ),
         ),
     )
+    visible_unselected = replace(
+        source.items[0],
+        code="600002",
+        selected=False,
+        rank=0,
+        selection_rank=0,
+        action=RecommendationAction.UNAVAILABLE,
+        quote=replace(source.items[0].quote, code="600002"),
+    )
+    source = replace(source, items=(*source.items, visible_unselected))
     record = CommittedDecisionRecord(source, frozen_at.replace(hour=15, minute=0), "scheduled")
     assert index.restore_formal(record)
     d25_source = replace(
@@ -620,6 +633,16 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
     )
     assert index.restore_formal(CommittedDecisionRecord(d25_source, record.committed_at, "scheduled"))
     data = DataRefresh()
+
+    class RecordingOverlayDecisions(Decisions):
+        def __init__(self) -> None:
+            self.overlay_times: list[datetime] = []
+
+        def refreshed_overlay(self, current, request, previous):
+            self.overlay_times.append(request.observed_at)
+            return super().refreshed_overlay(current, request, previous)
+
+    decisions = RecordingOverlayDecisions()
     runtime = SchedulerRuntime(
         RuntimeDependencies(
             control_pool=BoundedExecutor(
@@ -628,11 +651,11 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
                 queue_capacity=4,
                 thread_name_prefix="test-control",
             ),
-            clock=FixedClock(frozen_at),
+            clock=FixedClock(frozen_at + timedelta(seconds=2)),
             calendar=TradingCalendar(),
             cadence=_cadence(frozen_at),
             data=data,
-            decisions=Decisions(),
+            decisions=decisions,
             reviews=SharedReviews(),
             index=index,
             observer=AsyncDecisionObserver((), capacity=4, thread_name="test-frozen-cadence-observer"),
@@ -645,6 +668,8 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
         config_version="runtime-current",
     )
 
+    assert runtime._selected_overlay_codes(MarketPhase.AFTERNOON) == ("600001", "600002")
+    assert runtime._selected_overlay_codes(MarketPhase.MIDDAY) == ("600001",)
     runtime.start()
     runtime.submit_due(frozen_at)
     assert runtime.wait_idle(2.0)
@@ -652,6 +677,7 @@ def test_frozen_cadence_targets_formal_codes_and_refreshes_overlay_without_resco
 
     topk = next(request for request in data.task_requests if request.task is PipelineTask.TOPK_QUOTES)
     assert topk.selected_codes == ("600001",)
+    assert topk.observed_at in decisions.overlay_times
     assert not [
         request
         for request in data.requests
@@ -824,11 +850,12 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
     assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert len(research.observed_versions) == 2
-    assert reviews.calls == [Strategy.TOMORROW]
-    current = index.snapshot(Strategy.TOMORROW).current
-    assert isinstance(current, ScoredDecision)
-    assert current.stage == "hybrid"
+    assert len(research.observed_versions) == 3
+    assert set(reviews.calls) == {Strategy.TOMORROW, Strategy.D25}
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        current = index.snapshot(strategy).current
+        assert isinstance(current, ScoredDecision)
+        assert current.stage == "hybrid"
 
 
 class Freezes:
@@ -1038,6 +1065,185 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
         runtime.stop(ShutdownDeadline.start(2.0))
 
     assert isinstance(index.snapshot(Strategy.TOMORROW).current, ScoredDecision)
+    assert isinstance(index.snapshot(Strategy.D25).current, ScoredDecision)
+
+
+def test_scoring_wave_retains_both_previous_currents_when_d25_is_not_ready() -> None:
+    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+    index = UnifiedDecisionIndex()
+    originals = (decision(Strategy.TOMORROW), decision(Strategy.D25))
+    for original in originals:
+        assert index.publish(original, expected_version=None).accepted
+
+    class FailedD25(Decisions):
+        def build_local(self, request: CycleRequest):
+            if request.strategy is Strategy.D25:
+                raise DecisionUnavailableError("model_input_pending")
+            return super().build_local(request)
+
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
+            clock=FixedClock(observed_at),
+            calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
+            data=DataRefresh(),
+            decisions=FailedD25(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-paired-failure-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+    )
+    runtime.start()
+    try:
+        runtime.submit_due(observed_at)
+        assert runtime.wait_idle(2.0)
+    finally:
+        runtime.stop(ShutdownDeadline.start(2.0))
+    assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
+
+
+def test_scoring_wave_rejects_source_epoch_change_between_strategy_builds() -> None:
+    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+    index = UnifiedDecisionIndex()
+    originals = (decision(Strategy.TOMORROW), decision(Strategy.D25))
+    for original in originals:
+        assert index.publish(original, expected_version=None).accepted
+
+    class ChangingData(DataRefresh):
+        def __init__(self) -> None:
+            super().__init__()
+            self.epoch = "initial"
+
+        def scoring_epoch(self) -> str:
+            return self.epoch
+
+        def refresh(self, request: CycleRequest) -> None:
+            super().refresh(request)
+            if request.strategy is Strategy.D25:
+                self.epoch = "new-input"
+
+    data = ChangingData()
+
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
+            clock=FixedClock(observed_at),
+            calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-source-epoch-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+    )
+    runtime.start()
+    try:
+        runtime.submit_due(observed_at)
+        assert runtime.wait_idle(2.0)
+    finally:
+        runtime.stop(ShutdownDeadline.start(2.0))
+    assert tuple(index.snapshot(item.strategy).current for item in originals) == originals
+    assert runtime.status().last_error_code == "decision:paired_input_epoch_mismatch"
+
+
+def test_scoring_wave_skips_overlapping_ten_second_tick() -> None:
+    observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class ChangingAfterCutData(DataRefresh):
+        def __init__(self) -> None:
+            super().__init__()
+            self.epoch = "initial"
+
+        def scoring_epoch(self) -> str:
+            return self.epoch
+
+    data = ChangingAfterCutData()
+
+    class BlockingD25(Decisions):
+        def __init__(self) -> None:
+            self.built: list[Strategy] = []
+
+        def build_local(self, request: CycleRequest):
+            if request.strategy is Strategy.D25:
+                entered.set()
+                assert release.wait(2.0)
+            self.built.append(request.strategy)
+            local = super().build_local(request)
+            assert isinstance(local, ScoredDecision)
+            return replace(local, input_versions=(("market", f"native-market:{request.strategy.value}"),))
+
+    decisions = BlockingD25()
+    index = UnifiedDecisionIndex()
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-control",
+            ),
+            clock=FixedClock(observed_at),
+            calendar=TradingCalendar(),
+            cadence=_cadence(observed_at),
+            data=data,
+            decisions=decisions,
+            reviews=SharedReviews(),
+            index=index,
+            observer=AsyncDecisionObserver((), capacity=4, thread_name="test-overlap-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+    )
+    runtime.start()
+    try:
+        runtime._dispatch_pipeline_task(
+            ScheduledPipelineTask(PipelineTask.SCORE, observed_at, MarketPhase.MORNING_MAIN)
+        )
+        assert entered.wait(1.0)
+        runtime._dispatch_pipeline_task(
+            ScheduledPipelineTask(PipelineTask.SCORE, observed_at + timedelta(seconds=10), MarketPhase.MORNING_MAIN)
+        )
+        data.epoch = "new-input-after-cut"
+        score_lane = next(lane for lane in runtime.status().task_lanes if lane.name == "trader-task-score-wave")
+        assert score_lane.offered_count == 1
+        assert score_lane.running and not score_lane.pending
+        release.set()
+        assert runtime.wait_idle(2.0)
+    finally:
+        release.set()
+        runtime.stop(ShutdownDeadline.start(2.0))
+    assert decisions.built == [Strategy.TOMORROW, Strategy.D25]
+    assert all(isinstance(index.snapshot(strategy).current, ScoredDecision) for strategy in decisions.built)
 
 
 def test_unchanged_candidate_refresh_does_not_trigger_another_score() -> None:

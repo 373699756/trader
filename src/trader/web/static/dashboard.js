@@ -863,23 +863,25 @@
     }
     const previous = state.payload;
     const quotes = new Map((patch.quotes || []).map((quote) => [quote.code, quote]));
+    const updateQuotedItem = (item) => {
+      const quote = quotes.get(item.code);
+      if (!quote) return item;
+      const anchor = Number(item.anchor_price);
+      const current = Number(quote.price);
+      const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
+        ? ((current / anchor) - 1) * 100 : null;
+      return {
+        ...item,
+        ...quote,
+        quote_status: quote.quote_status || quote.status || item.quote_status,
+        anchor_to_now_pct: anchorToNow,
+      };
+    };
     const nextPayload = {
       ...state.payload,
       projection_version: patch.projection_version,
-      items: (state.payload.items || []).map((item) => {
-        const quote = quotes.get(item.code);
-        if (!quote) return item;
-        const anchor = Number(item.anchor_price);
-        const current = Number(quote.price);
-        const anchorToNow = Number.isFinite(anchor) && anchor > 0 && Number.isFinite(current)
-          ? ((current / anchor) - 1) * 100 : null;
-        return {
-          ...item,
-          ...quote,
-          quote_status: quote.quote_status || quote.status || item.quote_status,
-          anchor_to_now_pct: anchorToNow,
-        };
-      }),
+      items: (state.payload.items || []).map(updateQuotedItem),
+      top_scores: (state.payload.top_scores || []).map(updateQuotedItem),
     };
     if (!patchOverlayRows(previous, nextPayload, new Set(quotes.keys()))) {
       requestRecommendationResync("overlay_dom_mismatch");

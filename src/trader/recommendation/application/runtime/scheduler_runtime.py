@@ -59,7 +59,6 @@ from trader.recommendation.application.runtime.schedule_requests import (
     PipelineLane,
     PipelineTaskCorrelationId,
     PipelineTaskOrderKey,
-    ResearchInputVersion,
 )
 from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError, TradingSession
@@ -67,6 +66,7 @@ from trader.recommendation.domain.evidence.pipeline import StageState
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
+    DisplayQuoteCodes,
     IdentityCodes,
     LongProjection,
     ScoredDecision,
@@ -175,6 +175,16 @@ class SchedulerRuntime:
             )
             for task in _DATA_LANES
         }
+        self._score_lane = LatestWinsWorker(
+            "trader-task-score-wave",
+            self._process_score_wave,
+            order_key=PipelineTaskOrderKey,
+            telemetry=LatestWinsTelemetry(
+                dependencies.latency,
+                PipelineTaskCorrelationId,
+                lambda request: f"score-wave:{request.task.value}",
+            ),
+        )
         self._refresh_failure_count = 0
         self._decision_failure_count = 0
         self._review_failure_count = 0
@@ -241,9 +251,7 @@ class SchedulerRuntime:
             raise RuntimeError("decision observer did not start")
         if not self._control.start():
             raise RuntimeError("control executor did not start")
-        for task in _DATA_LANES:
-            if not self._task_lanes[task].start():
-                raise RuntimeError(f"{task.value} task lane did not start")
+        self._start_task_lanes()
         for strategy in Strategy:
             if not self._lanes[strategy].start():
                 raise RuntimeError(f"{strategy.value} lane did not start")
@@ -253,17 +261,26 @@ class SchedulerRuntime:
         if not self._research.start():
             raise RuntimeError("research runtime did not start")
 
+    def _start_task_lanes(self) -> None:
+        for task in _DATA_LANES:
+            if not self._task_lanes[task].start():
+                raise RuntimeError(f"{task.value} task lane did not start")
+        if not self._score_lane.start():
+            raise RuntimeError("score wave lane did not start")
+
     def _abort_start(self) -> None:
         deadline = ShutdownDeadline.start(self._shutdown_timeout_seconds)
         self._research.stop(wait=False, deadline=deadline)
         for task_lane in self._task_lanes.values():
             task_lane.close()
+        self._score_lane.close()
         for strategy_lane in self._lanes.values():
             strategy_lane.close()
         for hybrid_lane in self._hybrid_lanes.values():
             hybrid_lane.close()
         for task_lane in self._task_lanes.values():
             task_lane.stop(deadline=deadline)
+        self._score_lane.stop(deadline=deadline)
         for strategy_lane in self._lanes.values():
             strategy_lane.stop(deadline=deadline)
         for hybrid_lane in self._hybrid_lanes.values():
@@ -424,18 +441,30 @@ class SchedulerRuntime:
         return lane.running or lane.pending
 
     def _submit_scoring(self, scheduled: ScheduledPipelineTask) -> bool:
-        decision = DecisionAt(scheduled.scheduled_at, is_trading_day=True)
-        accepted = False
-        for strategy in self._due_strategies(decision, None, scheduled.scheduled_at):
-            if strategy is Strategy.LONG:
-                continue
-            phase = CyclePhase(strategy, decision.phase)
-            request = replace(
-                self._scheduled_request(strategy, scheduled.scheduled_at, phase), session=scheduled.session
+        with self._lock:
+            state = self._score_lane.status()
+            if state.running or state.pending:
+                return False
+            return self._score_lane.offer(scheduled) is not LatestWinsOffer.REJECTED
+
+    def _process_score_wave(self, scheduled: ScheduledPipelineTask) -> None:
+        try:
+            with SessionGuard(scheduled.session):
+                pass
+            decision = DecisionAt(scheduled.scheduled_at, is_trading_day=True)
+            strategies = self._due_strategies(decision, None, scheduled.scheduled_at)
+            if not {Strategy.TOMORROW, Strategy.D25}.issubset(strategies):
+                return
+            requests = tuple(
+                replace(
+                    self._scheduled_request(strategy, scheduled.scheduled_at, CyclePhase(strategy, decision.phase)),
+                    session=scheduled.session,
+                )
+                for strategy in (Strategy.TOMORROW, Strategy.D25)
             )
-            offer = self.submit_cycle(request)
-            accepted = accepted or offer is not LatestWinsOffer.REJECTED
-        return accepted
+            self._cycles.execute_pair((requests[0], requests[1]))
+        except StaleSessionError:
+            return
 
     def submit_cycle(self, request: CycleRequest) -> LatestWinsOffer:
         with self._lock:
@@ -465,7 +494,9 @@ class SchedulerRuntime:
         if scheduled.task is PipelineTask.CLOSE_QUOTES:
             self._close_control.process_close_recovery(scheduled)
             return
-        selected_codes = self._selected_overlay_codes() if scheduled.task is PipelineTask.TOPK_QUOTES else ()
+        selected_codes = (
+            self._selected_overlay_codes(scheduled.phase) if scheduled.task is PipelineTask.TOPK_QUOTES else ()
+        )
         request = PipelineTaskRequest(
             scheduled.task,
             ShanghaiNow(self._dependencies.clock.now()),
@@ -480,16 +511,18 @@ class SchedulerRuntime:
                 self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
             return
         with SessionGuard(scheduled.session):
-            self._after_successful_data_refresh(scheduled, outcome)
+            self._after_successful_data_refresh(scheduled, outcome, observed_at=request.observed_at)
             self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
 
     def _after_successful_data_refresh(
         self,
         scheduled: ScheduledPipelineTask,
         outcome: RefreshOutcome,
+        *,
+        observed_at: datetime,
     ) -> None:
         if scheduled.task is PipelineTask.TOPK_QUOTES and outcome.changed:
-            self._refresh_selected_overlays(scheduled)
+            self._refresh_selected_overlays(scheduled, observed_at)
         elif scheduled.task is PipelineTask.FULL_MARKET and scheduled.phase is MarketPhase.MIDDAY:
             for strategy in self._midday_recovery_strategies(scheduled.scheduled_at):
                 if strategy is Strategy.LONG:
@@ -528,16 +561,25 @@ class SchedulerRuntime:
             at=ShanghaiNow(self._dependencies.clock.now()),
         )
 
-    def _selected_overlay_codes(self) -> tuple[str, ...]:
+    def _selected_overlay_codes(self, phase: MarketPhase) -> tuple[str, ...]:
         codes: list[str] = []
+        visible_six = phase in {
+            MarketPhase.MORNING_OBSERVE,
+            MarketPhase.MORNING_MAIN,
+            MarketPhase.MORNING_LATE,
+            MarketPhase.AFTERNOON,
+            MarketPhase.FINAL_REVIEW,
+            MarketPhase.DEEPSEEK_CUTOFF,
+            MarketPhase.FINAL_QUOTE,
+        }
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = self._dependencies.index.snapshot(strategy)
             identity = snapshot.formal.decision if snapshot.formal is not None else snapshot.current
             if isinstance(identity, ScoredDecision):
-                codes.extend(IdentityCodes(identity))
+                codes.extend(sorted(DisplayQuoteCodes(identity) if visible_six else IdentityCodes(identity)))
         return tuple(dict.fromkeys(codes))
 
-    def _refresh_selected_overlays(self, scheduled: ScheduledPipelineTask) -> None:
+    def _refresh_selected_overlays(self, scheduled: ScheduledPipelineTask, observed_at: datetime) -> None:
         for strategy in (Strategy.TOMORROW, Strategy.D25):
             snapshot = self._dependencies.index.snapshot(strategy)
             if (
@@ -546,7 +588,7 @@ class SchedulerRuntime:
             ):
                 continue
             request = replace(
-                self._scheduled_request(strategy, scheduled.scheduled_at, "quote_overlay"), session=scheduled.session
+                self._scheduled_request(strategy, observed_at, "quote_overlay"), session=scheduled.session
             )
             for outcome in self._overlay_refresher.refresh(request):
                 if outcome.status == "failed":
@@ -557,14 +599,14 @@ class SchedulerRuntime:
 
     def wait_idle(self, timeout_seconds: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout_seconds)
-        for task in _DATA_LANES:
-            if not self._task_lanes[task].wait_idle(max(0.0, deadline - time.monotonic())):
-                return False
-        for strategy in Strategy:
-            if not self._lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
-                return False
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
-            if not self._hybrid_lanes[strategy].wait_idle(max(0.0, deadline - time.monotonic())):
+        waiters = (
+            *(self._task_lanes[task].wait_idle for task in _DATA_LANES),
+            self._score_lane.wait_idle,
+            *(self._lanes[strategy].wait_idle for strategy in Strategy),
+            *(self._hybrid_lanes[strategy].wait_idle for strategy in (Strategy.TOMORROW, Strategy.D25)),
+        )
+        for wait_idle in waiters:
+            if not wait_idle(max(0.0, deadline - time.monotonic())):
                 return False
         while self._control.status().inflight > 0:
             remaining = deadline - time.monotonic()
@@ -594,12 +636,14 @@ class SchedulerRuntime:
         self._dependencies.observer.close()
         for task_lane in self._task_lanes.values():
             task_lane.close()
+        self._score_lane.close()
         for strategy_lane in self._lanes.values():
             strategy_lane.close()
         for hybrid_lane in self._hybrid_lanes.values():
             hybrid_lane.close()
         steps: list[ShutdownStep] = [self._control.stop(wait=True, cancel_futures=False, deadline=deadline)]
         steps.extend(self._task_lanes[task].stop(deadline=deadline) for task in _DATA_LANES)
+        steps.append(self._score_lane.stop(deadline=deadline))
         steps.extend(self._lanes[strategy].stop(deadline=deadline) for strategy in Strategy)
         steps.extend(
             self._hybrid_lanes[strategy].stop(deadline=deadline) for strategy in (Strategy.TOMORROW, Strategy.D25)
@@ -616,7 +660,7 @@ class SchedulerRuntime:
         session = self._session.status()
         lanes = tuple(self._lanes[strategy].status() for strategy in Strategy)
         hybrid_lanes = tuple(self._hybrid_lanes[strategy].status() for strategy in (Strategy.TOMORROW, Strategy.D25))
-        task_lanes = tuple(self._task_lanes[task].status() for task in _DATA_LANES)
+        task_lanes = (*tuple(self._task_lanes[task].status() for task in _DATA_LANES), self._score_lane.status())
         with self._lock:
             issues = self._issues.snapshot()
             return SchedulerRuntimeStatus(
@@ -700,14 +744,12 @@ class SchedulerRuntime:
         schedule = DecisionAt(completed_at, is_trading_day=is_trading_day)
         if not schedule.should_score:
             return
-        strategies: tuple[Strategy, ...] = (Strategy.TOMORROW, Strategy.D25)
-        risk_version = ResearchInputVersion(result)
-        for strategy in strategies:
-            current = self._dependencies.index.snapshot(strategy).current
-            if not isinstance(current, ScoredDecision) or current.trade_date != completed_at.date():
-                continue
-            request = self._scheduled_request(strategy, completed_at, schedule.phase.value)
-            self.submit_cycle(replace(request, input_version=f"risk:{strategy.value}:{risk_version}"))
+        if any(
+            isinstance((current := self._dependencies.index.snapshot(strategy).current), ScoredDecision)
+            and current.trade_date == completed_at.date()
+            for strategy in (Strategy.TOMORROW, Strategy.D25)
+        ):
+            self._trigger_scoring_after_input()
 
     def _record_publish(
         self,
