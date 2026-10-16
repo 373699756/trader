@@ -6,7 +6,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date, datetime
-from typing import ParamSpec, TypeVar
+from typing import ParamSpec, TypeGuard, TypeVar
 
 from trader.infra.cache_contracts import CacheRequestKey, RequestKey
 from trader.infra.market_data.history.history import DailyBar
@@ -329,37 +329,41 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
     evidence_raw = raw.get("evidence")
     corporate_risk_raw = raw.get("corporate_risk_facts")
     source_errors = raw.get("source_errors")
-    if not isinstance(source_errors, list):
+    if not _is_json_sequence(source_errors):
         raise ValueError("source_errors must be a list")
     return ResearchObservation(
         data_version=str(raw.get("data_version") or "research:recovered"),
-        financial=_deserialize_financial_report(financial_raw) if isinstance(financial_raw, dict) else None,
+        financial=_deserialize_financial_report(financial_raw) if isinstance(financial_raw, Mapping) else None,
         financial_history=tuple(
-            _deserialize_financial_report(item) for item in financial_history_raw if isinstance(item, dict)
+            _deserialize_financial_report(item) for item in financial_history_raw if isinstance(item, Mapping)
         )
-        if isinstance(financial_history_raw, list)
+        if _is_json_sequence(financial_history_raw)
         else (),
         financial_history_complete=bool(raw.get("financial_history_complete", False)),
         announcements=tuple(
-            _deserialize_research_announcement(item) for item in announcements_raw if isinstance(item, dict)
+            _deserialize_research_announcement(item) for item in announcements_raw if isinstance(item, Mapping)
         )
-        if isinstance(announcements_raw, list)
+        if _is_json_sequence(announcements_raw)
         else (),
         announcements_available=bool(raw.get("announcements_available", False)),
         pledge_ratio_pct=_optional_float(raw.get("pledge_ratio_pct")),
         unlock_ratio_pct=_optional_float(raw.get("unlock_ratio_pct")),
         corporate_risk_facts=tuple(
-            _deserialize_corporate_risk_fact(item) for item in corporate_risk_raw if isinstance(item, dict)
+            _deserialize_corporate_risk_fact(item) for item in corporate_risk_raw if isinstance(item, Mapping)
         )
-        if isinstance(corporate_risk_raw, list)
+        if _is_json_sequence(corporate_risk_raw)
         else (),
         corporate_risk_history_complete=bool(raw.get("corporate_risk_history_complete", False)),
         corporate_risk_evidence_version=str(raw.get("corporate_risk_evidence_version") or ""),
-        evidence=tuple(_deserialize_evidence(item) for item in evidence_raw if isinstance(item, dict))
-        if isinstance(evidence_raw, list)
+        evidence=tuple(_deserialize_evidence(item) for item in evidence_raw if isinstance(item, Mapping))
+        if _is_json_sequence(evidence_raw)
         else (),
         source_errors=tuple(str(value) for value in source_errors),
     )
+
+
+def _is_json_sequence(value: object) -> TypeGuard[Sequence[object]]:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
 
 
 def _serialize_financial_report(report: FinancialReport) -> dict[str, object]:

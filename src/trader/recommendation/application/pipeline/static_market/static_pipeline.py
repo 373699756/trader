@@ -30,10 +30,12 @@ from trader.recommendation.domain.evidence.pipeline import (
 )
 from trader.recommendation.domain.market.eligibility import (
     EligibilityFactsFromQuote,
+    EligibilityFactsFromStaticIssuer,
     HistoricalStEligibilitySnapshot,
     IssuerEligibilityBatch,
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
+    IssuerEligibilityReason,
     IssuerEligibilityReasonCount,
     IssuerEligibilityState,
 )
@@ -131,9 +133,19 @@ class StaticMarketPipeline:
         normalized = self._measured_stage(normalized, started)
         population = frozenset(item.code for item in normalized.records)
         started = self._monotonic()
+        self._record_static_eligibility(normalized.records, observed_at)
         self._record_quote_eligibility(tuple(quote for quote in quotes if quote.code in population), observed_at)
         self._refresh_eligibility_if_due(observed_at)
-        exclusions = tuple(item for item in self.eligibility.exclusions(observed_at) if item.code in population)
+        exclusions = tuple(
+            item
+            for item in self.eligibility.exclusions(observed_at)
+            if item.code in population
+            and item.reason
+            in {
+                IssuerEligibilityReason.HISTORICAL_ST,
+                IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
+            }
+        )
         exclusions_by_code = {item.code: item for item in exclusions}
         reason_counts = Counter(item.reason for item in exclusions_by_code.values() if item.reason is not None)
         historical_st = self._historical_st_eligibility() if self._historical_st_eligibility is not None else None
@@ -181,14 +193,21 @@ class StaticMarketPipeline:
         return replace(output, snapshot=replace(output.snapshot, latency_ms=self._elapsed_ms(started)))
 
     def _record_quote_eligibility(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> None:
-        eligible = set(self.eligibility.filter_codes(tuple(quote.code for quote in quotes), observed_at))
         facts = tuple(
             fact
             for quote in quotes
-            if quote.code in eligible
             for fact in EligibilityFactsFromQuote(quote, observed_at=observed_at)
         )
         self._record_eligibility(facts)
+
+    def _record_static_eligibility(self, issuers: Sequence[StaticIssuer], observed_at: datetime) -> None:
+        self._record_eligibility(
+            tuple(
+                fact
+                for issuer in issuers
+                for fact in EligibilityFactsFromStaticIssuer(issuer, observed_at=observed_at)
+            )
+        )
 
     def _record_eligibility(self, facts: Sequence[IssuerEligibilityFact]) -> None:
         try:

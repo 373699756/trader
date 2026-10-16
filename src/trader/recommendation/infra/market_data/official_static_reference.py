@@ -44,8 +44,17 @@ def ParseOfficialStaticReference(observations: Sequence[SourceObservation]) -> S
         listing_date = date.fromisoformat(listing_raw)
         if listing_date > item.observed_at.astimezone(SHANGHAI).date():
             raise ValueError("official static issuer listing is in the future")
+        normalized_name = name.strip()
         records.append(
-            StaticIssuer(item.subject_key, name.strip(), Board(board), str(exchange), listing_date, False, False)
+            StaticIssuer(
+                item.subject_key,
+                normalized_name,
+                Board(board),
+                str(exchange),
+                listing_date,
+                "ST" in normalized_name.upper() or "退" in normalized_name,
+                False,
+            )
         )
     if len({item.code for item in records}) != len(records):
         raise ValueError("official static issuer codes must be unique")

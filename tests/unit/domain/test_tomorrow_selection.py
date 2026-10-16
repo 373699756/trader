@@ -240,7 +240,7 @@ def test_candidate_stage_counts_follow_issuer_and_dynamic_qualification_before_c
         )
     )
 
-    assert plan.stage_counts.issuer_eligible_population == 4
+    assert plan.stage_counts.issuer_eligible_population == 5
     assert plan.stage_counts.dynamic_filter_eligible == 3
     assert plan.stage_counts.strategy_history_eligible == 2
     assert plan.stage_counts.model_input_eligible == 2

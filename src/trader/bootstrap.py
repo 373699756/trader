@@ -77,6 +77,7 @@ from trader.infra.settings import (
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
+from trader.recommendation.application.risk_download import DownloadRiskSnapshot, RiskDownloadResult
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.data_source.source_router import (
     InputRefreshDependencies,
@@ -126,6 +127,7 @@ from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisorConfig,
     SchedulerIntervalSeconds,
 )
+from trader.recommendation.domain.market.eligibility import IssuerEligibilityReason
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -148,6 +150,7 @@ from trader.recommendation.infra.market_data.providers.akshare import AkshareRes
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient, TencentFullMarketSource
+from trader.recommendation.infra.market_data.official_static_reference import ParseOfficialStaticReference
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
@@ -155,6 +158,7 @@ from trader.recommendation.infra.market_data.trading_calendar import ChinaTradin
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.normalization.features import FeatureBuilder
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
+from trader.recommendation.infra.persistence.daily_risk import SQLiteDailyRiskIndex
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
@@ -185,6 +189,89 @@ from trader.web import CreateApp
 
 if TYPE_CHECKING:
     from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
+
+
+def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
+    """Prepare the next applicable trade-date risk partition with bounded supplier work."""
+    settings = LoadRuntimeSettings(config_path)
+    strategy = LoadStrategySettings(settings.strategy_config_path)
+    clock = ShanghaiClock(_utc_now)
+    observed_at = clock.now()
+    calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
+    open_dates = calendar.open_dates()
+    target_date = _risk_target_date(observed_at, open_dates)
+    official = ExchangeSecurityMasterClient(
+        sse_fetcher=partial(FetchSseListings, get=requests.get),
+        szse_fetcher=partial(FetchSzseListings, get=requests.get),
+        timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
+        wall_clock=clock.now,
+    )
+    population = ParseOfficialStaticReference(official.fetch(observed_at)).records
+    eligibility = SQLiteIssuerEligibilityIndex(settings.reference_dir, read_only=True)
+    st_reasons = {
+        IssuerEligibilityReason.HISTORICAL_ST,
+        IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
+    }
+    excluded = {
+        item.code
+        for item in eligibility.exclusions(observed_at)
+        if item.reason in st_reasons
+    }
+    codes = tuple(item.code for item in population if not item.is_st and item.code not in excluded)
+    risk_data = SQLiteDailyRiskIndex(settings.project_root / "data" / "risk", target_date=lambda: target_date)
+    risk_data.prepare(target_date)
+    workers = BoundedExecutor(
+        worker_count=settings.pipeline.market_workers,
+        queue_capacity=len(codes),
+        thread_name_prefix="risk-download",
+    )
+    source_deadline = time.monotonic() + 120.0
+    workers.start()
+    try:
+        runner = MarketTaskRunner(
+            worker_pool=workers,
+            source_lanes=None,
+            cache=None,
+            source_contracts=settings.market_data.source_contracts,
+            config_version=settings.config_version,
+            schema_version="risk_snapshot",
+            wall_clock=clock.now,
+        )
+        loader = ResearchLoader(
+            AkshareResearchClient(
+                get=cast(AkshareGetFunction, requests.get),
+                timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
+                long_research_policy=strategy.long_research,
+                cancel_requested=lambda: not workers.is_running() or time.monotonic() >= source_deadline,
+            ),
+            runner,
+            data_plane=risk_data,
+            workers=settings.pipeline.market_workers,
+            ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
+            circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
+            circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
+            capacity=max(1, len(codes)),
+            cache_dir=None,
+            json_writer=None,
+            monotonic=time.monotonic,
+        )
+        return DownloadRiskSnapshot(
+            loader,
+            codes,
+            target_date=target_date,
+            observed_at=observed_at,
+            monotonic=time.monotonic,
+        )
+    finally:
+        workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+
+
+def _risk_target_date(observed_at: datetime, open_dates: tuple[date, ...]) -> date:
+    local_date = observed_at.date()
+    eligible = tuple(day for day in open_dates if day > local_date or (day == local_date and observed_at.hour < 15))
+    if not eligible:
+        raise RuntimeError("risk download cannot resolve a current or next trading date")
+    return eligible[0]
 
 
 def ExecuteHistoryDownload(
@@ -855,7 +942,21 @@ def _build_market_data(
         snapshot = references.static_reference().reference
         if snapshot is None:
             return ()
-        codes = eligibility.filter_codes(tuple(issuer.code for issuer in snapshot.records), now())
+        observed_at = now()
+        st_reasons = {
+            IssuerEligibilityReason.HISTORICAL_ST,
+            IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
+        }
+        excluded = {
+            item.code
+            for item in eligibility.exclusions(observed_at)
+            if item.reason in st_reasons
+        }
+        codes = tuple(
+            issuer.code
+            for issuer in snapshot.records
+            if not issuer.is_st and issuer.code not in excluded
+        )
         historical_st = history_cache.historical_st_eligibility()
         if historical_st.status == "ready":
             return tuple(code for code in codes if historical_st.eligible(code))
@@ -993,10 +1094,14 @@ def _build_market_data(
         except RuntimeError:
             # The typed index retains any facts it could verify; persistence degradation stays observable.
             pass
+    risk_data = SQLiteDailyRiskIndex(
+        settings.project_root / "data" / "risk",
+        target_date=lambda: ShanghaiClock(now).now().date(),
+    )
     research = ResearchLoader(
         research_client,
         research_runner,
-        data_plane=data_plane,
+        data_plane=risk_data,
         workers=settings.pipeline.market_workers,
         ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
@@ -1191,4 +1296,10 @@ def _build_publication(
     )
 
 
-__all__ = ["ApplicationSystem", "ProfiledApplicationSystem", "BuildProfiledSystem", "BuildSystem"]
+__all__ = [
+    "ApplicationSystem",
+    "ProfiledApplicationSystem",
+    "BuildProfiledSystem",
+    "BuildSystem",
+    "ExecuteRiskDownload",
+]

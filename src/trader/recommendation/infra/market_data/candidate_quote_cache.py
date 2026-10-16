@@ -144,6 +144,7 @@ class QuoteCache:
         histories: Mapping[str, tuple[DailyBar, ...]],
         observed_at: datetime,
         *,
+        research_observations: Mapping[str, ResearchObservation] | None = None,
         action_restrictions: Mapping[str, set[str]],
     ) -> tuple[FeatureSnapshot, ...]:
         return _apply_action_restrictions(
@@ -152,6 +153,7 @@ class QuoteCache:
                     self._with_industry_quotes(quotes, observed_at),
                     histories,
                     observed_at,
+                    research_observations=research_observations,
                     history_summaries=self._history.summaries(histories, observed_at),
                 )
             ),

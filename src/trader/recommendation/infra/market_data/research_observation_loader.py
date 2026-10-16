@@ -7,7 +7,7 @@ import logging
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import Future, wait
+from concurrent.futures import FIRST_COMPLETED, Future, wait
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -428,11 +428,15 @@ class ResearchLoader:
                 state.result[code] = cached.observation
                 state.previous[code] = cached
 
-    def recover_from_data_plane(self) -> None:
+    def recover_from_data_plane(self, observed_at: datetime | None = None) -> None:
         data_plane = self._data_plane
         if data_plane is None:
             return
-        _recover_research_component_statuses_from_plane(self, data_plane)
+        _recover_research_component_statuses_from_plane(
+            self,
+            data_plane,
+            observed_at or self._runner.wall_clock(),
+        )
 
     def _mark_loaded_research_actionability(self, state: _ResearchLoadState) -> None:
         for code, observation in state.result.items():
@@ -463,19 +467,39 @@ class ResearchLoader:
             if request.deadline is None
             else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
         )
-        completed, pending = wait(futures, timeout=timeout)
-        completed_code_set = {futures[future] for future in completed}
-        completed_codes = tuple(code for code in missing if code in completed_code_set)
-        completed_by_code = {futures[future]: future for future in completed}
+        pending = set(futures)
+        consumed: set[str] = set()
         changed_codes: list[str] = []
-        for code in completed_codes:
-            future = completed_by_code[code]
-            if self._consume_research_future(state, futures[future], future, started_at[future]):
-                changed_codes.append(code)
-        deferred = tuple(code for code in missing if code not in completed_by_code)
+        deadline_reached = False
+        while pending:
+            completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+            if not completed:
+                break
+            completed_by_code = {futures[future]: future for future in completed}
+            for code in missing:
+                future = completed_by_code.get(code)
+                if future is None:
+                    continue
+                try:
+                    self._runner.ensure_before_deadline(request.deadline)
+                except MarketDataDeadlineExceededError:
+                    deadline_reached = True
+                    break
+                if self._consume_research_future(state, code, future, started_at[future]):
+                    changed_codes.append(code)
+                consumed.add(code)
+            if deadline_reached:
+                break
+            timeout = (
+                None
+                if request.deadline is None
+                else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
+            )
+        deferred = tuple(code for code in missing if code not in consumed)
         if deferred:
-            for future in pending:
-                future.cancel()
+            for future, code in futures.items():
+                if code not in consumed:
+                    future.cancel()
             with self._lock:
                 self._error_count += len(deferred)
                 self._timeout_count += len(deferred)

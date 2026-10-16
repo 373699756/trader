@@ -274,13 +274,13 @@ def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> Non
 @pytest.mark.parametrize(
     ("observed_at", "expected"),
     (
-        (datetime(2026, 7, 16, 9, 25, tzinfo=SHANGHAI), datetime(2026, 7, 16, 9, 30, tzinfo=SHANGHAI)),
+        (datetime(2026, 7, 16, 9, 25, tzinfo=SHANGHAI), datetime(2026, 7, 16, 9, 27, tzinfo=SHANGHAI)),
         (datetime(2026, 7, 16, 12, 58, tzinfo=SHANGHAI), datetime(2026, 7, 16, 13, 0, tzinfo=SHANGHAI)),
     ),
 )
 def test_research_snapshot_deadline_never_crosses_the_opening_boundary(observed_at, expected) -> None:
     assert TaskDeadline(PipelineTaskRequest(PipelineTask.RESEARCH_SNAPSHOT, observed_at)) == expected
-    assert TaskExecutionBudgetSeconds(PipelineTask.RESEARCH_SNAPSHOT) == 600.0
+    assert TaskExecutionBudgetSeconds(PipelineTask.RESEARCH_SNAPSHOT) == 120.0
 
 
 def test_research_schedule_point_retry_expires_at_the_opening_boundary() -> None:

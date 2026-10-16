@@ -89,9 +89,9 @@ class _PreparedWrite:
 class SQLiteDataPlane:
     """Persist and recover unified data-plane records."""
 
-    def __init__(self, runtime_root: Path) -> None:
-        self._runtime_root = runtime_root / "market-data"
-        self._database = self._runtime_root / "market-data.sqlite3"
+    def __init__(self, runtime_root: Path, *, database_path: Path | None = None) -> None:
+        self._runtime_root = database_path.parent if database_path is not None else runtime_root / "market-data"
+        self._database = database_path if database_path is not None else self._runtime_root / "market-data.sqlite3"
         self._lock = threading.RLock()
 
     def initialize(self) -> None:

@@ -126,6 +126,8 @@ class _PendingQualityContext:
 class MarketReader(Protocol):
     def reference_version(self) -> str: ...
 
+    def risk_universe_codes(self, observed_at: datetime) -> tuple[str, ...]: ...
+
     def fetch_market_feature_batch(
         self,
         observed_at: datetime,
@@ -595,7 +597,8 @@ class MarketInputCoordinator(DataRefreshPort):
         request: PipelineTaskRequest,
         deadline: datetime | None,
     ) -> RefreshOutcome:
-        requested = self._requested_codes()
+        with SessionGuard(request.session):
+            requested = self._market.risk_universe_codes(request.observed_at)
         _require_codes(requested, "research_universe_unavailable")
         result = self._market.refresh_stock_risk(requested, request.observed_at, deadline=deadline)
         return self._research_outcome(request, result)

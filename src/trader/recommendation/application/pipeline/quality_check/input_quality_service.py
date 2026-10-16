@@ -23,7 +23,7 @@ from trader.recommendation.domain.candidate.filters import (
     BoardForSnapshot,
     FilterSeverity,
     HardFilterPolicy,
-    LevelTwoFilterRules,
+    LevelOneFilterRules,
 )
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, Severity, StageReasonAggregate, StageState
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot
@@ -399,7 +399,7 @@ def AssessCandidateInputStage(
     RequirePreviousStage(source, PipelineStage.QUALITY_CHECK)
     validation_rules = tuple(
         rule
-        for rule in LevelTwoFilterRules(max_age_seconds=30.0, policy=hard_filter)
+        for rule in LevelOneFilterRules(max_age_seconds=30.0, policy=hard_filter)
         if rule.severity is FilterSeverity.DEFERRED
     )
     accepted: list[FeatureSnapshot] = []

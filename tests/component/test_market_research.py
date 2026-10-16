@@ -207,7 +207,7 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
     assert "600001" not in history.calls
 
 
-def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_batch(tmp_path: Path) -> None:
+def test_newly_discovered_annual_loss_is_attached_for_second_level_filtering(tmp_path: Path) -> None:
     class RecordingGateway(StaticGateway):
         def __init__(self, quotes) -> None:
             super().__init__(quotes)
@@ -244,9 +244,10 @@ def test_newly_discovered_annual_loss_stops_quote_and_history_in_same_candidate_
 
     result = service.fetch_candidate_features(("600001",), NOW, include_structured_research=True)
 
-    assert result == ()
-    assert gateway.candidate_requests == []
-    assert history.calls == []
+    assert tuple(feature.quote.code for feature in result) == ("600001",)
+    assert "issuer_risk:historical_audited_loss" in result[0].quote.execution_restrictions
+    assert gateway.candidate_requests == [("600001",)]
+    assert history.calls == ["600001", "600001"]
     assert registry.exclusions(NOW)[0].reason is IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS
 
 
@@ -899,7 +900,7 @@ def test_read_candidate_features_reuses_structured_research_disk_cache_after_res
     assert restored[0].values["quality_score"] == pytest.approx(written[0].values["quality_score"])
 
 
-def test_explicit_research_snapshot_refresh_bypasses_the_parsed_observation_cache() -> None:
+def test_research_snapshot_refresh_reuses_fresh_database_observation() -> None:
     observation = ResearchObservation(
         announcements_available=True,
         pledge_ratio_pct=0.0,
@@ -917,7 +918,45 @@ def test_explicit_research_snapshot_refresh_bypasses_the_parsed_observation_cach
     service.refresh_stock_risk(("600001",), AFTERNOON)
     service.refresh_stock_risk(("600001",), AFTERNOON + timedelta(minutes=3))
 
-    assert research.snapshot_calls == 2
+    assert research.snapshot_calls == 1
+
+
+def test_research_snapshot_restart_reuses_fresh_persisted_observation(tmp_path: Path) -> None:
+    observation = ResearchObservation(
+        announcements_available=True,
+        pledge_ratio_pct=0.0,
+        unlock_ratio_pct=0.0,
+    )
+    data_plane = SQLiteDataPlane(tmp_path)
+    writer_client = StaticStructuredResearchClient((), observation)
+    writer = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        data_plane=data_plane,
+        research_client=writer_client,
+        research_workers=1,
+        wall_clock=lambda: AFTERNOON,
+    )
+    writer.refresh_stock_risk(("600001",), AFTERNOON)
+
+    reader_client = StaticStructuredResearchClient((), observation)
+    restarted_at = AFTERNOON + timedelta(minutes=3)
+    reader = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        data_plane=data_plane,
+        research_client=reader_client,
+        research_workers=1,
+        wall_clock=lambda: restarted_at,
+    )
+    reader.research.recover_from_data_plane(restarted_at)
+    result = reader.refresh_stock_risk(("600001",), restarted_at)
+
+    assert writer_client.snapshot_calls == 1
+    assert reader_client.snapshot_calls == 0
+    assert result.completed_codes == ("600001",)
 
 
 def test_stock_risk_refresh_reports_only_real_research_version_changes() -> None:
@@ -1116,7 +1155,8 @@ def test_research_component_same_time_conflict_preserves_first_committed_status(
 
     records = data_plane.load_risk_evidence_recent_records(codes=("603083",))
     records_by_id = {record.evidence_id: record for record in records}
-    assert len(records_by_id) == len(RESEARCH_COMPONENT_IDS)
+    assert len(records_by_id) == len(RESEARCH_COMPONENT_IDS) + 1
+    assert "risk-observation:structured" in records_by_id
     assert records_by_id["risk-component:pledge"].payload == {"status": "unknown"}
     assert records_by_id["risk-component:penalty"].payload == {"status": "unknown"}
     assert "research risk component persistence failed" not in caplog.text

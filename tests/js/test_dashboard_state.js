@@ -16,8 +16,8 @@ const statusHealthPath = path.join(path.dirname(dashboardPath), "status_health.j
 const errorDrawerPath = path.join(path.dirname(dashboardPath), "error_drawer.js");
 const statusViewPath = path.join(path.dirname(dashboardPath), "status_view.js");
 const statusViewSource = fs.readFileSync(statusViewPath, "utf8");
-assert(statusViewSource.includes('[["static_filter"], "ST预筛与一级资格复核", true]'));
-assert(statusViewSource.includes('[["dynamic_filter"], "二级动态过滤", true]'));
+assert(statusViewSource.includes('[["static_filter"], "ST预过滤", true]'));
+assert(statusViewSource.includes('[["dynamic_filter"], "一级市场过滤与二级公司风险过滤", true]'));
 assert(!statusViewSource.includes('["一级稳定过滤", ["dynamic_filter"]]'));
 assert(statusViewSource.includes('stageKeys.includes("quality_check") && state === "not_ready"'));
 const releaseContractPath = path.join(path.dirname(dashboardPath), "release_contract.js");
@@ -412,8 +412,8 @@ assert.strictEqual(
   (canonicalObservationElements.observationStageList.innerHTML.match(/class="observation-stage"/g) || []).length,
   12,
 );
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("ST预筛与一级资格复核"));
-assert(canonicalObservationElements.observationStageList.innerHTML.includes("二级动态过滤"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("ST预过滤"));
+assert(canonicalObservationElements.observationStageList.innerHTML.includes("一级市场过滤与二级公司风险过滤"));
 assert.match(canonicalObservationElements.observationStageList.innerHTML,
   /<button class="observation-stage-toggle"[^>]*aria-expanded="false"[^>]*>[\s\S]*?<\/button><div id="observation-stage-detail-0" class="observation-stage-detail">/);
 assert.doesNotMatch(canonicalObservationElements.observationStageList.innerHTML,

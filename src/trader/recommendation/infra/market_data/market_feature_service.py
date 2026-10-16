@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from trader.infra.serialization.canonical import ContentHash
@@ -21,6 +21,7 @@ from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.eligibility import (
     EligibilityFactsFromResearch,
     IssuerEligibilityFact,
+    IssuerEligibilityReason,
 )
 from trader.recommendation.domain.market.models import (
     Board,
@@ -84,6 +85,14 @@ class MarketFeatureService:
 
         return _reference_epoch(self.references.versions())
 
+    def risk_universe_codes(self, observed_at: datetime) -> tuple[str, ...]:
+        """Return the official non-ST research population without requiring quotes."""
+        reference = self.references.static_reference().reference
+        if reference is None:
+            return ()
+        codes = tuple(item.code for item in reference.records if not item.is_st)
+        return self._eligible_codes(codes, observed_at)
+
     def fetch_market_features(
         self,
         observed_at: datetime,
@@ -109,13 +118,35 @@ class MarketFeatureService:
             cached = self.quotes.cached_market_features(force=force, reference_epoch=reference_epoch)
             original_quotes = self._latest_market_quotes
         if cached is not None:
-            cached_features = tuple(cached)
             quotes = original_quotes
             started = self._monotonic()
             eligibility_batch, eligible_codes, static_stages, filtered = self._static_pipeline.observe(
                 quotes, reference, observed_at
             )
-            features = tuple(feature for feature in cached_features if feature.quote.code in eligible_codes)
+            eligible_quotes = tuple(quote for quote in quotes if quote.code in eligible_codes)
+            cached_codes = tuple(quote.code for quote in eligible_quotes)
+            cached_action_restrictions: dict[str, set[str]] = {}
+            research = self.research.cached(
+                cached_codes,
+                include_structured=True,
+                action_restrictions=cached_action_restrictions,
+            )
+            features = (
+                self.quotes.build_market_features(
+                    eligible_quotes,
+                    self.history.cached(
+                        cached_codes,
+                        observed_at=observed_at,
+                        action_restrictions=cached_action_restrictions,
+                    ),
+                    observed_at,
+                    research_observations=research,
+                    action_restrictions=cached_action_restrictions,
+                )
+                if research
+                else tuple(feature for feature in cached if feature.quote.code in eligible_codes)
+            )
+            features = self._apply_issuer_risk_facts(features, observed_at)
             dynamic = self._static_pipeline.dynamic_snapshot(
                 filtered, features, as_of=observed_at, latency_ms=self._elapsed_ms(started)
             )
@@ -152,12 +183,17 @@ class MarketFeatureService:
         self.quotes.gateway.record_local_latency("history_load", self._elapsed_ms(assembly_started))
         self.runner.ensure_before_deadline(deadline)
         feature_started = self._monotonic()
-        features = self.quotes.build_market_features(
+        features = self._apply_issuer_risk_facts(self.quotes.build_market_features(
             quotes,
             histories,
             observed_at,
+            research_observations=self.research.cached(
+                history_codes,
+                include_structured=True,
+                action_restrictions=action_restrictions,
+            ),
             action_restrictions=action_restrictions,
-        )
+        ), observed_at)
         self.quotes.gateway.record_local_latency("feature_build", self._elapsed_ms(feature_started))
         self.runner.ensure_before_deadline(deadline)
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
@@ -216,14 +252,14 @@ class MarketFeatureService:
             if include_intraday_tail
             else None
         )
-        features = self.quotes.build_candidate_features(
+        features = self._apply_issuer_risk_facts(self.quotes.build_candidate_features(
             quotes,
             histories,
             observed_at,
             research_observations=research,
             intraday_minutes=intraday,
             action_restrictions=action_restrictions,
-        )
+        ), observed_at)
         if include_intraday_tail:
             self.intraday.record_feature_coverage(normalized, features)
         return features
@@ -375,11 +411,12 @@ class MarketFeatureService:
     ) -> ResearchRefreshResult:
         requested = self._eligible_codes(codes, observed_at)
         started_at = self.runner.wall_clock()
+        self.research.recover_from_data_plane(observed_at)
         report = self.research.load_report(
             requested,
             observed_at,
             include_structured=True,
-            force=True,
+            force=False,
             deadline=deadline,
         )
         self._record_research_eligibility(report.observations)
@@ -450,20 +487,61 @@ class MarketFeatureService:
         intraday = (
             self.intraday.cached(normalized, action_restrictions=action_restrictions) if include_intraday_tail else None
         )
-        features = self.quotes.build_candidate_features(
+        features = self._apply_issuer_risk_facts(self.quotes.build_candidate_features(
             self.quotes.candidate_snapshot(normalized),
             histories,
             observed_at,
             research_observations=research,
             intraday_minutes=intraday,
             action_restrictions=action_restrictions,
-        )
+        ), observed_at)
         if include_intraday_tail:
             self.intraday.record_feature_coverage(normalized, features)
         return features
 
     def _eligible_codes(self, codes: Sequence[str], observed_at: datetime) -> tuple[str, ...]:
-        return self.eligibility.filter_codes(_normalize_codes(codes), observed_at)
+        normalized = _normalize_codes(codes)
+        st_reasons = {
+            IssuerEligibilityReason.HISTORICAL_ST,
+            IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
+        }
+        excluded = {
+            item.code
+            for item in self.eligibility.exclusions(observed_at)
+            if item.reason in st_reasons
+        }
+        return tuple(code for code in normalized if code not in excluded)
+
+    def _apply_issuer_risk_facts(
+        self,
+        features: Sequence[FeatureSnapshot],
+        observed_at: datetime,
+    ) -> tuple[FeatureSnapshot, ...]:
+        st_reasons = {
+            IssuerEligibilityReason.HISTORICAL_ST,
+            IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
+        }
+        reasons = {
+            item.code: item.reason
+            for item in self.eligibility.exclusions(observed_at)
+            if item.reason is not None and item.reason not in st_reasons
+        }
+        return tuple(
+            replace(
+                feature,
+                quote=replace(
+                    feature.quote,
+                    execution_restrictions=tuple(
+                        dict.fromkeys(
+                            (*feature.quote.execution_restrictions, f"issuer_risk:{reasons[feature.quote.code].value}")
+                        )
+                    ),
+                ),
+            )
+            if feature.quote.code in reasons
+            else feature
+            for feature in features
+        )
 
     def _eligible_quotes(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> tuple[MarketQuote, ...]:
         eligible = set(self._eligible_codes(tuple(quote.code for quote in quotes), observed_at))

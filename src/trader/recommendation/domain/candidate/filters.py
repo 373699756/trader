@@ -339,6 +339,12 @@ class _DefaultFilterRules:
             return _make_audit(snapshot, "major_regulatory_risk", "false", True)
         return None
 
+    def issuer_eligibility_risk(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
+        for restriction in snapshot.quote.execution_restrictions:
+            if restriction.startswith("issuer_risk:"):
+                return _make_audit(snapshot, restriction.removeprefix("issuer_risk:"), "false", True)
+        return None
+
     def invalid_quote_structure(self, snapshot: FeatureSnapshot, _now: datetime) -> FilterAudit | None:
         audit: FilterAudit | None = None
 
@@ -457,24 +463,27 @@ def LevelOneFilterRules(*, max_age_seconds: float, policy: HardFilterPolicy | No
         raise ValueError("max_age_seconds must be finite and non-negative")
     rules = _DefaultFilterRules(max_age_seconds, policy or HardFilterPolicy())
     return (
-        FilterRule(
-            "st_or_delisting",
-            FilterSeverity.REQUIRED,
-            rules.st_or_delisting,
-            FilterTier.ISSUER_PERMANENT,
-        ),
-        FilterRule(
-            "blacklisted",
-            FilterSeverity.REQUIRED,
-            rules.blacklisted,
-            FilterTier.ISSUER_PERMANENT,
-        ),
-        FilterRule(
-            "permanent_structured_negative_risk",
-            FilterSeverity.REQUIRED,
-            rules.permanent_structured_negative_risk,
-            FilterTier.ISSUER_PERMANENT,
-        ),
+        FilterRule("st_or_delisting", FilterSeverity.REQUIRED, rules.st_or_delisting),
+        FilterRule("unsupported_code", FilterSeverity.REQUIRED, rules.unsupported_code),
+        FilterRule("suspended", FilterSeverity.REQUIRED, rules.suspended),
+        FilterRule("invalid_price", FilterSeverity.DEFERRED, rules.invalid_price),
+        FilterRule("invalid_amount", FilterSeverity.DEFERRED, rules.invalid_amount),
+        FilterRule("invalid_quote_time", FilterSeverity.DEFERRED, rules.invalid_quote_time),
+        FilterRule("invalid_cross_source_deviation", FilterSeverity.DEFERRED, rules.cross_source_deviation),
+        FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, rules.cross_source_deviation_optional),
+        FilterRule("new_listing_session", FilterSeverity.REQUIRED, rules.new_listing_session),
+        FilterRule("relisted_first_session", FilterSeverity.REQUIRED, rules.relisted_first_session),
+        FilterRule("delisting_period_first_session", FilterSeverity.REQUIRED, rules.delisting_period_first_session),
+        FilterRule("board_classification_conflict", FilterSeverity.OPTIONAL, rules.board_classification_conflict),
+        FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, rules.board_identity_degraded),
+        FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, rules.missing_listing_date),
+        FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, rules.missing_listing_age_sessions),
+        FilterRule("liquidity_readiness", FilterSeverity.DEFERRED, rules.liquidity_readiness),
+        FilterRule("insufficient_liquidity", FilterSeverity.REQUIRED, rules.insufficient_liquidity),
+        FilterRule("one_price_limit", FilterSeverity.REQUIRED, rules.one_price_limit),
+        FilterRule("invalid_quote_structure", FilterSeverity.DEFERRED, rules.invalid_quote_structure),
+        FilterRule("invalid_pct_change_value", FilterSeverity.DEFERRED, rules.invalid_pct_change_value),
+        FilterRule("price_heat_limit", FilterSeverity.REQUIRED, rules.price_heat_limit),
     )
 
 
@@ -494,23 +503,19 @@ def LevelTwoFilterRules(
     rules = _DefaultFilterRules(max_age_seconds, policy)
 
     return (
-        FilterRule("unsupported_code", FilterSeverity.REQUIRED, rules.unsupported_code),
-        FilterRule("suspended", FilterSeverity.REQUIRED, rules.suspended),
-        FilterRule("invalid_price", FilterSeverity.DEFERRED, rules.invalid_price),
-        FilterRule("invalid_amount", FilterSeverity.DEFERRED, rules.invalid_amount),
-        FilterRule("invalid_quote_time", FilterSeverity.DEFERRED, rules.invalid_quote_time),
-        FilterRule("invalid_cross_source_deviation", FilterSeverity.DEFERRED, rules.cross_source_deviation),
-        FilterRule("cross_source_deviation", FilterSeverity.OPTIONAL, rules.cross_source_deviation_optional),
-        FilterRule("new_listing_session", FilterSeverity.REQUIRED, rules.new_listing_session),
-        FilterRule("relisted_first_session", FilterSeverity.REQUIRED, rules.relisted_first_session),
-        FilterRule("delisting_period_first_session", FilterSeverity.REQUIRED, rules.delisting_period_first_session),
-        FilterRule("board_classification_conflict", FilterSeverity.OPTIONAL, rules.board_classification_conflict),
-        FilterRule("board_identity_degraded", FilterSeverity.OPTIONAL, rules.board_identity_degraded),
-        FilterRule("missing_listing_date", FilterSeverity.OPTIONAL, rules.missing_listing_date),
-        FilterRule("missing_listing_age_sessions", FilterSeverity.OPTIONAL, rules.missing_listing_age_sessions),
-        FilterRule("liquidity_readiness", FilterSeverity.DEFERRED, rules.liquidity_readiness),
-        FilterRule("insufficient_liquidity", FilterSeverity.REQUIRED, rules.insufficient_liquidity),
-        FilterRule("one_price_limit", FilterSeverity.REQUIRED, rules.one_price_limit),
+        FilterRule("blacklisted", FilterSeverity.REQUIRED, rules.blacklisted, FilterTier.ISSUER_PERMANENT),
+        FilterRule(
+            "issuer_eligibility_risk",
+            FilterSeverity.REQUIRED,
+            rules.issuer_eligibility_risk,
+            FilterTier.ISSUER_PERMANENT,
+        ),
+        FilterRule(
+            "permanent_structured_negative_risk",
+            FilterSeverity.REQUIRED,
+            rules.permanent_structured_negative_risk,
+            FilterTier.ISSUER_PERMANENT,
+        ),
         FilterRule("major_regulatory_risk", FilterSeverity.REQUIRED, rules.major_regulatory_risk),
         FilterRule(
             "dynamic_structured_negative_risk",
@@ -523,9 +528,6 @@ def LevelTwoFilterRules(
             FilterSeverity.OPTIONAL,
             rules.corporate_risk_history_unavailable,
         ),
-        FilterRule("invalid_quote_structure", FilterSeverity.DEFERRED, rules.invalid_quote_structure),
-        FilterRule("invalid_pct_change_value", FilterSeverity.DEFERRED, rules.invalid_pct_change_value),
-        FilterRule("price_heat_limit", FilterSeverity.REQUIRED, rules.price_heat_limit),
     )
 
 

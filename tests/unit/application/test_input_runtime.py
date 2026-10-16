@@ -33,6 +33,7 @@ from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
     StageState,
 )
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.market.models import Board
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
@@ -66,6 +67,7 @@ class _Market:
         self.candidate_reads: list[tuple[tuple[str, ...], bool, bool]] = []
         self.candidate_requests: list[tuple[str, ...]] = []
         self.reference_requests: list[tuple[tuple[str, ...], tuple[str, ...], datetime, bool]] = []
+        self.research_requests: list[tuple[str, ...]] = []
         self.requested_codes: tuple[str, ...] = ()
 
     def fetch_market_features(self, _observed_at, *, force=False, deadline=None):
@@ -79,6 +81,23 @@ class _Market:
 
     def reference_version(self):
         return "reference:fixture"
+
+    def risk_universe_codes(self, _observed_at):
+        return tuple(feature.quote.code for feature in self._features if not feature.quote.is_st)
+
+    def refresh_stock_risk(self, codes, observed_at, *, deadline=None):
+        del deadline
+        requested = tuple(codes)
+        self.research_requests.append(requested)
+        return ResearchRefreshResult(
+            requested_codes=requested,
+            completed_codes=requested,
+            changed_codes=requested,
+            covered_codes=requested,
+            data_version="research:fixture",
+            started_at=observed_at,
+            completed_at=observed_at,
+        )
 
     def refresh_candidate_quotes(self, codes, _observed_at, *, force=False, deadline=None):
         del force, deadline
@@ -212,6 +231,28 @@ def test_model_scoring_context_uses_each_strategy_freeze_deadline(
 def _prime_scoring_cache(adapter: CycleFixture, observed_at: datetime) -> None:
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
     adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+
+def test_research_snapshot_uses_non_st_reference_universe_before_market_refresh(
+    application_feature_factory,
+) -> None:
+    observed_at = datetime(2026, 8, 12, 9, 15, tzinfo=SHANGHAI)
+    clear = application_feature_factory("600001", observed_at)
+    st = application_feature_factory("600002", observed_at)
+    st = replace(st, quote=replace(st.quote, is_st=True))
+    market = _Market((clear, st))
+    adapter = build_cycle_fixture(
+        market,
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    result = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.RESEARCH_SNAPSHOT, observed_at))
+
+    assert result.changed_codes == ("600001",)
+    assert market.research_requests == [("600001",)]
+    assert market.market_fetch_count == 0
 
 
 def test_refresh_outcome_is_versioned_and_identical_candidate_data_does_not_change(

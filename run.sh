@@ -24,6 +24,7 @@ usage() {
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh download                零参数历史维护" \
     "  ./run.sh qfq_download            Tencent并发更新短窗口，支持断点续传" \
+    "  ./run.sh risk_download           准备当日或下一交易日公司风险日库，支持断点续传" \
     "  ./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" \
     "  ./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" \
     "" \
@@ -55,7 +56,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download|qfq_download|train-v2|train-v3)
+    help|-h|--help|check|download|qfq_download|risk_download|train-v2|train-v3)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -88,7 +89,7 @@ if [[ "$MODE" == "check" && "$SCORING_PROFILE" == "both" ]]; then
   exit 2
 fi
 
-if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "risk_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -101,7 +102,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download|qfq_download|train-v2|train-v3)
+  check|download|qfq_download|risk_download|train-v2|train-v3)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -181,6 +182,9 @@ if [[ "$MODE" == "download" ]]; then
 fi
 if [[ "$MODE" == "qfq_download" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" qfq_download
+fi
+if [[ "$MODE" == "risk_download" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" risk_download
 fi
 if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" ]]; then
   if [[ "$(uname -s)" == "Linux" ]]; then

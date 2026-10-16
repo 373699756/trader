@@ -256,9 +256,9 @@
   const OBSERVATION_STAGE_DEFINITIONS = Object.freeze([
     [["data_source"], "官方证券名单（本地）", false],
     [["static_market", "static_standardize"], "一级数据与ST资格准备", false],
-    [["static_filter"], "ST预筛与一级资格复核", true],
+    [["static_filter"], "ST预过滤", true],
     [["dynamic_market", "dynamic_standardize"], "腾讯行情采集与标准化", false],
-    [["dynamic_filter"], "二级动态过滤", true],
+    [["dynamic_filter"], "一级市场过滤与二级公司风险过滤", true],
     [["candidate_pool"], "候选生成", false],
     [["quality_check"], "质量评估", false],
     [["local_score"], "评分", false],

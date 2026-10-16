@@ -170,10 +170,10 @@ def test_filter_registry_separates_permanent_issuer_and_dynamic_runtime_rules() 
     level_one = LevelOneFilterRules(max_age_seconds=20)
     level_two = LevelTwoFilterRules(max_age_seconds=20)
 
-    assert {rule.tier for rule in level_one} == {FilterTier.ISSUER_PERMANENT}
-    assert {rule.tier for rule in level_two} == {FilterTier.DYNAMIC}
-    assert {rule.name for rule in level_one} == {
-        "st_or_delisting",
+    assert {rule.tier for rule in level_one} == {FilterTier.DYNAMIC}
+    assert FilterTier.ISSUER_PERMANENT in {rule.tier for rule in level_two}
+    assert "st_or_delisting" in {rule.name for rule in level_one}
+    assert {rule.name for rule in level_two} >= {
         "blacklisted",
         "permanent_structured_negative_risk",
     }
@@ -216,7 +216,7 @@ def test_non_finite_and_structurally_invalid_quotes_are_deferred(feature_factory
         item.filter_code for item in HardFilter(invalid_deviation, observed_at, max_age_seconds=20).deferred
     }
 
-    rules = LevelTwoFilterRules(max_age_seconds=20)
+    rules = LevelOneFilterRules(max_age_seconds=20)
     for snapshot in (non_finite, invalid_ohlc, invalid_deviation):
         result = ApplyFilters(snapshot, rules, now=observed_at)
         assert result.reasons == ()
@@ -242,7 +242,7 @@ def test_invalid_quote_values_never_become_business_rejections(
     source = feature_factory()
     invalid = replace(source, quote=replace(source.quote, **{field: value}))
 
-    result = ApplyFilters(invalid, LevelTwoFilterRules(max_age_seconds=20), now=observed_at)
+    result = ApplyFilters(invalid, LevelOneFilterRules(max_age_seconds=20), now=observed_at)
 
     assert not result.allowed
     assert result.reasons == ()

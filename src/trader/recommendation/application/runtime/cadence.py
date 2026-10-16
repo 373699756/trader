@@ -107,7 +107,7 @@ def TaskExecutionBudgetSeconds(task: PipelineTask) -> float | None:
         PipelineTask.LONG_QUOTES: 3.0,
         PipelineTask.SCORE: 15.0,
         PipelineTask.INDUSTRY_HEAT: 20.0,
-        PipelineTask.RESEARCH_SNAPSHOT: 600.0,
+        PipelineTask.RESEARCH_SNAPSHOT: 120.0,
         PipelineTask.REFERENCE_DATA: 20.0,
         PipelineTask.DEEPSEEK_CUTOFF: 1.0,
         PipelineTask.CHECKPOINT: None,

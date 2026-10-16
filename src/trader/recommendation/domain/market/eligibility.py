@@ -12,6 +12,7 @@ from typing import Literal
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.research import CorporateRiskCategory, ResearchObservation
+from trader.recommendation.domain.market.static import StaticIssuer
 
 _CODE = re.compile(r"^[0-9]{6}$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -252,6 +253,27 @@ def EligibilityFactsFromQuote(
     return tuple(sorted(facts))
 
 
+def EligibilityFactsFromStaticIssuer(
+    issuer: StaticIssuer,
+    *,
+    observed_at: datetime,
+) -> tuple[IssuerEligibilityFact, ...]:
+    if not issuer.is_st:
+        return ()
+    return (
+        _fact(
+            issuer.code,
+            IssuerEligibilityReason.HISTORICAL_ST,
+            observed_at,
+            _FactEvidence(
+                f"official-static:{issuer.code}:{observed_at.date().isoformat()}",
+                "exchange_security_master",
+                (("name", issuer.name),),
+            ),
+        ),
+    )
+
+
 _PERMANENT_RISK_REASONS = {
     CorporateRiskCategory.FINANCIAL_FRAUD: IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD,
     CorporateRiskCategory.MAJOR_ILLEGAL: IssuerEligibilityReason.CONFIRMED_MAJOR_ILLEGAL,
@@ -363,6 +385,7 @@ __all__ = [
     "IssuerEligibilitySnapshot",
     "IssuerEligibilityState",
     "EligibilityFactsFromQuote",
+    "EligibilityFactsFromStaticIssuer",
     "EligibilityFactsFromResearch",
     "IssuerEligibilityFactHash",
     "ManualBlacklistFact",

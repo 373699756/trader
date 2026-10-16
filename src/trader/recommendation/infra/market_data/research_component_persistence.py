@@ -17,6 +17,7 @@ from trader.recommendation.application.ports.data_plane_records import (
     RiskEvidenceRecord,
     SourceCursorRecord,
 )
+from trader.recommendation.application.ports.json_values import JsonObject
 from trader.recommendation.domain.market.research import (
     CorporateRiskFactsFromAnnouncements,
     ResearchAnnouncement,
@@ -29,9 +30,11 @@ from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_SOURCE,
 )
 from trader.recommendation.infra.market_data.market_cache_identity import (
+    _deserialize_research_observation,
     _merge_research_observation,
     _research_data_version,
     _research_source_time,
+    _serialize_research_observation,
 )
 from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
 from trader.recommendation.infra.market_data.research_load_status import (
@@ -43,6 +46,7 @@ from trader.recommendation.infra.market_data.research_load_status import (
 
 _LOGGER = logging.getLogger(__name__)
 _RISK_COMPONENT_EVIDENCE_PREFIX = "risk-component:"
+_RESEARCH_OBSERVATION_EVIDENCE_ID = "risk-observation:structured"
 _RESEARCH_SOURCE = "akshare"
 _COMPONENT_PREFIXES = (_RISK_COMPONENT_EVIDENCE_PREFIX, CNINFO_COMPONENT_PREFIX)
 _STATUS_PRIORITY: Mapping[ResearchComponentStatus, int] = {
@@ -107,6 +111,7 @@ def ComponentStatusesForCode(
 def RecoverResearchComponentStatuses(
     state: _ResearchComponentPersistenceState,
     data_plane: _ResearchDataPlane,
+    observed_at: datetime,
 ) -> None:
     try:
         records = data_plane.load_risk_evidence_recent_records()
@@ -118,8 +123,21 @@ def RecoverResearchComponentStatuses(
         return
 
     restored: dict[str, dict[str, ResearchComponentStatus]] = {}
+    restored_observations: dict[str, tuple[ResearchObservation, datetime]] = {}
     cninfo_announcements: dict[str, list[ResearchAnnouncement]] = {}
     for record in records:
+        if record.evidence_id == _RESEARCH_OBSERVATION_EVIDENCE_ID:
+            if record.observed_at > observed_at:
+                _LOGGER.warning("research recovery skipped future observation code=%s", record.code)
+                continue
+            try:
+                restored_observations[record.code] = (
+                    _deserialize_research_observation(record.payload),
+                    record.observed_at,
+                )
+            except (TypeError, ValueError, KeyError):
+                _LOGGER.warning("research recovery skipped invalid observation code=%s", record.code)
+            continue
         component = _component_from_evidence_id(record.evidence_id)
         if component is not None and record.source in {_RESEARCH_SOURCE, CNINFO_SOURCE}:
             status = _parse_component_risk_status(record.payload)
@@ -141,6 +159,11 @@ def RecoverResearchComponentStatuses(
         restored = {}
     with state._lock:
         state._component_statuses.update(restored)
+        for code, (observation, cached_at) in restored_observations.items():
+            age_seconds = max(0.0, (observed_at - cached_at).total_seconds())
+            ttl_seconds = min(60.0, state._ttl_seconds) if observation.source_errors else state._ttl_seconds
+            remaining = max(0.0, ttl_seconds - age_seconds)
+            state._entries[(code, True)] = _ResearchEntry(observation, state._monotonic() + remaining)
     _recover_cninfo_observations(state, data_plane, cninfo_announcements)
 
 
@@ -156,6 +179,25 @@ def PersistResearchComponentStatuses(
     if source_time > observed_at:
         source_time = observed_at
     source_version = _research_data_version(observation)
+
+    try:
+        data_plane.save_risk_evidence_recent(
+            RiskEvidenceRecord(
+                code=code,
+                observed_at=observed_at,
+                source=_RESEARCH_SOURCE,
+                source_time=source_time,
+                data_version=source_version,
+                evidence_id=_RESEARCH_OBSERVATION_EVIDENCE_ID,
+                payload=cast(JsonObject, _serialize_research_observation(observation)),
+            )
+        )
+    except DataPlaneConflictError:
+        pass
+    except DataPlaneUnavailableError:
+        _LOGGER.warning("research data plane unavailable while saving observation code=%s", code)
+    except Exception as exc:
+        _LOGGER.warning("research observation persistence failed code=%s error=%s", code, type(exc).__name__)
 
     with state._lock:
         current = state._component_statuses.setdefault(code, {})

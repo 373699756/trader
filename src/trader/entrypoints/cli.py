@@ -58,6 +58,9 @@ def BuildParser() -> argparse.ArgumentParser:
         "qfq_download", help="Update Tencent V2/V3 bounded daily windows concurrently; resume automatically."
     )
     subparsers.add_parser(
+        "risk_download", help="Prepare the current or next trade-date company risk snapshot; resume automatically."
+    )
+    subparsers.add_parser(
         "scheduled-history-maintenance",
         help="Run the installed zero-argument history task without environment installation.",
     )
@@ -180,36 +183,60 @@ def _run_history_maintenance_command(
     profile: str | None,
     parser: argparse.ArgumentParser,
 ) -> int | None:
+    if command == "risk_download":
+        if profile is not None:
+            parser.error("risk_download does not accept --profile")
+        from trader.bootstrap import ExecuteRiskDownload
+
+        risk_result = ExecuteRiskDownload(_absolute_config_path(raw_config_path))
+        print(
+            json.dumps(
+                {
+                    "target_date": risk_result.target_date.isoformat(),
+                    "requested_codes": risk_result.requested_codes,
+                    "available_codes": risk_result.available_codes,
+                    "covered_codes": risk_result.covered_codes,
+                    "partial_codes": risk_result.partial_codes,
+                    "changed_codes": risk_result.changed_codes,
+                    "deferred_codes": risk_result.deferred_codes,
+                    "failed_codes": risk_result.failed_codes,
+                    "deadline_reached": risk_result.deadline_reached,
+                    "elapsed_seconds": round(risk_result.elapsed_seconds, 3),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 1 if risk_result.needs_retry else 0
     if command == "qfq_download":
         if profile is not None:
             parser.error("qfq_download does not accept --profile")
         from trader.bootstrap import ExecuteQfqDownload
 
         runtime = LoadRuntimeSettings(_absolute_config_path(raw_config_path))
-        result = ExecuteQfqDownload(
+        qfq_result = ExecuteQfqDownload(
             runtime.project_root,
             reference_root=runtime.reference_dir,
         )
         print(
             json.dumps(
                 {
-                    "target_date": result.target_date.isoformat() if result.target_date else None,
-                    "completed_codes": result.completed_codes,
-                    "pending_codes": result.pending_codes,
-                    "no_trade_data_codes": result.no_trade_data_codes,
-                    "latest_missing_codes": result.latest_missing_codes,
-                    "changed_files": result.changed_files,
-                    "changed_rows": result.changed_rows,
-                    "skipped_codes": result.skipped_codes,
-                    "failure_reason": result.failure_reason,
+                    "target_date": qfq_result.target_date.isoformat() if qfq_result.target_date else None,
+                    "completed_codes": qfq_result.completed_codes,
+                    "pending_codes": qfq_result.pending_codes,
+                    "no_trade_data_codes": qfq_result.no_trade_data_codes,
+                    "latest_missing_codes": qfq_result.latest_missing_codes,
+                    "changed_files": qfq_result.changed_files,
+                    "changed_rows": qfq_result.changed_rows,
+                    "skipped_codes": qfq_result.skipped_codes,
+                    "failure_reason": qfq_result.failure_reason,
                     "pending_reasons": [
-                        {"reason": item.reason, "count": item.count} for item in result.pending_reasons
+                        {"reason": item.reason, "count": item.count} for item in qfq_result.pending_reasons
                     ],
                 },
                 ensure_ascii=False,
             )
         )
-        return 1 if result.needs_retry else 0
+        return 1 if qfq_result.needs_retry else 0
     if command == "download":
         if profile is not None:
             parser.error("download does not accept --profile")

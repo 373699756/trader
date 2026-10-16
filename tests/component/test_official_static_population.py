@@ -180,17 +180,30 @@ def test_successful_same_content_refresh_updates_age_without_changing_content_id
     assert first.static_stages[0].source_health.latest_success_at == NOW
 
 
-def test_unique_registry_filters_the_complete_population_before_quote_and_history_subset(tmp_path):
+def test_non_st_registry_fact_is_deferred_to_second_level_filter(tmp_path):
     registry = SQLiteIssuerEligibilityIndex(tmp_path)
     registry.record((ManualBlacklistFact("300001", effective_at=NOW, config_hash="fixture"),))
-    _, _, _, history, service = _fixture(eligibility=registry)
+    _, _, _, history, service = _fixture(
+        quotes=(_quote(), _quote("300001")),
+        eligibility=registry,
+    )
     service.references.schedule_security_master_refresh(NOW)
     batch = service.fetch_market_feature_batch(NOW)
     static = batch.static_stages[-1]
-    assert (static.input_count, static.output_count, static.rejected_count) == (2, 1, 1)
+    assert (static.input_count, static.output_count, static.rejected_count) == (2, 2, 0)
     assert batch.dynamic_stage.snapshot.pending_count == 0
-    assert history.calls == ["600001"]
+    assert sorted(history.calls) == ["300001", "600001"]
+    blocked = next(feature for feature in batch.features if feature.quote.code == "300001")
+    assert "issuer_risk:manual_permanent_blacklist" in blocked.quote.execution_restrictions
     assert all(s.rejected_count == 0 for s in batch.static_stages[:3])
+
+
+def test_risk_universe_uses_official_population_without_waiting_for_quotes():
+    state, _, _, _, service = _fixture(quotes=())
+    state["rows"] = (replace(_listing(), name="*ST测试"),)
+    service.references.schedule_security_master_refresh(NOW)
+
+    assert service.risk_universe_codes(NOW) == ("300001",)
 
 
 def test_published_history_st_eligibility_prunes_realtime_requests_before_per_stock_history() -> None:
