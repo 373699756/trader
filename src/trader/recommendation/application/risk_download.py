@@ -81,6 +81,7 @@ class RiskDownloadResult:
     failed_codes: int
     deadline_reached: bool
     elapsed_seconds: float
+    inventory: RiskDownloadInventory
 
     @property
     def needs_retry(self) -> bool:
@@ -92,6 +93,18 @@ class RiskDownloadContext:
     target_date: date
     observed_at: datetime
     monotonic: Callable[[], float]
+
+
+@dataclass(frozen=True)
+class RiskDownloadInventory:
+    financial_codes: int
+    announcement_codes: int
+    pledge_codes: int
+    unlock_codes: int
+    regulatory_history_codes: int
+    news_items: int
+    announcement_items: int
+    financial_reports: int
 
 
 @dataclass(frozen=True)
@@ -139,6 +152,7 @@ def DownloadRiskSnapshot(
     coverage = {code: _research_component_coverage(observation) for code, observation in observations.items()}
     available = {code for code, status in coverage.items() if any(status)}
     covered = {code for code, status in coverage.items() if all(status)}
+    retained = tuple(observations[code] for code in normalized if code in observations)
     return RiskDownloadResult(
         target_date=context.target_date,
         requested_codes=len(normalized),
@@ -150,6 +164,16 @@ def DownloadRiskSnapshot(
         failed_codes=max(0, len(normalized) - len(available) - len(report.deferred_codes)),
         deadline_reached=report.deadline_reached,
         elapsed_seconds=max(0.0, context.monotonic() - started),
+        inventory=RiskDownloadInventory(
+            financial_codes=sum(item.financial is not None for item in retained),
+            announcement_codes=sum(item.announcements_available for item in retained),
+            pledge_codes=sum(item.pledge_ratio_pct is not None for item in retained),
+            unlock_codes=sum(item.unlock_ratio_pct is not None for item in retained),
+            regulatory_history_codes=sum(item.corporate_risk_history_complete for item in retained),
+            news_items=sum(sum(evidence.evidence_type == "news" for evidence in item.evidence) for item in retained),
+            announcement_items=sum(len(item.announcements) for item in retained),
+            financial_reports=sum(len(item.financial_history) for item in retained),
+        ),
     )
 
 
@@ -157,6 +181,7 @@ _RETRYABLE_SOURCE_FAILURES = frozenset(
     {
         "timeout",
         "deadline",
+        "deferred",
         "circuit_open",
         "negative_cache",
         "superseded",
@@ -187,6 +212,7 @@ __all__ = [
     "DownloadRiskSnapshot",
     "RiskDownloadBudget",
     "RiskDownloadContext",
+    "RiskDownloadInventory",
     "RiskDownloadResult",
     "RiskResearchLoadReport",
 ]

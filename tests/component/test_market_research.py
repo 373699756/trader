@@ -359,6 +359,101 @@ def test_akshare_news_response_is_cached_with_atomic_writer(tmp_path) -> None:
     assert "payload" in cached
 
 
+def test_akshare_risk_batch_fetches_structured_fields_without_claiming_regulatory_history() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def get(url, **kwargs):
+        params = kwargs["params"]
+        calls.append((url, params))
+        if "securities/api/data/get" in url:
+            assert '"600001.SH"' in params["filter"]
+            assert '"830001.BJ"' in params["filter"]
+            return FakeResponse(
+                {
+                    "success": True,
+                    "result": {
+                        "pages": 1,
+                        "count": 2,
+                        "data": [
+                            {
+                                "SECURITY_CODE": code,
+                                "REPORT_DATE": "2026-03-31",
+                                "NOTICE_DATE": "2026-04-30",
+                                "EPSJB": "1",
+                                "PARENTNETPROFIT": "10",
+                                "KCFJCXSYJLR": "8",
+                            }
+                            for code in ("600001", "830001")
+                        ],
+                    },
+                }
+            )
+        if params.get("reportName") == "RPT_CSDC_LIST":
+            return FakeResponse(
+                {
+                    "success": True,
+                    "result": {
+                        "pages": 1,
+                        "count": 1,
+                        "data": [
+                            {
+                                "SECURITY_CODE": "600001",
+                                "TRADE_DATE": "2026-07-16",
+                                "PLEDGE_RATIO": "5",
+                            }
+                        ],
+                    },
+                }
+            )
+        if params.get("reportName") == "RPT_LIFT_STAGE":
+            return FakeResponse(
+                {
+                    "success": True,
+                    "result": {
+                        "pages": 1,
+                        "count": 1,
+                        "data": [
+                            {
+                                "SECURITY_CODE": "830001",
+                                "FREE_DATE": "2026-08-01",
+                                "TOTAL_RATIO": "0.02",
+                            }
+                        ],
+                    },
+                }
+            )
+        raise AssertionError(f"unexpected research URL: {url}")
+
+    observations = AkshareResearchClient(
+        timeout_seconds=8,
+        get=get,
+        long_research_policy=LONG_POLICY,
+    ).fetch_risk_snapshots(("600001", "830001"), observed_at=AFTERNOON)
+
+    assert set(observations) == {"600001", "830001"}
+    assert observations["600001"].financial is not None
+    assert observations["830001"].financial is not None
+    assert all(not item.announcements_available for item in observations.values())
+    assert all(item.announcements == () for item in observations.values())
+    assert all(not item.corporate_risk_history_complete for item in observations.values())
+    assert all("announcements:deferred" in item.source_errors for item in observations.values())
+    assert observations["600001"].pledge_ratio_pct == pytest.approx(5.0)
+    assert observations["830001"].pledge_ratio_pct == pytest.approx(0.0)
+    assert observations["600001"].unlock_ratio_pct == pytest.approx(0.0)
+    assert observations["830001"].unlock_ratio_pct == pytest.approx(2.0)
+    assert not any("search-api-web" in url for url, _params in calls)
+    pledge_filters = [str(params["filter"]) for _url, params in calls if params.get("reportName") == "RPT_CSDC_LIST"]
+    assert pledge_filters == [
+        "(TRADE_DATE<='2026-07-16')",
+        '(TRADE_DATE=\'2026-07-16\')(SECURITY_CODE in ("600001","830001"))',
+    ]
+    unlock_filter = next(
+        str(params["filter"]) for _url, params in calls if params.get("reportName") == "RPT_LIFT_STAGE"
+    )
+    assert "(FREE_DATE>='2026-07-16')" in unlock_filter
+    assert "(FREE_DATE<='2026-10-14')" in unlock_filter
+
+
 def test_research_cache_is_used_after_restart_before_source_request(tmp_path) -> None:
     cache_dir = tmp_path / "evidence_cache"
     cache_file = cache_dir / "observations" / "news" / "600001.json"
@@ -1206,6 +1301,73 @@ def test_research_loader_recover_from_data_plane_overrides_component_statuses(tm
     assert status.unlock_covered_count == 1
 
 
+def test_research_loader_uses_bounded_risk_batches() -> None:
+    class BatchClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, ...]] = []
+
+        def fetch_risk_snapshots(self, codes, *, observed_at):
+            self.calls.append(tuple(codes))
+            assert observed_at == NOW
+            return {code: ResearchObservation(pledge_ratio_pct=0.0) for code in codes}
+
+    class BatchDataPlane:
+        def __init__(self) -> None:
+            self.batch_sizes: list[int] = []
+
+        def load_risk_evidence_recent_records(self, codes=None):
+            return ()
+
+        def load_source_cursor_recent_records(self, cursor_names=None):
+            return ()
+
+        def save_risk_evidence_recent_records(self, records) -> None:
+            self.batch_sizes.append(len(records))
+
+    batch_client = BatchClient()
+    data_plane = BatchDataPlane()
+    structured_client = StaticStructuredResearchClient((), ResearchObservation())
+    workers = BoundedExecutor(worker_count=2, queue_capacity=4, thread_name_prefix="risk-batch-test")
+    workers.start()
+    try:
+        service = _service(
+            StaticGateway((_quote(),)),
+            StaticHistoryClient(),
+            FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+            data_plane=data_plane,
+            research_client=structured_client,
+            risk_batch_client=batch_client,
+            worker_pool=workers,
+            research_cache_limit=120,
+            wall_clock=lambda: NOW,
+        )
+        codes = tuple(f"{index:06d}" for index in range(101))
+
+        report = service.research.load_report(
+            codes,
+            NOW,
+            include_structured=True,
+            deadline=NOW + timedelta(seconds=5),
+        )
+        service.research.load_report(
+            (codes[0],),
+            NOW,
+            include_structured=True,
+            force=True,
+            deadline=NOW + timedelta(seconds=5),
+        )
+    finally:
+        workers.stop()
+
+    assert sorted(len(call) for call in batch_client.calls) == [1, 50, 50]
+    assert set(report.observations) == set(codes)
+    assert len(report.changed_codes) == 101
+    assert report.deferred_codes == ()
+    assert report.deadline_reached is False
+    assert structured_client.snapshot_calls == 1
+    assert sorted(data_plane.batch_sizes) == [9, 9, 450, 450]
+
+
 def test_research_component_same_time_conflict_preserves_first_committed_status(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -1254,6 +1416,9 @@ def test_news_research_does_not_persist_risk_components() -> None:
         def save_risk_evidence_recent(self, _record: RiskEvidenceRecord) -> None:
             self.save_calls += 1
 
+        def save_risk_evidence_recent_records(self, records) -> None:
+            self.save_calls += len(records)
+
     data_plane = CountingRiskDataPlane()
     service = _service(
         StaticGateway((_quote(),)),
@@ -1279,6 +1444,9 @@ def test_research_data_plane_persistence_unavailable_does_not_block_research_loa
             return ()
 
         def save_risk_evidence_recent(self, _record: RiskEvidenceRecord) -> None:
+            raise DataPlaneUnavailableError("unavailable")
+
+        def save_risk_evidence_recent_records(self, _records) -> None:
             raise DataPlaneUnavailableError("unavailable")
 
     service = _service(

@@ -69,6 +69,8 @@ class _ResearchComponentPersistenceState(Protocol):
 class _ResearchDataPlane(Protocol):
     def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None: ...
 
+    def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None: ...
+
     def load_risk_evidence_recent_records(
         self, codes: Sequence[str] | None = None
     ) -> tuple[RiskEvidenceRecord, ...]: ...
@@ -213,14 +215,23 @@ def PersistResearchComponentStatuses(
     observed_at: datetime,
     observation: ResearchObservation,
 ) -> None:
-    component_statuses = ResearchComponentStatuses(observation)
-    source_time = _research_source_time(observation) or observed_at
-    if source_time > observed_at:
-        source_time = observed_at
-    source_version = _research_data_version(observation)
+    PersistResearchComponentStatusBatch(state, data_plane, observed_at, {code: observation})
 
-    try:
-        data_plane.save_risk_evidence_recent(
+
+def PersistResearchComponentStatusBatch(
+    state: _ResearchComponentPersistenceState,
+    data_plane: _ResearchDataPlane,
+    observed_at: datetime,
+    observations: Mapping[str, ResearchObservation],
+) -> None:
+    records: list[RiskEvidenceRecord] = []
+    statuses_by_code: dict[str, tuple[ResearchComponentStatus, ...]] = {}
+    for code, observation in observations.items():
+        component_statuses = ResearchComponentStatuses(observation)
+        statuses_by_code[code] = component_statuses
+        source_time = min(_research_source_time(observation) or observed_at, observed_at)
+        source_version = _research_data_version(observation)
+        records.append(
             RiskEvidenceRecord(
                 code=code,
                 observed_at=observed_at,
@@ -231,51 +242,33 @@ def PersistResearchComponentStatuses(
                 payload=cast(JsonObject, _serialize_research_observation(observation)),
             )
         )
-    except DataPlaneConflictError:
-        pass
-    except DataPlaneUnavailableError:
-        _LOGGER.warning("research data plane unavailable while saving observation code=%s", code)
-    except Exception as exc:
-        _LOGGER.warning("research observation persistence failed code=%s error=%s", code, type(exc).__name__)
+        records.extend(
+            RiskEvidenceRecord(
+                code=code,
+                observed_at=observed_at,
+                source=_RESEARCH_SOURCE,
+                source_time=source_time,
+                data_version=source_version,
+                evidence_id=f"{_RISK_COMPONENT_EVIDENCE_PREFIX}{component}",
+                payload={"status": status},
+            )
+            for component, status in zip(RESEARCH_COMPONENT_IDS, component_statuses, strict=True)
+        )
 
     with state._lock:
-        current = state._component_statuses.setdefault(code, {})
-        for component, status in zip(RESEARCH_COMPONENT_IDS, component_statuses, strict=True):
-            current.setdefault(component, status)
+        for code, component_statuses in statuses_by_code.items():
+            current = state._component_statuses.setdefault(code, {})
+            for component, status in zip(RESEARCH_COMPONENT_IDS, component_statuses, strict=True):
+                current.setdefault(component, status)
 
-    for component, status in zip(RESEARCH_COMPONENT_IDS, component_statuses, strict=True):
-        payload = {"status": status}
-        try:
-            data_plane.save_risk_evidence_recent(
-                RiskEvidenceRecord(
-                    code=code,
-                    observed_at=observed_at,
-                    source=_RESEARCH_SOURCE,
-                    source_time=source_time,
-                    data_version=source_version,
-                    evidence_id=f"{_RISK_COMPONENT_EVIDENCE_PREFIX}{component}",
-                    payload=payload,
-                )
-            )
-        except DataPlaneConflictError:
-            _LOGGER.debug(
-                "research risk component retained an existing same-time record for component=%s code=%s",
-                component,
-                code,
-            )
-        except DataPlaneUnavailableError:
-            _LOGGER.warning(
-                "research data plane unavailable while saving risk component status for component=%s code=%s",
-                component,
-                code,
-            )
-        except Exception as exc:
-            _LOGGER.warning(
-                "research risk component persistence failed for component=%s code=%s error=%s",
-                component,
-                code,
-                type(exc).__name__,
-            )
+    try:
+        data_plane.save_risk_evidence_recent_records(records)
+    except DataPlaneConflictError:
+        _LOGGER.debug("research risk batch retained existing same-time records rows=%s", len(records))
+    except DataPlaneUnavailableError:
+        _LOGGER.warning("research data plane unavailable while saving risk batch rows=%s", len(records))
+    except Exception as exc:
+        _LOGGER.warning("research risk batch persistence failed rows=%s error=%s", len(records), type(exc).__name__)
 
 
 def _parse_component_risk_status(payload: object) -> ResearchComponentStatus | None:

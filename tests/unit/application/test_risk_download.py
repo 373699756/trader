@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.application.risk_download import DownloadRiskSnapshot, RiskDownloadContext
+from trader.entrypoints import cli
+from trader.recommendation.application.risk_download import (
+    DownloadRiskSnapshot,
+    RiskDownloadContext,
+    RiskDownloadInventory,
+    RiskDownloadResult,
+)
 from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.infra.market_data.research_load_status import ResearchLoadReport
 
@@ -108,3 +115,37 @@ def test_risk_download_retries_only_recoverable_component_errors_after_initial_c
 
     assert loader.loaded_codes == ("300001", "600001")
     assert loader.force is True
+
+
+def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch, capsys, tmp_path) -> None:
+    result = RiskDownloadResult(
+        target_date=date(2026, 10, 19),
+        requested_codes=100,
+        available_codes=80,
+        covered_codes=10,
+        partial_codes=70,
+        changed_codes=20,
+        deferred_codes=20,
+        failed_codes=0,
+        deadline_reached=True,
+        elapsed_seconds=123.4567,
+        inventory=RiskDownloadInventory(75, 10, 70, 78, 0, 12, 34, 567),
+    )
+    monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", lambda _path: result)
+
+    assert cli.Main(["--config", str(tmp_path / "runtime.json"), "risk_download"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["component_codes"] == {
+        "financial": 75,
+        "announcements": 10,
+        "pledge": 70,
+        "unlock": 78,
+        "regulatory_history": 0,
+    }
+    assert payload["retained_items"] == {
+        "news": 12,
+        "announcements": 34,
+        "financial_reports": 567,
+    }
+    assert payload["elapsed_seconds"] == 123.457

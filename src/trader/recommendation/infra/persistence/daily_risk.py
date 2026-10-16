@@ -51,6 +51,11 @@ class SQLiteDailyRiskIndex:
         self.prepare(trade_date)
         self._plane(trade_date).save_risk_evidence_recent(record)
 
+    def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None:
+        trade_date = self._target_date()
+        self.prepare(trade_date)
+        self._plane(trade_date).save_risk_evidence_recent_records(records)
+
     def load_risk_evidence_recent(self, code: str, evidence_id: str) -> RiskEvidenceRecord | None:
         trade_date = self._target_date()
         self.prepare(trade_date)

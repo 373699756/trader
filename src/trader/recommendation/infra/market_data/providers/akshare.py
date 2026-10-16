@@ -6,8 +6,8 @@ import logging
 import math
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
-from datetime import datetime, timedelta
+from collections.abc import Callable, Mapping, Sequence
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 from zoneinfo import ZoneInfo
@@ -128,6 +128,67 @@ def _announcement_payload_with_rows(
     return result
 
 
+def _result_metadata(payload: Mapping[str, object]) -> Mapping[str, object] | None:
+    result = payload.get("result")
+    return result if isinstance(result, Mapping) else None
+
+
+def _result_page_count(payload: Mapping[str, object]) -> int | None:
+    result = _result_metadata(payload)
+    pages = result.get("pages") if result is not None else None
+    if not isinstance(pages, int) or isinstance(pages, bool) or pages < 0:
+        return None
+    return max(1, pages)
+
+
+def _result_count(payload: Mapping[str, object]) -> int | None:
+    result = _result_metadata(payload)
+    count = result.get("count") if result is not None else None
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        return None
+    return count
+
+
+def _result_payload_with_rows(
+    payload: Mapping[str, object],
+    rows: Sequence[Mapping[str, object]],
+) -> Mapping[str, object]:
+    raw_result = _result_metadata(payload)
+    if raw_result is None:
+        raise ValueError("research batch response is missing result metadata")
+    result = dict(raw_result)
+    result["data"] = [dict(row) for row in rows]
+    result["count"] = len(rows)
+    result["pages"] = 1 if rows else 0
+    projected = dict(payload)
+    projected["result"] = result
+    return projected
+
+
+def _group_result_payloads(
+    codes: tuple[str, ...],
+    template: Mapping[str, object],
+    rows: Sequence[Mapping[str, object]],
+) -> Mapping[str, Mapping[str, object]]:
+    grouped: dict[str, list[Mapping[str, object]]] = {code: [] for code in codes}
+    for row in rows:
+        raw_code = row.get("SECURITY_CODE") or row.get("SECUCODE")
+        code = str(raw_code or "").split(".", maxsplit=1)[0]
+        if code in grouped:
+            grouped[code].append(row)
+    return {code: _result_payload_with_rows(template, grouped[code]) for code in codes}
+
+
+def _eastmoney_security_code(code: str) -> str:
+    if code.startswith("6"):
+        market = "SH"
+    elif code.startswith(("4", "8")):
+        market = "BJ"
+    else:
+        market = "SZ"
+    return f"{code}.{market}"
+
+
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 _DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _SOURCE_EXCEPTIONS = (OSError, RuntimeError, ValueError, requests.RequestException)
@@ -139,6 +200,9 @@ _COMPONENT_TTLS = {
 }
 _ANNOUNCEMENT_PAGE_SIZE = 100
 _ANNOUNCEMENT_MAX_PAGES = 50
+_RISK_BATCH_SIZE = 50
+_RISK_BATCH_PAGE_SIZE = 500
+_RISK_BATCH_MAX_PAGES = 50
 
 
 class _AkshareRequiredOptions(TypedDict):
@@ -166,6 +230,8 @@ class AkshareResearchClient:
         self._timeout_seconds = max(0.1, timeout_seconds)
         self._get = options["get"]
         self._version_lock = threading.Lock()
+        self._pledge_date_lock = threading.Lock()
+        self._pledge_trade_dates: dict[date, date] = {}
         self._revision = 0
         self._versions: OrderedDict[tuple[str, str], tuple[CacheRequestKey, str]] = OrderedDict()
         self._long_research_policy = options.get("long_research_policy")
@@ -199,7 +265,73 @@ class AkshareResearchClient:
         if policy is None:
             raise RuntimeError("long research policy is required for structured research")
 
-        source_errors: list[str] = []
+        return self._compose_snapshot(code, point_in_time, policy, component_payloads=None)
+
+    def fetch_risk_snapshots(
+        self,
+        codes: Sequence[str],
+        *,
+        observed_at: datetime,
+    ) -> Mapping[str, ResearchObservation]:
+        """Fetch current structured risk fields in bounded supplier batches.
+
+        News remains on the candidate-only route.  Announcements are intentionally
+        limited to the configured current-event window, so this path never claims
+        that the permanent regulatory history is complete.
+        """
+        normalized = tuple(dict.fromkeys(codes))
+        if not normalized:
+            return {}
+        if len(normalized) > _RISK_BATCH_SIZE:
+            raise ValueError(f"risk snapshot batch accepts at most {_RISK_BATCH_SIZE} codes")
+        for code in normalized:
+            _validate_code(code)
+        point_in_time = _point_in_time(observed_at)
+        policy = self._long_research_policy
+        if policy is None:
+            raise RuntimeError("long research policy is required for structured research")
+
+        payloads: dict[str, dict[str, Mapping[str, object]]] = {code: {} for code in normalized}
+        errors: dict[str, list[str]] = {code: ["announcements:deferred"] for code in normalized}
+        fetchers = (
+            ("financial", lambda: self._batch_financial_payloads(normalized)),
+            ("pledge", lambda: self._batch_pledge_payloads(normalized, point_in_time)),
+            ("unlock", lambda: self._batch_unlock_payloads(normalized, point_in_time, policy)),
+        )
+        for source, fetch in fetchers:
+            try:
+                component_payloads = fetch()
+            except _SOURCE_EXCEPTIONS as exc:
+                error = _source_error(source, exc)
+                for code in normalized:
+                    errors[code].append(error)
+                continue
+            for code in normalized:
+                payloads[code][source] = component_payloads[code]
+
+        return {
+            code: self._compose_snapshot(
+                code,
+                point_in_time,
+                policy,
+                component_payloads=payloads[code],
+                initial_errors=errors[code],
+            )
+            for code in normalized
+        }
+
+    def _compose_snapshot(
+        self,
+        code: str,
+        point_in_time: datetime,
+        policy: LongResearchPolicy,
+        *,
+        component_payloads: Mapping[str, Mapping[str, object]] | None,
+        initial_errors: Sequence[str] = (),
+    ) -> ResearchObservation:
+        failed_sources = {error.partition(":")[0] for error in initial_errors}
+
+        source_errors = list(initial_errors)
         financial: FinancialReport | None = None
         financial_history: tuple[FinancialReport, ...] = ()
         financial_history_complete = False
@@ -216,40 +348,63 @@ class AkshareResearchClient:
         unlock_evidence: tuple[Evidence, ...] = ()
         news_evidence: tuple[Evidence, ...] = ()
 
-        try:
-            news_evidence = self.fetch_news(code, observed_at=point_in_time)
-        except _SOURCE_EXCEPTIONS as exc:
-            source_errors.append(_source_error("news", exc))
+        if component_payloads is None:
+            try:
+                news_evidence = self.fetch_news(code, observed_at=point_in_time)
+            except _SOURCE_EXCEPTIONS as exc:
+                source_errors.append(_source_error("news", exc))
 
-        try:
-            financial, financial_history, financial_history_complete, financial_evidence = self._fetch_financial(
-                code, point_in_time, policy
-            )
-        except _SOURCE_EXCEPTIONS as exc:
-            source_errors.append(_source_error("financial", exc))
+        if "financial" not in failed_sources:
+            try:
+                financial, financial_history, financial_history_complete, financial_evidence = self._fetch_financial(
+                    code,
+                    point_in_time,
+                    policy,
+                    payload=None if component_payloads is None else component_payloads["financial"],
+                )
+            except _SOURCE_EXCEPTIONS as exc:
+                source_errors.append(_source_error("financial", exc))
 
-        try:
-            (
-                announcements,
-                announcement_evidence,
-                corporate_risk_facts,
-                corporate_risk_history_complete,
-                corporate_risk_evidence_version,
-            ) = self._fetch_announcements(code, point_in_time, policy)
-        except _SOURCE_EXCEPTIONS as exc:
-            source_errors.append(_source_error("announcements", exc))
-        else:
-            announcements_available = True
+        if "announcements" not in failed_sources:
+            try:
+                (
+                    announcements,
+                    announcement_evidence,
+                    corporate_risk_facts,
+                    corporate_risk_history_complete,
+                    corporate_risk_evidence_version,
+                ) = self._fetch_announcements(
+                    code,
+                    point_in_time,
+                    policy,
+                    payload=None if component_payloads is None else component_payloads["announcements"],
+                    history_complete_allowed=component_payloads is None,
+                )
+            except _SOURCE_EXCEPTIONS as exc:
+                source_errors.append(_source_error("announcements", exc))
+            else:
+                announcements_available = True
 
-        try:
-            pledge_ratio, pledge_evidence = self._fetch_pledge(code, point_in_time)
-        except _SOURCE_EXCEPTIONS as exc:
-            source_errors.append(_source_error("pledge", exc))
+        if "pledge" not in failed_sources:
+            try:
+                pledge_ratio, pledge_evidence = self._fetch_pledge(
+                    code,
+                    point_in_time,
+                    payload=None if component_payloads is None else component_payloads["pledge"],
+                )
+            except _SOURCE_EXCEPTIONS as exc:
+                source_errors.append(_source_error("pledge", exc))
 
-        try:
-            unlock_ratio, unlock_evidence = self._fetch_unlock(code, point_in_time, policy)
-        except _SOURCE_EXCEPTIONS as exc:
-            source_errors.append(_source_error("unlock", exc))
+        if "unlock" not in failed_sources:
+            try:
+                unlock_ratio, unlock_evidence = self._fetch_unlock(
+                    code,
+                    point_in_time,
+                    policy,
+                    payload=None if component_payloads is None else component_payloads["unlock"],
+                )
+            except _SOURCE_EXCEPTIONS as exc:
+                source_errors.append(_source_error("unlock", exc))
 
         announcement_summary = tuple(item for item in announcement_evidence if item.evidence_type == "research_summary")
         announcement_details = tuple(item for item in announcement_evidence if item.evidence_type != "research_summary")
@@ -288,17 +443,20 @@ class AkshareResearchClient:
         code: str,
         observed_at: datetime,
         policy: LongResearchPolicy,
+        *,
+        payload: Mapping[str, object] | None = None,
     ) -> tuple[FinancialReport | None, tuple[FinancialReport, ...], bool, tuple[Evidence, ...]]:
-        payload = self._component_payload(
-            "financial",
-            code,
-            observed_at,
-            lambda: self._financial_payload(code),
-        )
+        if payload is None:
+            payload = self._component_payload(
+                "financial",
+                code,
+                observed_at,
+                lambda: self._financial_payload(code),
+            )
         history: list[FinancialReport] = []
         for row in _result_rows(payload):
             report_date = _parse_date(row.get("REPORT_DATE"))
-            published_at = _parse_date_end(row.get("NOTICE_DATE"))
+            published_at = _parse_date_end(row.get("NOTICE_DATE") or row.get("TRADE_DATE"))
             if report_date is None or published_at is None or published_at > observed_at:
                 continue
             if report_date.month not in {3, 6, 9, 12}:
@@ -356,14 +514,13 @@ class AkshareResearchClient:
         )
 
     def _financial_payload(self, code: str) -> Mapping[str, object]:
-        market = "SH" if code.startswith("6") else "SZ"
         return self._request_json(
             "https://datacenter.eastmoney.com/securities/api/data/get",
             params={
                 "type": "RPT_F10_FINANCE_MAINFINADATA",
                 "sty": "APP_F10_MAINFINADATA",
                 "quoteColumns": "",
-                "filter": f'(SECUCODE="{code}.{market}")',
+                "filter": f'(SECUCODE="{_eastmoney_security_code(code)}")',
                 "p": "1",
                 "ps": "500",
                 "sr": "-1",
@@ -378,6 +535,9 @@ class AkshareResearchClient:
         code: str,
         observed_at: datetime,
         policy: LongResearchPolicy,
+        *,
+        payload: Mapping[str, object] | None = None,
+        history_complete_allowed: bool = True,
     ) -> tuple[
         tuple[ResearchAnnouncement, ...],
         tuple[Evidence, ...],
@@ -385,7 +545,8 @@ class AkshareResearchClient:
         bool,
         str,
     ]:
-        payload = self._announcement_payload(code, observed_at)
+        if payload is None:
+            payload = self._announcement_payload(code, observed_at)
         rows = _announcement_rows(payload)
         cutoff = observed_at - timedelta(days=policy.announcement_lookback_days)
         version = self.source_version("eastmoney-announcement", code, payload)
@@ -468,45 +629,54 @@ class AkshareResearchClient:
             version,
         )
         evidence = (summary, *corporate_evidence, *(evidence for item in evidence_rows for evidence in item[1]))
-        history_complete = invalid_rows == 0 and _announcement_history_complete(payload, len(historical_announcements))
+        history_complete = (
+            history_complete_allowed
+            and invalid_rows == 0
+            and _announcement_history_complete(payload, len(historical_announcements))
+        )
         return tuple(item[0] for item in parsed), evidence, corporate_facts, history_complete, version
 
     def _fetch_pledge(
         self,
         code: str,
         observed_at: datetime,
+        *,
+        payload: Mapping[str, object] | None = None,
     ) -> tuple[float, tuple[Evidence, ...]]:
-        payload = self._component_payload(
-            "pledge",
-            code,
-            observed_at,
-            lambda: self._request_json(
-                "https://datacenter-web.eastmoney.com/api/data/v1/get",
-                params={
-                    "sortColumns": "NOTICE_DATE",
-                    "sortTypes": "-1",
-                    "pageSize": "200",
-                    "pageNumber": "1",
-                    "reportName": "RPTA_APP_ACCUMDETAILS",
-                    "columns": "ALL",
-                    "quoteColumns": "",
-                    "source": "WEB",
-                    "client": "WEB",
-                    "filter": f'(SECURITY_CODE="{code}")',
-                },
-            ),
-        )
+        if payload is None:
+            payload = self._component_payload(
+                "pledge",
+                code,
+                observed_at,
+                lambda: self._request_json(
+                    "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                    params={
+                        "sortColumns": "NOTICE_DATE",
+                        "sortTypes": "-1",
+                        "pageSize": "200",
+                        "pageNumber": "1",
+                        "reportName": "RPTA_APP_ACCUMDETAILS",
+                        "columns": "ALL",
+                        "quoteColumns": "",
+                        "source": "WEB",
+                        "client": "WEB",
+                        "filter": f'(SECURITY_CODE="{code}")',
+                    },
+                ),
+            )
         rows = _result_rows(payload)
         eligible: list[tuple[datetime, float]] = []
         invalid_eligible_row = False
         for row in rows:
             published_at = _parse_date_end(row.get("NOTICE_DATE"))
+            if published_at is None and (trade_date := _parse_date(row.get("TRADE_DATE"))) is not None:
+                published_at = datetime.combine(trade_date, time.min, tzinfo=SHANGHAI_TZ)
             if published_at is None:
                 invalid_eligible_row = True
                 continue
             if published_at > observed_at:
                 continue
-            ratio = _finite_number(row.get("ACCUM_PLEDGE_TSR"))
+            ratio = _finite_number(row.get("ACCUM_PLEDGE_TSR") or row.get("PLEDGE_RATIO"))
             if ratio is None or not 0.0 <= ratio <= 100.0:
                 invalid_eligible_row = True
             else:
@@ -533,30 +703,33 @@ class AkshareResearchClient:
         code: str,
         observed_at: datetime,
         policy: LongResearchPolicy,
+        *,
+        payload: Mapping[str, object] | None = None,
     ) -> tuple[float, tuple[Evidence, ...]]:
-        payload = self._component_payload(
-            "unlock",
-            code,
-            observed_at,
-            lambda: self._request_json(
-                "https://datacenter-web.eastmoney.com/api/data/v1/get",
-                params={
-                    "sortColumns": "FREE_DATE",
-                    "sortTypes": "-1",
-                    "pageSize": "200",
-                    "pageNumber": "1",
-                    "reportName": "RPT_LIFT_STAGE",
-                    "columns": (
-                        "SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,CURRENT_FREE_SHARES,ABLE_FREE_SHARES,"
-                        "LIFT_MARKET_CAP,FREE_RATIO,NEW,B20_ADJCHRATE,A20_ADJCHRATE,FREE_SHARES_TYPE,"
-                        "TOTAL_RATIO,NON_FREE_SHARES,BATCH_HOLDER_NUM"
-                    ),
-                    "source": "WEB",
-                    "client": "WEB",
-                    "filter": f'(SECURITY_CODE="{code}")',
-                },
-            ),
-        )
+        if payload is None:
+            payload = self._component_payload(
+                "unlock",
+                code,
+                observed_at,
+                lambda: self._request_json(
+                    "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                    params={
+                        "sortColumns": "FREE_DATE",
+                        "sortTypes": "-1",
+                        "pageSize": "200",
+                        "pageNumber": "1",
+                        "reportName": "RPT_LIFT_STAGE",
+                        "columns": (
+                            "SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,CURRENT_FREE_SHARES,ABLE_FREE_SHARES,"
+                            "LIFT_MARKET_CAP,FREE_RATIO,NEW,B20_ADJCHRATE,A20_ADJCHRATE,FREE_SHARES_TYPE,"
+                            "TOTAL_RATIO,NON_FREE_SHARES,BATCH_HOLDER_NUM"
+                        ),
+                        "source": "WEB",
+                        "client": "WEB",
+                        "filter": f'(SECURITY_CODE="{code}")',
+                    },
+                ),
+            )
         end_date = observed_at.date() + timedelta(days=policy.unlock_forward_days)
         total_ratio = 0.0
         invalid_window_row = False
@@ -586,6 +759,142 @@ class AkshareResearchClient:
                 data_version=version,
             ),
         )
+
+    def _batch_financial_payloads(
+        self,
+        codes: tuple[str, ...],
+    ) -> Mapping[str, Mapping[str, object]]:
+        filters = ",".join(f'"{_eastmoney_security_code(code)}"' for code in codes)
+        template, rows = self._batch_result_rows(
+            "https://datacenter.eastmoney.com/securities/api/data/get",
+            params={
+                "type": "RPT_F10_FINANCE_MAINFINADATA",
+                "sty": "APP_F10_MAINFINADATA",
+                "quoteColumns": "",
+                "filter": f"(SECUCODE in ({filters}))",
+                "sr": "-1",
+                "st": "REPORT_DATE",
+                "source": "HSF10",
+                "client": "PC",
+            },
+            page_key="p",
+            size_key="ps",
+        )
+        return _group_result_payloads(codes, template, rows)
+
+    def _batch_pledge_payloads(
+        self,
+        codes: tuple[str, ...],
+        observed_at: datetime,
+    ) -> Mapping[str, Mapping[str, object]]:
+        filters = ",".join(f'"{code}"' for code in codes)
+        trade_date = self._latest_pledge_trade_date(observed_at)
+        template, rows = self._batch_result_rows(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            params={
+                "sortColumns": "PLEDGE_RATIO",
+                "sortTypes": "-1",
+                "reportName": "RPT_CSDC_LIST",
+                "columns": "ALL",
+                "quoteColumns": "",
+                "source": "WEB",
+                "client": "WEB",
+                "filter": (f"(TRADE_DATE='{trade_date.isoformat()}')(SECURITY_CODE in ({filters}))"),
+            },
+            page_key="pageNumber",
+            size_key="pageSize",
+        )
+        return _group_result_payloads(codes, template, rows)
+
+    def _latest_pledge_trade_date(self, observed_at: datetime) -> date:
+        observation_date = observed_at.date()
+        with self._pledge_date_lock:
+            cached = self._pledge_trade_dates.get(observation_date)
+            if cached is not None:
+                return cached
+            payload = self._request_json(
+                "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                params={
+                    "sortColumns": "TRADE_DATE",
+                    "sortTypes": "-1",
+                    "pageSize": "1",
+                    "pageNumber": "1",
+                    "reportName": "RPT_CSDC_LIST",
+                    "columns": "ALL",
+                    "quoteColumns": "",
+                    "source": "WEB",
+                    "client": "WEB",
+                    "filter": f"(TRADE_DATE<='{observation_date.isoformat()}')",
+                },
+            )
+            rows = _result_rows(payload)
+            trade_date = _parse_date(rows[0].get("TRADE_DATE")) if rows else None
+            if trade_date is None or trade_date > observation_date:
+                raise ValueError("pledge batch has no valid point-in-time snapshot date")
+            self._pledge_trade_dates[observation_date] = trade_date
+            return trade_date
+
+    def _batch_unlock_payloads(
+        self,
+        codes: tuple[str, ...],
+        observed_at: datetime,
+        policy: LongResearchPolicy,
+    ) -> Mapping[str, Mapping[str, object]]:
+        filters = ",".join(f'"{code}"' for code in codes)
+        start_date = observed_at.date()
+        end_date = start_date + timedelta(days=policy.unlock_forward_days)
+        template, rows = self._batch_result_rows(
+            "https://datacenter-web.eastmoney.com/api/data/v1/get",
+            params={
+                "sortColumns": "FREE_DATE",
+                "sortTypes": "-1",
+                "reportName": "RPT_LIFT_STAGE",
+                "columns": (
+                    "SECURITY_CODE,SECURITY_NAME_ABBR,FREE_DATE,CURRENT_FREE_SHARES,ABLE_FREE_SHARES,"
+                    "LIFT_MARKET_CAP,FREE_RATIO,NEW,B20_ADJCHRATE,A20_ADJCHRATE,FREE_SHARES_TYPE,"
+                    "TOTAL_RATIO,NON_FREE_SHARES,BATCH_HOLDER_NUM"
+                ),
+                "source": "WEB",
+                "client": "WEB",
+                "filter": (
+                    f"(FREE_DATE>='{start_date.isoformat()}')"
+                    f"(FREE_DATE<='{end_date.isoformat()}')"
+                    f"(SECURITY_CODE in ({filters}))"
+                ),
+            },
+            page_key="pageNumber",
+            size_key="pageSize",
+        )
+        return _group_result_payloads(codes, template, rows)
+
+    def _batch_result_rows(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, object],
+        page_key: str,
+        size_key: str,
+    ) -> tuple[Mapping[str, object], tuple[Mapping[str, object], ...]]:
+        first = self._request_json(
+            url,
+            params={**params, page_key: "1", size_key: str(_RISK_BATCH_PAGE_SIZE)},
+        )
+        page_count = _result_page_count(first)
+        if page_count is None:
+            raise ValueError("research batch response is missing page metadata")
+        if page_count > _RISK_BATCH_MAX_PAGES:
+            raise ValueError("research batch exceeds bounded page limit")
+        rows = list(_result_rows(first))
+        for page in range(2, page_count + 1):
+            payload = self._request_json(
+                url,
+                params={**params, page_key: str(page), size_key: str(_RISK_BATCH_PAGE_SIZE)},
+            )
+            rows.extend(_result_rows(payload))
+        expected = _result_count(first)
+        if expected is None or len(rows) < expected:
+            raise ValueError("research batch returned incomplete pages")
+        return first, tuple(rows)
 
     def _request_json(self, url: str, *, params: Mapping[str, object]) -> Mapping[str, object]:
         response = self._request(url, params=params)

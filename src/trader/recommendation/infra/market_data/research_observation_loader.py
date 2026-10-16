@@ -40,9 +40,12 @@ from trader.recommendation.infra.market_data.market_cache_identity import (
 )
 from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.recommendation.infra.market_data.provider_ports import ResearchSource
+from trader.recommendation.infra.market_data.provider_ports import ResearchSource, RiskSnapshotBatchSource
 from trader.recommendation.infra.market_data.research_component_persistence import (
     LoaderStatus as _loader_status_from_plane,
+)
+from trader.recommendation.infra.market_data.research_component_persistence import (
+    PersistResearchComponentStatusBatch as _persist_research_component_status_batch_from_plane,
 )
 from trader.recommendation.infra.market_data.research_component_persistence import (
     PersistResearchComponentStatuses as _persist_research_component_statuses_from_plane,
@@ -122,12 +125,14 @@ class ResearchLoader:
         runner: MarketTaskRunner,
         *,
         data_plane: _ResearchDataPlaneProtocol | None = None,
+        risk_batch_client: RiskSnapshotBatchSource | None = None,
         **options: Unpack[ResearchLoaderOptions],
     ) -> None:
         self._versions = InputVersionClock()
         self._client = client
         self._runner = runner
         self._data_plane = data_plane
+        self._risk_batch_client = risk_batch_client
         self._workers = max(1, options["workers"])
         self._ttl_seconds = max(60.0, options["ttl_seconds"])
         self._failure_limit = max(1, options["circuit_breaker_failures"])
@@ -467,6 +472,8 @@ class ResearchLoader:
             self._runner.worker_pool,
             inline=source_lanes is not None and source_lanes.owns_current_thread("akshare"),
         )
+        if request.include_structured and not request.force and self._risk_batch_client is not None:
+            return self._fetch_missing_risk_batches(pool, state, missing)
         futures, started_at = self._submit_research(pool, state, missing)
         timeout = self._remaining_research_timeout(request.deadline)
         pending = set(futures)
@@ -495,6 +502,85 @@ class ResearchLoader:
             timeout = self._remaining_research_timeout(request.deadline)
         deferred = tuple(code for code in missing if code not in consumed)
         self._cancel_deferred_research(futures, consumed, deferred)
+        return tuple(changed_codes), deferred
+
+    def _fetch_missing_risk_batches(
+        self,
+        pool: WorkerExecutor,
+        state: _ResearchLoadState,
+        missing: Sequence[str],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        client = self._risk_batch_client
+        assert client is not None
+        batches = tuple(tuple(missing[index : index + 50]) for index in range(0, len(missing), 50))
+        futures: dict[Future[Mapping[str, ResearchObservation]], tuple[str, ...]] = {}
+        started_at: dict[Future[Mapping[str, ResearchObservation]], float] = {}
+        for batch in batches:
+            self._runner.ensure_before_deadline(state.request.deadline)
+            started = self._monotonic()
+            future = SubmitOrReject(
+                pool,
+                client.fetch_risk_snapshots,
+                batch,
+                observed_at=state.request.observed_at,
+            )
+            futures[future] = batch
+            started_at[future] = started
+
+        pending = set(futures)
+        consumed: set[str] = set()
+        changed_codes: list[str] = []
+        deadline_reached = False
+        timeout = self._remaining_research_timeout(state.request.deadline)
+        while pending:
+            completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+            if not completed:
+                break
+            for future in sorted(completed, key=lambda item: futures[item]):
+                batch = futures[future]
+                batch_observations: dict[str, ResearchObservation] = {}
+                latency_ms = max(0.0, (self._monotonic() - started_at[future]) * 1000.0)
+                try:
+                    observations = future.result()
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    observations = {
+                        code: ResearchObservation(source_errors=(f"batch:{_batch_error_code(exc)}",)) for code in batch
+                    }
+                for code in batch:
+                    try:
+                        self._runner.ensure_before_deadline(state.request.deadline)
+                    except MarketDataDeadlineExceededError:
+                        deadline_reached = True
+                        break
+                    observation = observations.get(code)
+                    if observation is None:
+                        observation = ResearchObservation(source_errors=("batch:source_failed",))
+                    if self._consume_research_observation(state, code, observation, latency_ms, persist=False):
+                        changed_codes.append(code)
+                    batch_observations[code] = state.result[code]
+                    consumed.add(code)
+                if batch_observations and self._data_plane is not None:
+                    _persist_research_component_status_batch_from_plane(
+                        self,
+                        self._data_plane,
+                        state.request.observed_at,
+                        batch_observations,
+                    )
+                if deadline_reached:
+                    break
+            if deadline_reached:
+                break
+            timeout = self._remaining_research_timeout(state.request.deadline)
+
+        deferred = tuple(code for code in missing if code not in consumed)
+        if deferred:
+            for future, batch in futures.items():
+                if any(code not in consumed for code in batch):
+                    future.cancel()
+            with self._lock:
+                self._error_count += len(deferred)
+                self._timeout_count += len(deferred)
+                self._last_error = "research_batch_deadline"
         return tuple(changed_codes), deferred
 
     def _cancel_deferred_research(
@@ -551,10 +637,35 @@ class ResearchLoader:
         future: Future[ResearchObservation],
         started_at: float,
     ) -> bool:
-        request = state.request
         old_entry = state.previous.get(code)
         latency_ms = max(0.0, (self._monotonic() - started_at) * 1000.0)
         observation, ttl = self._resolve_research_result(future, old_entry, latency_ms)
+        return self._commit_research_observation(state, code, observation, ttl)
+
+    def _consume_research_observation(
+        self,
+        state: _ResearchLoadState,
+        code: str,
+        observation: ResearchObservation,
+        latency_ms: float,
+        *,
+        persist: bool = True,
+    ) -> bool:
+        old_entry = state.previous.get(code)
+        observation, ttl = self._resolve_research_observation(observation, old_entry, latency_ms)
+        return self._commit_research_observation(state, code, observation, ttl, persist=persist)
+
+    def _commit_research_observation(
+        self,
+        state: _ResearchLoadState,
+        code: str,
+        observation: ResearchObservation,
+        ttl: float,
+        *,
+        persist: bool = True,
+    ) -> bool:
+        request = state.request
+        old_entry = state.previous.get(code)
         changed = old_entry is None or _research_facts(old_entry.observation) != _research_facts(observation)
         observation = replace(
             observation,
@@ -563,7 +674,7 @@ class ResearchLoader:
             else self._versions.advance("research"),
         )
         state.result[code] = observation
-        if request.include_structured:
+        if persist and request.include_structured:
             if self._data_plane is not None:
                 _persist_research_component_statuses_from_plane(
                     self,
@@ -606,6 +717,15 @@ class ResearchLoader:
                 self._latencies_ms.append(latency_ms)
                 self._last_error = str(exc)[:240]
             return observation, min(60.0, ttl)
+        return self._resolve_research_observation(observation, old_entry, latency_ms)
+
+    def _resolve_research_observation(
+        self,
+        observation: ResearchObservation,
+        old_entry: _ResearchEntry | None,
+        latency_ms: float,
+    ) -> tuple[ResearchObservation, float]:
+        ttl = self._ttl_seconds
         if _research_is_older(observation, old_entry):
             observation = _degraded_research_observation(old_entry, "out_of_order_research_result")
             ttl = min(60.0, ttl)
@@ -824,6 +944,13 @@ class ResearchLoader:
     @property
     def client(self) -> ResearchSource | None:
         return self._client
+
+
+def _batch_error_code(exc: BaseException) -> str:
+    name = type(exc).__name__.lower()
+    if "timeout" in name or "deadline" in str(exc).lower():
+        return "timeout"
+    return "source_failed"
 
 
 def _research_facts(observation: ResearchObservation) -> ResearchObservation:

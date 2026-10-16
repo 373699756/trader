@@ -197,20 +197,22 @@ if TYPE_CHECKING:
 
 def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
     """Prepare the next applicable trade-date risk partition with bounded supplier work."""
+    command_started = time.monotonic()
     settings = LoadRuntimeSettings(config_path)
     strategy = LoadStrategySettings(settings.strategy_config_path)
     clock = ShanghaiClock(_utc_now)
-    observed_at = clock.now()
+    population_observed_at = clock.now()
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     open_dates = calendar.open_dates()
-    target_date = _risk_target_date(observed_at, open_dates)
     official = ExchangeSecurityMasterClient(
         sse_fetcher=partial(FetchSseListings, get=requests.get),
         szse_fetcher=partial(FetchSzseListings, get=requests.get),
         timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
         wall_clock=clock.now,
     )
-    population = ParseOfficialStaticReference(official.fetch(observed_at)).records
+    population = ParseOfficialStaticReference(official.fetch(population_observed_at)).records
+    observed_at = clock.now()
+    target_date = _risk_target_date(observed_at, open_dates)
     eligibility = SQLiteIssuerEligibilityIndex(settings.reference_dir, read_only=True)
     st_reasons = {
         IssuerEligibilityReason.HISTORICAL_ST,
@@ -237,15 +239,17 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
             schema_version="risk_snapshot",
             wall_clock=clock.now,
         )
+        research_client = AkshareResearchClient(
+            get=cast(AkshareGetFunction, requests.get),
+            timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
+            long_research_policy=strategy.long_research,
+            cancel_requested=lambda: not workers.is_running() or time.monotonic() >= source_deadline,
+        )
         loader = ResearchLoader(
-            AkshareResearchClient(
-                get=cast(AkshareGetFunction, requests.get),
-                timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
-                long_research_policy=strategy.long_research,
-                cancel_requested=lambda: not workers.is_running() or time.monotonic() >= source_deadline,
-            ),
+            research_client,
             runner,
             data_plane=risk_data,
+            risk_batch_client=research_client,
             workers=settings.pipeline.market_workers,
             ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
             circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
@@ -255,13 +259,14 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
             json_writer=None,
             monotonic=time.monotonic,
         )
-        return DownloadRiskSnapshot(
+        result = DownloadRiskSnapshot(
             loader,
             codes,
             RiskDownloadContext(target_date, observed_at, time.monotonic),
         )
     finally:
         workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+    return replace(result, elapsed_seconds=max(0.0, time.monotonic() - command_started))
 
 
 def _risk_target_date(observed_at: datetime, open_dates: tuple[date, ...]) -> date:

@@ -202,6 +202,18 @@ def _run_history_maintenance_command(
                     "failed_codes": risk_result.failed_codes,
                     "deadline_reached": risk_result.deadline_reached,
                     "elapsed_seconds": round(risk_result.elapsed_seconds, 3),
+                    "component_codes": {
+                        "financial": risk_result.inventory.financial_codes,
+                        "announcements": risk_result.inventory.announcement_codes,
+                        "pledge": risk_result.inventory.pledge_codes,
+                        "unlock": risk_result.inventory.unlock_codes,
+                        "regulatory_history": risk_result.inventory.regulatory_history_codes,
+                    },
+                    "retained_items": {
+                        "news": risk_result.inventory.news_items,
+                        "announcements": risk_result.inventory.announcement_items,
+                        "financial_reports": risk_result.inventory.financial_reports,
+                    },
                 },
                 ensure_ascii=False,
             )

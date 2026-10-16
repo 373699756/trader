@@ -296,6 +296,7 @@ def _service(
         kwargs.pop("research_client", None),
         runner,
         data_plane=data_plane,
+        risk_batch_client=kwargs.pop("risk_batch_client", None),
         workers=kwargs.pop("research_workers", 4),
         ttl_seconds=kwargs.pop("research_ttl_seconds", 600),
         circuit_breaker_failures=kwargs.pop("research_circuit_breaker_failures", 3),

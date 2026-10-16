@@ -139,6 +139,9 @@ class SQLiteDataPlane:
     def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None:
         self._save("risk_evidence", mode="recent", record=record)
 
+    def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None:
+        self._save_many("risk_evidence", mode="recent", records=records)
+
     def save_risk_evidence_formal(self, freeze_id: str, record: RiskEvidenceRecord) -> None:
         self._save("risk_evidence", mode="formal", freeze_id=freeze_id, record=record)
 

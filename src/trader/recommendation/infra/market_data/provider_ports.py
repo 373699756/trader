@@ -8,7 +8,7 @@ details do not cross the market-data boundary.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime
 from typing import Protocol
 
@@ -47,6 +47,15 @@ class ResearchSource(Protocol):
     def fetch_snapshot(self, code: str, *, observed_at: datetime) -> ResearchObservation: ...
 
     def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> Sequence[Evidence]: ...
+
+
+class RiskSnapshotBatchSource(Protocol):
+    def fetch_risk_snapshots(
+        self,
+        codes: Sequence[str],
+        *,
+        observed_at: datetime,
+    ) -> Mapping[str, ResearchObservation]: ...
 
 
 class IndustryReferenceSource(Protocol):
@@ -100,5 +109,6 @@ __all__ = [
     "ModelIndustrySource",
     "ReferenceSource",
     "ResearchSource",
+    "RiskSnapshotBatchSource",
     "SecurityMasterSource",
 ]
