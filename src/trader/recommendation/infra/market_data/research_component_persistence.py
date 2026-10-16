@@ -112,6 +112,8 @@ def RecoverResearchComponentStatuses(
     state: _ResearchComponentPersistenceState,
     data_plane: _ResearchDataPlane,
     observed_at: datetime,
+    *,
+    retain_stale: bool = False,
 ) -> None:
     try:
         records = data_plane.load_risk_evidence_recent_records()
@@ -126,45 +128,82 @@ def RecoverResearchComponentStatuses(
     restored_observations: dict[str, tuple[ResearchObservation, datetime]] = {}
     cninfo_announcements: dict[str, list[ResearchAnnouncement]] = {}
     for record in records:
-        if record.evidence_id == _RESEARCH_OBSERVATION_EVIDENCE_ID:
-            if record.observed_at > observed_at:
-                _LOGGER.warning("research recovery skipped future observation code=%s", record.code)
-                continue
-            try:
-                restored_observations[record.code] = (
-                    _deserialize_research_observation(record.payload),
-                    record.observed_at,
-                )
-            except (TypeError, ValueError, KeyError):
-                _LOGGER.warning("research recovery skipped invalid observation code=%s", record.code)
+        observation = _recovered_observation(record, observed_at)
+        if observation is not None:
+            restored_observations[record.code] = (observation, record.observed_at)
             continue
-        component = _component_from_evidence_id(record.evidence_id)
-        if component is not None and record.source in {_RESEARCH_SOURCE, CNINFO_SOURCE}:
-            status = _parse_component_risk_status(record.payload)
-            if status is None:
-                _LOGGER.warning(
-                    "research recovery skipped invalid status payload for component=%s code=%s",
-                    component,
-                    record.code,
-                )
-                continue
+        component_status = _recovered_component_status(record)
+        if component_status is not None:
+            component, status = component_status
             current = restored.setdefault(record.code, {}).get(component)
             restored[record.code][component] = status if current is None else _merge_component_status(current, status)
             continue
-        if record.source == CNINFO_SOURCE and record.evidence_id.startswith(CNINFO_ANNOUNCEMENT_PREFIX):
-            announcement = _announcement_from_risk_evidence(record)
-            if announcement is not None:
-                cninfo_announcements.setdefault(record.code, []).append(announcement)
-    if not restored:
-        restored = {}
+        announcement = _recovered_cninfo_announcement(record)
+        if announcement is not None:
+            cninfo_announcements.setdefault(record.code, []).append(announcement)
     with state._lock:
         state._component_statuses.update(restored)
         for code, (observation, cached_at) in restored_observations.items():
-            age_seconds = max(0.0, (observed_at - cached_at).total_seconds())
-            ttl_seconds = min(60.0, state._ttl_seconds) if observation.source_errors else state._ttl_seconds
-            remaining = max(0.0, ttl_seconds - age_seconds)
+            remaining = _recovered_remaining_seconds(
+                observation,
+                observed_at=observed_at,
+                cached_at=cached_at,
+                ttl_seconds=state._ttl_seconds,
+                retain_stale=retain_stale,
+            )
             state._entries[(code, True)] = _ResearchEntry(observation, state._monotonic() + remaining)
     _recover_cninfo_observations(state, data_plane, cninfo_announcements)
+
+
+def _recovered_observation(record: RiskEvidenceRecord, observed_at: datetime) -> ResearchObservation | None:
+    if record.evidence_id != _RESEARCH_OBSERVATION_EVIDENCE_ID:
+        return None
+    if record.observed_at > observed_at:
+        _LOGGER.warning("research recovery skipped future observation code=%s", record.code)
+        return None
+    try:
+        return _deserialize_research_observation(record.payload)
+    except (TypeError, ValueError, KeyError):
+        _LOGGER.warning("research recovery skipped invalid observation code=%s", record.code)
+        return None
+
+
+def _recovered_component_status(
+    record: RiskEvidenceRecord,
+) -> tuple[str, ResearchComponentStatus] | None:
+    component = _component_from_evidence_id(record.evidence_id)
+    if component is None or record.source not in {_RESEARCH_SOURCE, CNINFO_SOURCE}:
+        return None
+    status = _parse_component_risk_status(record.payload)
+    if status is None:
+        _LOGGER.warning(
+            "research recovery skipped invalid status payload for component=%s code=%s",
+            component,
+            record.code,
+        )
+        return None
+    return component, status
+
+
+def _recovered_cninfo_announcement(record: RiskEvidenceRecord) -> ResearchAnnouncement | None:
+    if record.source != CNINFO_SOURCE or not record.evidence_id.startswith(CNINFO_ANNOUNCEMENT_PREFIX):
+        return None
+    return _announcement_from_risk_evidence(record)
+
+
+def _recovered_remaining_seconds(
+    observation: ResearchObservation,
+    *,
+    observed_at: datetime,
+    cached_at: datetime,
+    ttl_seconds: float,
+    retain_stale: bool,
+) -> float:
+    effective_ttl = min(60.0, ttl_seconds) if observation.source_errors else ttl_seconds
+    if retain_stale:
+        return effective_ttl
+    age_seconds = max(0.0, (observed_at - cached_at).total_seconds())
+    return max(0.0, effective_ttl - age_seconds)
 
 
 def PersistResearchComponentStatuses(

@@ -707,7 +707,7 @@ def test_akshare_announcement_page_failure_does_not_claim_complete_history(tmp_p
 
     assert observation.announcements_available is False
     assert observation.corporate_risk_history_complete is False
-    assert observation.source_errors == ("announcements:Timeout",)
+    assert observation.source_errors == ("announcements:timeout",)
 
 
 def test_structured_research_source_failure_preserves_null_and_other_sources() -> None:
@@ -729,6 +729,87 @@ def test_structured_research_source_failure_preserves_null_and_other_sources() -
     assert feature.values["reduction_or_unlock"] == 0.0
     assert "pledge_risk" in feature.missing_fields
     assert feature.values["risk_protection_score"] is not None
+
+
+def test_partial_research_components_do_not_open_the_shared_source_circuit() -> None:
+    observation = ResearchObservation(
+        announcements_available=True,
+        pledge_ratio_pct=None,
+        unlock_ratio_pct=0.0,
+        source_errors=("pledge:timeout",),
+    )
+    client = StaticStructuredResearchClient(
+        Evidence("news-1", "news", "普通新闻", "fixture", AFTERNOON),
+        observation,
+    )
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        research_client=client,
+        research_workers=1,
+        research_circuit_breaker_failures=3,
+        wall_clock=lambda: AFTERNOON,
+    )
+
+    report = service.research.load_report(
+        ("600001", "600002", "600003", "600004"),
+        AFTERNOON,
+        include_structured=True,
+        force=True,
+    )
+
+    assert tuple(report.observations) == ("600001", "600002", "600003", "600004")
+    assert client.snapshot_calls == 4
+    assert service.research.status().consecutive_failures == 0
+    assert service.research.status().circuit_open is False
+
+
+def test_successful_component_retry_clears_old_error_and_preserves_verified_history() -> None:
+    class RecoveringResearchClient:
+        calls = 0
+
+        def fetch_snapshot(self, _code, *, observed_at):
+            self.calls += 1
+            if self.calls == 1:
+                return ResearchObservation(
+                    announcements_available=True,
+                    corporate_risk_history_complete=True,
+                    corporate_risk_evidence_version="verified-history",
+                    pledge_ratio_pct=None,
+                    unlock_ratio_pct=0.0,
+                    source_errors=("pledge:timeout",),
+                )
+            return ResearchObservation(
+                announcements_available=True,
+                corporate_risk_history_complete=False,
+                pledge_ratio_pct=0.0,
+                unlock_ratio_pct=0.0,
+            )
+
+    client = RecoveringResearchClient()
+    service = _service(
+        StaticGateway((_quote(),)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        research_client=client,
+        research_workers=1,
+        wall_clock=lambda: AFTERNOON,
+    )
+
+    first = service.research.load(("600001",), AFTERNOON, include_structured=True, force=True)["600001"]
+    recovered = service.research.load(
+        ("600001",),
+        AFTERNOON + timedelta(minutes=1),
+        include_structured=True,
+        force=True,
+    )["600001"]
+
+    assert first.source_errors == ("pledge:timeout",)
+    assert recovered.source_errors == ()
+    assert recovered.pledge_ratio_pct == 0.0
+    assert recovered.corporate_risk_history_complete is True
+    assert recovered.corporate_risk_evidence_version == "verified-history"
 
 
 @pytest.mark.parametrize(
@@ -766,7 +847,7 @@ def test_akshare_structured_research_contains_malformed_source_failure(unlock_ro
     assert observation.announcements_available is True
     assert observation.unlock_ratio_pct is None
     assert observation.pledge_ratio_pct is None
-    assert observation.source_errors == ("pledge:ValueError", "unlock:ValueError")
+    assert observation.source_errors == ("pledge:schema_invalid", "unlock:schema_invalid")
 
 
 def test_akshare_research_rejects_unvalidated_stock_code() -> None:

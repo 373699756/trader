@@ -77,7 +77,6 @@ from trader.infra.settings import (
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
-from trader.recommendation.application.risk_download import DownloadRiskSnapshot, RiskDownloadResult
 from trader.recommendation.application.pipeline.candidate_pool.candidate_pool_service import CandidateFilteringService
 from trader.recommendation.application.pipeline.data_source.source_router import (
     InputRefreshDependencies,
@@ -117,6 +116,11 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
+from trader.recommendation.application.risk_download import (
+    DownloadRiskSnapshot,
+    RiskDownloadContext,
+    RiskDownloadResult,
+)
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
@@ -146,19 +150,19 @@ from trader.recommendation.infra.market_data.market_feature_service import (
     MarketFeatureService,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.official_static_reference import ParseOfficialStaticReference
 from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient, TencentFullMarketSource
-from trader.recommendation.infra.market_data.official_static_reference import ParseOfficialStaticReference
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
 from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.daily_risk import SQLiteDailyRiskIndex
+from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
@@ -212,11 +216,7 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
         IssuerEligibilityReason.HISTORICAL_ST,
         IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
     }
-    excluded = {
-        item.code
-        for item in eligibility.exclusions(observed_at)
-        if item.reason in st_reasons
-    }
+    excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
     codes = tuple(item.code for item in population if not item.is_st and item.code not in excluded)
     risk_data = SQLiteDailyRiskIndex(settings.project_root / "data" / "risk", target_date=lambda: target_date)
     risk_data.prepare(target_date)
@@ -258,9 +258,7 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
         return DownloadRiskSnapshot(
             loader,
             codes,
-            target_date=target_date,
-            observed_at=observed_at,
-            monotonic=time.monotonic,
+            RiskDownloadContext(target_date, observed_at, time.monotonic),
         )
     finally:
         workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
@@ -947,16 +945,8 @@ def _build_market_data(
             IssuerEligibilityReason.HISTORICAL_ST,
             IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
         }
-        excluded = {
-            item.code
-            for item in eligibility.exclusions(observed_at)
-            if item.reason in st_reasons
-        }
-        codes = tuple(
-            issuer.code
-            for issuer in snapshot.records
-            if not issuer.is_st and issuer.code not in excluded
-        )
+        excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
+        codes = tuple(issuer.code for issuer in snapshot.records if not issuer.is_st and issuer.code not in excluded)
         historical_st = history_cache.historical_st_eligibility()
         if historical_st.status == "ready":
             return tuple(code for code in codes if historical_st.eligible(code))

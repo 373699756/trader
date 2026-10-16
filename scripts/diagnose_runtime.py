@@ -939,6 +939,49 @@ def _market_factor_compare_details(
     payload["findings"] = _bounded_findings(source.get("findings"))
 
 
+def _research_source_compare_details(
+    _result: DiagnosticResult,
+    source: Mapping[str, object],
+    payload: dict[str, object],
+) -> None:
+    sources = source.get("sources")
+    source_values = sources if isinstance(sources, list) else []
+    projected_sources: list[dict[str, object]] = []
+    for item in source_values[:4]:
+        if not isinstance(item, dict):
+            continue
+        samples = item.get("samples")
+        sample_values = samples if isinstance(samples, list) else []
+        missing_field_counts: dict[str, int] = {}
+        component_error_counts: dict[str, int] = {}
+        for sample in sample_values[:50]:
+            if not isinstance(sample, dict):
+                continue
+            for field in _safe_string_list(sample.get("missing_fields"), limit=12):
+                missing_field_counts[field] = missing_field_counts.get(field, 0) + 1
+            for error in _safe_string_list(sample.get("component_errors"), limit=12):
+                component_error_counts[error] = component_error_counts.get(error, 0) + 1
+        projected_sources.append(
+            {
+                "source": _safe_text(item.get("source")),
+                "tested": item.get("tested") is True,
+                "excluded_by_budget": item.get("excluded_by_budget") is True,
+                "physical_http_requests": _safe_nonnegative_int(item.get("physical_http_requests")),
+                "sample_count": _safe_nonnegative_int(item.get("sample_count")),
+                "field_coverage": _mapping(item.get("field_coverage")),
+                "interface_status": _safe_text(item.get("interface_status")),
+                "missing_field_counts": missing_field_counts,
+                "component_error_counts": component_error_counts,
+            }
+        )
+    payload["summary"] = {
+        "required_fields": _safe_string_list(source.get("required_fields"), limit=12),
+        "sources": projected_sources,
+        "selected_route": _mapping(source.get("selected_route")),
+        "budget": _mapping(source.get("budget")),
+    }
+
+
 def _baostock_qfq_shadow_details(
     _result: DiagnosticResult,
     source: Mapping[str, object],
@@ -1051,6 +1094,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "history_sqlite_performance": _history_sqlite_performance_details,
     "history_source_compare": _history_sqlite_performance_details,
     "market_factor_compare": _market_factor_compare_details,
+    "research_source_compare": _research_source_compare_details,
     "history_write_benchmark": _history_sqlite_performance_details,
     "history_space": _history_sqlite_performance_details,
     "history_industry": _history_sqlite_performance_details,

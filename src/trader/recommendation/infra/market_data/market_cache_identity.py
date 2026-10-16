@@ -282,15 +282,13 @@ def _merge_research_observation(
         ),
         corporate_risk_facts=corporate_risk_facts,
         corporate_risk_history_complete=(
-            previous.corporate_risk_history_complete
-            if "announcements" in failed_sources and not current.corporate_risk_history_complete
-            else current.corporate_risk_history_complete
+            previous.corporate_risk_history_complete or current.corporate_risk_history_complete
         ),
         corporate_risk_evidence_version=(
             current.corporate_risk_evidence_version or previous.corporate_risk_evidence_version
         ),
         evidence=evidence,
-        source_errors=tuple(dict.fromkeys((*previous.source_errors, *current.source_errors))),
+        source_errors=tuple(dict.fromkeys(current.source_errors)),
     )
 
 

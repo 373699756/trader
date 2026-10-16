@@ -408,6 +408,55 @@ def test_research_profile_runs_only_research_readiness_probe() -> None:
     )
 
 
+def test_research_source_compare_projects_bounded_component_errors() -> None:
+    report = build_report(
+        "research-source-compare",
+        (
+            DiagnosticResult(
+                "research_source_compare",
+                0,
+                4.0,
+                {
+                    "schema_version": "research-source-comparison",
+                    "status": "degraded",
+                    "required_fields": ["financial", "pledge"],
+                    "sources": [
+                        {
+                            "source": "eastmoney",
+                            "tested": True,
+                            "excluded_by_budget": False,
+                            "physical_http_requests": 5,
+                            "sample_count": 1,
+                            "field_coverage": {"financial": {"covered": 1, "sample_count": 1}},
+                            "interface_status": "partial",
+                            "samples": [
+                                {
+                                    "code": "600519",
+                                    "physical_http_requests": 5,
+                                    "missing_fields": ["pledge"],
+                                    "component_errors": ["pledge:Timeout"],
+                                    "raw_payload": "secret",
+                                }
+                            ],
+                            "raw_payload": "secret",
+                        }
+                    ],
+                    "selected_route": {"primary": None},
+                    "budget": {"elapsed_ms": 4.0},
+                },
+                None,
+            ),
+        ),
+    )
+
+    summary = report["checks"][0]["summary"]
+    assert summary["required_fields"] == ["financial", "pledge"]
+    assert summary["sources"][0]["missing_field_counts"] == {"pledge": 1}
+    assert summary["sources"][0]["component_error_counts"] == {"pledge:Timeout": 1}
+    assert "600519" not in str(summary)
+    assert "raw_payload" not in str(summary)
+
+
 def test_research_status_projection_uses_the_active_monthly_archive_and_v3_blockers() -> None:
     report = build_report(
         "research",

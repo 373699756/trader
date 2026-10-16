@@ -33,8 +33,8 @@ from trader.recommendation.domain.evidence.pipeline import (
     PIPELINE_STAGES,
     StageState,
 )
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.market.models import Board
+from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 

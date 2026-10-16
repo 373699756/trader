@@ -6,7 +6,7 @@ import os
 import sqlite3
 import threading
 from collections.abc import Callable, Sequence
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from trader.recommendation.application.ports.data_plane_records import (
@@ -56,9 +56,7 @@ class SQLiteDailyRiskIndex:
         self.prepare(trade_date)
         return self._plane(trade_date).load_risk_evidence_recent(code, evidence_id)
 
-    def load_risk_evidence_recent_records(
-        self, codes: Sequence[str] | None = None
-    ) -> tuple[RiskEvidenceRecord, ...]:
+    def load_risk_evidence_recent_records(self, codes: Sequence[str] | None = None) -> tuple[RiskEvidenceRecord, ...]:
         trade_date = self._target_date()
         self.prepare(trade_date)
         return self._plane(trade_date).load_risk_evidence_recent_records(codes)

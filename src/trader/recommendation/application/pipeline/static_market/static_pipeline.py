@@ -193,19 +193,13 @@ class StaticMarketPipeline:
         return replace(output, snapshot=replace(output.snapshot, latency_ms=self._elapsed_ms(started)))
 
     def _record_quote_eligibility(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> None:
-        facts = tuple(
-            fact
-            for quote in quotes
-            for fact in EligibilityFactsFromQuote(quote, observed_at=observed_at)
-        )
+        facts = tuple(fact for quote in quotes for fact in EligibilityFactsFromQuote(quote, observed_at=observed_at))
         self._record_eligibility(facts)
 
     def _record_static_eligibility(self, issuers: Sequence[StaticIssuer], observed_at: datetime) -> None:
         self._record_eligibility(
             tuple(
-                fact
-                for issuer in issuers
-                for fact in EligibilityFactsFromStaticIssuer(issuer, observed_at=observed_at)
+                fact for issuer in issuers for fact in EligibilityFactsFromStaticIssuer(issuer, observed_at=observed_at)
             )
         )
 

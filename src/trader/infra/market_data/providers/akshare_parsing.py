@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+from trader.infra.failures import ClassifyAdapterFailure
+
 _LOGGER = logging.getLogger(__name__)
 
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
@@ -149,7 +151,10 @@ def _finite_number(raw: object) -> float | None:
 
 
 def _source_error(source: str, error: BaseException) -> str:
-    return f"{source}:{type(error).__name__}"
+    if isinstance(error, (TypeError, ValueError)):
+        return f"{source}:schema_invalid"
+    failure = ClassifyAdapterFailure(error, provider="eastmoney", operation=source)
+    return f"{source}:{failure.code.value}"
 
 
 def _summary_number(value: float | None) -> str:

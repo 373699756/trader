@@ -183,17 +183,20 @@ class MarketFeatureService:
         self.quotes.gateway.record_local_latency("history_load", self._elapsed_ms(assembly_started))
         self.runner.ensure_before_deadline(deadline)
         feature_started = self._monotonic()
-        features = self._apply_issuer_risk_facts(self.quotes.build_market_features(
-            quotes,
-            histories,
-            observed_at,
-            research_observations=self.research.cached(
-                history_codes,
-                include_structured=True,
+        features = self._apply_issuer_risk_facts(
+            self.quotes.build_market_features(
+                quotes,
+                histories,
+                observed_at,
+                research_observations=self.research.cached(
+                    history_codes,
+                    include_structured=True,
+                    action_restrictions=action_restrictions,
+                ),
                 action_restrictions=action_restrictions,
             ),
-            action_restrictions=action_restrictions,
-        ), observed_at)
+            observed_at,
+        )
         self.quotes.gateway.record_local_latency("feature_build", self._elapsed_ms(feature_started))
         self.runner.ensure_before_deadline(deadline)
         self.history.update_coverage(history_codes, tuple(quote.data_version for quote in quotes))
@@ -252,14 +255,17 @@ class MarketFeatureService:
             if include_intraday_tail
             else None
         )
-        features = self._apply_issuer_risk_facts(self.quotes.build_candidate_features(
-            quotes,
-            histories,
+        features = self._apply_issuer_risk_facts(
+            self.quotes.build_candidate_features(
+                quotes,
+                histories,
+                observed_at,
+                research_observations=research,
+                intraday_minutes=intraday,
+                action_restrictions=action_restrictions,
+            ),
             observed_at,
-            research_observations=research,
-            intraday_minutes=intraday,
-            action_restrictions=action_restrictions,
-        ), observed_at)
+        )
         if include_intraday_tail:
             self.intraday.record_feature_coverage(normalized, features)
         return features
@@ -487,14 +493,17 @@ class MarketFeatureService:
         intraday = (
             self.intraday.cached(normalized, action_restrictions=action_restrictions) if include_intraday_tail else None
         )
-        features = self._apply_issuer_risk_facts(self.quotes.build_candidate_features(
-            self.quotes.candidate_snapshot(normalized),
-            histories,
+        features = self._apply_issuer_risk_facts(
+            self.quotes.build_candidate_features(
+                self.quotes.candidate_snapshot(normalized),
+                histories,
+                observed_at,
+                research_observations=research,
+                intraday_minutes=intraday,
+                action_restrictions=action_restrictions,
+            ),
             observed_at,
-            research_observations=research,
-            intraday_minutes=intraday,
-            action_restrictions=action_restrictions,
-        ), observed_at)
+        )
         if include_intraday_tail:
             self.intraday.record_feature_coverage(normalized, features)
         return features
@@ -505,11 +514,7 @@ class MarketFeatureService:
             IssuerEligibilityReason.HISTORICAL_ST,
             IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
         }
-        excluded = {
-            item.code
-            for item in self.eligibility.exclusions(observed_at)
-            if item.reason in st_reasons
-        }
+        excluded = {item.code for item in self.eligibility.exclusions(observed_at) if item.reason in st_reasons}
         return tuple(code for code in normalized if code not in excluded)
 
     def _apply_issuer_risk_facts(

@@ -428,7 +428,12 @@ class ResearchLoader:
                 state.result[code] = cached.observation
                 state.previous[code] = cached
 
-    def recover_from_data_plane(self, observed_at: datetime | None = None) -> None:
+    def recover_from_data_plane(
+        self,
+        observed_at: datetime | None = None,
+        *,
+        retain_stale: bool = False,
+    ) -> None:
         data_plane = self._data_plane
         if data_plane is None:
             return
@@ -436,6 +441,7 @@ class ResearchLoader:
             self,
             data_plane,
             observed_at or self._runner.wall_clock(),
+            retain_stale=retain_stale,
         )
 
     def _mark_loaded_research_actionability(self, state: _ResearchLoadState) -> None:
@@ -462,11 +468,7 @@ class ResearchLoader:
             inline=source_lanes is not None and source_lanes.owns_current_thread("akshare"),
         )
         futures, started_at = self._submit_research(pool, state, missing)
-        timeout = (
-            None
-            if request.deadline is None
-            else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
-        )
+        timeout = self._remaining_research_timeout(request.deadline)
         pending = set(futures)
         consumed: set[str] = set()
         changed_codes: list[str] = []
@@ -490,21 +492,31 @@ class ResearchLoader:
                 consumed.add(code)
             if deadline_reached:
                 break
-            timeout = (
-                None
-                if request.deadline is None
-                else max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
-            )
+            timeout = self._remaining_research_timeout(request.deadline)
         deferred = tuple(code for code in missing if code not in consumed)
-        if deferred:
-            for future, code in futures.items():
-                if code not in consumed:
-                    future.cancel()
-            with self._lock:
-                self._error_count += len(deferred)
-                self._timeout_count += len(deferred)
-                self._last_error = "research_batch_deadline"
+        self._cancel_deferred_research(futures, consumed, deferred)
         return tuple(changed_codes), deferred
+
+    def _cancel_deferred_research(
+        self,
+        futures: Mapping[Future[ResearchObservation], str],
+        consumed: set[str],
+        deferred: tuple[str, ...],
+    ) -> None:
+        if not deferred:
+            return
+        for future, code in futures.items():
+            if code not in consumed:
+                future.cancel()
+        with self._lock:
+            self._error_count += len(deferred)
+            self._timeout_count += len(deferred)
+            self._last_error = "research_batch_deadline"
+
+    def _remaining_research_timeout(self, deadline: datetime | None) -> float | None:
+        if deadline is None:
+            return None
+        return max(0.0, (deadline - self._runner.wall_clock()).total_seconds())
 
     def _submit_research(
         self,
@@ -775,7 +787,10 @@ class ResearchLoader:
         except Exception:
             self._finish_research_request(success=False)
             raise
-        self._finish_research_request(success=not observation.source_errors)
+        # A returned observation is a successful adapter call even when one component
+        # degraded. Component errors retain their own retry state and must not open the
+        # shared circuit for unrelated stocks and endpoints.
+        self._finish_research_request(success=True)
         return observation
 
     def _begin_research_request(self) -> bool:
