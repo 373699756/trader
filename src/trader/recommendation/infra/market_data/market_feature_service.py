@@ -366,30 +366,6 @@ class MarketFeatureService:
         )
         return self.quotes.publish_market_features(features, reference_epoch=self.reference_version())
 
-    def refresh_market_news(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        deadline: datetime | None = None,
-    ) -> ResearchRefreshResult:
-        requested = self._eligible_codes(codes, observed_at)
-        started_at = self.runner.wall_clock()
-        report = self.research.load_report(
-            requested,
-            observed_at,
-            include_structured=False,
-            force=True,
-            deadline=deadline,
-        )
-        return _research_refresh_result(
-            requested,
-            report,
-            started_at,
-            self.runner.wall_clock(),
-            require_structured=False,
-        )
-
     def refresh_stock_risk(
         self,
         codes: Sequence[str],
@@ -403,6 +379,7 @@ class MarketFeatureService:
             requested,
             observed_at,
             include_structured=True,
+            force=True,
             deadline=deadline,
         )
         self._record_research_eligibility(report.observations)

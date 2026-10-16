@@ -50,6 +50,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "history-sqlite": ("history_sqlite_performance",),
     "history-source-compare": ("history_source_compare",),
     "market-factor-compare": ("market_factor_compare",),
+    "research-source-compare": ("research_source_compare",),
     "history-write": ("history_write_benchmark",),
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
@@ -663,6 +664,25 @@ def build_commands(
             + ("--batch-seconds", str(options.market_batch_seconds))
             + ("--source-loop-seconds", str(options.market_source_loop_seconds))
             + ("--task-seconds", str(options.market_task_seconds)),
+            min(common_timeout, options.market_task_seconds),
+        ),
+        "research_source_compare": DiagnosticCommand(
+            "research_source_compare",
+            (
+                python_executable,
+                "-m",
+                "scripts.runtime_diagnostics.research_source_compare",
+                "--config",
+                str(options.runtime_config),
+                "--codes",
+                *options.codes,
+                "--timeout-seconds",
+                str(options.source_timeout_seconds),
+                "--source-loop-seconds",
+                str(options.market_source_loop_seconds),
+                "--task-seconds",
+                str(options.market_task_seconds),
+            ),
             min(common_timeout, options.market_task_seconds),
         ),
     }

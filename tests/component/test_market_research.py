@@ -11,7 +11,6 @@ from tests.component.market_data_test_support import (
     RESEARCH_COMPONENT_IDS,
     TAIL_POLICY,
     AkshareResearchClient,
-    BlockingResearchClient,
     BlockingStructuredResearchClient,
     BoundedExecutor,
     BoundedLruCache,
@@ -180,18 +179,17 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
     assert cached_batch.static_stages[1].reasons[0].code == "static_baseline_reused"
 
     service.refresh_candidate_quotes(("600001", "600002"), NOW)
-    news_result = service.refresh_market_news(("600001", "600002"), NOW)
-    assert len(news_result.data_version) == len("research-batch:") + 64
-    assert news_result.completed_at is not None and news_result.completed_at.tzinfo == _SHANGHAI
+    research_result = service.refresh_stock_risk(("600001", "600002"), NOW)
+    assert len(research_result.data_version) == len("research-batch:") + 64
+    assert research_result.completed_at is not None and research_result.completed_at.tzinfo == _SHANGHAI
     RefreshOutcome(
-        PipelineTask.MARKET_NEWS,
-        bool(news_result.changed_codes),
-        news_result.data_version,
-        news_result.changed_codes,
-        news_result.completed_at or NOW,
+        PipelineTask.RESEARCH_SNAPSHOT,
+        bool(research_result.changed_codes),
+        research_result.data_version,
+        research_result.changed_codes,
+        research_result.completed_at or NOW,
         False,
     )
-    service.refresh_stock_risk(("600001", "600002"), NOW)
     service.refresh_intraday_tail(("600001", "600002"), NOW)
     service.refresh_long_quotes(("600001", "600002"), NOW)
     service.schedule_reference_data(
@@ -202,7 +200,7 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
 
     assert gateway.candidate_requests == [("600002",)]
     assert gateway.long_requests == [("600002",)]
-    assert research.news_calls == 1
+    assert research.news_calls == 0
     assert research.snapshot_calls == 1
     assert intraday.calls == ["600002"]
     assert reference_requests == [(("600002",), False, ("600002",))]
@@ -260,7 +258,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
     )
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneScheduler(pool)
-    research = BlockingResearchClient((Evidence("news-late", "news", "迟到新闻", "fixture", NOW - timedelta(hours=1)),))
+    research = BlockingStructuredResearchClient()
     service = _service(
         StaticGateway((_quote(),)),
         StaticHistoryClient(),
@@ -280,7 +278,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
 
     started = time.monotonic()
     try:
-        result = service.refresh_market_news(("600001",), NOW, deadline=deadline)
+        result = service.refresh_stock_risk(("600001",), NOW, deadline=deadline)
         assert result.deadline_reached
         assert result.deferred_codes == ("600001",)
         elapsed = time.monotonic() - started
@@ -299,7 +297,7 @@ def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_p
 
 
 def test_akshare_news_is_bounded_and_normalized() -> None:
-    callback = "jQuery35101792940631092459_1764599530165"
+    callback = "diag"
     payload = {
         "result": {
             "cmsArticleWebOld": [
@@ -326,10 +324,12 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
     assert evidence[0].published_at.isoformat() == "2026-07-16T09:00:00+08:00"
     assert calls[0][1]["timeout"] == 8
     assert calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+    assert calls[0][1]["headers"]["User-Agent"] == "Mozilla/5.0"
+    assert "_" not in calls[0][1]["params"]
 
 
 def test_akshare_news_response_is_cached_with_atomic_writer(tmp_path) -> None:
-    callback = "jQuery35101792940631092459_1764599530165"
+    callback = "diag"
     payload = {
         "result": {
             "cmsArticleWebOld": [
@@ -550,6 +550,9 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
 
     def get(url, **kwargs):
         calls.append((url, kwargs))
+        if "search-api-web" in url:
+            callback = "diag"
+            return FakeResponse(f'{callback}({{"result": {{"cmsArticleWebOld": []}}}});')
         if "securities/api/data/get" in url:
             return FakeResponse(financial_payload)
         if "api/security/ann" in url:
@@ -588,7 +591,7 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     assert observation.pledge_ratio_pct == pytest.approx(15.0)
     assert observation.unlock_ratio_pct == pytest.approx(6.0)
     assert repeated.financial == observation.financial
-    assert len(calls) == 5
+    assert len(calls) == 8
     assert "api/security/ann" in calls[-1][0]
     assert feature.values["value_score"] == pytest.approx(92.8571428571)
     assert feature.values["growth_score"] == pytest.approx(70.0)
@@ -611,7 +614,7 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in calls)
     financial_call = next(call for call in calls if "securities/api/data/get" in call[0])
     assert financial_call[1]["params"]["ps"] == "500"
-    assert all("search-api-web" not in call[0] for call in calls)
+    assert sum("search-api-web" in call[0] for call in calls) == 3
 
 
 def test_akshare_announcements_paginate_to_total_and_refresh_from_complete_baseline(tmp_path) -> None:
@@ -637,6 +640,9 @@ def test_akshare_announcements_paginate_to_total_and_refresh_from_complete_basel
         }
 
     def get(url, **kwargs):
+        if "search-api-web" in url:
+            callback = "diag"
+            return FakeResponse(f'{callback}({{"result": {{"cmsArticleWebOld": []}}}});')
         if "securities/api/data/get" in url:
             return FakeResponse({"result": {"data": []}, "success": True})
         if "api/security/ann" in url:
@@ -664,6 +670,9 @@ def test_akshare_announcements_paginate_to_total_and_refresh_from_complete_basel
 
 def test_akshare_announcement_page_failure_does_not_claim_complete_history(tmp_path) -> None:
     def get(url, **kwargs):
+        if "search-api-web" in url:
+            callback = "diag"
+            return FakeResponse(f'{callback}({{"result": {{"cmsArticleWebOld": []}}}});')
         if "securities/api/data/get" in url:
             return FakeResponse({"result": {"data": []}, "success": True})
         if "api/security/ann" in url:
@@ -730,6 +739,9 @@ def test_structured_research_source_failure_preserves_null_and_other_sources() -
 )
 def test_akshare_structured_research_contains_malformed_source_failure(unlock_row) -> None:
     def get(url, **kwargs):
+        if "search-api-web" in url:
+            callback = "diag"
+            return FakeResponse(f'{callback}({{"result": {{"cmsArticleWebOld": []}}}});')
         if "securities/api/data/get" in url:
             return FakeResponse({"version": "financial-empty", "result": {"data": []}, "success": True})
         if "api/security/ann" in url:
@@ -887,7 +899,7 @@ def test_read_candidate_features_reuses_structured_research_disk_cache_after_res
     assert restored[0].values["quality_score"] == pytest.approx(written[0].values["quality_score"])
 
 
-def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:
+def test_explicit_research_snapshot_refresh_bypasses_the_parsed_observation_cache() -> None:
     observation = ResearchObservation(
         announcements_available=True,
         pledge_ratio_pct=0.0,
@@ -905,7 +917,7 @@ def test_stock_risk_refresh_reuses_successful_ten_minute_cache() -> None:
     service.refresh_stock_risk(("600001",), AFTERNOON)
     service.refresh_stock_risk(("600001",), AFTERNOON + timedelta(minutes=3))
 
-    assert research.snapshot_calls == 1
+    assert research.snapshot_calls == 2
 
 
 def test_stock_risk_refresh_reports_only_real_research_version_changes() -> None:

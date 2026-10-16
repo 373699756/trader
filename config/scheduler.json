@@ -63,20 +63,6 @@
         "morning_late": 60,
         "afternoon": 60,
         "final_review": 60
-      },
-      "market_news": {
-        "warmup": 120,
-        "morning_main": 60,
-        "morning_late": 60,
-        "afternoon": 60,
-        "final_review": 60
-      },
-      "stock_risk": {
-        "warmup": 300,
-        "morning_main": 180,
-        "morning_late": 180,
-        "afternoon": 180,
-        "final_review": 120
       }
     },
     "publish_heartbeat_seconds": 15

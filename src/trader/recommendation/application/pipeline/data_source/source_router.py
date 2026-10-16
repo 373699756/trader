@@ -163,14 +163,6 @@ class MarketReader(Protocol):
 
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
 
-    def refresh_market_news(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        deadline: datetime | None = None,
-    ) -> ResearchRefreshResult: ...
-
     def refresh_stock_risk(
         self,
         codes: Sequence[str],
@@ -285,8 +277,7 @@ class MarketInputCoordinator(DataRefreshPort):
             PipelineTask.TOPK_QUOTES: self._refresh_topk,
             PipelineTask.INTRADAY_TAIL: self._refresh_intraday_tail,
             PipelineTask.INDUSTRY_HEAT: self._refresh_industry_heat,
-            PipelineTask.MARKET_NEWS: self._refresh_market_news,
-            PipelineTask.STOCK_RISK: self._refresh_stock_risk,
+            PipelineTask.RESEARCH_SNAPSHOT: self._refresh_stock_risk,
             PipelineTask.REFERENCE_DATA: self._refresh_reference_data,
         }.get(request.task)
         if handler is None:
@@ -599,23 +590,13 @@ class MarketInputCoordinator(DataRefreshPort):
             False,
         )
 
-    def _refresh_market_news(
-        self,
-        request: PipelineTaskRequest,
-        deadline: datetime | None,
-    ) -> RefreshOutcome:
-        requested = self._requested_codes()
-        _require_codes(requested, "news_universe_unavailable")
-        result = self._market.refresh_market_news(requested, request.observed_at, deadline=deadline)
-        return self._research_outcome(request, result)
-
     def _refresh_stock_risk(
         self,
         request: PipelineTaskRequest,
         deadline: datetime | None,
     ) -> RefreshOutcome:
         requested = self._requested_codes()
-        _require_codes(requested, "risk_universe_unavailable")
+        _require_codes(requested, "research_universe_unavailable")
         result = self._market.refresh_stock_risk(requested, request.observed_at, deadline=deadline)
         return self._research_outcome(request, result)
 

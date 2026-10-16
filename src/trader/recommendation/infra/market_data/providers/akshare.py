@@ -214,6 +214,12 @@ class AkshareResearchClient:
         pledge_evidence: tuple[Evidence, ...] = ()
         unlock_ratio: float | None = None
         unlock_evidence: tuple[Evidence, ...] = ()
+        news_evidence: tuple[Evidence, ...] = ()
+
+        try:
+            news_evidence = self.fetch_news(code, observed_at=point_in_time)
+        except _SOURCE_EXCEPTIONS as exc:
+            source_errors.append(_source_error("news", exc))
 
         try:
             financial, financial_history, financial_history_complete, financial_evidence = self._fetch_financial(
@@ -248,6 +254,7 @@ class AkshareResearchClient:
         announcement_summary = tuple(item for item in announcement_evidence if item.evidence_type == "research_summary")
         announcement_details = tuple(item for item in announcement_evidence if item.evidence_type != "research_summary")
         evidence = (
+            *news_evidence,
             *unlock_evidence,
             *pledge_evidence,
             *announcement_summary,
@@ -434,8 +441,6 @@ class AkshareResearchClient:
                     max(negative_level, ownership_level),
                 )
             )
-        if invalid_rows:
-            raise ValueError("announcement source returned malformed point-in-time rows")
         parsed.sort(key=lambda item: item[0].published_at, reverse=True)
         parsed = parsed[: policy.announcement_limit]
         evidence_rows = sorted(parsed, key=lambda item: (-item[2], -item[0].published_at.timestamp()))
@@ -463,7 +468,7 @@ class AkshareResearchClient:
             version,
         )
         evidence = (summary, *corporate_evidence, *(evidence for item in evidence_rows for evidence in item[1]))
-        history_complete = _announcement_history_complete(payload, len(historical_announcements))
+        history_complete = invalid_rows == 0 and _announcement_history_complete(payload, len(historical_announcements))
         return tuple(item[0] for item in parsed), evidence, corporate_facts, history_complete, version
 
     def _fetch_pledge(

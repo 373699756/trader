@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 
 from trader.infra.settings import LoadRuntimeSettings
+from trader.recommendation.application.pipeline.data_source.input_assembly import TaskDeadline
+from trader.recommendation.application.ports.runtime import PipelineTaskRequest
 from trader.recommendation.application.runtime.cadence import (
     PERIODIC_TASKS,
     CadencePlanner,
@@ -269,6 +271,35 @@ def test_close_quotes_budget_allows_slow_close_source_and_local_rebuild() -> Non
     assert TaskExecutionBudgetSeconds(PipelineTask.CLOSE_QUOTES) >= 180.0
 
 
+@pytest.mark.parametrize(
+    ("observed_at", "expected"),
+    (
+        (datetime(2026, 7, 16, 9, 25, tzinfo=SHANGHAI), datetime(2026, 7, 16, 9, 30, tzinfo=SHANGHAI)),
+        (datetime(2026, 7, 16, 12, 58, tzinfo=SHANGHAI), datetime(2026, 7, 16, 13, 0, tzinfo=SHANGHAI)),
+    ),
+)
+def test_research_snapshot_deadline_never_crosses_the_opening_boundary(observed_at, expected) -> None:
+    assert TaskDeadline(PipelineTaskRequest(PipelineTask.RESEARCH_SNAPSHOT, observed_at)) == expected
+    assert TaskExecutionBudgetSeconds(PipelineTask.RESEARCH_SNAPSHOT) == 600.0
+
+
+def test_research_schedule_point_retry_expires_at_the_opening_boundary() -> None:
+    started = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
+    planner = CadencePlanner(_policy(), started_at=started)
+    first = planner.plan(started, is_trading_day=True)
+    research = next(task for task in first.tasks if task.task is PipelineTask.RESEARCH_SNAPSHOT)
+    planner.record_submission(research, accepted=True, at=started)
+    planner.record_results(research, {"-": SchedulePointResult.RETRY}, at=started)
+
+    expired = planner.plan(started.replace(minute=30), is_trading_day=True)
+
+    assert PipelineTask.RESEARCH_SNAPSHOT not in {task.task for task in expired.tasks}
+    assert (
+        planner.schedule_point_status(started.date().isoformat(), SchedulePoint.MORNING_RESEARCH)
+        is SchedulePointStatus.MISSED
+    )
+
+
 def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
     runtime = LoadRuntimeSettings(Path(__file__).parents[3] / "config" / "runtime.json")
     current = datetime(2026, 7, 16, 9, 15, tzinfo=SHANGHAI)
@@ -292,14 +323,13 @@ def test_production_policy_plans_exact_full_trading_day_task_counts() -> None:
 
     assert counts == Counter(
         {
-            PipelineTask.FULL_MARKET: 1998,
-            PipelineTask.CANDIDATE_QUOTES: 10940,
+            PipelineTask.FULL_MARKET: 2070,
+            PipelineTask.CANDIDATE_QUOTES: 2708,
             PipelineTask.TOPK_QUOTES: 15301,
             PipelineTask.INTRADAY_TAIL: 1520,
-            PipelineTask.LONG_QUOTES: 15301,
+            PipelineTask.LONG_QUOTES: 2719,
             PipelineTask.INDUSTRY_HEAT: 226,
-            PipelineTask.MARKET_NEWS: 226,
-            PipelineTask.STOCK_RISK: 81,
+            PipelineTask.RESEARCH_SNAPSHOT: 2,
             PipelineTask.REFERENCE_DATA: 2,
             PipelineTask.DEEPSEEK_CUTOFF: 1,
             PipelineTask.CHECKPOINT: 1,
@@ -320,7 +350,5 @@ def _policy() -> CadencePolicy:
             "long_quotes": {"morning_main": 3, "midday": 60, "final_window": 3},
             "score": {"morning_main": 10, "final_window": 1},
             "industry_heat": {"morning_main": 60},
-            "market_news": {"morning_main": 60},
-            "stock_risk": {"morning_main": 180},
         }
     )

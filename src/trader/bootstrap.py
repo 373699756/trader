@@ -642,13 +642,7 @@ def BuildSystem(
                     session_distance=calendar.session_distance,
                 ),
             ),
-            research_factory=lambda on_result: ResearchRuntime(
-                market_data,
-                context.workers.company_research_pool,
-                cadence=context.cadence_policy,
-                now=context.now,
-                on_result=on_result,
-            ),
+            research_factory=ResearchRuntime,
             publish_decision=publication.decision_events.publish_committed,
             publish_overlay=publish_overlay_event,
             latency=latency,
@@ -796,11 +790,6 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         queue_capacity=settings.market_data.candidate_pool_size,
         thread_name_prefix="research-data",
     )
-    company_research_pool = BoundedExecutor(
-        worker_count=1,
-        queue_capacity=4,
-        thread_name_prefix="company-research",
-    )
     persistence_pool = BoundedExecutor(
         worker_count=1,
         queue_capacity=max(1, settings.pipeline.event_queue_size),
@@ -818,7 +807,6 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         quote_pool=quote_pool,
         market_quote_pool=market_quote_pool,
         research_pool=research_pool,
-        company_research_pool=company_research_pool,
         persistence_pool=persistence_pool,
         source_lanes=source_lanes,
         json_writer=json_writer,

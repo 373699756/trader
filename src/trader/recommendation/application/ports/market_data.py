@@ -164,10 +164,6 @@ class QuoteReaderPort(Protocol):
 class ResearchReaderPort(Protocol):
     def refresh_industry_heat(self, observed_at: datetime) -> Sequence[FeatureSnapshot]: ...
 
-    def refresh_market_news(
-        self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None
-    ) -> _ResearchRefreshResult: ...
-
     def refresh_stock_risk(
         self, codes: Sequence[str], observed_at: datetime, *, deadline: datetime | None = None
     ) -> _ResearchRefreshResult: ...

@@ -63,7 +63,6 @@ from trader.recommendation.application.runtime.schedule_requests import (
 from trader.recommendation.application.runtime.status import SchedulerRuntimeStatus, TradingCalendarRuntimeStatus
 from trader.recommendation.application.runtime.trading_session import SessionGuard, StaleSessionError, TradingSession
 from trader.recommendation.domain.evidence.pipeline import StageState
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     DecisionIdentity,
     DisplayQuoteCodes,
@@ -79,8 +78,7 @@ _DATA_TASKS = (
     PipelineTask.TOPK_QUOTES,
     PipelineTask.INTRADAY_TAIL,
     PipelineTask.INDUSTRY_HEAT,
-    PipelineTask.MARKET_NEWS,
-    PipelineTask.STOCK_RISK,
+    PipelineTask.RESEARCH_SNAPSHOT,
     PipelineTask.REFERENCE_DATA,
     PipelineTask.FINAL_CANDIDATE_QUOTES,
     PipelineTask.CLOSE_QUOTES,
@@ -95,8 +93,7 @@ _SCORING_INPUT_TASKS = frozenset(
     {
         PipelineTask.CANDIDATE_QUOTES,
         PipelineTask.FINAL_CANDIDATE_QUOTES,
-        PipelineTask.MARKET_NEWS,
-        PipelineTask.STOCK_RISK,
+        PipelineTask.RESEARCH_SNAPSHOT,
     }
 )
 _CALENDAR_RETRY_DELAYS_SECONDS = (30.0, 60.0, 120.0, 300.0)
@@ -124,7 +121,7 @@ class SchedulerRuntime:
             dependencies.publish_overlay,
             FailureCode,
         )
-        self._research = dependencies.research_factory(self._on_research_result)
+        self._research = dependencies.research_factory()
         self._config_version = config_version
         self._shutdown_timeout_seconds = max(0.1, shutdown_timeout_seconds)
         self._lock = threading.RLock()
@@ -320,11 +317,6 @@ class SchedulerRuntime:
         for scheduled in batch.tasks:
             if not self._periodic_task_inflight(scheduled):
                 self._dispatch_pipeline_task(replace(scheduled, session=session))
-        phase = DecisionAt(observed_at, is_trading_day=is_trading_day).phase
-        try:
-            self._research.offer_due(observed_at, phase, is_trading_day=is_trading_day)
-        except (RuntimeError, TypeError, ValueError) as exc:
-            self._record_failure("research", FailureCode(exc, "research_offer_failed"), None)
         return batch.next_delay_seconds
 
     def _calendar_decision(self, observed_at: datetime) -> tuple[bool | None, float]:
@@ -733,27 +725,6 @@ class SchedulerRuntime:
             review_deadline=review_deadline,
             session=self._session.capture(),
         )
-
-    def _on_research_result(self, result: ResearchRefreshResult, initial_rescore: bool) -> None:
-        del initial_rescore
-        if not result.changed_codes:
-            return
-        with self._lock:
-            if not self._running:
-                return
-        completed_at = ShanghaiNow(result.completed_at or self._dependencies.clock.now())
-        is_trading_day, _retry_delay = self._calendar_decision(completed_at)
-        if is_trading_day is None:
-            return
-        schedule = DecisionAt(completed_at, is_trading_day=is_trading_day)
-        if not schedule.should_score:
-            return
-        if any(
-            isinstance((current := self._dependencies.index.snapshot(strategy).current), ScoredDecision)
-            and current.trade_date == completed_at.date()
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
-        ):
-            self._trigger_scoring_after_input()
 
     def _record_publish(
         self,

@@ -229,10 +229,6 @@ class _NoopResearchRuntime:
         del intent, request
         return False
 
-    def offer_due(self, at: datetime, phase: object, *, is_trading_day: bool) -> bool:
-        del at, phase, is_trading_day
-        return False
-
     def wait_until_idle(self, timeout_seconds: float) -> bool:
         del timeout_seconds
         return True
@@ -264,8 +260,7 @@ class _Settlement:
         raise AssertionError(f"unexpected settlement during interval measurement: {at}")
 
 
-def _research_factory(on_result: object) -> _NoopResearchRuntime:
-    del on_result
+def _research_factory() -> _NoopResearchRuntime:
     return _NoopResearchRuntime()
 
 

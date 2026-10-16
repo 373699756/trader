@@ -459,38 +459,11 @@ def _company_research(runtime: Mapping[str, object]) -> dict[str, object]:
         return {}
     scalar_fields = (
         "state",
-        "running_codes",
-        "pending_codes",
-        "completed_batches",
-        "partial_batches",
-        "failed_batches",
-        "deferred_codes",
-        "cooldown_codes",
-        "retry_wait_codes",
-        "next_retry_seconds",
-        "gated_offer_codes",
-        "short_circuited_batches",
-        "short_circuited_codes",
-        "tracked_code_gates",
-        "evicted_code_gates",
-        "batch_size",
-        "batch_budget_seconds",
-        "success_cooldown_seconds",
         "trade_date",
         "tracked_strategies",
         "tracked_output_codes",
-        "next_periodic_at",
-        "intent_offer_count",
-        "periodic_offer_count",
-        "result_count",
-        "rescore_result_count",
     )
     result = {field: raw[field] for field in scalar_fields if field in raw and _json_scalar(raw[field])}
-    delays = raw.get("retry_delays_seconds")
-    if isinstance(delays, (tuple, list)):
-        result["retry_delays_seconds"] = [
-            numeric for value in delays[:8] if (numeric := _non_negative_number(value)) is not None
-        ]
     return result
 
 

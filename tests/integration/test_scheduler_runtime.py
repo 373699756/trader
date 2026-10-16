@@ -39,7 +39,6 @@ from trader.recommendation.application.runtime.cadence import (
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
 from trader.recommendation.application.runtime.schedule import SHANGHAI, MarketPhase, SchedulePoint
 from trader.recommendation.application.runtime.scheduler_runtime import SchedulerRuntime
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionOverlay,
@@ -104,7 +103,7 @@ class BlockingScoringInputs(DataRefresh):
         if request.task is PipelineTask.CANDIDATE_QUOTES:
             self.candidate_started.set()
             assert self.release_candidate.wait(2.0)
-        elif request.task in {PipelineTask.MARKET_NEWS, PipelineTask.STOCK_RISK}:
+        elif request.task is PipelineTask.RESEARCH_SNAPSHOT:
             raise DataRefreshUnavailableError("controlled_input_failure")
         return outcome
 
@@ -164,20 +163,6 @@ def _cadence(at: datetime) -> CadencePlanner:
                     "morning_late": 60,
                     "afternoon": 60,
                     "final_review": 60,
-                },
-                "market_news": {
-                    "warmup": 120,
-                    "morning_main": 60,
-                    "morning_late": 60,
-                    "afternoon": 60,
-                    "final_review": 60,
-                },
-                "stock_risk": {
-                    "warmup": 300,
-                    "morning_main": 180,
-                    "morning_late": 180,
-                    "afternoon": 180,
-                    "final_review": 120,
                 },
             }
         ),
@@ -271,10 +256,6 @@ class NoopResearchRuntime:
         del intent, request
         return False
 
-    def offer_due(self, at, phase, *, is_trading_day) -> bool:
-        del at, phase, is_trading_day
-        return False
-
     def wait_until_idle(self, timeout_seconds: float) -> bool:
         del timeout_seconds
         return True
@@ -283,7 +264,7 @@ class NoopResearchRuntime:
         return ResearchRuntimeStatus(state="idle")
 
 
-def noop_research_factory(_on_result):
+def noop_research_factory():
     return NoopResearchRuntime()
 
 
@@ -770,14 +751,13 @@ def test_scheduler_recovers_overlay_issue_after_later_success() -> None:
     assert dict(recovered.strategy_error_codes).get("tomorrow") is None
 
 
-def test_scheduler_publishes_local_before_research_and_defers_first_review_until_risk_rescore() -> None:
+def test_scheduler_publishes_local_before_research_visibility_and_does_not_defer_review() -> None:
     index = UnifiedDecisionIndex()
     reviews = SharedReviews()
     holder: list[object] = []
 
     class RecordingResearchRuntime(NoopResearchRuntime):
-        def __init__(self, on_result) -> None:
-            self.on_result = on_result
+        def __init__(self) -> None:
             self.observed_versions: list[str] = []
 
         def observe(self, intent, request) -> bool:
@@ -785,10 +765,10 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
             current = index.snapshot(request.strategy).current
             assert current is not None
             self.observed_versions.append(current.version)
-            return len(self.observed_versions) == 1
+            return False
 
-    def research_factory(on_result):
-        research = RecordingResearchRuntime(on_result)
+    def research_factory():
+        research = RecordingResearchRuntime()
         holder.append(research)
         return research
 
@@ -832,30 +812,13 @@ def test_scheduler_publishes_local_before_research_and_defers_first_review_until
     assert runtime.wait_idle(2.0)
     research = holder[0]
     assert isinstance(research, RecordingResearchRuntime)
-    assert reviews.calls == []
+    assert reviews.calls == [Strategy.TOMORROW]
     assert len(research.observed_versions) == 1
-
-    research.on_result(
-        ResearchRefreshResult(
-            requested_codes=("600001",),
-            completed_codes=("600001",),
-            changed_codes=("600001",),
-            covered_codes=("600001",),
-            data_version="research:changed",
-            started_at=NOW,
-            completed_at=NOW + timedelta(seconds=1),
-        ),
-        True,
-    )
-    assert runtime.wait_idle(2.0)
     runtime.stop(ShutdownDeadline.start(2.0))
 
-    assert len(research.observed_versions) == 3
-    assert set(reviews.calls) == {Strategy.TOMORROW, Strategy.D25}
-    for strategy in (Strategy.TOMORROW, Strategy.D25):
-        current = index.snapshot(strategy).current
-        assert isinstance(current, ScoredDecision)
-        assert current.stage == "hybrid"
+    current = index.snapshot(Strategy.TOMORROW).current
+    assert isinstance(current, ScoredDecision)
+    assert current.stage == "hybrid"
 
 
 class Freezes:

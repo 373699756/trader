@@ -567,20 +567,6 @@ def _validate_cadence_settings(
             "afternoon": 60.0,
             "final_review": 60.0,
         },
-        "market_news": {
-            "warmup": 120.0,
-            "morning_main": 60.0,
-            "morning_late": 60.0,
-            "afternoon": 60.0,
-            "final_review": 60.0,
-        },
-        "stock_risk": {
-            "warmup": 300.0,
-            "morning_main": 180.0,
-            "morning_late": 180.0,
-            "afternoon": 180.0,
-            "final_review": 120.0,
-        },
     }
     if cadence != expected:
         raise ConfigurationError("pipeline cadence_seconds must match the fixed section 6 cadence table")

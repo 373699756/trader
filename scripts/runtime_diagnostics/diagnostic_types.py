@@ -23,6 +23,7 @@ Profile = Literal[
     "history-sqlite",
     "history-source-compare",
     "market-factor-compare",
+    "research-source-compare",
     "history-write",
     "history-space",
     "history-industry",

@@ -13,9 +13,7 @@ from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.application.ports.clock import TradingCalendarPort
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, ResearchAuditIdentity
 from trader.recommendation.application.runtime.cadence import PipelineTask
-from trader.recommendation.application.runtime.schedule import MarketPhase
 from trader.recommendation.application.runtime.trading_session import SessionLease
-from trader.recommendation.domain.market.refresh import ResearchRefreshResult
 from trader.recommendation.domain.publication.decision_identity import DecisionIdentity, DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 
@@ -114,33 +112,9 @@ class ResearchIntent:
 @dataclass(frozen=True)
 class ResearchRuntimeStatus:
     state: str = "stopped"
-    running_codes: int = 0
-    pending_codes: int = 0
-    completed_batches: int = 0
-    partial_batches: int = 0
-    failed_batches: int = 0
-    deferred_codes: int = 0
-    cooldown_codes: int = 0
-    retry_wait_codes: int = 0
-    next_retry_seconds: float = 0.0
-    gated_offer_codes: int = 0
-    short_circuited_batches: int = 0
-    short_circuited_codes: int = 0
-    tracked_code_gates: int = 0
-    evicted_code_gates: int = 0
-    last_error: str = ""
-    batch_size: int = 4
-    batch_budget_seconds: float = 40.0
-    success_cooldown_seconds: float = 60.0
-    retry_delays_seconds: tuple[float, ...] = (60.0, 120.0, 240.0, 480.0, 900.0)
     trade_date: str | None = None
     tracked_strategies: int = 0
     tracked_output_codes: int = 0
-    next_periodic_at: str | None = None
-    intent_offer_count: int = 0
-    periodic_offer_count: int = 0
-    result_count: int = 0
-    rescore_result_count: int = 0
 
 
 class DataRefreshUnavailableError(RuntimeError):
@@ -208,18 +182,13 @@ class ResearchRuntimePort(Protocol):
 
     def observe(self, intent: ResearchIntent, request: CycleRequest) -> bool: ...
 
-    def offer_due(self, at: datetime, phase: MarketPhase, *, is_trading_day: bool) -> bool: ...
-
     def wait_until_idle(self, timeout_seconds: float) -> bool: ...
 
     def status(self) -> ResearchRuntimeStatus: ...
 
 
 class ResearchRuntimeFactoryPort(Protocol):
-    def __call__(
-        self,
-        on_result: Callable[[ResearchRefreshResult, bool], None],
-    ) -> ResearchRuntimePort: ...
+    def __call__(self) -> ResearchRuntimePort: ...
 
 
 class DeepSeekUpgradePort(Protocol):

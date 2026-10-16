@@ -22,7 +22,7 @@ def FetchNews(client: Any, code: str, *, observed_at: datetime, limit: int = 5) 
     if limit <= 0:
         return ()
     point_in_time = _point_in_time(observed_at)
-    callback = "jQuery35101792940631092459_1764599530165"
+    callback = "diag"
     inner_param = {
         "uid": "",
         "keyword": code,
@@ -46,9 +46,11 @@ def FetchNews(client: Any, code: str, *, observed_at: datetime, limit: int = 5) 
         params={
             "cb": callback,
             "param": json.dumps(inner_param, ensure_ascii=False),
-            "_": "1764599530176",
         },
-        headers={"Referer": f"https://so.eastmoney.com/news/s?keyword={code}"},
+        headers={
+            "Referer": f"https://so.eastmoney.com/news/s?keyword={code}",
+            "User-Agent": "Mozilla/5.0",
+        },
     )
     client._cache_payload("news", code, point_in_time, response.text)
     rows = _news_rows(response.text, callback)

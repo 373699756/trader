@@ -13,7 +13,7 @@ from trader.recommendation.application.ports.runtime import (
     DecisionUnavailableError,
     PipelineTaskRequest,
 )
-from trader.recommendation.application.runtime.cadence import TaskExecutionBudgetSeconds
+from trader.recommendation.application.runtime.cadence import PipelineTask, TaskExecutionBudgetSeconds
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.recommendation.domain.publication.decision_identity import DecisionQuote
@@ -86,7 +86,20 @@ def MergeOverlayQuote(quotes: dict[str, DecisionQuote], feature: FeatureSnapshot
 
 def TaskDeadline(request: PipelineTaskRequest) -> datetime | None:
     seconds = TaskExecutionBudgetSeconds(request.task)
-    return request.observed_at + timedelta(seconds=seconds) if seconds is not None else None
+    if seconds is None:
+        return None
+    deadline = request.observed_at + timedelta(seconds=seconds)
+    if request.task is not PipelineTask.RESEARCH_SNAPSHOT:
+        return deadline
+    local_time = request.observed_at.time().replace(tzinfo=None)
+    window_end = time(9, 30) if local_time < time(9, 30) else time(13, 0)
+    boundary = request.observed_at.replace(
+        hour=window_end.hour,
+        minute=window_end.minute,
+        second=0,
+        microsecond=0,
+    )
+    return min(deadline, boundary)
 
 
 def CandidateBatchIsComplete(

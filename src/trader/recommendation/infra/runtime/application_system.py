@@ -43,7 +43,6 @@ class RuntimeWorkerResources:
     quote_pool: BoundedExecutor
     market_quote_pool: BoundedExecutor
     research_pool: BoundedExecutor
-    company_research_pool: BoundedExecutor
     persistence_pool: BoundedExecutor
     source_lanes: SourceLaneScheduler
     json_writer: RuntimeJsonWriter
