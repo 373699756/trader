@@ -23,12 +23,34 @@ def Connect(database_path: Path, *, cross_thread: bool = False) -> sqlite3.Conne
     return connection
 
 
+def ReadConnect(database_path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True, timeout=10.0)
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=8000")
+    except BaseException:
+        connection.close()
+        raise
+    return connection
+
+
 @contextmanager
 def ConnectionScope(database_path: Path) -> Iterator[sqlite3.Connection]:
     connection = Connect(database_path)
     try:
         with connection:
             yield connection
+    finally:
+        connection.close()
+
+
+@contextmanager
+def ReadConnectionScope(database_path: Path) -> Iterator[sqlite3.Connection]:
+    connection = ReadConnect(database_path)
+    try:
+        yield connection
     finally:
         connection.close()
 
@@ -322,4 +344,13 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
 }
 
 
-__all__ = ["SCHEMA_VERSION", "ApplyMigrations", "ConnectionScope", "Connect", "InitializeDatabase"]
+__all__ = [
+    "SCHEMA_VERSION",
+    "SCHEMA_META_KEY",
+    "ApplyMigrations",
+    "ConnectionScope",
+    "Connect",
+    "InitializeDatabase",
+    "ReadConnectionScope",
+    "ReadConnect",
+]

@@ -98,12 +98,14 @@ class SQLiteDataPlane:
         *,
         database_path: Path | None = None,
         buffered_writes: bool = False,
+        read_only: bool = False,
     ) -> None:
         self._runtime_root = database_path.parent if database_path is not None else runtime_root / "market-data"
         self._database = database_path if database_path is not None else self._runtime_root / "market-data.sqlite3"
         self._lock = threading.RLock()
         self._initialized = False
         self._buffered_writes = buffered_writes
+        self._read_only = read_only
         self._writer_connection: sqlite3.Connection | None = None
 
     def close(self) -> None:
@@ -115,6 +117,7 @@ class SQLiteDataPlane:
 
     @contextmanager
     def _write_scope(self) -> Iterator[sqlite3.Connection]:
+        self._require_writable()
         if not self._buffered_writes:
             with data_plane_sqlite.ConnectionScope(self._database) as connection:
                 yield connection
@@ -136,14 +139,29 @@ class SQLiteDataPlane:
             if self._initialized and self._database.is_file():
                 return
             try:
+                if self._read_only:
+                    with data_plane_sqlite.ReadConnectionScope(self._database) as connection:
+                        row = connection.execute(
+                            "SELECT value FROM schema_meta WHERE key = ?",
+                            (data_plane_sqlite.SCHEMA_META_KEY,),
+                        ).fetchone()
+                    if row is None or int(row["value"]) != data_plane_sqlite.SCHEMA_VERSION:
+                        raise DataPlaneUnavailableError("read-only data plane schema is unavailable")
+                    self._initialized = True
+                    return
                 self._runtime_root.mkdir(parents=True, exist_ok=True)
                 data_plane_sqlite.InitializeDatabase(self._database)
+            except DataPlaneUnavailableError:
+                raise
             except sqlite3.DatabaseError as exc:
                 raise _map_sqlite_error(exc, operation="initialize") from exc
+            except (TypeError, ValueError) as exc:
+                raise DataPlaneUnavailableError("read-only data plane schema is unavailable") from exc
             self._initialized = True
 
     def probe_writable(self, *, timeout_seconds: float = 8.0) -> None:
         """Check the SQLite write lock without changing application data."""
+        self._require_writable()
         if not self._initialized or not self._database.is_file():
             self.initialize()
         started = time.monotonic()
@@ -230,7 +248,7 @@ class SQLiteDataPlane:
         selected_set = set(selected) if selected is not None else None
         with self._lock:
             try:
-                with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                with self._read_scope() as connection:
                     evidence_filter = (
                         " AND (evidence_id = 'risk-observation:structured' "
                         "OR (evidence_id >= 'risk-component:' AND evidence_id < 'risk-component;'))"
@@ -380,6 +398,7 @@ class SQLiteDataPlane:
         )
 
     def recover(self) -> DataPlaneRecoverySummary:
+        self._require_writable()
         self.initialize()
         recovered = 0
         quarantined = 0
@@ -423,6 +442,7 @@ class SQLiteDataPlane:
         records: Sequence[Record],
         freeze_id: str | None = None,
     ) -> None:
+        self._require_writable()
         pending = tuple(records)
         if not pending:
             return
@@ -465,7 +485,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                with self._read_scope() as connection:
                     row = connection.execute(
                         f"""
                         SELECT * FROM {table}
@@ -517,7 +537,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                with self._read_scope() as connection:
                     for row in connection.execute(query, params).fetchall():
                         if code_filter is not None:
                             candidate = _text(row["code"])
@@ -589,6 +609,8 @@ class SQLiteDataPlane:
             return False
 
     def _quarantine_row(self, connection: sqlite3.Connection, table: str, row: sqlite3.Row, reason: str) -> bool:
+        if self._read_only:
+            return False
         pk_fields = _pk_fields_from_table(table)
         pk_values = tuple(_text(row[field]) for field in pk_fields)
         connection.execute(
@@ -614,6 +636,16 @@ class SQLiteDataPlane:
             ),
         )
         return True
+
+    @contextmanager
+    def _read_scope(self) -> Iterator[sqlite3.Connection]:
+        scope = data_plane_sqlite.ReadConnectionScope if self._read_only else data_plane_sqlite.ConnectionScope
+        with scope(self._database) as connection:
+            yield connection
+
+    def _require_writable(self) -> None:
+        if self._read_only:
+            raise DataPlaneUnavailableError("read-only data plane cannot be modified")
 
 
 def _record_select_query(

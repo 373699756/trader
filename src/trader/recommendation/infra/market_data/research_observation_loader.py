@@ -54,7 +54,10 @@ from trader.recommendation.infra.market_data.research_component_persistence impo
     RecoverResearchComponentStatuses as _recover_research_component_statuses_from_plane,
 )
 from trader.recommendation.infra.market_data.research_component_persistence import (
-    _ResearchDataPlane as _ResearchDataPlaneProtocol,
+    ResearchDataPlane,
+)
+from trader.recommendation.infra.market_data.research_component_persistence import (
+    ResearchRecoveryDataPlane,
 )
 from trader.recommendation.infra.market_data.research_load_status import (
     ResearchComponentStatus,
@@ -139,7 +142,8 @@ class ResearchLoader:
         client: ResearchSource | None,
         runner: MarketTaskRunner,
         *,
-        data_plane: _ResearchDataPlaneProtocol | None = None,
+        data_plane: ResearchDataPlane | None = None,
+        recovery_data_plane: ResearchRecoveryDataPlane | None = None,
         risk_batch_client: RiskSnapshotBatchSource | None = None,
         **options: Unpack[ResearchLoaderOptions],
     ) -> None:
@@ -147,6 +151,8 @@ class ResearchLoader:
         self._client = client
         self._runner = runner
         self._data_plane = data_plane
+        self._recovery_data_plane = recovery_data_plane or data_plane
+        self._recovery_attempted = False
         self._risk_batch_client = risk_batch_client
         self._workers = max(1, options["workers"])
         self._ttl_seconds = max(60.0, options["ttl_seconds"])
@@ -472,9 +478,15 @@ class ResearchLoader:
         codes: Sequence[str] | None = None,
         research_only: bool = False,
     ) -> None:
-        data_plane = self._data_plane
+        data_plane = self._recovery_data_plane
         if data_plane is None:
             return
+        if data_plane is not self._data_plane:
+            with self._lock:
+                if self._recovery_attempted:
+                    return
+                self._recovery_attempted = True
+        assert data_plane is not None
         _recover_research_component_statuses_from_plane(
             self,
             data_plane,

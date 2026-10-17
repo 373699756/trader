@@ -11,7 +11,7 @@ from typing import TextIO
 from trader.recommendation.application.risk_download import RiskDownloadProgress
 
 _STAGE_LABELS = {
-    "local_snapshot": "本地日库",
+    "local_snapshot": "本地任务库",
     "research_initial": "公司研究",
     "research_retry": "研究重试",
     "official_announcements": "巨潮公告",
@@ -23,7 +23,7 @@ _STATE_LABELS = {
     "running": "进行中",
     "completed": "完成",
     "deferred": "本波截止",
-    "waiting": "等待日库",
+    "waiting": "等待任务库",
     "stopped": "待续传",
 }
 _WAVE_STAGES = frozenset({"research_initial", "research_retry", "official_announcements"})
@@ -169,9 +169,9 @@ class StderrRiskDownloadProgress:
             )
             parts.append(f"恢复耗时 {progress.official_recovery_seconds:.2f}秒")
         if progress.official_persistence_error == "busy":
-            parts.append("日库写入 等待写锁")
+            parts.append("任务库写入 等待写锁")
         elif progress.official_persistence_error == "unavailable":
-            parts.append("日库写入 不可用")
+            parts.append("任务库写入 不可用")
         if progress.official_source_error == "access_denied":
             parts.append("巨潮来源 拒绝访问")
         elif progress.official_source_error == "rate_limited":

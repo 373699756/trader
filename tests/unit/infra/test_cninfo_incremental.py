@@ -809,6 +809,58 @@ def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_pa
     assert loader.status().announcements_covered_count == 1
 
 
+def test_research_loader_can_recover_from_snapshot_without_writing_task_database(tmp_path: Path) -> None:
+    task_data = SQLiteDataPlane(tmp_path, database_path=tmp_path / "risk_download.sqlite3")
+    snapshot_data = SQLiteDataPlane(tmp_path, database_path=tmp_path / "risk_snapshot.sqlite3")
+    CninfoAnnouncementIncrementalSync(
+        _StaticCninfoClient(
+            (
+                {
+                    "announcements": (
+                        {
+                            "announcementId": "snapshot-case",
+                            "announcementTitle": "关于收到立案告知书的公告",
+                            "announcementTime": "2026-07-29 18:30:00",
+                        },
+                    ),
+                    "hasMore": False,
+                },
+            )
+        ),
+        snapshot_data,
+    ).sync_code("600005", OBSERVED_AT)
+    loader = ResearchLoader(
+        None,
+        MarketTaskRunner(
+            worker_pool=None,
+            source_lanes=None,
+            cache=None,
+            source_contracts={"akshare": "akshare-test"},
+            config_version="test",
+            schema_version="test",
+            wall_clock=lambda: OBSERVED_AT,
+        ),
+        data_plane=task_data,
+        recovery_data_plane=snapshot_data,
+        workers=1,
+        ttl_seconds=600,
+        circuit_breaker_failures=3,
+        circuit_breaker_seconds=60,
+        capacity=10,
+        cache_dir=None,
+        json_writer=None,
+        monotonic=lambda: 100.0,
+    )
+
+    loader.recover_from_data_plane()
+
+    recovered = loader.cached(("600005",), include_structured=True)["600005"]
+    assert {fact.evidence_id for fact in recovered.corporate_risk_facts} == {
+        f"{CNINFO_ANNOUNCEMENT_PREFIX}snapshot-case"
+    }
+    assert task_data.load_risk_evidence_recent_records() == ()
+
+
 def test_cninfo_recovery_preserves_existing_financial_news_pledge_and_unlock(tmp_path: Path) -> None:
     data_plane = SQLiteDataPlane(tmp_path)
     observation = ResearchObservation(

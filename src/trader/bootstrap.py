@@ -171,12 +171,16 @@ from trader.recommendation.infra.market_data.research_observation_loader import 
 from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.normalization.features import FeatureBuilder
-from trader.recommendation.infra.persistence.daily_risk import SQLiteDailyRiskIndex
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.data_plane_initialization import _initialize_reference_data_plane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
+from trader.recommendation.infra.persistence.risk_snapshot import (
+    PublishRiskSnapshot,
+    RiskDatabaseKind,
+    RiskDatabasePath,
+)
 from trader.recommendation.infra.policy_settings import (
     _long_group_definitions,
     _long_item_definitions,
@@ -219,9 +223,7 @@ def ExecuteRiskDownload(
     st_evidence_path = HistoryStEvidencePath(settings.reference_dir)
     if not st_evidence_path.is_file():
         raise RuntimeError("risk download requires the historical ST evidence file")
-    st_excluded_codes = frozenset(
-        item.code for item in ReadStEvidence(st_evidence_path) if item.status != "clear"
-    )
+    st_excluded_codes = frozenset(item.code for item in ReadStEvidence(st_evidence_path) if item.status != "clear")
     population_observed_at = clock.now()
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     open_dates = calendar.open_dates()
@@ -245,10 +247,14 @@ def ExecuteRiskDownload(
         for item in population
         if not item.is_st and item.code not in excluded and item.code not in st_excluded_codes
     )
-    risk_data = SQLiteDailyRiskIndex(
-        settings.project_root / "data" / "risk", target_date=lambda: target_date, buffered_writes=True
+    risk_root = settings.project_root / "data" / "risk"
+    task_database: RiskDatabaseKind = "risk_history_download" if include_official_history else "risk_download"
+    risk_data = SQLiteDataPlane(
+        risk_root,
+        database_path=RiskDatabasePath(risk_root, task_database),
+        buffered_writes=True,
     )
-    risk_data.prepare(target_date)
+    risk_data.initialize()
     workers = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
         queue_capacity=len(codes),
@@ -316,6 +322,7 @@ def ExecuteRiskDownload(
         workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         cninfo_client.close()
         risk_data.close()
+    PublishRiskSnapshot(risk_root)
     return replace(result, elapsed_seconds=max(0.0, time.monotonic() - command_started))
 
 
@@ -1139,14 +1146,21 @@ def _build_market_data(
         except RuntimeError:
             # The typed index retains any facts it could verify; persistence degradation stays observable.
             pass
-    risk_data = SQLiteDailyRiskIndex(
-        settings.project_root / "data" / "risk",
-        target_date=lambda: ShanghaiClock(now).now().date(),
+    risk_root = settings.project_root / "data" / "risk"
+    risk_data = SQLiteDataPlane(
+        risk_root,
+        database_path=RiskDatabasePath(risk_root, "risk_download"),
+    )
+    risk_snapshot = SQLiteDataPlane(
+        risk_root,
+        database_path=RiskDatabasePath(risk_root, "risk_snapshot"),
+        read_only=True,
     )
     research = ResearchLoader(
         research_client,
         research_runner,
         data_plane=risk_data,
+        recovery_data_plane=risk_snapshot,
         workers=settings.pipeline.market_workers,
         ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
         circuit_breaker_failures=settings.market_data.circuit_breaker_failures,

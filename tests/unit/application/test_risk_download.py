@@ -790,7 +790,7 @@ def test_risk_download_cli_rejects_second_process_before_supplier_work(monkeypat
         raise AssertionError("second downloader must not reach supplier work")
 
     monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", forbidden_execute)
-    with ProcessLock(tmp_path / "risk_download.lock", label="risk_download"):
+    with ProcessLock(tmp_path / "risk_snapshot.lock", label="risk_download"):
         result = cli.Main(["--config", str(tmp_path / "runtime.json"), "risk_download"])
 
     captured = capsys.readouterr()

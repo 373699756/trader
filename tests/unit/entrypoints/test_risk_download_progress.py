@@ -40,8 +40,8 @@ def test_risk_download_reports_startup_and_heartbeat_during_silent_recovery() ->
 
     output = stream.getvalue()
     assert "启动准备 | 开始" in output
-    assert "本地日库 | 开始" in output
-    assert "本地日库 | 仍在运行 | 距上次状态更新" in output
+    assert "本地任务库 | 开始" in output
+    assert "本地任务库 | 仍在运行 | 距上次状态更新" in output
     assert "总体      0/  5027" not in output
 
 
@@ -181,7 +181,7 @@ def test_risk_download_progress_labels_database_lock_wait_without_false_wave_com
     )
 
     output = stream.getvalue()
-    assert "巨潮公告 | 等待日库" in output
+    assert "巨潮公告 | 等待任务库" in output
     assert "本波待处理   4798" in output
-    assert "日库写入 等待写锁" in output
+    assert "任务库写入 等待写锁" in output
     assert "本波处理      0/  4798" not in output

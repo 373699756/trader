@@ -191,7 +191,7 @@ def _run_history_maintenance_command(
 
         try:
             settings = LoadRuntimeSettings(_absolute_config_path(raw_config_path))
-            with ProcessLock(settings.runtime_dir / "risk_download.lock", label=command):
+            with ProcessLock(settings.runtime_dir / "risk_snapshot.lock", label=command):
                 risk_progress = StderrRiskDownloadProgress(command_name=command)
                 risk_progress.start()
                 try:

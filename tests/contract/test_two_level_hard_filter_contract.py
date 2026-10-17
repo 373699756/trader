@@ -35,7 +35,9 @@ def test_authoritative_documents_define_st_prefilter_and_two_level_runtime_filte
         "ST预过滤",
         "一级市场过滤",
         "二级公司风险过滤",
-        "data/risk/YYYY-MM-DD.sqlite3",
+        "data/risk/risk_download.sqlite3",
+        "data/risk/risk_history_download.sqlite3",
+        "data/risk/risk_snapshot.sqlite3",
         "permanently_excluded",
         "eligible_unverified",
     )

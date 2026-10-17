@@ -66,11 +66,7 @@ class _ResearchComponentPersistenceState(Protocol):
     _ttl_seconds: float
 
 
-class _ResearchDataPlane(Protocol):
-    def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None: ...
-
-    def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None: ...
-
+class ResearchRecoveryDataPlane(Protocol):
     def scan_risk_evidence_recent_records(
         self,
         consume: Callable[[RiskEvidenceRecord], None],
@@ -82,6 +78,12 @@ class _ResearchDataPlane(Protocol):
     def load_source_cursor_recent_records(
         self, cursor_names: Sequence[str] | None = None
     ) -> tuple[SourceCursorRecord, ...]: ...
+
+
+class ResearchDataPlane(ResearchRecoveryDataPlane, Protocol):
+    def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None: ...
+
+    def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None: ...
 
 
 class _ResearchLoaderStatusState(_ResearchComponentPersistenceState, Protocol):
@@ -116,7 +118,7 @@ def ComponentStatusesForCode(
 
 def RecoverResearchComponentStatuses(
     state: _ResearchComponentPersistenceState,
-    data_plane: _ResearchDataPlane,
+    data_plane: ResearchRecoveryDataPlane,
     observed_at: datetime,
     *,
     retain_stale: bool = False,
@@ -220,7 +222,7 @@ def _recovered_remaining_seconds(
 
 def PersistResearchComponentStatuses(
     state: _ResearchComponentPersistenceState,
-    data_plane: _ResearchDataPlane,
+    data_plane: ResearchDataPlane,
     code: str,
     observed_at: datetime,
     observation: ResearchObservation,
@@ -230,7 +232,7 @@ def PersistResearchComponentStatuses(
 
 def PersistResearchComponentStatusBatch(
     state: _ResearchComponentPersistenceState,
-    data_plane: _ResearchDataPlane,
+    data_plane: ResearchDataPlane,
     observed_at: datetime,
     observations: Mapping[str, ResearchObservation],
 ) -> None:
@@ -332,7 +334,7 @@ def _announcement_from_risk_evidence(record: RiskEvidenceRecord) -> ResearchAnno
 
 def _recover_cninfo_observations(
     state: _ResearchComponentPersistenceState,
-    data_plane: _ResearchDataPlane,
+    data_plane: ResearchRecoveryDataPlane,
     announcements_by_code: dict[str, list[ResearchAnnouncement]],
 ) -> None:
     if not announcements_by_code:
@@ -400,7 +402,10 @@ def _recover_cninfo_observations(
                     current[component] = status
 
 
-def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane, codes: Sequence[str]) -> dict[str, bool]:
+def _cninfo_history_complete_by_code(
+    data_plane: ResearchRecoveryDataPlane,
+    codes: Sequence[str],
+) -> dict[str, bool]:
     try:
         records = data_plane.load_source_cursor_recent_records(tuple(f"{CNINFO_CURSOR_PREFIX}{code}" for code in codes))
     except DataPlaneUnavailableError:
