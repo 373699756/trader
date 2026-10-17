@@ -127,7 +127,7 @@ class SQLiteOutcomeEvidenceRepository:
                             item.quote.price,
                             item.downside.atr20_pct
                             if item.downside is not None and item.downside.atr20_pct is not None
-                            else 0.0,
+                            else None,
                             pending_horizons,
                             entry_at=item.quote.source_time,
                         )

@@ -102,6 +102,22 @@ def test_pending_targets_are_derived_only_from_selected_formal_decisions(tmp_pat
     assert targets[0].atr20_pct == 2.5
 
 
+def test_pending_target_does_not_fabricate_zero_atr_when_downside_is_unavailable(tmp_path: Path) -> None:
+    original = decision(Strategy.TOMORROW)
+    item = original.items[0]
+    formal = CommittedDecisionRecord(
+        replace(original, items=(replace(item, selected=True, rank=1, downside=None),)),
+        NOW,
+        "scheduled",
+    )
+    repository = _repository(tmp_path, formal)
+
+    targets = repository.pending_outcome_targets(limit=10)
+
+    assert len(targets) == 1
+    assert targets[0].atr20_pct is None
+
+
 def test_recommend_and_watch_outcomes_are_counted_separately_from_avoided_leader(tmp_path: Path) -> None:
     original = decision(Strategy.TOMORROW)
     base = original.items[0]
@@ -217,6 +233,31 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
     assert status.initialized is True
     assert status.recommendation_outcomes == 1
     assert status.complete_outcomes == 1
+
+
+def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    outcome = replace(
+        _outcome(),
+        atr20_pct=None,
+        mae_atr=None,
+        severe_drawdown=None,
+        quality_reason="atr20_unavailable",
+    )
+
+    repository.save_recommendation_outcomes((outcome,))
+
+    database = tmp_path / "research" / "outcomes.sqlite3"
+    with sqlite3.connect(database) as connection:
+        row = connection.execute("SELECT status, payload FROM recommendation_outcomes").fetchone()
+    assert row is not None
+    payload = json.loads(row[1])
+    assert row[0] == "complete"
+    assert payload["atr20_pct"] is None
+    assert payload["mae_atr"] is None
+    assert payload["severe_drawdown"] is None
+    assert payload["quality_reason"] == "atr20_unavailable"
+    assert SQLiteOutcomeEvidenceRepository.inspect_status(tmp_path).complete_outcomes == 1
 
 
 def test_outcome_status_inspection_is_read_only_for_missing_database(tmp_path: Path) -> None:

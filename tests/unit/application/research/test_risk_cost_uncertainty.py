@@ -433,7 +433,10 @@ def test_sample_cost_inconsistency_cannot_be_constructed() -> None:
         replace(row, actual_net_excess_return=row.actual_net_excess_return - 0.002)
 
 
-@pytest.mark.parametrize("mutation", ("missing_severe", "cost_label_conflict", "cost_gross_conflict"))
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing_atr", "missing_mae_atr", "missing_severe", "cost_label_conflict", "cost_gross_conflict"),
+)
 def test_incomplete_or_conflicting_parent_outcomes_fail_before_source_reads(mutation: str) -> None:
     dataset = _dataset()
     assert dataset.manifest is not None
@@ -441,7 +444,11 @@ def test_incomplete_or_conflicting_parent_outcomes_fail_before_source_reads(muta
     row = day.rows[5]
     cost = row.outcomes[1]
     outcome = cost.outcome
-    if mutation == "missing_severe":
+    if mutation == "missing_atr":
+        outcome = replace(outcome, atr20_pct=None)
+    elif mutation == "missing_mae_atr":
+        outcome = replace(outcome, mae_atr=None)
+    elif mutation == "missing_severe":
         outcome = replace(outcome, severe_drawdown=None)
     elif mutation == "cost_label_conflict":
         outcome = replace(outcome, severe_drawdown=not outcome.severe_drawdown)

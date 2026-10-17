@@ -135,6 +135,7 @@ def _parent_outcome(row: PointInTimeDatasetRow) -> tuple[float, bool]:
             outcome.status != "complete"
             or outcome.gross_return_pct is None
             or outcome.benchmark_return_pct is None
+            or not outcome.risk_label_complete
             or outcome.severe_drawdown is None
             or outcome.exit_untradable is None
         ):

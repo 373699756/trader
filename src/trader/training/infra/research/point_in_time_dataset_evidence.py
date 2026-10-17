@@ -600,7 +600,7 @@ def _decode_outcome(raw: dict[str, object]) -> RecommendationOutcome:
         settled_at=_shanghai_datetime(raw["settled_at"]),
         anchor_raw_price=_float(raw["anchor_raw_price"]),
         anchor_qfq_price=_optional_float(raw["anchor_qfq_price"]),
-        atr20_pct=_float(raw["atr20_pct"]),
+        atr20_pct=_optional_float(raw["atr20_pct"]),
         minimum_qfq_low=_optional_float(raw["minimum_qfq_low"]),
         end_qfq_close=_optional_float(raw["end_qfq_close"]),
         exit_status=OutcomeExitStatus(_string(exit_status)) if exit_status is not None else None,

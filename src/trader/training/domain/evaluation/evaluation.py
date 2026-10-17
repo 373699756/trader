@@ -126,7 +126,8 @@ def _complete_outcome(request: OutcomeEvaluationRequest, prepared: _PreparedOutc
     end_close = window[-1].qfq_close
     gross = (end_close / prepared.anchor_qfq_price - 1.0) * 100.0
     mae = (minimum_low / prepared.anchor_qfq_price - 1.0) * 100.0
-    mae_atr = mae / target.atr20_pct
+    atr20_pct = _valid_atr20_pct(target.atr20_pct)
+    mae_atr = mae / atr20_pct if atr20_pct is not None else None
     threshold = -1.5 if target.strategy is Strategy.TOMORROW else -2.5
     benchmark = (
         _compound_returns(request.benchmark_returns[: request.horizon])
@@ -144,7 +145,7 @@ def _complete_outcome(request: OutcomeEvaluationRequest, prepared: _PreparedOutc
         settled_at=request.settled_at,
         anchor_raw_price=target.anchor_raw_price,
         anchor_qfq_price=prepared.anchor_qfq_price,
-        atr20_pct=target.atr20_pct,
+        atr20_pct=atr20_pct,
         minimum_qfq_low=minimum_low,
         end_qfq_close=end_close,
         exit_status=window[-1].exit_status,
@@ -156,8 +157,8 @@ def _complete_outcome(request: OutcomeEvaluationRequest, prepared: _PreparedOutc
         net_excess_return_pct=net_excess,
         mae_pct=mae,
         mae_atr=mae_atr,
-        severe_drawdown=mae_atr <= threshold,
-        quality_reason="" if benchmark is not None else "benchmark_missing",
+        severe_drawdown=mae_atr <= threshold if mae_atr is not None else None,
+        quality_reason=("benchmark_missing" if benchmark is None else "atr20_unavailable" if atr20_pct is None else ""),
     )
 
 
@@ -166,7 +167,7 @@ def _prepare_outcome(request: OutcomeEvaluationRequest) -> _PreparedOutcome | st
     if isinstance(bar_window, str):
         return bar_window
     anchor_qfq_price = _anchor_qfq_price(request.target.anchor_raw_price, bar_window.reference)
-    if anchor_qfq_price is None or not math.isfinite(request.target.atr20_pct) or request.target.atr20_pct <= 0.0:
+    if anchor_qfq_price is None:
         return "invalid_price_window"
     settlement = _evaluated_settlement(request, bar_window)
     if isinstance(settlement, str):
@@ -222,9 +223,13 @@ def _insufficient(
         settled_at=settled_at,
         anchor_raw_price=target.anchor_raw_price,
         anchor_qfq_price=None,
-        atr20_pct=target.atr20_pct,
+        atr20_pct=_valid_atr20_pct(target.atr20_pct),
         quality_reason=reason,
     )
+
+
+def _valid_atr20_pct(value: float | None) -> float | None:
+    return value if value is not None and math.isfinite(value) and value > 0.0 else None
 
 
 def _anchor_qfq_price(anchor_raw_price: float, reference: OutcomeBar) -> float | None:

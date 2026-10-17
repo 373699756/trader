@@ -149,7 +149,9 @@ def test_equal_weight_benchmark_requires_every_market_return(application_feature
     assert repository.benchmark == ()
 
 
-def test_settlement_persists_non_retryable_quality_failure(application_feature_factory) -> None:
+def test_settlement_preserves_complete_return_when_atr_risk_label_is_unavailable(
+    application_feature_factory,
+) -> None:
     class _InvalidAtrRepository(_Repository):
         def pending_outcome_targets(self, *, limit):
             return tuple(replace(target, atr20_pct=0.0) for target in super().pending_outcome_targets(limit=limit))
@@ -162,11 +164,18 @@ def test_settlement_persists_non_retryable_quality_failure(application_feature_f
         (application_feature_factory("600001", NOW),),
     )
 
-    assert result.completed_count == 0
+    assert result.completed_count == 1
     assert result.retryable_count == 0
     assert len(repository.saved) == 1
-    assert repository.saved[0].status == "insufficient_data"
-    assert repository.saved[0].quality_reason == "invalid_price_window"
+    outcome = repository.saved[0]
+    assert outcome.status == "complete"
+    assert outcome.net_excess_return_pct == pytest.approx(1.3)
+    assert outcome.mae_pct == pytest.approx(-4.0)
+    assert outcome.atr20_pct is None
+    assert outcome.mae_atr is None
+    assert outcome.severe_drawdown is None
+    assert outcome.quality_reason == "atr20_unavailable"
+    assert outcome.risk_label_complete is False
 
 
 def test_adapter_fetches_fresh_close_market_before_settlement(application_feature_factory) -> None:

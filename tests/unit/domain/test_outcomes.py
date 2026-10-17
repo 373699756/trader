@@ -344,17 +344,14 @@ def test_outcome_converts_raw_intraday_anchor_to_the_same_qfq_basis() -> None:
     assert outcome.gross_return_pct == pytest.approx(10.0)
 
 
-@pytest.mark.parametrize("field", ("anchor_raw_price", "atr20_pct"))
-def test_outcome_rejects_non_finite_target_values(field: str) -> None:
-    values = {"anchor_raw_price": 10.0, "atr20_pct": 2.0}
-    values[field] = float("nan")
+def test_outcome_rejects_non_finite_anchor_price() -> None:
     target = OutcomeTarget(
         "snapshot",
         Strategy.TOMORROW,
         "2026-07-20",
         "600001",
-        values["anchor_raw_price"],
-        values["atr20_pct"],
+        float("nan"),
+        2.0,
     )
     bars = (
         _bar("2026-07-20", 10.0, 10.1, 9.9, 10.0),
@@ -371,3 +368,30 @@ def test_outcome_rejects_non_finite_target_values(field: str) -> None:
 
     assert outcome.status == "insufficient_data"
     assert outcome.quality_reason == "invalid_price_window"
+
+
+@pytest.mark.parametrize("atr20_pct", (None, 0.0, float("nan")))
+def test_outcome_preserves_complete_return_when_atr_risk_label_is_unavailable(atr20_pct: float | None) -> None:
+    target = OutcomeTarget("snapshot", Strategy.TOMORROW, "2026-07-20", "600001", 10.0, atr20_pct)
+    bars = (
+        _bar("2026-07-20", 10.0, 10.1, 9.9, 10.0),
+        _bar("2026-07-21", 10.0, 10.2, 9.8, 10.1),
+    )
+
+    outcome = _evaluate_outcome(
+        target,
+        bars,
+        horizon=1,
+        benchmark_returns=(0.0,),
+        settled_at=datetime(2026, 7, 21, 8, tzinfo=timezone.utc),
+    )
+
+    assert outcome.status == "complete"
+    assert outcome.gross_return_pct == pytest.approx(1.0)
+    assert outcome.net_excess_return_pct == pytest.approx(0.8)
+    assert outcome.mae_pct == pytest.approx(-2.0)
+    assert outcome.atr20_pct is None
+    assert outcome.mae_atr is None
+    assert outcome.severe_drawdown is None
+    assert outcome.quality_reason == "atr20_unavailable"
+    assert outcome.risk_label_complete is False

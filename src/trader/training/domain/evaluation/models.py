@@ -92,7 +92,7 @@ class OutcomeTarget:
     recommend_date: str
     stock_code: str
     anchor_raw_price: float
-    atr20_pct: float
+    atr20_pct: float | None
     pending_horizons: tuple[int, ...] = ()
     entry_at: datetime | None = None
 
@@ -146,7 +146,7 @@ class RecommendationOutcome:
     settled_at: datetime
     anchor_raw_price: float
     anchor_qfq_price: float | None
-    atr20_pct: float
+    atr20_pct: float | None
     minimum_qfq_low: float | None = None
     end_qfq_close: float | None = None
     exit_status: OutcomeExitStatus | None = None
@@ -182,12 +182,15 @@ class RecommendationOutcome:
                 self.end_qfq_close,
                 self.gross_return_pct,
                 self.mae_pct,
-                self.mae_atr,
             )
             if self.exit_status is None or any(value is None or not math.isfinite(value) for value in required):
                 raise ValueError("settled recommendation outcome is incomplete")
         if self.status == "complete" and (self.benchmark_return_pct is None or self.net_excess_return_pct is None):
             raise ValueError("complete recommendation outcome requires benchmark and net excess return")
+        if self.atr20_pct is not None and (not math.isfinite(self.atr20_pct) or self.atr20_pct <= 0.0):
+            raise ValueError("recommendation outcome ATR20 must be positive when available")
+        if self.mae_atr is not None and not math.isfinite(self.mae_atr):
+            raise ValueError("recommendation outcome MAE/ATR must be finite when available")
 
     @property
     def exit_untradable(self) -> bool | None:
@@ -202,6 +205,10 @@ class RecommendationOutcome:
         return self.status == "benchmark_missing" or (
             self.status == "insufficient_data" and self.quality_reason == "horizon_not_due"
         )
+
+    @property
+    def risk_label_complete(self) -> bool:
+        return self.atr20_pct is not None and self.mae_atr is not None and self.severe_drawdown is not None
 
 
 __all__ = [
