@@ -20,12 +20,18 @@ from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 class SQLiteDailyRiskIndex:
     """Route risk evidence to one self-contained SQLite database per trade date."""
 
-    def __init__(self, root: Path, *, target_date: Callable[[], date]) -> None:
+    def __init__(self, root: Path, *, target_date: Callable[[], date], buffered_writes: bool = False) -> None:
         self._root = root
         self._target_date = target_date
         self._lock = threading.RLock()
         self._prepared: set[date] = set()
         self._planes: dict[date, SQLiteDataPlane] = {}
+        self._buffered_writes = buffered_writes
+
+    def close(self) -> None:
+        with self._lock:
+            for plane in self._planes.values():
+                plane.close()
 
     def initialize(self) -> None:
         self.prepare(self._target_date())
@@ -40,7 +46,6 @@ class SQLiteDailyRiskIndex:
                 self._publish_seeded_partition(trade_date, database)
             plane = self._plane(trade_date)
             plane.initialize()
-            _require_quick_check(database)
             self._prepared.add(trade_date)
             return database
 
@@ -102,7 +107,11 @@ class SQLiteDailyRiskIndex:
         with self._lock:
             plane = self._planes.get(trade_date)
             if plane is None:
-                plane = SQLiteDataPlane(self._root, database_path=self.database_for(trade_date))
+                plane = SQLiteDataPlane(
+                    self._root,
+                    database_path=self.database_for(trade_date),
+                    buffered_writes=self._buffered_writes,
+                )
                 self._planes[trade_date] = plane
             return plane
 

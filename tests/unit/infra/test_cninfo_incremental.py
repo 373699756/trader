@@ -8,6 +8,8 @@ from threading import Barrier, Condition, Event
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import requests
+
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
     DataPlaneUnavailableError,
@@ -405,8 +407,44 @@ def test_cninfo_batch_sync_pauses_remaining_source_after_rate_limit(tmp_path: Pa
             deadline=OBSERVED_AT.replace(minute=51),
         )
 
-    assert report.failed_codes == ("600006", "600007")
-    assert report.deferred_codes == ()
+    assert report.failed_codes == ()
+    assert report.deferred_codes == ("600006", "600007")
+    assert report.source_error == "rate_limited"
+
+
+def test_cninfo_batch_stops_dispatch_after_http_403(tmp_path: Path, caplog) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    syncer = _ForbiddenCninfoSync()
+    codes = tuple(f"6{index:05d}" for index in range(100))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            syncer, data_plane, pool, wall_clock=lambda: OBSERVED_AT, max_inflight=8
+        )
+        report = batch.sync_report(codes, OBSERVED_AT, deadline=OBSERVED_AT.replace(minute=51))
+
+    assert syncer.calls <= 8
+    assert report.source_error == "access_denied"
+    assert report.failed_codes == ()
+    assert report.deferred_codes == codes
+    assert report.deadline_reached is False
+    assert "http_403" in caplog.text
+
+
+def test_cninfo_batch_throttles_repeated_transient_failure_progress(tmp_path: Path, caplog) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    progress: list[tuple[int, int, int, int, int, int]] = []
+    codes = tuple(f"6{index:05d}" for index in range(100))
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            _TransientCninfoSync(), data_plane, pool, wall_clock=lambda: OBSERVED_AT, max_inflight=8
+        )
+        report = batch.sync_report(
+            codes, OBSERVED_AT, deadline=OBSERVED_AT.replace(minute=51), progress=progress.append
+        )
+
+    assert report.pages_checkpointed == 0
+    assert len(progress) <= 2
+    assert "CNInfo batch source failures by class" in caplog.text
 
 
 def test_cninfo_batch_reports_confirmed_pages_before_stock_completion(tmp_path: Path) -> None:
@@ -774,6 +812,24 @@ class _RateLimitedCninfoSync:
     def sync_code(self, code: str, observed_at: datetime, *, deadline: datetime | None = None, progress=None):
         del code, observed_at, deadline, progress
         raise RuntimeError("http_429")
+
+
+class _TransientCninfoSync:
+    def sync_code(self, code: str, observed_at: datetime, *, deadline: datetime | None = None, progress=None):
+        del code, observed_at, deadline, progress
+        raise TimeoutError("temporary supplier failure")
+
+
+class _ForbiddenCninfoSync:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def sync_code(self, code: str, observed_at: datetime, *, deadline: datetime | None = None, progress=None):
+        del code, observed_at, deadline, progress
+        self.calls += 1
+        response = requests.Response()
+        response.status_code = 403
+        raise requests.HTTPError(response=response)
 
 
 class _BoundedCninfoSync:

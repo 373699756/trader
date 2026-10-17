@@ -230,7 +230,9 @@ def ExecuteRiskDownload(
     }
     excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
     codes = tuple(item.code for item in population if not item.is_st and item.code not in excluded)
-    risk_data = SQLiteDailyRiskIndex(settings.project_root / "data" / "risk", target_date=lambda: target_date)
+    risk_data = SQLiteDailyRiskIndex(
+        settings.project_root / "data" / "risk", target_date=lambda: target_date, buffered_writes=True
+    )
     risk_data.prepare(target_date)
     workers = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
@@ -291,6 +293,7 @@ def ExecuteRiskDownload(
     finally:
         workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
         cninfo_client.close()
+        risk_data.close()
     return replace(result, elapsed_seconds=max(0.0, time.monotonic() - command_started))
 
 

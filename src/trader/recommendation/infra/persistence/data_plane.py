@@ -6,9 +6,10 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Iterator, cast
 
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
@@ -91,11 +92,44 @@ class _PreparedWrite:
 class SQLiteDataPlane:
     """Persist and recover unified data-plane records."""
 
-    def __init__(self, runtime_root: Path, *, database_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        runtime_root: Path,
+        *,
+        database_path: Path | None = None,
+        buffered_writes: bool = False,
+    ) -> None:
         self._runtime_root = database_path.parent if database_path is not None else runtime_root / "market-data"
         self._database = database_path if database_path is not None else self._runtime_root / "market-data.sqlite3"
         self._lock = threading.RLock()
         self._initialized = False
+        self._buffered_writes = buffered_writes
+        self._writer_connection: sqlite3.Connection | None = None
+
+    def close(self) -> None:
+        with self._lock:
+            connection = self._writer_connection
+            self._writer_connection = None
+            if connection is not None:
+                connection.close()
+
+    @contextmanager
+    def _write_scope(self) -> Iterator[sqlite3.Connection]:
+        if not self._buffered_writes:
+            with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                yield connection
+            return
+        writer_connection = self._writer_connection
+        if writer_connection is None:
+            writer_connection = data_plane_sqlite.Connect(self._database, cross_thread=True)
+            try:
+                writer_connection.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.DatabaseError:
+                writer_connection.close()
+                raise
+            self._writer_connection = writer_connection
+        with writer_connection:
+            yield writer_connection
 
     def initialize(self) -> None:
         with self._lock:
@@ -394,7 +428,7 @@ class SQLiteDataPlane:
 
         with self._lock:
             try:
-                with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                with self._write_scope() as connection:
                     for write in writes:
                         _execute_write(connection, table=table, mode=mode, write=write)
             except sqlite3.DatabaseError as exc:
@@ -634,10 +668,10 @@ def _prepare_write(
             "schema_version": record.schema_version or _DEFAULT_SCHEMA_VERSION,
             "payload_hash": payload_hash,
             "payload": payload_text,
-            "status": "staged",
+            "status": "committed",
             "error": "",
-            "recovery_payload": payload_bytes,
-            "recovery_sha256": payload_hash,
+            "recovery_payload": None,
+            "recovery_sha256": "",
         }
     )
     return _PreparedWrite(
@@ -656,6 +690,18 @@ def _execute_write(
     mode: Mode,
     write: _PreparedWrite,
 ) -> None:
+    columns = tuple(write.row)
+    placeholders = ", ".join("?" for _ in columns)
+    inserted = connection.execute(
+        f"""
+        INSERT INTO {table} ({", ".join(columns)})
+        VALUES ({placeholders})
+        ON CONFLICT({", ".join(write.pk_fields)}) DO NOTHING
+        """,
+        tuple(write.row[field] for field in columns),
+    )
+    if inserted.rowcount:
+        return
     identity = (write.pk_fields, write.pk_values)
     allowed = (
         _formal_write_allowed(
@@ -676,26 +722,14 @@ def _execute_write(
     )
     if not allowed:
         return
-    columns = tuple(write.row)
-    placeholders = ", ".join("?" for _ in columns)
     update_fields = tuple(field for field in columns if field not in write.pk_fields)
-    upsert = ", ".join(f"{field}=excluded.{field}" for field in update_fields)
+    updates = ", ".join(f"{field}= ?" for field in update_fields)
     connection.execute(
         f"""
-        INSERT INTO {table} ({", ".join(columns)})
-        VALUES ({placeholders})
-        ON CONFLICT({", ".join(write.pk_fields)}) DO UPDATE SET
-            {upsert}
-        """,
-        tuple(write.row[field] for field in columns),
-    )
-    connection.execute(
-        f"""
-        UPDATE {table}
-        SET status = 'committed', error = '', recovery_payload = NULL, recovery_sha256 = ''
+        UPDATE {table} SET {updates}
         WHERE {_where_clause(write.pk_fields)}
         """,
-        write.pk_values,
+        (*tuple(write.row[field] for field in update_fields), *write.pk_values),
     )
 
 

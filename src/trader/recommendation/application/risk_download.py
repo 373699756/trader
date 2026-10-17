@@ -103,6 +103,9 @@ class RiskAnnouncementSyncReport(Protocol):
     @property
     def persistence_error(self) -> Literal["busy", "unavailable"] | None: ...
 
+    @property
+    def source_error(self) -> Literal["access_denied", "rate_limited"] | None: ...
+
 
 RiskAnnouncementProgress: TypeAlias = tuple[int, int, int, int, int, int]
 
@@ -156,6 +159,7 @@ class RiskDownloadResult:
     official_resumed_codes: int = 0
     official_failed_codes: int = 0
     official_persistence_error: Literal["busy", "unavailable"] | None = None
+    official_source_error: Literal["access_denied", "rate_limited"] | None = None
 
     @property
     def needs_retry(self) -> bool:
@@ -230,6 +234,7 @@ class RiskDownloadProgress:
     official_evidence_write_seconds: float = 0.0
     official_cursor_write_seconds: float = 0.0
     official_persistence_error: Literal["busy", "unavailable"] | None = None
+    official_source_error: Literal["access_denied", "rate_limited"] | None = None
     stop_reason: str | None = None
 
 
@@ -286,6 +291,7 @@ class _RiskDownloadState:
     official_evidence_write_seconds: float = 0.0
     official_cursor_write_seconds: float = 0.0
     official_persistence_error: Literal["busy", "unavailable"] | None = None
+    official_source_error: Literal["access_denied", "rate_limited"] | None = None
     official_wave_initial_pending: int = 0
     wave_count: int = 0
     any_deadline: bool = False
@@ -407,11 +413,17 @@ def _run_download_waves(
             state.official_checkpoint_advances,
         )
         if not _made_durable_progress(before, after):
+            if state.official_source_error is not None:
+                state.stop_reason = "source_blocked"
+                break
             if state.official_persistence_error == "busy":
                 continue
             state.stop_reason = (
                 "persistence_unavailable" if state.official_persistence_error == "unavailable" else "no_progress"
             )
+            break
+        if state.official_source_error is not None:
+            state.stop_reason = "source_blocked"
             break
 
 
@@ -564,6 +576,7 @@ def _run_official_wave(
     state.official_evidence_write_seconds = report.evidence_write_seconds
     state.official_cursor_write_seconds = report.cursor_write_seconds
     state.official_persistence_error = report.persistence_error
+    state.official_source_error = report.source_error
     state.changed_codes.update(report.changed_codes)
     state.official_terminal_codes.update(report.failed_codes)
     state.official_pages_fetched += report.pages_fetched
@@ -671,6 +684,7 @@ def _publish_stage_progress(state: _RiskDownloadState, update: _RiskStageUpdate)
             official_evidence_write_seconds=state.official_evidence_write_seconds,
             official_cursor_write_seconds=state.official_cursor_write_seconds,
             official_persistence_error=state.official_persistence_error,
+            official_source_error=state.official_source_error,
         )
     )
 
@@ -707,6 +721,7 @@ def _publish_summary_progress(
             official_announcements_saved=state.official_announcements_saved,
             official_resumed_codes=len(state.official_resumed_codes),
             official_persistence_error=state.official_persistence_error,
+            official_source_error=state.official_source_error,
         )
     )
 
@@ -737,6 +752,7 @@ def _publish_result_progress(
             official_announcements_saved=result.official_announcements_saved,
             official_resumed_codes=result.official_resumed_codes,
             official_persistence_error=result.official_persistence_error,
+            official_source_error=result.official_source_error,
             stop_reason=result.stop_reason,
         )
     )
@@ -784,6 +800,7 @@ def _build_download_result(
         official_resumed_codes=len(state.official_resumed_codes),
         official_failed_codes=len(state.official_terminal_codes),
         official_persistence_error=state.official_persistence_error,
+        official_source_error=state.official_source_error,
     )
 
 

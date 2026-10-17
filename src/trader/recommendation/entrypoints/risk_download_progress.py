@@ -156,6 +156,10 @@ class StderrRiskDownloadProgress:
             parts.append("日库写入 等待写锁")
         elif progress.official_persistence_error == "unavailable":
             parts.append("日库写入 不可用")
+        if progress.official_source_error == "access_denied":
+            parts.append("巨潮来源 拒绝访问")
+        elif progress.official_source_error == "rate_limited":
+            parts.append("巨潮来源 限流")
         if progress.stop_reason is not None:
             parts.append(f"停止原因 {progress.stop_reason}")
         with self._lock:

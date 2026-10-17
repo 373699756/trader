@@ -20,8 +20,9 @@ class _WindowsLockApi(Protocol):
 
 
 class ProcessLock:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, label: str = "trader-server") -> None:
         self._path = path
+        self._label = label
         self._handle: BinaryIO | None = None
 
     def acquire(self) -> None:
@@ -38,7 +39,10 @@ class ProcessLock:
             _lock_handle(handle)
         except OSError as exc:
             handle.close()
-            raise ProcessLockError(f"trader-server is already running for {self._path.parent}") from exc
+            message = f"{self._label} is already running"
+            if self._label == "trader-server":
+                message += f" for {self._path.parent}"
+            raise ProcessLockError(message) from exc
         self._handle = handle
 
     def release(self) -> None:

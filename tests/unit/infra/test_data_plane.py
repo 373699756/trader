@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -56,6 +57,36 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     assert data_plane.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
     assert data_plane.load_trading_calendar_recent("sse_szse") == _trading_calendar_record()
     assert data_plane.load_trading_calendar_formal("calendar-freeze-1", "sse_szse") == _trading_calendar_record()
+
+
+def test_committed_write_uses_one_atomic_row_without_recovery_copy(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    record = _risk_evidence_record("600001", "announcement-1")
+
+    data_plane.save_risk_evidence_recent(record)
+
+    with closing(sqlite3.connect(_database_path(tmp_path))) as connection:
+        row = connection.execute(
+            "SELECT status, recovery_payload, recovery_sha256 FROM risk_evidence_recent "
+            "WHERE code = ? AND evidence_id = ?",
+            (record.code, record.evidence_id),
+        ).fetchone()
+    assert row == ("committed", None, "")
+    assert data_plane.load_risk_evidence_recent(record.code, record.evidence_id) == record
+
+
+def test_buffered_daily_writer_serializes_threads_and_survives_reopen(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path, buffered_writes=True)
+    records = tuple(_risk_evidence_record("600001", f"announcement-{index}") for index in range(30))
+
+    with ThreadPoolExecutor(max_workers=3) as workers:
+        list(workers.map(data_plane.save_risk_evidence_recent, records))
+    data_plane.close()
+
+    reopened = SQLiteDataPlane(tmp_path)
+    assert reopened.load_risk_evidence_recent_records(("600001",)) == tuple(
+        sorted(records, key=lambda record: record.evidence_id)
+    )
 
 
 def test_security_master_batch_uses_one_write_transaction(

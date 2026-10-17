@@ -69,6 +69,20 @@ def test_daily_risk_index_uses_date_filename_and_seeds_previous_partition(tmp_pa
     assert not tuple((tmp_path / "risk").glob("*.building*"))
 
 
+def test_daily_risk_resume_skips_redundant_full_partition_check(tmp_path, monkeypatch) -> None:
+    selected = date(2026, 10, 19)
+    first = SQLiteDailyRiskIndex(tmp_path / "risk", target_date=lambda: selected)
+    first.prepare(selected)
+
+    def forbidden_check(_database) -> None:
+        pytest.fail("warm resume must not scan the entire daily partition")
+
+    monkeypatch.setattr("trader.recommendation.infra.persistence.daily_risk._require_quick_check", forbidden_check)
+    resumed = SQLiteDailyRiskIndex(tmp_path / "risk", target_date=lambda: selected)
+    resumed.prepare(selected)
+    resumed.save_risk_evidence_recent(_risk_record(datetime(2026, 10, 19, 9, 15, tzinfo=SHANGHAI)))
+
+
 def test_daily_risk_index_does_not_read_a_later_partition(tmp_path) -> None:
     selected = date(2026, 10, 20)
     later = SQLiteDailyRiskIndex(tmp_path / "risk", target_date=lambda: selected)

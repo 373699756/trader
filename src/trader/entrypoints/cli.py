@@ -187,19 +187,26 @@ def _run_history_maintenance_command(
     if command == "risk_download":
         if profile is not None:
             parser.error("risk_download does not accept --profile")
+        from trader.infra.process_lock import ProcessLock, ProcessLockError
         from trader.recommendation.entrypoints.risk_download_progress import StderrRiskDownloadProgress
 
-        risk_progress = StderrRiskDownloadProgress()
-        risk_progress.start()
         try:
-            from trader.bootstrap import ExecuteRiskDownload
+            settings = LoadRuntimeSettings(_absolute_config_path(raw_config_path))
+            with ProcessLock(settings.runtime_dir / "risk_download.lock", label="risk_download"):
+                risk_progress = StderrRiskDownloadProgress()
+                risk_progress.start()
+                try:
+                    from trader.bootstrap import ExecuteRiskDownload
 
-            risk_result = ExecuteRiskDownload(
-                _absolute_config_path(raw_config_path),
-                progress=risk_progress,
-            )
-        finally:
-            risk_progress.close()
+                    risk_result = ExecuteRiskDownload(
+                        _absolute_config_path(raw_config_path),
+                        progress=risk_progress,
+                    )
+                finally:
+                    risk_progress.close()
+        except ProcessLockError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
         print(
             json.dumps(
                 {
@@ -236,6 +243,7 @@ def _run_history_maintenance_command(
                         "resumed_codes": risk_result.official_resumed_codes,
                         "failed_codes": risk_result.official_failed_codes,
                         "persistence_error": risk_result.official_persistence_error,
+                        "source_error": risk_result.official_source_error,
                     },
                 },
                 ensure_ascii=False,

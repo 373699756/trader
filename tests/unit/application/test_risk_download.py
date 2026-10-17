@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from trader.entrypoints import cli
+from trader.infra.process_lock import ProcessLock
 from trader.recommendation.application.risk_download import (
     DownloadRiskSnapshot,
     RiskDownloadContext,
@@ -74,6 +76,7 @@ class _AnnouncementReport:
     evidence_write_seconds = 0.0
     cursor_write_seconds = 0.0
     persistence_error = None
+    source_error = None
 
 
 class _AnnouncementSync:
@@ -108,6 +111,7 @@ class _EmptyAnnouncementReport:
     evidence_write_seconds = 0.0
     cursor_write_seconds = 0.0
     persistence_error = None
+    source_error = None
 
 
 class _BusyThenReadyAnnouncementSync(_AnnouncementSync):
@@ -129,6 +133,19 @@ class _UnavailableAnnouncementSync(_AnnouncementSync):
         del codes, observed_at, deadline, progress
         report = _EmptyAnnouncementReport()
         report.persistence_error = "unavailable"
+        return report
+
+
+class _AccessDeniedAnnouncementSync(_AnnouncementSync):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def sync_report(self, codes, observed_at, *, deadline, progress=None):
+        del codes, observed_at, deadline, progress
+        self.calls += 1
+        report = _EmptyAnnouncementReport()
+        report.source_error = "access_denied"
         return report
 
 
@@ -183,6 +200,7 @@ class _CheckpointAnnouncementReport:
         self.evidence_write_seconds = 0.0
         self.cursor_write_seconds = 0.0
         self.persistence_error = None
+        self.source_error = None
 
 
 class _FairAnnouncementSync:
@@ -246,6 +264,7 @@ class _FairAnnouncementReport:
         self.evidence_write_seconds = 0.0
         self.cursor_write_seconds = 0.0
         self.persistence_error = None
+        self.source_error = None
 
 
 class _Progress:
@@ -490,6 +509,25 @@ def test_risk_download_reports_non_lock_persistence_failure_without_retry_loop()
     assert result.official_pages_checkpointed == 0
 
 
+def test_risk_download_stops_when_official_source_denies_access() -> None:
+    loader = _Loader()
+    loader.cached_observations = {"600001": ResearchObservation(data_version="existing")}
+    announcement_sync = _AccessDeniedAnnouncementSync()
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001",),
+        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at),
+        announcement_sync=announcement_sync,
+    )
+
+    assert announcement_sync.calls == 1
+    assert result.stop_reason == "source_blocked"
+    assert result.official_source_error == "access_denied"
+    assert result.deferred_codes == 1
+
+
 def test_risk_download_stops_when_only_volatile_cache_version_changes() -> None:
     loader = _ChangingVersionLoader()
     announcement_sync = _StuckAnnouncementSync()
@@ -633,6 +671,7 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
         return result
 
     monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", execute)
+    monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: SimpleNamespace(runtime_dir=tmp_path))
 
     assert cli.Main(["--config", str(tmp_path / "runtime.json"), "risk_download"]) == 1
 
@@ -661,5 +700,22 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
         "resumed_codes": 0,
         "failed_codes": 0,
         "persistence_error": None,
+        "source_error": None,
     }
     assert payload["elapsed_seconds"] == 123.457
+
+
+def test_risk_download_cli_rejects_second_process_before_supplier_work(monkeypatch, capsys, tmp_path) -> None:
+    monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: SimpleNamespace(runtime_dir=tmp_path))
+
+    def forbidden_execute(_path, *, progress):
+        raise AssertionError("second downloader must not reach supplier work")
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", forbidden_execute)
+    with ProcessLock(tmp_path / "risk_download.lock", label="risk_download"):
+        result = cli.Main(["--config", str(tmp_path / "runtime.json"), "risk_download"])
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert "risk_download is already running" in captured.err
+    assert captured.out == ""

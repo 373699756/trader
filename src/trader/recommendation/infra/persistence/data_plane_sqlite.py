@@ -11,8 +11,8 @@ SCHEMA_VERSION = 3
 SCHEMA_META_KEY = "schema_version"
 
 
-def Connect(database_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(database_path, timeout=10.0)
+def Connect(database_path: Path, *, cross_thread: bool = False) -> sqlite3.Connection:
+    connection = sqlite3.connect(database_path, timeout=10.0, check_same_thread=not cross_thread)
     try:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")

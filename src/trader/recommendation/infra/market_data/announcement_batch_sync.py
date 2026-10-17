@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ from trader.recommendation.infra.market_data.announcement_sync import (
 
 _RESULT_DRAIN_SECONDS = 1.0
 _PROGRESS_INTERVAL_SECONDS = 5.0
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,7 @@ class CninfoBatchSyncReport:
     evidence_write_seconds: float
     cursor_write_seconds: float
     persistence_error: Literal["busy", "unavailable"] | None = None
+    source_error: Literal["access_denied", "rate_limited"] | None = None
 
 
 class _CninfoBatchProgress:
@@ -60,6 +64,7 @@ class _CninfoBatchProgress:
         self._processed = 0
         self._completed = 0
         self._last_publish = 0.0
+        self._last_snapshot: tuple[int, int, int, int, int, int] | None = None
         self._closed = False
 
     def checkpoint(self, code: str, counts: tuple[int, int, int]) -> None:
@@ -81,10 +86,11 @@ class _CninfoBatchProgress:
                 )
             self._processed = min(self._total_codes, len(results) + len(failed))
             self._completed = sum(result.history_complete for result in results.values())
-            self._emit(force=True)
+            self._emit(force=False)
 
     def close(self) -> dict[str, tuple[int, int, int]]:
         with self._lock:
+            self._emit(force=True)
             self._closed = True
             return dict(self._pages_by_code)
 
@@ -94,9 +100,13 @@ class _CninfoBatchProgress:
         now = time.monotonic()
         if not force and now - self._last_publish < _PROGRESS_INTERVAL_SECONDS:
             return
-        self._last_publish = now
         pages = tuple(sum(counts[index] for counts in self._pages_by_code.values()) for index in range(3))
-        self._publish((self._processed, self._total_codes, pages[0], pages[1], pages[2], self._completed))
+        snapshot = (self._processed, self._total_codes, pages[0], pages[1], pages[2], self._completed)
+        if snapshot == self._last_snapshot:
+            return
+        self._last_publish = now
+        self._last_snapshot = snapshot
+        self._publish(snapshot)
 
 
 class CninfoAnnouncementBatchSynchronizer:
@@ -164,7 +174,9 @@ class CninfoAnnouncementBatchSynchronizer:
                 cursor_write_seconds=0.0,
                 persistence_error=preflight_error,
             )
-        results, failed, pending, page_counts = self._collect_sync_results(codes, observed_at, deadline, progress)
+        results, failed, pending, page_counts, source_error = self._collect_sync_results(
+            codes, observed_at, deadline, progress
+        )
         completed_codes = tuple(sorted(code for code, result in results.items() if result.history_complete))
         changed_codes = tuple(sorted(code for code, counts in page_counts.items() if counts[2] > 0))
         failed.update(code for code, result in results.items() if result.terminal_failure)
@@ -183,12 +195,13 @@ class CninfoAnnouncementBatchSynchronizer:
             pages_checkpointed=sum(counts[1] for counts in page_counts.values()),
             saved_announcements=sum(counts[2] for counts in page_counts.values()),
             resumed_codes=tuple(sorted(code for code, result in results.items() if result.resumed)),
-            deadline_reached=bool(pending) or self._wall_clock() >= deadline,
+            deadline_reached=self._wall_clock() >= deadline or (source_error is None and bool(pending)),
             request_seconds=sum(result.request_seconds for result in results.values()),
             parse_seconds=sum(result.parse_seconds for result in results.values()),
             evidence_write_seconds=sum(result.evidence_write_seconds for result in results.values()),
             cursor_write_seconds=sum(result.cursor_write_seconds for result in results.values()),
             persistence_error=persistence_error,
+            source_error=source_error,
         )
 
     def _fill_sync_futures(
@@ -220,61 +233,83 @@ class CninfoAnnouncementBatchSynchronizer:
         observed_at: datetime,
         deadline: datetime,
         progress: Callable[[tuple[int, int, int, int, int, int]], None] | None,
-    ) -> tuple[dict[str, CninfoSyncResult], set[str], bool, dict[str, tuple[int, int, int]]]:
+    ) -> tuple[
+        dict[str, CninfoSyncResult],
+        set[str],
+        bool,
+        dict[str, tuple[int, int, int]],
+        Literal["access_denied", "rate_limited"] | None,
+    ]:
         futures: dict[Future[CninfoSyncResult], str] = {}
         tracker = _CninfoBatchProgress(len(codes), progress)
         next_index = self._fill_sync_futures(codes, 0, observed_at, deadline, futures, tracker)
         results: dict[str, CninfoSyncResult] = {}
         failed: set[str] = set()
+        error_counts: Counter[str] = Counter()
         pending = set(futures)
-        rate_limited = False
+        source_error: Literal["access_denied", "rate_limited"] | None = None
         persistence_blocked = False
-        while pending and not rate_limited and not persistence_blocked:
+        while pending and source_error is None and not persistence_blocked:
             timeout = max(0.0, (deadline - self._wall_clock()).total_seconds())
             if timeout <= 0.0:
                 break
             completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
             if not completed:
                 break
-            rate_limited, persistence_blocked = self._consume_sync_results(completed, futures, codes, results, failed)
+            source_error, persistence_blocked = self._consume_sync_results(
+                completed, futures, results, failed, error_counts
+            )
             for future in completed:
                 futures.pop(future, None)
-            if not rate_limited and not persistence_blocked:
+            if source_error is None and not persistence_blocked:
                 next_index = self._fill_sync_futures(codes, next_index, observed_at, deadline, futures, tracker)
                 pending.update(futures)
             tracker.results(results, failed)
         if pending:
             completed, pending = wait(pending, timeout=_RESULT_DRAIN_SECONDS)
-            self._consume_sync_results(completed, futures, codes, results, failed)
+            drained_error, _ = self._consume_sync_results(completed, futures, results, failed, error_counts)
+            source_error = source_error or drained_error
             tracker.results(results, failed)
         for future in pending:
             future.cancel()
         has_pending = bool(pending) or next_index < len(codes)
         page_counts = tracker.close()
-        return results, failed, has_pending, page_counts
+        if error_counts:
+            _LOGGER.warning("CNInfo batch source failures by class: %s", dict(sorted(error_counts.items())))
+        return results, failed, has_pending, page_counts, source_error
 
     @staticmethod
     def _consume_sync_results(
         completed: set[Future[CninfoSyncResult]],
         futures: Mapping[Future[CninfoSyncResult], str],
-        codes: Sequence[str],
         results: dict[str, CninfoSyncResult],
         failed: set[str],
-    ) -> tuple[bool, bool]:
+        error_counts: Counter[str],
+    ) -> tuple[Literal["access_denied", "rate_limited"] | None, bool]:
         persistence_blocked = False
+        source_error: Literal["access_denied", "rate_limited"] | None = None
         for future in completed:
             code = futures[future]
             try:
                 results[code] = future.result()
+                error_counts.update(results[code].source_errors)
                 persistence_blocked = persistence_blocked or results[code].persistence_error is not None
             except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
                 failure = ClassifyAdapterFailure(exc, provider=CNINFO_SOURCE, operation="announcements")
+                if isinstance(exc, requests.HTTPError) and exc.response is not None:
+                    status = exc.response.status_code
+                    error_counts[f"http_{status}"] += 1
+                    if status == 403:
+                        source_error = "access_denied"
+                        continue
+                else:
+                    error_counts[f"{failure.code.value}:{type(exc).__name__}"] += 1
                 if failure.code is AdapterFailureCode.RATE_LIMITED:
-                    failed.update(codes)
-                    return True, persistence_blocked
+                    source_error = source_error or "rate_limited"
+                    continue
                 if not failure.retryable:
                     failed.add(code)
-        return False, persistence_blocked
+        return source_error, persistence_blocked
 
 
 __all__ = ["CninfoAnnouncementBatchSynchronizer", "CninfoBatchSyncReport"]
