@@ -64,6 +64,9 @@ class RiskAnnouncementSyncReport(Protocol):
     def completed_codes(self) -> tuple[str, ...]: ...
 
     @property
+    def attempted_codes(self) -> tuple[str, ...]: ...
+
+    @property
     def deferred_codes(self) -> tuple[str, ...]: ...
 
     @property
@@ -171,7 +174,7 @@ RiskDownloadProgressStage = Literal[
     "wave_summary",
     "finished",
 ]
-RiskDownloadProgressState = Literal["started", "running", "completed", "stopped"]
+RiskDownloadProgressState = Literal["started", "running", "completed", "deferred", "stopped"]
 
 
 @dataclass(frozen=True)
@@ -182,6 +185,8 @@ class RiskDownloadProgress:
     completed_units: int
     total_units: int
     requested_codes: int
+    research_pending_codes: int | None = None
+    official_pending_codes: int | None = None
     available_codes: int | None = None
     covered_codes: int | None = None
     deferred_codes: int | None = None
@@ -202,17 +207,18 @@ class _RiskObservationProgress:
     evidence_ids: tuple[str, ...]
     announcement_ids: tuple[str, ...]
     financial_reports: tuple[tuple[date, datetime], ...]
+    financial_history_complete: bool
     financial_available: bool
     announcements_available: bool
     pledge_available: bool
     unlock_available: bool
     regulatory_facts: tuple[tuple[str, str], ...]
     regulatory_history_complete: bool
-    source_errors: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class _RiskProgressIdentity:
+    research_pending: tuple[str, ...]
     official_pending: tuple[str, ...]
     observations: tuple[_RiskObservationProgress, ...]
 
@@ -225,6 +231,10 @@ class _RiskDownloadState:
     changed_codes: set[str]
     official_terminal_codes: set[str]
     progress: RiskDownloadProgressPort | None = None
+    research_retry_order: tuple[str, ...] = ()
+    official_order: tuple[str, ...] = ()
+    research_pending_codes: int = 0
+    official_pending_codes: int = 0
     official_pages_fetched: int = 0
     official_announcements_saved: int = 0
     wave_count: int = 0
@@ -270,6 +280,7 @@ def DownloadRiskSnapshot(
         progress=context.progress,
     )
     initial_pending = _pending_codes(state, context, announcement_sync)
+    _remember_pending_counts(state, initial_pending)
     _publish_summary_progress(
         state,
         initial_pending,
@@ -279,7 +290,7 @@ def DownloadRiskSnapshot(
     )
     _run_download_waves(loader, context, budget, announcement_sync, state)
     result = _build_download_result(context, state, announcement_sync)
-    _publish_result_progress(context.progress, result)
+    _publish_result_progress(context.progress, result, state)
     return result
 
 
@@ -292,6 +303,7 @@ def _run_download_waves(
 ) -> None:
     while True:
         pending = _pending_codes(state, context, announcement_sync)
+        _remember_pending_counts(state, pending)
         if not pending.missing and not pending.retryable and not pending.official:
             state.stop_reason = (
                 "complete"
@@ -305,7 +317,7 @@ def _run_download_waves(
             break
 
         state.wave_count += 1
-        before = _progress_identity(state.normalized, state.observations, pending.official)
+        before = _progress_identity(state.normalized, state.observations, pending)
         if not _run_research_wave(loader, context, budget, state, pending):
             state.stop_reason = "task_deadline"
             break
@@ -313,6 +325,7 @@ def _run_download_waves(
             state.stop_reason = "task_deadline"
             break
         after_pending = _pending_codes(state, context, announcement_sync)
+        _remember_pending_counts(state, after_pending)
         unresolved = set((*after_pending.missing, *after_pending.retryable, *after_pending.official))
         _publish_summary_progress(
             state,
@@ -321,8 +334,8 @@ def _run_download_waves(
             state_name="completed",
             completed_units=len(state.normalized) - len(unresolved),
         )
-        after = _progress_identity(state.normalized, state.observations, after_pending.official)
-        if after == before:
+        after = _progress_identity(state.normalized, state.observations, after_pending)
+        if not _made_durable_progress(before, after):
             state.stop_reason = "no_progress"
             break
 
@@ -333,21 +346,46 @@ def _pending_codes(
     announcement_sync: RiskAnnouncementSynchronizer | None,
 ) -> _RiskPendingCodes:
     missing = tuple(code for code in state.normalized if code not in state.observations)
-    retryable = tuple(
-        code
-        for code in state.normalized
-        if code in state.observations and _has_retryable_source_error(state.observations[code])
-    )
-    official = (
+    retryable = _prioritize_pending(
         tuple(
             code
-            for code in announcement_sync.pending_codes(state.normalized, context.observed_at)
-            if code not in state.official_terminal_codes
+            for code in state.normalized
+            if code in state.observations and _has_retryable_source_error(state.observations[code])
+        ),
+        state.research_retry_order,
+    )
+    official = (
+        _prioritize_pending(
+            tuple(
+                code
+                for code in announcement_sync.pending_codes(state.normalized, context.observed_at)
+                if code not in state.official_terminal_codes
+            ),
+            state.official_order,
         )
         if announcement_sync is not None
         else ()
     )
     return _RiskPendingCodes(missing, retryable, official)
+
+
+def _prioritize_pending(codes: tuple[str, ...], priority: Sequence[str]) -> tuple[str, ...]:
+    pending = set(codes)
+    prioritized = tuple(code for code in priority if code in pending)
+    included = set(prioritized)
+    return (*prioritized, *(code for code in codes if code not in included))
+
+
+def _remember_pending_counts(state: _RiskDownloadState, pending: _RiskPendingCodes) -> None:
+    state.research_pending_codes = len(set((*pending.missing, *pending.retryable)))
+    state.official_pending_codes = len(pending.official)
+
+
+def _research_pending_count(
+    codes: Sequence[str],
+    observations: Mapping[str, ResearchObservation],
+) -> int:
+    return sum(code not in observations or _has_retryable_source_error(observations[code]) for code in codes)
 
 
 def _run_research_wave(
@@ -384,12 +422,33 @@ def _run_research_wave(
             deadline=context.wall_clock() + timedelta(seconds=source_seconds),
             progress=partial(_publish_research_progress, state, stage),
         )
+        previous = {code: state.observations.get(code) for code in report.changed_codes}
         state.observations.update(report.observations)
-        state.changed_codes.update(report.changed_codes)
+        state.changed_codes.update(
+            code
+            for code in report.changed_codes
+            if (current := state.observations.get(code)) is not None
+            and _research_observation_advanced(code, previous[code], current)
+        )
         state.any_deadline = state.any_deadline or report.deadline_reached
+        state.research_pending_codes = _research_pending_count(state.normalized, state.observations)
+        if stage == "research_retry":
+            deferred = set(report.deferred_codes)
+            state.research_retry_order = (
+                *report.deferred_codes,
+                *(code for code in group if code not in deferred),
+            )
+        unresolved_group = sum(
+            code not in state.observations or _has_retryable_source_error(state.observations[code]) for code in group
+        )
         _publish_stage_progress(
             state,
-            _RiskStageUpdate(stage, "completed", len(group) - len(report.deferred_codes), len(group)),
+            _RiskStageUpdate(
+                stage,
+                "deferred" if unresolved_group else "completed",
+                len(group) - len(report.deferred_codes),
+                len(group),
+            ),
         )
     return True
 
@@ -427,11 +486,18 @@ def _run_official_wave(
     state.official_pages_fetched += report.pages_fetched
     state.official_announcements_saved += report.saved_announcements
     state.any_deadline = state.any_deadline or report.deadline_reached
+    attempted = set(report.attempted_codes)
+    deferred = set(report.deferred_codes)
+    state.official_order = (
+        *(code for code in official_pending if code in deferred and code not in attempted),
+        *(code for code in official_pending if code in deferred and code in attempted),
+    )
+    state.official_pending_codes = len(report.deferred_codes)
     _publish_stage_progress(
         state,
         _RiskStageUpdate(
             "official_announcements",
-            "completed",
+            "deferred" if report.deferred_codes else "completed",
             len(report.completed_codes) + len(report.failed_codes),
             len(official_pending),
         ),
@@ -482,6 +548,8 @@ def _publish_stage_progress(state: _RiskDownloadState, update: _RiskStageUpdate)
             completed_units=update.completed_units,
             total_units=update.total_units,
             requested_codes=len(state.normalized),
+            research_pending_codes=state.research_pending_codes,
+            official_pending_codes=state.official_pending_codes,
             changed_codes=len(state.changed_codes),
             official_pages_fetched=(
                 state.official_pages_fetched if update.official_pages_fetched is None else update.official_pages_fetched
@@ -516,6 +584,8 @@ def _publish_summary_progress(
             completed_units=completed_units,
             total_units=len(state.normalized),
             requested_codes=len(state.normalized),
+            research_pending_codes=state.research_pending_codes,
+            official_pending_codes=state.official_pending_codes,
             available_codes=available,
             covered_codes=covered,
             deferred_codes=len(deferred),
@@ -529,6 +599,7 @@ def _publish_summary_progress(
 def _publish_result_progress(
     progress: RiskDownloadProgressPort | None,
     result: RiskDownloadResult,
+    state: _RiskDownloadState,
 ) -> None:
     if progress is None:
         return
@@ -540,6 +611,8 @@ def _publish_result_progress(
             completed_units=result.requested_codes - result.deferred_codes - result.failed_codes,
             total_units=result.requested_codes,
             requested_codes=result.requested_codes,
+            research_pending_codes=state.research_pending_codes,
+            official_pending_codes=state.official_pending_codes,
             available_codes=result.available_codes,
             covered_codes=result.covered_codes,
             deferred_codes=result.deferred_codes,
@@ -625,32 +698,102 @@ def _source_budget_seconds(
 def _progress_identity(
     codes: Sequence[str],
     observations: Mapping[str, ResearchObservation],
-    official_pending: Sequence[str],
+    pending: _RiskPendingCodes,
 ) -> _RiskProgressIdentity:
     return _RiskProgressIdentity(
-        official_pending=tuple(official_pending),
+        research_pending=tuple(sorted(set((*pending.missing, *pending.retryable)))),
+        official_pending=tuple(sorted(pending.official)),
         observations=tuple(
-            _RiskObservationProgress(
-                code=code,
-                news_queried=observation.news_queried,
-                evidence_ids=tuple(item.evidence_id for item in observation.evidence),
-                announcement_ids=tuple(item.announcement_id for item in observation.announcements),
-                financial_reports=tuple(
-                    (item.report_date, item.published_at) for item in observation.financial_history
-                ),
-                financial_available=observation.financial is not None,
-                announcements_available=observation.announcements_available,
-                pledge_available=observation.pledge_ratio_pct is not None,
-                unlock_available=observation.unlock_ratio_pct is not None,
-                regulatory_facts=tuple(
-                    (item.category.value, item.evidence_id) for item in observation.corporate_risk_facts
-                ),
-                regulatory_history_complete=observation.corporate_risk_history_complete,
-                source_errors=observation.source_errors,
-            )
+            _observation_progress(code, observation)
             for code in codes
             if (observation := observations.get(code)) is not None
         ),
+    )
+
+
+def _observation_progress(code: str, observation: ResearchObservation) -> _RiskObservationProgress:
+    return _RiskObservationProgress(
+        code=code,
+        news_queried=observation.news_queried,
+        evidence_ids=tuple(item.evidence_id for item in observation.evidence),
+        announcement_ids=tuple(item.announcement_id for item in observation.announcements),
+        financial_reports=tuple((item.report_date, item.published_at) for item in observation.financial_history),
+        financial_history_complete=observation.financial_history_complete,
+        financial_available=observation.financial is not None,
+        announcements_available=observation.announcements_available,
+        pledge_available=observation.pledge_ratio_pct is not None,
+        unlock_available=observation.unlock_ratio_pct is not None,
+        regulatory_facts=tuple((item.category.value, item.evidence_id) for item in observation.corporate_risk_facts),
+        regulatory_history_complete=observation.corporate_risk_history_complete,
+    )
+
+
+def _research_observation_advanced(
+    code: str,
+    previous: ResearchObservation | None,
+    current: ResearchObservation,
+) -> bool:
+    if previous is not None and _has_retryable_source_error(previous) and not _has_retryable_source_error(current):
+        return True
+    return _observation_progressed(
+        None if previous is None else _observation_progress(code, previous),
+        _observation_progress(code, current),
+    )
+
+
+def _made_durable_progress(before: _RiskProgressIdentity, after: _RiskProgressIdentity) -> bool:
+    if set(after.research_pending) < set(before.research_pending):
+        return True
+    if set(after.official_pending) < set(before.official_pending):
+        return True
+    before_observations = {item.code: item for item in before.observations}
+    return any(
+        _observation_progressed(before_observations.get(current.code), current) for current in after.observations
+    )
+
+
+def _observation_progressed(
+    previous: _RiskObservationProgress | None,
+    current: _RiskObservationProgress,
+) -> bool:
+    if previous is None:
+        return _observation_has_durable_progress(current)
+    if (
+        (current.news_queried and not previous.news_queried)
+        or (current.financial_history_complete and not previous.financial_history_complete)
+        or (current.financial_available and not previous.financial_available)
+        or (current.announcements_available and not previous.announcements_available)
+        or (current.pledge_available and not previous.pledge_available)
+        or (current.unlock_available and not previous.unlock_available)
+        or (current.regulatory_history_complete and not previous.regulatory_history_complete)
+    ):
+        return True
+    return any(
+        set(current_values) - set(previous_values)
+        for current_values, previous_values in (
+            (current.evidence_ids, previous.evidence_ids),
+            (current.announcement_ids, previous.announcement_ids),
+            (current.financial_reports, previous.financial_reports),
+            (current.regulatory_facts, previous.regulatory_facts),
+        )
+    )
+
+
+def _observation_has_durable_progress(observation: _RiskObservationProgress) -> bool:
+    return any(
+        (
+            observation.news_queried,
+            observation.financial_history_complete,
+            observation.financial_available,
+            observation.announcements_available,
+            observation.pledge_available,
+            observation.unlock_available,
+            observation.regulatory_history_complete,
+            bool(observation.evidence_ids),
+            bool(observation.announcement_ids),
+            bool(observation.financial_reports),
+            bool(observation.regulatory_facts),
+        )
     )
 
 

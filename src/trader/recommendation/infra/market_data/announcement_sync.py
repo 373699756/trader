@@ -380,6 +380,7 @@ class CninfoAnnouncementHttpClient:
 class CninfoBatchSyncReport:
     changed_codes: tuple[str, ...]
     completed_codes: tuple[str, ...]
+    attempted_codes: tuple[str, ...]
     deferred_codes: tuple[str, ...]
     failed_codes: tuple[str, ...]
     pages_fetched: int
@@ -435,6 +436,7 @@ class CninfoAnnouncementBatchSynchronizer:
         return CninfoBatchSyncReport(
             changed_codes=changed_codes,
             completed_codes=completed_codes,
+            attempted_codes=tuple(sorted(set(results) | failed)),
             deferred_codes=deferred,
             failed_codes=tuple(sorted(failed)),
             pages_fetched=sum(result.pages_fetched for result in results.values()),

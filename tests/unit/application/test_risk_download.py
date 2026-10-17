@@ -43,7 +43,7 @@ class _Loader:
         if progress := options.get("progress"):
             progress(len(codes), len(codes))
         return ResearchLoadReport(
-            {codes[0]: ResearchObservation(data_version="risk:1")} if codes else {},
+            {codes[0]: ResearchObservation(data_version="risk:1", pledge_ratio_pct=0.0)} if codes else {},
             changed_codes=(codes[0],) if codes else (),
             deferred_codes=(codes[1],) if len(codes) > 1 else (),
             deadline_reached=len(codes) > 1,
@@ -53,6 +53,7 @@ class _Loader:
 class _AnnouncementReport:
     changed_codes = ("600001",)
     completed_codes = ("600001",)
+    attempted_codes = ("600001",)
     deferred_codes: tuple[str, ...] = ()
     failed_codes: tuple[str, ...] = ()
     pages_fetched = 3
@@ -79,6 +80,7 @@ class _AnnouncementSync:
 class _EmptyAnnouncementReport:
     changed_codes: tuple[str, ...] = ()
     completed_codes: tuple[str, ...] = ()
+    attempted_codes: tuple[str, ...] = ()
     deferred_codes = ("600001",)
     failed_codes: tuple[str, ...] = ()
     pages_fetched = 0
@@ -102,6 +104,62 @@ class _StuckAnnouncementSync:
         return _EmptyAnnouncementReport()
 
 
+class _FairAnnouncementSync:
+    def __init__(self) -> None:
+        self.completed: set[str] = set()
+        self.sync_calls: list[tuple[str, ...]] = []
+
+    def pending_codes(self, codes, observed_at):
+        del observed_at
+        return tuple(code for code in codes if code not in self.completed)
+
+    def sync_report(self, codes, observed_at, *, deadline, progress=None):
+        del observed_at, deadline
+        requested = tuple(codes)
+        self.sync_calls.append(requested)
+        attempt = len(self.sync_calls)
+        if attempt == 1:
+            report = _FairAnnouncementReport(
+                completed_codes=("300001",),
+                attempted_codes=("000001", "300001"),
+                deferred_codes=("000001", "600001"),
+            )
+        elif attempt == 2:
+            report = _FairAnnouncementReport(
+                completed_codes=("600001",),
+                attempted_codes=("600001",),
+                deferred_codes=("000001",),
+            )
+        else:
+            report = _FairAnnouncementReport(
+                completed_codes=(),
+                attempted_codes=("000001",),
+                deferred_codes=("000001",),
+            )
+        self.completed.update(report.completed_codes)
+        if progress is not None:
+            progress(len(report.attempted_codes), len(requested), 0, 0)
+        return report
+
+
+class _FairAnnouncementReport:
+    def __init__(
+        self,
+        *,
+        completed_codes: tuple[str, ...],
+        attempted_codes: tuple[str, ...],
+        deferred_codes: tuple[str, ...],
+    ) -> None:
+        self.changed_codes: tuple[str, ...] = ()
+        self.completed_codes = completed_codes
+        self.attempted_codes = attempted_codes
+        self.deferred_codes = deferred_codes
+        self.failed_codes: tuple[str, ...] = ()
+        self.pages_fetched = 0
+        self.saved_announcements = 0
+        self.deadline_reached = bool(deferred_codes)
+
+
 class _Progress:
     def __init__(self) -> None:
         self.events: list[RiskDownloadProgress] = []
@@ -121,6 +179,60 @@ class _ChangingVersionLoader(_Loader):
         self.cached_observations["600001"] = ResearchObservation(data_version=f"risk:{self.recovery_count}")
 
 
+class _OscillatingErrorLoader(_Loader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cached_observations["600001"] = ResearchObservation(source_errors=("news:timeout",))
+        self.attempts = 0
+
+    def load_report(self, codes, observed_at, **options):
+        del observed_at
+        self.attempts += 1
+        requested = tuple(codes)
+        self.load_calls.append((requested, options["force"]))
+        if progress := options.get("progress"):
+            progress(len(requested), len(requested))
+        error = "news:rate_limited" if self.attempts % 2 else "news:timeout"
+        return ResearchLoadReport(
+            {requested[0]: ResearchObservation(source_errors=(error,))},
+            changed_codes=(requested[0],),
+        )
+
+
+class _FairRetryLoader(_Loader):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cached_observations = {
+            code: ResearchObservation(source_errors=("news:timeout",)) for code in ("000001", "300001", "600001")
+        }
+
+    def load_report(self, codes, observed_at, **options):
+        del observed_at
+        requested = tuple(codes)
+        self.load_calls.append((requested, options["force"]))
+        attempt = len(self.load_calls)
+        if attempt == 1:
+            observations = {
+                "000001": ResearchObservation(source_errors=("news:rate_limited",)),
+                "300001": ResearchObservation(pledge_ratio_pct=0.0),
+            }
+            deferred = ("600001",)
+        elif attempt == 2:
+            observations = {"600001": ResearchObservation(pledge_ratio_pct=0.0)}
+            deferred = ("000001",)
+        else:
+            observations = {"000001": ResearchObservation(source_errors=("news:timeout",))}
+            deferred = ()
+        if progress := options.get("progress"):
+            progress(len(requested) - len(deferred), len(requested))
+        return ResearchLoadReport(
+            observations,
+            changed_codes=tuple(observations),
+            deferred_codes=deferred,
+            deadline_reached=bool(deferred),
+        )
+
+
 def test_risk_download_reads_partition_before_bounded_supplier_refresh() -> None:
     loader = _Loader()
     observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
@@ -136,12 +248,12 @@ def test_risk_download_reads_partition_before_bounded_supplier_refresh() -> None
     assert loader.deadline is not None
     assert (loader.deadline - observed_at).total_seconds() == 120.0
     assert result.requested_codes == 2
-    assert result.available_codes == 0
+    assert result.available_codes == 2
     assert result.covered_codes == 0
-    assert result.partial_codes == 0
+    assert result.partial_codes == 2
     assert result.changed_codes == 2
     assert result.deferred_codes == 0
-    assert result.failed_codes == 2
+    assert result.failed_codes == 0
     assert result.deadline_reached is False
     assert result.needs_retry
     assert result.wave_count == 2
@@ -171,7 +283,7 @@ def test_risk_download_reports_persisted_batches_wave_summary_and_final_state() 
         event.stage == "research_initial" and event.state == "running" and event.completed_units == event.total_units
         for event in progress.events
     )
-    assert any(event.stage == "wave_summary" and event.available_codes == 0 for event in progress.events)
+    assert any(event.stage == "wave_summary" and event.available_codes == 2 for event in progress.events)
     assert progress.events[-1].stage == "finished"
     assert progress.events[-1].stop_reason == result.stop_reason
 
@@ -252,6 +364,77 @@ def test_risk_download_stops_when_only_volatile_cache_version_changes() -> None:
 
     assert announcement_sync.report_count == 1
     assert result.wave_count == 1
+    assert result.stop_reason == "no_progress"
+    assert result.deferred_codes == 1
+
+
+def test_risk_download_prioritizes_unattempted_official_codes_across_waves() -> None:
+    loader = _Loader()
+    loader.cached_observations = {
+        code: ResearchObservation(data_version="existing") for code in ("000001", "300001", "600001")
+    }
+    announcement_sync = _FairAnnouncementSync()
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001", "000001", "300001"),
+        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at),
+        announcement_sync=announcement_sync,
+    )
+
+    assert announcement_sync.sync_calls == [
+        ("000001", "300001", "600001"),
+        ("600001", "000001"),
+        ("000001",),
+    ]
+    assert result.wave_count == 3
+    assert result.stop_reason == "no_progress"
+    assert result.deferred_codes == 1
+
+
+def test_risk_download_stops_when_only_retryable_error_category_changes() -> None:
+    loader = _OscillatingErrorLoader()
+    progress = _Progress()
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001",),
+        RiskDownloadContext(
+            date(2026, 10, 16),
+            observed_at,
+            lambda: 10.0,
+            lambda: observed_at,
+            progress=progress,
+        ),
+    )
+
+    assert loader.attempts == 1
+    assert result.wave_count == 1
+    assert result.stop_reason == "no_progress"
+    assert result.changed_codes == 0
+    assert result.deferred_codes == 1
+    assert any(event.stage == "research_retry" and event.state == "deferred" for event in progress.events)
+    assert progress.events[-1].changed_codes == 0
+
+
+def test_risk_download_prioritizes_previous_wave_deferred_retries() -> None:
+    loader = _FairRetryLoader()
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001", "000001", "300001"),
+        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at),
+    )
+
+    assert loader.load_calls == [
+        (("000001", "300001", "600001"), True),
+        (("600001", "000001"), True),
+        (("000001",), True),
+    ]
+    assert result.wave_count == 3
     assert result.stop_reason == "no_progress"
     assert result.deferred_codes == 1
 

@@ -22,8 +22,10 @@ _STATE_LABELS = {
     "started": "开始",
     "running": "进行中",
     "completed": "完成",
+    "deferred": "本波截止",
     "stopped": "待续传",
 }
+_WAVE_STAGES = frozenset({"research_initial", "research_retry", "official_announcements"})
 
 
 class StderrRiskDownloadProgress:
@@ -40,15 +42,20 @@ class StderrRiskDownloadProgress:
 
     def publish(self, progress: RiskDownloadProgress) -> None:
         percent = 100.0 if progress.total_units == 0 else progress.completed_units / progress.total_units * 100.0
+        progress_scope = "本波" if progress.stage in _WAVE_STAGES else "总体"
         parts = [
             _format_duration(self._monotonic() - self._started),
             "risk_download 下载进度",
             f"波次 {progress.wave}",
             _STAGE_LABELS[progress.stage],
             _STATE_LABELS[progress.state],
-            f"阶段 {progress.completed_units:>6}/{progress.total_units:>6}（{percent:6.2f}%）",
+            f"{progress_scope} {progress.completed_units:>6}/{progress.total_units:>6}（{percent:6.2f}%）",
             f"请求 {progress.requested_codes:>6}",
         ]
+        if progress.research_pending_codes is not None:
+            parts.append(f"研究待补 {progress.research_pending_codes:>6}")
+        if progress.official_pending_codes is not None:
+            parts.append(f"巨潮待补 {progress.official_pending_codes:>6}")
         if progress.available_codes is not None:
             parts.append(f"可用 {progress.available_codes:>6}")
         if progress.covered_codes is not None:

@@ -308,6 +308,7 @@ def test_cninfo_batch_sync_skips_completed_codes_on_same_day(tmp_path: Path) -> 
         )
 
     assert report.completed_codes == ("600006", "600007")
+    assert report.attempted_codes == ("600006", "600007")
     assert report.deferred_codes == ()
     assert report.failed_codes == ()
     assert progress[-1] == (2, 2, 2, 0)

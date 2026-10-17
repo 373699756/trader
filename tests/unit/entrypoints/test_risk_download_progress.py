@@ -26,6 +26,8 @@ def test_risk_download_progress_uses_stderr_style_fields_and_checkpoint_counts()
             completed_units=998,
             total_units=5027,
             requested_codes=5027,
+            research_pending_codes=4029,
+            official_pending_codes=4987,
             available_codes=998,
             covered_codes=12,
             deferred_codes=4029,
@@ -37,6 +39,45 @@ def test_risk_download_progress_uses_stderr_style_fields_and_checkpoint_counts()
 
     output = stream.getvalue()
     assert output.startswith("00:01:05 | risk_download 下载进度 | 波次 2 | 波次汇总 | 完成")
-    assert "阶段    998/  5027（ 19.85%）" in output
-    assert "请求   5027 | 可用    998 | 完整     12 | 延后   4029 | 变更    500" in output
+    assert "总体    998/  5027（ 19.85%）" in output
+    assert "请求   5027 | 研究待补   4029 | 巨潮待补   4987" in output
+    assert "可用    998 | 完整     12 | 延后   4029 | 变更    500" in output
     assert "官方分页     30 | 公告保存     80" in output
+
+
+def test_risk_download_progress_marks_source_window_and_deferred_state() -> None:
+    stream = StringIO()
+    reporter = StderrRiskDownloadProgress(stream, monotonic=_Clock(10.0, 20.0, 21.0))
+
+    reporter.publish(
+        RiskDownloadProgress(
+            stage="research_retry",
+            state="deferred",
+            wave=7,
+            completed_units=47,
+            total_units=4366,
+            requested_codes=5027,
+            research_pending_codes=4319,
+            official_pending_codes=4987,
+            changed_codes=399,
+        )
+    )
+    reporter.publish(
+        RiskDownloadProgress(
+            stage="official_announcements",
+            state="started",
+            wave=7,
+            completed_units=0,
+            total_units=4987,
+            requested_codes=5027,
+            research_pending_codes=4319,
+            official_pending_codes=4987,
+            changed_codes=399,
+        )
+    )
+
+    lines = stream.getvalue().splitlines()
+    assert "研究重试 | 本波截止 | 本波     47/  4366（  1.08%）" in lines[0]
+    assert "研究待补   4319 | 巨潮待补   4987" in lines[0]
+    assert "巨潮公告 | 开始 | 本波      0/  4987（  0.00%）" in lines[1]
+    assert "研究待补   4319 | 巨潮待补   4987" in lines[1]
