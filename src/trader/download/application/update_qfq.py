@@ -32,8 +32,15 @@ from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerR
 class QfqPairPublicationError(RuntimeError):
     """A later board failed after earlier paired transactions committed."""
 
-    def __init__(self, codes: tuple[str, ...], files: tuple[str, ...], rows: int) -> None:
-        super().__init__("qfq_pair_publication_failed")
+    def __init__(
+        self,
+        codes: tuple[str, ...],
+        files: tuple[str, ...],
+        rows: int,
+        *,
+        reason: str = "qfq_pair_publication_failed",
+    ) -> None:
+        super().__init__(reason)
         self.codes = codes
         self.files = files
         self.rows = rows

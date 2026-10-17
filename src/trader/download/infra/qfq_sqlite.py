@@ -30,6 +30,12 @@ CREATE TABLE identities(code TEXT PRIMARY KEY, digest TEXT NOT NULL, source TEXT
 """
 
 
+def _pair_publication_failure_reason(exc: BaseException) -> str:
+    if isinstance(exc, sqlite3.OperationalError) and any(marker in str(exc).lower() for marker in ("locked", "busy")):
+        return "qfq_pair_database_busy"
+    return "qfq_pair_publication_failed"
+
+
 def QfqShardName(code: str) -> str:
     if len(code) != 6 or not code.isascii() or not code.isdigit():
         raise ValueError("qfq code invalid")
@@ -131,6 +137,7 @@ class SQLiteQfqWindowCache:
                 with closing(self._read_connection(name)) as connection, connection:
                     for code in requested:
                         rows = self._read_rows(connection, code)
+                        connection.rollback()
                         result.append(
                             PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
                         )
@@ -323,7 +330,12 @@ class SQLiteQfqWindowCache:
                 count += board_rows
                 committed.extend(window.code for window in batch)
         except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
-            raise QfqPairPublicationError(tuple(committed), tuple(changed), count) from exc
+            raise QfqPairPublicationError(
+                tuple(committed),
+                tuple(changed),
+                count,
+                reason=_pair_publication_failure_reason(exc),
+            ) from exc
         return tuple(changed), count
 
     def _prepare_pair_files(self, peer: SQLiteQfqWindowCache, name: str) -> None:
@@ -469,6 +481,7 @@ class SQLiteQfqWindowCache:
             with closing(self._read_connection(name)) as connection, connection:
                 for code in requested:
                     rows = self._read_rows(connection, code)[-sessions:]
+                    connection.rollback()
                     result.append(
                         PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
                     )

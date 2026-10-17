@@ -116,6 +116,63 @@ def test_paired_board_failure_reports_only_durable_boards(tmp_path, monkeypatch)
     assert primary.read_code("300001").cells == peer.read_code("300001").cells == ()
 
 
+def test_paired_database_lock_reports_stable_busy_reason(tmp_path, monkeypatch) -> None:
+    primary, peer = SQLiteQfqWindowCache(tmp_path, "v2"), SQLiteQfqWindowCache(tmp_path, "v3")
+
+    def fail_locked(_peer, _name):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(primary, "_prepare_pair_files", fail_locked)
+    with pytest.raises(QfqPairPublicationError, match="qfq_pair_database_busy"):
+        primary.replace_paired_windows(peer, (_window(),), "fixture")
+
+
+def test_projection_decode_does_not_block_paired_publication(tmp_path, monkeypatch) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from trader.download.infra import qfq_sqlite as qfq_sqlite_module
+
+    primary, peer = SQLiteQfqWindowCache(tmp_path, "v2"), SQLiteQfqWindowCache(tmp_path, "v3")
+    primary.replace_paired_windows(peer, (_window("600001"), _window("600002")), "fixture")
+    projection = PublishedHistoryCache(ReadPublishedHistoryUseCase(primary), lookback_sessions=251)
+    decode_started, release_decode = threading.Event(), threading.Event()
+    decode = qfq_sqlite_module.DecodeCell
+
+    def blocked_decode(*args):
+        if not decode_started.is_set():
+            decode_started.set()
+            assert release_decode.wait(10)
+        return decode(*args)
+
+    monkeypatch.setattr(qfq_sqlite_module, "DecodeCell", blocked_decode)
+    revision = _window("600002")
+    revision = replace(
+        revision,
+        cells=(*revision.cells[:-1], ProjectHistoryCell(_cell("600002", DAYS[-1], price=11.0))),
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reading = pool.submit(projection.refresh)
+        assert decode_started.wait(2)
+        publishing = pool.submit(
+            primary.replace_paired_windows,
+            peer,
+            (revision,),
+            "revision",
+        )
+        try:
+            changed, rows = publishing.result(timeout=4)
+        finally:
+            release_decode.set()
+        assert set(changed) == {"v2/qfq_sse_main.sqlite3", "v3/qfq_sse_main.sqlite3"}
+        assert rows == 2
+        assert not reading.result(timeout=5)
+
+    assert projection.entries() == {}
+    assert projection.refresh()
+    assert projection.entries()["600002"].bars[-1].close == 11.0
+
+
 def test_inspection_streams_each_board_without_per_code_queries(tmp_path, monkeypatch) -> None:
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
     cache.replace_windows((_window("600001"), _window("600002")), "fixture")
