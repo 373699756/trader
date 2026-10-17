@@ -313,6 +313,17 @@ class AkshareResearchClient:
 
         return self._compose_snapshot(code, point_in_time, policy, component_payloads=None)
 
+    def fetch_risk_refresh_snapshot(
+        self, code: str, *, observed_at: datetime, previous: ResearchObservation
+    ) -> ResearchObservation:
+        _validate_code(code)
+        policy = self._long_research_policy
+        if policy is None:
+            raise RuntimeError("long research policy is required for structured research")
+        return self._compose_snapshot(
+            code, _point_in_time(observed_at), policy, component_payloads=None, previous=previous
+        )
+
     def fetch_risk_snapshots(
         self,
         codes: Sequence[str],
@@ -374,16 +385,28 @@ class AkshareResearchClient:
         *,
         component_payloads: Mapping[str, Mapping[str, object]] | None,
         initial_errors: Sequence[str] = (),
+        previous: ResearchObservation | None = None,
     ) -> ResearchObservation:
         failed_sources = {error.partition(":")[0] for error in initial_errors}
+        reusable = previous if previous is not None and previous.queried_on == point_in_time.date() else None
+        prior_errors = {error.partition(":")[0] for error in reusable.source_errors} if reusable else set()
         news = self._news_component(code, point_in_time, enabled=component_payloads is None)
         financial_enabled = "financial" not in failed_sources
-        financial = self._financial_component(
-            code,
-            point_in_time,
-            policy,
-            payload=_snapshot_component_payload(component_payloads, "financial", enabled=financial_enabled),
-            enabled=financial_enabled,
+        financial = (
+            _FinancialComponent(
+                reusable.financial,
+                reusable.financial_history,
+                True,
+                tuple(item for item in reusable.evidence if item.source == "eastmoney_financial"),
+            )
+            if reusable is not None and reusable.financial_history_complete and "financial" not in prior_errors
+            else self._financial_component(
+                code,
+                point_in_time,
+                policy,
+                payload=_snapshot_component_payload(component_payloads, "financial", enabled=financial_enabled),
+                enabled=financial_enabled,
+            )
         )
         announcements_enabled = "announcements" not in failed_sources
         announcements = self._announcement_component(
@@ -398,19 +421,36 @@ class AkshareResearchClient:
             enabled=announcements_enabled,
         )
         pledge_enabled = "pledge" not in failed_sources
-        pledge = self._pledge_component(
-            code,
-            point_in_time,
-            payload=_snapshot_component_payload(component_payloads, "pledge", enabled=pledge_enabled),
-            enabled=pledge_enabled,
+        pledge = (
+            _RatioComponent(
+                reusable.pledge_ratio_pct,
+                tuple(item for item in reusable.evidence if item.source == "eastmoney_pledge"),
+            )
+            if reusable is not None
+            and reusable.pledge_checked_on == point_in_time.date()
+            and reusable.pledge_ratio_pct is not None
+            and "pledge" not in prior_errors
+            else self._pledge_component(
+                code,
+                point_in_time,
+                payload=_snapshot_component_payload(component_payloads, "pledge", enabled=pledge_enabled),
+                enabled=pledge_enabled,
+            )
         )
         unlock_enabled = "unlock" not in failed_sources
-        unlock = self._unlock_component(
-            code,
-            point_in_time,
-            policy,
-            payload=_snapshot_component_payload(component_payloads, "unlock", enabled=unlock_enabled),
-            enabled=unlock_enabled,
+        unlock = (
+            _RatioComponent(
+                reusable.unlock_ratio_pct,
+                tuple(item for item in reusable.evidence if item.source == "eastmoney_unlock"),
+            )
+            if reusable is not None and reusable.unlock_ratio_pct is not None and "unlock" not in prior_errors
+            else self._unlock_component(
+                code,
+                point_in_time,
+                policy,
+                payload=_snapshot_component_payload(component_payloads, "unlock", enabled=unlock_enabled),
+                enabled=unlock_enabled,
+            )
         )
         source_errors = tuple(
             (

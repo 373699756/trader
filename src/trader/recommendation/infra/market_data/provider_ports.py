@@ -57,6 +57,14 @@ class RiskSnapshotBatchSource(Protocol):
         observed_at: datetime,
     ) -> Mapping[str, ResearchObservation]: ...
 
+    def fetch_risk_refresh_snapshot(
+        self,
+        code: str,
+        *,
+        observed_at: datetime,
+        previous: ResearchObservation,
+    ) -> ResearchObservation: ...
+
 
 class IndustryReferenceSource(Protocol):
     def fetch(self, observed_at: datetime) -> Sequence[SourceObservation]: ...

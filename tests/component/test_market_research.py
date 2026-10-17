@@ -495,6 +495,64 @@ def test_akshare_risk_batch_fetches_structured_fields_without_claiming_regulator
     assert "(FREE_DATE<='2026-10-14')" in unlock_filter
 
 
+def test_risk_refresh_reuses_completed_same_day_batch_fields_and_retries_failed_field() -> None:
+    calls: list[tuple[str, str | None]] = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs.get("params", {}).get("reportName")))
+        if "search-api-web" in url:
+            return FakeResponse('diag({"result": {"cmsArticleWebOld": []}});')
+        if "api/security/ann" in url:
+            return FakeResponse({"data": {"list": [], "total_hits": 0}, "success": 1})
+        if "securities/api/data/get" in url:
+            return FakeResponse(
+                {
+                    "success": True,
+                    "result": {
+                        "pages": 1,
+                        "count": 1,
+                        "data": [{"REPORT_DATE": "2026-03-31", "NOTICE_DATE": "2026-04-30"}],
+                    },
+                }
+            )
+        return FakeResponse({"success": True, "result": {"pages": 1, "count": 0, "data": []}})
+
+    client = AkshareResearchClient(get=get, long_research_policy=LONG_POLICY)
+    report = FinancialReport(date(2026, 3, 31), AFTERNOON - timedelta(days=30))
+    previous = ResearchObservation(
+        queried_on=AFTERNOON.date(),
+        pledge_checked_on=AFTERNOON.date(),
+        financial=report,
+        financial_history=(report,),
+        financial_history_complete=True,
+        pledge_ratio_pct=5.0,
+        unlock_ratio_pct=2.0,
+        source_errors=("announcements:deferred",),
+    )
+
+    refreshed = client.fetch_risk_refresh_snapshot("600001", observed_at=AFTERNOON, previous=previous)
+
+    assert len(calls) == 2
+    assert refreshed.financial == report
+    assert refreshed.financial_history_complete
+    assert refreshed.pledge_ratio_pct == 5.0
+    assert refreshed.unlock_ratio_pct == 2.0
+    assert refreshed.news_queried and refreshed.announcements_available
+    assert refreshed.source_errors == ()
+
+    calls.clear()
+    failed_financial = replace(previous, source_errors=("financial:timeout", "announcements:deferred"))
+    client.fetch_risk_refresh_snapshot("600001", observed_at=AFTERNOON, previous=failed_financial)
+    assert any("securities/api/data/get" in url for url, _report in calls)
+
+    calls.clear()
+    stale = replace(previous, queried_on=AFTERNOON.date() - timedelta(days=1))
+    client.fetch_risk_refresh_snapshot("600001", observed_at=AFTERNOON, previous=stale)
+    assert any("securities/api/data/get" in url for url, _report in calls)
+    assert any(report == "RPT_CSDC_LIST" for _url, report in calls)
+    assert any(report == "RPT_LIFT_STAGE" for _url, report in calls)
+
+
 def test_research_cache_is_used_after_restart_before_source_request(tmp_path) -> None:
     cache_dir = tmp_path / "evidence_cache"
     cache_file = cache_dir / "observations" / "news" / "600001.json"
@@ -1364,11 +1422,18 @@ def test_research_loader_uses_bounded_risk_batches() -> None:
     class BatchClient:
         def __init__(self) -> None:
             self.calls: list[tuple[str, ...]] = []
+            self.refresh_calls: list[str] = []
 
         def fetch_risk_snapshots(self, codes, *, observed_at):
             self.calls.append(tuple(codes))
             assert observed_at == NOW
             return {code: ResearchObservation(pledge_ratio_pct=0.0) for code in codes}
+
+        def fetch_risk_refresh_snapshot(self, code, *, observed_at, previous):
+            self.refresh_calls.append(code)
+            assert observed_at == NOW
+            assert previous.pledge_ratio_pct == 0.0
+            return previous
 
     class BatchDataPlane:
         def __init__(self) -> None:
@@ -1419,11 +1484,12 @@ def test_research_loader_uses_bounded_risk_batches() -> None:
         workers.stop()
 
     assert sorted(len(call) for call in batch_client.calls) == [1, 50, 50]
+    assert batch_client.refresh_calls == [codes[0]]
     assert set(report.observations) == set(codes)
     assert len(report.changed_codes) == 101
     assert report.deferred_codes == ()
     assert report.deadline_reached is False
-    assert structured_client.snapshot_calls == 1
+    assert structured_client.snapshot_calls == 0
     assert sorted(data_plane.batch_sizes) == [9, 9, 450, 450]
 
 

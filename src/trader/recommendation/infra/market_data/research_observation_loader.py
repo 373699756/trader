@@ -700,6 +700,7 @@ class ResearchLoader:
                 code,
                 state.request.observed_at,
                 include_structured=state.request.include_structured,
+                previous=state.previous[code].observation if code in state.previous else None,
             )
             self._runner.ensure_before_deadline(state.request.deadline)
             futures[future] = code
@@ -968,6 +969,7 @@ class ResearchLoader:
         observed_at: datetime,
         *,
         include_structured: bool,
+        previous: ResearchObservation | None = None,
     ) -> ResearchObservation:
         if self._client is None:
             return ResearchObservation()
@@ -975,7 +977,12 @@ class ResearchLoader:
             raise RuntimeError("akshare_circuit_open")
         try:
             if include_structured:
-                observation = self._client.fetch_snapshot(code, observed_at=observed_at)
+                if previous is not None and self._risk_batch_client is not None:
+                    observation = self._risk_batch_client.fetch_risk_refresh_snapshot(
+                        code, observed_at=observed_at, previous=previous
+                    )
+                else:
+                    observation = self._client.fetch_snapshot(code, observed_at=observed_at)
             else:
                 observation = ResearchObservation(
                     evidence=tuple(self._client.fetch_news(code, observed_at=observed_at))
