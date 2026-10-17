@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from trader.infra.market_data.providers.akshare_parsing import (
@@ -22,6 +22,7 @@ def FetchNews(client: Any, code: str, *, observed_at: datetime, limit: int = 5) 
     if limit <= 0:
         return ()
     point_in_time = _point_in_time(observed_at)
+    cutoff = point_in_time - timedelta(days=7)
     callback = "diag"
     inner_param = {
         "uid": "",
@@ -63,7 +64,7 @@ def FetchNews(client: Any, code: str, *, observed_at: datetime, limit: int = 5) 
         if not title:
             continue
         published = _parse_datetime(_first_text(row, ("date", "发布时间", "时间", "publish_time")))
-        if published is None or published > point_in_time:
+        if published is None or not cutoff <= published <= point_in_time:
             continue
         source = _first_text(row, ("mediaName", "文章来源", "来源", "source")) or "eastmoney_news"
         identity = f"{response_version}:{len(evidence)}"

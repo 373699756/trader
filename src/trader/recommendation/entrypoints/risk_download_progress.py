@@ -36,10 +36,12 @@ class StderrRiskDownloadProgress:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         heartbeat_seconds: float = 20.0,
+        command_name: str = "risk_download",
     ) -> None:
         if heartbeat_seconds <= 0.0:
             raise ValueError("heartbeat_seconds must be positive")
         self._stream = stream if stream is not None else sys.stderr
+        self._command_name = command_name
         self._monotonic = monotonic
         self._started = monotonic()
         self._lock = Lock()
@@ -47,6 +49,8 @@ class StderrRiskDownloadProgress:
         self._last_status_at = self._started
         self._last_output_at = self._started
         self._current_stage = "启动准备"
+        self._last_running_key: tuple[int, str] | None = None
+        self._last_running_count = 0
         self._closed = Event()
         self._thread: Thread | None = None
 
@@ -56,7 +60,7 @@ class StderrRiskDownloadProgress:
                 raise RuntimeError("risk download progress already started")
             now = self._monotonic()
             self._write_locked(
-                f"{_format_duration(now - self._started)} | risk_download 下载进度 | 启动准备 | 开始", now
+                f"{_format_duration(now - self._started)} | {self._command_name} 下载进度 | 启动准备 | 开始", now
             )
             thread = Thread(target=self._run_heartbeat, name="risk-download-progress")
             thread.start()
@@ -76,7 +80,7 @@ class StderrRiskDownloadProgress:
                     continue
                 age = max(0, int(now - self._last_status_at))
                 self._write_locked(
-                    f"{_format_duration(now - self._started)} | risk_download 下载进度 | "
+                    f"{_format_duration(now - self._started)} | {self._command_name} 下载进度 | "
                     f"{self._current_stage} | 仍在运行 | 距上次状态更新 {age}秒",
                     now,
                 )
@@ -88,9 +92,21 @@ class StderrRiskDownloadProgress:
 
     def publish(self, progress: RiskDownloadProgress) -> None:
         now = self._monotonic()
+        if progress.state == "running" and progress.stage in _WAVE_STAGES:
+            with self._lock:
+                key = (progress.wave, progress.stage)
+                if (
+                    key == self._last_running_key
+                    and progress.completed_units - self._last_running_count < 25
+                    and now - self._last_output_at < 5.0
+                ):
+                    self._last_status_at = now
+                    return
+                self._last_running_key = key
+                self._last_running_count = progress.completed_units
         parts = [
             _format_duration(now - self._started),
-            "risk_download 下载进度",
+            f"{self._command_name} 下载进度",
             f"波次 {progress.wave}",
             _STAGE_LABELS[progress.stage],
             _STATE_LABELS[progress.state],
@@ -129,7 +145,7 @@ class StderrRiskDownloadProgress:
         if progress.available_codes is not None:
             parts.append(f"可用 {progress.available_codes:>6}")
         if progress.covered_codes is not None:
-            parts.append(f"完整 {progress.covered_codes:>6}")
+            parts.append(f"四项有值 {progress.covered_codes:>6}")
         if progress.deferred_codes is not None:
             parts.append(f"延后 {progress.deferred_codes:>6}")
         if progress.changed_codes is not None:

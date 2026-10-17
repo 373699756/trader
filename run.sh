@@ -24,7 +24,8 @@ usage() {
     "离线研究（仅在明确执行研究任务时使用）:" \
     "  ./run.sh download                零参数历史维护" \
     "  ./run.sh qfq_download            Tencent并发更新短窗口，支持断点续传" \
-    "  ./run.sh risk_download           准备当日或下一交易日公司风险日库，支持断点续传" \
+    "  ./run.sh risk_download           一小时预算内准备当期公司研究日库" \
+    "  ./run.sh risk_history_download   独立续传巨潮发行人历史公告" \
     "  ./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" \
     "  ./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" \
     "  ./run.sh train-both              一次历史扫描生成 V2/V3 样本并训练双档" \
@@ -58,7 +59,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download|qfq_download|risk_download|train-v2|train-v3|train-both|download-train)
+    help|-h|--help|check|download|qfq_download|risk_download|risk_history_download|train-v2|train-v3|train-both|download-train)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -91,7 +92,7 @@ if [[ "$MODE" == "check" && "$SCORING_PROFILE" == "both" ]]; then
   exit 2
 fi
 
-if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "risk_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" || "$MODE" == "download-train" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "risk_download" || "$MODE" == "risk_history_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" || "$MODE" == "download-train" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -104,7 +105,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download|qfq_download|risk_download|train-v2|train-v3|train-both|download-train)
+  check|download|qfq_download|risk_download|risk_history_download|train-v2|train-v3|train-both|download-train)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -135,8 +136,8 @@ if [[ "$MODE" == "download-train" ]]; then
   exit 0
 fi
 
-if [[ "$MODE" == "risk_download" ]]; then
-  printf '%s\n' 'risk_download: 正在检查运行环境。' >&2
+if [[ "$MODE" == "risk_download" || "$MODE" == "risk_history_download" ]]; then
+  printf '%s: 正在检查运行环境。\n' "$MODE" >&2
 fi
 
 find_python() {
@@ -209,8 +210,8 @@ fi
 if [[ "$MODE" == "qfq_download" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" qfq_download
 fi
-if [[ "$MODE" == "risk_download" ]]; then
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" risk_download
+if [[ "$MODE" == "risk_download" || "$MODE" == "risk_history_download" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
 fi
 if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" ]]; then
   TRAINING_MEMORY_HIGH=1792M

@@ -118,6 +118,7 @@ from trader.recommendation.application.pipeline.score_merge.score_fusion import 
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
 from trader.recommendation.application.risk_download import (
     DownloadRiskSnapshot,
+    RiskDownloadBudget,
     RiskDownloadContext,
     RiskDownloadProgressPort,
     RiskDownloadResult,
@@ -205,8 +206,9 @@ def ExecuteRiskDownload(
     config_path: str | Path,
     *,
     progress: RiskDownloadProgressPort | None = None,
+    include_official_history: bool = False,
 ) -> RiskDownloadResult:
-    """Prepare the next applicable trade-date risk partition with bounded supplier work."""
+    """Prepare current research, or explicitly backfill issuer history."""
     command_started = time.monotonic()
     settings = LoadRuntimeSettings(config_path)
     strategy = LoadStrategySettings(settings.strategy_config_path)
@@ -275,20 +277,27 @@ def ExecuteRiskDownload(
             json_writer=None,
             monotonic=time.monotonic,
         )
-        cninfo_sync = CninfoAnnouncementBatchSynchronizer(
-            CninfoAnnouncementIncrementalSync(
-                cninfo_client,
+        cninfo_sync = (
+            CninfoAnnouncementBatchSynchronizer(
+                CninfoAnnouncementIncrementalSync(cninfo_client, risk_data),
                 risk_data,
-            ),
-            risk_data,
-            workers,
-            wall_clock=clock.now,
+                workers,
+                wall_clock=clock.now,
+            )
+            if include_official_history
+            else None
+        )
+        budget = RiskDownloadBudget(
+            task_seconds=None if include_official_history else max(1.0, 3480.0 - (time.monotonic() - command_started))
         )
         result = DownloadRiskSnapshot(
             loader,
             codes,
             RiskDownloadContext(target_date, observed_at, time.monotonic, clock.now, progress=progress),
+            budget=budget,
             announcement_sync=cninfo_sync,
+            require_current_window=not include_official_history,
+            research_enabled=not include_official_history,
         )
     finally:
         workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))

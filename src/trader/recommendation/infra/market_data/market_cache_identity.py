@@ -236,7 +236,19 @@ def _merge_research_observation(
         return current
     previous = old_entry.observation
     failed_sources = {error.partition(":")[0] for error in current.source_errors}
-    evidence = tuple({item.evidence_id: item for item in (*previous.evidence, *current.evidence)}.values())[-60:]
+    previous_evidence = tuple(
+        item
+        for item in previous.evidence
+        if not (
+            (current.news_queried and item.evidence_type == "news")
+            or (
+                current.announcements_available
+                and item.source == "eastmoney_announcement"
+                and item.evidence_type in {"announcement", "research_summary"}
+            )
+        )
+    )
+    evidence = tuple({item.evidence_id: item for item in (*previous_evidence, *current.evidence)}.values())[-60:]
     corporate_risk_facts = tuple(
         {
             (item.category, item.evidence_id): item
@@ -290,6 +302,8 @@ def _merge_research_observation(
         news_queried=(
             previous.news_queried if "news" in failed_sources and not current.news_queried else current.news_queried
         ),
+        queried_on=current.queried_on or previous.queried_on,
+        pledge_checked_on=current.pledge_checked_on or previous.pledge_checked_on,
         evidence=evidence,
         source_errors=tuple(dict.fromkeys(current.source_errors)),
     )
@@ -306,6 +320,10 @@ def _history_priority(quote: MarketQuote) -> tuple[float, float, str]:
 def _serialize_research_observation(observation: ResearchObservation) -> dict[str, object]:
     return {
         "data_version": observation.data_version,
+        "queried_on": observation.queried_on.isoformat() if observation.queried_on is not None else None,
+        "pledge_checked_on": observation.pledge_checked_on.isoformat()
+        if observation.pledge_checked_on is not None
+        else None,
         "financial": _serialize_financial_report(observation.financial) if observation.financial is not None else None,
         "financial_history": tuple(_serialize_financial_report(item) for item in observation.financial_history),
         "financial_history_complete": observation.financial_history_complete,
@@ -335,6 +353,8 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
         raise ValueError("source_errors must be a list")
     return ResearchObservation(
         data_version=str(raw.get("data_version") or "research:recovered"),
+        queried_on=date.fromisoformat(str(raw["queried_on"])) if raw.get("queried_on") else None,
+        pledge_checked_on=date.fromisoformat(str(raw["pledge_checked_on"])) if raw.get("pledge_checked_on") else None,
         financial=_deserialize_financial_report(financial_raw) if isinstance(financial_raw, Mapping) else None,
         financial_history=tuple(
             _deserialize_financial_report(item) for item in financial_history_raw if isinstance(item, Mapping)

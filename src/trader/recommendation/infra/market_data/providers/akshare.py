@@ -241,7 +241,7 @@ _SOURCE_EXCEPTIONS = (OSError, RuntimeError, ValueError, requests.RequestExcepti
 _COMPONENT_TTLS = {
     "financial": timedelta(hours=6),
     "announcement": timedelta(minutes=10),
-    "pledge": timedelta(hours=6),
+    "pledge_snapshot": timedelta(hours=6),
     "unlock": timedelta(hours=6),
 }
 _ANNOUNCEMENT_PAGE_SIZE = 100
@@ -444,6 +444,8 @@ class AkshareResearchClient:
         )
 
         return ResearchObservation(
+            queried_on=point_in_time.date(),
+            pledge_checked_on=point_in_time.date() if not pledge.source_error else None,
             financial=financial.current,
             financial_history=financial.history,
             financial_history_complete=financial.history_complete,
@@ -507,7 +509,7 @@ class AkshareResearchClient:
                 observed_at,
                 policy,
                 payload=payload,
-                history_complete_allowed=payload is None,
+                history_complete_allowed=False,
             )
         except _SOURCE_EXCEPTIONS as exc:
             return _AnnouncementComponent(source_error=_source_error("announcements", exc))
@@ -660,7 +662,7 @@ class AkshareResearchClient:
         str,
     ]:
         if payload is None:
-            payload = self._announcement_payload(code, observed_at)
+            payload = self._announcement_payload(code, observed_at, policy.announcement_lookback_days)
         rows = _announcement_rows(payload)
         cutoff = observed_at - timedelta(days=policy.announcement_lookback_days)
         version = self.source_version("eastmoney-announcement", code, payload)
@@ -758,23 +760,24 @@ class AkshareResearchClient:
         payload: Mapping[str, object] | None = None,
     ) -> tuple[float, tuple[Evidence, ...]]:
         if payload is None:
+            snapshot_trade_date = self._latest_pledge_trade_date(observed_at)
             payload = self._component_payload(
-                "pledge",
+                "pledge_snapshot",
                 code,
                 observed_at,
                 lambda: self._request_json(
                     "https://datacenter-web.eastmoney.com/api/data/v1/get",
                     params={
-                        "sortColumns": "NOTICE_DATE",
+                        "sortColumns": "PLEDGE_RATIO",
                         "sortTypes": "-1",
-                        "pageSize": "200",
+                        "pageSize": "1",
                         "pageNumber": "1",
-                        "reportName": "RPTA_APP_ACCUMDETAILS",
+                        "reportName": "RPT_CSDC_LIST",
                         "columns": "ALL",
                         "quoteColumns": "",
                         "source": "WEB",
                         "client": "WEB",
-                        "filter": f'(SECURITY_CODE="{code}")',
+                        "filter": f"(TRADE_DATE='{snapshot_trade_date.isoformat()}')(SECURITY_CODE=\"{code}\")",
                     },
                 ),
             )
@@ -1054,36 +1057,28 @@ class AkshareResearchClient:
         self._cache_payload(source, code, observed_at, payload)
         return payload
 
-    def _announcement_payload(self, code: str, observed_at: datetime) -> Mapping[str, object]:
+    def _announcement_payload(self, code: str, observed_at: datetime, lookback_days: int) -> Mapping[str, object]:
+        begin_date = (observed_at - timedelta(days=lookback_days)).date()
         cached = self._read_cached_payload("announcement", code, observed_at)
-        if cached is not None:
+        if cached is not None and cached.get("query_begin_date") == begin_date.isoformat():
             return cached
-        stale_record = self._read_cached_payload_record("announcement", code)
-        first = self._announcement_page(code, observed_at, 1)
+        first = self._announcement_page(code, observed_at, 1, begin_date)
         total = _announcement_total_hits(first)
         first_rows = _deduplicate_announcement_rows(_announcement_rows(first))
-        if stale_record is not None and total is not None:
-            _cached_at, stale = stale_record
-            stale_rows = _deduplicate_announcement_rows(_announcement_rows(stale))
-            stale_total = _announcement_total_hits(stale)
-            if stale_total is not None and stale_total <= len(stale_rows) and total >= stale_total:
-                merged = _deduplicate_announcement_rows((*first_rows, *stale_rows))
-                if len(merged) == total:
-                    payload = _announcement_payload_with_rows(first, merged)
-                    self._cache_payload("announcement", code, observed_at, payload)
-                    return payload
-
         rows = list(first_rows)
         page_count = 1 if total is None else max(1, math.ceil(total / _ANNOUNCEMENT_PAGE_SIZE))
         for page in range(2, min(page_count, _ANNOUNCEMENT_MAX_PAGES) + 1):
-            payload = self._announcement_page(code, observed_at, page)
+            payload = self._announcement_page(code, observed_at, page, begin_date)
             rows.extend(_announcement_rows(payload))
         combined = _deduplicate_announcement_rows(rows)
-        payload = _announcement_payload_with_rows(first, combined)
+        if total is None or len(combined) < total:
+            raise ValueError("announcement window is not fully covered")
+        payload = dict(_announcement_payload_with_rows(first, combined))
+        payload["query_begin_date"] = begin_date.isoformat()
         self._cache_payload("announcement", code, observed_at, payload)
         return payload
 
-    def _announcement_page(self, code: str, observed_at: datetime, page: int) -> Mapping[str, object]:
+    def _announcement_page(self, code: str, observed_at: datetime, page: int, begin_date: date) -> Mapping[str, object]:
         return self._request_json(
             "https://np-anotice-stock.eastmoney.com/api/security/ann",
             params={
@@ -1095,7 +1090,7 @@ class AkshareResearchClient:
                 "f_node": "0",
                 "s_node": "0",
                 "stock_list": code,
-                "begin_time": "1990-01-01",
+                "begin_time": begin_date.isoformat(),
                 "end_time": observed_at.date().isoformat(),
             },
         )

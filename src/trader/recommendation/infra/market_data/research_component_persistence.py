@@ -72,7 +72,11 @@ class _ResearchDataPlane(Protocol):
     def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None: ...
 
     def scan_risk_evidence_recent_records(
-        self, consume: Callable[[RiskEvidenceRecord], None], codes: Sequence[str] | None = None
+        self,
+        consume: Callable[[RiskEvidenceRecord], None],
+        codes: Sequence[str] | None = None,
+        *,
+        research_only: bool = False,
     ) -> None: ...
 
     def load_source_cursor_recent_records(
@@ -117,6 +121,7 @@ def RecoverResearchComponentStatuses(
     *,
     retain_stale: bool = False,
     codes: Sequence[str] | None = None,
+    research_only: bool = False,
 ) -> None:
     restored: dict[str, dict[str, ResearchComponentStatus]] = {}
     restored_observations: dict[str, tuple[ResearchObservation, datetime]] = {}
@@ -138,7 +143,10 @@ def RecoverResearchComponentStatuses(
             cninfo_announcements.setdefault(record.code, []).append(announcement)
 
     try:
-        data_plane.scan_risk_evidence_recent_records(consume, codes)
+        if research_only:
+            data_plane.scan_risk_evidence_recent_records(consume, codes, research_only=True)
+        else:
+            data_plane.scan_risk_evidence_recent_records(consume, codes)
     except DataPlaneUnavailableError:
         _LOGGER.warning("research data plane unavailable during recovery")
         return

@@ -254,6 +254,8 @@ class CorporateRiskFact:
 @dataclass(frozen=True)
 class ResearchObservation:
     data_version: str = "research:unassigned"
+    queried_on: date | None = None
+    pledge_checked_on: date | None = None
     financial: FinancialReport | None = None
     financial_history: tuple[FinancialReport, ...] = ()
     financial_history_complete: bool = False
@@ -299,8 +301,6 @@ def ResearchComponentsFromObservation(observation: ResearchObservation | None) -
     financial: ResearchComponentStatus = "known_clear" if observation.financial is not None else "unknown"
     if not observation.announcements_available:
         announcements: ResearchComponentStatus = "unknown"
-    elif not observation.corporate_risk_history_complete:
-        announcements = "stale"
     elif any(
         fact.category in {CorporateRiskCategory.OFFICIAL_INVESTIGATION, CorporateRiskCategory.MAJOR_ILLEGAL}
         for fact in observation.corporate_risk_facts

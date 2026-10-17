@@ -52,6 +52,12 @@ from tests.component.market_data_test_support import (
 from trader.recommendation.application.ports.runtime import RefreshOutcome
 from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
+from trader.recommendation.infra.market_data.market_cache_identity import (
+    _deserialize_research_observation,
+    _merge_research_observation,
+    _serialize_research_observation,
+)
+from trader.recommendation.infra.market_data.market_feature_cache_entries import _ResearchEntry
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 
 
@@ -305,6 +311,7 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
             "cmsArticleWebOld": [
                 {"title": "时间未知", "date": "invalid", "mediaName": "交易所"},
                 {"title": "未来新闻", "date": "2026-07-16 11:00:00", "mediaName": "交易所"},
+                {"title": "过期新闻", "date": "2026-07-08 09:00:00", "mediaName": "交易所"},
                 {
                     "title": "<em>测试股份</em>发布公告",
                     "date": "2026-07-16 09:00:00",
@@ -319,8 +326,9 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
         calls.append((args, kwargs))
         return FakeResponse(f"{callback}({json.dumps(payload, ensure_ascii=False)});")
 
-    evidence = AkshareResearchClient(timeout_seconds=8, get=get).fetch_news("600001", observed_at=NOW, limit=1)
+    evidence = AkshareResearchClient(timeout_seconds=8, get=get).fetch_news("600001", observed_at=NOW, limit=5)
 
+    assert len(evidence) == 1
     assert evidence[0].evidence_type == "news"
     assert evidence[0].title == "测试股份发布公告"
     assert evidence[0].published_at.isoformat() == "2026-07-16T09:00:00+08:00"
@@ -328,6 +336,38 @@ def test_akshare_news_is_bounded_and_normalized() -> None:
     assert calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
     assert calls[0][1]["headers"]["User-Agent"] == "Mozilla/5.0"
     assert "_" not in calls[0][1]["params"]
+
+
+def test_refreshed_window_replaces_old_news_and_ordinary_announcement_evidence() -> None:
+    old_evidence = (
+        Evidence("old-news", "news", "旧新闻", "eastmoney_news", NOW - timedelta(days=10)),
+        Evidence("old-ann", "announcement", "旧公告", "eastmoney_announcement", NOW - timedelta(days=200)),
+        Evidence("official-risk", "regulatory_filing", "已确认风险", "cninfo", NOW - timedelta(days=200)),
+    )
+    current_evidence = (Evidence("new-news", "news", "新新闻", "eastmoney_news", NOW),)
+    old = ResearchObservation(announcements_available=True, news_queried=True, evidence=old_evidence)
+    current = ResearchObservation(
+        queried_on=NOW.date(),
+        announcements_available=True,
+        news_queried=True,
+        evidence=current_evidence,
+    )
+
+    merged = _merge_research_observation(_ResearchEntry(old, 0.0), current)
+
+    assert {item.evidence_id for item in merged.evidence} == {"new-news", "official-risk"}
+
+
+def test_research_window_dates_survive_daily_checkpoint_and_legacy_rows_refresh() -> None:
+    current = ResearchObservation(queried_on=NOW.date(), pledge_checked_on=NOW.date(), news_queried=True)
+    payload = _serialize_research_observation(current)
+
+    assert _deserialize_research_observation(payload) == current
+    del payload["queried_on"]
+    del payload["pledge_checked_on"]
+    legacy = _deserialize_research_observation(payload)
+    assert legacy.queried_on is None
+    assert legacy.pledge_checked_on is None
 
 
 def test_akshare_news_response_is_cached_with_atomic_writer(tmp_path) -> None:
@@ -630,7 +670,7 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     }
     pledge_payload = {
         "version": "pledge-source",
-        "result": {"data": [{"NOTICE_DATE": "2026-07-01", "ACCUM_PLEDGE_TSR": 15.0}]},
+        "result": {"data": [{"NOTICE_DATE": "2026-07-01", "TRADE_DATE": "2026-07-16", "PLEDGE_RATIO": 15.0}]},
         "success": True,
     }
     unlock_payload = {
@@ -655,7 +695,9 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
         if "api/security/ann" in url:
             return FakeResponse(announcement_payload)
         report = kwargs["params"].get("reportName")
-        if report == "RPTA_APP_ACCUMDETAILS":
+        if report == "RPT_CSDC_LIST" and kwargs["params"]["filter"].startswith("(TRADE_DATE<="):
+            return FakeResponse({"success": True, "result": {"data": [{"TRADE_DATE": "2026-07-16"}]}})
+        if report == "RPT_CSDC_LIST":
             return FakeResponse(pledge_payload)
         if report == "RPT_LIFT_STAGE":
             return FakeResponse(unlock_payload)
@@ -686,9 +728,10 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     assert observation.financial_history_complete is False
     assert len(observation.announcements) == 22
     assert observation.pledge_ratio_pct == pytest.approx(15.0)
+    assert observation.pledge_checked_on == AFTERNOON.date()
     assert observation.unlock_ratio_pct == pytest.approx(6.0)
     assert repeated.financial == observation.financial
-    assert len(calls) == 8
+    assert len(calls) == 9
     assert "api/security/ann" in calls[-1][0]
     assert feature.values["value_score"] == pytest.approx(92.8571428571)
     assert feature.values["growth_score"] == pytest.approx(70.0)
@@ -714,7 +757,7 @@ def test_akshare_structured_research_is_point_in_time_and_builds_real_long_input
     assert sum("search-api-web" in call[0] for call in calls) == 3
 
 
-def test_akshare_announcements_paginate_to_total_and_refresh_from_complete_baseline(tmp_path) -> None:
+def test_akshare_announcements_query_policy_window_without_claiming_full_history(tmp_path) -> None:
     announcement_pages: list[int] = []
 
     def announcement_payload(page: int, *, total: int = 250):
@@ -745,6 +788,10 @@ def test_akshare_announcements_paginate_to_total_and_refresh_from_complete_basel
         if "api/security/ann" in url:
             page = int(kwargs["params"]["page_index"])
             assert kwargs["params"]["page_size"] == "100"
+            assert (
+                kwargs["params"]["begin_time"]
+                == (AFTERNOON - timedelta(days=LONG_POLICY.announcement_lookback_days)).date().isoformat()
+            )
             announcement_pages.append(page)
             return FakeResponse(announcement_payload(page))
         return FakeResponse({"result": {"data": []}, "success": True})
@@ -760,9 +807,11 @@ def test_akshare_announcements_paginate_to_total_and_refresh_from_complete_basel
     client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=1))
     refreshed = client.fetch_snapshot("600001", observed_at=AFTERNOON + timedelta(minutes=11))
 
-    assert first.corporate_risk_history_complete is True
-    assert refreshed.corporate_risk_history_complete is True
-    assert announcement_pages == [1, 2, 3, 1]
+    assert first.announcements_available is True
+    assert refreshed.announcements_available is True
+    assert first.corporate_risk_history_complete is False
+    assert refreshed.corporate_risk_history_complete is False
+    assert announcement_pages == [1, 2, 3, 1, 2, 3]
 
 
 def test_akshare_announcement_page_failure_does_not_claim_complete_history(tmp_path) -> None:
@@ -772,6 +821,10 @@ def test_akshare_announcement_page_failure_does_not_claim_complete_history(tmp_p
             return FakeResponse(f'{callback}({{"result": {{"cmsArticleWebOld": []}}}});')
         if "securities/api/data/get" in url:
             return FakeResponse({"result": {"data": []}, "success": True})
+        if kwargs["params"].get("reportName") == "RPT_CSDC_LIST" and kwargs["params"]["filter"].startswith(
+            "(TRADE_DATE<="
+        ):
+            return FakeResponse({"result": {"data": [{"TRADE_DATE": "2026-07-16"}]}, "success": True})
         if "api/security/ann" in url:
             page = int(kwargs["params"]["page_index"])
             if page == 2:
@@ -924,11 +977,15 @@ def test_akshare_structured_research_contains_malformed_source_failure(unlock_ro
             return FakeResponse({"version": "financial-empty", "result": {"data": []}, "success": True})
         if "api/security/ann" in url:
             return FakeResponse({"data": {"list": [], "total_hits": 0}, "success": 1})
-        if kwargs["params"].get("reportName") == "RPTA_APP_ACCUMDETAILS":
+        if kwargs["params"].get("reportName") == "RPT_CSDC_LIST" and kwargs["params"]["filter"].startswith(
+            "(TRADE_DATE<="
+        ):
+            return FakeResponse({"success": True, "result": {"data": [{"TRADE_DATE": "2026-07-16"}]}})
+        if kwargs["params"].get("reportName") == "RPT_CSDC_LIST":
             return FakeResponse(
                 {
                     "version": "pledge-invalid",
-                    "result": {"data": [{"NOTICE_DATE": "2026-07-01", "ACCUM_PLEDGE_TSR": "invalid"}]},
+                    "result": {"data": [{"TRADE_DATE": "2026-07-16", "PLEDGE_RATIO": "invalid"}]},
                     "success": True,
                 }
             )
@@ -943,6 +1000,7 @@ def test_akshare_structured_research_contains_malformed_source_failure(unlock_ro
     assert observation.announcements_available is True
     assert observation.unlock_ratio_pct is None
     assert observation.pledge_ratio_pct is None
+    assert observation.pledge_checked_on is None
     assert observation.source_errors == ("pledge:schema_invalid", "unlock:schema_invalid")
 
 

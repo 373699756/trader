@@ -37,10 +37,12 @@ class _Loader:
         *,
         retain_stale: bool = False,
         codes: tuple[str, ...] | None = None,
+        research_only: bool = False,
     ) -> None:
         self.recovered_at = observed_at
         self.retained_stale = retain_stale
         self.recovered_codes.append(codes)
+        self.research_only = research_only
 
     def cached(self, codes, **_options):
         return {code: self.cached_observations[code] for code in codes if code in self.cached_observations}
@@ -280,8 +282,10 @@ class _ChangingVersionLoader(_Loader):
         super().__init__()
         self.recovery_count = 0
 
-    def recover_from_data_plane(self, observed_at=None, *, retain_stale=False, codes=None):
-        super().recover_from_data_plane(observed_at, retain_stale=retain_stale, codes=codes)
+    def recover_from_data_plane(self, observed_at=None, *, retain_stale=False, codes=None, research_only=False):
+        super().recover_from_data_plane(
+            observed_at, retain_stale=retain_stale, codes=codes, research_only=research_only
+        )
         self.recovery_count += 1
         self.cached_observations["600001"] = ResearchObservation(data_version=f"risk:{self.recovery_count}")
 
@@ -365,6 +369,50 @@ def test_risk_download_reads_partition_before_bounded_supplier_refresh() -> None
     assert result.needs_retry
     assert result.wave_count == 2
     assert result.stop_reason == "source_exhausted"
+
+
+def test_current_download_refreshes_legacy_observation_without_query_date() -> None:
+    class CurrentWindowLoader(_Loader):
+        def load_report(self, codes, observed_at, **options):
+            self.load_calls.append((tuple(codes), options["force"]))
+            observation = ResearchObservation(
+                queried_on=observed_at.date(), pledge_checked_on=observed_at.date(), news_queried=True
+            )
+            self.cached_observations[codes[0]] = observation
+            return ResearchLoadReport({codes[0]: observation}, changed_codes=(codes[0],))
+
+    loader = CurrentWindowLoader()
+    loader.cached_observations["600001"] = ResearchObservation(news_queried=True)
+    observed_at = datetime(2026, 10, 17, 18, 0, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001",),
+        RiskDownloadContext(date(2026, 10, 19), observed_at, lambda: 0.0, lambda: observed_at),
+        require_current_window=True,
+    )
+
+    assert loader.research_only is True
+    assert loader.load_calls == [(("600001",), True)]
+    assert result.deferred_codes == 0
+
+
+def test_history_download_skips_current_research_and_only_waits_for_official_history() -> None:
+    loader = _Loader()
+    observed_at = datetime(2026, 10, 17, 18, 0, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001",),
+        RiskDownloadContext(date(2026, 10, 19), observed_at, lambda: 0.0, lambda: observed_at),
+        announcement_sync=_AnnouncementSync(),
+        research_enabled=False,
+    )
+
+    assert loader.load_calls == []
+    assert loader.research_only is False
+    assert result.stop_reason == "complete"
+    assert result.needs_retry is False
 
 
 def test_risk_download_reports_persisted_batches_wave_summary_and_final_state() -> None:
@@ -653,7 +701,8 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
         inventory=RiskDownloadInventory(75, 10, 70, 78, 0, 3, 60, 12, 34, 567),
     )
 
-    def execute(_path, *, progress):
+    def execute(_path, *, progress, include_official_history):
+        assert include_official_history is False
         progress.publish(
             RiskDownloadProgress(
                 stage="wave_summary",
@@ -677,7 +726,9 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
+    assert payload["download_scope"] == "current"
     assert "risk_download 下载进度" in captured.err
+    assert "巨潮累计" not in captured.err
     assert "波次汇总 | 完成" in captured.err
     assert payload["component_codes"] == {
         "financial": 75,
@@ -705,10 +756,37 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
     assert payload["elapsed_seconds"] == 123.457
 
 
+def test_history_download_cli_uses_official_scope_and_shared_lock(monkeypatch, capsys, tmp_path) -> None:
+    result = RiskDownloadResult(
+        target_date=date(2026, 10, 19),
+        requested_codes=1,
+        available_codes=0,
+        covered_codes=0,
+        partial_codes=0,
+        changed_codes=0,
+        deferred_codes=0,
+        failed_codes=0,
+        deadline_reached=False,
+        elapsed_seconds=1.0,
+        inventory=RiskDownloadInventory(0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        research_coverage_required=False,
+    )
+
+    def execute(_path, *, progress, include_official_history):
+        assert include_official_history is True
+        return result
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", execute)
+    monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: SimpleNamespace(runtime_dir=tmp_path))
+
+    assert cli.Main(["--config", str(tmp_path / "runtime.json"), "risk_history_download"]) == 0
+    assert json.loads(capsys.readouterr().out)["download_scope"] == "history"
+
+
 def test_risk_download_cli_rejects_second_process_before_supplier_work(monkeypatch, capsys, tmp_path) -> None:
     monkeypatch.setattr(cli, "LoadRuntimeSettings", lambda _path: SimpleNamespace(runtime_dir=tmp_path))
 
-    def forbidden_execute(_path, *, progress):
+    def forbidden_execute(_path, *, progress, include_official_history):
         raise AssertionError("second downloader must not reach supplier work")
 
     monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", forbidden_execute)

@@ -95,7 +95,6 @@ def InitializeDatabase(database_path: Path) -> None:
                 CHECK(status IN ('staged', 'committed', 'quarantined')),
                 PRIMARY KEY(code, evidence_id)
             );
-
             CREATE TABLE IF NOT EXISTS risk_evidence_formal(
                 freeze_id TEXT NOT NULL,
                 code TEXT NOT NULL,
@@ -195,6 +194,13 @@ def InitializeDatabase(database_path: Path) -> None:
             """
         )
         ApplyMigrations(connection)
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS risk_evidence_research_lookup "
+            "ON risk_evidence_recent(evidence_id, code) "
+            "WHERE status = 'committed' AND "
+            "(evidence_id = 'risk-observation:structured' OR "
+            "(evidence_id >= 'risk-component:' AND evidence_id < 'risk-component;'))"
+        )
         if _current_schema_version(connection) < SCHEMA_VERSION:
             connection.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",

@@ -133,6 +133,25 @@ def test_risk_evidence_scan_reads_only_requested_codes_without_materializing_all
     assert data_plane.load_risk_evidence_recent_records(("600001",)) == records[:2]
 
 
+def test_research_scan_skips_large_official_history_without_hiding_component_rows(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    records = (
+        _risk_evidence_record("600001", "cninfo-announcement:older"),
+        _risk_evidence_record("600001", "risk-component:announcements"),
+        _risk_evidence_record("600001", "risk-observation:structured"),
+        _risk_evidence_record("600002", "cninfo-announcement:other"),
+    )
+    data_plane.save_risk_evidence_recent_records(records)
+    seen: list[RiskEvidenceRecord] = []
+
+    data_plane.scan_risk_evidence_recent_records(seen.append, research_only=True)
+
+    assert [record.evidence_id for record in seen] == [
+        "risk-component:announcements",
+        "risk-observation:structured",
+    ]
+
+
 def test_security_master_batch_rolls_back_when_one_record_conflicts(tmp_path: Path) -> None:
     data_plane = SQLiteDataPlane(tmp_path)
     existing = _security_master_record(

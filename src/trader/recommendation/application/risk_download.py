@@ -38,6 +38,7 @@ class RiskResearchLoader(Protocol):
         *,
         retain_stale: bool = False,
         codes: Sequence[str] | None = None,
+        research_only: bool = False,
     ) -> None: ...
 
     def cached(
@@ -160,10 +161,15 @@ class RiskDownloadResult:
     official_failed_codes: int = 0
     official_persistence_error: Literal["busy", "unavailable"] | None = None
     official_source_error: Literal["access_denied", "rate_limited"] | None = None
+    research_coverage_required: bool = True
 
     @property
     def needs_retry(self) -> bool:
-        return self.stop_reason != "complete" or self.covered_codes < self.requested_codes or self.deadline_reached
+        return (
+            self.stop_reason != "complete"
+            or (self.research_coverage_required and self.covered_codes < self.requested_codes)
+            or self.deadline_reached
+        )
 
 
 @dataclass(frozen=True)
@@ -274,10 +280,13 @@ class _RiskDownloadState:
     changed_codes: set[str]
     official_terminal_codes: set[str]
     progress: RiskDownloadProgressPort | None = None
+    official_enabled: bool = False
+    require_current_window: bool = False
+    research_enabled: bool = True
     research_retry_order: tuple[str, ...] = ()
     official_order: tuple[str, ...] = ()
     research_pending_codes: int = 0
-    official_pending_codes: int = 0
+    official_pending_codes: int | None = None
     official_pages_fetched: int = 0
     official_pages_checkpointed: int = 0
     official_announcements_saved: int = 0
@@ -323,6 +332,8 @@ def DownloadRiskSnapshot(
     context: RiskDownloadContext,
     budget: RiskDownloadBudget = _DEFAULT_RISK_DOWNLOAD_BUDGET,
     announcement_sync: RiskAnnouncementSynchronizer | None = None,
+    require_current_window: bool = False,
+    research_enabled: bool = True,
 ) -> RiskDownloadResult:
     if budget.source_seconds <= 0.0 or (budget.task_seconds is not None and budget.task_seconds <= 0.0):
         raise ValueError("risk download budgets must be positive")
@@ -339,7 +350,7 @@ def DownloadRiskSnapshot(
                 requested_codes=len(normalized),
             )
         )
-    loader.recover_from_data_plane(context.observed_at, retain_stale=True)
+    loader.recover_from_data_plane(context.observed_at, retain_stale=True, research_only=announcement_sync is None)
     state = _RiskDownloadState(
         normalized=normalized,
         started=started,
@@ -347,6 +358,9 @@ def DownloadRiskSnapshot(
         changed_codes=set(),
         official_terminal_codes=set(),
         progress=context.progress,
+        official_enabled=announcement_sync is not None,
+        require_current_window=require_current_window,
+        research_enabled=research_enabled,
     )
     initial_pending = _pending_codes(state, context, announcement_sync)
     _remember_pending_counts(state, initial_pending)
@@ -376,7 +390,8 @@ def _run_download_waves(
         if not pending.missing and not pending.retryable and not pending.official:
             state.stop_reason = (
                 "complete"
-                if not state.official_terminal_codes and _all_components_covered(state.normalized, state.observations)
+                if not state.official_terminal_codes
+                and (not state.research_enabled or _all_components_covered(state.normalized, state.observations))
                 else "source_exhausted"
             )
             break
@@ -432,12 +447,16 @@ def _pending_codes(
     context: RiskDownloadContext,
     announcement_sync: RiskAnnouncementSynchronizer | None,
 ) -> _RiskPendingCodes:
-    missing = tuple(code for code in state.normalized if code not in state.observations)
+    missing = (
+        tuple(code for code in state.normalized if code not in state.observations) if state.research_enabled else ()
+    )
     retryable = _prioritize_pending(
         tuple(
             code
             for code in state.normalized
-            if code in state.observations and _has_retryable_source_error(state.observations[code])
+            if state.research_enabled
+            and code in state.observations
+            and _needs_research_refresh(state, state.observations[code], context.observed_at.date())
         ),
         state.research_retry_order,
     )
@@ -465,14 +484,18 @@ def _prioritize_pending(codes: tuple[str, ...], priority: Sequence[str]) -> tupl
 
 def _remember_pending_counts(state: _RiskDownloadState, pending: _RiskPendingCodes) -> None:
     state.research_pending_codes = len(set((*pending.missing, *pending.retryable)))
-    state.official_pending_codes = len(pending.official)
+    state.official_pending_codes = len(pending.official) if state.official_enabled else None
 
 
-def _research_pending_count(
-    codes: Sequence[str],
-    observations: Mapping[str, ResearchObservation],
-) -> int:
-    return sum(code not in observations or _has_retryable_source_error(observations[code]) for code in codes)
+def _needs_research_refresh(state: _RiskDownloadState, observation: ResearchObservation, observed_on: date) -> bool:
+    return _has_retryable_source_error(observation) or (
+        state.require_current_window
+        and (
+            observation.queried_on != observed_on
+            or observation.pledge_checked_on != observed_on
+            or not observation.news_queried
+        )
+    )
 
 
 def _run_research_wave(
@@ -517,7 +540,8 @@ def _run_research_wave(
                 state.changed_codes.add(code)
                 state.research_advances += 1
         state.any_deadline = state.any_deadline or report.deadline_reached
-        state.research_pending_codes = _research_pending_count(state.normalized, state.observations)
+        research_pending = _pending_codes(state, context, None)
+        state.research_pending_codes = len(set((*research_pending.missing, *research_pending.retryable)))
         if stage == "research_retry":
             deferred = set(report.deferred_codes)
             state.research_retry_order = (
@@ -525,7 +549,9 @@ def _run_research_wave(
                 *(code for code in group if code not in deferred),
             )
         unresolved_group = sum(
-            code not in state.observations or _has_retryable_source_error(state.observations[code]) for code in group
+            code not in state.observations
+            or _needs_research_refresh(state, state.observations[code], context.observed_at.date())
+            for code in group
         )
         _publish_stage_progress(
             state,
@@ -777,7 +803,11 @@ def _build_download_result(
         partial_codes=len(available - covered),
         changed_codes=len(state.changed_codes),
         deferred_codes=len(deferred),
-        failed_codes=max(0, len(state.normalized) - len(available) - len(deferred)),
+        failed_codes=(
+            max(0, len(state.normalized) - len(available) - len(deferred))
+            if state.research_enabled
+            else len(state.official_terminal_codes)
+        ),
         deadline_reached=state.any_deadline and bool(deferred),
         elapsed_seconds=max(0.0, context.monotonic() - state.started),
         inventory=RiskDownloadInventory(
@@ -801,6 +831,7 @@ def _build_download_result(
         official_failed_codes=len(state.official_terminal_codes),
         official_persistence_error=state.official_persistence_error,
         official_source_error=state.official_source_error,
+        research_coverage_required=state.research_enabled,
     )
 
 

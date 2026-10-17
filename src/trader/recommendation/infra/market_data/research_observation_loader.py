@@ -470,6 +470,7 @@ class ResearchLoader:
         *,
         retain_stale: bool = False,
         codes: Sequence[str] | None = None,
+        research_only: bool = False,
     ) -> None:
         data_plane = self._data_plane
         if data_plane is None:
@@ -480,6 +481,7 @@ class ResearchLoader:
             observed_at or self._runner.wall_clock(),
             retain_stale=retain_stale,
             codes=codes,
+            research_only=research_only,
         )
 
     def _mark_loaded_research_actionability(self, state: _ResearchLoadState) -> None:

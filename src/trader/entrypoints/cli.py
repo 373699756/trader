@@ -58,9 +58,8 @@ def BuildParser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "qfq_download", help="Update Tencent V2/V3 bounded daily windows concurrently; resume automatically."
     )
-    subparsers.add_parser(
-        "risk_download", help="Prepare the current or next trade-date company risk snapshot; resume automatically."
-    )
+    subparsers.add_parser("risk_download", help="Prepare current company research within a bounded task budget.")
+    subparsers.add_parser("risk_history_download", help="Resume CNInfo issuer announcement history separately.")
     subparsers.add_parser(
         "scheduled-history-maintenance",
         help="Run the installed zero-argument history task without environment installation.",
@@ -184,16 +183,16 @@ def _run_history_maintenance_command(
     profile: str | None,
     parser: argparse.ArgumentParser,
 ) -> int | None:
-    if command == "risk_download":
+    if command in {"risk_download", "risk_history_download"}:
         if profile is not None:
-            parser.error("risk_download does not accept --profile")
+            parser.error(f"{command} does not accept --profile")
         from trader.infra.process_lock import ProcessLock, ProcessLockError
         from trader.recommendation.entrypoints.risk_download_progress import StderrRiskDownloadProgress
 
         try:
             settings = LoadRuntimeSettings(_absolute_config_path(raw_config_path))
-            with ProcessLock(settings.runtime_dir / "risk_download.lock", label="risk_download"):
-                risk_progress = StderrRiskDownloadProgress()
+            with ProcessLock(settings.runtime_dir / "risk_download.lock", label=command):
+                risk_progress = StderrRiskDownloadProgress(command_name=command)
                 risk_progress.start()
                 try:
                     from trader.bootstrap import ExecuteRiskDownload
@@ -201,6 +200,7 @@ def _run_history_maintenance_command(
                     risk_result = ExecuteRiskDownload(
                         _absolute_config_path(raw_config_path),
                         progress=risk_progress,
+                        include_official_history=command == "risk_history_download",
                     )
                 finally:
                     risk_progress.close()
@@ -211,6 +211,7 @@ def _run_history_maintenance_command(
             json.dumps(
                 {
                     "target_date": risk_result.target_date.isoformat(),
+                    "download_scope": "history" if command == "risk_history_download" else "current",
                     "requested_codes": risk_result.requested_codes,
                     "available_codes": risk_result.available_codes,
                     "covered_codes": risk_result.covered_codes,

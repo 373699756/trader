@@ -220,6 +220,8 @@ class SQLiteDataPlane:
         self,
         consume: Callable[[RiskEvidenceRecord], None],
         codes: Sequence[str] | None = None,
+        *,
+        research_only: bool = False,
     ) -> None:
         self.initialize()
         selected = tuple(sorted(set(codes))) if codes is not None else None
@@ -229,16 +231,24 @@ class SQLiteDataPlane:
         with self._lock:
             try:
                 with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                    evidence_filter = (
+                        " AND (evidence_id = 'risk-observation:structured' "
+                        "OR (evidence_id >= 'risk-component:' AND evidence_id < 'risk-component;'))"
+                        if research_only
+                        else ""
+                    )
+                    sort_order = "evidence_id, code" if research_only else "code, evidence_id"
                     if selected is not None and len(selected) <= 900:
                         placeholders = ", ".join("?" for _ in selected)
                         query = (
                             "SELECT * FROM risk_evidence_recent WHERE status = 'committed' "
-                            f"AND code IN ({placeholders}) ORDER BY code, evidence_id"
+                            f"AND code IN ({placeholders}){evidence_filter} ORDER BY {sort_order}"
                         )
                         rows = connection.execute(query, selected)
                     else:
                         rows = connection.execute(
-                            "SELECT * FROM risk_evidence_recent WHERE status = 'committed' ORDER BY code, evidence_id"
+                            "SELECT * FROM risk_evidence_recent WHERE status = 'committed'"
+                            f"{evidence_filter} ORDER BY {sort_order}"
                         )
                     for row in rows:
                         if (

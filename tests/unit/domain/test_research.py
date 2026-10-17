@@ -18,6 +18,7 @@ from trader.recommendation.domain.market.research import (
     LongResearchPolicy,
     MarketRegimePolicy,
     ResearchAnnouncement,
+    ResearchComponentsFromObservation,
     ResearchObservation,
 )
 
@@ -287,6 +288,13 @@ def test_corporate_risk_history_applies_permanent_cooling_and_coverage_rules() -
     assert features["official_investigation_history"] == 0.0
     assert features["major_shareholder_reduction"] == 0.0
     assert features["corporate_risk_history_unavailable"] == 1.0
+
+
+def test_current_announcement_coverage_does_not_claim_regulatory_history() -> None:
+    observation = ResearchObservation(announcements_available=True, corporate_risk_history_complete=False)
+
+    assert ResearchComponentsFromObservation(observation).announcements == "known_clear"
+    assert DeriveCorporateRiskFeatures((), NOW, history_complete=False)["corporate_risk_history_unavailable"] == 1.0
 
 
 def test_active_reduction_and_unresolved_investigation_are_hard_risk_facts() -> None:

@@ -81,10 +81,12 @@ class SQLiteDailyRiskIndex:
         self,
         consume: Callable[[RiskEvidenceRecord], None],
         codes: Sequence[str] | None = None,
+        *,
+        research_only: bool = False,
     ) -> None:
         trade_date = self._target_date()
         self.prepare(trade_date)
-        self._plane(trade_date).scan_risk_evidence_recent_records(consume, codes)
+        self._plane(trade_date).scan_risk_evidence_recent_records(consume, codes, research_only=research_only)
 
     def save_source_cursor_recent(self, record: SourceCursorRecord) -> None:
         trade_date = self._target_date()

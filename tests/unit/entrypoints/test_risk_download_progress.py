@@ -75,8 +75,21 @@ def test_risk_download_progress_uses_stderr_style_fields_and_checkpoint_counts()
     assert "总体    998/  5027（ 19.85%）" in output
     assert "研究累计    998/  5027（ 19.85%） | 巨潮累计     40/  5027（  0.80%）" in output
     assert "请求   5027 | 研究待补   4029 | 巨潮待补   4987" in output
-    assert "可用    998 | 完整     12 | 延后   4029 | 变更    500" in output
+    assert "可用    998 | 四项有值     12 | 延后   4029 | 变更    500" in output
     assert "官方分页     30 | 断点分页     28 | 公告保存     80 | 断点续传      2" in output
+
+
+def test_running_research_progress_is_bounded_without_hiding_new_checkpoint() -> None:
+    stream = StringIO()
+    reporter = StderrRiskDownloadProgress(stream, monotonic=_Clock(10.0, 11.0, 12.0, 16.0))
+
+    for count in (1, 2, 3):
+        reporter.publish(RiskDownloadProgress("research_retry", "running", 1, count, 5027, 5027))
+
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 2
+    assert "本波处理      1/  5027" in lines[0]
+    assert "本波处理      3/  5027" in lines[1]
 
 
 def test_risk_download_progress_keeps_cumulative_counts_across_sources_and_waves() -> None:
