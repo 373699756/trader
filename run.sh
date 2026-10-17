@@ -27,6 +27,8 @@ usage() {
     "  ./run.sh risk_download           准备当日或下一交易日公司风险日库，支持断点续传" \
     "  ./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" \
     "  ./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" \
+    "  ./run.sh train-both              一次历史扫描生成 V2/V3 样本并训练双档" \
+    "  ./run.sh download-train          先维护完整历史，再联合训练 V2/V3" \
     "" \
     "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数。" \
     "" \
@@ -56,7 +58,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download|qfq_download|risk_download|train-v2|train-v3)
+    help|-h|--help|check|download|qfq_download|risk_download|train-v2|train-v3|train-both|download-train)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -89,7 +91,7 @@ if [[ "$MODE" == "check" && "$SCORING_PROFILE" == "both" ]]; then
   exit 2
 fi
 
-if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "risk_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "risk_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" || "$MODE" == "download-train" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -102,7 +104,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download|qfq_download|risk_download|train-v2|train-v3)
+  check|download|qfq_download|risk_download|train-v2|train-v3|train-both|download-train)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -112,6 +114,26 @@ case "$MODE" in
     exit 2
     ;;
 esac
+
+if [[ "$MODE" == "download-train" ]]; then
+  PIPELINE_STARTED=$SECONDS
+  if "$ROOT_DIR/run.sh" download; then
+    :
+  else
+    PIPELINE_EXIT_CODE=$?
+    printf '%s\n' '完整历史维护失败；未启动双档训练。' >&2
+    exit "$PIPELINE_EXIT_CODE"
+  fi
+  if "$ROOT_DIR/run.sh" train-both; then
+    :
+  else
+    PIPELINE_EXIT_CODE=$?
+    printf '联合训练失败；总耗时 %s 秒。\n' "$((SECONDS - PIPELINE_STARTED))" >&2
+    exit "$PIPELINE_EXIT_CODE"
+  fi
+  printf '下载与双档训练完成；总耗时 %s 秒。\n' "$((SECONDS - PIPELINE_STARTED))" >&2
+  exit 0
+fi
 
 find_python() {
   local candidate
@@ -186,14 +208,20 @@ fi
 if [[ "$MODE" == "risk_download" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" risk_download
 fi
-if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" ]]; then
+if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" ]]; then
+  TRAINING_MEMORY_HIGH=1792M
+  TRAINING_MEMORY_MAX=2048M
+  if [[ "$MODE" == "train-both" ]]; then
+    TRAINING_MEMORY_HIGH=4608M
+    TRAINING_MEMORY_MAX=5120M
+  fi
   if [[ "$(uname -s)" == "Linux" ]]; then
     if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
       exec systemd-run --user --scope --quiet --collect \
         --unit="trader-${MODE}-training" \
         --slice=background.slice \
-        --property=MemoryHigh=1792M \
-        --property=MemoryMax=2048M \
+        --property="MemoryHigh=$TRAINING_MEMORY_HIGH" \
+        --property="MemoryMax=$TRAINING_MEMORY_MAX" \
         --property=MemorySwapMax=2048M \
         --property=CPUWeight=20 \
         --property=IOWeight=20 \

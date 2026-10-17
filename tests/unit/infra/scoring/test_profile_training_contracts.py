@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from trader.download.domain.baostock_daily import BaoStockCalendar, BuildBaostockTrainingSplit
+from trader.download.domain.history_revision import HistoryTrainingPoint, HistoryTrainingRow
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.cost_settings import (
     LoadEvaluationCostScenarios,
@@ -18,7 +19,11 @@ from trader.training.infra.model_fitting import LightGBMFittingParameters, Ridge
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.research_settings import LoadResearchSettings
-from trader.training.infra.sample_builder import BuildTrainingSamples, TrainingSampleBuildRequest
+from trader.training.infra.sample_builder import (
+    BuildJointTrainingSamples,
+    BuildTrainingSamples,
+    TrainingSampleBuildRequest,
+)
 from trader.training.infra.sample_repository import SQLiteTrainingSampleRepository
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
@@ -123,6 +128,67 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
         )
 
     assert requested == [TomorrowTrainingWindow(split).readable_dates]
+
+
+def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(tmp_path: Path) -> None:
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(2_000))
+    points = tuple(
+        HistoryTrainingRow("600000", day, "main", "银行", HistoryTrainingPoint(day, 10.0 + index * 0.01, 1_000_000.0))
+        for index, day in enumerate(dates[-1_000:])
+    )
+
+    class HistorySourceFixture:
+        snapshot = SimpleNamespace(calendar=BaoStockCalendar(dates), active_snapshot_hash="a" * 64)
+
+        def __init__(self) -> None:
+            self.scans = 0
+
+        def training_row_upper_bound(self, allowed_dates: frozenset[date]) -> int:
+            return sum(row.trade_date in allowed_dates for row in points)
+
+        def iter_training_rows(self, allowed_dates: frozenset[date], progress=None):
+            self.scans += 1
+            for row in points:
+                if row.trade_date in allowed_dates:
+                    yield row
+
+    profiles = (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE)
+    windows = tuple(
+        TomorrowTrainingWindow(
+            BuildBaostockTrainingSplit(
+                dates,
+                parent_manifest_hash="a" * 64,
+                fit_dates=1000 if profile.profile_id == "v2" else 750,
+                early_stopping_sessions=20 if profile.profile_id == "v2" else 0,
+                history_sessions=profile.history_sessions,
+            )
+        )
+        for profile in profiles
+    )
+    joint_source = HistorySourceFixture()
+    with (
+        SQLiteTrainingSampleRepository(tmp_path / "joint-v2.sqlite3", 10) as joint_v2,
+        SQLiteTrainingSampleRepository(tmp_path / "joint-v3.sqlite3", 6) as joint_v3,
+        SQLiteTrainingSampleRepository(tmp_path / "single-v2.sqlite3", 10) as single_v2,
+        SQLiteTrainingSampleRepository(tmp_path / "single-v3.sqlite3", 6) as single_v3,
+    ):
+        joint_requests = tuple(
+            TrainingSampleBuildRequest(joint_source, ("600000",), window, repository, profile)
+            for window, repository, profile in zip(windows, (joint_v2, joint_v3), profiles, strict=True)
+        )
+        rows_read = BuildJointTrainingSamples(joint_requests)
+        for window, repository, profile in zip(windows, (single_v2, single_v3), profiles, strict=True):
+            BuildTrainingSamples(
+                TrainingSampleBuildRequest(HistorySourceFixture(), ("600000",), window, repository, profile)
+            )
+        assert joint_source.scans == 1
+        assert rows_read == sum(
+            row.trade_date in windows[0].readable_dates | windows[1].readable_dates for row in points
+        )
+        for joint, single in ((joint_v2, single_v2), (joint_v3, single_v3)):
+            assert joint._connection.execute("SELECT * FROM samples ORDER BY trade_date, code").fetchall() == (
+                single._connection.execute("SELECT * FROM samples ORDER BY trade_date, code").fetchall()
+            )
 
 
 def test_date_budget_reserves_warmup_and_every_five_day_label_boundary() -> None:

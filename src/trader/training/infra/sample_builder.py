@@ -191,17 +191,8 @@ class _SampleBuildState:
 def BuildTrainingSamples(request: TrainingSampleBuildRequest) -> None:
     """Build T+1..T+5 targets with one scan and at most five pending sample days."""
 
-    calendar = request.archive.snapshot.calendar.open_dates
-    total_rows = request.archive.training_row_upper_bound(request.window.readable_dates)
-    state = _SampleBuildState(
-        request.repository,
-        request.profile,
-        request.progress,
-        total_rows,
-        {day: position for position, day in enumerate(calendar)},
-        request.window.readable_dates,
-        frozenset(request.codes),
-    )
+    state = _new_sample_state(request)
+    total_rows = state.total_rows
     _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, total_rows))
     _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, total_rows))
 
@@ -211,6 +202,56 @@ def BuildTrainingSamples(request: TrainingSampleBuildRequest) -> None:
     ):
         state.accept(row)
 
+    _complete_sample_state(state, request)
+
+
+def BuildJointTrainingSamples(requests: tuple[TrainingSampleBuildRequest, ...]) -> int:
+    """Fan one immutable history row stream into independent profile sample databases."""
+
+    if not requests:
+        raise ValueError("joint_training_requests_empty")
+    archive = requests[0].archive
+    if any(
+        request.archive.snapshot.active_snapshot_hash != archive.snapshot.active_snapshot_hash for request in requests
+    ):
+        raise ValueError("joint_training_snapshot_mismatch")
+    if len({request.profile.profile_id for request in requests}) != len(requests):
+        raise ValueError("joint_training_profile_duplicate")
+    states = tuple(_new_sample_state(request) for request in requests)
+    for request, state in zip(requests, states, strict=True):
+        _publish(request.progress, TomorrowTrainingProgress("history_conversion", "started", 0, state.total_rows))
+        _publish(request.progress, TomorrowTrainingProgress("cross_section_conversion", "started", 0, state.total_rows))
+    union_dates = frozenset().union(*(request.window.readable_dates for request in requests))
+    scanned = [0] * len(states)
+    scanned_union = 0
+    for row in archive.iter_training_rows(union_dates):
+        scanned_union += 1
+        for index, state in enumerate(states):
+            if row.trade_date in state.readable_dates:
+                state.accept(row)
+                scanned[index] += 1
+                if scanned[index] % 4096 == 0:
+                    state.report_scanned(scanned[index])
+    for index, (request, state) in enumerate(zip(requests, states, strict=True)):
+        state.report_scanned(scanned[index])
+        _complete_sample_state(state, request)
+    return scanned_union
+
+
+def _new_sample_state(request: TrainingSampleBuildRequest) -> _SampleBuildState:
+    calendar = request.archive.snapshot.calendar.open_dates
+    return _SampleBuildState(
+        request.repository,
+        request.profile,
+        request.progress,
+        request.archive.training_row_upper_bound(request.window.readable_dates),
+        {day: position for position, day in enumerate(calendar)},
+        request.window.readable_dates,
+        frozenset(request.codes),
+    )
+
+
+def _complete_sample_state(state: _SampleBuildState, request: TrainingSampleBuildRequest) -> None:
     state.flush_matured(state.current_position, all_days=True)
     _publish(
         request.progress,
@@ -398,6 +439,7 @@ __all__ = [
     "TrainingSampleBuildRequest",
     "AlignedSampleDates",
     "BuildTrainingSamples",
+    "BuildJointTrainingSamples",
     "ResidualizeSampleDay",
     "TrainingAlphaTarget",
 ]

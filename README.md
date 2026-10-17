@@ -48,6 +48,8 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh download
 ./run.sh train-v2
 ./run.sh train-v3
+./run.sh train-both
+./run.sh download-train
 ./run.sh qfq_download
 ./run.sh help
 ```
@@ -55,7 +57,8 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 日常启动不需要参数，默认使用 V2 并加载 `data/train/v2/{tomorrow,d25}` 双头工件；
 追加 `--profile v2|v3` 可单独启动一档，`--profile both` 在同一进程启动两档；这些选择不会写回配置。双档模式的 Tomorrow/D25 结果、冻结和历史按档位隔离，Long 固定由 V2 单一采集并供两档页面只读。启动不执行训练，所选档位任一bundle损坏时失败关闭。
 `check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download` 维护完整历史；
-`qfq_download` 使用 Tencent 有界并发维护在线短窗口。`train-v2`使用1000个有效拟合日和251日特征窗，只拟合LightGBM；`train-v3`使用750个有效拟合日和61日特征窗，只拟合Ridge。两者读取最长2000日完整历史，各自一次扫描顺序训练Tomorrow/D25，不训练Today。
+`qfq_download` 使用 Tencent 有界并发维护在线短窗口。`train-v2`使用1000个有效拟合日和251日特征窗，只拟合LightGBM；`train-v3`使用750个有效拟合日和61日特征窗，只拟合Ridge。独立命令各自扫描完整历史，`train-both`在同一快照下一次扫描生成两档样本；`download-train`先完成历史维护再执行联合训练。每档内部仍顺序训练Tomorrow/D25，不训练Today。
+联合训练默认串行拟合；仅在资源门和仓库外隔离副本的同输入速度基准同时通过后，才按`docs/4_下载训练.md`启用并行。
 两个命令每次直接重建并覆盖`data/train/{v2,v3}/{tomorrow,d25}`，不检查到期、不比较旧历史修订、不创建额外训练快照。
 stderr显示累计/阶段耗时，索引、统计和拟合等耗时阶段每30秒有反馈；失败保留该头上一完整工件组。V2/V3共享历史事实和
 训练引擎，但不共享特征合同、模型身份或输出目录。旧 H0 历史归档、回测和筛选入口已退役，

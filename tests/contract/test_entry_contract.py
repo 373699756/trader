@@ -185,6 +185,8 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh download                零参数历史维护" in completed.stdout
     assert "./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" in completed.stdout
     assert "./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" in completed.stdout
+    assert "./run.sh train-both              一次历史扫描生成 V2/V3 样本并训练双档" in completed.stdout
+    assert "./run.sh download-train          先维护完整历史，再联合训练 V2/V3" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数" in completed.stdout
@@ -384,6 +386,73 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
 
     assert completed.returncode == 0
     assert completed.stdout == f"cli:--config {config} download\n"
+
+
+@pytest.mark.parametrize(
+    ("failed_command", "expected_commands"),
+    (("", ("download", "train-both")), ("download", ("download",)), ("train-both", ("download", "train-both"))),
+)
+def test_download_train_runs_joint_training_only_after_successful_download(
+    tmp_path: Path, failed_command: str, expected_commands: tuple[str, ...]
+) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(
+        venv_bin / "trader-cli",
+        f'printf \'cli:%s\\n\' "$*"\nif [[ "${{!#}}" == "{failed_command}" ]]; then exit 1; fi',
+    )
+    _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "download-train"),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{venv_bin}:{os.environ['PATH']}",
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == int(bool(failed_command))
+    assert completed.stdout.splitlines() == [f"cli:--config {config} {command}" for command in expected_commands]
+
+
+def test_train_both_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
+    _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
+    _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
+    _write_fake_entrypoint(venv_bin / "systemctl", "exit 0")
+    _write_fake_entrypoint(venv_bin / "systemd-run", "printf 'scope:%s\\n' \"$*\"")
+    config = tmp_path / "runtime.json"
+
+    completed = subprocess.run(
+        ("bash", str(ROOT / "run.sh"), "train-both"),
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{venv_bin}:{os.environ['PATH']}",
+            "VENV_DIR": str(venv_bin.parent),
+            "TRADER_CONFIG": str(config),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "--property=MemoryHigh=4608M" in completed.stdout
+    assert "--property=MemoryMax=5120M" in completed.stdout
+    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} train-both")
 
 
 def test_run_script_isolates_history_download_from_the_desktop_terminal(tmp_path: Path) -> None:
@@ -615,7 +684,10 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert '$ScoringProfile -notin @("v2", "v3")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
-    assert '$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3")' in powershell
+    assert (
+        '$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3", "train-both", "download-train")'
+        in powershell
+    )
     assert "install-history-automation" not in powershell
     assert "uninstall-history-automation" not in powershell
 

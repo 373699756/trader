@@ -7,6 +7,9 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from datetime import date
 from importlib.metadata import version
@@ -25,6 +28,7 @@ from trader.download.infra.history_partition_repack import (
     HistoryPartitionRepackFenceError,
     RequireHistoryPartitionRepackInactive,
 )
+from trader.download.infra.history_storage_profile import ClassifyHistoryStorage
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT
@@ -41,6 +45,7 @@ from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputSnapshot,
     SQLiteHistoryTrainingInputSnapshot,
 )
+from trader.training.infra.joint_fit_evidence import LoadJointFitEvidence
 from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
 )
@@ -48,6 +53,7 @@ from trader.training.infra.model_bundles.contracts import TrainedHeadContract, T
 from trader.training.infra.model_bundles.profile_publication import PublishProfileBundles
 from trader.training.infra.model_fitting import FitIndustryModels, LightGBMFittingParameters
 from trader.training.infra.sample_builder import (
+    BuildJointTrainingSamples,
     BuildTrainingSamples,
     TrainingHistorySource,
     TrainingSampleBuildRequest,
@@ -115,6 +121,25 @@ class TrainingRunResult:
         if "rejected" in statuses:
             return "rejected"
         return "engineering_ready" if statuses else "blocked"
+
+
+@dataclass(frozen=True)
+class JointTrainingRunResult:
+    profiles: tuple[TrainingRunResult, TrainingRunResult]
+    history_scan_passes: int
+    history_rows_read: int
+    fit_mode: Literal["serial", "parallel"]
+    preparation_seconds: float
+    fit_seconds: float
+
+    @property
+    def status(self) -> TrainingStatus:
+        statuses = tuple(profile.status for profile in self.profiles)
+        if "blocked" in statuses:
+            return "blocked"
+        if "rejected" in statuses:
+            return "rejected"
+        return "engineering_ready"
 
 
 @dataclass(frozen=True)
@@ -202,6 +227,164 @@ def RunRepackProfileTraining(request: ProfileTrainingRequest) -> TrainingRunResu
     return RunProfileTraining(request)
 
 
+def RunJointProfileTraining(
+    requests: tuple[ProfileTrainingRequest, ProfileTrainingRequest],
+    *,
+    parallel_fit: bool,
+) -> JointTrainingRunResult:
+    """Build both profile caches from one published scan, then fit under the same history lock."""
+
+    if {request.profile.profile_id for request in requests} != {"v2", "v3"}:
+        raise ValueError("joint_training_requires_v2_v3")
+    if requests[0].history_root != requests[1].history_root or requests[0].train_root != requests[1].train_root:
+        raise ValueError("joint_training_roots_mismatch")
+    normalized = tuple(
+        replace(request, train_root=request.train_root / request.profile.output_directory) for request in requests
+    )
+    started = time.monotonic()
+    try:
+        archive = SQLiteHistoryTrainingInputSnapshot.open(requests[0].history_root)
+    except (HistoryTrainingInputError, OSError, ValueError) as exc:
+        unavailable = tuple(
+            TrainingRunResult(None, "", 0, tuple(_unavailable_result(head, _reason(exc)) for head in request.contracts))
+            for request in normalized
+        )
+        return JointTrainingRunResult(
+            cast(tuple[TrainingRunResult, TrainingRunResult], unavailable), 0, 0, "serial", 0, 0
+        )
+    try:
+        with ExitStack() as locks:
+            locks.enter_context(HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"))
+            for request in normalized:
+                request.train_root.mkdir(parents=True, exist_ok=True)
+                locks.enter_context(HistoryMaintenanceLock(request.train_root / ".training.lock"))
+            archive = SQLiteHistoryTrainingInputSnapshot.open(requests[0].history_root)
+            RequireHistoryPartitionRepackInactive(archive.archive_root)
+            snapshot = archive.snapshot
+            if any(
+                request.expected_history_snapshot_hash is not None
+                and request.expected_history_snapshot_hash != snapshot.active_snapshot_hash
+                for request in normalized
+            ):
+                raise ValueError("history_archive_repack_target_mismatch")
+            pending: list[tuple[TrainingSampleBuildRequest, TrainingSampleCache]] = []
+            with ExitStack() as samples_scope:
+                for request in normalized:
+                    split, _ = _prepare_locked_split(snapshot, request.profile, request.settings)
+                    if split is None:
+                        continue
+                    try:
+                        window = _require_industry_coverage(
+                            archive,
+                            split,
+                            request.profile.history_sessions,
+                            request.profile.algorithm,
+                            request.settings.fitting.minimum_industry_training_rows,
+                        )
+                    except (HistoryTrainingInputError, OSError, ValueError):
+                        continue
+                    cache = _sample_cache_for(snapshot, split, request)
+                    samples = samples_scope.enter_context(cache.open())
+                    if not cache.reused:
+                        pending.append(
+                            (
+                                TrainingSampleBuildRequest(
+                                    archive, snapshot.training_codes, window, samples, request.profile, request.progress
+                                ),
+                                cache,
+                            )
+                        )
+                rows_read = BuildJointTrainingSamples(tuple(item[0] for item in pending)) if pending else 0
+                for sample_request, cache in pending:
+                    if sample_request.repository.count() == 0:
+                        raise ValueError("profile_training_rows_empty")
+                    cache.seal(sample_request.repository)
+            preparation_seconds = time.monotonic() - started
+            fit_started = time.monotonic()
+            fit_mode: Literal["serial", "parallel"] = "parallel" if parallel_fit else "serial"
+            if parallel_fit:
+                with ThreadPoolExecutor(max_workers=2, thread_name_prefix="profile-fit") as executor:
+                    futures = tuple(
+                        executor.submit(
+                            _run_locked, SQLiteHistoryTrainingInputSnapshot.open(request.history_root), request
+                        )
+                        for request in normalized
+                    )
+                    profile_results = tuple(future.result() for future in futures)
+            else:
+                profile_results = tuple(
+                    _run_locked(SQLiteHistoryTrainingInputSnapshot.open(request.history_root), request)
+                    for request in normalized
+                )
+            return JointTrainingRunResult(
+                cast(tuple[TrainingRunResult, TrainingRunResult], profile_results),
+                int(bool(pending)),
+                rows_read,
+                fit_mode,
+                preparation_seconds,
+                time.monotonic() - fit_started,
+            )
+    except (HistoryMaintenanceAlreadyRunningError, HistoryPartitionRepackFenceError) as exc:
+        blocked = tuple(
+            TrainingRunResult(
+                None,
+                archive.snapshot.active_snapshot_hash,
+                0,
+                tuple(_blocked_from_snapshot(head, archive.snapshot, _reason(exc)) for head in request.contracts),
+            )
+            for request in normalized
+        )
+        return JointTrainingRunResult(cast(tuple[TrainingRunResult, TrainingRunResult], blocked), 0, 0, "serial", 0, 0)
+    except (HistoryTrainingInputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        blocked = tuple(
+            TrainingRunResult(
+                None,
+                archive.snapshot.active_snapshot_hash,
+                0,
+                tuple(_blocked_from_snapshot(head, archive.snapshot, _reason(exc)) for head in request.contracts),
+            )
+            for request in normalized
+        )
+        return JointTrainingRunResult(cast(tuple[TrainingRunResult, TrainingRunResult], blocked), 0, 0, "serial", 0, 0)
+
+
+def ChooseJointFitMode(history_root: Path, *, evidence_path: Path | None = None) -> Literal["serial", "parallel"]:
+    """Require both safe resources and a same-input winning benchmark."""
+
+    if not ParallelFitResourcesAvailable(history_root) or evidence_path is None:
+        return "serial"
+    evidence = LoadJointFitEvidence(evidence_path)
+    if evidence is None or not evidence.supports_parallel(
+        storage_kind=ClassifyHistoryStorage(history_root), cpu_count=os.cpu_count() or 1
+    ):
+        return "serial"
+    return "parallel"
+
+
+def ParallelFitResourcesAvailable(history_root: Path) -> bool:
+    """Check bounded fit concurrency without reading or creating benchmark state."""
+
+    if ClassifyHistoryStorage(history_root) != "ssd" or (os.cpu_count() or 1) < 4:
+        return False
+    try:
+        available_line = next(
+            line
+            for line in Path("/proc/meminfo").read_text(encoding="ascii").splitlines()
+            if line.startswith("MemAvailable:")
+        )
+        available_bytes = int(available_line.split()[1]) * 1024
+        cgroup_limit = Path("/sys/fs/cgroup/memory.max").read_text(encoding="ascii").strip()
+    except (OSError, StopIteration, ValueError, IndexError):
+        return False
+    try:
+        cgroup_bytes = int(cgroup_limit) if cgroup_limit != "max" else None
+    except ValueError:
+        return False
+    if available_bytes < 5 * 1024**3 or (cgroup_bytes is not None and cgroup_bytes < 5 * 1024**3):
+        return False
+    return True
+
+
 def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
     _publish(request.progress, TomorrowTrainingProgress("resource_preflight", "completed", 1, 1))
     _publish(request.progress, TomorrowTrainingProgress("input_read", "started", 0, 1))
@@ -279,28 +462,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
         )
         request.train_root.mkdir(parents=True, exist_ok=True)
         _cleanup_abandoned_workspaces(request.train_root)
-        feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
-        cache_identity = ContentHash(
-            (
-                snapshot.active_snapshot_hash,
-                snapshot.input_descriptor_hash,
-                request.profile.profile_id,
-                split.content_hash,
-                feature_count,
-                "monthly_samples",
-                "tencent_inferred_suspended_trade_bar_windows",
-                request.profile.history_sessions,
-                request.profile.momentum_horizons,
-                request.profile.market_state_momentum_horizons,
-                request.profile.raw_feature_manifest.content_hash,
-                TRAINED_HEAD_EXPOSURE_CONTRACT,
-                tuple(
-                    (contract.feature_manifest.content_hash, contract.label_target, contract.maturity_sessions)
-                    for contract in request.contracts
-                ),
-            )
-        )
-        cache = TrainingSampleCache(request.train_root, cache_identity, feature_count, split.content_hash)
+        cache = _sample_cache_for(snapshot, split, request)
         _publish(request.progress, TomorrowTrainingProgress("sample_cache", "started", 0, 1))
         with cache.open() as samples:
             _publish(request.progress, TomorrowTrainingProgress("sample_cache", "completed", 1, 1, int(cache.reused)))
@@ -381,6 +543,35 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
                 )
     ordered = _ordered_results(request.contracts, completed)
     return TrainingRunResult(run_id, snapshot.active_snapshot_hash, peak_bytes, ordered)
+
+
+def _sample_cache_for(
+    snapshot: HistoryTrainingInputSnapshot,
+    split: BaoStockTrainingSplit,
+    request: ProfileTrainingRequest,
+) -> TrainingSampleCache:
+    feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
+    cache_identity = ContentHash(
+        (
+            snapshot.active_snapshot_hash,
+            snapshot.input_descriptor_hash,
+            request.profile.profile_id,
+            split.content_hash,
+            feature_count,
+            "monthly_samples",
+            "tencent_inferred_suspended_trade_bar_windows",
+            request.profile.history_sessions,
+            request.profile.momentum_horizons,
+            request.profile.market_state_momentum_horizons,
+            request.profile.raw_feature_manifest.content_hash,
+            TRAINED_HEAD_EXPOSURE_CONTRACT,
+            tuple(
+                (contract.feature_manifest.content_hash, contract.label_target, contract.maturity_sessions)
+                for contract in request.contracts
+            ),
+        )
+    )
+    return TrainingSampleCache(request.train_root, cache_identity, feature_count, split.content_hash)
 
 
 def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleCache) -> tuple[TargetMetric, ...]:
@@ -919,10 +1110,14 @@ def _reason(exc: BaseException) -> str:
 
 
 __all__ = [
+    "ChooseJointFitMode",
     "HeadTrainingResult",
+    "JointTrainingRunResult",
+    "ParallelFitResourcesAvailable",
     "ProfileTrainingRequest",
     "TrainingRunResult",
     "TrainingStatus",
+    "RunJointProfileTraining",
     "RunProfileTraining",
     "RunRepackProfileTraining",
 ]
