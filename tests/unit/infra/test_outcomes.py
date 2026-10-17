@@ -173,6 +173,24 @@ def test_benchmark_and_outcome_retries_ignore_observation_time_but_reject_busine
         repository.save_recommendation_outcomes((_outcome(net_excess_return_pct=1.3),))
 
 
+def test_retryable_outcome_cannot_occupy_immutable_horizon(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    benchmark_missing = replace(
+        _outcome(),
+        status="benchmark_missing",
+        benchmark_return_pct=None,
+        net_excess_return_pct=None,
+        quality_reason="benchmark_missing",
+    )
+    horizon_not_due = replace(benchmark_missing, status="insufficient_data", quality_reason="horizon_not_due")
+
+    for retryable in (benchmark_missing, horizon_not_due):
+        with pytest.raises(ValueError, match="retryable recommendation outcomes"):
+            repository.save_recommendation_outcomes((retryable,))
+
+    assert not (tmp_path / "research" / "outcomes.sqlite3").exists()
+
+
 def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     repository.initialize()

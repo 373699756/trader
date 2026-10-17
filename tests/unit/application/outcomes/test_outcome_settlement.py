@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.recommendation.application.ports.runtime import SettlementUnavailableError
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.outcome_settlement import OutcomeSettlementAdapter, OutcomeSettlementService
 from trader.training.domain.evaluation.models import (
@@ -118,7 +119,7 @@ def test_settlement_skips_horizons_that_are_not_due(application_feature_factory)
     assert repository.saved == ()
 
 
-def test_settlement_records_due_stock_outcome_when_benchmark_is_unavailable(
+def test_settlement_keeps_due_stock_outcome_retryable_when_benchmark_is_unavailable(
     application_feature_factory,
 ) -> None:
     repository = _Repository()
@@ -132,8 +133,8 @@ def test_settlement_records_due_stock_outcome_when_benchmark_is_unavailable(
 
     assert result.benchmark_recorded is False
     assert result.outcome_count == 1
-    assert repository.saved[0].status == "benchmark_missing"
-    assert repository.saved[0].gross_return_pct == pytest.approx(2.0)
+    assert result.retryable_count == 1
+    assert repository.saved == ()
 
 
 def test_equal_weight_benchmark_requires_every_market_return(application_feature_factory) -> None:
@@ -148,6 +149,26 @@ def test_equal_weight_benchmark_requires_every_market_return(application_feature
     assert repository.benchmark == ()
 
 
+def test_settlement_persists_non_retryable_quality_failure(application_feature_factory) -> None:
+    class _InvalidAtrRepository(_Repository):
+        def pending_outcome_targets(self, *, limit):
+            return tuple(replace(target, atr20_pct=0.0) for target in super().pending_outcome_targets(limit=limit))
+
+    repository = _InvalidAtrRepository()
+    market_data = _MarketData()
+
+    result = _service(market_data, repository).settle(
+        NOW,
+        (application_feature_factory("600001", NOW),),
+    )
+
+    assert result.completed_count == 0
+    assert result.retryable_count == 0
+    assert len(repository.saved) == 1
+    assert repository.saved[0].status == "insufficient_data"
+    assert repository.saved[0].quality_reason == "invalid_price_window"
+
+
 def test_adapter_fetches_fresh_close_market_before_settlement(application_feature_factory) -> None:
     feature = application_feature_factory("600001", NOW)
     market_data = _MarketData((feature,))
@@ -158,6 +179,29 @@ def test_adapter_fetches_fresh_close_market_before_settlement(application_featur
 
     assert market_data.fetch_calls == [(NOW, True)]
     assert repository.benchmark == (BenchmarkReturn("2026-07-21", 3.0), NOW)
+
+
+def test_adapter_rejects_incomplete_settlement_without_poisoning_immutable_evidence(
+    application_feature_factory,
+) -> None:
+    stale = application_feature_factory(
+        "600001",
+        datetime(2026, 7, 21, 14, 59, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+    market_data = _MarketData((stale,))
+    repository = _Repository()
+    repository.benchmark_returns_after = lambda _date, *, limit: ()
+    adapter = OutcomeSettlementAdapter(market_data, _service(market_data, repository))
+
+    with pytest.raises(SettlementUnavailableError, match="settlement_outcomes_incomplete"):
+        adapter.settle(NOW)
+
+    assert repository.saved == ()
+    market_data.features = (application_feature_factory("600001", NOW),)
+    repository.benchmark_returns_after = lambda _date, *, limit: (BenchmarkReturn("2026-07-21", 0.5),)
+    adapter.settle(NOW)
+    assert len(repository.saved) == 1
+    assert repository.saved[0].status == "complete"
 
 
 def test_d25_settlement_includes_t4_but_only_evaluates_pending_horizons(application_feature_factory) -> None:

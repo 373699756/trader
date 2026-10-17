@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
+from trader.recommendation.application.ports.runtime import SettlementUnavailableError
 from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.domain.market.models import FeatureSnapshot
 from trader.training.application.outcome_ports import (
@@ -23,6 +24,7 @@ class SettlementResult:
     target_count: int
     outcome_count: int
     completed_count: int
+    retryable_count: int
     benchmark_recorded: bool
 
 
@@ -50,7 +52,7 @@ class OutcomeSettlementService:
             self._writer.record_benchmark_return(benchmark, observed_at=now)
         targets = tuple(self._targets.pending_outcome_targets(limit=self._target_limit))
         if not targets:
-            return SettlementResult(0, 0, 0, benchmark is not None)
+            return SettlementResult(0, 0, 0, 0, benchmark is not None)
         codes = tuple(dict.fromkeys(target.stock_code for target in targets))
         histories = self._market_data.read_outcome_bars(codes, now)
         outcomes = []
@@ -82,12 +84,14 @@ class OutcomeSettlementService:
                         )
                     )
                 )
-        if outcomes:
-            self._writer.save_recommendation_outcomes(outcomes)
+        terminal_outcomes = tuple(item for item in outcomes if not item.is_retryable)
+        if terminal_outcomes:
+            self._writer.save_recommendation_outcomes(terminal_outcomes)
         return SettlementResult(
             len(targets),
             len(outcomes),
             sum(item.status == "complete" for item in outcomes),
+            sum(item.is_retryable for item in outcomes),
             benchmark is not None,
         )
 
@@ -140,7 +144,9 @@ class OutcomeSettlementAdapter:
 
     def settle(self, at: datetime) -> None:
         features = self._market_data.fetch_market_features(at, force=True)
-        self._service.settle(at, features)
+        result = self._service.settle(at, features)
+        if result.retryable_count:
+            raise SettlementUnavailableError("settlement_outcomes_incomplete")
 
 
 __all__ = [

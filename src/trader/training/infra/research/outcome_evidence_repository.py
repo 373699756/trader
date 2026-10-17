@@ -173,6 +173,8 @@ class SQLiteOutcomeEvidenceRepository:
         return benchmarks
 
     def save_recommendation_outcomes(self, outcomes: Sequence[RecommendationOutcome]) -> None:
+        if any(outcome.is_retryable for outcome in outcomes):
+            raise ValueError("retryable recommendation outcomes cannot be persisted")
         self.initialize()
         with self._lock, self._connection() as connection:
             for outcome in outcomes:

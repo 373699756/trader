@@ -195,6 +195,14 @@ class RecommendationOutcome:
             return None
         return self.exit_status is not OutcomeExitStatus.TRADABLE
 
+    @property
+    def is_retryable(self) -> bool:
+        """Whether later source evidence can complete this horizon without changing its identity."""
+
+        return self.status == "benchmark_missing" or (
+            self.status == "insufficient_data" and self.quality_reason == "horizon_not_due"
+        )
+
 
 __all__ = [
     "BenchmarkConstituentReturn",
