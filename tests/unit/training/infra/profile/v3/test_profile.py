@@ -374,12 +374,15 @@ def test_v3_loader_rejects_tampered_group_identity(tmp_path: Path) -> None:
         LoadHeadBundle(selected, Strategy.TOMORROW, V3_TRAINING_PROFILE)
 
 
-def test_v3_loader_reads_legacy_report_without_reusing_its_validation_flag_as_return_evidence(
+@pytest.mark.parametrize("profile", (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE))
+def test_shared_loader_rejects_retired_report_schema(
     tmp_path: Path,
+    profile: TrainedProfileContract,
 ) -> None:
-    model, report, training_input = _documents(TOMORROW_HEAD_CONTRACT)
+    contract = profile.head_for_strategy(Strategy.TOMORROW)
+    model, report, training_input = _documents(contract, profile)
     report.pop("content_hash")
-    report["schema_version"] = "v3_head_training_report"
+    report["schema_version"] = f"{profile.profile_id}_head_training_report"
     report.pop("artifact_structure_valid")
     report.pop("artifact_structure_failure_reasons")
     report.pop("prediction_return_validation_passed")
@@ -392,11 +395,8 @@ def test_v3_loader_reads_legacy_report_without_reusing_its_validation_flag_as_re
     for name, document in (("model.json", model), ("report.json", report), ("training-input.json", training_input)):
         (tmp_path / name).write_text(json.dumps(document), encoding="utf-8")
 
-    loaded = LoadHeadBundle(tmp_path / "model.json", Strategy.TOMORROW, V3_TRAINING_PROFILE)
-
-    assert loaded.point_in_time_parity is False
-    assert loaded.historical_status == "historical_data_insufficient"
-    assert loaded.historical_failure_reasons == ("daily_close_proxy_not_point_in_time",)
+    with pytest.raises(ValueError, match="fields or content hash are invalid"):
+        LoadHeadBundle(tmp_path / "model.json", Strategy.TOMORROW, profile)
 
 
 def test_v3_failed_replacement_restores_previous_fixed_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
