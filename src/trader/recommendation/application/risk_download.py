@@ -285,7 +285,7 @@ class _RiskDownloadState:
     research_enabled: bool = True
     research_retry_order: tuple[str, ...] = ()
     official_order: tuple[str, ...] = ()
-    research_pending_codes: int = 0
+    research_pending_codes: int | None = None
     official_pending_codes: int | None = None
     official_pages_fetched: int = 0
     official_pages_checkpointed: int = 0
@@ -483,7 +483,7 @@ def _prioritize_pending(codes: tuple[str, ...], priority: Sequence[str]) -> tupl
 
 
 def _remember_pending_counts(state: _RiskDownloadState, pending: _RiskPendingCodes) -> None:
-    state.research_pending_codes = len(set((*pending.missing, *pending.retryable)))
+    state.research_pending_codes = len(set((*pending.missing, *pending.retryable))) if state.research_enabled else None
     state.official_pending_codes = len(pending.official) if state.official_enabled else None
 
 
@@ -738,8 +738,8 @@ def _publish_summary_progress(
             requested_codes=len(state.normalized),
             research_pending_codes=state.research_pending_codes,
             official_pending_codes=state.official_pending_codes,
-            available_codes=available,
-            covered_codes=covered,
+            available_codes=available if state.research_enabled else None,
+            covered_codes=covered if state.research_enabled else None,
             deferred_codes=len(deferred),
             changed_codes=len(state.changed_codes),
             official_pages_fetched=state.official_pages_fetched,
@@ -769,8 +769,8 @@ def _publish_result_progress(
             requested_codes=result.requested_codes,
             research_pending_codes=state.research_pending_codes,
             official_pending_codes=state.official_pending_codes,
-            available_codes=result.available_codes,
-            covered_codes=result.covered_codes,
+            available_codes=result.available_codes if state.research_enabled else None,
+            covered_codes=result.covered_codes if state.research_enabled else None,
             deferred_codes=result.deferred_codes,
             changed_codes=result.changed_codes,
             official_pages_fetched=result.official_pages_fetched,

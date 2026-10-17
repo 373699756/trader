@@ -399,18 +399,21 @@ def test_current_download_refreshes_legacy_observation_without_query_date() -> N
 
 def test_history_download_skips_current_research_and_only_waits_for_official_history() -> None:
     loader = _Loader()
+    progress = _Progress()
     observed_at = datetime(2026, 10, 17, 18, 0, tzinfo=SHANGHAI)
 
     result = DownloadRiskSnapshot(
         loader,
         ("600001",),
-        RiskDownloadContext(date(2026, 10, 19), observed_at, lambda: 0.0, lambda: observed_at),
+        RiskDownloadContext(date(2026, 10, 19), observed_at, lambda: 0.0, lambda: observed_at, progress),
         announcement_sync=_AnnouncementSync(),
         research_enabled=False,
     )
 
     assert loader.load_calls == []
     assert loader.research_only is False
+    assert all(event.research_pending_codes is None for event in progress.events)
+    assert all(event.available_codes is None and event.covered_codes is None for event in progress.events)
     assert result.stop_reason == "complete"
     assert result.needs_retry is False
 
