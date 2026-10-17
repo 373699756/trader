@@ -366,7 +366,11 @@ def test_risk_download_reports_persisted_batches_wave_summary_and_final_state() 
     )
 
     assert progress.events[0].stage == "local_snapshot"
-    assert progress.events[0].deferred_codes == 2
+    assert progress.events[0].state == "started"
+    assert progress.events[0].requested_codes == 2
+    assert progress.events[1].stage == "local_snapshot"
+    assert progress.events[1].state == "completed"
+    assert progress.events[1].deferred_codes == 2
     assert any(
         event.stage == "research_initial" and event.state == "running" and event.completed_units == event.total_units
         for event in progress.events

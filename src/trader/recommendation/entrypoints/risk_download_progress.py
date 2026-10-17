@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable
-from threading import Lock
+from threading import Event, Lock, Thread
 from typing import TextIO
 
 from trader.recommendation.application.risk_download import RiskDownloadProgress
@@ -35,21 +35,69 @@ class StderrRiskDownloadProgress:
         stream: TextIO | None = None,
         *,
         monotonic: Callable[[], float] = time.monotonic,
+        heartbeat_seconds: float = 20.0,
     ) -> None:
+        if heartbeat_seconds <= 0.0:
+            raise ValueError("heartbeat_seconds must be positive")
         self._stream = stream if stream is not None else sys.stderr
         self._monotonic = monotonic
         self._started = monotonic()
         self._lock = Lock()
+        self._heartbeat_seconds = heartbeat_seconds
+        self._last_status_at = self._started
+        self._last_output_at = self._started
+        self._current_stage = "启动准备"
+        self._closed = Event()
+        self._thread: Thread | None = None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._thread is not None:
+                raise RuntimeError("risk download progress already started")
+            now = self._monotonic()
+            self._write_locked(
+                f"{_format_duration(now - self._started)} | risk_download 下载进度 | 启动准备 | 开始", now
+            )
+            thread = Thread(target=self._run_heartbeat, name="risk-download-progress")
+            thread.start()
+            self._thread = thread
+
+    def close(self) -> None:
+        self._closed.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join()
+
+    def _run_heartbeat(self) -> None:
+        while not self._closed.wait(self._heartbeat_seconds):
+            with self._lock:
+                now = self._monotonic()
+                if now - self._last_output_at < self._heartbeat_seconds:
+                    continue
+                age = max(0, int(now - self._last_status_at))
+                self._write_locked(
+                    f"{_format_duration(now - self._started)} | risk_download 下载进度 | "
+                    f"{self._current_stage} | 仍在运行 | 距上次状态更新 {age}秒",
+                    now,
+                )
+
+    def _write_locked(self, line: str, now: float) -> None:
+        self._stream.write(line + "\n")
+        self._stream.flush()
+        self._last_output_at = now
 
     def publish(self, progress: RiskDownloadProgress) -> None:
+        now = self._monotonic()
         parts = [
-            _format_duration(self._monotonic() - self._started),
+            _format_duration(now - self._started),
             "risk_download 下载进度",
             f"波次 {progress.wave}",
             _STAGE_LABELS[progress.stage],
             _STATE_LABELS[progress.state],
         ]
-        if progress.stage not in _WAVE_STAGES:
+        if progress.stage not in _WAVE_STAGES and not (
+            progress.stage == "local_snapshot" and progress.state == "started"
+        ):
             parts.append(_format_progress("总体", progress.completed_units, progress.total_units))
         if progress.research_pending_codes is not None:
             parts.append(
@@ -111,8 +159,9 @@ class StderrRiskDownloadProgress:
         if progress.stop_reason is not None:
             parts.append(f"停止原因 {progress.stop_reason}")
         with self._lock:
-            self._stream.write(" | ".join(parts) + "\n")
-            self._stream.flush()
+            self._current_stage = _STAGE_LABELS[progress.stage]
+            self._last_status_at = now
+            self._write_locked(" | ".join(parts), now)
 
 
 def _format_duration(seconds: float) -> str:

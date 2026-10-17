@@ -322,6 +322,17 @@ def DownloadRiskSnapshot(
         raise ValueError("risk download budgets must be positive")
     normalized = tuple(sorted(set(codes)))
     started = context.monotonic()
+    if context.progress is not None:
+        context.progress.publish(
+            RiskDownloadProgress(
+                stage="local_snapshot",
+                state="started",
+                wave=0,
+                completed_units=0,
+                total_units=len(normalized),
+                requested_codes=len(normalized),
+            )
+        )
     loader.recover_from_data_plane(context.observed_at, retain_stale=True)
     state = _RiskDownloadState(
         normalized=normalized,

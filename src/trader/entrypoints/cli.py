@@ -187,13 +187,19 @@ def _run_history_maintenance_command(
     if command == "risk_download":
         if profile is not None:
             parser.error("risk_download does not accept --profile")
-        from trader.bootstrap import ExecuteRiskDownload
         from trader.recommendation.entrypoints.risk_download_progress import StderrRiskDownloadProgress
 
-        risk_result = ExecuteRiskDownload(
-            _absolute_config_path(raw_config_path),
-            progress=StderrRiskDownloadProgress(),
-        )
+        risk_progress = StderrRiskDownloadProgress()
+        risk_progress.start()
+        try:
+            from trader.bootstrap import ExecuteRiskDownload
+
+            risk_result = ExecuteRiskDownload(
+                _absolute_config_path(raw_config_path),
+                progress=risk_progress,
+            )
+        finally:
+            risk_progress.close()
         print(
             json.dumps(
                 {

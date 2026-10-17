@@ -135,6 +135,10 @@ if [[ "$MODE" == "download-train" ]]; then
   exit 0
 fi
 
+if [[ "$MODE" == "risk_download" ]]; then
+  printf '%s\n' 'risk_download: 正在检查运行环境。' >&2
+fi
+
 find_python() {
   local candidate
   for candidate in python3; do

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from threading import Event
 
 from trader.recommendation.application.risk_download import RiskDownloadProgress
 from trader.recommendation.entrypoints.risk_download_progress import StderrRiskDownloadProgress
@@ -12,6 +13,36 @@ class _Clock:
 
     def __call__(self) -> float:
         return next(self._values)
+
+
+class _HeartbeatStream(StringIO):
+    def __init__(self) -> None:
+        super().__init__()
+        self.heartbeat = Event()
+
+    def write(self, value: str) -> int:
+        written = super().write(value)
+        if "仍在运行" in value:
+            self.heartbeat.set()
+        return written
+
+
+def test_risk_download_reports_startup_and_heartbeat_during_silent_recovery() -> None:
+    stream = _HeartbeatStream()
+    reporter = StderrRiskDownloadProgress(stream, heartbeat_seconds=0.01)
+
+    reporter.start()
+    try:
+        reporter.publish(RiskDownloadProgress("local_snapshot", "started", 0, 0, 5027, 5027))
+        assert stream.heartbeat.wait(timeout=1.0)
+    finally:
+        reporter.close()
+
+    output = stream.getvalue()
+    assert "启动准备 | 开始" in output
+    assert "本地日库 | 开始" in output
+    assert "本地日库 | 仍在运行 | 距上次状态更新" in output
+    assert "总体      0/  5027" not in output
 
 
 def test_risk_download_progress_uses_stderr_style_fields_and_checkpoint_counts() -> None:
