@@ -426,9 +426,11 @@ def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -
                 },
                 policy.local_component_weights["trend"],
             ),
-            "stability": _weighted_known(
-                snapshot,
-                ("low_volatility_score", "low_drawdown_score"),
+            "stability": WeightedScore(
+                {
+                    "low_volatility_score": snapshot.value("low_volatility_score"),
+                    "low_drawdown_score": snapshot.value("low_drawdown_score"),
+                },
                 policy.local_component_weights["stability"],
             ),
             "market_state": {"risk_on": 60.0, "neutral": 50.0, "risk_off": 40.0}.get(snapshot.market_regime, 50.0),
@@ -452,9 +454,11 @@ def ScoreBoardStrategy(snapshot: FeatureSnapshot, policy: BoardStrategyPolicy) -
                 },
                 policy.local_component_weights["quality_value"],
             ),
-            "stability": _weighted_known(
-                snapshot,
-                ("low_volatility_score", "low_drawdown_score"),
+            "stability": WeightedScore(
+                {
+                    "low_volatility_score": snapshot.value("low_volatility_score"),
+                    "low_drawdown_score": snapshot.value("low_drawdown_score"),
+                },
                 policy.local_component_weights["stability"],
             ),
             "flow_liquidity": WeightedScore(

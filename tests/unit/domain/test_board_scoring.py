@@ -17,6 +17,7 @@ from trader.recommendation.domain.publication.models import (
 from trader.recommendation.domain.risk.fusion import FuseScore, FusionPolicy, FusionRequest
 from trader.recommendation.domain.scoring.scoring import (
     ApplyBoardPolicy,
+    BoardCandidateComponents,
     BoardCrossSectionRequest,
     BuildBoardCrossSection,
     ScoreBoardStrategy,
@@ -62,6 +63,66 @@ def test_production_score_deducts_missing_weight_even_after_neutral_fill(applica
     )
     assert final.score.final_score == final.score.local_score == RoundScore(scored.base_score - 2.0)
     assert final.score.components["quality_penalty"] == pytest.approx(expected_penalty)
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+@pytest.mark.parametrize("masked", (True, False))
+def test_production_stability_missing_value_cannot_gain_known_weight(
+    application_feature_factory,
+    strategy,
+    masked,
+):
+    names = (*_LOCAL_COMPONENT_WEIGHTS[strategy], "entry_quality")
+    if strategy is Strategy.TOMORROW:
+        names = (*names, "market_state")
+    local_weights = {name: 1 / len(names) for name in names}
+    policy = _policy(strategy, Board.MAIN, local_weights)
+    values = {name: 50.0 for parts in _LOCAL_COMPONENT_WEIGHTS[strategy].values() for name in parts}
+    values.update({"entry_quality": 50.0, "low_volatility_score": 100.0})
+    complete = replace(_features(application_feature_factory, 1, Board.MAIN)[0], values=values, missing_fields=())
+    incomplete = replace(
+        complete,
+        values=values if masked else {key: value for key, value in values.items() if key != "low_drawdown_score"},
+        missing_fields=("low_drawdown_score",) if masked else (),
+    )
+
+    complete_score = ScoreBoardStrategy(complete, policy)
+    incomplete_score = ScoreBoardStrategy(incomplete, policy)
+    expected_penalty = 50.0 * 0.5 * local_weights["stability"]
+
+    assert complete_score.components["stability"] == 75.0
+    assert incomplete_score.components["stability"] == 75.0
+    assert incomplete_score.components["quality_penalty"] == pytest.approx(expected_penalty)
+    assert incomplete_score.base_score == pytest.approx(complete_score.base_score - expected_penalty)
+    final = FuseScore(
+        FusionRequest(
+            local=incomplete_score,
+            local_risk_facts=(_risk_fact("local", "local_rule", 2.0),),
+            review=None,
+            risk_rules={},
+            fusion_mode=FusionMode.LOCAL_DEGRADED,
+            policy=FusionPolicy(25.0),
+        )
+    )
+    assert final.score.final_score == final.score.local_score == RoundScore(incomplete_score.base_score - 2.0)
+
+
+@pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
+def test_candidate_stability_keeps_known_value_average(application_feature_factory, strategy):
+    names = (*_LOCAL_COMPONENT_WEIGHTS[strategy], "entry_quality")
+    if strategy is Strategy.TOMORROW:
+        names = (*names, "market_state")
+    policy = _policy(strategy, Board.MAIN, {name: 1 / len(names) for name in names})
+    feature = _features(application_feature_factory, 1, Board.MAIN)[0]
+    values = {
+        **feature.values,
+        "low_volatility_score": 100.0,
+    }
+    values.pop("low_drawdown_score", None)
+
+    components = BoardCandidateComponents(replace(feature, values=values, missing_fields=()), policy)
+
+    assert components["stability"] == 100.0
 
 
 _CANDIDATE_COMPONENT_WEIGHTS = {
