@@ -30,7 +30,8 @@ CNINFO_CURSOR_PREFIX = "cninfo.announcements:"
 CNINFO_ANNOUNCEMENT_PREFIX = "cninfo-announcement:"
 CNINFO_COMPONENT_PREFIX = "cninfo-risk-component:"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-_INITIAL_HISTORY_START = date(1990, 1, 1)
+_LEGACY_HISTORY_START = date(1990, 1, 1)
+_HISTORY_LOOKBACK_DAYS = 365
 _CHECKPOINT_VERSION = 1
 
 
@@ -101,6 +102,7 @@ class _CninfoCursorState:
     issuer_history_complete: bool = False
     observed_at: datetime | None = None
     checkpoint_version: int = 0
+    window_days: int = 0
     initial_backfill_complete: bool = False
     range_start: date | None = None
     range_end: date | None = None
@@ -395,6 +397,7 @@ class CninfoAnnouncementIncrementalSync:
             issuer_history_complete=issuer_history_complete,
             observed_at=cursor.observed_at,
             checkpoint_version=_positive_int(payload.get("checkpoint_version"), default=0),
+            window_days=_non_negative_int(payload.get("window_days")),
             initial_backfill_complete=bool(payload.get("initial_backfill_complete", issuer_history_complete)),
             range_start=_payload_date(payload.get("range_start")),
             range_end=_payload_date(payload.get("range_end")),
@@ -453,7 +456,9 @@ class CninfoAnnouncementHttpClient:
             raise ValueError("CNInfo page coordinates must be positive")
         organization = self._organization_id(query.code, query.deadline)
         column, plate = _cninfo_market_scope(query.code)
-        start_date = query.range_start or _cursor_start_date(query.cursor_value)
+        start_date = query.range_start or max(
+            _cursor_start_date(query.cursor_value), query.observed_at.date() - timedelta(days=_HISTORY_LOOKBACK_DAYS)
+        )
         end_date = query.range_end or query.observed_at.date()
         if end_date < start_date:
             raise ValueError("CNInfo query range end precedes start")
@@ -660,9 +665,11 @@ def _payload_has_more(payload: Mapping[str, object], *, page: int, page_size: in
 
 
 def _build_sync_state(cursor: _CninfoCursorState, observed_at: datetime) -> _CninfoSyncState:
+    window_start = observed_at.date() - timedelta(days=_HISTORY_LOOKBACK_DAYS)
     is_resumable = (
         not cursor.issuer_history_complete
         and cursor.checkpoint_version == _CHECKPOINT_VERSION
+        and cursor.window_days == _HISTORY_LOOKBACK_DAYS
         and cursor.range_start is not None
         and cursor.range_end is not None
         and cursor.range_start <= cursor.range_end
@@ -685,18 +692,18 @@ def _build_sync_state(cursor: _CninfoCursorState, observed_at: datetime) -> _Cni
             resumed=True,
         )
     initial_backfill_complete = cursor.issuer_history_complete
-    range_start = _cursor_start_date(cursor.value) if initial_backfill_complete else _INITIAL_HISTORY_START
+    range_start = max(window_start, _cursor_start_date(cursor.value)) if initial_backfill_complete else window_start
     return _CninfoSyncState(
         range_start=min(range_start, observed_at.date()),
         range_end=observed_at.date(),
         next_page=1,
         latest_cursor_value=cursor.value if initial_backfill_complete else "",
         initial_backfill_complete=initial_backfill_complete,
-        total_pages_persisted=cursor.total_pages_persisted,
-        total_saved_rows=cursor.total_saved_rows,
+        total_pages_persisted=cursor.total_pages_persisted if initial_backfill_complete else 0,
+        total_saved_rows=cursor.total_saved_rows if initial_backfill_complete else 0,
         range_duplicate_rows=0,
         range_invalid_rows=0,
-        risk_categories=set(),
+        risk_categories=set(cursor.risk_categories) if initial_backfill_complete else set(),
         checkpoint_observed_at=cursor.observed_at,
         resumed=False,
     )
@@ -932,6 +939,7 @@ def _save_cursor_checkpoint(
                     "history_complete": False,
                     "issuer_history_complete": history_complete,
                     "checkpoint_version": _CHECKPOINT_VERSION,
+                    "window_days": _HISTORY_LOOKBACK_DAYS,
                     "initial_backfill_complete": state.initial_backfill_complete,
                     "range_start": state.range_start.isoformat(),
                     "range_end": state.range_end.isoformat(),
@@ -981,7 +989,7 @@ def _cursor_start_date(cursor_value: str) -> date:
     try:
         return datetime.fromisoformat(raw).date()
     except ValueError:
-        return _INITIAL_HISTORY_START
+        return _LEGACY_HISTORY_START
 
 
 def _cursor_sort_key(cursor_value: str) -> tuple[datetime, str]:

@@ -73,7 +73,7 @@ def test_risk_download_progress_uses_stderr_style_fields_and_checkpoint_counts()
     output = stream.getvalue()
     assert output.startswith("00:01:05 | risk_download 下载进度 | 波次 2 | 波次汇总 | 完成")
     assert "总体    998/  5027（ 19.85%）" in output
-    assert "研究累计    998/  5027（ 19.85%） | 巨潮累计     40/  5027（  0.80%）" in output
+    assert "研究累计    998/  5027（ 19.85%） | 巨潮近一年累计     40/  5027（  0.80%）" in output
     assert "请求   5027 | 研究待补   4029 | 巨潮待补   4987" in output
     assert "可用    998 | 四项有值     12 | 延后   4029 | 变更    500" in output
     assert "官方分页     30 | 断点分页     28 | 公告保存     80 | 断点续传      2" in output
@@ -150,13 +150,13 @@ def test_risk_download_progress_keeps_cumulative_counts_across_sources_and_waves
     )
 
     lines = stream.getvalue().splitlines()
-    assert "研究累计    794/  5027（ 15.79%） | 巨潮累计     43/  5027（  0.86%）" in lines[0]
+    assert "研究累计    794/  5027（ 15.79%） | 巨潮近一年累计     43/  5027（  0.86%）" in lines[0]
     assert "本波处理     61/  4294（  1.42%）" in lines[0]
     assert "巨潮公告 | 开始 | 研究累计    794/  5027（ 15.79%）" in lines[1]
-    assert "巨潮累计     43/  5027（  0.86%） | 本波待处理   4984" in lines[1]
-    assert "研究累计    794/  5027（ 15.79%） | 巨潮累计     46/  5027（  0.92%）" in lines[2]
+    assert "巨潮近一年累计     43/  5027（  0.86%） | 本波待处理   4984" in lines[1]
+    assert "研究累计    794/  5027（ 15.79%） | 巨潮近一年累计     46/  5027（  0.92%）" in lines[2]
     assert "研究重试 | 开始 | 研究累计    794/  5027（ 15.79%）" in lines[3]
-    assert "巨潮累计     46/  5027（  0.92%） | 本波待处理   4233" in lines[3]
+    assert "巨潮近一年累计     46/  5027（  0.92%） | 本波待处理   4233" in lines[3]
     assert "0/  4984（  0.00%）" not in lines[1]
     assert "0/  4233（  0.00%）" not in lines[3]
 

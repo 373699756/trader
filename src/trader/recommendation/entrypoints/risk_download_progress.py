@@ -126,7 +126,7 @@ class StderrRiskDownloadProgress:
         if progress.official_pending_codes is not None:
             parts.append(
                 _format_progress(
-                    "巨潮累计",
+                    "巨潮近一年累计",
                     max(0, progress.requested_codes - progress.official_pending_codes),
                     progress.requested_codes,
                 )

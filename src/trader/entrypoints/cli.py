@@ -59,7 +59,7 @@ def BuildParser() -> argparse.ArgumentParser:
         "qfq_download", help="Update Tencent V2/V3 bounded daily windows concurrently; resume automatically."
     )
     subparsers.add_parser("risk_download", help="Prepare current company research within a bounded task budget.")
-    subparsers.add_parser("risk_history_download", help="Resume CNInfo issuer announcement history separately.")
+    subparsers.add_parser("risk_history_download", help="Resume the latest year of CNInfo issuer announcements.")
     subparsers.add_parser(
         "scheduled-history-maintenance",
         help="Run the installed zero-argument history task without environment installation.",

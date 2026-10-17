@@ -25,7 +25,7 @@ usage() {
     "  ./run.sh download                零参数历史维护" \
     "  ./run.sh qfq_download            Tencent并发更新短窗口，支持断点续传" \
     "  ./run.sh risk_download           一小时预算内准备当期公司研究日库" \
-    "  ./run.sh risk_history_download   独立续传巨潮发行人历史公告" \
+    "  ./run.sh risk_history_download   独立续传巨潮发行人近一年公告" \
     "  ./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" \
     "  ./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" \
     "  ./run.sh train-both              一次历史扫描生成 V2/V3 样本并训练双档" \

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from threading import Barrier, Condition, Event
 from typing import Any
@@ -14,6 +14,7 @@ from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
     DataPlaneUnavailableError,
     RiskEvidenceRecord,
+    SourceCursorRecord,
 )
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
@@ -83,7 +84,7 @@ def test_cninfo_http_client_resolves_exact_security_and_bounds_public_query_page
     assert calls[1][1]["stock"] == "600001,gssh0600001"
     assert calls[1][1]["column"] == "sse"
     assert calls[1][1]["pageSize"] == "30"
-    assert calls[1][1]["seDate"] == "1990-01-01~2026-07-30"
+    assert calls[1][1]["seDate"] == "2025-07-30~2026-07-30"
     assert calls[2][1]["seDate"] == "2026-07-01~2026-07-30"
 
 
@@ -265,9 +266,10 @@ def test_cninfo_sync_checkpoints_each_page_and_resumes_fixed_range(tmp_path: Pat
     assert first.history_complete is False
     checkpoint = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600009")
     assert checkpoint is not None
-    assert checkpoint.payload["range_start"] == "1990-01-01"
+    assert checkpoint.payload["range_start"] == "2025-07-30"
     assert checkpoint.payload["range_end"] == "2026-07-30"
     assert checkpoint.payload["next_page"] == 2
+    assert checkpoint.payload["window_days"] == 365
 
     next_observed_at = OBSERVED_AT.replace(day=31)
     second_client = _ResumeCninfoClient()
@@ -278,7 +280,7 @@ def test_cninfo_sync_checkpoints_each_page_and_resumes_fixed_range(tmp_path: Pat
     assert second.pages_checkpointed == 2
     assert second.history_complete is True
     assert [(query.page, query.range_start, query.range_end) for query in second_client.queries] == [
-        (2, date(1990, 1, 1), date(2026, 7, 30)),
+        (2, date(2025, 7, 30), date(2026, 7, 30)),
         (1, date(2026, 7, 29), date(2026, 7, 31)),
     ]
     assert data_plane.load_risk_evidence_recent("600009", f"{CNINFO_ANNOUNCEMENT_PREFIX}resume-risk") is not None
@@ -289,6 +291,71 @@ def test_cninfo_sync_checkpoints_each_page_and_resumes_fixed_range(tmp_path: Pat
     completed = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600009")
     assert completed is not None
     assert completed.payload["issuer_history_complete"] is True
+
+
+def test_cninfo_legacy_unfinished_cursor_restarts_at_one_year_window(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane.save_source_cursor_recent(
+        SourceCursorRecord(
+            cursor_name=f"{CNINFO_CURSOR_PREFIX}600009",
+            observed_at=OBSERVED_AT,
+            source="cninfo",
+            source_time=OBSERVED_AT - timedelta(days=1),
+            data_version="legacy-checkpoint",
+            cursor_value="2026-07-29T18:30:00+08:00|old",
+            payload={
+                "issuer_history_complete": False,
+                "checkpoint_version": 1,
+                "range_start": "1990-01-01",
+                "range_end": "2026-07-30",
+                "next_page": 77,
+                "total_pages_persisted": 76,
+                "total_saved_rows": 2280,
+            },
+        )
+    )
+    client = _StaticCninfoClient(({"announcements": (), "hasMore": False},))
+
+    result = CninfoAnnouncementIncrementalSync(client, data_plane).sync_code("600009", OBSERVED_AT)
+
+    assert result.resumed is False
+    assert client.calls == [(1, "")]
+    checkpoint = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600009")
+    assert checkpoint is not None
+    assert checkpoint.payload["range_start"] == "2025-07-30"
+    assert checkpoint.payload["total_pages_persisted"] == 1
+    assert checkpoint.payload["window_days"] == 365
+
+
+def test_cninfo_legacy_completed_cursor_only_fetches_newer_announcements(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane.save_source_cursor_recent(
+        SourceCursorRecord(
+            cursor_name=f"{CNINFO_CURSOR_PREFIX}600009",
+            observed_at=OBSERVED_AT - timedelta(days=1),
+            source="cninfo",
+            source_time=OBSERVED_AT - timedelta(days=2),
+            data_version="legacy-complete",
+            cursor_value="2026-07-01T09:00:00+08:00|latest",
+            payload={
+                "issuer_history_complete": True,
+                "initial_backfill_complete": True,
+                "range_start": "1990-01-01",
+                "range_end": "2026-07-29",
+                "next_page": 101,
+            },
+        )
+    )
+    client = _StaticCninfoClient(({"announcements": (), "hasMore": False},))
+
+    result = CninfoAnnouncementIncrementalSync(client, data_plane).sync_code("600009", OBSERVED_AT)
+
+    assert result.history_complete is True
+    assert client.calls == [(1, "2026-07-01T09:00:00+08:00|latest")]
+    checkpoint = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600009")
+    assert checkpoint is not None
+    assert checkpoint.payload["range_start"] == "2026-07-01"
+    assert checkpoint.payload["window_days"] == 365
 
 
 def test_cninfo_benign_increment_does_not_downgrade_historical_risk(tmp_path: Path) -> None:
