@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from trader.recommendation.application.ports.data_plane_records import (
+    DataPlaneBusyError,
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -105,6 +107,25 @@ class SQLiteDataPlane:
             except sqlite3.DatabaseError as exc:
                 raise _map_sqlite_error(exc, operation="initialize") from exc
             self._initialized = True
+
+    def probe_writable(self, *, timeout_seconds: float = 8.0) -> None:
+        """Check the SQLite write lock without changing application data."""
+        if not self._initialized or not self._database.is_file():
+            self.initialize()
+        started = time.monotonic()
+        wait_seconds = min(30.0, max(0.0, timeout_seconds))
+        if not self._lock.acquire(timeout=wait_seconds):
+            raise DataPlaneBusyError("data plane write_probe blocked by local writer")
+        try:
+            with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                remaining_ms = max(0, int((wait_seconds - (time.monotonic() - started)) * 1000))
+                connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
+                connection.execute("BEGIN IMMEDIATE")
+                connection.rollback()
+        except sqlite3.DatabaseError as exc:
+            raise _map_sqlite_error(exc, operation="write_probe") from exc
+        finally:
+            self._lock.release()
 
     def save_security_master_recent(self, record: SecurityMasterRecord) -> None:
         self._save("security_master", mode="recent", record=record)
@@ -765,8 +786,8 @@ def _record_identity_from_record(profile: _Profile, record: Record) -> tuple[str
 
 
 def _map_sqlite_error(exc: sqlite3.DatabaseError, *, operation: str) -> DataPlaneUnavailableError:
-    if "locked" in str(exc).lower():
-        return DataPlaneUnavailableError(f"data plane {operation} blocked by database lock")
+    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+        return DataPlaneBusyError(f"data plane {operation} blocked by database lock")
     return DataPlaneUnavailableError(f"data plane {operation} failed")
 
 

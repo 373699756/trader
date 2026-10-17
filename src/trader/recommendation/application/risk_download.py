@@ -100,6 +100,9 @@ class RiskAnnouncementSyncReport(Protocol):
     @property
     def cursor_write_seconds(self) -> float: ...
 
+    @property
+    def persistence_error(self) -> Literal["busy", "unavailable"] | None: ...
+
 
 RiskAnnouncementProgress: TypeAlias = tuple[int, int, int, int, int, int]
 
@@ -152,6 +155,7 @@ class RiskDownloadResult:
     official_announcements_saved: int = 0
     official_resumed_codes: int = 0
     official_failed_codes: int = 0
+    official_persistence_error: Literal["busy", "unavailable"] | None = None
 
     @property
     def needs_retry(self) -> bool:
@@ -198,7 +202,7 @@ RiskDownloadProgressStage = Literal[
     "wave_summary",
     "finished",
 ]
-RiskDownloadProgressState = Literal["started", "running", "completed", "deferred", "stopped"]
+RiskDownloadProgressState = Literal["started", "running", "completed", "deferred", "waiting", "stopped"]
 
 
 @dataclass(frozen=True)
@@ -225,6 +229,7 @@ class RiskDownloadProgress:
     official_parse_seconds: float = 0.0
     official_evidence_write_seconds: float = 0.0
     official_cursor_write_seconds: float = 0.0
+    official_persistence_error: Literal["busy", "unavailable"] | None = None
     stop_reason: str | None = None
 
 
@@ -280,6 +285,7 @@ class _RiskDownloadState:
     official_parse_seconds: float = 0.0
     official_evidence_write_seconds: float = 0.0
     official_cursor_write_seconds: float = 0.0
+    official_persistence_error: Literal["busy", "unavailable"] | None = None
     official_wave_initial_pending: int = 0
     wave_count: int = 0
     any_deadline: bool = False
@@ -381,7 +387,7 @@ def _run_download_waves(
             state,
             after_pending,
             stage="wave_summary",
-            state_name="completed",
+            state_name="waiting" if state.official_persistence_error == "busy" else "completed",
             completed_units=len(state.normalized) - len(unresolved),
         )
         after = _progress_identity(
@@ -390,7 +396,11 @@ def _run_download_waves(
             state.official_checkpoint_advances,
         )
         if not _made_durable_progress(before, after):
-            state.stop_reason = "no_progress"
+            if state.official_persistence_error == "busy":
+                continue
+            state.stop_reason = (
+                "persistence_unavailable" if state.official_persistence_error == "unavailable" else "no_progress"
+            )
             break
 
 
@@ -515,6 +525,7 @@ def _run_official_wave(
 ) -> bool:
     official_pending = _pending_codes(state, context, announcement_sync).official
     if announcement_sync is None or not official_pending:
+        state.official_persistence_error = None
         return True
     source_seconds = _source_budget_seconds(
         budget.source_seconds,
@@ -541,6 +552,7 @@ def _run_official_wave(
     state.official_parse_seconds = report.parse_seconds
     state.official_evidence_write_seconds = report.evidence_write_seconds
     state.official_cursor_write_seconds = report.cursor_write_seconds
+    state.official_persistence_error = report.persistence_error
     state.changed_codes.update(report.changed_codes)
     state.official_terminal_codes.update(report.failed_codes)
     state.official_pages_fetched += report.pages_fetched
@@ -566,7 +578,7 @@ def _run_official_wave(
         state,
         _RiskStageUpdate(
             "official_announcements",
-            "deferred" if report.deferred_codes else "completed",
+            "waiting" if report.persistence_error == "busy" else "deferred" if report.deferred_codes else "completed",
             len(report.completed_codes) + len(report.failed_codes),
             len(official_pending),
             official_pages_fetched=state.official_pages_fetched,
@@ -647,6 +659,7 @@ def _publish_stage_progress(state: _RiskDownloadState, update: _RiskStageUpdate)
             official_parse_seconds=state.official_parse_seconds,
             official_evidence_write_seconds=state.official_evidence_write_seconds,
             official_cursor_write_seconds=state.official_cursor_write_seconds,
+            official_persistence_error=state.official_persistence_error,
         )
     )
 
@@ -682,6 +695,7 @@ def _publish_summary_progress(
             official_pages_checkpointed=state.official_pages_checkpointed,
             official_announcements_saved=state.official_announcements_saved,
             official_resumed_codes=len(state.official_resumed_codes),
+            official_persistence_error=state.official_persistence_error,
         )
     )
 
@@ -711,6 +725,7 @@ def _publish_result_progress(
             official_pages_checkpointed=result.official_pages_checkpointed,
             official_announcements_saved=result.official_announcements_saved,
             official_resumed_codes=result.official_resumed_codes,
+            official_persistence_error=result.official_persistence_error,
             stop_reason=result.stop_reason,
         )
     )
@@ -757,6 +772,7 @@ def _build_download_result(
         official_announcements_saved=state.official_announcements_saved,
         official_resumed_codes=len(state.official_resumed_codes),
         official_failed_codes=len(state.official_terminal_codes),
+        official_persistence_error=state.official_persistence_error,
     )
 
 

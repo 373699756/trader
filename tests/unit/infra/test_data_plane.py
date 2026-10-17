@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from trader.recommendation.application.ports.data_plane_records import (
+    DataPlaneBusyError,
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
@@ -24,6 +26,17 @@ from trader.recommendation.infra.persistence import data_plane_sqlite
 from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def test_data_plane_write_probe_classifies_concurrent_writer_without_changing_rows(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane.initialize()
+    with closing(sqlite3.connect(tmp_path / "market-data" / "market-data.sqlite3")) as locker:
+        locker.execute("BEGIN IMMEDIATE")
+        with pytest.raises(DataPlaneBusyError, match="database lock"):
+            data_plane.probe_writable(timeout_seconds=0.001)
+        locker.rollback()
+    data_plane.probe_writable()
 
 
 def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:

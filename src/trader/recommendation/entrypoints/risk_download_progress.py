@@ -23,6 +23,7 @@ _STATE_LABELS = {
     "running": "进行中",
     "completed": "完成",
     "deferred": "本波截止",
+    "waiting": "等待日库",
     "stopped": "待续传",
 }
 _WAVE_STAGES = frozenset({"research_initial", "research_retry", "official_announcements"})
@@ -69,7 +70,7 @@ class StderrRiskDownloadProgress:
         if progress.stage in _WAVE_STAGES:
             parts.append(
                 f"本波待处理 {progress.total_units:>6}"
-                if progress.state == "started"
+                if progress.state == "started" or (progress.state == "waiting" and progress.completed_units == 0)
                 else _format_progress("本波处理", progress.completed_units, progress.total_units)
             )
         parts.append(f"请求 {progress.requested_codes:>6}")
@@ -93,7 +94,7 @@ class StderrRiskDownloadProgress:
             parts.append(f"公告保存 {progress.official_announcements_saved:>6}")
         if progress.stage == "official_announcements" or progress.official_resumed_codes:
             parts.append(f"断点续传 {progress.official_resumed_codes:>6}")
-        if progress.stage == "official_announcements" and progress.state in {"completed", "deferred"}:
+        if progress.stage == "official_announcements" and progress.state in {"completed", "deferred", "waiting"}:
             parts.append(f"来源耗时 {progress.official_sync_seconds:.2f}秒")
             parts.append(
                 "分项累计 "
@@ -103,6 +104,10 @@ class StderrRiskDownloadProgress:
                 f"断点写入{progress.official_cursor_write_seconds:.2f}秒"
             )
             parts.append(f"恢复耗时 {progress.official_recovery_seconds:.2f}秒")
+        if progress.official_persistence_error == "busy":
+            parts.append("日库写入 等待写锁")
+        elif progress.official_persistence_error == "unavailable":
+            parts.append("日库写入 不可用")
         if progress.stop_reason is not None:
             parts.append(f"停止原因 {progress.stop_reason}")
         with self._lock:

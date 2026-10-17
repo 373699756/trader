@@ -229,6 +229,7 @@ def _run_history_maintenance_command(
                         "announcements_saved": risk_result.official_announcements_saved,
                         "resumed_codes": risk_result.official_resumed_codes,
                         "failed_codes": risk_result.official_failed_codes,
+                        "persistence_error": risk_result.official_persistence_error,
                     },
                 },
                 ensure_ascii=False,

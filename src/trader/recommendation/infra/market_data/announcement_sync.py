@@ -8,12 +8,13 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from threading import Lock, local
-from typing import Protocol
+from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 import requests
 
 from trader.recommendation.application.ports.data_plane_records import (
+    DataPlaneBusyError,
     DataPlaneUnavailableError,
     RiskEvidenceRecord,
     SourceCursorRecord,
@@ -50,6 +51,8 @@ class CninfoAnnouncementClient(Protocol):
 
 
 class CninfoDataPlane(Protocol):
+    def probe_writable(self, *, timeout_seconds: float = 8.0) -> None: ...
+
     def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None: ...
 
     def save_source_cursor_recent(self, record: SourceCursorRecord) -> None: ...
@@ -89,6 +92,7 @@ class CninfoSyncResult:
     parse_seconds: float = 0.0
     evidence_write_seconds: float = 0.0
     cursor_write_seconds: float = 0.0
+    persistence_error: Literal["busy", "unavailable"] | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +157,7 @@ class _CninfoRunCounters:
     parse_seconds: float = 0.0
     evidence_write_seconds: float = 0.0
     cursor_write_seconds: float = 0.0
+    persistence_error: Literal["busy", "unavailable"] | None = None
     source_errors: list[str] = field(default_factory=list)
 
 
@@ -202,7 +207,23 @@ class CninfoAnnouncementIncrementalSync:
         _validate_code(code)
         _validate_time(observed_at, "observed_at")
         context = _CninfoSyncContext(code, observed_at, deadline)
-        cursor = self._load_cursor(f"{CNINFO_CURSOR_PREFIX}{code}")
+        try:
+            cursor = self._load_cursor(f"{CNINFO_CURSOR_PREFIX}{code}")
+        except DataPlaneUnavailableError as exc:
+            persistence_error: Literal["busy", "unavailable"] = (
+                "busy" if isinstance(exc, DataPlaneBusyError) else "unavailable"
+            )
+            return CninfoSyncResult(
+                code=code,
+                pages_fetched=0,
+                saved_announcements=0,
+                duplicate_rows=0,
+                invalid_rows=0,
+                history_complete=False,
+                cursor_value="",
+                source_errors=(f"cninfo_cursor_read_{persistence_error}",),
+                persistence_error=persistence_error,
+            )
         state = _build_sync_state(cursor, observed_at)
         counters = _CninfoRunCounters()
         history_complete = False
@@ -241,6 +262,7 @@ class CninfoAnnouncementIncrementalSync:
             parse_seconds=counters.parse_seconds,
             evidence_write_seconds=counters.evidence_write_seconds,
             cursor_write_seconds=counters.cursor_write_seconds,
+            persistence_error=counters.persistence_error,
         )
 
     def _sync_next_page(
@@ -254,6 +276,7 @@ class CninfoAnnouncementIncrementalSync:
         persist_errors = self._persist_page(context, state, counters, page)
         counters.source_errors.extend(persist_errors)
         if persist_errors:
+            counters.persistence_error = _persistence_error(persist_errors)
             return _CninfoPageOutcome(should_stop=True)
         history_complete, terminal_failure, completion_errors = _complete_range_if_needed(
             self._data_plane,
@@ -263,6 +286,7 @@ class CninfoAnnouncementIncrementalSync:
         )
         counters.source_errors.extend(completion_errors)
         if completion_errors:
+            counters.persistence_error = _persistence_error(completion_errors)
             return _CninfoPageOutcome(should_stop=True)
         if terminal_failure:
             counters.source_errors.append("cninfo_schema_invalid")
@@ -278,6 +302,7 @@ class CninfoAnnouncementIncrementalSync:
             counters.cursor_write_seconds += max(0.0, self._monotonic() - checkpoint_started)
         counters.source_errors.extend(checkpoint_errors)
         if checkpoint_errors:
+            counters.persistence_error = _persistence_error(checkpoint_errors)
             return _CninfoPageOutcome(should_stop=True)
         counters.pages_checkpointed += 1
         counters.checkpoint_advanced = True
@@ -338,6 +363,8 @@ class CninfoAnnouncementIncrementalSync:
             write_started = self._monotonic()
             try:
                 self._data_plane.save_risk_evidence_recent_records(records)
+            except DataPlaneBusyError:
+                return ("cninfo_persist_busy",)
             except DataPlaneUnavailableError as exc:
                 return (f"cninfo_persist_unavailable:{type(exc).__name__}",)
             finally:
@@ -349,10 +376,7 @@ class CninfoAnnouncementIncrementalSync:
         return ()
 
     def _load_cursor(self, cursor_name: str) -> _CninfoCursorState:
-        try:
-            cursor = self._data_plane.load_source_cursor_recent(cursor_name)
-        except DataPlaneUnavailableError:
-            return _CninfoCursorState()
+        cursor = self._data_plane.load_source_cursor_recent(cursor_name)
         if cursor is None:
             return _CninfoCursorState()
         payload = cursor.payload
@@ -861,6 +885,8 @@ def _save_component_statuses(
     )
     try:
         data_plane.save_risk_evidence_recent_records(records)
+    except DataPlaneBusyError:
+        return ("cninfo_component_persist_busy",)
     except DataPlaneUnavailableError as exc:
         return (f"cninfo_component_persist_unavailable:{type(exc).__name__}",)
     return ()
@@ -924,11 +950,19 @@ def _save_cursor_checkpoint(
                 },
             )
         )
+    except DataPlaneBusyError:
+        return ("cninfo_cursor_persist_busy",)
     except DataPlaneUnavailableError as exc:
         return (f"cninfo_cursor_persist_unavailable:{type(exc).__name__}",)
     state.latest_cursor_value = cursor_value
     state.checkpoint_observed_at = checkpoint_time
     return ()
+
+
+def _persistence_error(errors: tuple[str, ...]) -> Literal["busy", "unavailable"] | None:
+    if not errors:
+        return None
+    return "busy" if any(error.endswith("_busy") for error in errors) else "unavailable"
 
 
 def _next_cursor(previous: str, rows: Sequence[CninfoAnnouncementRow], range_end: date) -> str:

@@ -142,6 +142,10 @@ class DataPlaneUnavailableError(DataPlanePersistenceError):
     """A persistence failure prevented trusted read/write/recovery."""
 
 
+class DataPlaneBusyError(DataPlaneUnavailableError):
+    """A SQLite lock temporarily blocked persistence."""
+
+
 @dataclass(frozen=True)
 class DataPlaneRecoverySummary:
     recovered: int = 0
@@ -253,6 +257,7 @@ __all__ = [
     "DataPlaneRecord",
     "DataPlanePorts",
     "DataPlaneConflictError",
+    "DataPlaneBusyError",
     "DataPlanePersistenceError",
     "DataPlaneUnavailableError",
     "DataPlaneRecoverySummary",

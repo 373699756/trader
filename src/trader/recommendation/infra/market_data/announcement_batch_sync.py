@@ -9,12 +9,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from threading import Lock
+from typing import Literal
 
 import requests
 
 from trader.infra.failures import AdapterFailureCode, ClassifyAdapterFailure
 from trader.infra.workers import SubmitOrReject, WorkerExecutor
-from trader.recommendation.application.ports.data_plane_records import DataPlaneUnavailableError
+from trader.recommendation.application.ports.data_plane_records import DataPlaneBusyError, DataPlaneUnavailableError
 from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_CURSOR_PREFIX,
     CNINFO_SOURCE,
@@ -43,6 +44,7 @@ class CninfoBatchSyncReport:
     parse_seconds: float
     evidence_write_seconds: float
     cursor_write_seconds: float
+    persistence_error: Literal["busy", "unavailable"] | None = None
 
 
 class _CninfoBatchProgress:
@@ -139,11 +141,38 @@ class CninfoAnnouncementBatchSynchronizer:
         deadline: datetime,
         progress: Callable[[tuple[int, int, int, int, int, int]], None] | None = None,
     ) -> CninfoBatchSyncReport:
+        try:
+            self._data_plane.probe_writable(timeout_seconds=max(0.0, (deadline - self._wall_clock()).total_seconds()))
+        except DataPlaneUnavailableError as exc:
+            preflight_error: Literal["busy", "unavailable"] = (
+                "busy" if isinstance(exc, DataPlaneBusyError) else "unavailable"
+            )
+            return CninfoBatchSyncReport(
+                changed_codes=(),
+                completed_codes=(),
+                attempted_codes=(),
+                deferred_codes=tuple(codes),
+                failed_codes=(),
+                pages_fetched=0,
+                pages_checkpointed=0,
+                saved_announcements=0,
+                resumed_codes=(),
+                deadline_reached=self._wall_clock() >= deadline,
+                request_seconds=0.0,
+                parse_seconds=0.0,
+                evidence_write_seconds=0.0,
+                cursor_write_seconds=0.0,
+                persistence_error=preflight_error,
+            )
         results, failed, pending, page_counts = self._collect_sync_results(codes, observed_at, deadline, progress)
         completed_codes = tuple(sorted(code for code, result in results.items() if result.history_complete))
         changed_codes = tuple(sorted(code for code, counts in page_counts.items() if counts[2] > 0))
         failed.update(code for code, result in results.items() if result.terminal_failure)
         deferred = tuple(sorted(set(codes) - set(completed_codes) - failed))
+        persistence_errors = {result.persistence_error for result in results.values()}
+        persistence_error: Literal["busy", "unavailable"] | None = (
+            "unavailable" if "unavailable" in persistence_errors else "busy" if "busy" in persistence_errors else None
+        )
         return CninfoBatchSyncReport(
             changed_codes=changed_codes,
             completed_codes=completed_codes,
@@ -159,6 +188,7 @@ class CninfoAnnouncementBatchSynchronizer:
             parse_seconds=sum(result.parse_seconds for result in results.values()),
             evidence_write_seconds=sum(result.evidence_write_seconds for result in results.values()),
             cursor_write_seconds=sum(result.cursor_write_seconds for result in results.values()),
+            persistence_error=persistence_error,
         )
 
     def _fill_sync_futures(
@@ -198,17 +228,18 @@ class CninfoAnnouncementBatchSynchronizer:
         failed: set[str] = set()
         pending = set(futures)
         rate_limited = False
-        while pending and not rate_limited:
+        persistence_blocked = False
+        while pending and not rate_limited and not persistence_blocked:
             timeout = max(0.0, (deadline - self._wall_clock()).total_seconds())
             if timeout <= 0.0:
                 break
             completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
             if not completed:
                 break
-            rate_limited = self._consume_sync_results(completed, futures, codes, results, failed)
+            rate_limited, persistence_blocked = self._consume_sync_results(completed, futures, codes, results, failed)
             for future in completed:
                 futures.pop(future, None)
-            if not rate_limited:
+            if not rate_limited and not persistence_blocked:
                 next_index = self._fill_sync_futures(codes, next_index, observed_at, deadline, futures, tracker)
                 pending.update(futures)
             tracker.results(results, failed)
@@ -229,19 +260,21 @@ class CninfoAnnouncementBatchSynchronizer:
         codes: Sequence[str],
         results: dict[str, CninfoSyncResult],
         failed: set[str],
-    ) -> bool:
+    ) -> tuple[bool, bool]:
+        persistence_blocked = False
         for future in completed:
             code = futures[future]
             try:
                 results[code] = future.result()
+                persistence_blocked = persistence_blocked or results[code].persistence_error is not None
             except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
                 failure = ClassifyAdapterFailure(exc, provider=CNINFO_SOURCE, operation="announcements")
                 if failure.code is AdapterFailureCode.RATE_LIMITED:
                     failed.update(codes)
-                    return True
+                    return True, persistence_blocked
                 if not failure.retryable:
                     failed.add(code)
-        return False
+        return False, persistence_blocked
 
 
 __all__ = ["CninfoAnnouncementBatchSynchronizer", "CninfoBatchSyncReport"]

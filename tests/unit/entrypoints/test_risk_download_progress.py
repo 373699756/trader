@@ -115,3 +115,29 @@ def test_risk_download_progress_keeps_cumulative_counts_across_sources_and_waves
     assert "巨潮累计     46/  5027（  0.92%） | 本波待处理   4233" in lines[3]
     assert "0/  4984（  0.00%）" not in lines[1]
     assert "0/  4233（  0.00%）" not in lines[3]
+
+
+def test_risk_download_progress_labels_database_lock_wait_without_false_wave_completion() -> None:
+    stream = StringIO()
+    reporter = StderrRiskDownloadProgress(stream, monotonic=_Clock(10.0, 18.0))
+
+    reporter.publish(
+        RiskDownloadProgress(
+            stage="official_announcements",
+            state="waiting",
+            wave=2,
+            completed_units=0,
+            total_units=4798,
+            requested_codes=5027,
+            research_pending_codes=0,
+            official_pending_codes=4798,
+            official_persistence_error="busy",
+            official_sync_seconds=8.0,
+        )
+    )
+
+    output = stream.getvalue()
+    assert "巨潮公告 | 等待日库" in output
+    assert "本波待处理   4798" in output
+    assert "日库写入 等待写锁" in output
+    assert "本波处理      0/  4798" not in output

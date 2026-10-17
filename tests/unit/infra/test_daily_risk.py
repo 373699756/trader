@@ -1,12 +1,33 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
-from trader.recommendation.application.ports.data_plane_records import RiskEvidenceRecord, SourceCursorRecord
+import pytest
+
+from trader.recommendation.application.ports.data_plane_records import (
+    DataPlaneBusyError,
+    RiskEvidenceRecord,
+    SourceCursorRecord,
+)
 from trader.recommendation.infra.persistence.daily_risk import SQLiteDailyRiskIndex
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def test_daily_risk_write_probe_routes_to_selected_partition(tmp_path) -> None:
+    selected = date(2026, 10, 19)
+    index = SQLiteDailyRiskIndex(tmp_path / "risk", target_date=lambda: selected)
+    database = index.prepare(selected)
+
+    with closing(sqlite3.connect(database)) as locker:
+        locker.execute("BEGIN IMMEDIATE")
+        with pytest.raises(DataPlaneBusyError):
+            index.probe_writable(timeout_seconds=0.001)
+        locker.rollback()
+    index.probe_writable()
 
 
 def _risk_record(observed_at: datetime) -> RiskEvidenceRecord:

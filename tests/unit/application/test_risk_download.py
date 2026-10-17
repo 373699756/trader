@@ -73,6 +73,7 @@ class _AnnouncementReport:
     parse_seconds = 0.0
     evidence_write_seconds = 0.0
     cursor_write_seconds = 0.0
+    persistence_error = None
 
 
 class _AnnouncementSync:
@@ -106,6 +107,29 @@ class _EmptyAnnouncementReport:
     parse_seconds = 0.0
     evidence_write_seconds = 0.0
     cursor_write_seconds = 0.0
+    persistence_error = None
+
+
+class _BusyThenReadyAnnouncementSync(_AnnouncementSync):
+    def __init__(self) -> None:
+        super().__init__()
+        self.report_count = 0
+
+    def sync_report(self, codes, observed_at, *, deadline, progress=None):
+        self.report_count += 1
+        if self.report_count == 1:
+            report = _EmptyAnnouncementReport()
+            report.persistence_error = "busy"
+            return report
+        return super().sync_report(codes, observed_at, deadline=deadline, progress=progress)
+
+
+class _UnavailableAnnouncementSync(_AnnouncementSync):
+    def sync_report(self, codes, observed_at, *, deadline, progress=None):
+        del codes, observed_at, deadline, progress
+        report = _EmptyAnnouncementReport()
+        report.persistence_error = "unavailable"
+        return report
 
 
 class _StuckAnnouncementSync:
@@ -158,6 +182,7 @@ class _CheckpointAnnouncementReport:
         self.parse_seconds = 0.0
         self.evidence_write_seconds = 0.0
         self.cursor_write_seconds = 0.0
+        self.persistence_error = None
 
 
 class _FairAnnouncementSync:
@@ -220,6 +245,7 @@ class _FairAnnouncementReport:
         self.parse_seconds = 0.0
         self.evidence_write_seconds = 0.0
         self.cursor_write_seconds = 0.0
+        self.persistence_error = None
 
 
 class _Progress:
@@ -420,6 +446,46 @@ def test_risk_download_runs_official_source_until_issuer_checkpoint_completes() 
     )
 
 
+def test_risk_download_waits_for_busy_daily_database_then_resumes_official_source() -> None:
+    loader = _Loader()
+    loader.cached_observations = {"600001": ResearchObservation(data_version="existing")}
+    announcement_sync = _BusyThenReadyAnnouncementSync()
+    progress = _Progress()
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001",),
+        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at, progress),
+        announcement_sync=announcement_sync,
+    )
+
+    assert announcement_sync.report_count == 2
+    assert result.wave_count == 2
+    assert result.official_pages_checkpointed == 3
+    assert result.stop_reason != "no_progress"
+    assert result.official_persistence_error is None
+    assert any(event.official_persistence_error == "busy" for event in progress.events)
+
+
+def test_risk_download_reports_non_lock_persistence_failure_without_retry_loop() -> None:
+    loader = _Loader()
+    loader.cached_observations = {"600001": ResearchObservation(data_version="existing")}
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001",),
+        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at),
+        announcement_sync=_UnavailableAnnouncementSync(),
+    )
+
+    assert result.wave_count == 1
+    assert result.stop_reason == "persistence_unavailable"
+    assert result.official_persistence_error == "unavailable"
+    assert result.official_pages_checkpointed == 0
+
+
 def test_risk_download_stops_when_only_volatile_cache_version_changes() -> None:
     loader = _ChangingVersionLoader()
     announcement_sync = _StuckAnnouncementSync()
@@ -590,5 +656,6 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
         "announcements_saved": 0,
         "resumed_codes": 0,
         "failed_codes": 0,
+        "persistence_error": None,
     }
     assert payload["elapsed_seconds"] == 123.457

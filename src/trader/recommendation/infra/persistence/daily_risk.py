@@ -57,6 +57,11 @@ class SQLiteDailyRiskIndex:
         self.prepare(trade_date)
         self._plane(trade_date).save_risk_evidence_recent_records(records)
 
+    def probe_writable(self, *, timeout_seconds: float = 8.0) -> None:
+        trade_date = self._target_date()
+        self.prepare(trade_date)
+        self._plane(trade_date).probe_writable(timeout_seconds=timeout_seconds)
+
     def load_risk_evidence_recent(self, code: str, evidence_id: str) -> RiskEvidenceRecord | None:
         trade_date = self._target_date()
         self.prepare(trade_date)

@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.application.ports.data_plane_records import (
+    DataPlaneBusyError,
     DataPlaneUnavailableError,
     RiskEvidenceRecord,
 )
@@ -434,6 +435,70 @@ def test_cninfo_batch_reports_confirmed_pages_before_stock_completion(tmp_path: 
     assert progress[-1] == (1, 1, 2, 2, 0, 1)
 
 
+def test_cninfo_batch_defers_source_requests_while_daily_database_is_busy(tmp_path: Path, monkeypatch) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    client = _StaticCninfoClient(({"announcements": (), "hasMore": False},))
+
+    def busy_probe(*, timeout_seconds: float = 8.0) -> None:
+        del timeout_seconds
+        raise DataPlaneBusyError("database lock")
+
+    monkeypatch.setattr(data_plane, "probe_writable", busy_probe)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            CninfoAnnouncementIncrementalSync(client, data_plane),
+            data_plane,
+            pool,
+            wall_clock=lambda: OBSERVED_AT,
+        )
+        report = batch.sync_report(("600008",), OBSERVED_AT, deadline=OBSERVED_AT.replace(minute=51))
+
+    assert client.calls == []
+    assert report.deferred_codes == ("600008",)
+    assert report.persistence_error == "busy"
+    assert report.pages_fetched == 0
+
+
+def test_cninfo_batch_stops_dispatch_after_page_write_hits_database_lock(tmp_path: Path, monkeypatch) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    client = _StaticCninfoClient(
+        (
+            {
+                "announcements": (
+                    {
+                        "announcementId": "blocked-write",
+                        "announcementTitle": "关于控股股东拟减持股份的预披露公告",
+                        "announcementTime": "2026-07-29 18:30:00",
+                    },
+                ),
+                "hasMore": False,
+            },
+        )
+    )
+
+    def busy_write(records) -> None:
+        del records
+        raise DataPlaneBusyError("database lock")
+
+    monkeypatch.setattr(data_plane, "save_risk_evidence_recent_records", busy_write)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            CninfoAnnouncementIncrementalSync(client, data_plane),
+            data_plane,
+            pool,
+            wall_clock=lambda: OBSERVED_AT,
+            max_inflight=1,
+        )
+        report = batch.sync_report(("600008", "600009"), OBSERVED_AT, deadline=OBSERVED_AT.replace(minute=51))
+
+    assert client.calls == [(1, "")]
+    assert report.attempted_codes == ("600008",)
+    assert report.deferred_codes == ("600008", "600009")
+    assert report.pages_fetched == 1
+    assert report.pages_checkpointed == 0
+    assert report.persistence_error == "busy"
+
+
 def test_cninfo_batch_retains_checkpointed_pages_from_unfinished_worker(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("trader.recommendation.infra.market_data.announcement_batch_sync._RESULT_DRAIN_SECONDS", 0.0)
 
@@ -467,7 +532,7 @@ def test_cninfo_batch_retains_checkpointed_pages_from_unfinished_worker(tmp_path
     def wall_clock() -> datetime:
         nonlocal clock_calls
         clock_calls += 1
-        if clock_calls == 1:
+        if clock_calls <= 2:
             return OBSERVED_AT
         assert client.second_started.wait(timeout=2.0)
         return deadline
