@@ -2,7 +2,7 @@
 
 ## Evidence depth
 
-For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, keep the batch lightweight. Record the baseline and preserved user changes, requested outcome, exact scope, direct review/check, ledger update, commit, push, and upstream confirmation. Implement directly; a multi-step plan, architecture comparison, regression test, and live evidence are unnecessary.
+For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, keep the batch lightweight. Record the baseline and preserved user changes, requested outcome, exact scope, direct review/check, commit, push, and upstream confirmation. Update the engineering ledger only when `AGENTS.md` requires a stage or an existing task already owns one. Implement directly; a multi-step plan, architecture comparison, regression test, and live evidence are unnecessary.
 
 For a defect, repeated regression, public-contract change, runtime behavior change, or cross-boundary change, make these facts reviewable:
 
@@ -45,6 +45,7 @@ stage counts; do not summarize every zero as “no data”.
 
 - Compare the complete diff with the previously pushed baseline and with the original file allowlist.
 - Inspect new files, removed paths, duplicate owners, hidden fallbacks, TODOs, generated output, and source-file size.
-- Run `git diff --check`; confirm the staged set contains only this batch.
+- In a shared worktree, capture the initial staged set separately from unstaged files. Before commit, re-read `HEAD`, its upstream and `git diff --cached --name-only`; if another batch advanced the branch or touched a shared file, rebase the review baseline and stage only this batch's exact hunks.
+- Run `git diff --check` and `git diff --cached --check`; confirm every staged hunk belongs to the original file allowlist.
 - Record actual changes, verification, and unfinished work only in `docs/3_工程实施.md`. For a repeated defect, connect its stable `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
 - Do not mark the batch complete before its single commit is pushed and confirmed present on the upstream branch.

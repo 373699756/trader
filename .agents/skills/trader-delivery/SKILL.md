@@ -16,7 +16,7 @@ Deliver one repository change without reopening a known failure or regressing an
 
 ## Plan and implement
 
-- For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, use the lightweight route in [the delivery evidence guide](references/delivery-evidence.md): record concise scope and verification in the engineering ledger and implement directly. Do not manufacture an architecture comparison, multi-step plan, regression test, or `Regression-Key`.
+- For a low-risk single-file, documentation, process, or metadata change with no runtime or public-contract effect, use the lightweight route in [the delivery evidence guide](references/delivery-evidence.md). Follow `AGENTS.md` when deciding whether a ledger entry is required; do not create one for formality. Do not manufacture an architecture comparison, multi-step plan, regression test, or `Regression-Key`.
 - For defects, repeated regressions, public-contract changes, or cross-boundary work, state the user-visible symptom, confirmed evidence, root cause status (`confirmed` or `pending verification`), target architecture, in-scope files, excluded boundaries, and completion conditions. Use a stable `Regression-Key` only for a repeated defect family.
 - Compare a local patch with a systemic repair when ownership, representation, resource orchestration, or timing crosses modules. Choose from evidence, not diff size.
 - Complete the implementation slice first, then add or change only the contracts and tests required by the actual risk. When regression proof is required, cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
@@ -30,6 +30,8 @@ Deliver one repository change without reopening a known failure or regressing an
 Read [the runtime diagnostics guide](references/runtime-diagnostics.md) whenever the task touches running behavior, suppliers, history, Web, performance, or browser delivery. Use `scripts/diagnose_runtime.py` as the only public diagnostic CLI. Keep each implementation in its owning `scripts/runtime_diagnostics/` module; do not recreate standalone wrapper scripts or duplicate probe logic in the orchestrator.
 
 For empty recommendations, a stuck collecting state, unexpected funnel counts, or disagreement between Web and runtime status, read [the recommendation-funnel incident playbook](references/recommendation-funnel-incidents.md) before assigning a root cause. Complete all six checkpoints even when the first probe appears decisive. A sandbox `connection_failed`, a generic runtime error category, HTTP 200, or a fixture browser pass is not enough to close a funnel incident.
+
+For qfq downloads that report pending codes after successful supplier responses, or when database membership and checkpoint completion differ, read [the qfq paired-publication incident playbook](references/qfq-publication-incidents.md). Separate supplier download, pair validation, V2/V3 publication, checkpoint confirmation, and reader/writer contention before assigning a cause.
 
 Read [the delivery evidence guide](references/delivery-evidence.md) before marking implementation or Review complete. It defines lightweight and higher-risk evidence routes plus the minimum root-cause, regression, live-process, diff, and handoff evidence.
 

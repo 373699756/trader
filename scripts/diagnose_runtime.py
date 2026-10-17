@@ -54,7 +54,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "history-write": ("history_write_benchmark",),
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
-    "qfq-sqlite": ("qfq_sqlite_performance",),
+    "qfq-sqlite": ("qfq_sqlite_audit",),
     "research": ("research_readiness",),
     "long-watchlist": ("long_watchlist_admission",),
     "browser": ("browser_refresh",),
@@ -355,16 +355,14 @@ def build_commands(
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
     commands: dict[str, DiagnosticCommand] = {
-        "qfq_sqlite_performance": DiagnosticCommand(
-            "qfq_sqlite_performance",
+        "qfq_sqlite_audit": DiagnosticCommand(
+            "qfq_sqlite_audit",
             (
                 python_executable,
                 "-m",
                 "scripts.runtime_diagnostics.qfq_sqlite",
                 "--qfq-root",
                 str(options.qfq_root),
-                "--rounds",
-                str(options.sqlite_query_rounds),
             ),
             common_timeout,
         ),
@@ -1088,7 +1086,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "history_sources": _history_details,
     "tencent_download": _security_master_details,
     "tencent_history_window": _security_master_details,
-    "qfq_sqlite_performance": _security_master_details,
+    "qfq_sqlite_audit": _security_master_details,
     "exchange_security_master": _security_master_details,
     "tencent_quotes": _tencent_quote_details,
     "tushare_daily": _tushare_details,

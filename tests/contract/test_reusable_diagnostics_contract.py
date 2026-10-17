@@ -23,6 +23,7 @@ INTERNAL_DIAGNOSTIC_MODULES = (
     ROOT / "scripts" / "runtime_diagnostics" / "tencent_quotes.py",
     ROOT / "scripts" / "runtime_diagnostics" / "tushare_daily.py",
     ROOT / "scripts" / "runtime_diagnostics" / "history_sqlite_performance.py",
+    ROOT / "scripts" / "runtime_diagnostics" / "qfq_sqlite.py",
 )
 INTERNAL_REPORTING = ROOT / "scripts" / "runtime_diagnostics" / "reporting.py"
 SKILL_ROOT = ROOT / ".agents" / "skills" / "trader-delivery"
@@ -66,6 +67,7 @@ def test_unified_runtime_diagnostic_is_the_only_public_parameterized_script() ->
         "browser",
         "performance",
         "history-sqlite",
+        "qfq-sqlite",
         "live",
         "full",
     ):
@@ -177,5 +179,27 @@ def test_delivery_skill_preserves_recommendation_funnel_incident_checkpoints() -
         "candidate_quotes_pending",
         "security_master_coverage_incomplete",
         "close_quotes",
+    ):
+        assert incident_term in playbook
+
+
+def test_delivery_skill_preserves_qfq_publication_incident_checkpoints() -> None:
+    playbook = (
+        ROOT / ".agents" / "skills" / "trader-delivery" / "references" / "qfq-publication-incidents.md"
+    ).read_text(encoding="utf-8")
+
+    for checkpoint in (
+        "supplier-download",
+        "pair-validation",
+        "paired-publication",
+        "checkpoint-confirmation",
+        "reader-writer-contention",
+    ):
+        assert checkpoint in playbook
+    for incident_term in (
+        "qfq_pair_publication_failed",
+        "qfq_pair_database_busy",
+        "database_not_checkpointed",
+        "checkpoint_not_paired",
     ):
         assert incident_term in playbook

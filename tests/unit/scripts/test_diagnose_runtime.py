@@ -123,6 +123,7 @@ def test_history_profile_passes_explicit_source_to_the_bounded_probe(source: str
         ("history-daily-capability", "history_daily_capability"),
         ("baostock-concurrency", "baostock_concurrency"),
         ("baostock-qfq-shadow", "baostock_qfq_shadow"),
+        ("qfq-sqlite", "qfq_sqlite_audit"),
         ("history-sqlite", "history_sqlite_performance"),
         ("history-source-compare", "history_source_compare"),
         ("research-source-compare", "research_source_compare"),
@@ -759,10 +760,10 @@ def test_child_launch_failure_becomes_a_result_instead_of_aborting_scan(
     assert result.payload is None
 
 
-def test_qfq_sqlite_profile_uses_isolated_migration_and_bounded_rounds():
-    options, _ = _validate(_parser().parse_args(["--profile", "qfq-sqlite", "--sqlite-query-rounds", "3"]))
+def test_qfq_sqlite_profile_audits_the_active_root_read_only():
+    options, _ = _validate(_parser().parse_args(["--profile", "qfq-sqlite"]))
     command = build_commands(options, python_executable="python3")[0]
-    assert command.name == "qfq_sqlite_performance"
+    assert command.name == "qfq_sqlite_audit"
     assert "scripts.runtime_diagnostics.qfq_sqlite" in command.argv
     assert "--qfq-root" in command.argv
-    assert command.argv[-2:] == ("--rounds", "3")
+    assert "--rounds" not in command.argv

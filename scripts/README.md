@@ -16,7 +16,7 @@ behavior; they do not grant permission to write active data.
 | --- | --- | --- | --- | --- | --- |
 | `check_refactor_quality.py` | Repository quality gate | None | None; Ruff runs with `--no-cache` | stdout success; stderr violations/failure | Two sequential Ruff subprocesses, 60 s timeout each; finite repository scan, no hard RSS/total I/O limit |
 | `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models/reports/sample data under required `--train-root`; atomic result at `--output`, default `data/historyless/training-memory-result.json` | Result JSON to stdout and result file; progress to stderr | Two sequential full rebuilds; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; stage durations are recorded, with no artificial total deadline |
-| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; qfq migration and revision benchmarks write only disposable temporary targets; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output is not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq reads/converts the entire source one stock at a time; child capture has no fixed byte/RSS cap |
+| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; history revision benchmarks and qfq integrity checks write only disposable system-temporary targets, while active qfq data remains read-only; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output and stock identities are not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq copies and scans at most eight bounded board shards and emits aggregate counts; child capture has no fixed byte/RSS cap |
 | `generate_long_watchlist_asset.py` | Packaged Long build asset | None | Without `--check`, writes only `src/trader/web/static/long_watchlist_data.js` from `config/long_watchlist.json`; `--check` is read-only | Stale-asset message to stdout; silent success | One JSON document and one asset; no hard byte/RSS/deadline cap; does not fetch quotes |
 | `migrate_runtime_data.py` | Isolated data-layout migration | None | Explicit external source/target/backup paths; `build-references` also requires an external copy of the legacy eligibility database and converts it into the target snapshot layout; `verify` is read-only; build/rollback use sibling lock, staging, previous and failed directories, and may remove previous staging/backup/failed copies | Aggregate manifest/status JSON to stdout | Sequential full tree copy/hash and SQLite integrity scan; hashing reads each file in full; no hard RSS/disk/deadline cap |
 | `repack_history_partitions.py` | Explicit history SQLite maintenance; download owns coordination | None | Source/target state under maintenance lock; build/activate/rollback/finalize may replace paths and finalize releases old files; defaults are repository data paths | Aggregate status JSON to stdout; build progress to stderr | Sequential monthly compaction/verification; SQLite busy timeout 30 s; no hard RSS/disk/whole-job deadline |
@@ -61,18 +61,21 @@ Missing trading dates remain pending. Supplier socket timeouts are inactivity
 limits; the diagnostic child deadline bounds the whole child command.
 The report never authorizes replacing complete history with Tencent.
 
-Compare the qfq database layouts with the existing real local source:
+Audit active qfq paired publication and checkpoint state:
 
 ```bash
 .venv/bin/python3 scripts/diagnose_runtime.py --profile qfq-sqlite \
-  --sqlite-query-rounds 3 --output -
+  --output -
 ```
 
-The probe converts and validates both profiles in a disposable external target.
-SQL timings compare identical payload reads and hashes; they exclude domain
-decoding and use alternating repeated reads, without claiming OS cold caches.
-It also checks primary-key query plans, no-op file identities and bounded
-single-row revisions. The source is read-only and never activated or deleted.
+The probe copies the current V2/V3 board shards without taking SQLite read
+transactions on active files, rejects a copy if file or journal identity changes,
+and runs `quick_check` only on the disposable system-temporary copies. It reports
+aggregate shard/code/row counts, `quick_check`,
+journal modes, hot journals, identity shape, V2/V3 source/cutoff/calendar
+pairing, and both directions of the database/checkpoint difference. It does not
+emit stock identities or prove supplier availability. Use `tencent-download`
+separately when a bounded disposable supplier/update probe is required.
 
 Build a persistent migration candidate with:
 
