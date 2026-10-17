@@ -34,7 +34,7 @@ from trader.download.infra.history_partition_repack_state import (
 from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.history.history_training_due import EvaluateHistoryTrainingDue, HistoryTrainingDueQuery
-from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
+from trader.training.infra.model_bundles.bundle_snapshot import ActiveHeadBundle
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.profile.v3.training import RunRepackTomorrowTraining, RunRepackV3Training
 from trader.training.infra.profile.v3.training_memory_evidence import TomorrowTrainingMemoryEvidence
@@ -316,6 +316,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
         "a" * 64,
         "b" * 64,
         "c" * 64,
+        "d" * 64,
     )
     monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _profile, _strategy: (bundle, False))
 
@@ -349,16 +350,18 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         repack_module,
-        "InspectActiveHeadBundle",
-        lambda _path, _strategy, _profile: type(
-            "Bundle",
-            (),
-            {
-                "training_input_hash": built.target_snapshot_hash,
-                "model_hash": "b" * 64,
-                "report_hash": "c" * 64,
-            },
-        )(),
+        "InspectActiveProfileBundles",
+        lambda _path, _profile: (
+            type(
+                "Bundle",
+                (),
+                {
+                    "training_input_hash": built.target_snapshot_hash,
+                    "model_hash": "b" * 64,
+                    "report_hash": "c" * 64,
+                },
+            )(),
+        ),
     )
     memory_evidence = tmp_path / "data/historyless/memory.json"
     _write_training_memory_evidence(memory_evidence, built.target_snapshot_hash)
@@ -394,16 +397,18 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         repack_module,
-        "InspectActiveHeadBundle",
-        lambda _path, _strategy, _profile: type(
-            "Bundle",
-            (),
-            {
-                "training_input_hash": built.target_snapshot_hash,
-                "model_hash": "b" * 64,
-                "report_hash": "c" * 64,
-            },
-        )(),
+        "InspectActiveProfileBundles",
+        lambda _path, _profile: (
+            type(
+                "Bundle",
+                (),
+                {
+                    "training_input_hash": built.target_snapshot_hash,
+                    "model_hash": "b" * 64,
+                    "report_hash": "c" * 64,
+                },
+            )(),
+        ),
     )
     monkeypatch.setattr(
         repack_module,
@@ -437,16 +442,18 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
     assert built.target_snapshot_hash is not None
     monkeypatch.setattr(
         repack_module,
-        "InspectActiveHeadBundle",
-        lambda _path, _strategy, _profile: type(
-            "Bundle",
-            (),
-            {
-                "training_input_hash": built.target_snapshot_hash,
-                "model_hash": "b" * 64,
-                "report_hash": "c" * 64,
-            },
-        )(),
+        "InspectActiveProfileBundles",
+        lambda _path, _profile: (
+            type(
+                "Bundle",
+                (),
+                {
+                    "training_input_hash": built.target_snapshot_hash,
+                    "model_hash": "b" * 64,
+                    "report_hash": "c" * 64,
+                },
+            )(),
+        ),
     )
     monkeypatch.setattr(
         repack_module,

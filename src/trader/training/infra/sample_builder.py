@@ -294,22 +294,24 @@ def _finalize_sample_day(
     values: Sequence[_PendingSample],
     profile: TrainedProfileContract,
 ) -> tuple[TrainingSample, ...]:
-    eligible = tuple(item for item in values if item.future_returns[0] is not None)
-    if not eligible:
+    population = tuple(values)
+    if not population:
         return ()
     residuals = ResidualizeSampleDay(
-        tuple(item.features[3:] for item in eligible),
-        tuple(item.board for item in eligible),
-        tuple(item.industry for item in eligible),
-        tuple(item.average_amount_20d for item in eligible),
+        tuple(item.features[3:] for item in population),
+        tuple(item.board for item in population),
+        tuple(item.industry for item in population),
+        tuple(item.average_amount_20d for item in population),
     )
-    benchmarks = tuple(_benchmark(eligible, horizon) for horizon in range(5))
+    benchmarks = tuple(_benchmark(population, horizon) for horizon in range(5))
     market_state = tuple(
-        math.fsum(item.features[3 + profile.momentum_horizons.index(horizon)] for item in eligible) / len(eligible)
+        math.fsum(item.features[3 + profile.momentum_horizons.index(horizon)] for item in population) / len(population)
         for horizon in profile.market_state_momentum_horizons
     )
     finalized: list[TrainingSample] = []
-    for index, item in enumerate(eligible):
+    for index, item in enumerate(population):
+        if item.future_returns[0] is None:
+            continue
         excess = tuple(
             TrainingAlphaTarget(next_return=value, benchmark_return=cast(float, benchmarks[horizon]))
             if value is not None and benchmarks[horizon] is not None

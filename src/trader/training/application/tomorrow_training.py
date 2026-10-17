@@ -67,11 +67,13 @@ class TomorrowTrainingWindow:
     def __post_init__(self) -> None:
         readable = frozenset(
             (
+                *self.split.warmup_dates,
                 *self.split.development_dates,
                 *self.split.first_embargo_dates,
                 *self.split.confirmation_dates,
                 *self.split.second_embargo_dates,
                 *self.split.daily_proxy_holdout_dates,
+                *self.split.terminal_embargo_dates,
             )
         )
         if readable.intersection(self.split.point_in_time_holdout_dates):

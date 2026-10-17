@@ -141,6 +141,7 @@ class ModelScoreBatch:
 class ModelScoringContext:
     time_budget_seconds: float | None = None
     input_age_seconds: float = 0.0
+    population_features: tuple[FeatureSnapshot, ...] | None = None
 
     def __post_init__(self) -> None:
         if (

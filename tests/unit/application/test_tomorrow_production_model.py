@@ -8,10 +8,11 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.application.scoring_helpers import profile_for
-from tests.unit.training.infra.profile.v3.test_profile import _publish
+from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
     SharedModelFeatureCache,
+    _market_state_values,
 )
 from trader.recommendation.application.ports.loaded_profile import (
     ModelInput,
@@ -89,6 +90,24 @@ def _model_feature(feature: FeatureSnapshot, *, offset: float, amihud: float) ->
         }
     )
     return replace(feature, values=values, history_days=61)
+
+
+def test_v2_market_state_reads_120_and_250_day_columns() -> None:
+    assert _market_state_values(((0.2, 0.4, 0.6, 1.2, 2.5),), (20, 40, 60, 120, 250), (120, 250)) == (
+        1.2,
+        2.5,
+    )
+
+
+def test_model_residual_population_includes_non_candidate_peers(application_feature_factory) -> None:
+    candidate = _model_feature(application_feature_factory("600000", NOW), offset=0.0, amihud=1.0)
+    peer = _model_feature(application_feature_factory("600001", NOW), offset=0.01, amihud=2.0)
+    service = _service(_Predictor())
+    batch = service.score((candidate,), context=ModelScoringContext(population_features=(candidate, peer)))
+
+    assert tuple(item.code for item in batch.predictions) == (candidate.quote.code,)
+    assert service._state is not None
+    assert len(service._state.momenta) == 2
 
 
 def test_production_model_residualizes_bound_features_and_keeps_prediction_rank_as_diagnostic(
@@ -179,7 +198,7 @@ def test_single_prediction_uses_neutral_rank_for_score_and_cost(application_feat
 
 
 @pytest.mark.parametrize("strategy", (Strategy.D25,))
-def test_v3_trend_heads_do_not_require_the_unselected_one_day_return(
+def test_v3_trend_heads_require_complete_training_raw_population_even_for_unselected_return(
     application_feature_factory,
     strategy: Strategy,
 ) -> None:
@@ -200,7 +219,8 @@ def test_v3_trend_heads_do_not_require_the_unselected_one_day_return(
 
     service = _strategy_service(_TrendPredictor(), strategy)
 
-    assert service.is_input_eligible(replace(complete, values=values)) is True
+    assert service.is_input_eligible(complete) is True
+    assert service.is_input_eligible(replace(complete, values=values)) is False
 
 
 def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_independent(
@@ -268,14 +288,7 @@ def test_v3_heads_share_only_feature_computation_and_keep_prediction_caches_inde
 
 def test_current_shared_training_bundles_score_all_default_v2_heads(tmp_path, application_feature_factory) -> None:
     training_root = tmp_path / "train"
-    for contract in V2_TRAINING_PROFILE.heads:
-        _publish(
-            training_root,
-            contract,
-            f"staging-{contract.strategy.value}",
-            profile=V2_TRAINING_PROFILE,
-            profile_owned=True,
-        )
+    _publish_profile(training_root, V2_TRAINING_PROFILE)
     profile = LoadScoringProfile("v2", training_root=training_root)
     industries = set.intersection(*(set(head.predictor.industry_ids) for head in profile.heads.values()))
     industry = sorted(industries)[0]

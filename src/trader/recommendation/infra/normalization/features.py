@@ -18,7 +18,6 @@ from trader.infra.market_data.history.history import (
     HistoryContext,
     HistoryProfile,
     RequireQfqHistory,
-    ReturnPct,
     SummarizeHistoryMetrics,
 )
 from trader.recommendation.domain.market.factors import Clamp, PercentileScoresWithMetadata, WeightedScore
@@ -466,9 +465,12 @@ class FeatureBuilder:
         bars: tuple[DailyBar, ...],
         history_summary: HistoryContext | None = None,
     ) -> dict[str, float | None]:
-        context = history_summary
-        history = context.profile if context is not None else SummarizeHistoryMetrics(bars)
         observation_date = quote.source_time.astimezone(_SHANGHAI).date().isoformat()
+        context = history_summary
+        if context is not None and context.latest_trade_date > observation_date:
+            context = None
+            bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
+        history = context.profile if context is not None else SummarizeHistoryMetrics(bars)
         completed_bars = tuple(bar for bar in bars if bar.trade_date < observation_date)
         if (
             context is not None
@@ -479,7 +481,9 @@ class FeatureBuilder:
         else:
             setup_history = SummarizeHistoryMetrics(completed_bars) if len(completed_bars) != len(bars) else history
         returns = {
-            days: context.return_pct(days, quote.price) if context is not None else ReturnPct(bars, days, quote.price)
+            days: context.return_pct(days, quote.price, observation_date)
+            if context is not None
+            else _live_return_pct(bars, days, quote.price, observation_date)
             for days in (1, 3, 5, 10, 20, 40, 60)
         }
         anchor_horizons = tuple(dict.fromkeys((1, 3, 5, *self._model_momentum_horizons)))
@@ -489,7 +493,12 @@ class FeatureBuilder:
                 QfqPriceAnchors(
                     quote.price,
                     tuple(
-                        (days, context.anchor_price(days) if context is not None else _lag_close(bars, days))
+                        (
+                            days,
+                            context.anchor_price(days, observation_date)
+                            if context is not None
+                            else _lag_close(bars, days, observation_date),
+                        )
                         for days in anchor_horizons
                     ),
                 ),
@@ -618,11 +627,23 @@ class FeatureBuilder:
         }
 
 
-def _lag_close(bars: tuple[DailyBar, ...], days: int) -> float | None:
-    if days < 1 or len(bars) < days + 1:
+def _lag_close(bars: tuple[DailyBar, ...], days: int, observation_date: str) -> float | None:
+    if days < 1:
         return None
-    value = bars[-days - 1].close
+    completed = tuple(bar for bar in bars if bar.trade_date < observation_date)
+    if len(completed) < days:
+        return None
+    value = completed[-days].close
     return value if math.isfinite(value) and value > 0.0 else None
+
+
+def _live_return_pct(
+    bars: tuple[DailyBar, ...], days: int, current_price: float | None, observation_date: str
+) -> float | None:
+    start = _lag_close(bars, days, observation_date)
+    if start is None or current_price is None or not math.isfinite(current_price) or current_price <= 0:
+        return None
+    return (current_price / start - 1.0) * 100.0
 
 
 def _volume_to_5d_average(quote: MarketQuote, history: HistoryProfile) -> float | None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from datetime import date, timedelta
 
 from tests.component.market_data_test_support import (
     AFTERNOON,
@@ -272,7 +273,7 @@ def test_feature_builder_populates_every_tomorrow_component_from_point_in_time_i
 def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_sessions() -> None:
     bars = tuple(
         DailyBar(
-            trade_date=f"2026-{(index // 28) + 4:02d}-{(index % 28) + 1:02d}",
+            trade_date=(date(2026, 7, 16) - timedelta(days=60 - index)).isoformat(),
             open_price=10.0 + index / 100.0,
             close=10.0 + index / 100.0,
             high=10.1 + index / 100.0,
@@ -312,3 +313,62 @@ def test_feature_builder_reconstructs_the_six_packaged_p2_inputs_from_61_qfq_ses
     assert feature.optional_value("qfq_momentum_20d_skip5") == pytest.approx(bars[-6].close / bars[-21].close - 1.0)
     assert feature.optional_value("qfq_momentum_40d_skip5") == pytest.approx(bars[-6].close / bars[-41].close - 1.0)
     assert feature.optional_value("qfq_momentum_60d_skip5") == pytest.approx(bars[-6].close / bars[-61].close - 1.0)
+
+
+def test_live_quote_uses_yesterday_as_one_day_anchor_with_or_without_summary() -> None:
+    bars = tuple(
+        DailyBar(
+            trade_date=(date(2026, 7, 15) - timedelta(days=60 - index)).isoformat(),
+            open_price=90.0 + index / 3,
+            close=90.0 + index / 3,
+            high=91.0 + index / 3,
+            low=89.0 + index / 3,
+            volume=1_000_000.0,
+            amount=100_000_000.0,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(61)
+    )
+    quote = replace(_quote(), price=121.0, source_time=AFTERNOON)
+    builder = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY)
+
+    summarized = builder.build(
+        (quote,),
+        {quote.code: bars[-20:]},
+        AFTERNOON,
+        history_summaries={quote.code: BuildHistoryContext(bars)},
+    )[0]
+    direct = builder.build((quote,), {quote.code: bars}, AFTERNOON)[0]
+
+    expected = 121.0 / bars[-1].close - 1.0
+    assert summarized.optional_value("qfq_return_1d") == pytest.approx(expected)
+    assert direct.optional_value("qfq_return_1d") == pytest.approx(expected)
+    assert summarized.values["return_3d"] == pytest.approx((121.0 / bars[-3].close - 1.0) * 100.0)
+
+
+def test_future_history_summary_is_not_used_for_live_quote() -> None:
+    bars = tuple(
+        DailyBar(
+            trade_date=(date(2026, 7, 15) + timedelta(days=index)).isoformat(),
+            open_price=10.0 + index,
+            close=10.0 + index,
+            high=11.0 + index,
+            low=9.0 + index,
+            volume=1_000_000.0,
+            amount=100_000_000.0,
+            pct_change=0.1,
+            adjustment=PriceAdjustment.QFQ,
+            source="fixture",
+        )
+        for index in range(3)
+    )
+    quote = replace(_quote(), price=12.0, source_time=AFTERNOON)
+    context = BuildHistoryContext(bars)
+    feature = FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY).build(
+        (quote,), {quote.code: bars}, AFTERNOON, history_summaries={quote.code: context}
+    )[0]
+
+    assert context.anchor_price(1, quote.source_time.date().isoformat()) is None
+    assert feature.optional_value("qfq_return_1d") == pytest.approx(12.0 / 10.0 - 1.0)

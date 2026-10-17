@@ -45,7 +45,7 @@ from trader.training.infra.history.history_training_due import (
     _revised_dates_since_bundle,
 )
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
-from trader.training.infra.model_bundles.bundle_repository import ActiveHeadBundle
+from trader.training.infra.model_bundles.bundle_snapshot import ActiveHeadBundle
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
@@ -471,6 +471,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
         "a" * 64,
         "b" * 64,
         "c" * 64,
+        "d" * 64,
     )
     later_dates = (*first_dates, date(2026, 9, 10))
     RunHistorySync(configuration, _Supplier(later_dates), clock=lambda: NOW)

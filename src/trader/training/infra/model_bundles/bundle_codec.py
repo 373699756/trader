@@ -31,6 +31,7 @@ _MODEL_FIELDS = {
     "exposure_contract",
     "training_input_scope",
     "training_input_hash",
+    "training_run_hash",
     "label_cutoff",
     "source_identity_hash",
     "training_input_document_hash",
@@ -65,6 +66,7 @@ _REPORT_COMMON_FIELDS = {
     "strategy_head",
     "training_input_scope",
     "training_input_hash",
+    "training_run_hash",
     "label_cutoff",
     "source_identity_hash",
     "training_input_document_hash",
@@ -102,6 +104,7 @@ _INPUT_FIELDS = {
     "strategy_head",
     "training_input_scope",
     "training_input_hash",
+    "training_run_hash",
     "label_cutoff",
     "source_identity_hash",
     "calendar_hash",
@@ -162,6 +165,7 @@ class TrainedHeadModelBundle:
     algorithm: TrainedAlgorithm
     training_input_scope: Literal["complete_manifest"]
     training_input_hash: str
+    training_run_hash: str
     label_cutoff: date
     source_identity_hash: str
     training_input_document_hash: str
@@ -191,6 +195,7 @@ class _GroupIdentity:
     strategy: Strategy
     model_id: str
     training_input_hash: str
+    training_run_hash: str
     label_cutoff: date
     source_identity_hash: str
     training_input_document_hash: str
@@ -218,6 +223,7 @@ def LoadHeadBundle(
         bundle.strategy,
         bundle.model_id,
         bundle.training_input_hash,
+        bundle.training_run_hash,
         bundle.label_cutoff,
         bundle.source_identity_hash,
         bundle.feature_manifest_hash,
@@ -278,6 +284,7 @@ def DecodeHeadBundle(
         raise ValueError("trained strategy-head model contract is invalid")
     for name in (
         "training_input_hash",
+        "training_run_hash",
         "source_identity_hash",
         "training_input_document_hash",
         "split_hash",
@@ -301,6 +308,7 @@ def DecodeHeadBundle(
         profile.algorithm,
         "complete_manifest",
         _text(payload, "training_input_hash"),
+        _text(payload, "training_run_hash"),
         _date(payload, "label_cutoff"),
         _text(payload, "source_identity_hash"),
         _text(payload, "training_input_document_hash"),
@@ -372,6 +380,7 @@ def _decode_group_document(
         raise ValueError("trained strategy-head validation semantics are invalid")
     for name in (
         "training_input_hash",
+        "training_run_hash",
         "source_identity_hash",
         "feature_manifest_hash",
         "split_hash",
@@ -394,6 +403,7 @@ def _decode_group_document(
         strategy,
         contract.model_id,
         _text(payload, "training_input_hash"),
+        _text(payload, "training_run_hash"),
         _date(payload, "label_cutoff"),
         _text(payload, "source_identity_hash"),
         training_document_hash,
@@ -428,6 +438,7 @@ def _identity_tuple(value: _GroupIdentity) -> tuple[object, ...]:
         value.strategy,
         value.model_id,
         value.training_input_hash,
+        value.training_run_hash,
         value.label_cutoff,
         value.source_identity_hash,
         value.feature_manifest_hash,

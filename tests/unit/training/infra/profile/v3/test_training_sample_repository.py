@@ -29,7 +29,7 @@ def _sample(
 
 
 def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: Path) -> None:
-    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     training_day = split.model_fit_dates[0]
     early_day = split.early_stopping_dates[0]
@@ -74,6 +74,8 @@ def test_sample_repository_serves_both_heads_from_one_stable_database(tmp_path: 
         assert np.all(tomorrow_data.training.features == 0.1)
         assert repository.split_count("training", TOMORROW_HEAD_CONTRACT) == 3
         assert repository.split_count("training", D25_HEAD_CONTRACT) == 2
+        assert repository.split_distinct_date_count("training", TOMORROW_HEAD_CONTRACT) == 1
+        assert repository.split_distinct_date_count("validation", TOMORROW_HEAD_CONTRACT) == 1
         metrics = {item.target: item for item in repository.validation_target_metrics()}
         assert metrics["target_t1"].count == 1
         assert metrics["target_d25_aggregate"].mean == pytest.approx(0.045)
@@ -96,7 +98,7 @@ def test_sample_repository_has_only_the_shared_tables_and_one_build_transaction(
 
 
 def test_validation_statistics_use_one_scan_and_include_validation_only_industries(tmp_path: Path) -> None:
-    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
         repository.add_final(

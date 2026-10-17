@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -107,6 +108,35 @@ def test_tomorrow_experiment_runs_four_arms_two_pooled_families_and_two_selectio
     assert refilled.metrics.capacity_shortfall_rate == pytest.approx(1 / 9)
     assert report.production_authority is False
     assert report.terminal_holdout_opened is False
+
+
+def test_fixed_score_control_never_admits_rank_seven_after_concentration() -> None:
+    rows = tuple(
+        replace(
+            row,
+            board="main" if index < 6 else "star",
+            candidate_rank_by_board=index + 1 if index < 6 else index - 5,
+            capacity_sufficient=True,
+        )
+        for index, row in enumerate(_rows())
+    )
+    report = EvaluatePairedSelectionExperiment(_specification(), rows)
+    fixed = next(
+        result
+        for result in report.results
+        if result.variant.arm == "rule_only"
+        and result.variant.capacity_per_board is None
+        and result.variant.selection_mode == "fixed_score_top6"
+    )
+    refilled = next(
+        result
+        for result in report.results
+        if result.variant.arm == "rule_only"
+        and result.variant.capacity_per_board is None
+        and result.variant.selection_mode == "gate_then_constrained_top6"
+    )
+    assert fixed.metrics.selected_rows == 4
+    assert refilled.metrics.selected_rows == 6
 
 
 def test_d25_experiment_compares_only_preregistered_realizable_targets() -> None:

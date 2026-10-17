@@ -24,10 +24,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[6]
 def test_industry_fitting_matches_after_complete_cache_reopen(
     tmp_path: Path, monkeypatch, contract: TrainedHeadContract
 ) -> None:
-    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
-    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
-    usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
     profile = V2_TRAINING_PROFILE if contract in V2_HEAD_CONTRACTS else V3_TRAINING_PROFILE
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_500))
+    split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64, history_sessions=profile.history_sessions)
+    usable_dates = tuple((*split.development_dates, *split.confirmation_dates, *split.daily_proxy_holdout_dates))
     settings = LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id)
 
     feature_count = max(contract.feature_positions) + 1

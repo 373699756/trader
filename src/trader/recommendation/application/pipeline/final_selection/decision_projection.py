@@ -165,7 +165,10 @@ def BuildScoredLocal(
         model_scoring.score(
             strategy,
             _model_eligible_candidates(scoring_input, policy),
-            context=runtime.scoring_context,
+            context=replace(
+                runtime.scoring_context or ModelScoringContext(),
+                population_features=native_input.market_features,
+            ),
         )
         if model_scoring is not None and uses_model
         else None

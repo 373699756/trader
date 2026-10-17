@@ -26,11 +26,11 @@ from trader.download.infra.history_snapshot_reader import (
 )
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
-from trader.training.infra.model_bundles.bundle_repository import (
+from trader.training.infra.model_bundles.bundle_snapshot import (
     ActiveHeadBundle,
-    InspectActiveHeadBundle,
 )
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
+from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
 
 
 @dataclass(frozen=True)
@@ -222,12 +222,13 @@ def _active_bundle(
     profile: TrainedProfileContract,
     strategy: Strategy,
 ) -> tuple[ActiveHeadBundle | None, bool]:
-    directory = training_root / profile.head_for_strategy(strategy).directory_name
-    pointer = directory / "active-bundle.json"
+    pointer = training_root / "active-profile.json"
     if not pointer.exists():
         return None, False
     try:
-        return InspectActiveHeadBundle(directory, strategy, profile), False
+        return next(
+            item for item in InspectActiveProfileBundles(training_root, profile) if item.strategy is strategy
+        ), False
     except (OSError, RuntimeError, TypeError, ValueError):
         return None, True
 

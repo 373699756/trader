@@ -10,7 +10,7 @@ from trader.training.infra.engine import (
     RunRepackProfileTraining,
     TrainingRunResult,
 )
-from trader.training.infra.profile.v3.contracts import TOMORROW_HEAD_CONTRACT, V3_TRAINING_PROFILE
+from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
 
@@ -26,7 +26,7 @@ def RunTomorrowTraining(
             history_root,
             train_root,
             V3_TRAINING_PROFILE,
-            (TOMORROW_HEAD_CONTRACT,),
+            V3_TRAINING_PROFILE.heads,
             settings,
             progress,
         )
@@ -65,7 +65,7 @@ def RunRepackTomorrowTraining(
             history_root,
             train_root,
             V3_TRAINING_PROFILE,
-            (TOMORROW_HEAD_CONTRACT,),
+            V3_TRAINING_PROFILE.heads,
             settings,
             progress,
             expected_history_snapshot_hash=expected_history_snapshot_hash,

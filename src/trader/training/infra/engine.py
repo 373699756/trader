@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -42,13 +41,11 @@ from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputSnapshot,
     SQLiteHistoryTrainingInputSnapshot,
 )
-from trader.training.infra.model_bundles.bundle_repository import (
-    HeadBundlePublicationIdentity,
+from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
-    PublishHeadBundle,
-    RecoverHeadBundlePublication,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
+from trader.training.infra.model_bundles.profile_publication import PublishProfileBundles
 from trader.training.infra.model_fitting import FitIndustryModels, LightGBMFittingParameters
 from trader.training.infra.sample_builder import (
     BuildTrainingSamples,
@@ -61,6 +58,7 @@ from trader.training.infra.sample_repository import (
     TRAINING_SAMPLE_MMAP_BYTES,
     SQLiteTrainingSampleRepository,
     TargetMetric,
+    TrainingSplitName,
 )
 from trader.training.infra.training_settings import ProfileTrainingSettings
 
@@ -138,6 +136,7 @@ class _TrainingRunContext:
     training_contract_hash: str
     training_rows: int
     validation_rows: int
+    training_run_hash: str
 
 
 @dataclass(frozen=True)
@@ -154,7 +153,7 @@ class ProfileTrainingRequest:
         strategies = tuple(contract.strategy for contract in self.contracts)
         self.settings.require_profile(self.profile)
         if (
-            not self.contracts
+            self.contracts != self.profile.heads
             or len(set(strategies)) != len(strategies)
             or any(contract != self.profile.head_for_strategy(contract.strategy) for contract in self.contracts)
             or (self.profile.algorithm == "lightgbm") != isinstance(self.settings.fitting, LightGBMFittingParameters)
@@ -185,6 +184,7 @@ class _TrainingInputDocumentContext:
     training_contract_hash: str
     split_hash: str
     contract: TrainedHeadContract
+    training_run_hash: str
 
 
 def RunProfileTraining(request: ProfileTrainingRequest) -> TrainingRunResult:
@@ -247,9 +247,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
         )
         return TrainingRunResult(None, archive.snapshot.active_snapshot_hash, 0, heads)
     snapshot = archive.snapshot
-    split, preparation_failure = _prepare_locked_split(
-        snapshot, request.train_root, request.profile, request.contracts, request.settings
-    )
+    split, preparation_failure = _prepare_locked_split(snapshot, request.profile, request.settings)
     if split is None:
         heads = tuple(_blocked_from_snapshot(item, snapshot, preparation_failure) for item in request.contracts)
         return TrainingRunResult(None, snapshot.active_snapshot_hash, 0, heads)
@@ -261,12 +259,14 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
     if preflight_result is not None:
         return preflight_result
     _publish(request.progress, TomorrowTrainingProgress("training_preparation", "completed", 1, 1))
-    run_id = hashlib.sha256(
+    run_id = ContentHash(
         (
-            f"{request.profile.profile_id}:{snapshot.active_snapshot_hash}:"
-            f"{','.join(item.contract.strategy.value for item in plans)}"
-        ).encode()
-    ).hexdigest()
+            request.profile.profile_id,
+            snapshot.active_snapshot_hash,
+            split.content_hash,
+            tuple((item.contract.strategy.value, item.training_contract_hash) for item in plans),
+        )
+    )
     peak_bytes = 0
     cache: TrainingSampleCache | None = None
     try:
@@ -278,7 +278,7 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
             request.settings.fitting.minimum_industry_training_rows,
         )
         request.train_root.mkdir(parents=True, exist_ok=True)
-        _cleanup_abandoned_workspaces(request.train_root, request.contracts)
+        _cleanup_abandoned_workspaces(request.train_root)
         feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
         cache_identity = ContentHash(
             (
@@ -310,25 +310,61 @@ def _run_locked(archive: _TrainingInputSnapshot, request: ProfileTrainingRequest
                 ),
                 cache,
             )
+            for contract in request.contracts:
+                for split_name, expected in cast(
+                    tuple[tuple[TrainingSplitName, int], ...],
+                    (
+                        ("training", len(split.model_fit_dates)),
+                        ("early_stopping", len(split.early_stopping_dates)),
+                        ("calibration", len(split.calibration_dates)),
+                        ("validation", len(split.confirmation_dates) + len(split.daily_proxy_holdout_dates)),
+                    ),
+                ):
+                    if expected and samples.split_distinct_date_count(split_name, contract) != expected:
+                        raise ValueError("profile_training_effective_dates_insufficient")
             peak_bytes = samples.database_size_bytes
+            prepared: list[tuple[Strategy, Path]] = []
             for plan in plans:
-                completed.append(
-                    _fit_and_publish_head(
-                        _HeadFitRequest(
-                            plan,
-                            request.profile,
-                            request.settings,
-                            snapshot,
-                            split,
-                            samples,
-                            metrics,
-                            request.train_root,
-                            run_id,
-                            request.progress,
-                            peak_bytes,
-                        )
+                result, staging = _fit_and_prepare_head(
+                    _HeadFitRequest(
+                        plan,
+                        request.profile,
+                        request.settings,
+                        snapshot,
+                        split,
+                        samples,
+                        metrics,
+                        request.train_root,
+                        run_id,
+                        request.progress,
+                        peak_bytes,
                     )
                 )
+                completed.append(result)
+                if staging is not None:
+                    prepared.append((plan.contract.strategy, staging))
+            if len(prepared) == len(request.profile.heads) and all(
+                item.status == "engineering_ready" for item in completed
+            ):
+                try:
+                    _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "started", 0, 1))
+                    PublishProfileBundles(request.train_root, request.profile, tuple(prepared))
+                    _publish(request.progress, TomorrowTrainingProgress("artifact_publish", "completed", 1, 1))
+                except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                    completed = [
+                        replace(item, status="blocked", model_hash="", failure_reasons=(_reason(exc),))
+                        for item in completed
+                    ]
+            else:
+                completed = [
+                    replace(item, status="blocked", model_hash="", failure_reasons=("profile_pair_incomplete",))
+                    if item.status == "engineering_ready"
+                    else item
+                    for item in completed
+                ]
+            for _, staging in prepared:
+                if staging.exists():
+                    shutil.rmtree(staging)
         if all(item.status != "blocked" for item in completed):
             cache.clear()
     except (HistoryTrainingInputError, OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
@@ -399,21 +435,16 @@ def _reopen_expected_snapshot(
 
 def _prepare_locked_split(
     snapshot: HistoryTrainingInputSnapshot,
-    train_root: Path,
     profile: TrainedProfileContract,
-    contracts: tuple[TrainedHeadContract, ...],
     settings: ProfileTrainingSettings,
 ) -> tuple[BaoStockTrainingSplit | None, str]:
-    try:
-        _recover_incomplete_publications(train_root, profile, contracts)
-    except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        return None, _reason(exc)
     try:
         split = BuildBaostockTrainingSplit(
             snapshot.calendar.open_dates,
             parent_manifest_hash=snapshot.active_snapshot_hash,
             fit_dates=settings.fit_dates,
             early_stopping_sessions=20 if profile.algorithm == "lightgbm" else 0,
+            history_sessions=profile.history_sessions,
         )
     except ValueError:
         return None, "training_split_unavailable"
@@ -465,7 +496,7 @@ def _preflight_failure_result(
     )
 
 
-def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
+def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult, Path | None]:
     plan = request.plan
     snapshot = request.snapshot
     contract = plan.contract
@@ -478,10 +509,6 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
             request.settings.fitting,
             progress=request.progress,
         )
-        _publish(
-            request.progress,
-            TomorrowTrainingProgress("artifact_publish", "started", 0, 1, strategy=contract.strategy),
-        )
         split_hash = _head_split_hash(request.split, contract)
         training_input = _training_input_document(
             _TrainingInputDocumentContext(
@@ -491,6 +518,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
                 plan.training_contract_hash,
                 split_hash,
                 contract,
+                request.run_id,
             )
         )
         input_document_hash = cast(str, training_input["content_hash"])
@@ -505,6 +533,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
             plan.training_contract_hash,
             training_rows,
             validation_rows,
+            request.run_id,
         )
         provisional_model = _model_document(context, "0" * 64, models)
         model_payload_hash = cast(str, provisional_model["model_payload_hash"])
@@ -528,32 +557,15 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
                 tuple(cast(list[str], report["artifact_structure_failure_reasons"])),
                 label_cutoff=plan.label_cutoff,
                 sample_database_peak_bytes=request.peak_bytes,
-            )
+            ), None
         model = _model_document(context, report_hash, models)
         model_hash = ContentHash(model)
         model["content_hash"] = model_hash
-        output = request.train_root / contract.directory_name
-        staging = MakeBundleStagingDirectory(output)
+        staging = MakeBundleStagingDirectory(request.train_root)
         _write_json(staging / "training-input.json", training_input)
         _write_json(staging / "report.json", report)
         _write_json(staging / "model.json", model)
-        PublishHeadBundle(
-            staging,
-            output,
-            contract.strategy,
-            request.profile,
-            HeadBundlePublicationIdentity(
-                snapshot.active_snapshot_hash,
-                snapshot.source_identity_hash,
-                plan.label_cutoff,
-            ),
-        )
-        staging = None
-        _publish(
-            request.progress,
-            TomorrowTrainingProgress("artifact_publish", "completed", 1, 1, strategy=contract.strategy),
-        )
-        return HeadTrainingResult(
+        result = HeadTrainingResult(
             contract.strategy,
             "engineering_ready",
             snapshot.input_scope,
@@ -570,16 +582,16 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
             label_cutoff=plan.label_cutoff,
             sample_database_peak_bytes=request.peak_bytes,
         )
+        return result, staging
     except (LightGBMError, OSError, TypeError, ValueError, RuntimeError, sqlite3.Error) as exc:
+        if staging is not None:
+            shutil.rmtree(staging, ignore_errors=True)
         return replace(
             _blocked_from_snapshot(contract, snapshot, _reason(exc)),
             run_id=request.run_id,
             label_cutoff=plan.label_cutoff,
             sample_database_peak_bytes=request.peak_bytes,
-        )
-    finally:
-        if staging is not None:
-            shutil.rmtree(staging, ignore_errors=True)
+        ), None
 
 
 def _report_document(
@@ -677,6 +689,7 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
         "strategy_head": contract.strategy.value,
         "training_input_scope": snapshot.input_scope,
         "training_input_hash": snapshot.active_snapshot_hash,
+        "training_run_hash": context.training_run_hash,
         "label_cutoff": context.label_cutoff.isoformat(),
         "source_identity_hash": snapshot.source_identity_hash,
         "calendar_hash": snapshot.calendar_hash,
@@ -703,6 +716,7 @@ def _common_document(context: _TrainingRunContext) -> dict[str, object]:
     return {
         "training_input_scope": snapshot.input_scope,
         "training_input_hash": snapshot.active_snapshot_hash,
+        "training_run_hash": context.training_run_hash,
         "label_cutoff": context.label_cutoff.isoformat(),
         "source_identity_hash": snapshot.source_identity_hash,
         "training_input_codes": len(snapshot.training_codes),
@@ -856,26 +870,13 @@ def _ordered_results(
     return tuple(by_strategy[item.strategy] for item in contracts)
 
 
-def _cleanup_abandoned_workspaces(train_root: Path, contracts: tuple[TrainedHeadContract, ...]) -> None:
+def _cleanup_abandoned_workspaces(train_root: Path) -> None:
     for candidate in train_root.glob(".training-sample-workspace.*"):
         if candidate.is_dir() and not candidate.is_symlink():
             shutil.rmtree(candidate)
-    for output in (train_root / contract.directory_name for contract in contracts):
-        if output.is_dir():
-            for candidate in output.glob(".bundle-staging.*"):
-                if candidate.is_dir() and not candidate.is_symlink():
-                    shutil.rmtree(candidate)
-
-
-def _recover_incomplete_publications(
-    train_root: Path,
-    profile: TrainedProfileContract,
-    contracts: tuple[TrainedHeadContract, ...],
-) -> None:
-    for contract in contracts:
-        output = train_root / contract.directory_name
-        if output.is_dir():
-            RecoverHeadBundlePublication(output, contract.strategy, profile)
+    for candidate in train_root.glob(".bundle-staging.*"):
+        if candidate.is_dir() and not candidate.is_symlink():
+            shutil.rmtree(candidate)
 
 
 def _publish(progress: TomorrowTrainingProgressPort | None, update: TomorrowTrainingProgress) -> None:

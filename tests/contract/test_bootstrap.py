@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.training.infra.profile.v3.test_profile import _publish
+from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
 from trader.bootstrap import BuildSystem
 from trader.infra.initialization import InitializeIfAvailable
 from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
@@ -114,14 +114,7 @@ def _config(tmp_path: Path) -> Path:
     (reference_dir / "historical_st.json").write_text("{}\n", encoding="utf-8")
     sqlite3.connect(reference_dir / "industry_queries.sqlite3").close()
     for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
-        for contract in profile.heads:
-            _publish(
-                tmp_path / "data" / "train",
-                contract,
-                f"staging-{profile.profile_id}-{contract.strategy.value}",
-                profile=profile,
-                profile_owned=True,
-            )
+        _publish_profile(tmp_path / "data" / "train", profile)
     path = config_dir / "runtime.json"
     path.write_text(json.dumps(runtime), encoding="utf-8")
     return path

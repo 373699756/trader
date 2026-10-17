@@ -47,8 +47,7 @@ from trader.download.infra.history_reference_files import (
     WriteHistoryReference,
 )
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.recommendation.domain.publication.models import Strategy
-from trader.training.infra.model_bundles.bundle_repository import InspectActiveHeadBundle
+from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]
@@ -254,11 +253,7 @@ class HistoryPartitionRepackCoordinator:
             _require_stable_target(layout, state, full_hash=False)
             from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
-            bundle = InspectActiveHeadBundle(
-                training_root.resolve() / "v3" / "tomorrow",
-                Strategy.TOMORROW,
-                V3_TRAINING_PROFILE,
-            )
+            bundle = InspectActiveProfileBundles(training_root.resolve() / "v3", V3_TRAINING_PROFILE)[0]
             evidence = ReadTomorrowTrainingMemoryEvidence(memory_evidence_path.resolve())
             if (
                 bundle.training_input_hash != state.target_snapshot_hash

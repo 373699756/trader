@@ -83,14 +83,19 @@ class HistoryContext:
     sample_count: int
     return_anchors: tuple[tuple[int, float], ...]
 
-    def return_pct(self, days: int, current_price: float | None) -> float | None:
-        start = dict(self.return_anchors).get(days)
+    def return_pct(self, days: int, current_price: float | None, observation_date: str) -> float | None:
+        start = self.anchor_price(days, observation_date)
         if start is None or start <= 0 or current_price is None or current_price <= 0:
             return None
         return (current_price / start - 1.0) * 100.0
 
-    def anchor_price(self, days: int) -> float | None:
-        price = dict(self.return_anchors).get(days)
+    def anchor_price(self, days: int, observation_date: str) -> float | None:
+        # The live quote is today's bar. Published history normally ends yesterday;
+        # a same-day published bar must instead be skipped before counting lags.
+        if days < 1 or self.latest_trade_date > observation_date:
+            return None
+        offset = days if self.latest_trade_date == observation_date else days - 1
+        price = dict(self.return_anchors).get(offset)
         return price if price is not None and price > 0.0 else None
 
 
@@ -104,10 +109,15 @@ def BuildHistoryContext(
     if lookback_sessions < 1:
         raise ValueError("history context lookback must be positive")
     ordered = tuple(sorted(bars, key=lambda item: item.trade_date))[-lookback_sessions:]
+    offsets = {
+        0,
+        *(days - 1 for days in (1, 3, 5, 10, 20, 40, 60, 120, 250)),
+        *(days for days in (1, 3, 5, 10, 20, 40, 60, 120, 250)),
+    }
     anchors = tuple(
-        (days, ordered[-days - 1].close)
-        for days in (1, 3, 5, 10, 20, 40, 60, 120, 250)
-        if len(ordered) >= days + 1 and ordered[-days - 1].close > 0
+        (offset, ordered[-offset - 1].close)
+        for offset in sorted(offsets)
+        if len(ordered) > offset and ordered[-offset - 1].close > 0
     )
     return HistoryContext(
         profile=SummarizeHistoryMetrics(ordered),

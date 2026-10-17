@@ -250,6 +250,15 @@ class SQLiteTrainingSampleRepository:
         ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    def split_distinct_date_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:
+        target = _require_target_column(contract.target_column)
+        row = self._connection.execute(
+            "SELECT COUNT(DISTINCT samples.trade_date) FROM samples JOIN sample_split_dates AS splits "
+            f"ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.{target} IS NOT NULL",  # noqa: S608
+            (split_name,),
+        ).fetchone()
+        return int(row[0]) if row is not None else 0
+
     def validation_target_metrics(self) -> tuple[TargetMetric, ...]:
         aggregates = ", ".join(
             f"COUNT(samples.{target}), AVG(samples.{target}), AVG(samples.{target} * samples.{target})"

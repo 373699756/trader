@@ -28,6 +28,14 @@ def BuildTrainedScoringProfile(
     by_strategy = {bundle.strategy: bundle for bundle in bundles}
     if len(bundles) != 2 or set(by_strategy) != {Strategy.TOMORROW, Strategy.D25}:
         raise ValueError("shared scoring profiles require one Tomorrow and D25 bundle")
+    if any(bundle.serialization_profile_id != profile_id for bundle in bundles):
+        raise ValueError("shared scoring profile contains a foreign head")
+    if (
+        len({bundle.training_input_hash for bundle in bundles}) != 1
+        or len({bundle.training_run_hash for bundle in bundles}) != 1
+        or len({bundle.source_identity_hash for bundle in bundles}) != 1
+    ):
+        raise ValueError("shared scoring profile heads use different source snapshots or training runs")
     try:
         predictors: dict[Strategy, HeadPredictorPort] = {
             strategy: cast(HeadPredictorPort, TrainedHeadPredictor(profile_id, by_strategy[strategy], strategy))

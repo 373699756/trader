@@ -11,6 +11,7 @@ from datetime import date
 from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.recommendation.domain.market.factors import RoundScore
 from trader.training.domain.evaluation.baseline import PopulationSpearman
 
 SelectionStrategy = Literal["tomorrow", "d25"]
@@ -133,7 +134,7 @@ class PairedSelectionSpecification:
     selection_modes: tuple[SelectionMode, ...] = SELECTION_MODES
     cost_bps: tuple[int, int, int] = SELECTION_COST_BPS
     top_k: int = 6
-    maximum_board_count: int = 3
+    maximum_board_count: int = 4
     maximum_industry_count: int = 2
     terminal_holdout_opened: bool = False
     production_authority: bool = False
@@ -163,7 +164,7 @@ class PairedSelectionSpecification:
             raise ValueError("paired selection grid must use the preregistered capacities and modes")
         if self.cost_bps != SELECTION_COST_BPS or self.top_k != 6:
             raise ValueError("paired selection costs and TopK are fixed")
-        if self.maximum_board_count != 3 or self.maximum_industry_count != 2:
+        if self.maximum_board_count != 4 or self.maximum_industry_count != 2:
             raise ValueError("paired selection concentration constraints are fixed")
         if self.pooled_exposures != ("market", "board", "industry", "log_average_amount_20d"):
             raise ValueError("pooled selection models require market, board, industry and liquidity exposures")
@@ -490,8 +491,9 @@ def _select(
 ) -> tuple[PairedSelectionRow, ...]:
     ordered = tuple(sorted(candidates, key=lambda row: (-_ranking_value(row, variant), row.code)))
     if variant.selection_mode == "fixed_score_top6":
-        fixed = _constrained_top_k(ordered, specification)
-        return tuple(row for row in fixed if _passes_gates(row, variant))
+        leaders = ordered[: specification.top_k]
+        eligible_leaders = tuple(row for row in leaders if _passes_gates(row, variant))
+        return _constrained_top_k(eligible_leaders, specification)
     eligible = tuple(row for row in ordered if _passes_gates(row, variant))
     return _constrained_top_k(eligible, specification)
 
@@ -525,7 +527,7 @@ def _passes_gates(row: PairedSelectionRow, variant: SelectionExperimentVariant) 
 
 def _ranking_value(row: PairedSelectionRow, variant: SelectionExperimentVariant) -> float:
     if variant.arm in {"rule_only", "rule_model_gate"}:
-        return row.rule_score
+        return RoundScore(row.rule_score)
     return _model_utility(row, variant)
 
 

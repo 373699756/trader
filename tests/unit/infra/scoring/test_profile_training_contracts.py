@@ -94,7 +94,7 @@ def test_profile_training_request_rejects_a_head_owned_by_another_profile(tmp_pa
 
 
 def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: Path) -> None:
-    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     requested: list[frozenset[date]] = []
 
@@ -123,3 +123,32 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
         )
 
     assert requested == [TomorrowTrainingWindow(split).readable_dates]
+
+
+def test_date_budget_reserves_warmup_and_every_five_day_label_boundary() -> None:
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(2_000))
+    split = BuildBaostockTrainingSplit(
+        dates, parent_manifest_hash="a" * 64, fit_dates=750, early_stopping_sessions=0, history_sessions=61
+    )
+    assert len(split.warmup_dates) == 60
+    assert len(split.model_fit_dates) == 750
+    assert len(split.fit_embargo_dates) == len(split.first_embargo_dates) == 5
+    assert len(split.second_embargo_dates) == len(split.terminal_embargo_dates) == 5
+    assert split.model_fit_dates[-1] < split.fit_embargo_dates[0] < split.calibration_dates[0]
+    assert split.daily_proxy_holdout_dates[-1] < split.terminal_embargo_dates[0] < split.point_in_time_holdout_dates[0]
+    assert TomorrowTrainingWindow(split).readable_dates.isdisjoint(split.point_in_time_holdout_dates)
+
+    v2 = BuildBaostockTrainingSplit(
+        dates, parent_manifest_hash="a" * 64, fit_dates=1_000, early_stopping_sessions=20, history_sessions=251
+    )
+    assert len(v2.warmup_dates) == 250
+    assert len(v2.model_fit_dates) == 1_000
+    assert len(v2.early_stopping_dates) == len(v2.calibration_dates) == 20
+    with pytest.raises(ValueError, match="enough unique dates"):
+        BuildBaostockTrainingSplit(
+            dates[:1_464], parent_manifest_hash="a" * 64, early_stopping_sessions=20, history_sessions=251
+        )
+    with pytest.raises(ValueError, match="fit dates are insufficient"):
+        BuildBaostockTrainingSplit(
+            dates, parent_manifest_hash="a" * 64, fit_dates=1_100, early_stopping_sessions=20, history_sessions=251
+        )

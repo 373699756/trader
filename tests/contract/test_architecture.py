@@ -255,8 +255,8 @@ def test_v2_and_v3_profiles_share_one_neutral_trained_head_owner() -> None:
 
     for relative in (
         "bundle_codec.py",
-        "bundle_locator.py",
-        "bundle_repository.py",
+        "bundle_snapshot.py",
+        "profile_publication.py",
         "contracts.py",
         "predictor.py",
         "profile.py",

@@ -83,8 +83,6 @@ class _RawRow:
 class _ModelRowContract:
     return_horizons: tuple[int, ...]
     momentum_horizons: tuple[int, ...]
-    required_return_horizons: frozenset[int]
-    required_momentum_horizons: frozenset[int]
     exposure_contract: ExposureContract
     industry_ids: frozenset[str]
     history_required_sessions: int
@@ -215,11 +213,6 @@ class ProductionModelScoringService:
         self._strategy = strategy
         self._cost_policy = cost_policy
         self._predictor = predictor
-        self._required_return_horizons = frozenset(
-            _feature_horizon(feature_id, "qfq_return_")
-            for feature_id in self._feature_ids
-            if feature_id.startswith("qfq_return_")
-        )
         self._required_momentum_horizons = frozenset(
             _feature_horizon(feature_id, prefix)
             for feature_id in self._feature_ids
@@ -235,8 +228,6 @@ class ProductionModelScoringService:
         self._row_contract = _ModelRowContract(
             self._runtime_features.return_horizons,
             self._runtime_features.momentum_horizons,
-            self._required_return_horizons,
-            self._required_momentum_horizons,
             self._exposure_contract,
             self._industry_ids,
             self._history_required_sessions,
@@ -295,11 +286,12 @@ class ProductionModelScoringService:
         *,
         context: ModelScoringContext | None = None,
     ) -> ModelScoreBatch:
-        deadline = _ScoringDeadline(context or ModelScoringContext(), self._monotonic)
+        scoring_context = context or ModelScoringContext()
+        deadline = _ScoringDeadline(scoring_context, self._monotonic)
         with self._lock:
             self._request_count += 1
             try:
-                return self._score_locked(tuple(features), deadline)
+                return self._score_locked(tuple(features), scoring_context.population_features, deadline)
             except ModelScoringDeadlineError as exc:
                 self._publish_computation_status(
                     candidate_count=len(features),
@@ -312,12 +304,30 @@ class ProductionModelScoringService:
     def _score_locked(
         self,
         features: tuple[FeatureSnapshot, ...],
+        population_features: tuple[FeatureSnapshot, ...] | None,
         deadline: _ScoringDeadline,
     ) -> ModelScoreBatch:
         deadline.require_time("before_feature_computation")
-        rows, missing_codes = _eligible_rows(
-            features,
+        requested_codes = {feature.quote.code for feature in features}
+        if len(requested_codes) != len(features):
+            raise ValueError("model scoring candidates must be unique")
+        population = {feature.quote.code: feature for feature in population_features or features}
+        population.update((feature.quote.code, feature) for feature in features)
+        rows, missing_population_codes = _eligible_rows(
+            tuple(population.values()),
             self._row_contract,
+        )
+        missing_codes = tuple(
+            sorted(
+                {code for code in missing_population_codes if code in requested_codes}
+                | {
+                    row.code
+                    for row in rows
+                    if row.code in requested_codes
+                    and self._exposure_contract.requires_industry
+                    and row.industry not in self._industry_ids
+                }
+            )
         )
         codes = tuple(row.code for row in rows)
         if len(codes) != len(set(codes)):
@@ -368,7 +378,11 @@ class ProductionModelScoringService:
                     "market_state",
                     affected,
                     previous.market_state if previous is not None else None,
-                    lambda: _market_state_values(momenta, self._runtime_features.market_state_horizons),
+                    lambda: _market_state_values(
+                        momenta,
+                        self._runtime_features.momentum_horizons,
+                        self._runtime_features.market_state_horizons,
+                    ),
                     deadline,
                 )
                 if self._runtime_features.market_state_horizons
@@ -410,6 +424,8 @@ class ProductionModelScoringService:
                 row.industry,
             )
             for index, row in enumerate(ordered_rows)
+            if row.code in requested_codes
+            and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
         )
         predictions = previous.predictions if previous is not None and inputs == previous.inputs else None
         if not inputs:
@@ -423,7 +439,12 @@ class ProductionModelScoringService:
             deadline.require_time("completed_after_batch_prediction_deadline")
         if tuple(item.code for item in predictions) != tuple(item.code for item in inputs):
             raise ValueError(f"{self._strategy.value} production model returned a mismatched prediction batch")
-        cost_inputs = tuple(row.amihud_20d for row in ordered_rows)
+        cost_inputs = tuple(
+            row.amihud_20d
+            for row in ordered_rows
+            if row.code in requested_codes
+            and (not self._exposure_contract.requires_industry or row.industry in self._industry_ids)
+        )
         if (
             previous is not None
             and inputs == previous.inputs
@@ -553,10 +574,7 @@ def _eligible_rows(
     missing: list[str] = []
     for feature in sorted(features, key=lambda item: item.quote.code):
         row = _raw_row(feature, contract)
-        if row is None or (
-            contract.exposure_contract.requires_industry
-            and (not row.industry or row.industry not in contract.industry_ids)
-        ):
+        if row is None or (contract.exposure_contract.requires_industry and not row.industry):
             missing.append(feature.quote.code)
         else:
             rows.append(row)
@@ -663,15 +681,10 @@ def _raw_row(
         _optional_finite(feature.values.get(f"qfq_momentum_{horizon}d_skip5")) for horizon in contract.momentum_horizons
     )
     required = (
-        tuple(return_values[contract.return_horizons.index(horizon)] for horizon in contract.required_return_horizons)
-        + tuple(
-            momentum_values[contract.momentum_horizons.index(horizon)]
-            for horizon in contract.required_momentum_horizons
-        )
-        + (
-            _optional_finite(feature.values.get(_AMOUNT_FIELD)),
-            _optional_finite(feature.values.get(_AMIHUD_FIELD)),
-        )
+        *return_values,
+        *momentum_values,
+        _optional_finite(feature.values.get(_AMOUNT_FIELD)),
+        _optional_finite(feature.values.get(_AMIHUD_FIELD)),
     )
     if any(value is None for value in required):
         return None
@@ -752,12 +765,14 @@ def _fact_value(values: dict[str, object], fact_id: str) -> object:
 
 def _market_state_values(
     momenta: tuple[tuple[float | None, ...], ...],
+    momentum_horizons: tuple[int, ...],
     market_state_horizons: tuple[int, ...],
 ) -> tuple[float | None, ...]:
     if not market_state_horizons:
         return ()
     result: list[float | None] = []
-    for index in range(len(market_state_horizons)):
+    for horizon in market_state_horizons:
+        index = momentum_horizons.index(horizon)
         values = tuple(row[index] for row in momenta)
         result.append(
             math.fsum(cast(float, value) for value in values) / len(values) if values and None not in values else None

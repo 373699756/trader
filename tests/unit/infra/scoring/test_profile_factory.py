@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit.training.infra.profile.v3.test_profile import _publish
+from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
@@ -12,14 +12,7 @@ from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
 def test_v3_two_head_ridge_bundles_load_with_expected_identity(tmp_path: Path) -> None:
     training_root = tmp_path / "train"
-    for contract in V3_TRAINING_PROFILE.heads:
-        _publish(
-            training_root,
-            contract,
-            f"staging-{contract.strategy.value}",
-            profile=V3_TRAINING_PROFILE,
-            profile_owned=True,
-        )
+    _publish_profile(training_root, V3_TRAINING_PROFILE)
     profile = LoadScoringProfile("v3", training_root=training_root)
 
     assert tuple(profile.heads) == (Strategy.TOMORROW, Strategy.D25)

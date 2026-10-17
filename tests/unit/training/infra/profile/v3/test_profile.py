@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
-from datetime import date
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -15,15 +14,9 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.scoring.profile_factory import LoadScoringProfile
 from trader.training.infra.model_bundles.bundle_codec import DecodeHeadBundle, LoadHeadBundle
-from trader.training.infra.model_bundles.bundle_locator import LocateHeadBundles
-from trader.training.infra.model_bundles.bundle_repository import (
-    HeadBundlePublicationIdentity,
-    InspectActiveHeadBundle,
-    PublishHeadBundle,
-    RecoverHeadBundlePublication,
-)
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
 from trader.training.infra.model_bundles.profile import BuildTrainedScoringProfile
+from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles, PublishProfileBundles
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import (
     HEAD_CONTRACTS,
@@ -71,6 +64,7 @@ def _documents(
         "strategy_head": contract.strategy.value,
         "training_input_scope": "complete_manifest",
         "training_input_hash": "a" * 64,
+        "training_run_hash": "9" * 64,
         "label_cutoff": "2026-09-08",
         "source_identity_hash": "1" * 64,
         "calendar_hash": "4" * 64,
@@ -120,6 +114,7 @@ def _documents(
         },
         "training_input_scope": "complete_manifest",
         "training_input_hash": "a" * 64,
+        "training_run_hash": "9" * 64,
         "label_cutoff": "2026-09-08",
         "source_identity_hash": "1" * 64,
         "training_input_document_hash": training_input["content_hash"],
@@ -170,6 +165,7 @@ def _documents(
         "strategy_head": contract.strategy.value,
         "training_input_scope": "complete_manifest",
         "training_input_hash": "a" * 64,
+        "training_run_hash": "9" * 64,
         "label_cutoff": "2026-09-08",
         "source_identity_hash": "1" * 64,
         "training_input_document_hash": training_input["content_hash"],
@@ -220,34 +216,64 @@ def _write_bundle(
     (staging / "training-input.json").write_text(json.dumps(training_input), encoding="utf-8")
 
 
-def _publish(
-    training_root: Path,
-    contract: TrainedHeadContract,
-    name: str = "staging",
-    *,
-    profile: TrainedProfileContract = V3_TRAINING_PROFILE,
-    profile_owned: bool = False,
-) -> Path:
-    staging = training_root / name
-    _write_bundle(staging, contract, profile)
-    output_root = (
-        training_root / profile.output_directory / contract.directory_name
-        if profile_owned
-        else training_root / contract.directory_name
-    )
-    return PublishHeadBundle(
-        staging,
-        output_root,
-        contract.strategy,
-        profile,
-        HeadBundlePublicationIdentity("a" * 64, "1" * 64, date(2026, 9, 8)),
+def _publish_profile(training_root: Path, profile: TrainedProfileContract) -> None:
+    staged = []
+    for contract in profile.heads:
+        staging = training_root / f"staging-{profile.profile_id}-{contract.strategy.value}"
+        _write_bundle(staging, contract, profile)
+        staged.append((contract.strategy, staging))
+    PublishProfileBundles(training_root / profile.output_directory, profile, tuple(staged))
+
+
+def test_profile_pair_pointer_keeps_old_generation_when_second_head_or_commit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile_root = tmp_path / "v3"
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    old_pointer = (profile_root / "active-profile.json").read_bytes()
+    old_hashes = tuple(item.model_hash for item in InspectActiveProfileBundles(profile_root, V3_TRAINING_PROFILE))
+    staged = []
+    for contract in V3_TRAINING_PROFILE.heads:
+        staging = tmp_path / f"bad-{contract.strategy.value}"
+        _write_bundle(staging, contract)
+        staged.append((contract.strategy, staging))
+    (staged[1][1] / "report.json").write_text("{}", encoding="utf-8")
+    with pytest.raises((ValueError, TypeError)):
+        PublishProfileBundles(profile_root, V3_TRAINING_PROFILE, tuple(staged))
+    assert (profile_root / "active-profile.json").read_bytes() == old_pointer
+
+    staged = []
+    for contract in V3_TRAINING_PROFILE.heads:
+        staging = tmp_path / f"interrupted-{contract.strategy.value}"
+        _write_bundle(staging, contract)
+        staged.append((contract.strategy, staging))
+    from trader.training.infra.model_bundles import profile_publication
+
+    real_write = profile_publication.AtomicWriteJson
+
+    def fail_commit(path: Path, payload: object) -> None:
+        if path.name == "active-profile.json":
+            assert (
+                tuple(item.model_hash for item in InspectActiveProfileBundles(profile_root, V3_TRAINING_PROFILE))
+                == old_hashes
+            )
+            raise OSError("fixture_pointer_write_failed")
+        real_write(path, payload)
+
+    monkeypatch.setattr(profile_publication, "AtomicWriteJson", fail_commit)
+    with pytest.raises(OSError, match="fixture_pointer_write_failed"):
+        PublishProfileBundles(profile_root, V3_TRAINING_PROFILE, tuple(staged))
+    assert (profile_root / "active-profile.json").read_bytes() == old_pointer
+    assert (
+        tuple(item.model_hash for item in InspectActiveProfileBundles(profile_root, V3_TRAINING_PROFILE)) == old_hashes
     )
 
 
 def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> None:
-    selected = _publish(tmp_path, TOMORROW_HEAD_CONTRACT)
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    selected = InspectActiveProfileBundles(tmp_path / "v3", V3_TRAINING_PROFILE)[0].model_path
 
-    assert selected == tmp_path / "tomorrow/model.json"
+    assert selected.parent.name == "tomorrow"
     assert sorted(path.name for path in selected.parent.iterdir()) == [
         "active-bundle.json",
         "model.json",
@@ -257,26 +283,30 @@ def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> N
     pointer = json.loads((selected.parent / "active-bundle.json").read_text(encoding="utf-8"))
     assert set(pointer) == {"model_hash", "report_hash", "training_input_hash", "content_hash"}
     assert "source_commit" not in (selected.parent / "model.json").read_text(encoding="utf-8")
-    assert not (selected.parent / "generations").exists()
+    assert (tmp_path / "v3" / "active-profile.json").is_file()
 
 
 def test_shared_loader_builds_two_distinct_heads_for_v2_and_v3(tmp_path: Path) -> None:
-    for index, contract in enumerate(HEAD_CONTRACTS):
-        _publish(tmp_path, contract, f"staging-v3-{index}", profile=V3_TRAINING_PROFILE, profile_owned=True)
-    for index, contract in enumerate(V2_TRAINING_PROFILE.heads):
-        _publish(tmp_path, contract, f"staging-v2-{index}", profile=V2_TRAINING_PROFILE, profile_owned=True)
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    _publish_profile(tmp_path, V2_TRAINING_PROFILE)
 
-    located = LocateHeadBundles(tmp_path, V3_TRAINING_PROFILE)
+    located = InspectActiveProfileBundles(tmp_path / "v3", V3_TRAINING_PROFILE)
     profiles = tuple(LoadScoringProfile(profile, training_root=tmp_path) for profile in ("v2", "v3"))
 
-    assert tuple(strategy for strategy, _ in located) == (Strategy.TOMORROW, Strategy.D25)
+    assert tuple(item.strategy for item in located) == (Strategy.TOMORROW, Strategy.D25)
     for profile in profiles:
         assert tuple(profile.heads) == (Strategy.TOMORROW, Strategy.D25)
         assert len({head.predictor.model_hash for head in profile.heads.values()}) == 2
         assert profile.heads[Strategy.TOMORROW].evidence.runtime_anchor == "15:00"
         assert profile.heads[Strategy.D25].evidence.runtime_anchor == "15:00"
-    assert tuple(path.parent.parent.name for _, path in LocateHeadBundles(tmp_path, V2_TRAINING_PROFILE)) == ("v2",) * 2
-    assert tuple(path.parent.parent.name for _, path in located) == ("v3",) * 2
+    assert (
+        tuple(
+            item.model_path.parent.parent.parent.name
+            for item in InspectActiveProfileBundles(tmp_path / "v2", V2_TRAINING_PROFILE)
+        )
+        == ("v2",) * 2
+    )
+    assert tuple(item.model_path.parent.parent.parent.name for item in located) == ("v3",) * 2
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         v2_predictor = profiles[0].heads[strategy].predictor
         v3_predictor = profiles[1].heads[strategy].predictor
@@ -290,7 +320,7 @@ def test_shared_loader_builds_two_distinct_heads_for_v2_and_v3(tmp_path: Path) -
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_shared_loader_fails_closed_for_both_profiles_when_any_head_is_missing(tmp_path: Path, profile: str) -> None:
     selected = V2_TRAINING_PROFILE if profile == "v2" else V3_TRAINING_PROFILE
-    _publish(tmp_path, selected.head_for_strategy(Strategy.TOMORROW), profile=selected, profile_owned=True)
+    _write_bundle(tmp_path / selected.output_directory / "tomorrow", selected.heads[0], selected)
 
     with pytest.raises(RuntimeError, match="unavailable"):
         LoadScoringProfile(profile, training_root=tmp_path)
@@ -299,9 +329,10 @@ def test_shared_loader_fails_closed_for_both_profiles_when_any_head_is_missing(t
 @pytest.mark.parametrize("profile", ("v2", "v3"))
 def test_shared_loader_fails_closed_for_both_profiles_when_a_bundle_is_corrupt(tmp_path: Path, profile: str) -> None:
     selected = V2_TRAINING_PROFILE if profile == "v2" else V3_TRAINING_PROFILE
-    for index, contract in enumerate(selected.heads):
-        _publish(tmp_path, contract, f"staging-{index}", profile=selected, profile_owned=True)
-    report_path = tmp_path / selected.output_directory / "tomorrow" / "report.json"
+    _publish_profile(tmp_path, selected)
+    report_path = (
+        InspectActiveProfileBundles(tmp_path / selected.output_directory, selected)[0].model_path.parent / "report.json"
+    )
     report = json.loads(report_path.read_text(encoding="utf-8"))
     report["training_contract_hash"] = "f" * 64
     report["content_hash"] = ContentHash({key: value for key, value in report.items() if key != "content_hash"})
@@ -338,6 +369,15 @@ def test_shared_profile_rejects_a_duplicate_head_even_when_all_strategies_exist(
         BuildTrainedScoringProfile("v2", (*artifacts, artifacts[0]))
 
 
+def test_shared_profile_rejects_heads_from_distinct_runs_on_the_same_snapshot() -> None:
+    tomorrow, d25 = tuple(
+        DecodeHeadBundle(_documents(contract)[0], contract.strategy, V3_TRAINING_PROFILE) for contract in HEAD_CONTRACTS
+    )
+
+    with pytest.raises(ValueError, match="different source snapshots"):
+        BuildTrainedScoringProfile("v3", (tomorrow, replace(d25, training_run_hash="8" * 64)))
+
+
 def test_v3_codec_rejects_cross_head_and_nonportable_fields() -> None:
     model, _, _ = _documents(TOMORROW_HEAD_CONTRACT)
     with pytest.raises(ValueError, match="contract"):
@@ -364,7 +404,8 @@ def test_model_codec_rejects_a_rehashed_retired_runtime_anchor(profile, strategy
 
 
 def test_v3_loader_rejects_tampered_group_identity(tmp_path: Path) -> None:
-    selected = _publish(tmp_path, TOMORROW_HEAD_CONTRACT)
+    selected = tmp_path / "model.json"
+    _write_bundle(tmp_path, TOMORROW_HEAD_CONTRACT)
     report = json.loads(selected.with_name("report.json").read_text(encoding="utf-8"))
     report["training_contract_hash"] = "f" * 64
     report["content_hash"] = ContentHash({key: value for key, value in report.items() if key != "content_hash"})
@@ -397,62 +438,3 @@ def test_shared_loader_rejects_retired_report_schema(
 
     with pytest.raises(ValueError, match="fields or content hash are invalid"):
         LoadHeadBundle(tmp_path / "model.json", Strategy.TOMORROW, profile)
-
-
-def test_v3_failed_replacement_restores_previous_fixed_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    output = tmp_path / TOMORROW_HEAD_CONTRACT.directory_name
-    _publish(tmp_path, TOMORROW_HEAD_CONTRACT, "first-staging")
-    previous = {
-        name: (output / name).read_bytes()
-        for name in ("training-input.json", "report.json", "model.json", "active-bundle.json")
-    }
-    staging = tmp_path / "second-staging"
-    _write_bundle(staging, TOMORROW_HEAD_CONTRACT)
-    original_replace = os.replace
-
-    def fail_report(source: str | Path, destination: str | Path) -> None:
-        if Path(source) == staging / "report.json":
-            raise KeyboardInterrupt
-        original_replace(source, destination)
-
-    monkeypatch.setattr("trader.training.infra.model_bundles.bundle_repository.os.replace", fail_report)
-    with pytest.raises(KeyboardInterrupt):
-        PublishHeadBundle(
-            staging,
-            output,
-            Strategy.TOMORROW,
-            V3_TRAINING_PROFILE,
-            HeadBundlePublicationIdentity("a" * 64, "1" * 64, date(2026, 9, 8)),
-        )
-
-    assert {name: (output / name).read_bytes() for name in previous} == previous
-    assert not (output / ".bundle-publication.json").exists()
-
-
-def test_flat_publication_recovery_restores_previous_files(tmp_path: Path) -> None:
-    output = tmp_path / TOMORROW_HEAD_CONTRACT.directory_name
-    _publish(tmp_path, TOMORROW_HEAD_CONTRACT)
-    previous = {
-        name: (output / name).read_bytes()
-        for name in ("training-input.json", "report.json", "model.json", "active-bundle.json")
-    }
-    rollback = output / ".bundle-rollback.test"
-    rollback.mkdir()
-    for name, content in previous.items():
-        (rollback / name).write_bytes(content)
-    (output / "model.json").write_text("{}", encoding="utf-8")
-    journal = {
-        "schema_version": "v3_head_bundle_publication",
-        "strategy_head": "tomorrow",
-        "rollback_directory": rollback.name,
-        "previous_files": list(previous),
-        "new_pointer_hash": "f" * 64,
-    }
-    journal["content_hash"] = ContentHash(journal)
-    (output / ".bundle-publication.json").write_text(json.dumps(journal), encoding="utf-8")
-
-    RecoverHeadBundlePublication(output, Strategy.TOMORROW, V3_TRAINING_PROFILE)
-
-    assert {name: (output / name).read_bytes() for name in previous} == previous
-    assert InspectActiveHeadBundle(output, Strategy.TOMORROW, V3_TRAINING_PROFILE).strategy is Strategy.TOMORROW
-    assert not rollback.exists()

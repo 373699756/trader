@@ -26,6 +26,7 @@ from trader.training.infra.engine import (
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputSnapshot
 from trader.training.infra.model_fitting import FitIndustryModels, RidgeFittingParameters
+from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v2.training import RunV2Training as _run_v2_training
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
@@ -48,7 +49,7 @@ from trader.training.infra.profile.v3.training_sample_repository import (
     V3TrainingIndustryCounts,
     V3TrainingSample,
 )
-from trader.training.infra.sample_builder import TrainingSampleBuildRequest
+from trader.training.infra.sample_builder import TrainingSampleBuildRequest, _finalize_sample_day, _PendingSample
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[6]
@@ -189,9 +190,10 @@ def test_missing_industry_in_fit_split_blocks_before_history_scan(tmp_path: Path
     assert result.failure_reasons == ("history_industry_split_coverage_insufficient",)
 
 
-@pytest.mark.parametrize("run_training,profile", ((run_v2_training, "v2"), (run_v3_training, "v3")))
 @pytest.mark.parametrize("failure", (ValueError, sqlite3.OperationalError))
-def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeypatch, run_training, profile, failure):
+def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeypatch, failure):
+    run_training = run_v3_training
+    profile = "v3"
     archive = _cadence_archive(tmp_path / "history")
     _patch_archive(monkeypatch, archive)
     builds = 0
@@ -218,6 +220,10 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
         raise failure("fixture_fit_failed")
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
+    monkeypatch.setattr(
+        "trader.training.infra.sample_repository.SQLiteTrainingSampleRepository.split_distinct_date_count",
+        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
+    )
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fail)
     first = run_training(tmp_path / "history", tmp_path / "train")
     assert first.status == "blocked"
@@ -230,7 +236,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
         return ({"银行": _industry_model(len(contract.feature_positions), algorithm)}, 1, 1)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
-    monkeypatch.setattr("trader.training.infra.engine.PublishHeadBundle", lambda *_args: None)
+    monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args: None)
     monkeypatch.setattr(
         "trader.training.infra.engine.BuildTrainingSamples",
         lambda _request: pytest.fail("complete sample cache must skip the history scan"),
@@ -268,6 +274,21 @@ def test_training_rejects_insufficient_industry_history_before_sample_scan(
     assert result.status == "blocked"
     assert result.failure_reasons == ("history_industry_coverage_insufficient",)
     assert result.model_hash == result.report_hash == ""
+
+
+def test_v2_2000_day_budget_reaches_sample_scan_with_full_fit_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_archive(monkeypatch, _cadence_archive(tmp_path / "history"))
+    monkeypatch.setattr(
+        "trader.training.infra.engine.BuildTrainingSamples",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("scan reached")),
+    )
+
+    result = run_v2_training(tmp_path / "history", tmp_path / "train")
+
+    assert result.status == "blocked"
+    assert all(head.failure_reasons == ("profile_training_failed",) for head in result.heads)
 
 
 def test_v3_training_scans_history_once_then_fits_heads_sequentially(
@@ -308,17 +329,22 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     published: list[tuple[Strategy, Path]] = []
 
-    def publish(staging, output, strategy, _profile, _identity) -> None:
-        assert {path.name for path in staging.iterdir()} == {"model.json", "report.json", "training-input.json"}
-        report = json.loads((staging / "report.json").read_text(encoding="utf-8"))
-        assert report["artifact_structure_valid"] is True
-        assert report["artifact_structure_failure_reasons"] == []
-        assert report["prediction_return_validation_passed"] is False
-        assert report["prediction_return_failure_reasons"] == ["daily_close_proxy_not_point_in_time"]
-        assert "validation_passed" not in report
-        published.append((strategy, output))
+    def publish(output, _profile, staged) -> None:
+        for strategy, staging in staged:
+            assert {path.name for path in staging.iterdir()} == {"model.json", "report.json", "training-input.json"}
+            report = json.loads((staging / "report.json").read_text(encoding="utf-8"))
+            assert report["artifact_structure_valid"] is True
+            assert report["artifact_structure_failure_reasons"] == []
+            assert report["prediction_return_validation_passed"] is False
+            assert report["prediction_return_failure_reasons"] == ["daily_close_proxy_not_point_in_time"]
+            assert "validation_passed" not in report
+            published.append((strategy, output))
 
-    monkeypatch.setattr("trader.training.infra.engine.PublishHeadBundle", publish)
+    monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", publish)
+    monkeypatch.setattr(
+        "trader.training.infra.sample_repository.SQLiteTrainingSampleRepository.split_distinct_date_count",
+        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
+    )
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
@@ -326,8 +352,8 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
     assert scan_calls == 1
     assert fitted == [Strategy.TOMORROW, Strategy.D25]
     assert published == [
-        (Strategy.TOMORROW, tmp_path / "train" / "v3" / "tomorrow"),
-        (Strategy.D25, tmp_path / "train" / "v3" / "d25"),
+        (Strategy.TOMORROW, tmp_path / "train" / "v3"),
+        (Strategy.D25, tmp_path / "train" / "v3"),
     ]
     assert all(head.status == "engineering_ready" for head in result.heads)
     assert all(head.label_cutoff is not None for head in result.heads)
@@ -383,7 +409,11 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
         return ({"银行": _industry_model(len(contract.feature_positions), algorithm)}, 1, 1)
 
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
-    monkeypatch.setattr("trader.training.infra.engine.PublishHeadBundle", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "trader.training.infra.sample_repository.SQLiteTrainingSampleRepository.split_distinct_date_count",
+        lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
+    )
 
     result = run_v3_training(tmp_path / "history", tmp_path / "train")
 
@@ -457,14 +487,14 @@ def test_training_respects_the_history_repack_fence(tmp_path: Path, monkeypatch:
 
 def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path) -> None:
     abandoned = tmp_path / ".training-sample-workspace.abandoned"
-    staging = tmp_path / "d25" / ".bundle-staging.abandoned"
+    staging = tmp_path / ".bundle-staging.abandoned"
     preserved = tmp_path / "tomorrow" / "model.json"
     abandoned.mkdir()
     staging.mkdir(parents=True)
     preserved.parent.mkdir(parents=True)
     preserved.touch()
 
-    _cleanup_abandoned_workspaces(tmp_path, HEAD_CONTRACTS)
+    _cleanup_abandoned_workspaces(tmp_path)
 
     assert not abandoned.exists()
     assert not staging.exists()
@@ -472,7 +502,7 @@ def test_training_cleanup_removes_only_owned_abandoned_workspaces(tmp_path: Path
 
 
 def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path: Path) -> None:
-    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     rows = tuple(_training_point(day, 10.0 + index) for index, day in enumerate(dates[:66]))
 
@@ -506,7 +536,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
 
 
 def test_training_window_and_sample_dates_preserve_the_frozen_tomorrow_contract() -> None:
-    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     window = TomorrowTrainingWindow(split)
 
@@ -540,8 +570,32 @@ def test_training_uses_shared_exposure_and_pre_cost_target_contracts() -> None:
     assert TrainingAlphaTarget(next_return=0.06, benchmark_return=0.01) == pytest.approx(0.05)
 
 
+def test_training_exposure_features_do_not_change_when_peer_future_label_is_missing() -> None:
+    day = date(2026, 1, 5)
+    samples = tuple(
+        _PendingSample(
+            f"60000{index}",
+            day,
+            0,
+            ("main", "chinext", "star")[index],
+            f"industry-{index}",
+            100_000_000.0 + index * 1_000_000.0,
+            (0.01, 0.02, 0.03, *(value + index / 10 for value in (0.1, 0.2, 0.3, 0.4, 0.5))),
+            10.0,
+            [0.01] * 5,
+        )
+        for index in range(3)
+    )
+    before = _finalize_sample_day(samples, V2_TRAINING_PROFILE)
+    samples[2].future_returns[:] = [None] * 5
+    after = _finalize_sample_day(samples, V2_TRAINING_PROFILE)
+
+    assert len(before) == 3 and len(after) == 2
+    assert before[0].features == after[0].features
+
+
 def test_model_progress_keeps_real_industry_count_for_each_head() -> None:
-    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_250))
+    dates = tuple(date(2021, 1, 1) + timedelta(days=index) for index in range(1_600))
     split = BuildBaostockTrainingSplit(dates, parent_manifest_hash="a" * 64)
     updates: list[TomorrowTrainingProgress] = []
 

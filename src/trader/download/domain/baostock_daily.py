@@ -474,13 +474,17 @@ class BaoStockTrainingSplit:
     parent_manifest_hash: str
     label_contract: BaoStockTrainingLabelContract
     model_fit_dates: tuple[date, ...]
+    warmup_dates: tuple[date, ...]
+    fit_embargo_dates: tuple[date, ...]
     early_stopping_dates: tuple[date, ...]
+    calibration_embargo_dates: tuple[date, ...]
     calibration_dates: tuple[date, ...]
     development_dates: tuple[date, ...]
     first_embargo_dates: tuple[date, ...]
     confirmation_dates: tuple[date, ...]
     second_embargo_dates: tuple[date, ...]
     daily_proxy_holdout_dates: tuple[date, ...]
+    terminal_embargo_dates: tuple[date, ...]
     point_in_time_holdout_dates: tuple[date, ...]
     training_anchor: str = "15:00_daily_close"
     point_in_time_parity: bool = False
@@ -504,11 +508,13 @@ class BaoStockTrainingSplit:
 
 def _validate_training_split_dates(value: BaoStockTrainingSplit) -> None:
     ordered_groups = (
+        value.warmup_dates,
         value.development_dates,
         value.first_embargo_dates,
         value.confirmation_dates,
         value.second_embargo_dates,
         value.daily_proxy_holdout_dates,
+        value.terminal_embargo_dates,
         value.point_in_time_holdout_dates,
     )
     flattened = tuple(day for group in ordered_groups for day in group)
@@ -518,11 +524,26 @@ def _validate_training_split_dates(value: BaoStockTrainingSplit) -> None:
         raise ValueError("BaoStock training development or confirmation dates are insufficient")
     if len(value.daily_proxy_holdout_dates) < 200 or len(value.point_in_time_holdout_dates) != 200:
         raise ValueError("BaoStock training holdout dates are insufficient")
-    if len(value.first_embargo_dates) != 5 or len(value.second_embargo_dates) != 5:
+    if (
+        len(value.first_embargo_dates) != 5
+        or len(value.second_embargo_dates) != 5
+        or len(value.terminal_embargo_dates) != 5
+    ):
         raise ValueError("BaoStock training split requires two five-day embargoes")
     if len(value.early_stopping_dates) not in {0, 20} or len(value.calibration_dates) != 20:
         raise ValueError("BaoStock training split requires supported early-stop and calibration dates")
-    if value.model_fit_dates + value.early_stopping_dates + value.calibration_dates != value.development_dates:
+    if len(value.fit_embargo_dates) != 5 or len(value.calibration_embargo_dates) not in {0, 5}:
+        raise ValueError("BaoStock training split requires internal label embargoes")
+    if bool(value.early_stopping_dates) != bool(value.calibration_embargo_dates):
+        raise ValueError("BaoStock training split internal embargoes do not match early stopping")
+    if (
+        value.model_fit_dates
+        + value.fit_embargo_dates
+        + value.early_stopping_dates
+        + value.calibration_embargo_dates
+        + value.calibration_dates
+        != value.development_dates
+    ):
         raise ValueError("BaoStock training development sub-splits are invalid")
 
 
@@ -532,41 +553,57 @@ def BuildBaostockTrainingSplit(
     parent_manifest_hash: str,
     fit_dates: int | None = None,
     early_stopping_sessions: int = 20,
+    history_sessions: int = 61,
 ) -> BaoStockTrainingSplit:
     ordered = tuple(dates)
-    if ordered != tuple(sorted(set(ordered))) or len(ordered) < BAOSTOCK_MIN_TRAINING_DATES:
-        raise ValueError("BaoStock training split requires at least 1250 unique ordered dates")
-    if early_stopping_sessions not in {0, 20} or (fit_dates is not None and fit_dates < 1):
+    if early_stopping_sessions not in {0, 20} or (fit_dates is not None and fit_dates < 1) or history_sessions < 1:
         raise ValueError("BaoStock training fit window is invalid")
+    minimum_dates = max(
+        BAOSTOCK_MIN_TRAINING_DATES,
+        history_sessions - 1 + 600 + 200 * 2 + 5 * 3 + BAOSTOCK_POINT_IN_TIME_RESERVE,
+    )
+    if ordered != tuple(sorted(set(ordered))) or not minimum_dates <= len(ordered) <= BAOSTOCK_MAX_SESSIONS:
+        raise ValueError("BaoStock training split requires enough unique dates for warmup and isolated holdouts")
     point_in_time = ordered[-BAOSTOCK_POINT_IN_TIME_RESERVE:]
-    earlier = ordered[:-BAOSTOCK_POINT_IN_TIME_RESERVE]
-    first_boundary = int(len(earlier) * 0.60)
-    second_boundary = int(len(earlier) * 0.80)
-    raw_development = earlier[:first_boundary]
-    raw_confirmation = earlier[first_boundary:second_boundary]
-    daily_proxy = earlier[second_boundary:]
-    available_development = raw_development[:-5]
-    first_embargo = raw_development[-5:]
-    confirmation = raw_confirmation[:-5]
-    second_embargo = raw_confirmation[-5:]
-    available_fit = available_development[: -(early_stopping_sessions + 20)]
-    if fit_dates is not None and len(available_fit) < fit_dates:
+    cursor = len(ordered) - BAOSTOCK_POINT_IN_TIME_RESERVE
+
+    def take(count: int) -> tuple[date, ...]:
+        nonlocal cursor
+        if count < 0 or cursor < count:
+            raise ValueError("BaoStock training date budget is insufficient")
+        cursor -= count
+        return ordered[cursor : cursor + count]
+
+    terminal_embargo = take(5)
+    daily_proxy = take(200)
+    second_embargo = take(5)
+    confirmation = take(200)
+    first_embargo = take(5)
+    calibration = take(20)
+    calibration_embargo = take(5) if early_stopping_sessions else ()
+    early_stopping = take(early_stopping_sessions)
+    fit_embargo = take(5)
+    available_fit_days = cursor - (history_sessions - 1)
+    if available_fit_days < 1 or (fit_dates is not None and available_fit_days < fit_dates):
         raise ValueError("BaoStock training fit dates are insufficient")
-    model_fit = available_fit[-fit_dates:] if fit_dates is not None else available_fit
-    early_stopping = available_development[-(early_stopping_sessions + 20) : -20] if early_stopping_sessions else ()
-    calibration = available_development[-20:]
-    development = model_fit + early_stopping + calibration
+    model_fit = take(fit_dates if fit_dates is not None else available_fit_days)
+    warmup = take(history_sessions - 1)
+    development = model_fit + fit_embargo + early_stopping + calibration_embargo + calibration
     return BaoStockTrainingSplit(
         parent_manifest_hash=parent_manifest_hash,
         label_contract=BaoStockTrainingLabelContract(),
         model_fit_dates=model_fit,
+        warmup_dates=warmup,
+        fit_embargo_dates=fit_embargo,
         early_stopping_dates=early_stopping,
+        calibration_embargo_dates=calibration_embargo,
         calibration_dates=calibration,
         development_dates=development,
         first_embargo_dates=first_embargo,
         confirmation_dates=confirmation,
         second_embargo_dates=second_embargo,
         daily_proxy_holdout_dates=daily_proxy,
+        terminal_embargo_dates=terminal_embargo,
         point_in_time_holdout_dates=point_in_time,
     )
 
