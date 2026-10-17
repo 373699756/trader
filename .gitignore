@@ -50,6 +50,7 @@ data/filter_config/
 !.agents/skills/
 .agents/skills/*
 !.agents/skills/trader-delivery/
+!.agents/skills/python-engineering-guide/
 .codex/
 __pycache__/
 *.py[cod]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Python 工程设计与编码规范"
+  short_description: "设计、实现、重构与审查可维护的现代 Python 工程规范"
+  default_prompt: "Use $python-engineering-guide to design or review this Python project against modern engineering and coding standards."
