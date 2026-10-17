@@ -123,39 +123,108 @@ def test_cninfo_http_client_uses_current_bse_market_scope() -> None:
     assert calls[1]["stock"] == "920002,gfbj0873843"
 
 
-def test_cninfo_http_client_allows_bounded_parallel_requests_without_a_global_post_lock() -> None:
-    announcement_barrier = Barrier(2)
+def test_cninfo_http_client_serializes_parallel_requests() -> None:
+    start_barrier = Barrier(3)
+    first_request_started = Event()
+    release_first_request = Event()
+    active_condition = Condition()
+    active_requests = 0
+    maximum_active_requests = 0
+    request_count = 0
 
     def post(url: str, **kwargs: Any) -> _Response:
+        nonlocal active_requests, maximum_active_requests, request_count
+        with active_condition:
+            active_requests += 1
+            maximum_active_requests = max(maximum_active_requests, active_requests)
+            request_count += 1
+            current_request = request_count
+        if current_request == 1:
+            first_request_started.set()
+            assert release_first_request.wait(timeout=2.0)
         data = kwargs["data"]
-        if url.endswith("/topSearch/query"):
-            code = data["keyWord"]
-            return _Response([{"code": code, "category": "A股", "orgId": f"org-{code}"}])
-        announcement_barrier.wait(timeout=2.0)
-        return _Response({"announcements": (), "hasMore": False})
+        response = (
+            _Response([{"code": data["keyWord"], "category": "A股", "orgId": f"org-{data['keyWord']}"}])
+            if url.endswith("/topSearch/query")
+            else _Response({"announcements": (), "hasMore": False})
+        )
+        with active_condition:
+            active_requests -= 1
+        return response
 
     client = CninfoAnnouncementHttpClient(
         post=post,
         timeout_seconds=8.0,
         wall_clock=lambda: OBSERVED_AT,
         sleeper=lambda _seconds: None,
+        minimum_request_interval_seconds=0.0,
     )
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = tuple(
-            pool.submit(
-                client.fetch_announcements,
-                CninfoAnnouncementQuery(
-                    code=code,
-                    page=1,
-                    page_size=30,
-                    observed_at=OBSERVED_AT,
-                    cursor_value="",
-                    deadline=OBSERVED_AT.replace(minute=51),
-                ),
+
+    def fetch(code: str) -> Mapping[str, object]:
+        start_barrier.wait(timeout=2.0)
+        return client.fetch_announcements(
+            CninfoAnnouncementQuery(
+                code=code,
+                page=1,
+                page_size=30,
+                observed_at=OBSERVED_AT,
+                cursor_value="",
+                deadline=OBSERVED_AT.replace(minute=51),
             )
-            for code in ("600001", "000001")
         )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = tuple(pool.submit(fetch, code) for code in ("600001", "000001"))
+        start_barrier.wait(timeout=2.0)
+        assert first_request_started.wait(timeout=2.0)
+        with active_condition:
+            assert maximum_active_requests == 1
+        release_first_request.set()
         assert all(future.result()["hasMore"] is False for future in futures)
+    assert maximum_active_requests == 1
+
+
+def test_cninfo_http_client_spaces_request_starts() -> None:
+    now = [0.0]
+    sleeps: list[float] = []
+    request_starts: list[float] = []
+
+    def monotonic() -> float:
+        return now[0]
+
+    def sleeper(seconds: float) -> None:
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    def post(url: str, **kwargs: Any) -> _Response:
+        request_starts.append(now[0])
+        if url.endswith("/topSearch/query"):
+            code = kwargs["data"]["keyWord"]
+            return _Response([{"code": code, "category": "A股", "orgId": f"org-{code}"}])
+        return _Response({"announcements": (), "hasMore": False})
+
+    client = CninfoAnnouncementHttpClient(
+        post=post,
+        timeout_seconds=8.0,
+        wall_clock=lambda: OBSERVED_AT,
+        sleeper=sleeper,
+        monotonic=monotonic,
+        minimum_request_interval_seconds=1.0,
+    )
+    query = CninfoAnnouncementQuery(
+        code="600001",
+        page=1,
+        page_size=30,
+        observed_at=OBSERVED_AT,
+        cursor_value="",
+        deadline=OBSERVED_AT.replace(minute=51),
+    )
+
+    client.fetch_announcements(query)
+    client.fetch_announcements(query)
+
+    assert request_starts == [0.0, 1.0, 2.0]
+    assert sleeps == [1.0, 1.0]
 
 
 def test_missing_announcement_id_uses_persistent_evidence_digest_once() -> None:

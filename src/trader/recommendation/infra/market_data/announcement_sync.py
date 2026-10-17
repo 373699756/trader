@@ -433,9 +433,13 @@ class CninfoAnnouncementHttpClient:
         timeout_seconds: float,
         wall_clock: Callable[[], datetime],
         sleeper: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
+        minimum_request_interval_seconds: float = 1.0,
     ) -> None:
         if timeout_seconds <= 0.0:
             raise ValueError("CNInfo timeout must be positive")
+        if minimum_request_interval_seconds < 0.0:
+            raise ValueError("CNInfo request interval must be non-negative")
         if (post is None) == (session_factory is None):
             raise ValueError("CNInfo requires exactly one post function or session factory")
         self._post = post
@@ -443,6 +447,10 @@ class CninfoAnnouncementHttpClient:
         self._timeout_seconds = timeout_seconds
         self._wall_clock = wall_clock
         self._sleeper = sleeper
+        self._monotonic = monotonic
+        self._minimum_request_interval_seconds = minimum_request_interval_seconds
+        self._request_lock = Lock()
+        self._next_request_at = 0.0
         self._organizations: dict[str, str] = {}
         self._organization_lock = Lock()
         self._thread_state = _CninfoThreadState()
@@ -568,17 +576,32 @@ class CninfoAnnouncementHttpClient:
         headers: Mapping[str, str],
         timeout: float,
     ) -> requests.Response:
-        if self._post is not None:
-            return self._post(url, data=data, headers=headers, timeout=timeout)
-        session = self._thread_state.session
-        if session is None:
-            if self._session_factory is None:
-                raise RuntimeError("CNInfo session factory is unavailable")
-            session = self._session_factory()
-            self._thread_state.session = session
-            with self._sessions_lock:
-                self._sessions.append(session)
-        return session.post(url, data=data, headers=headers, timeout=timeout)
+        queue_started = self._monotonic()
+        if not self._request_lock.acquire(timeout=timeout):
+            raise TimeoutError("CNInfo request queue exceeded deadline")
+        try:
+            queue_wait = max(0.0, self._monotonic() - queue_started)
+            delay = max(0.0, self._next_request_at - self._monotonic())
+            if queue_wait + delay >= timeout:
+                raise TimeoutError("CNInfo request pacing exceeded deadline")
+            if delay:
+                self._sleeper(delay)
+            request_started = self._monotonic()
+            self._next_request_at = request_started + self._minimum_request_interval_seconds
+            request_timeout = timeout - queue_wait - delay
+            if self._post is not None:
+                return self._post(url, data=data, headers=headers, timeout=request_timeout)
+            session = self._thread_state.session
+            if session is None:
+                if self._session_factory is None:
+                    raise RuntimeError("CNInfo session factory is unavailable")
+                session = self._session_factory()
+                self._thread_state.session = session
+                with self._sessions_lock:
+                    self._sessions.append(session)
+            return session.post(url, data=data, headers=headers, timeout=request_timeout)
+        finally:
+            self._request_lock.release()
 
     def _remaining_timeout(self, deadline: datetime | None) -> float:
         if deadline is None:
