@@ -35,7 +35,10 @@ from trader.download.infra.exchange_security_universe import (
     SelectStEligibleUniverse,
 )
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_reference_files import HistoryStEvidencePath
+from trader.download.infra.history_reference_files import (
+    HistoryStEvidencePath,
+    ReadStEvidence,
+)
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_gateway import HistorySyncGateway
@@ -213,6 +216,12 @@ def ExecuteRiskDownload(
     settings = LoadRuntimeSettings(config_path)
     strategy = LoadStrategySettings(settings.strategy_config_path)
     clock = ShanghaiClock(_utc_now)
+    st_evidence_path = HistoryStEvidencePath(settings.reference_dir)
+    if not st_evidence_path.is_file():
+        raise RuntimeError("risk download requires the historical ST evidence file")
+    st_excluded_codes = frozenset(
+        item.code for item in ReadStEvidence(st_evidence_path) if item.status != "clear"
+    )
     population_observed_at = clock.now()
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     open_dates = calendar.open_dates()
@@ -231,7 +240,11 @@ def ExecuteRiskDownload(
         IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
     }
     excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
-    codes = tuple(item.code for item in population if not item.is_st and item.code not in excluded)
+    codes = tuple(
+        item.code
+        for item in population
+        if not item.is_st and item.code not in excluded and item.code not in st_excluded_codes
+    )
     risk_data = SQLiteDailyRiskIndex(
         settings.project_root / "data" / "risk", target_date=lambda: target_date, buffered_writes=True
     )
