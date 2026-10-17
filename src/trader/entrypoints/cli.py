@@ -201,6 +201,8 @@ def _run_history_maintenance_command(
                     "deferred_codes": risk_result.deferred_codes,
                     "failed_codes": risk_result.failed_codes,
                     "deadline_reached": risk_result.deadline_reached,
+                    "wave_count": risk_result.wave_count,
+                    "stop_reason": risk_result.stop_reason,
                     "elapsed_seconds": round(risk_result.elapsed_seconds, 3),
                     "component_codes": {
                         "financial": risk_result.inventory.financial_codes,
@@ -208,11 +210,18 @@ def _run_history_maintenance_command(
                         "pledge": risk_result.inventory.pledge_codes,
                         "unlock": risk_result.inventory.unlock_codes,
                         "regulatory_history": risk_result.inventory.regulatory_history_codes,
+                        "regulatory_evidence": risk_result.inventory.regulatory_evidence_codes,
+                        "news_queried": risk_result.inventory.news_queried_codes,
                     },
                     "retained_items": {
                         "news": risk_result.inventory.news_items,
                         "announcements": risk_result.inventory.announcement_items,
                         "financial_reports": risk_result.inventory.financial_reports,
+                    },
+                    "official_source": {
+                        "pages_fetched": risk_result.official_pages_fetched,
+                        "announcements_saved": risk_result.official_announcements_saved,
+                        "failed_codes": risk_result.official_failed_codes,
                     },
                 },
                 ensure_ascii=False,

@@ -7,6 +7,7 @@ import math
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
@@ -50,6 +51,51 @@ from trader.recommendation.domain.market.research import (
 from trader.recommendation.infra.market_data.providers.akshare_news import FetchNews as _fetch_news
 
 _LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _NewsComponent:
+    evidence: tuple[Evidence, ...] = ()
+    queried: bool = False
+    source_error: str = ""
+
+
+@dataclass(frozen=True)
+class _FinancialComponent:
+    current: FinancialReport | None = None
+    history: tuple[FinancialReport, ...] = ()
+    history_complete: bool = False
+    evidence: tuple[Evidence, ...] = ()
+    source_error: str = ""
+
+
+@dataclass(frozen=True)
+class _AnnouncementComponent:
+    announcements: tuple[ResearchAnnouncement, ...] = ()
+    evidence: tuple[Evidence, ...] = ()
+    risk_facts: tuple[CorporateRiskFact, ...] = ()
+    risk_history_complete: bool = False
+    risk_evidence_version: str = ""
+    available: bool = False
+    source_error: str = ""
+
+
+@dataclass(frozen=True)
+class _RatioComponent:
+    ratio: float | None = None
+    evidence: tuple[Evidence, ...] = ()
+    source_error: str = ""
+
+
+def _snapshot_component_payload(
+    payloads: Mapping[str, Mapping[str, object]] | None,
+    source: str,
+    *,
+    enabled: bool,
+) -> Mapping[str, object] | None:
+    if not enabled or payloads is None:
+        return None
+    return payloads[source]
 
 
 def _corporate_risk_projection(
@@ -330,107 +376,175 @@ class AkshareResearchClient:
         initial_errors: Sequence[str] = (),
     ) -> ResearchObservation:
         failed_sources = {error.partition(":")[0] for error in initial_errors}
-
-        source_errors = list(initial_errors)
-        financial: FinancialReport | None = None
-        financial_history: tuple[FinancialReport, ...] = ()
-        financial_history_complete = False
-        financial_evidence: tuple[Evidence, ...] = ()
-        announcements: tuple[ResearchAnnouncement, ...] = ()
-        announcement_evidence: tuple[Evidence, ...] = ()
-        corporate_risk_facts: tuple[CorporateRiskFact, ...] = ()
-        corporate_risk_history_complete = False
-        corporate_risk_evidence_version = ""
-        announcements_available = False
-        pledge_ratio: float | None = None
-        pledge_evidence: tuple[Evidence, ...] = ()
-        unlock_ratio: float | None = None
-        unlock_evidence: tuple[Evidence, ...] = ()
-        news_evidence: tuple[Evidence, ...] = ()
-
-        if component_payloads is None:
-            try:
-                news_evidence = self.fetch_news(code, observed_at=point_in_time)
-            except _SOURCE_EXCEPTIONS as exc:
-                source_errors.append(_source_error("news", exc))
-
-        if "financial" not in failed_sources:
-            try:
-                financial, financial_history, financial_history_complete, financial_evidence = self._fetch_financial(
-                    code,
-                    point_in_time,
-                    policy,
-                    payload=None if component_payloads is None else component_payloads["financial"],
-                )
-            except _SOURCE_EXCEPTIONS as exc:
-                source_errors.append(_source_error("financial", exc))
-
-        if "announcements" not in failed_sources:
-            try:
-                (
-                    announcements,
-                    announcement_evidence,
-                    corporate_risk_facts,
-                    corporate_risk_history_complete,
-                    corporate_risk_evidence_version,
-                ) = self._fetch_announcements(
-                    code,
-                    point_in_time,
-                    policy,
-                    payload=None if component_payloads is None else component_payloads["announcements"],
-                    history_complete_allowed=component_payloads is None,
-                )
-            except _SOURCE_EXCEPTIONS as exc:
-                source_errors.append(_source_error("announcements", exc))
-            else:
-                announcements_available = True
-
-        if "pledge" not in failed_sources:
-            try:
-                pledge_ratio, pledge_evidence = self._fetch_pledge(
-                    code,
-                    point_in_time,
-                    payload=None if component_payloads is None else component_payloads["pledge"],
-                )
-            except _SOURCE_EXCEPTIONS as exc:
-                source_errors.append(_source_error("pledge", exc))
-
-        if "unlock" not in failed_sources:
-            try:
-                unlock_ratio, unlock_evidence = self._fetch_unlock(
-                    code,
-                    point_in_time,
-                    policy,
-                    payload=None if component_payloads is None else component_payloads["unlock"],
-                )
-            except _SOURCE_EXCEPTIONS as exc:
-                source_errors.append(_source_error("unlock", exc))
-
-        announcement_summary = tuple(item for item in announcement_evidence if item.evidence_type == "research_summary")
-        announcement_details = tuple(item for item in announcement_evidence if item.evidence_type != "research_summary")
+        news = self._news_component(code, point_in_time, enabled=component_payloads is None)
+        financial_enabled = "financial" not in failed_sources
+        financial = self._financial_component(
+            code,
+            point_in_time,
+            policy,
+            payload=_snapshot_component_payload(component_payloads, "financial", enabled=financial_enabled),
+            enabled=financial_enabled,
+        )
+        announcements_enabled = "announcements" not in failed_sources
+        announcements = self._announcement_component(
+            code,
+            point_in_time,
+            policy,
+            payload=_snapshot_component_payload(
+                component_payloads,
+                "announcements",
+                enabled=announcements_enabled,
+            ),
+            enabled=announcements_enabled,
+        )
+        pledge_enabled = "pledge" not in failed_sources
+        pledge = self._pledge_component(
+            code,
+            point_in_time,
+            payload=_snapshot_component_payload(component_payloads, "pledge", enabled=pledge_enabled),
+            enabled=pledge_enabled,
+        )
+        unlock_enabled = "unlock" not in failed_sources
+        unlock = self._unlock_component(
+            code,
+            point_in_time,
+            policy,
+            payload=_snapshot_component_payload(component_payloads, "unlock", enabled=unlock_enabled),
+            enabled=unlock_enabled,
+        )
+        source_errors = tuple(
+            (
+                *initial_errors,
+                *(
+                    item
+                    for item in (
+                        news.source_error,
+                        financial.source_error,
+                        announcements.source_error,
+                        pledge.source_error,
+                        unlock.source_error,
+                    )
+                    if item
+                ),
+            )
+        )
+        announcement_summary = tuple(
+            item for item in announcements.evidence if item.evidence_type == "research_summary"
+        )
+        announcement_details = tuple(
+            item for item in announcements.evidence if item.evidence_type != "research_summary"
+        )
         evidence = (
-            *news_evidence,
-            *unlock_evidence,
-            *pledge_evidence,
+            *news.evidence,
+            *unlock.evidence,
+            *pledge.evidence,
             *announcement_summary,
-            *financial_evidence,
+            *financial.evidence,
             *announcement_details,
         )
 
         return ResearchObservation(
-            financial=financial,
-            financial_history=financial_history,
-            financial_history_complete=financial_history_complete,
-            announcements=announcements,
-            announcements_available=announcements_available,
-            pledge_ratio_pct=pledge_ratio,
-            unlock_ratio_pct=unlock_ratio,
-            corporate_risk_facts=corporate_risk_facts,
-            corporate_risk_history_complete=corporate_risk_history_complete,
-            corporate_risk_evidence_version=corporate_risk_evidence_version,
+            financial=financial.current,
+            financial_history=financial.history,
+            financial_history_complete=financial.history_complete,
+            announcements=announcements.announcements,
+            announcements_available=announcements.available,
+            pledge_ratio_pct=pledge.ratio,
+            unlock_ratio_pct=unlock.ratio,
+            corporate_risk_facts=announcements.risk_facts,
+            corporate_risk_history_complete=announcements.risk_history_complete,
+            corporate_risk_evidence_version=announcements.risk_evidence_version,
+            news_queried=news.queried,
             evidence=evidence,
-            source_errors=tuple(source_errors),
+            source_errors=source_errors,
         )
+
+    def _news_component(self, code: str, observed_at: datetime, *, enabled: bool) -> _NewsComponent:
+        if not enabled:
+            return _NewsComponent()
+        try:
+            evidence = self.fetch_news(code, observed_at=observed_at)
+        except _SOURCE_EXCEPTIONS as exc:
+            return _NewsComponent(source_error=_source_error("news", exc))
+        return _NewsComponent(evidence=evidence, queried=True)
+
+    def _financial_component(
+        self,
+        code: str,
+        observed_at: datetime,
+        policy: LongResearchPolicy,
+        *,
+        payload: Mapping[str, object] | None,
+        enabled: bool,
+    ) -> _FinancialComponent:
+        if not enabled:
+            return _FinancialComponent()
+        try:
+            current, history, history_complete, evidence = self._fetch_financial(
+                code,
+                observed_at,
+                policy,
+                payload=payload,
+            )
+        except _SOURCE_EXCEPTIONS as exc:
+            return _FinancialComponent(source_error=_source_error("financial", exc))
+        return _FinancialComponent(current, history, history_complete, evidence)
+
+    def _announcement_component(
+        self,
+        code: str,
+        observed_at: datetime,
+        policy: LongResearchPolicy,
+        *,
+        payload: Mapping[str, object] | None,
+        enabled: bool,
+    ) -> _AnnouncementComponent:
+        if not enabled:
+            return _AnnouncementComponent()
+        try:
+            announcements, evidence, facts, history_complete, version = self._fetch_announcements(
+                code,
+                observed_at,
+                policy,
+                payload=payload,
+                history_complete_allowed=payload is None,
+            )
+        except _SOURCE_EXCEPTIONS as exc:
+            return _AnnouncementComponent(source_error=_source_error("announcements", exc))
+        return _AnnouncementComponent(announcements, evidence, facts, history_complete, version, True)
+
+    def _pledge_component(
+        self,
+        code: str,
+        observed_at: datetime,
+        *,
+        payload: Mapping[str, object] | None,
+        enabled: bool,
+    ) -> _RatioComponent:
+        if not enabled:
+            return _RatioComponent()
+        try:
+            ratio, evidence = self._fetch_pledge(code, observed_at, payload=payload)
+        except _SOURCE_EXCEPTIONS as exc:
+            return _RatioComponent(source_error=_source_error("pledge", exc))
+        return _RatioComponent(ratio, evidence)
+
+    def _unlock_component(
+        self,
+        code: str,
+        observed_at: datetime,
+        policy: LongResearchPolicy,
+        *,
+        payload: Mapping[str, object] | None,
+        enabled: bool,
+    ) -> _RatioComponent:
+        if not enabled:
+            return _RatioComponent()
+        try:
+            ratio, evidence = self._fetch_unlock(code, observed_at, policy, payload=payload)
+        except _SOURCE_EXCEPTIONS as exc:
+            return _RatioComponent(source_error=_source_error("unlock", exc))
+        return _RatioComponent(ratio, evidence)
 
     def fetch_financial_snapshot(self, code: str) -> Mapping[str, object]:
         _validate_code(code)

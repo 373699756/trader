@@ -264,6 +264,7 @@ class ResearchObservation:
     corporate_risk_facts: tuple[CorporateRiskFact, ...] = ()
     corporate_risk_history_complete: bool = False
     corporate_risk_evidence_version: str = ""
+    news_queried: bool = False
     evidence: tuple[Evidence, ...] = ()
     source_errors: tuple[str, ...] = ()
 

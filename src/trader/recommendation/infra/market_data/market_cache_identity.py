@@ -287,6 +287,9 @@ def _merge_research_observation(
         corporate_risk_evidence_version=(
             current.corporate_risk_evidence_version or previous.corporate_risk_evidence_version
         ),
+        news_queried=(
+            previous.news_queried if "news" in failed_sources and not current.news_queried else current.news_queried
+        ),
         evidence=evidence,
         source_errors=tuple(dict.fromkeys(current.source_errors)),
     )
@@ -315,6 +318,7 @@ def _serialize_research_observation(observation: ResearchObservation) -> dict[st
         ),
         "corporate_risk_history_complete": observation.corporate_risk_history_complete,
         "corporate_risk_evidence_version": observation.corporate_risk_evidence_version,
+        "news_queried": observation.news_queried,
         "evidence": tuple(_serialize_evidence(item) for item in observation.evidence),
         "source_errors": list(observation.source_errors),
     }
@@ -353,6 +357,7 @@ def _deserialize_research_observation(raw: Mapping[str, object]) -> ResearchObse
         else (),
         corporate_risk_history_complete=bool(raw.get("corporate_risk_history_complete", False)),
         corporate_risk_evidence_version=str(raw.get("corporate_risk_evidence_version") or ""),
+        news_queried=bool(raw.get("news_queried", False)),
         evidence=tuple(_deserialize_evidence(item) for item in evidence_raw if isinstance(item, Mapping))
         if _is_json_sequence(evidence_raw)
         else (),

@@ -140,6 +140,11 @@ from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.factory import CreateDeepseekClient
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.market_data.announcement_sync import (
+    CninfoAnnouncementBatchSynchronizer,
+    CninfoAnnouncementHttpClient,
+    CninfoAnnouncementIncrementalSync,
+)
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
@@ -227,7 +232,7 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
         queue_capacity=len(codes),
         thread_name_prefix="risk-download",
     )
-    source_deadline = time.monotonic() + 120.0
+    cninfo_session = requests.Session()
     workers.start()
     try:
         runner = MarketTaskRunner(
@@ -243,7 +248,7 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
             get=cast(AkshareGetFunction, requests.get),
             timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
             long_research_policy=strategy.long_research,
-            cancel_requested=lambda: not workers.is_running() or time.monotonic() >= source_deadline,
+            cancel_requested=lambda: not workers.is_running(),
         )
         loader = ResearchLoader(
             research_client,
@@ -259,13 +264,28 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
             json_writer=None,
             monotonic=time.monotonic,
         )
+        cninfo_sync = CninfoAnnouncementBatchSynchronizer(
+            CninfoAnnouncementIncrementalSync(
+                CninfoAnnouncementHttpClient(
+                    post=cninfo_session.post,
+                    timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
+                    wall_clock=clock.now,
+                ),
+                risk_data,
+            ),
+            risk_data,
+            workers,
+            wall_clock=clock.now,
+        )
         result = DownloadRiskSnapshot(
             loader,
             codes,
-            RiskDownloadContext(target_date, observed_at, time.monotonic),
+            RiskDownloadContext(target_date, observed_at, time.monotonic, clock.now),
+            announcement_sync=cninfo_sync,
         )
     finally:
         workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        cninfo_session.close()
     return replace(result, elapsed_seconds=max(0.0, time.monotonic() - command_started))
 
 

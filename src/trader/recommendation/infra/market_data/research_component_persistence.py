@@ -31,7 +31,6 @@ from trader.recommendation.infra.market_data.announcement_sync import (
 )
 from trader.recommendation.infra.market_data.market_cache_identity import (
     _deserialize_research_observation,
-    _merge_research_observation,
     _research_data_version,
     _research_source_time,
     _serialize_research_observation,
@@ -335,17 +334,43 @@ def _recover_cninfo_observations(
     for code, announcements in announcements_by_code.items():
         ordered = tuple(sorted(announcements, key=lambda item: (item.published_at, item.announcement_id)))
         facts = CorporateRiskFactsFromAnnouncements(ordered)
-        observation = ResearchObservation(
-            announcements=ordered,
-            announcements_available=True,
-            corporate_risk_facts=facts,
-            corporate_risk_history_complete=history_complete_by_code.get(code, False),
-            corporate_risk_evidence_version=_cninfo_evidence_version(code, ordered),
-        )
         key = (code, True)
         previous = entries.get(key)
-        if previous is not None:
-            observation = _merge_research_observation(previous, observation)
+        if previous is None:
+            observation = ResearchObservation(
+                announcements=ordered,
+                announcements_available=True,
+                corporate_risk_facts=facts,
+                corporate_risk_history_complete=history_complete_by_code.get(code, False),
+                corporate_risk_evidence_version=_cninfo_evidence_version(code, ordered),
+            )
+        else:
+            previous_observation = previous.observation
+            merged_announcements = tuple(
+                sorted(
+                    {item.announcement_id: item for item in (*previous_observation.announcements, *ordered)}.values(),
+                    key=lambda item: (item.published_at, item.announcement_id),
+                )
+            )
+            merged_facts = tuple(
+                sorted(
+                    {
+                        (item.category, item.evidence_id): item
+                        for item in (*previous_observation.corporate_risk_facts, *facts)
+                    }.values(),
+                    key=lambda item: (item.announced_at, item.category.value, item.evidence_id),
+                )
+            )
+            observation = replace(
+                previous_observation,
+                announcements=merged_announcements,
+                announcements_available=True,
+                corporate_risk_facts=merged_facts,
+                corporate_risk_history_complete=(
+                    previous_observation.corporate_risk_history_complete or history_complete_by_code.get(code, False)
+                ),
+                corporate_risk_evidence_version=_cninfo_evidence_version(code, merged_announcements),
+            )
         restored[key] = _ResearchEntry(
             replace(observation, data_version=state._versions.advance("research")), monotonic() + ttl_seconds
         )
@@ -353,6 +378,15 @@ def _recover_cninfo_observations(
         return
     with state._lock:
         entries.update(restored)
+        for (code, _structured), entry in restored.items():
+            current = state._component_statuses.setdefault(code, {})
+            for component, status in zip(
+                RESEARCH_COMPONENT_IDS,
+                ResearchComponentStatuses(entry.observation),
+                strict=True,
+            ):
+                if status == "known_risk":
+                    current[component] = status
 
 
 def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane) -> dict[str, bool]:

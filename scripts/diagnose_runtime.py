@@ -970,6 +970,9 @@ def _research_source_compare_details(
                 "sample_count": _safe_nonnegative_int(item.get("sample_count")),
                 "field_coverage": _mapping(item.get("field_coverage")),
                 "interface_status": _safe_text(item.get("interface_status")),
+                "production_role": _safe_text(item.get("production_role")),
+                "regulatory_history_complete": item.get("regulatory_history_complete") is True,
+                "exchange_cross_check_status": _safe_text(item.get("exchange_cross_check_status")),
                 "missing_field_counts": missing_field_counts,
                 "component_error_counts": component_error_counts,
             }

@@ -439,7 +439,18 @@ def test_research_source_compare_projects_bounded_component_errors() -> None:
                                 }
                             ],
                             "raw_payload": "secret",
-                        }
+                        },
+                        {
+                            "source": "cninfo",
+                            "tested": True,
+                            "excluded_by_budget": False,
+                            "physical_http_requests": 2,
+                            "sample_count": 1,
+                            "interface_status": "complete",
+                            "production_role": "issuer_announcement_history_supplement",
+                            "regulatory_history_complete": False,
+                            "exchange_cross_check_status": "pending",
+                        },
                     ],
                     "selected_route": {"primary": None},
                     "budget": {"elapsed_ms": 4.0},
@@ -453,6 +464,9 @@ def test_research_source_compare_projects_bounded_component_errors() -> None:
     assert summary["required_fields"] == ["financial", "pledge"]
     assert summary["sources"][0]["missing_field_counts"] == {"pledge": 1}
     assert summary["sources"][0]["component_error_counts"] == {"pledge:Timeout": 1}
+    assert summary["sources"][1]["production_role"] == "issuer_announcement_history_supplement"
+    assert summary["sources"][1]["regulatory_history_complete"] is False
+    assert summary["sources"][1]["exchange_cross_check_status"] == "pending"
     assert "600519" not in str(summary)
     assert "raw_payload" not in str(summary)
 

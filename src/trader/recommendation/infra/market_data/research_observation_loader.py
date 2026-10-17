@@ -93,6 +93,19 @@ class _ResearchActionScope:
     action_restrictions: dict[str, set[str]] | None
 
 
+@dataclass(frozen=True)
+class _RiskBatchSubmission:
+    futures: Mapping[Future[Mapping[str, ResearchObservation]], tuple[str, ...]]
+    started_at: Mapping[Future[Mapping[str, ResearchObservation]], float]
+
+
+@dataclass(frozen=True)
+class _RiskBatchOutcome:
+    changed_codes: tuple[str, ...]
+    consumed_codes: tuple[str, ...]
+    deadline_reached: bool
+
+
 class ResearchLoaderOptions(TypedDict):
     workers: int
     ttl_seconds: float
@@ -512,6 +525,43 @@ class ResearchLoader:
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         client = self._risk_batch_client
         assert client is not None
+        submission = self._submit_risk_batches(pool, state, missing, client)
+        pending = set(submission.futures)
+        consumed: set[str] = set()
+        changed_codes: list[str] = []
+        timeout = self._remaining_research_timeout(state.request.deadline)
+        while pending:
+            completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
+            if not completed:
+                break
+            deadline_reached = False
+            for future in sorted(completed, key=lambda item: submission.futures[item]):
+                outcome = self._consume_risk_batch(
+                    state,
+                    future,
+                    submission.futures[future],
+                    submission.started_at[future],
+                )
+                changed_codes.extend(outcome.changed_codes)
+                consumed.update(outcome.consumed_codes)
+                deadline_reached = outcome.deadline_reached
+                if deadline_reached:
+                    break
+            if deadline_reached:
+                break
+            timeout = self._remaining_research_timeout(state.request.deadline)
+
+        deferred = tuple(code for code in missing if code not in consumed)
+        self._cancel_deferred_risk_batches(submission.futures, consumed, deferred)
+        return tuple(changed_codes), deferred
+
+    def _submit_risk_batches(
+        self,
+        pool: WorkerExecutor,
+        state: _ResearchLoadState,
+        missing: Sequence[str],
+        client: RiskSnapshotBatchSource,
+    ) -> _RiskBatchSubmission:
         batches = tuple(tuple(missing[index : index + 50]) for index in range(0, len(missing), 50))
         futures: dict[Future[Mapping[str, ResearchObservation]], tuple[str, ...]] = {}
         started_at: dict[Future[Mapping[str, ResearchObservation]], float] = {}
@@ -526,53 +576,54 @@ class ResearchLoader:
             )
             futures[future] = batch
             started_at[future] = started
+        return _RiskBatchSubmission(futures=futures, started_at=started_at)
 
-        pending = set(futures)
-        consumed: set[str] = set()
+    def _consume_risk_batch(
+        self,
+        state: _ResearchLoadState,
+        future: Future[Mapping[str, ResearchObservation]],
+        batch: tuple[str, ...],
+        started_at: float,
+    ) -> _RiskBatchOutcome:
         changed_codes: list[str] = []
         deadline_reached = False
-        timeout = self._remaining_research_timeout(state.request.deadline)
-        while pending:
-            completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
-            if not completed:
+        batch_observations: dict[str, ResearchObservation] = {}
+        latency_ms = max(0.0, (self._monotonic() - started_at) * 1000.0)
+        try:
+            observations = future.result()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            observations = {
+                code: ResearchObservation(source_errors=(f"batch:{_batch_error_code(exc)}",)) for code in batch
+            }
+        consumed: list[str] = []
+        for code in batch:
+            try:
+                self._runner.ensure_before_deadline(state.request.deadline)
+            except MarketDataDeadlineExceededError:
+                deadline_reached = True
                 break
-            for future in sorted(completed, key=lambda item: futures[item]):
-                batch = futures[future]
-                batch_observations: dict[str, ResearchObservation] = {}
-                latency_ms = max(0.0, (self._monotonic() - started_at[future]) * 1000.0)
-                try:
-                    observations = future.result()
-                except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                    observations = {
-                        code: ResearchObservation(source_errors=(f"batch:{_batch_error_code(exc)}",)) for code in batch
-                    }
-                for code in batch:
-                    try:
-                        self._runner.ensure_before_deadline(state.request.deadline)
-                    except MarketDataDeadlineExceededError:
-                        deadline_reached = True
-                        break
-                    observation = observations.get(code)
-                    if observation is None:
-                        observation = ResearchObservation(source_errors=("batch:source_failed",))
-                    if self._consume_research_observation(state, code, observation, latency_ms, persist=False):
-                        changed_codes.append(code)
-                    batch_observations[code] = state.result[code]
-                    consumed.add(code)
-                if batch_observations and self._data_plane is not None:
-                    _persist_research_component_status_batch_from_plane(
-                        self,
-                        self._data_plane,
-                        state.request.observed_at,
-                        batch_observations,
-                    )
-                if deadline_reached:
-                    break
-            if deadline_reached:
-                break
-            timeout = self._remaining_research_timeout(state.request.deadline)
+            observation = observations.get(code)
+            if observation is None:
+                observation = ResearchObservation(source_errors=("batch:source_failed",))
+            if self._consume_research_observation(state, code, observation, latency_ms, persist=False):
+                changed_codes.append(code)
+            batch_observations[code] = state.result[code]
+            consumed.append(code)
+        if batch_observations and self._data_plane is not None:
+            _persist_research_component_status_batch_from_plane(
+                self,
+                self._data_plane,
+                state.request.observed_at,
+                batch_observations,
+            )
+        return _RiskBatchOutcome(tuple(changed_codes), tuple(consumed), deadline_reached)
 
-        deferred = tuple(code for code in missing if code not in consumed)
+    def _cancel_deferred_risk_batches(
+        self,
+        futures: Mapping[Future[Mapping[str, ResearchObservation]], tuple[str, ...]],
+        consumed: set[str],
+        deferred: tuple[str, ...],
+    ) -> None:
         if deferred:
             for future, batch in futures.items():
                 if any(code not in consumed for code in batch):
@@ -581,7 +632,6 @@ class ResearchLoader:
                 self._error_count += len(deferred)
                 self._timeout_count += len(deferred)
                 self._last_error = "research_batch_deadline"
-        return tuple(changed_codes), deferred
 
     def _cancel_deferred_research(
         self,

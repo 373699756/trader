@@ -7,16 +7,22 @@ import json
 import math
 import time
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 import requests
 
+from trader.infra.failures import ClassifyAdapterFailure
 from trader.infra.market_data.providers.akshare_http_contracts import AkshareGetFunction, AkshareHttpResponse
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.recommendation.domain.market.research import ResearchObservation
+from trader.recommendation.infra.market_data.announcement_sync import (
+    CninfoAnnouncementHttpClient,
+    CninfoAnnouncementQuery,
+    ParseCninfoAnnouncementRows,
+)
 from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -108,12 +114,101 @@ def _probe_eastmoney(
     }
 
 
+def _probe_cninfo(
+    codes: tuple[str, ...],
+    *,
+    timeout_seconds: float,
+    loop_seconds: float,
+    task_deadline: float,
+) -> dict[str, object]:
+    source_deadline = min(task_deadline, time.monotonic() + loop_seconds)
+    samples: list[dict[str, object]] = []
+    request_count = 0
+    excluded = False
+    started = time.monotonic()
+    with requests.Session() as session:
+
+        def counted_post(url: str, **kwargs: Any) -> requests.Response:
+            nonlocal request_count
+            request_count += 1
+            return session.post(url, **kwargs)
+
+        client = CninfoAnnouncementHttpClient(
+            post=counted_post,
+            timeout_seconds=timeout_seconds,
+            wall_clock=lambda: datetime.now(_SHANGHAI),
+        )
+        for code in codes:
+            remaining = source_deadline - time.monotonic()
+            if remaining <= 0.0:
+                excluded = True
+                break
+            sample_started = time.monotonic()
+            try:
+                now = datetime.now(_SHANGHAI)
+                payload = client.fetch_announcements(
+                    CninfoAnnouncementQuery(
+                        code=code,
+                        page=1,
+                        page_size=30,
+                        observed_at=now,
+                        cursor_value="",
+                        deadline=now + timedelta(seconds=remaining),
+                    )
+                )
+                rows, invalid = ParseCninfoAnnouncementRows(code, payload, now)
+                total = payload.get("totalRecordNum")
+                has_more = payload.get("hasMore")
+                samples.append(
+                    {
+                        "code": code,
+                        "elapsed_ms": round((time.monotonic() - sample_started) * 1000.0, 3),
+                        "page_rows": len(rows),
+                        "invalid_rows": invalid,
+                        "total_records": total if isinstance(total, int) else None,
+                        "has_more": has_more if isinstance(has_more, bool) else None,
+                        "status": "available",
+                    }
+                )
+            except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
+                failure = ClassifyAdapterFailure(exc, provider="cninfo", operation="announcement_page")
+                samples.append(
+                    {
+                        "code": code,
+                        "elapsed_ms": round((time.monotonic() - sample_started) * 1000.0, 3),
+                        "status": "failed",
+                        "error": failure.code.value,
+                    }
+                )
+    available = sum(sample["status"] == "available" for sample in samples)
+    return {
+        "source": "cninfo",
+        "transport": "public_issuer_announcement_query",
+        "tested": True,
+        "excluded_by_budget": excluded,
+        "elapsed_ms": round((time.monotonic() - started) * 1000.0, 3),
+        "physical_http_requests": request_count,
+        "sample_count": len(samples),
+        "samples": samples,
+        "interface_status": "complete" if available == len(codes) else "partial" if available else "failed",
+        "production_role": "issuer_announcement_history_supplement",
+        "regulatory_history_complete": False,
+        "exchange_cross_check_status": "pending",
+    }
+
+
 def Collect(args: argparse.Namespace) -> dict[str, object]:
     task_started = time.monotonic()
     task_deadline = task_started + args.task_seconds
     eastmoney = _probe_eastmoney(
         tuple(args.codes),
         config=args.config,
+        timeout_seconds=args.timeout_seconds,
+        loop_seconds=args.source_loop_seconds,
+        task_deadline=task_deadline,
+    )
+    cninfo = _probe_cninfo(
+        tuple(args.codes),
         timeout_seconds=args.timeout_seconds,
         loop_seconds=args.source_loop_seconds,
         task_deadline=task_deadline,
@@ -128,6 +223,7 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
             "production_role": "unsupported_for_company_research",
         },
         eastmoney,
+        cninfo,
     ]
     eastmoney_status = eastmoney["interface_status"]
     eastmoney_usable = eastmoney_status == "complete" and not eastmoney["excluded_by_budget"]
