@@ -93,6 +93,16 @@ class StderrRiskDownloadProgress:
             parts.append(f"公告保存 {progress.official_announcements_saved:>6}")
         if progress.stage == "official_announcements" or progress.official_resumed_codes:
             parts.append(f"断点续传 {progress.official_resumed_codes:>6}")
+        if progress.stage == "official_announcements" and progress.state in {"completed", "deferred"}:
+            parts.append(f"来源耗时 {progress.official_sync_seconds:.2f}秒")
+            parts.append(
+                "分项累计 "
+                f"请求{progress.official_request_seconds:.2f}/"
+                f"解析{progress.official_parse_seconds:.2f}/"
+                f"公告写入{progress.official_evidence_write_seconds:.2f}/"
+                f"断点写入{progress.official_cursor_write_seconds:.2f}秒"
+            )
+            parts.append(f"恢复耗时 {progress.official_recovery_seconds:.2f}秒")
         if progress.stop_reason is not None:
             parts.append(f"停止原因 {progress.stop_reason}")
         with self._lock:

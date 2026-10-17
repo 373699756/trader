@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, wait
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
+from threading import Lock
 
 import requests
 
@@ -21,6 +24,7 @@ from trader.recommendation.infra.market_data.announcement_sync import (
 )
 
 _RESULT_DRAIN_SECONDS = 1.0
+_PROGRESS_INTERVAL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,62 @@ class CninfoBatchSyncReport:
     saved_announcements: int
     resumed_codes: tuple[str, ...]
     deadline_reached: bool
+    request_seconds: float
+    parse_seconds: float
+    evidence_write_seconds: float
+    cursor_write_seconds: float
+
+
+class _CninfoBatchProgress:
+    def __init__(
+        self,
+        total_codes: int,
+        publish: Callable[[tuple[int, int, int, int, int, int]], None] | None,
+    ) -> None:
+        self._total_codes = total_codes
+        self._publish = publish
+        self._lock = Lock()
+        self._pages_by_code: dict[str, tuple[int, int, int]] = {}
+        self._processed = 0
+        self._completed = 0
+        self._last_publish = 0.0
+        self._closed = False
+
+    def checkpoint(self, code: str, counts: tuple[int, int, int]) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._pages_by_code[code] = counts
+            self._emit(force=False)
+
+    def results(self, results: Mapping[str, CninfoSyncResult], failed: set[str]) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            for code, result in results.items():
+                self._pages_by_code[code] = (
+                    result.pages_fetched,
+                    result.pages_checkpointed,
+                    result.saved_announcements,
+                )
+            self._processed = min(self._total_codes, len(results) + len(failed))
+            self._completed = sum(result.history_complete for result in results.values())
+            self._emit(force=True)
+
+    def close(self) -> dict[str, tuple[int, int, int]]:
+        with self._lock:
+            self._closed = True
+            return dict(self._pages_by_code)
+
+    def _emit(self, *, force: bool) -> None:
+        if self._publish is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_publish < _PROGRESS_INTERVAL_SECONDS:
+            return
+        self._last_publish = now
+        pages = tuple(sum(counts[index] for counts in self._pages_by_code.values()) for index in range(3))
+        self._publish((self._processed, self._total_codes, pages[0], pages[1], pages[2], self._completed))
 
 
 class CninfoAnnouncementBatchSynchronizer:
@@ -77,24 +137,28 @@ class CninfoAnnouncementBatchSynchronizer:
         observed_at: datetime,
         *,
         deadline: datetime,
-        progress: Callable[[tuple[int, int, int, int, int]], None] | None = None,
+        progress: Callable[[tuple[int, int, int, int, int, int]], None] | None = None,
     ) -> CninfoBatchSyncReport:
-        results, failed, pending = self._collect_sync_results(codes, observed_at, deadline, progress)
+        results, failed, pending, page_counts = self._collect_sync_results(codes, observed_at, deadline, progress)
         completed_codes = tuple(sorted(code for code, result in results.items() if result.history_complete))
-        changed_codes = tuple(sorted(code for code, result in results.items() if result.saved_announcements > 0))
+        changed_codes = tuple(sorted(code for code, counts in page_counts.items() if counts[2] > 0))
         failed.update(code for code, result in results.items() if result.terminal_failure)
         deferred = tuple(sorted(set(codes) - set(completed_codes) - failed))
         return CninfoBatchSyncReport(
             changed_codes=changed_codes,
             completed_codes=completed_codes,
-            attempted_codes=tuple(sorted(set(results) | failed)),
+            attempted_codes=tuple(sorted(set(results) | failed | set(page_counts))),
             deferred_codes=deferred,
             failed_codes=tuple(sorted(failed)),
-            pages_fetched=sum(result.pages_fetched for result in results.values()),
-            pages_checkpointed=sum(result.pages_checkpointed for result in results.values()),
-            saved_announcements=sum(result.saved_announcements for result in results.values()),
+            pages_fetched=sum(counts[0] for counts in page_counts.values()),
+            pages_checkpointed=sum(counts[1] for counts in page_counts.values()),
+            saved_announcements=sum(counts[2] for counts in page_counts.values()),
             resumed_codes=tuple(sorted(code for code, result in results.items() if result.resumed)),
             deadline_reached=bool(pending) or self._wall_clock() >= deadline,
+            request_seconds=sum(result.request_seconds for result in results.values()),
+            parse_seconds=sum(result.parse_seconds for result in results.values()),
+            evidence_write_seconds=sum(result.evidence_write_seconds for result in results.values()),
+            cursor_write_seconds=sum(result.cursor_write_seconds for result in results.values()),
         )
 
     def _fill_sync_futures(
@@ -104,6 +168,7 @@ class CninfoAnnouncementBatchSynchronizer:
         observed_at: datetime,
         deadline: datetime,
         futures: dict[Future[CninfoSyncResult], str],
+        progress: _CninfoBatchProgress,
     ) -> int:
         while next_index < len(codes) and len(futures) < self._max_inflight and self._wall_clock() < deadline:
             code = codes[next_index]
@@ -113,6 +178,7 @@ class CninfoAnnouncementBatchSynchronizer:
                 code,
                 observed_at,
                 deadline=deadline,
+                progress=partial(progress.checkpoint, code),
             )
             futures[future] = code
             next_index += 1
@@ -123,10 +189,11 @@ class CninfoAnnouncementBatchSynchronizer:
         codes: Sequence[str],
         observed_at: datetime,
         deadline: datetime,
-        progress: Callable[[tuple[int, int, int, int, int]], None] | None,
-    ) -> tuple[dict[str, CninfoSyncResult], set[str], bool]:
+        progress: Callable[[tuple[int, int, int, int, int, int]], None] | None,
+    ) -> tuple[dict[str, CninfoSyncResult], set[str], bool, dict[str, tuple[int, int, int]]]:
         futures: dict[Future[CninfoSyncResult], str] = {}
-        next_index = self._fill_sync_futures(codes, 0, observed_at, deadline, futures)
+        tracker = _CninfoBatchProgress(len(codes), progress)
+        next_index = self._fill_sync_futures(codes, 0, observed_at, deadline, futures, tracker)
         results: dict[str, CninfoSyncResult] = {}
         failed: set[str] = set()
         pending = set(futures)
@@ -142,17 +209,18 @@ class CninfoAnnouncementBatchSynchronizer:
             for future in completed:
                 futures.pop(future, None)
             if not rate_limited:
-                next_index = self._fill_sync_futures(codes, next_index, observed_at, deadline, futures)
+                next_index = self._fill_sync_futures(codes, next_index, observed_at, deadline, futures, tracker)
                 pending.update(futures)
-            _publish_batch_progress(progress, codes, results, failed)
+            tracker.results(results, failed)
         if pending:
             completed, pending = wait(pending, timeout=_RESULT_DRAIN_SECONDS)
             self._consume_sync_results(completed, futures, codes, results, failed)
-            _publish_batch_progress(progress, codes, results, failed)
+            tracker.results(results, failed)
         for future in pending:
             future.cancel()
         has_pending = bool(pending) or next_index < len(codes)
-        return results, failed, has_pending
+        page_counts = tracker.close()
+        return results, failed, has_pending, page_counts
 
     @staticmethod
     def _consume_sync_results(
@@ -174,25 +242,6 @@ class CninfoAnnouncementBatchSynchronizer:
                 if not failure.retryable:
                     failed.add(code)
         return False
-
-
-def _publish_batch_progress(
-    progress: Callable[[tuple[int, int, int, int, int]], None] | None,
-    codes: Sequence[str],
-    results: Mapping[str, CninfoSyncResult],
-    failed: set[str],
-) -> None:
-    if progress is None:
-        return
-    progress(
-        (
-            min(len(codes), len(results) + len(failed)),
-            len(codes),
-            sum(result.pages_fetched for result in results.values()),
-            sum(result.pages_checkpointed for result in results.values()),
-            sum(result.saved_announcements for result in results.values()),
-        )
-    )
 
 
 __all__ = ["CninfoAnnouncementBatchSynchronizer", "CninfoBatchSyncReport"]

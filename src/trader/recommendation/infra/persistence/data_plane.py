@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -93,14 +93,18 @@ class SQLiteDataPlane:
         self._runtime_root = database_path.parent if database_path is not None else runtime_root / "market-data"
         self._database = database_path if database_path is not None else self._runtime_root / "market-data.sqlite3"
         self._lock = threading.RLock()
+        self._initialized = False
 
     def initialize(self) -> None:
         with self._lock:
+            if self._initialized and self._database.is_file():
+                return
             try:
                 self._runtime_root.mkdir(parents=True, exist_ok=True)
                 data_plane_sqlite.InitializeDatabase(self._database)
             except sqlite3.DatabaseError as exc:
                 raise _map_sqlite_error(exc, operation="initialize") from exc
+            self._initialized = True
 
     def save_security_master_recent(self, record: SecurityMasterRecord) -> None:
         self._save("security_master", mode="recent", record=record)
@@ -156,6 +160,49 @@ class SQLiteDataPlane:
         codes: Sequence[str] | None = None,
     ) -> tuple[RiskEvidenceRecord, ...]:
         return cast(tuple[RiskEvidenceRecord, ...], self._load_records("risk_evidence", mode="recent", codes=codes))
+
+    def scan_risk_evidence_recent_records(
+        self,
+        consume: Callable[[RiskEvidenceRecord], None],
+        codes: Sequence[str] | None = None,
+    ) -> None:
+        self.initialize()
+        selected = tuple(sorted(set(codes))) if codes is not None else None
+        if selected == ():
+            return
+        selected_set = set(selected) if selected is not None else None
+        with self._lock:
+            try:
+                with data_plane_sqlite.ConnectionScope(self._database) as connection:
+                    if selected is not None and len(selected) <= 900:
+                        placeholders = ", ".join("?" for _ in selected)
+                        query = (
+                            "SELECT * FROM risk_evidence_recent WHERE status = 'committed' "
+                            f"AND code IN ({placeholders}) ORDER BY code, evidence_id"
+                        )
+                        rows = connection.execute(query, selected)
+                    else:
+                        rows = connection.execute(
+                            "SELECT * FROM risk_evidence_recent WHERE status = 'committed' ORDER BY code, evidence_id"
+                        )
+                    for row in rows:
+                        if (
+                            selected_set is not None
+                            and len(selected_set) > 900
+                            and _text(row["code"]) not in selected_set
+                        ):
+                            continue
+                        try:
+                            _assert_committed_record_integrity("risk_evidence_recent", row)
+                            record = cast(RiskEvidenceRecord, _row_to_record("risk_evidence_recent", row))
+                        except (TypeError, ValueError, KeyError):
+                            self._quarantine_row(
+                                connection, "risk_evidence_recent", row, reason="load_verification_failed"
+                            )
+                            continue
+                        consume(record)
+            except sqlite3.DatabaseError as exc:
+                raise _map_sqlite_error(exc, operation="load") from exc
 
     def load_risk_evidence_formal(
         self,
@@ -398,11 +445,7 @@ class SQLiteDataPlane:
         evidence_filter = tuple(sorted(set(evidence_ids))) if evidence_ids else None
         calendar_filter = tuple(sorted(set(calendar_names))) if calendar_names else None
 
-        query = f"SELECT * FROM {table} WHERE status = ?"
-        params: tuple[object, ...] = ("committed",)
-        if mode == "formal":
-            query += " AND freeze_id = ?"
-            params = ("committed", freeze_id)
+        query, params = _record_select_query(table, mode, freeze_id, code_filter, cursor_filter)
         query += f" ORDER BY {', '.join(_identity_fields_for_table(table))}"
 
         result: list[Record] = []
@@ -506,6 +549,27 @@ class SQLiteDataPlane:
             ),
         )
         return True
+
+
+def _record_select_query(
+    table: str,
+    mode: Mode,
+    freeze_id: str | None,
+    code_filter: tuple[str, ...] | None,
+    cursor_filter: tuple[str, ...] | None,
+) -> tuple[str, tuple[object, ...]]:
+    query = f"SELECT * FROM {table} WHERE status = ?"
+    params: tuple[object, ...] = ("committed",)
+    if mode == "formal":
+        query += " AND freeze_id = ?"
+        params += (freeze_id,)
+    if code_filter is not None and len(code_filter) <= 900:
+        query += f" AND code IN ({', '.join('?' for _ in code_filter)})"
+        params += code_filter
+    if cursor_filter is not None and len(cursor_filter) <= 900:
+        query += f" AND cursor_name IN ({', '.join('?' for _ in cursor_filter)})"
+        params += cursor_filter
+    return query, params
 
 
 def _profile(family: str) -> _Profile:

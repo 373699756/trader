@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections import deque
 from collections.abc import Callable, Mapping, Sequence
@@ -70,9 +71,9 @@ class _ResearchDataPlane(Protocol):
 
     def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None: ...
 
-    def load_risk_evidence_recent_records(
-        self, codes: Sequence[str] | None = None
-    ) -> tuple[RiskEvidenceRecord, ...]: ...
+    def scan_risk_evidence_recent_records(
+        self, consume: Callable[[RiskEvidenceRecord], None], codes: Sequence[str] | None = None
+    ) -> None: ...
 
     def load_source_cursor_recent_records(
         self, cursor_names: Sequence[str] | None = None
@@ -115,33 +116,35 @@ def RecoverResearchComponentStatuses(
     observed_at: datetime,
     *,
     retain_stale: bool = False,
+    codes: Sequence[str] | None = None,
 ) -> None:
+    restored: dict[str, dict[str, ResearchComponentStatus]] = {}
+    restored_observations: dict[str, tuple[ResearchObservation, datetime]] = {}
+    cninfo_announcements: dict[str, list[ResearchAnnouncement]] = {}
+
+    def consume(record: RiskEvidenceRecord) -> None:
+        observation = _recovered_observation(record, observed_at)
+        if observation is not None:
+            restored_observations[record.code] = (observation, record.observed_at)
+            return
+        component_status = _recovered_component_status(record)
+        if component_status is not None:
+            component, status = component_status
+            current = restored.setdefault(record.code, {}).get(component)
+            restored[record.code][component] = status if current is None else _merge_component_status(current, status)
+            return
+        announcement = _recovered_cninfo_announcement(record)
+        if announcement is not None:
+            cninfo_announcements.setdefault(record.code, []).append(announcement)
+
     try:
-        records = data_plane.load_risk_evidence_recent_records()
+        data_plane.scan_risk_evidence_recent_records(consume, codes)
     except DataPlaneUnavailableError:
         _LOGGER.warning("research data plane unavailable during recovery")
         return
     except Exception as exc:
         _LOGGER.warning("research recovery read failed: %s", type(exc).__name__)
         return
-
-    restored: dict[str, dict[str, ResearchComponentStatus]] = {}
-    restored_observations: dict[str, tuple[ResearchObservation, datetime]] = {}
-    cninfo_announcements: dict[str, list[ResearchAnnouncement]] = {}
-    for record in records:
-        observation = _recovered_observation(record, observed_at)
-        if observation is not None:
-            restored_observations[record.code] = (observation, record.observed_at)
-            continue
-        component_status = _recovered_component_status(record)
-        if component_status is not None:
-            component, status = component_status
-            current = restored.setdefault(record.code, {}).get(component)
-            restored[record.code][component] = status if current is None else _merge_component_status(current, status)
-            continue
-        announcement = _recovered_cninfo_announcement(record)
-        if announcement is not None:
-            cninfo_announcements.setdefault(record.code, []).append(announcement)
     with state._lock:
         state._component_statuses.update(restored)
         for code, (observation, cached_at) in restored_observations.items():
@@ -326,7 +329,7 @@ def _recover_cninfo_observations(
 ) -> None:
     if not announcements_by_code:
         return
-    history_complete_by_code = _cninfo_history_complete_by_code(data_plane)
+    history_complete_by_code = _cninfo_history_complete_by_code(data_plane, tuple(announcements_by_code))
     entries = state._entries
     monotonic = state._monotonic
     ttl_seconds = state._ttl_seconds
@@ -389,9 +392,9 @@ def _recover_cninfo_observations(
                     current[component] = status
 
 
-def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane) -> dict[str, bool]:
+def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane, codes: Sequence[str]) -> dict[str, bool]:
     try:
-        records = data_plane.load_source_cursor_recent_records()
+        records = data_plane.load_source_cursor_recent_records(tuple(f"{CNINFO_CURSOR_PREFIX}{code}" for code in codes))
     except DataPlaneUnavailableError:
         return {}
     result: dict[str, bool] = {}
@@ -405,8 +408,13 @@ def _cninfo_history_complete_by_code(data_plane: _ResearchDataPlane) -> dict[str
 
 
 def _cninfo_evidence_version(code: str, announcements: tuple[ResearchAnnouncement, ...]) -> str:
-    coordinates = tuple((item.announcement_id, item.published_at.isoformat()) for item in announcements)
-    return f"cninfo-risk-evidence:{code}:{coordinates!r}"
+    digest = hashlib.sha256()
+    for item in announcements:
+        digest.update(item.announcement_id.encode("utf-8"))
+        digest.update(b"\x00")
+        digest.update(item.published_at.isoformat().encode("ascii"))
+        digest.update(b"\x00")
+    return f"cninfo-risk-evidence:{code}:{digest.hexdigest()}"
 
 
 def LoaderStatus(state: _ResearchLoaderStatusState) -> ResearchLoaderStatus:

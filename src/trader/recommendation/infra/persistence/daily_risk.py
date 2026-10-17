@@ -25,6 +25,7 @@ class SQLiteDailyRiskIndex:
         self._target_date = target_date
         self._lock = threading.RLock()
         self._prepared: set[date] = set()
+        self._planes: dict[date, SQLiteDataPlane] = {}
 
     def initialize(self) -> None:
         self.prepare(self._target_date())
@@ -66,6 +67,15 @@ class SQLiteDailyRiskIndex:
         self.prepare(trade_date)
         return self._plane(trade_date).load_risk_evidence_recent_records(codes)
 
+    def scan_risk_evidence_recent_records(
+        self,
+        consume: Callable[[RiskEvidenceRecord], None],
+        codes: Sequence[str] | None = None,
+    ) -> None:
+        trade_date = self._target_date()
+        self.prepare(trade_date)
+        self._plane(trade_date).scan_risk_evidence_recent_records(consume, codes)
+
     def save_source_cursor_recent(self, record: SourceCursorRecord) -> None:
         trade_date = self._target_date()
         self.prepare(trade_date)
@@ -84,7 +94,12 @@ class SQLiteDailyRiskIndex:
         return self._plane(trade_date).load_source_cursor_recent_records(cursor_names)
 
     def _plane(self, trade_date: date) -> SQLiteDataPlane:
-        return SQLiteDataPlane(self._root, database_path=self.database_for(trade_date))
+        with self._lock:
+            plane = self._planes.get(trade_date)
+            if plane is None:
+                plane = SQLiteDataPlane(self._root, database_path=self.database_for(trade_date))
+                self._planes[trade_date] = plane
+            return plane
 
     def _publish_seeded_partition(self, trade_date: date, database: Path) -> None:
         previous = self._latest_partition_before(trade_date)

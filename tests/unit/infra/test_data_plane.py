@@ -70,7 +70,23 @@ def test_security_master_batch_uses_one_write_transaction(
 
     assert connection_count == 2
     assert data_plane.load_security_master_recent_records() == records
-    assert connection_count == 4
+    assert connection_count == 3
+
+
+def test_risk_evidence_scan_reads_only_requested_codes_without_materializing_all_rows(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    records = (
+        _risk_evidence_record("600001", "a"),
+        _risk_evidence_record("600001", "b"),
+        _risk_evidence_record("600002", "c"),
+    )
+    data_plane.save_risk_evidence_recent_records(records)
+    seen: list[RiskEvidenceRecord] = []
+
+    data_plane.scan_risk_evidence_recent_records(seen.append, ("600001",))
+
+    assert seen == list(records[:2])
+    assert data_plane.load_risk_evidence_recent_records(("600001",)) == records[:2]
 
 
 def test_security_master_batch_rolls_back_when_one_record_conflicts(tmp_path: Path) -> None:

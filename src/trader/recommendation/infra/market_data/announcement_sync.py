@@ -85,6 +85,10 @@ class CninfoSyncResult:
     checkpoint_advanced: bool = False
     resumed: bool = False
     terminal_failure: bool = False
+    request_seconds: float = 0.0
+    parse_seconds: float = 0.0
+    evidence_write_seconds: float = 0.0
+    cursor_write_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -145,6 +149,10 @@ class _CninfoRunCounters:
     duplicate_rows: int = 0
     invalid_rows: int = 0
     checkpoint_advanced: bool = False
+    request_seconds: float = 0.0
+    parse_seconds: float = 0.0
+    evidence_write_seconds: float = 0.0
+    cursor_write_seconds: float = 0.0
     source_errors: list[str] = field(default_factory=list)
 
 
@@ -175,11 +183,13 @@ class CninfoAnnouncementIncrementalSync:
         *,
         page_size: int = 30,
         max_pages: int = 400,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client = client
         self._data_plane = data_plane
         self._page_size = max(1, page_size)
         self._max_pages = max(1, max_pages)
+        self._monotonic = monotonic
 
     def sync_code(
         self,
@@ -187,6 +197,7 @@ class CninfoAnnouncementIncrementalSync:
         observed_at: datetime,
         *,
         deadline: datetime | None = None,
+        progress: Callable[[tuple[int, int, int]], None] | None = None,
     ) -> CninfoSyncResult:
         _validate_code(code)
         _validate_time(observed_at, "observed_at")
@@ -198,6 +209,7 @@ class CninfoAnnouncementIncrementalSync:
         terminal_failure = False
 
         for _ in range(self._max_pages):
+            checkpointed_before = counters.pages_checkpointed
             try:
                 outcome = self._sync_next_page(context, state, counters)
             except (TimeoutError, requests.ConnectionError, requests.Timeout) as exc:
@@ -207,6 +219,8 @@ class CninfoAnnouncementIncrementalSync:
                 break
             history_complete = outcome.history_complete
             terminal_failure = outcome.terminal_failure
+            if progress is not None and counters.pages_checkpointed > checkpointed_before:
+                progress((counters.pages_fetched, counters.pages_checkpointed, counters.saved_announcements))
             if outcome.should_stop:
                 break
 
@@ -223,6 +237,10 @@ class CninfoAnnouncementIncrementalSync:
             checkpoint_advanced=counters.checkpoint_advanced,
             resumed=state.resumed,
             terminal_failure=terminal_failure,
+            request_seconds=counters.request_seconds,
+            parse_seconds=counters.parse_seconds,
+            evidence_write_seconds=counters.evidence_write_seconds,
+            cursor_write_seconds=counters.cursor_write_seconds,
         )
 
     def _sync_next_page(
@@ -231,7 +249,7 @@ class CninfoAnnouncementIncrementalSync:
         state: _CninfoSyncState,
         counters: _CninfoRunCounters,
     ) -> _CninfoPageOutcome:
-        page = self._fetch_page(context, state)
+        page = self._fetch_page(context, state, counters)
         counters.pages_fetched += 1
         persist_errors = self._persist_page(context, state, counters, page)
         counters.source_errors.extend(persist_errors)
@@ -248,12 +266,16 @@ class CninfoAnnouncementIncrementalSync:
             return _CninfoPageOutcome(should_stop=True)
         if terminal_failure:
             counters.source_errors.append("cninfo_schema_invalid")
-        checkpoint_errors = _save_cursor_checkpoint(
-            self._data_plane,
-            context=context,
-            state=state,
-            history_complete=history_complete,
-        )
+        checkpoint_started = self._monotonic()
+        try:
+            checkpoint_errors = _save_cursor_checkpoint(
+                self._data_plane,
+                context=context,
+                state=state,
+                history_complete=history_complete,
+            )
+        finally:
+            counters.cursor_write_seconds += max(0.0, self._monotonic() - checkpoint_started)
         counters.source_errors.extend(checkpoint_errors)
         if checkpoint_errors:
             return _CninfoPageOutcome(should_stop=True)
@@ -265,29 +287,39 @@ class CninfoAnnouncementIncrementalSync:
             should_stop=history_complete or terminal_failure,
         )
 
-    def _fetch_page(self, context: _CninfoSyncContext, state: _CninfoSyncState) -> _CninfoFetchedPage:
+    def _fetch_page(
+        self, context: _CninfoSyncContext, state: _CninfoSyncState, counters: _CninfoRunCounters
+    ) -> _CninfoFetchedPage:
         page = state.next_page
-        payload = self._client.fetch_announcements(
-            CninfoAnnouncementQuery(
-                code=context.code,
-                page=page,
-                page_size=self._page_size,
-                observed_at=context.observed_at,
-                cursor_value=state.latest_cursor_value,
-                deadline=context.deadline,
-                range_start=state.range_start,
-                range_end=state.range_end,
+        request_started = self._monotonic()
+        try:
+            payload = self._client.fetch_announcements(
+                CninfoAnnouncementQuery(
+                    code=context.code,
+                    page=page,
+                    page_size=self._page_size,
+                    observed_at=context.observed_at,
+                    cursor_value=state.latest_cursor_value,
+                    deadline=context.deadline,
+                    range_start=state.range_start,
+                    range_end=state.range_end,
+                )
             )
-        )
-        parsed, invalid_rows = ParseCninfoAnnouncementRows(context.code, payload, context.observed_at)
-        rows, duplicate_rows = _unique_announcement_rows(parsed)
-        return _CninfoFetchedPage(
-            page=page,
-            rows=rows,
-            duplicate_rows=duplicate_rows,
-            invalid_rows=invalid_rows,
-            has_more=_payload_has_more(payload, page=page, page_size=self._page_size),
-        )
+        finally:
+            counters.request_seconds += max(0.0, self._monotonic() - request_started)
+        parse_started = self._monotonic()
+        try:
+            parsed, invalid_rows = ParseCninfoAnnouncementRows(context.code, payload, context.observed_at)
+            rows, duplicate_rows = _unique_announcement_rows(parsed)
+            return _CninfoFetchedPage(
+                page=page,
+                rows=rows,
+                duplicate_rows=duplicate_rows,
+                invalid_rows=invalid_rows,
+                has_more=_payload_has_more(payload, page=page, page_size=self._page_size),
+            )
+        finally:
+            counters.parse_seconds += max(0.0, self._monotonic() - parse_started)
 
     def _persist_page(
         self,
@@ -303,10 +335,13 @@ class CninfoAnnouncementIncrementalSync:
             data_version=_range_version(state.range_start, state.range_end),
         )
         if records:
+            write_started = self._monotonic()
             try:
                 self._data_plane.save_risk_evidence_recent_records(records)
             except DataPlaneUnavailableError as exc:
                 return (f"cninfo_persist_unavailable:{type(exc).__name__}",)
+            finally:
+                counters.evidence_write_seconds += max(0.0, self._monotonic() - write_started)
         counters.saved_announcements += len(records)
         counters.duplicate_rows += page.duplicate_rows
         counters.invalid_rows += page.invalid_rows

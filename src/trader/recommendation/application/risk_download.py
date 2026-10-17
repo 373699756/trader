@@ -37,6 +37,7 @@ class RiskResearchLoader(Protocol):
         observed_at: datetime | None = None,
         *,
         retain_stale: bool = False,
+        codes: Sequence[str] | None = None,
     ) -> None: ...
 
     def cached(
@@ -87,8 +88,20 @@ class RiskAnnouncementSyncReport(Protocol):
     @property
     def deadline_reached(self) -> bool: ...
 
+    @property
+    def request_seconds(self) -> float: ...
 
-RiskAnnouncementProgress: TypeAlias = tuple[int, int, int, int, int]
+    @property
+    def parse_seconds(self) -> float: ...
+
+    @property
+    def evidence_write_seconds(self) -> float: ...
+
+    @property
+    def cursor_write_seconds(self) -> float: ...
+
+
+RiskAnnouncementProgress: TypeAlias = tuple[int, int, int, int, int, int]
 
 
 class RiskAnnouncementSynchronizer(Protocol):
@@ -206,6 +219,12 @@ class RiskDownloadProgress:
     official_pages_checkpointed: int = 0
     official_announcements_saved: int = 0
     official_resumed_codes: int = 0
+    official_sync_seconds: float = 0.0
+    official_recovery_seconds: float = 0.0
+    official_request_seconds: float = 0.0
+    official_parse_seconds: float = 0.0
+    official_evidence_write_seconds: float = 0.0
+    official_cursor_write_seconds: float = 0.0
     stop_reason: str | None = None
 
 
@@ -233,7 +252,7 @@ class _RiskObservationProgress:
 class _RiskProgressIdentity:
     research_pending: tuple[str, ...]
     official_pending: tuple[str, ...]
-    observations: tuple[_RiskObservationProgress, ...]
+    research_advances: int
     official_checkpoint_advances: int
 
 
@@ -254,6 +273,14 @@ class _RiskDownloadState:
     official_announcements_saved: int = 0
     official_resumed_codes: set[str] = field(default_factory=set)
     official_checkpoint_advances: int = 0
+    research_advances: int = 0
+    official_sync_seconds: float = 0.0
+    official_recovery_seconds: float = 0.0
+    official_request_seconds: float = 0.0
+    official_parse_seconds: float = 0.0
+    official_evidence_write_seconds: float = 0.0
+    official_cursor_write_seconds: float = 0.0
+    official_wave_initial_pending: int = 0
     wave_count: int = 0
     any_deadline: bool = False
     stop_reason: str = "complete"
@@ -337,9 +364,8 @@ def _run_download_waves(
 
         state.wave_count += 1
         before = _progress_identity(
-            state.normalized,
-            state.observations,
             pending,
+            state.research_advances,
             state.official_checkpoint_advances,
         )
         if not _run_research_wave(loader, context, budget, state, pending):
@@ -359,9 +385,8 @@ def _run_download_waves(
             completed_units=len(state.normalized) - len(unresolved),
         )
         after = _progress_identity(
-            state.normalized,
-            state.observations,
             after_pending,
+            state.research_advances,
             state.official_checkpoint_advances,
         )
         if not _made_durable_progress(before, after):
@@ -453,12 +478,11 @@ def _run_research_wave(
         )
         previous = {code: state.observations.get(code) for code in report.changed_codes}
         state.observations.update(report.observations)
-        state.changed_codes.update(
-            code
-            for code in report.changed_codes
-            if (current := state.observations.get(code)) is not None
-            and _research_observation_advanced(code, previous[code], current)
-        )
+        for code in report.changed_codes:
+            current = state.observations.get(code)
+            if current is not None and _research_observation_advanced(code, previous[code], current):
+                state.changed_codes.add(code)
+                state.research_advances += 1
         state.any_deadline = state.any_deadline or report.deadline_reached
         state.research_pending_codes = _research_pending_count(state.normalized, state.observations)
         if stage == "research_retry":
@@ -500,16 +524,23 @@ def _run_official_wave(
     )
     if source_seconds <= 0.0:
         return False
+    state.official_wave_initial_pending = len(official_pending)
     _publish_stage_progress(
         state,
         _RiskStageUpdate("official_announcements", "started", 0, len(official_pending)),
     )
+    sync_started = context.monotonic()
     report = announcement_sync.sync_report(
         official_pending,
         context.observed_at,
         deadline=context.wall_clock() + timedelta(seconds=source_seconds),
         progress=partial(_publish_official_progress, state),
     )
+    state.official_sync_seconds = max(0.0, context.monotonic() - sync_started)
+    state.official_request_seconds = report.request_seconds
+    state.official_parse_seconds = report.parse_seconds
+    state.official_evidence_write_seconds = report.evidence_write_seconds
+    state.official_cursor_write_seconds = report.cursor_write_seconds
     state.changed_codes.update(report.changed_codes)
     state.official_terminal_codes.update(report.failed_codes)
     state.official_pages_fetched += report.pages_fetched
@@ -525,6 +556,12 @@ def _run_official_wave(
         *(code for code in official_pending if code in deferred and code in attempted),
     )
     state.official_pending_codes = len(report.deferred_codes)
+    refreshed_codes = tuple(sorted(set((*report.changed_codes, *report.completed_codes))))
+    recovery_started = context.monotonic()
+    if refreshed_codes:
+        loader.recover_from_data_plane(context.observed_at, retain_stale=True, codes=refreshed_codes)
+        state.observations.update(loader.cached(refreshed_codes, include_structured=True, fresh_only=False))
+    state.official_recovery_seconds = max(0.0, context.monotonic() - recovery_started)
     _publish_stage_progress(
         state,
         _RiskStageUpdate(
@@ -538,8 +575,6 @@ def _run_official_wave(
             official_resumed_codes=len(state.official_resumed_codes),
         ),
     )
-    loader.recover_from_data_plane(context.observed_at, retain_stale=True)
-    state.observations.update(loader.cached(state.normalized, include_structured=True, fresh_only=False))
     return True
 
 
@@ -556,7 +591,8 @@ def _publish_official_progress(
     state: _RiskDownloadState,
     update: RiskAnnouncementProgress,
 ) -> None:
-    completed_units, total_units, pages_fetched, pages_checkpointed, announcements_saved = update
+    completed_units, total_units, pages_fetched, pages_checkpointed, announcements_saved, completed_history = update
+    state.official_pending_codes = max(0, state.official_wave_initial_pending - completed_history)
     _publish_stage_progress(
         state,
         _RiskStageUpdate(
@@ -605,6 +641,12 @@ def _publish_stage_progress(state: _RiskDownloadState, update: _RiskStageUpdate)
                 if update.official_resumed_codes is None
                 else update.official_resumed_codes
             ),
+            official_sync_seconds=state.official_sync_seconds,
+            official_recovery_seconds=state.official_recovery_seconds,
+            official_request_seconds=state.official_request_seconds,
+            official_parse_seconds=state.official_parse_seconds,
+            official_evidence_write_seconds=state.official_evidence_write_seconds,
+            official_cursor_write_seconds=state.official_cursor_write_seconds,
         )
     )
 
@@ -748,19 +790,14 @@ def _source_budget_seconds(
 
 
 def _progress_identity(
-    codes: Sequence[str],
-    observations: Mapping[str, ResearchObservation],
     pending: _RiskPendingCodes,
+    research_advances: int,
     official_checkpoint_advances: int,
 ) -> _RiskProgressIdentity:
     return _RiskProgressIdentity(
         research_pending=tuple(sorted(set((*pending.missing, *pending.retryable)))),
         official_pending=tuple(sorted(pending.official)),
-        observations=tuple(
-            _observation_progress(code, observation)
-            for code in codes
-            if (observation := observations.get(code)) is not None
-        ),
+        research_advances=research_advances,
         official_checkpoint_advances=official_checkpoint_advances,
     )
 
@@ -802,10 +839,7 @@ def _made_durable_progress(before: _RiskProgressIdentity, after: _RiskProgressId
         return True
     if after.official_checkpoint_advances > before.official_checkpoint_advances:
         return True
-    before_observations = {item.code: item for item in before.observations}
-    return any(
-        _observation_progressed(before_observations.get(current.code), current) for current in after.observations
-    )
+    return after.research_advances > before.research_advances
 
 
 def _observation_progressed(

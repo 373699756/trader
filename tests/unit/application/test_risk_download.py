@@ -22,15 +22,23 @@ class _Loader:
     def __init__(self) -> None:
         self.recovered_at: datetime | None = None
         self.retained_stale = False
+        self.recovered_codes: list[tuple[str, ...] | None] = []
         self.deadline: datetime | None = None
         self.loaded_codes: tuple[str, ...] = ()
         self.force = False
         self.load_calls: list[tuple[tuple[str, ...], bool]] = []
         self.cached_observations: dict[str, ResearchObservation] = {}
 
-    def recover_from_data_plane(self, observed_at: datetime | None = None, *, retain_stale: bool = False) -> None:
+    def recover_from_data_plane(
+        self,
+        observed_at: datetime | None = None,
+        *,
+        retain_stale: bool = False,
+        codes: tuple[str, ...] | None = None,
+    ) -> None:
         self.recovered_at = observed_at
         self.retained_stale = retain_stale
+        self.recovered_codes.append(codes)
 
     def cached(self, codes, **_options):
         return {code: self.cached_observations[code] for code in codes if code in self.cached_observations}
@@ -61,6 +69,10 @@ class _AnnouncementReport:
     saved_announcements = 42
     resumed_codes = ("600001",)
     deadline_reached = False
+    request_seconds = 0.0
+    parse_seconds = 0.0
+    evidence_write_seconds = 0.0
+    cursor_write_seconds = 0.0
 
 
 class _AnnouncementSync:
@@ -75,7 +87,7 @@ class _AnnouncementSync:
         del codes, observed_at, deadline
         self.completed = True
         if progress is not None:
-            progress((1, 1, 3, 3, 42))
+            progress((1, 1, 3, 3, 42, 1))
         return _AnnouncementReport()
 
 
@@ -90,6 +102,10 @@ class _EmptyAnnouncementReport:
     saved_announcements = 0
     resumed_codes: tuple[str, ...] = ()
     deadline_reached = False
+    request_seconds = 0.0
+    parse_seconds = 0.0
+    evidence_write_seconds = 0.0
+    cursor_write_seconds = 0.0
 
 
 class _StuckAnnouncementSync:
@@ -104,7 +120,7 @@ class _StuckAnnouncementSync:
         del codes, observed_at, deadline
         self.report_count += 1
         if progress is not None:
-            progress((0, 1, 0, 0, 0))
+            progress((0, 1, 0, 0, 0, 0))
         return _EmptyAnnouncementReport()
 
 
@@ -122,7 +138,7 @@ class _CheckpointAnnouncementSync:
         completed = ("600001",) if self.report_count == 2 else ()
         deferred = () if completed else ("600001",)
         if progress is not None:
-            progress((1, 1, 1, 1, 30))
+            progress((1, 1, 1, 1, 30, len(completed)))
         return _CheckpointAnnouncementReport(completed, deferred)
 
 
@@ -138,6 +154,10 @@ class _CheckpointAnnouncementReport:
         self.saved_announcements = 30
         self.resumed_codes = completed_codes
         self.deadline_reached = bool(deferred_codes)
+        self.request_seconds = 0.0
+        self.parse_seconds = 0.0
+        self.evidence_write_seconds = 0.0
+        self.cursor_write_seconds = 0.0
 
 
 class _FairAnnouncementSync:
@@ -174,7 +194,7 @@ class _FairAnnouncementSync:
             )
         self.completed.update(report.completed_codes)
         if progress is not None:
-            progress((len(report.attempted_codes), len(requested), 0, 0, 0))
+            progress((len(report.attempted_codes), len(requested), 0, 0, 0, len(report.completed_codes)))
         return report
 
 
@@ -196,6 +216,10 @@ class _FairAnnouncementReport:
         self.saved_announcements = 0
         self.resumed_codes: tuple[str, ...] = ()
         self.deadline_reached = bool(deferred_codes)
+        self.request_seconds = 0.0
+        self.parse_seconds = 0.0
+        self.evidence_write_seconds = 0.0
+        self.cursor_write_seconds = 0.0
 
 
 class _Progress:
@@ -211,8 +235,8 @@ class _ChangingVersionLoader(_Loader):
         super().__init__()
         self.recovery_count = 0
 
-    def recover_from_data_plane(self, observed_at=None, *, retain_stale=False):
-        super().recover_from_data_plane(observed_at, retain_stale=retain_stale)
+    def recover_from_data_plane(self, observed_at=None, *, retain_stale=False, codes=None):
+        super().recover_from_data_plane(observed_at, retain_stale=retain_stale, codes=codes)
         self.recovery_count += 1
         self.cached_observations["600001"] = ResearchObservation(data_version=f"risk:{self.recovery_count}")
 
@@ -370,12 +394,13 @@ def test_risk_download_runs_official_source_until_issuer_checkpoint_completes() 
     loader = _Loader()
     loader.cached_observations = {"600001": ResearchObservation(data_version="existing")}
     announcement_sync = _AnnouncementSync()
+    progress = _Progress()
     observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
 
     result = DownloadRiskSnapshot(
         loader,
         ("600001",),
-        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at),
+        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at, progress),
         announcement_sync=announcement_sync,
     )
 
@@ -388,6 +413,11 @@ def test_risk_download_runs_official_source_until_issuer_checkpoint_completes() 
     assert result.official_announcements_saved == 42
     assert result.official_resumed_codes == 1
     assert result.official_failed_codes == 0
+    assert loader.recovered_codes == [None, ("600001",)]
+    assert any(
+        event.stage == "official_announcements" and event.state == "running" and event.official_pending_codes == 0
+        for event in progress.events
+    )
 
 
 def test_risk_download_stops_when_only_volatile_cache_version_changes() -> None:
@@ -426,6 +456,7 @@ def test_risk_download_treats_official_page_checkpoint_as_durable_wave_progress(
     assert result.official_pages_fetched == 2
     assert result.official_pages_checkpointed == 2
     assert result.official_resumed_codes == 1
+    assert loader.recovered_codes == [None, ("600001",), ("600001",)]
 
 
 def test_risk_download_prioritizes_unattempted_official_codes_across_waves() -> None:
