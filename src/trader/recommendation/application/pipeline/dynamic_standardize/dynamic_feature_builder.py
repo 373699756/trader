@@ -23,6 +23,7 @@ from trader.recommendation.domain.market.epochs import (
 from trader.recommendation.domain.market.models import Evidence, FeatureSnapshot, LiveQuote, MarketQuote
 from trader.recommendation.domain.market.research import (
     DeriveCorporateRiskFeatures,
+    DeriveLatestDisclosedReportLoss,
     ResearchComponentsFromObservation,
     ResearchObservation,
 )
@@ -166,6 +167,7 @@ def _apply_research_risk_values(
     research: ResearchObservation,
     observed_at: datetime,
 ) -> None:
+    values["latest_disclosed_report_loss"] = DeriveLatestDisclosedReportLoss(research, observed_at)
     current = DeriveCorporateRiskFeatures(
         research.corporate_risk_facts,
         observed_at,

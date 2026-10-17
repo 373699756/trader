@@ -35,6 +35,7 @@ from trader.recommendation.domain.market.models import (
 from trader.recommendation.domain.market.news import DeriveNewsSignals, NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
     DeriveCorporateRiskFeatures,
+    DeriveLatestDisclosedReportLoss,
     DeriveLongResearchFeatures,
     DeriveMarketRegime,
     FeatureComponentWeightPolicy,
@@ -175,6 +176,7 @@ DERIVED_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("quality_score", "float", description="质量分"),
     FeatureSchema("industry_policy_score", "float", description="行业政策分"),
     FeatureSchema("risk_protection_score", "float", description="风险保护分"),
+    FeatureSchema("latest_disclosed_report_loss", "float", description="最新正式财报亏损"),
     FeatureSchema("financial_deterioration", "float", description="财务恶化"),
     FeatureSchema("reduction_or_unlock", "float", description="减持/解禁"),
     FeatureSchema("shareholder_reduction_level", "float", description="股东减持等级"),
@@ -395,9 +397,10 @@ class FeatureBuilder:
                 if name in reference:
                     values[name] = reference[name]
             market_regime = DeriveMarketRegime(values.get("market_breadth"), self._market_regime_policy)
+            observation = research_observation or ResearchObservation()
             values.update(
                 DeriveLongResearchFeatures(
-                    research_observation or ResearchObservation(),
+                    observation,
                     LongResearchInputs(
                         price=quote.price,
                         industry_strength=values.get("industry_strength"),
@@ -408,7 +411,7 @@ class FeatureBuilder:
                     self._feature_component_weights,
                 )
             )
-            observation = research_observation or ResearchObservation()
+            values["latest_disclosed_report_loss"] = DeriveLatestDisclosedReportLoss(observation, observed_at)
             values.update(
                 DeriveCorporateRiskFeatures(
                     observation.corporate_risk_facts,
@@ -585,6 +588,7 @@ class FeatureBuilder:
             "low_crowding_score": None if limit_proximity is None else 100.0 * (1.0 - limit_proximity),
             "limit_proximity": limit_proximity,
             "price_volume_divergence": None,
+            "latest_disclosed_report_loss": None,
             "financial_deterioration": None,
             "reduction_or_unlock": None,
             "shareholder_reduction_level": None,

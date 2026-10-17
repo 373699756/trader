@@ -24,6 +24,10 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.infra.atomic_files.json import RuntimeJsonWriter  # noqa: E402
 from trader.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings  # noqa: E402
+from trader.recommendation.domain.market.eligibility import (  # noqa: E402
+    IsActivePermanentEligibilityReason,
+    IssuerEligibilityReason,
+)
 from trader.recommendation.domain.market.research import FinancialReport, LongResearchPolicy  # noqa: E402
 from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient  # noqa: E402
 
@@ -58,22 +62,15 @@ def required_period(as_of: date) -> date:
 def financial_admission(code: str, history: tuple[FinancialReport, ...], complete: bool, as_of: date) -> Admission:
     annual = tuple(report for report in history if (report.report_date.month, report.report_date.day) == (12, 31))
     latest = max(history, key=lambda report: (report.report_date, report.published_at), default=None)
-    losses = tuple(
-        report
-        for report in annual
-        if any(value is not None and value < 0 for value in (report.parent_net_profit, report.core_net_profit))
-    )
-    latest_loss = latest is not None and any(
+    latest_report_loss = latest is not None and any(
         value is not None and value < 0 for value in (latest.parent_net_profit, latest.core_net_profit)
     )
     reasons: list[str] = []
-    evidence = tuple(f"financial:{code}:{report.report_date.isoformat()}" for report in losses)
-    if losses:
-        reasons.append("historical_annual_loss")
-    if latest_loss:
-        reasons.append("latest_disclosed_loss")
+    evidence: tuple[str, ...] = ()
+    if latest_report_loss:
         assert latest is not None
-        evidence += (f"financial:{code}:{latest.report_date.isoformat()}",)
+        reasons.append("latest_disclosed_report_loss")
+        evidence = (f"financial:{code}:{latest.report_date.isoformat()}",)
     if reasons:
         disposition = "excluded"
     else:
@@ -82,13 +79,10 @@ def financial_admission(code: str, history: tuple[FinancialReport, ...], complet
             reasons.append("financial_history_incomplete")
         if latest is None or latest.report_date < required_period(as_of):
             reasons.append("latest_report_missing")
-        for report in (*annual, *((latest,) if latest else ())):
-            if any(
-                value is None or not math.isfinite(value)
-                for value in (report.parent_net_profit, report.core_net_profit)
-            ):
-                reasons.append("profit_fields_missing")
-                break
+        if latest is None or any(
+            value is None or not math.isfinite(value) for value in (latest.parent_net_profit, latest.core_net_profit)
+        ):
+            reasons.append("profit_fields_missing")
         disposition = "pending" if reasons else "financial_pass"
     return Admission(
         code,
@@ -105,9 +99,12 @@ def historical_exclusions(paths: tuple[Path, ...], observed_at: datetime) -> dic
     evidence: dict[str, list[str]] = {}
     for path in paths:
         with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
-            for code, effective_at, evidence_id in connection.execute(
-                "SELECT code, effective_at, evidence_id FROM issuer_eligibility_facts"
+            for code, reason, effective_at, evidence_id in connection.execute(
+                "SELECT code, reason, effective_at, evidence_id FROM issuer_eligibility_facts"
             ):
+                eligibility_reason = IssuerEligibilityReason(str(reason))
+                if not IsActivePermanentEligibilityReason(eligibility_reason):
+                    continue
                 effective = datetime.fromisoformat(effective_at)
                 if effective.tzinfo is None:
                     raise ValueError("eligibility evidence time must be timezone-aware")

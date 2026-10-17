@@ -31,6 +31,7 @@ from trader.recommendation.domain.market.models import Board, Evidence, LiveQuot
 from trader.recommendation.domain.market.research import (
     CorporateRiskCategory,
     CorporateRiskFact,
+    FinancialReport,
     ResearchObservation,
 )
 from trader.recommendation.domain.publication.models import Strategy
@@ -90,6 +91,7 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         "ma_slope": 70.0,
         "breakout_20d": 70.0,
         "entry_quality": 70.0,
+        "latest_disclosed_report_loss": 0.0,
         "financial_deterioration": 0.0,
         "major_shareholder_reduction": 0.0,
         "financial_fraud_history": 0.0,
@@ -313,6 +315,12 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
         config_version="runtime-current",
         observations={
             "600001": ResearchObservation(
+                financial=FinancialReport(
+                    report_date=date(2026, 6, 30),
+                    published_at=NOW - timedelta(days=1),
+                    parent_net_profit=-3.0,
+                    core_net_profit=2.0,
+                ),
                 corporate_risk_facts=(
                     CorporateRiskFact(
                         category=CorporateRiskCategory.OFFICIAL_INVESTIGATION,
@@ -340,9 +348,61 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
 
     assert assembled[0].values["official_investigation_history"] == 1.0
     assert assembled[0].values["corporate_risk_history_unavailable"] == 0.0
+    assert assembled[0].values["latest_disclosed_report_loss"] == 1.0
     assert evidence in assembled[0].evidence
     assert {item.evidence_type for item in assembled[0].evidence} == {
         "structured_point_in_time",
         "intraday_tail",
         "regulatory_filing",
     }
+
+
+def test_latest_report_with_missing_profit_clears_older_loss_value() -> None:
+    snapshot = _data_snapshot()
+    assert snapshot.daily_features is not None
+    daily_row = snapshot.daily_features.rows[0]
+    stale_values = {**daily_row.values, "latest_disclosed_report_loss": 1.0}
+    stale_daily = replace(
+        snapshot.daily_features,
+        rows=(
+            replace(
+                daily_row,
+                values=stale_values,
+                field_values=daily_field_values(
+                    stale_values,
+                    source_time=NOW - timedelta(days=1),
+                    received_time=NOW,
+                ),
+            ),
+        ),
+    )
+    assert snapshot.market is not None
+    market = replace(snapshot.market, daily_feature_pack_version=stale_daily.version)
+    research = ResearchEpoch(
+        trade_date=NOW.date(),
+        sequence=1,
+        observed_at=NOW,
+        received_at=NOW,
+        config_version="runtime-current",
+        observations={
+            "600001": ResearchObservation(
+                financial=FinancialReport(
+                    report_date=date(2026, 6, 30),
+                    published_at=NOW - timedelta(days=1),
+                    parent_net_profit=3.0,
+                )
+            )
+        },
+        source_versions={"financial": "research-1"},
+        field_values={
+            "600001": research_field_values(
+                source_time=NOW - timedelta(days=1),
+                received_time=NOW,
+                data_version="research-1",
+            )
+        },
+    )
+
+    assembled = AssembleScoredFeatures(MarketDataPlaneSnapshot(stale_daily, market, None, research))
+
+    assert assembled[0].values["latest_disclosed_report_loss"] is None

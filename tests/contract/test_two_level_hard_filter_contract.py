@@ -14,6 +14,7 @@ def test_authoritative_documents_define_st_prefilter_and_two_level_runtime_filte
         "一级市场条件过滤",
         "二级公司资格与风险过滤",
         "historical_audited_loss",
+        "latest_disclosed_report_loss",
         "historical_st",
         "qualification_pending",
         "普通新闻",

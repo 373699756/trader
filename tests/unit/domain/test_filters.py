@@ -129,6 +129,7 @@ def test_quote_age_boundary_and_future_quote_are_auditable(feature_factory, obse
         ("illegal_guarantee_history", 1.0, "illegal_guarantee_history"),
         ("forced_delisting_risk", 1.0, "forced_delisting_risk"),
         ("pledge_risk", 1.0, "pledge_risk"),
+        ("latest_disclosed_report_loss", 1.0, "latest_disclosed_report_loss"),
         ("financial_deterioration", 1.0, "financial_deterioration"),
     ],
 )

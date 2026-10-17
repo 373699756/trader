@@ -42,6 +42,7 @@ class HardFilterPolicy:
                 "forced_delisting_risk": 0.0,
                 "unlock_risk": 0.0,
                 "pledge_risk": 0.0,
+                "latest_disclosed_report_loss": 0.0,
                 "financial_deterioration": 0.5,
             }
         )
@@ -391,6 +392,7 @@ class _DefaultFilterRules:
             "unlock_risk": "unlock_risk",
             "reduction_or_unlock": "reduction_or_unlock",
             "pledge_risk": "pledge_risk",
+            "latest_disclosed_report_loss": "latest_disclosed_report_loss",
             "financial_deterioration": "financial_deterioration",
         }
         for field_name, threshold in self.policy.structured_risk_thresholds.items():

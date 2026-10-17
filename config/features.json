@@ -713,6 +713,35 @@
         100
       ]
     },
+    "latest_disclosed_report_loss": {
+      "factor_id": "latest_disclosed_report_loss",
+      "strategies": [
+        "tomorrow",
+        "d25",
+        "long"
+      ],
+      "raw_inputs": [
+        "point_in_time_financial_history"
+      ],
+      "formula": "1 if either parent or core net profit is negative in the latest formally disclosed report, else 0",
+      "unit": "risk_indicator",
+      "direction": "higher_worse",
+      "observation_time": "latest_disclosed_report_before_observation",
+      "adjustment": "none",
+      "lookback_window": 0,
+      "minimum_samples": 1,
+      "winsorization": {
+        "enabled": false,
+        "lower_quantile": 0.025,
+        "upper_quantile": 0.975
+      },
+      "normalization": "none",
+      "missing_policy": "observe_only",
+      "output_range": [
+        0,
+        1
+      ]
+    },
     "financial_deterioration": {
       "factor_id": "financial_deterioration",
       "strategies": [

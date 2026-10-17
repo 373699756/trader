@@ -21,6 +21,7 @@ PRODUCTION_FACTOR_IDS = frozenset(
         "entry_quality",
         "financial_deterioration",
         "financial_fraud_history",
+        "latest_disclosed_report_loss",
         "forced_delisting_risk",
         "fund_occupation_history",
         "growth_score",

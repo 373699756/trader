@@ -207,7 +207,7 @@ def test_level_one_exclusion_prunes_every_non_frozen_per_stock_data_request(tmp_
     assert "600001" not in history.calls
 
 
-def test_newly_discovered_annual_loss_is_attached_for_second_level_filtering(tmp_path: Path) -> None:
+def test_latest_disclosed_report_loss_is_derived_without_permanent_fact(tmp_path: Path) -> None:
     class RecordingGateway(StaticGateway):
         def __init__(self, quotes) -> None:
             super().__init__(quotes)
@@ -217,16 +217,16 @@ def test_newly_discovered_annual_loss_is_attached_for_second_level_filtering(tmp
             self.candidate_requests.append(tuple(codes))
             return super().fetch_candidates(codes, **kwargs)
 
-    annual_loss = FinancialReport(
-        report_date=date(2022, 12, 31),
-        published_at=NOW - timedelta(days=1_000),
+    latest_loss = FinancialReport(
+        report_date=date(2026, 6, 30),
+        published_at=NOW - timedelta(days=1),
         parent_net_profit=-1.0,
         core_net_profit=2.0,
     )
     research = StaticStructuredResearchClient(
         Evidence("news-1", "news", "普通研究", "fixture", NOW),
         ResearchObservation(
-            financial_history=(annual_loss,),
+            financial_history=(latest_loss,),
             financial_history_complete=True,
             announcements_available=True,
         ),
@@ -245,10 +245,11 @@ def test_newly_discovered_annual_loss_is_attached_for_second_level_filtering(tmp
     result = service.fetch_candidate_features(("600001",), NOW, include_structured_research=True)
 
     assert tuple(feature.quote.code for feature in result) == ("600001",)
-    assert "issuer_risk:historical_audited_loss" in result[0].quote.execution_restrictions
+    assert result[0].values["latest_disclosed_report_loss"] == 1.0
+    assert "issuer_risk:historical_audited_loss" not in result[0].quote.execution_restrictions
     assert gateway.candidate_requests == [("600001",)]
     assert history.calls == ["600001", "600001"]
-    assert registry.exclusions(NOW)[0].reason is IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS
+    assert registry.exclusions(NOW) == ()
 
 
 def test_source_lane_research_deadline_discards_late_memory_and_disk_cache(tmp_path) -> None:

@@ -54,6 +54,26 @@ def test_index_rejects_same_evidence_identity_with_different_content(tmp_path) -
         index.record((_fact(evidence_hash="b" * 64),))
 
 
+def test_retired_historical_loss_remains_in_snapshot_without_excluding_issuer(tmp_path) -> None:
+    index = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
+    legacy = IssuerEligibilityFact(
+        code="600001",
+        reason=IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS,
+        effective_at=OBSERVED_AT,
+        evidence_id="financial:600001:2024-12-31",
+        source="eastmoney_financial",
+        evidence_hash="b" * 64,
+    )
+
+    assert index.record((legacy,)) == 1
+    assert index.facts() == (legacy,)
+    assert index.exclusions(OBSERVED_AT) == ()
+    assert index.filter_codes(("600001",), OBSERVED_AT) == ("600001",)
+    assert index.status().fact_count == 0
+    assert index.status().excluded_count == 0
+    assert index.status().reason_counts == ()
+
+
 def test_index_detects_tampering_without_silently_clearing_exclusions(tmp_path) -> None:
     root = tmp_path / "filter_config"
     index = SQLiteIssuerEligibilityIndex(root)

@@ -9,6 +9,7 @@ from trader.recommendation.domain.market.research import (
     CorporateRiskFact,
     CorporateRiskFactsFromAnnouncements,
     DeriveCorporateRiskFeatures,
+    DeriveLatestDisclosedReportLoss,
     DeriveLongResearchFeatures,
     DeriveMarketRegime,
     FeatureComponentWeightPolicy,
@@ -30,6 +31,64 @@ def test_market_regime_uses_exact_configured_boundaries() -> None:
     assert DeriveMarketRegime(40.0, policy) == "risk_off"
     assert DeriveMarketRegime(50.0, policy) == "neutral"
     assert DeriveMarketRegime(None, policy) == "neutral"
+
+
+def test_latest_disclosed_report_supersedes_older_loss_regardless_of_period_type() -> None:
+    observation = ResearchObservation(
+        financial_history=(
+            FinancialReport(
+                date(2025, 12, 31),
+                NOW - timedelta(days=100),
+                parent_net_profit=-10.0,
+                core_net_profit=-8.0,
+            ),
+            FinancialReport(
+                date(2026, 3, 31),
+                NOW - timedelta(days=20),
+                parent_net_profit=3.0,
+                core_net_profit=2.0,
+            ),
+        )
+    )
+
+    assert DeriveLatestDisclosedReportLoss(observation, NOW) == 0.0
+
+
+@pytest.mark.parametrize("negative_field", ("parent_net_profit", "core_net_profit"))
+def test_latest_disclosed_report_loss_uses_either_profit_field(negative_field: str) -> None:
+    profits = {"parent_net_profit": 3.0, "core_net_profit": 2.0, negative_field: -1.0}
+    report = FinancialReport(date(2026, 6, 30), NOW - timedelta(days=1), **profits)
+
+    assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial=report), NOW) == 1.0
+
+
+def test_latest_disclosed_report_loss_is_point_in_time_and_requires_both_profit_fields() -> None:
+    known = FinancialReport(
+        date(2026, 3, 31),
+        NOW - timedelta(days=20),
+        parent_net_profit=3.0,
+        core_net_profit=2.0,
+    )
+    future = FinancialReport(
+        date(2026, 6, 30),
+        NOW + timedelta(days=1),
+        parent_net_profit=-3.0,
+        core_net_profit=-2.0,
+    )
+    missing = FinancialReport(
+        date(2026, 6, 30),
+        NOW - timedelta(days=1),
+        parent_net_profit=3.0,
+    )
+    known_loss_with_missing_peer = FinancialReport(
+        date(2026, 6, 30),
+        NOW - timedelta(days=1),
+        parent_net_profit=-3.0,
+    )
+
+    assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial_history=(known, future)), NOW) == 0.0
+    assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial=missing), NOW) is None
+    assert DeriveLatestDisclosedReportLoss(ResearchObservation(financial=known_loss_with_missing_peer), NOW) == 1.0
 
 
 def test_long_research_features_use_point_in_time_financial_and_event_inputs() -> None:

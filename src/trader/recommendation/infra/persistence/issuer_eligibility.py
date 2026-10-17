@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from trader.recommendation.domain.market.eligibility import (
+    IsActivePermanentEligibilityReason,
     IssuerEligibilityDecision,
     IssuerEligibilityFact,
     IssuerEligibilityFactHash,
@@ -195,13 +196,14 @@ class SQLiteIssuerEligibilityIndex:
 
     def status(self) -> IssuerEligibilitySnapshot:
         facts = self.facts()
-        reason_counts = Counter(fact.reason for fact in facts)
+        active_facts = tuple(fact for fact in facts if IsActivePermanentEligibilityReason(fact.reason))
+        reason_counts = Counter(fact.reason for fact in active_facts)
         manifest = _manifest_hash(facts)
         with self._lock:
             return IssuerEligibilitySnapshot(
                 schema_version=_SCHEMA_VERSION,
-                fact_count=len(facts),
-                excluded_count=len({fact.code for fact in facts}),
+                fact_count=len(active_facts),
+                excluded_count=len({fact.code for fact in active_facts}),
                 reason_counts=tuple(
                     IssuerEligibilityReasonCount(reason, reason_counts[reason])
                     for reason in sorted(reason_counts, key=lambda item: item.value)
@@ -407,7 +409,7 @@ def _active_facts_by_code(
 ) -> dict[str, IssuerEligibilityFact]:
     active: dict[str, IssuerEligibilityFact] = {}
     for fact in facts:
-        if fact.effective_at > observed_at:
+        if fact.effective_at > observed_at or not IsActivePermanentEligibilityReason(fact.reason):
             continue
         current = active.get(fact.code)
         if current is None or fact < current:

@@ -43,6 +43,7 @@ def _validate_hard_filters(settings: StrategySettings) -> None:
         "forced_delisting_risk": 0.0,
         "unlock_risk": 0.0,
         "pledge_risk": 0.0,
+        "latest_disclosed_report_loss": 0.0,
         "financial_deterioration": 0.5,
     }
     if dict(settings.hard_filters.structured_risk_thresholds) != expected_hard_filter_thresholds:

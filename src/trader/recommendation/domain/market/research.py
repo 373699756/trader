@@ -349,6 +349,27 @@ def DeriveLongResearchFeatures(
     }
 
 
+def DeriveLatestDisclosedReportLoss(
+    observation: ResearchObservation,
+    observed_at: datetime,
+) -> float | None:
+    """Return the latest formally disclosed report loss state at ``observed_at``."""
+    if observed_at.tzinfo is None or observed_at.utcoffset() is None:
+        raise ValueError("financial loss observation time must be timezone-aware")
+    reports = observation.financial_history or ((observation.financial,) if observation.financial is not None else ())
+    disclosed = tuple(report for report in reports if report.published_at <= observed_at)
+    if not disclosed:
+        return None
+    latest = max(disclosed, key=lambda report: (report.report_date, report.published_at))
+    parent_profit = _finite_or_none(latest.parent_net_profit)
+    core_profit = _finite_or_none(latest.core_net_profit)
+    if any(value is not None and value < 0.0 for value in (parent_profit, core_profit)):
+        return 1.0
+    if parent_profit is None or core_profit is None:
+        return None
+    return 0.0
+
+
 def DeriveCorporateRiskFeatures(
     facts: tuple[CorporateRiskFact, ...],
     observed_at: datetime,
@@ -703,6 +724,7 @@ __all__ = [
     "AnnouncementLevel",
     "CorporateRiskFactsFromAnnouncements",
     "DeriveCorporateRiskFeatures",
+    "DeriveLatestDisclosedReportLoss",
     "DeriveMarketRegime",
     "DeriveLongResearchFeatures",
     "ReductionLevel",

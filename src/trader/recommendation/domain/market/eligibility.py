@@ -20,6 +20,7 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:/@+-]{1,240}$")
 
 
 class IssuerEligibilityReason(str, Enum):
+    # Retained only to verify and audit immutable snapshots written by the retired rule.
     HISTORICAL_AUDITED_LOSS = "historical_audited_loss"
     HISTORICAL_ST = "historical_st"
     HISTORICAL_DELISTING_WARNING = "historical_delisting_warning"
@@ -35,6 +36,15 @@ class IssuerEligibilityState(str, Enum):
     ELIGIBLE_UNVERIFIED = "eligible_unverified"
     QUALIFICATION_PENDING = "qualification_pending"
     PERMANENTLY_EXCLUDED = "permanently_excluded"
+
+
+_ACTIVE_PERMANENT_REASONS = frozenset(
+    reason for reason in IssuerEligibilityReason if reason is not IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS
+)
+
+
+def IsActivePermanentEligibilityReason(reason: IssuerEligibilityReason) -> bool:
+    return reason in _ACTIVE_PERMANENT_REASONS
 
 
 @dataclass(frozen=True)
@@ -201,7 +211,15 @@ def ResolveIssuerEligibility(
 ) -> IssuerEligibilityDecision:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("issuer eligibility observation time must be timezone-aware")
-    active = tuple(sorted(fact for fact in facts if fact.code == code and fact.effective_at <= observed_at))
+    active = tuple(
+        sorted(
+            fact
+            for fact in facts
+            if fact.code == code
+            and fact.effective_at <= observed_at
+            and IsActivePermanentEligibilityReason(fact.reason)
+        )
+    )
     if not active:
         return IssuerEligibilityDecision(code, IssuerEligibilityState.ELIGIBLE_UNVERIFIED, observed_at)
     fact = active[0]
@@ -288,28 +306,6 @@ def EligibilityFactsFromResearch(
     observation: ResearchObservation,
 ) -> tuple[IssuerEligibilityFact, ...]:
     facts: list[IssuerEligibilityFact] = []
-    reports = observation.financial_history or ((observation.financial,) if observation.financial is not None else ())
-    for report in reports:
-        if report.report_date.month != 12:
-            continue
-        if not any(value is not None and value < 0.0 for value in (report.parent_net_profit, report.core_net_profit)):
-            continue
-        evidence_id = f"financial:{code}:{report.report_date.isoformat()}"
-        facts.append(
-            _fact(
-                code,
-                IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS,
-                report.published_at,
-                _FactEvidence(
-                    evidence_id,
-                    "eastmoney_financial",
-                    (
-                        ("parent_net_profit", repr(report.parent_net_profit)),
-                        ("core_net_profit", repr(report.core_net_profit)),
-                    ),
-                ),
-            )
-        )
     for risk in observation.corporate_risk_facts:
         reason = _PERMANENT_RISK_REASONS.get(risk.category)
         if reason is None:
@@ -384,6 +380,7 @@ __all__ = [
     "IssuerEligibilityReasonCount",
     "IssuerEligibilitySnapshot",
     "IssuerEligibilityState",
+    "IsActivePermanentEligibilityReason",
     "EligibilityFactsFromQuote",
     "EligibilityFactsFromStaticIssuer",
     "EligibilityFactsFromResearch",

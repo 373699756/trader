@@ -96,18 +96,12 @@ def test_quote_fact_identity_accepts_untrusted_supplier_version() -> None:
     assert len(facts[0].evidence_id) < 80
 
 
-def test_research_creates_loss_and_confirmed_permanent_risk_facts_only() -> None:
+def test_research_creates_confirmed_permanent_risk_facts_only() -> None:
     annual_loss = FinancialReport(
         report_date=date(2024, 12, 31),
         published_at=OBSERVED_AT - timedelta(days=400),
         parent_net_profit=-1.0,
-        core_net_profit=2.0,
-    )
-    quarterly_loss = FinancialReport(
-        report_date=date(2025, 9, 30),
-        published_at=OBSERVED_AT - timedelta(days=300),
-        parent_net_profit=-5.0,
-        core_net_profit=-6.0,
+        core_net_profit=-2.0,
     )
     fraud = CorporateRiskFact(
         category=CorporateRiskCategory.FINANCIAL_FRAUD,
@@ -122,16 +116,27 @@ def test_research_creates_loss_and_confirmed_permanent_risk_facts_only() -> None
         source="issuer_disclosure",
     )
     observation = ResearchObservation(
-        financial=quarterly_loss,
-        financial_history=(annual_loss, quarterly_loss),
+        financial=annual_loss,
+        financial_history=(annual_loss,),
         corporate_risk_facts=(fraud, investigation),
     )
 
     facts = EligibilityFactsFromResearch("600001", observation)
 
-    assert {fact.reason for fact in facts} == {
-        IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS,
-        IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD,
-    }
-    loss = next(fact for fact in facts if fact.reason is IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS)
-    assert loss.effective_at == annual_loss.published_at
+    assert {fact.reason for fact in facts} == {IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD}
+
+
+def test_retired_historical_loss_fact_is_auditable_but_not_an_active_exclusion() -> None:
+    legacy = IssuerEligibilityFact(
+        code="600001",
+        reason=IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS,
+        effective_at=OBSERVED_AT - timedelta(days=400),
+        evidence_id="financial:600001:2024-12-31",
+        source="eastmoney_financial",
+        evidence_hash="b" * 64,
+    )
+
+    decision = ResolveIssuerEligibility((legacy,), "600001", OBSERVED_AT)
+
+    assert decision.state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
+    assert decision.reason is None

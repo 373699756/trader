@@ -390,6 +390,7 @@ def application_feature_factory():
             "risk_protection_score": 70.0,
             "limit_proximity": 0.3,
             "price_volume_divergence": 0.0,
+            "latest_disclosed_report_loss": 0.0,
             "financial_deterioration": 0.0,
             "reduction_or_unlock": 0.0,
             "shareholder_reduction_level": 0.0,
