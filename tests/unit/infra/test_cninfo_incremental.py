@@ -298,16 +298,19 @@ def test_cninfo_batch_sync_skips_completed_codes_on_same_day(tmp_path: Path) -> 
     with ThreadPoolExecutor(max_workers=2) as pool:
         batch = CninfoAnnouncementBatchSynchronizer(syncer, data_plane, pool, wall_clock=lambda: OBSERVED_AT)
         assert batch.pending_codes(("600006", "600007"), OBSERVED_AT) == ("600006", "600007")
+        progress: list[tuple[int, int, int, int]] = []
 
         report = batch.sync_report(
             ("600006", "600007"),
             OBSERVED_AT,
             deadline=OBSERVED_AT.replace(minute=51),
+            progress=lambda completed, total, pages, saved: progress.append((completed, total, pages, saved)),
         )
 
     assert report.completed_codes == ("600006", "600007")
     assert report.deferred_codes == ()
     assert report.failed_codes == ()
+    assert progress[-1] == (2, 2, 2, 0)
     assert batch.pending_codes(("600006", "600007"), OBSERVED_AT) == ()
 
 

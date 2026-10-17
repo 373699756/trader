@@ -119,6 +119,7 @@ from trader.recommendation.application.pipeline.static_market.static_pipeline im
 from trader.recommendation.application.risk_download import (
     DownloadRiskSnapshot,
     RiskDownloadContext,
+    RiskDownloadProgressPort,
     RiskDownloadResult,
 )
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
@@ -200,7 +201,11 @@ if TYPE_CHECKING:
     from trader.training.entrypoints.research_evidence import ResearchEvidenceCommand, ResearchEvidenceResult
 
 
-def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
+def ExecuteRiskDownload(
+    config_path: str | Path,
+    *,
+    progress: RiskDownloadProgressPort | None = None,
+) -> RiskDownloadResult:
     """Prepare the next applicable trade-date risk partition with bounded supplier work."""
     command_started = time.monotonic()
     settings = LoadRuntimeSettings(config_path)
@@ -280,7 +285,7 @@ def ExecuteRiskDownload(config_path: str | Path) -> RiskDownloadResult:
         result = DownloadRiskSnapshot(
             loader,
             codes,
-            RiskDownloadContext(target_date, observed_at, time.monotonic, clock.now),
+            RiskDownloadContext(target_date, observed_at, time.monotonic, clock.now, progress=progress),
             announcement_sync=cninfo_sync,
         )
     finally:

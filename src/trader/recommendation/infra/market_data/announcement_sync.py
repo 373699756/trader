@@ -425,9 +425,10 @@ class CninfoAnnouncementBatchSynchronizer:
         observed_at: datetime,
         *,
         deadline: datetime,
+        progress: Callable[[int, int, int, int], None] | None = None,
     ) -> CninfoBatchSyncReport:
         futures = self._submit_sync_futures(codes, observed_at, deadline)
-        results, failed, pending = self._collect_sync_results(futures, codes, deadline)
+        results, failed, pending = self._collect_sync_results(futures, codes, deadline, progress)
         completed_codes = tuple(sorted(code for code, result in results.items() if result.history_complete))
         changed_codes = tuple(sorted(code for code, result in results.items() if result.saved_announcements > 0))
         deferred = tuple(sorted(set(codes) - set(completed_codes) - failed))
@@ -466,6 +467,7 @@ class CninfoAnnouncementBatchSynchronizer:
         futures: Mapping[Future[CninfoSyncResult], str],
         codes: Sequence[str],
         deadline: datetime,
+        progress: Callable[[int, int, int, int], None] | None,
     ) -> tuple[dict[str, CninfoSyncResult], set[str], set[Future[CninfoSyncResult]]]:
         pending = set(futures)
         results: dict[str, CninfoSyncResult] = {}
@@ -477,7 +479,15 @@ class CninfoAnnouncementBatchSynchronizer:
             completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
             if not completed:
                 break
-            if self._consume_sync_results(completed, futures, codes, results, failed):
+            rate_limited = self._consume_sync_results(completed, futures, codes, results, failed)
+            if progress is not None:
+                progress(
+                    min(len(codes), len(results) + len(failed)),
+                    len(codes),
+                    sum(result.pages_fetched for result in results.values()),
+                    sum(result.saved_announcements for result in results.values()),
+                )
+            if rate_limited:
                 break
         for future in pending:
             future.cancel()

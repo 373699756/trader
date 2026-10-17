@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from functools import partial
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -87,6 +88,7 @@ class RiskAnnouncementSynchronizer(Protocol):
         observed_at: datetime,
         *,
         deadline: datetime,
+        progress: Callable[[int, int, int, int], None] | None = None,
     ) -> RiskAnnouncementSyncReport: ...
 
 
@@ -98,6 +100,7 @@ class _RiskLoadOptionalOptions(TypedDict, total=False):
     force: bool
     deadline: datetime | None
     action_restrictions: dict[str, set[str]] | None
+    progress: Callable[[int, int], None]
 
 
 class _RiskLoadOptions(_RiskLoadRequiredOptions, _RiskLoadOptionalOptions):
@@ -134,6 +137,7 @@ class RiskDownloadContext:
     observed_at: datetime
     monotonic: Callable[[], float]
     wall_clock: Callable[[], datetime]
+    progress: RiskDownloadProgressPort | None = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +161,38 @@ class RiskDownloadBudget:
 
 
 _DEFAULT_RISK_DOWNLOAD_BUDGET = RiskDownloadBudget()
+
+
+RiskDownloadProgressStage = Literal[
+    "local_snapshot",
+    "research_initial",
+    "research_retry",
+    "official_announcements",
+    "wave_summary",
+    "finished",
+]
+RiskDownloadProgressState = Literal["started", "running", "completed", "stopped"]
+
+
+@dataclass(frozen=True)
+class RiskDownloadProgress:
+    stage: RiskDownloadProgressStage
+    state: RiskDownloadProgressState
+    wave: int
+    completed_units: int
+    total_units: int
+    requested_codes: int
+    available_codes: int | None = None
+    covered_codes: int | None = None
+    deferred_codes: int | None = None
+    changed_codes: int | None = None
+    official_pages_fetched: int = 0
+    official_announcements_saved: int = 0
+    stop_reason: str | None = None
+
+
+class RiskDownloadProgressPort(Protocol):
+    def publish(self, progress: RiskDownloadProgress) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -188,6 +224,7 @@ class _RiskDownloadState:
     observations: dict[str, ResearchObservation]
     changed_codes: set[str]
     official_terminal_codes: set[str]
+    progress: RiskDownloadProgressPort | None = None
     official_pages_fetched: int = 0
     official_announcements_saved: int = 0
     wave_count: int = 0
@@ -200,6 +237,16 @@ class _RiskPendingCodes:
     missing: tuple[str, ...]
     retryable: tuple[str, ...]
     official: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _RiskStageUpdate:
+    stage: RiskDownloadProgressStage
+    state: RiskDownloadProgressState
+    completed_units: int
+    total_units: int
+    official_pages_fetched: int | None = None
+    official_announcements_saved: int | None = None
 
 
 def DownloadRiskSnapshot(
@@ -220,9 +267,20 @@ def DownloadRiskSnapshot(
         observations=dict(loader.cached(normalized, include_structured=True, fresh_only=False)),
         changed_codes=set(),
         official_terminal_codes=set(),
+        progress=context.progress,
+    )
+    initial_pending = _pending_codes(state, context, announcement_sync)
+    _publish_summary_progress(
+        state,
+        initial_pending,
+        stage="local_snapshot",
+        state_name="completed",
+        completed_units=len(state.observations),
     )
     _run_download_waves(loader, context, budget, announcement_sync, state)
-    return _build_download_result(context, state, announcement_sync)
+    result = _build_download_result(context, state, announcement_sync)
+    _publish_result_progress(context.progress, result)
+    return result
 
 
 def _run_download_waves(
@@ -255,6 +313,14 @@ def _run_download_waves(
             state.stop_reason = "task_deadline"
             break
         after_pending = _pending_codes(state, context, announcement_sync)
+        unresolved = set((*after_pending.missing, *after_pending.retryable, *after_pending.official))
+        _publish_summary_progress(
+            state,
+            after_pending,
+            stage="wave_summary",
+            state_name="completed",
+            completed_units=len(state.normalized) - len(unresolved),
+        )
         after = _progress_identity(state.normalized, state.observations, after_pending.official)
         if after == before:
             state.stop_reason = "no_progress"
@@ -291,9 +357,16 @@ def _run_research_wave(
     state: _RiskDownloadState,
     pending: _RiskPendingCodes,
 ) -> bool:
-    groups = tuple((group, force) for group, force in ((pending.missing, False), (pending.retryable, True)) if group)
+    group_candidates: tuple[
+        tuple[tuple[str, ...], bool, RiskDownloadProgressStage],
+        ...,
+    ] = (
+        (pending.missing, False, "research_initial"),
+        (pending.retryable, True, "research_retry"),
+    )
+    groups = tuple((group, force, stage) for group, force, stage in group_candidates if group)
     research_seconds = budget.source_seconds / max(1, len(groups))
-    for group, force in groups:
+    for group, force, stage in groups:
         source_seconds = _source_budget_seconds(
             research_seconds,
             started=state.started,
@@ -302,16 +375,22 @@ def _run_research_wave(
         )
         if source_seconds <= 0.0:
             return False
+        _publish_stage_progress(state, _RiskStageUpdate(stage, "started", 0, len(group)))
         report = loader.load_report(
             group,
             context.observed_at,
             include_structured=True,
             force=force,
             deadline=context.wall_clock() + timedelta(seconds=source_seconds),
+            progress=partial(_publish_research_progress, state, stage),
         )
         state.observations.update(report.observations)
         state.changed_codes.update(report.changed_codes)
         state.any_deadline = state.any_deadline or report.deadline_reached
+        _publish_stage_progress(
+            state,
+            _RiskStageUpdate(stage, "completed", len(group) - len(report.deferred_codes), len(group)),
+        )
     return True
 
 
@@ -333,19 +412,143 @@ def _run_official_wave(
     )
     if source_seconds <= 0.0:
         return False
+    _publish_stage_progress(
+        state,
+        _RiskStageUpdate("official_announcements", "started", 0, len(official_pending)),
+    )
     report = announcement_sync.sync_report(
         official_pending,
         context.observed_at,
         deadline=context.wall_clock() + timedelta(seconds=source_seconds),
+        progress=partial(_publish_official_progress, state),
     )
     state.changed_codes.update(report.changed_codes)
     state.official_terminal_codes.update(report.failed_codes)
     state.official_pages_fetched += report.pages_fetched
     state.official_announcements_saved += report.saved_announcements
     state.any_deadline = state.any_deadline or report.deadline_reached
+    _publish_stage_progress(
+        state,
+        _RiskStageUpdate(
+            "official_announcements",
+            "completed",
+            len(report.completed_codes) + len(report.failed_codes),
+            len(official_pending),
+        ),
+    )
     loader.recover_from_data_plane(context.observed_at, retain_stale=True)
     state.observations.update(loader.cached(state.normalized, include_structured=True, fresh_only=False))
     return True
+
+
+def _publish_research_progress(
+    state: _RiskDownloadState,
+    stage: RiskDownloadProgressStage,
+    completed_units: int,
+    total_units: int,
+) -> None:
+    _publish_stage_progress(state, _RiskStageUpdate(stage, "running", completed_units, total_units))
+
+
+def _publish_official_progress(
+    state: _RiskDownloadState,
+    completed_units: int,
+    total_units: int,
+    pages_fetched: int,
+    announcements_saved: int,
+) -> None:
+    _publish_stage_progress(
+        state,
+        _RiskStageUpdate(
+            "official_announcements",
+            "running",
+            completed_units,
+            total_units,
+            state.official_pages_fetched + pages_fetched,
+            state.official_announcements_saved + announcements_saved,
+        ),
+    )
+
+
+def _publish_stage_progress(state: _RiskDownloadState, update: _RiskStageUpdate) -> None:
+    progress = state.progress
+    if progress is None:
+        return
+    progress.publish(
+        RiskDownloadProgress(
+            stage=update.stage,
+            state=update.state,
+            wave=state.wave_count,
+            completed_units=update.completed_units,
+            total_units=update.total_units,
+            requested_codes=len(state.normalized),
+            changed_codes=len(state.changed_codes),
+            official_pages_fetched=(
+                state.official_pages_fetched if update.official_pages_fetched is None else update.official_pages_fetched
+            ),
+            official_announcements_saved=(
+                state.official_announcements_saved
+                if update.official_announcements_saved is None
+                else update.official_announcements_saved
+            ),
+        )
+    )
+
+
+def _publish_summary_progress(
+    state: _RiskDownloadState,
+    pending: _RiskPendingCodes,
+    *,
+    stage: RiskDownloadProgressStage,
+    state_name: RiskDownloadProgressState,
+    completed_units: int,
+) -> None:
+    progress = state.progress
+    if progress is None:
+        return
+    available, covered = _coverage_counts(state.normalized, state.observations)
+    deferred = set((*pending.missing, *pending.retryable, *pending.official))
+    progress.publish(
+        RiskDownloadProgress(
+            stage=stage,
+            state=state_name,
+            wave=state.wave_count,
+            completed_units=completed_units,
+            total_units=len(state.normalized),
+            requested_codes=len(state.normalized),
+            available_codes=available,
+            covered_codes=covered,
+            deferred_codes=len(deferred),
+            changed_codes=len(state.changed_codes),
+            official_pages_fetched=state.official_pages_fetched,
+            official_announcements_saved=state.official_announcements_saved,
+        )
+    )
+
+
+def _publish_result_progress(
+    progress: RiskDownloadProgressPort | None,
+    result: RiskDownloadResult,
+) -> None:
+    if progress is None:
+        return
+    progress.publish(
+        RiskDownloadProgress(
+            stage="finished",
+            state="completed" if not result.needs_retry else "stopped",
+            wave=result.wave_count,
+            completed_units=result.requested_codes - result.deferred_codes - result.failed_codes,
+            total_units=result.requested_codes,
+            requested_codes=result.requested_codes,
+            available_codes=result.available_codes,
+            covered_codes=result.covered_codes,
+            deferred_codes=result.deferred_codes,
+            changed_codes=result.changed_codes,
+            official_pages_fetched=result.official_pages_fetched,
+            official_announcements_saved=result.official_announcements_saved,
+            stop_reason=result.stop_reason,
+        )
+    )
 
 
 def _build_download_result(
@@ -388,6 +591,18 @@ def _build_download_result(
         official_announcements_saved=state.official_announcements_saved,
         official_failed_codes=len(state.official_terminal_codes),
     )
+
+
+def _coverage_counts(
+    codes: Sequence[str],
+    observations: Mapping[str, ResearchObservation],
+) -> tuple[int, int]:
+    coverage = tuple(
+        _research_component_coverage(observation)
+        for code in codes
+        if (observation := observations.get(code)) is not None
+    )
+    return sum(any(status) for status in coverage), sum(all(status) for status in coverage)
 
 
 def _remaining_task_seconds(started: float, now: float, task_seconds: float | None) -> float | None:
@@ -484,6 +699,8 @@ __all__ = [
     "RiskDownloadBudget",
     "RiskDownloadContext",
     "RiskDownloadInventory",
+    "RiskDownloadProgress",
+    "RiskDownloadProgressPort",
     "RiskDownloadResult",
     "RiskAnnouncementSynchronizer",
     "RiskResearchLoadReport",

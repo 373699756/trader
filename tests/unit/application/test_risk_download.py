@@ -9,6 +9,7 @@ from trader.recommendation.application.risk_download import (
     DownloadRiskSnapshot,
     RiskDownloadContext,
     RiskDownloadInventory,
+    RiskDownloadProgress,
     RiskDownloadResult,
 )
 from trader.recommendation.domain.market.research import ResearchObservation
@@ -39,6 +40,8 @@ class _Loader:
         self.loaded_codes = tuple(codes)
         self.force = options["force"]
         self.load_calls.append((self.loaded_codes, self.force))
+        if progress := options.get("progress"):
+            progress(len(codes), len(codes))
         return ResearchLoadReport(
             {codes[0]: ResearchObservation(data_version="risk:1")} if codes else {},
             changed_codes=(codes[0],) if codes else (),
@@ -65,9 +68,11 @@ class _AnnouncementSync:
         del observed_at
         return () if self.completed else tuple(codes)
 
-    def sync_report(self, codes, observed_at, *, deadline):
+    def sync_report(self, codes, observed_at, *, deadline, progress=None):
         del codes, observed_at, deadline
         self.completed = True
+        if progress is not None:
+            progress(1, 1, 3, 42)
         return _AnnouncementReport()
 
 
@@ -89,10 +94,20 @@ class _StuckAnnouncementSync:
         del observed_at
         return tuple(codes) if self.report_count < 2 else ()
 
-    def sync_report(self, codes, observed_at, *, deadline):
+    def sync_report(self, codes, observed_at, *, deadline, progress=None):
         del codes, observed_at, deadline
         self.report_count += 1
+        if progress is not None:
+            progress(0, 1, 0, 0)
         return _EmptyAnnouncementReport()
+
+
+class _Progress:
+    def __init__(self) -> None:
+        self.events: list[RiskDownloadProgress] = []
+
+    def publish(self, progress: RiskDownloadProgress) -> None:
+        self.events.append(progress)
 
 
 class _ChangingVersionLoader(_Loader):
@@ -131,6 +146,34 @@ def test_risk_download_reads_partition_before_bounded_supplier_refresh() -> None
     assert result.needs_retry
     assert result.wave_count == 2
     assert result.stop_reason == "source_exhausted"
+
+
+def test_risk_download_reports_persisted_batches_wave_summary_and_final_state() -> None:
+    loader = _Loader()
+    progress = _Progress()
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001", "000001"),
+        RiskDownloadContext(
+            date(2026, 10, 16),
+            observed_at,
+            lambda: 10.0,
+            lambda: observed_at,
+            progress=progress,
+        ),
+    )
+
+    assert progress.events[0].stage == "local_snapshot"
+    assert progress.events[0].deferred_codes == 2
+    assert any(
+        event.stage == "research_initial" and event.state == "running" and event.completed_units == event.total_units
+        for event in progress.events
+    )
+    assert any(event.stage == "wave_summary" and event.available_codes == 0 for event in progress.events)
+    assert progress.events[-1].stage == "finished"
+    assert progress.events[-1].stop_reason == result.stop_reason
 
 
 def test_risk_download_resumes_unseen_codes_before_retrying_existing_partial_observations() -> None:
@@ -227,11 +270,32 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
         elapsed_seconds=123.4567,
         inventory=RiskDownloadInventory(75, 10, 70, 78, 0, 3, 60, 12, 34, 567),
     )
-    monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", lambda _path: result)
+
+    def execute(_path, *, progress):
+        progress.publish(
+            RiskDownloadProgress(
+                stage="wave_summary",
+                state="completed",
+                wave=1,
+                completed_units=80,
+                total_units=100,
+                requested_codes=100,
+                available_codes=80,
+                covered_codes=10,
+                deferred_codes=20,
+                changed_codes=20,
+            )
+        )
+        return result
+
+    monkeypatch.setattr("trader.bootstrap.ExecuteRiskDownload", execute)
 
     assert cli.Main(["--config", str(tmp_path / "runtime.json"), "risk_download"]) == 1
 
-    payload = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert "risk_download 下载进度" in captured.err
+    assert "波次汇总 | 完成" in captured.err
     assert payload["component_codes"] == {
         "financial": 75,
         "announcements": 10,

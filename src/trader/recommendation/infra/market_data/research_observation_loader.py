@@ -75,6 +75,7 @@ class _ResearchLoadRequest:
     force: bool
     deadline: datetime | None
     action_restrictions: dict[str, set[str]] | None
+    progress: Callable[[int, int], None] | None
 
 
 @dataclass
@@ -125,6 +126,7 @@ class _ResearchLoadOptionalOptions(TypedDict, total=False):
     force: bool
     deadline: datetime | None
     action_restrictions: dict[str, set[str]] | None
+    progress: Callable[[int, int], None]
 
 
 class _ResearchLoadOptions(_ResearchLoadRequiredOptions, _ResearchLoadOptionalOptions):
@@ -302,6 +304,7 @@ class ResearchLoader:
             options.get("force", False),
             options.get("deadline"),
             options.get("action_restrictions"),
+            options.get("progress"),
         )
         if self._client is None:
             return ResearchLoadReport({})
@@ -328,18 +331,33 @@ class ResearchLoader:
             force=request.force,
             deadline=request.deadline,
         )
-        lane_future = source_lanes.submit(
-            "akshare",
-            identity,
-            request.observed_at,
-            self.load_report,
-            request.codes,
-            request.observed_at,
-            include_structured=request.include_structured,
-            force=request.force,
-            deadline=request.deadline,
-            action_restrictions=request.action_restrictions,
-        )
+        if request.progress is None:
+            lane_future = source_lanes.submit(
+                "akshare",
+                identity,
+                request.observed_at,
+                self.load_report,
+                request.codes,
+                request.observed_at,
+                include_structured=request.include_structured,
+                force=request.force,
+                deadline=request.deadline,
+                action_restrictions=request.action_restrictions,
+            )
+        else:
+            lane_future = source_lanes.submit(
+                "akshare",
+                identity,
+                request.observed_at,
+                self.load_report,
+                request.codes,
+                request.observed_at,
+                include_structured=request.include_structured,
+                force=request.force,
+                deadline=request.deadline,
+                action_restrictions=request.action_restrictions,
+                progress=request.progress,
+            )
         if request.deadline is None:
             return lane_future.result()
         remaining = max(0.0, (request.deadline - self._runner.wall_clock()).total_seconds())
@@ -510,6 +528,8 @@ class ResearchLoader:
                 if self._consume_research_future(state, code, future, started_at[future]):
                     changed_codes.append(code)
                 consumed.add(code)
+                if request.progress is not None:
+                    request.progress(len(consumed), len(missing))
             if deadline_reached:
                 break
             timeout = self._remaining_research_timeout(request.deadline)
@@ -544,6 +564,8 @@ class ResearchLoader:
                 )
                 changed_codes.extend(outcome.changed_codes)
                 consumed.update(outcome.consumed_codes)
+                if state.request.progress is not None:
+                    state.request.progress(len(consumed), len(missing))
                 deadline_reached = outcome.deadline_reached
                 if deadline_reached:
                     break
