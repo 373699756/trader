@@ -41,17 +41,38 @@ class StderrRiskDownloadProgress:
         self._lock = Lock()
 
     def publish(self, progress: RiskDownloadProgress) -> None:
-        percent = 100.0 if progress.total_units == 0 else progress.completed_units / progress.total_units * 100.0
-        progress_scope = "本波" if progress.stage in _WAVE_STAGES else "总体"
         parts = [
             _format_duration(self._monotonic() - self._started),
             "risk_download 下载进度",
             f"波次 {progress.wave}",
             _STAGE_LABELS[progress.stage],
             _STATE_LABELS[progress.state],
-            f"{progress_scope} {progress.completed_units:>6}/{progress.total_units:>6}（{percent:6.2f}%）",
-            f"请求 {progress.requested_codes:>6}",
         ]
+        if progress.stage not in _WAVE_STAGES:
+            parts.append(_format_progress("总体", progress.completed_units, progress.total_units))
+        if progress.research_pending_codes is not None:
+            parts.append(
+                _format_progress(
+                    "研究累计",
+                    max(0, progress.requested_codes - progress.research_pending_codes),
+                    progress.requested_codes,
+                )
+            )
+        if progress.official_pending_codes is not None:
+            parts.append(
+                _format_progress(
+                    "巨潮累计",
+                    max(0, progress.requested_codes - progress.official_pending_codes),
+                    progress.requested_codes,
+                )
+            )
+        if progress.stage in _WAVE_STAGES:
+            parts.append(
+                f"本波待处理 {progress.total_units:>6}"
+                if progress.state == "started"
+                else _format_progress("本波处理", progress.completed_units, progress.total_units)
+            )
+        parts.append(f"请求 {progress.requested_codes:>6}")
         if progress.research_pending_codes is not None:
             parts.append(f"研究待补 {progress.research_pending_codes:>6}")
         if progress.official_pending_codes is not None:
@@ -79,6 +100,11 @@ def _format_duration(seconds: float) -> str:
     hours, remainder = divmod(int(max(0.0, seconds)), 3600)
     minutes, remaining_seconds = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{remaining_seconds:02d}"
+
+
+def _format_progress(label: str, completed: int, total: int) -> str:
+    percent = 100.0 if total == 0 else completed / total * 100.0
+    return f"{label} {completed:>6}/{total:>6}（{percent:6.2f}%）"
 
 
 __all__ = ["StderrRiskDownloadProgress"]
