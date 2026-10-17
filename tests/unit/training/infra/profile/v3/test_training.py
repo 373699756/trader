@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -309,6 +310,12 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
 
     def publish(staging, output, strategy, _profile, _identity) -> None:
         assert {path.name for path in staging.iterdir()} == {"model.json", "report.json", "training-input.json"}
+        report = json.loads((staging / "report.json").read_text(encoding="utf-8"))
+        assert report["artifact_structure_valid"] is True
+        assert report["artifact_structure_failure_reasons"] == []
+        assert report["prediction_return_validation_passed"] is False
+        assert report["prediction_return_failure_reasons"] == ["daily_close_proxy_not_point_in_time"]
+        assert "validation_passed" not in report
         published.append((strategy, output))
 
     monkeypatch.setattr("trader.training.infra.engine.PublishHeadBundle", publish)

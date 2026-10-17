@@ -18,6 +18,7 @@ def _rows(count: int = 200, *, positive: bool = True) -> tuple[TerminalHoldoutRo
         day = date(2025, 1, 1) + timedelta(days=index)
         for stock in range(20):
             actual = (0.008 + stock / 10000) if positive else -0.01
+            selected = stock in {(index + offset) % 20 for offset in range(6)}
             rows.append(
                 TerminalHoldoutRow(
                     trade_date=day,
@@ -30,12 +31,16 @@ def _rows(count: int = 200, *, positive: bool = True) -> tuple[TerminalHoldoutRo
                     predicted_net_excess_return=actual,
                     actual_net_excess_returns=(actual, actual - 0.003, actual - 0.008),
                     baseline_net_excess_returns=(0.0, -0.003, -0.008),
-                    selected=True,
-                    baseline_selected=True,
+                    selected=selected,
+                    baseline_selected=selected,
                     severe_loss=False,
                     baseline_severe_loss=False,
                     mae_atr20=-0.3,
                     baseline_mae_atr20=-0.3,
+                    exit_untradable=False,
+                    baseline_exit_untradable=False,
+                    capacity=1_000_000.0,
+                    baseline_capacity=1_000_000.0,
                     point_in_time_parity=True,
                 ),
             )
@@ -80,7 +85,7 @@ def test_terminal_holdout_does_not_open_when_parent_is_rejected() -> None:
 
 def test_terminal_holdout_requires_point_in_time_parity() -> None:
     rows = list(_rows())
-    rows[0] = TerminalHoldoutRow(**{**rows[0].__dict__, "point_in_time_parity": False})
+    rows[0] = replace(rows[0], point_in_time_parity=False)
     with pytest.raises(ValueError, match="point-in-time"):
         EvaluateTerminalHoldout(
             TerminalHoldoutEvaluation(
@@ -107,6 +112,46 @@ def test_terminal_holdout_reports_data_insufficient_when_a_preregistered_state_i
 
     assert report.status == "historical_data_insufficient"
     assert "state_sample_below_40" in report.failure_reasons
+
+
+def test_terminal_holdout_reports_unified_top6_risk_execution_and_capacity_metrics() -> None:
+    report = EvaluateTerminalHoldout(
+        TerminalHoldoutEvaluation(
+            strategy="tomorrow",
+            research_identity="score_tomorrow_historical_candidate",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=_rows(),
+        )
+    )
+
+    assert report.metrics.ndcg_at_6 == pytest.approx(1.0)
+    assert report.metrics.win_rate == pytest.approx(1.0)
+    assert report.metrics.maximum_drawdown == pytest.approx(0.0)
+    assert report.metrics.mean_mae_atr20 == pytest.approx(-0.3)
+    assert report.metrics.exit_untradable_rate == pytest.approx(0.0)
+    assert report.metrics.capacity == pytest.approx(6_000_000.0)
+
+
+def test_terminal_holdout_rejects_worse_mae_exit_tradability_and_capacity() -> None:
+    rows = tuple(
+        replace(row, mae_atr20=-0.5, exit_untradable=True, capacity=500_000.0) if row.selected else row
+        for row in _rows()
+    )
+    report = EvaluateTerminalHoldout(
+        TerminalHoldoutEvaluation(
+            strategy="tomorrow",
+            research_identity="score_tomorrow_historical_candidate",
+            parent_hash="a" * 64,
+            candidate_hash="b" * 64,
+            rows=rows,
+        )
+    )
+
+    assert report.status == "historical_rejected"
+    assert "capacity_below_production_baseline" in report.failure_reasons
+    assert "mae_atr20_worse" in report.failure_reasons
+    assert "exit_untradable_rate_worse" in report.failure_reasons
 
 
 def test_terminal_holdout_rejects_a_second_terminal_open() -> None:

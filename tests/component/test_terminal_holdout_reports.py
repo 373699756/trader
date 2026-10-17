@@ -32,12 +32,16 @@ def _report():
             predicted_net_excess_return=0.01 + stock / 10000,
             actual_net_excess_returns=(0.01, 0.007, 0.002),
             baseline_net_excess_returns=(0.0, -0.003, -0.008),
-            selected=True,
-            baseline_selected=True,
+            selected=stock in {(day + offset) % 20 for offset in range(6)},
+            baseline_selected=stock in {(day + offset) % 20 for offset in range(6)},
             severe_loss=False,
             baseline_severe_loss=False,
             mae_atr20=-0.3,
             baseline_mae_atr20=-0.3,
+            exit_untradable=False,
+            baseline_exit_untradable=False,
+            capacity=1_000_000.0,
+            baseline_capacity=1_000_000.0,
             point_in_time_parity=True,
         )
         for day in range(200)

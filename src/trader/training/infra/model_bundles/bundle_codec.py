@@ -58,7 +58,7 @@ _MODEL_FIELDS = {
     "automatic_model_update",
     "production_authority",
 }
-_REPORT_FIELDS = {
+_REPORT_COMMON_FIELDS = {
     "schema_version",
     "profile_id",
     "model_id",
@@ -86,10 +86,20 @@ _REPORT_FIELDS = {
     "training_rows",
     "validation_rows",
     "target_metrics",
-    "validation_passed",
-    "failure_reasons",
     "automatic_model_update",
     "production_authority",
+}
+_REPORT_FIELDS = {
+    *_REPORT_COMMON_FIELDS,
+    "artifact_structure_valid",
+    "artifact_structure_failure_reasons",
+    "prediction_return_validation_passed",
+    "prediction_return_failure_reasons",
+}
+_LEGACY_REPORT_FIELDS = {
+    *_REPORT_COMMON_FIELDS,
+    "validation_passed",
+    "failure_reasons",
 }
 _INPUT_FIELDS = {
     "schema_version",
@@ -327,11 +337,18 @@ def _decode_group_document(
     *,
     report: bool,
 ) -> _GroupIdentity:
-    fields = _REPORT_FIELDS if report else _INPUT_FIELDS
+    legacy_report = report and isinstance(document, dict) and set(document) == {*_LEGACY_REPORT_FIELDS, "content_hash"}
+    fields = _LEGACY_REPORT_FIELDS if legacy_report else (_REPORT_FIELDS if report else _INPUT_FIELDS)
     payload, declared_hash = _hashed_object(document, fields, "report" if report else "training input")
     contract = profile.head_for_strategy(strategy)
     expected_schema = (
-        f"{profile.profile_id}_head_training_report" if report else f"{profile.profile_id}_head_training_input"
+        (
+            f"{profile.profile_id}_head_training_report"
+            if legacy_report
+            else f"{profile.profile_id}_head_training_report_validation_split"
+        )
+        if report
+        else f"{profile.profile_id}_head_training_input"
     )
     if (
         _text(payload, "schema_version") != expected_schema
@@ -352,12 +369,28 @@ def _decode_group_document(
         or _boolean(payload, "point_in_time_parity")
         or _text(payload, "historical_status") != "historical_data_insufficient"
         or tuple(_string_list(payload, "historical_failure_reasons")) != ("daily_close_proxy_not_point_in_time",)
-        or not _boolean(payload, "validation_passed")
-        or _string_list(payload, "failure_reasons")
         or _boolean(payload, "automatic_model_update")
         or not _valid_target_metrics(payload.get("target_metrics"), strategy)
     ):
         raise ValueError("trained strategy-head report is invalid")
+    if (
+        report
+        and legacy_report
+        and (not _boolean(payload, "validation_passed") or _string_list(payload, "failure_reasons"))
+    ):
+        raise ValueError("legacy trained strategy-head report is invalid")
+    if (
+        report
+        and not legacy_report
+        and (
+            not _boolean(payload, "artifact_structure_valid")
+            or _string_list(payload, "artifact_structure_failure_reasons")
+            or _boolean(payload, "prediction_return_validation_passed")
+            or tuple(_string_list(payload, "prediction_return_failure_reasons"))
+            != ("daily_close_proxy_not_point_in_time",)
+        )
+    ):
+        raise ValueError("trained strategy-head validation semantics are invalid")
     for name in (
         "training_input_hash",
         "source_identity_hash",

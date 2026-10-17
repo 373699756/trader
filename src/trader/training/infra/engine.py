@@ -511,7 +511,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
         report = _report_document(context, models, model_payload_hash, request.metrics)
         report_hash = ContentHash(report)
         report["content_hash"] = report_hash
-        if not report["validation_passed"]:
+        if not report["artifact_structure_valid"]:
             return HeadTrainingResult(
                 contract.strategy,
                 "rejected",
@@ -525,7 +525,7 @@ def _fit_and_publish_head(request: _HeadFitRequest) -> HeadTrainingResult:
                 len(models),
                 training_rows,
                 validation_rows,
-                tuple(cast(list[str], report["failure_reasons"])),
+                tuple(cast(list[str], report["artifact_structure_failure_reasons"])),
                 label_cutoff=plan.label_cutoff,
                 sample_database_peak_bytes=request.peak_bytes,
             )
@@ -588,7 +588,7 @@ def _report_document(
     model_payload_hash: str,
     metrics: tuple[TargetMetric, ...],
 ) -> dict[str, object]:
-    reasons = [] if models and context.validation_rows > 0 else ["industry_model_validation_insufficient"]
+    structure_reasons = [] if models and context.validation_rows > 0 else ["industry_model_validation_insufficient"]
     selected = (
         {
             item.target: _metric_payload(item)
@@ -600,7 +600,7 @@ def _report_document(
     )
     document: dict[str, object] = {
         **_common_document(context),
-        "schema_version": f"{context.profile.profile_id}_head_training_report",
+        "schema_version": f"{context.profile.profile_id}_head_training_report_validation_split",
         "profile_id": context.profile.profile_id,
         "model_id": context.contract.model_id,
         "strategy_head": context.contract.strategy.value,
@@ -615,8 +615,10 @@ def _report_document(
         "training_rows": context.training_rows,
         "validation_rows": context.validation_rows,
         "target_metrics": selected,
-        "validation_passed": not reasons,
-        "failure_reasons": reasons,
+        "artifact_structure_valid": not structure_reasons,
+        "artifact_structure_failure_reasons": structure_reasons,
+        "prediction_return_validation_passed": False,
+        "prediction_return_failure_reasons": ["daily_close_proxy_not_point_in_time"],
         "automatic_model_update": False,
     }
     return document

@@ -164,7 +164,7 @@ def _documents(
         else ("target_t1",)
     )
     report: dict[str, object] = {
-        "schema_version": f"{profile.profile_id}_head_training_report",
+        "schema_version": f"{profile.profile_id}_head_training_report_validation_split",
         "profile_id": profile.profile_id,
         "model_id": contract.model_id,
         "strategy_head": contract.strategy.value,
@@ -191,8 +191,10 @@ def _documents(
         "training_rows": 20_000,
         "validation_rows": 1_000,
         "target_metrics": {target: {"count": 1_000, "mean": 0.01, "standard_deviation": 0.02} for target in targets},
-        "validation_passed": True,
-        "failure_reasons": [],
+        "artifact_structure_valid": True,
+        "artifact_structure_failure_reasons": [],
+        "prediction_return_validation_passed": False,
+        "prediction_return_failure_reasons": ["daily_close_proxy_not_point_in_time"],
         "automatic_model_update": False,
         "production_authority": False,
     }
@@ -370,6 +372,31 @@ def test_v3_loader_rejects_tampered_group_identity(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="identities"):
         LoadHeadBundle(selected, Strategy.TOMORROW, V3_TRAINING_PROFILE)
+
+
+def test_v3_loader_reads_legacy_report_without_reusing_its_validation_flag_as_return_evidence(
+    tmp_path: Path,
+) -> None:
+    model, report, training_input = _documents(TOMORROW_HEAD_CONTRACT)
+    report.pop("content_hash")
+    report["schema_version"] = "v3_head_training_report"
+    report.pop("artifact_structure_valid")
+    report.pop("artifact_structure_failure_reasons")
+    report.pop("prediction_return_validation_passed")
+    report.pop("prediction_return_failure_reasons")
+    report["validation_passed"] = True
+    report["failure_reasons"] = []
+    report["content_hash"] = ContentHash(report)
+    model["report_hash"] = report["content_hash"]
+    model["content_hash"] = ContentHash({key: value for key, value in model.items() if key != "content_hash"})
+    for name, document in (("model.json", model), ("report.json", report), ("training-input.json", training_input)):
+        (tmp_path / name).write_text(json.dumps(document), encoding="utf-8")
+
+    loaded = LoadHeadBundle(tmp_path / "model.json", Strategy.TOMORROW, V3_TRAINING_PROFILE)
+
+    assert loaded.point_in_time_parity is False
+    assert loaded.historical_status == "historical_data_insufficient"
+    assert loaded.historical_failure_reasons == ("daily_close_proxy_not_point_in_time",)
 
 
 def test_v3_failed_replacement_restores_previous_fixed_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

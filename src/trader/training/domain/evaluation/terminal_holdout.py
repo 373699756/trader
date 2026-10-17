@@ -1,4 +1,4 @@
-"""Pure, one-shot terminal holdout evaluation for the three score strategies."""
+"""Pure, one-shot terminal holdout evaluation for Tomorrow and D25."""
 
 from __future__ import annotations
 
@@ -55,6 +55,10 @@ class TerminalHoldoutRow:
     baseline_severe_loss: bool
     mae_atr20: float
     baseline_mae_atr20: float
+    exit_untradable: bool
+    baseline_exit_untradable: bool
+    capacity: float
+    baseline_capacity: float
     point_in_time_parity: bool
     horizon_net_excess_returns: tuple[float, ...] = ()
     baseline_horizon_net_excess_returns: tuple[float, ...] = ()
@@ -78,9 +82,15 @@ class TerminalHoldoutRow:
             *self.baseline_horizon_net_excess_returns,
             self.mae_atr20,
             self.baseline_mae_atr20,
+            self.capacity,
+            self.baseline_capacity,
         )
         if any(not math.isfinite(value) for value in values):
             raise ValueError("terminal holdout numeric values must be finite")
+        if self.mae_atr20 > 0.0 or self.baseline_mae_atr20 > 0.0:
+            raise ValueError("terminal holdout MAE values must be non-positive")
+        if self.capacity < 0.0 or self.baseline_capacity < 0.0:
+            raise ValueError("terminal holdout capacity values must be non-negative")
         if self.baseline_horizon_net_excess_returns and len(self.horizon_net_excess_returns) != len(
             self.baseline_horizon_net_excess_returns
         ):
@@ -104,7 +114,16 @@ class TerminalHoldoutMetrics:
     turnover: float
     baseline_turnover: float
     rank_ic: float | None
+    ndcg_at_6: float | None
     top_bottom_quintile_spread: float | None
+    win_rate: float
+    baseline_win_rate: float
+    maximum_drawdown: float
+    baseline_maximum_drawdown: float
+    mean_mae_atr20: float | None
+    baseline_mean_mae_atr20: float | None
+    exit_untradable_rate: float | None
+    baseline_exit_untradable_rate: float | None
     maximum_stock_positive_fraction: float
     top_five_positive_fraction: float
     maximum_board_fraction: float
@@ -132,6 +151,10 @@ class TerminalHoldoutMetrics:
             *self.paired_net_increments,
             self.turnover,
             self.baseline_turnover,
+            self.win_rate,
+            self.baseline_win_rate,
+            self.maximum_drawdown,
+            self.baseline_maximum_drawdown,
             self.capacity,
             self.baseline_capacity,
         )
@@ -142,7 +165,12 @@ class TerminalHoldoutMetrics:
                 self.severe_loss_rate,
                 self.baseline_severe_loss_rate,
                 self.rank_ic,
+                self.ndcg_at_6,
                 self.top_bottom_quintile_spread,
+                self.mean_mae_atr20,
+                self.baseline_mean_mae_atr20,
+                self.exit_untradable_rate,
+                self.baseline_exit_untradable_rate,
             )
             if value is not None
         )
@@ -151,6 +179,11 @@ class TerminalHoldoutMetrics:
         rates = (
             self.severe_loss_rate,
             self.baseline_severe_loss_rate,
+            self.ndcg_at_6,
+            self.win_rate,
+            self.baseline_win_rate,
+            self.exit_untradable_rate,
+            self.baseline_exit_untradable_rate,
             self.maximum_stock_positive_fraction,
             self.top_five_positive_fraction,
             self.maximum_board_fraction,
@@ -159,6 +192,10 @@ class TerminalHoldoutMetrics:
             raise ValueError("terminal holdout rates must be in [0, 1]")
         if self.maximum_industry_count < 0:
             raise ValueError("terminal holdout industry count cannot be negative")
+        if min(self.maximum_drawdown, self.baseline_maximum_drawdown, self.capacity, self.baseline_capacity) < 0.0:
+            raise ValueError("terminal holdout drawdown and capacity must be non-negative")
+        if any(value is not None and value > 0.0 for value in (self.mean_mae_atr20, self.baseline_mean_mae_atr20)):
+            raise ValueError("terminal holdout mean MAE must be non-positive")
 
 
 @dataclass(frozen=True)
@@ -174,12 +211,14 @@ class TerminalHoldoutReport:
     failure_reasons: tuple[str, ...]
     terminal_trade_dates: tuple[date, ...]
     production_authority: bool = False
-    schema_version: str = "historical_terminal_holdout"
+    schema_version: str = "historical_terminal_holdout_unified_metrics"
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
         if self.strategy not in {"tomorrow", "d25"} or not self.research_identity:
             raise ValueError("terminal holdout strategy identity is invalid")
+        if self.schema_version != "historical_terminal_holdout_unified_metrics":
+            raise ValueError("terminal holdout schema version is invalid")
         if _SHA256.fullmatch(self.parent_hash) is None or _SHA256.fullmatch(self.candidate_hash) is None:
             raise ValueError("terminal holdout hashes must be SHA-256")
         if self.status not in {"historical_data_insufficient", "historical_rejected", "historical_validated"}:
@@ -313,9 +352,16 @@ class _TerminalMetricAccumulator:
     baseline_sets: list[frozenset[str]] = field(default_factory=list)
     rank_ics: list[float] = field(default_factory=list)
     spreads: list[float] = field(default_factory=list)
+    ndcgs: list[float] = field(default_factory=list)
     positive_by_code: dict[str, float] = field(default_factory=lambda: defaultdict(float))
     severe_values: list[float] = field(default_factory=list)
     baseline_severe_values: list[float] = field(default_factory=list)
+    mae_values: list[float] = field(default_factory=list)
+    baseline_mae_values: list[float] = field(default_factory=list)
+    exit_untradable_values: list[float] = field(default_factory=list)
+    baseline_exit_untradable_values: list[float] = field(default_factory=list)
+    capacities: list[float] = field(default_factory=list)
+    baseline_capacities: list[float] = field(default_factory=list)
     state_counts: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     horizon: list[tuple[float, ...]] = field(default_factory=list)
     baseline_horizon: list[tuple[float, ...]] = field(default_factory=list)
@@ -329,8 +375,8 @@ def _accumulate_terminal_day(
     baseline = tuple(row for row in day_rows if row.baseline_selected)
     accumulator.candidate_sets.append(frozenset(row.code for row in selected))
     accumulator.baseline_sets.append(frozenset(row.code for row in baseline))
-    accumulator.candidate_daily.append(_cost_means(tuple(row.actual_net_excess_returns for row in selected)))
-    accumulator.baseline_daily.append(_cost_means(tuple(row.baseline_net_excess_returns for row in baseline)))
+    accumulator.candidate_daily.append(_six_slot_returns(tuple(row.actual_net_excess_returns for row in selected)))
+    accumulator.baseline_daily.append(_six_slot_returns(tuple(row.baseline_net_excess_returns for row in baseline)))
     _accumulate_terminal_risk(accumulator, selected, baseline)
     _accumulate_terminal_rank(accumulator, day_rows)
     _accumulate_terminal_states(accumulator, day_rows)
@@ -343,11 +389,17 @@ def _accumulate_terminal_risk(
     baseline: tuple[TerminalHoldoutRow, ...],
 ) -> None:
     if selected:
-        accumulator.severe_values.append(sum(row.severe_loss for row in selected) / len(selected))
+        accumulator.severe_values.extend(float(row.severe_loss) for row in selected)
+        accumulator.mae_values.extend(row.mae_atr20 for row in selected)
+        accumulator.exit_untradable_values.extend(float(row.exit_untradable) for row in selected)
         for row in selected:
             accumulator.positive_by_code[row.code] += max(0.0, row.actual_net_excess_returns[0])
     if baseline:
-        accumulator.baseline_severe_values.append(sum(row.baseline_severe_loss for row in baseline) / len(baseline))
+        accumulator.baseline_severe_values.extend(float(row.baseline_severe_loss) for row in baseline)
+        accumulator.baseline_mae_values.extend(row.baseline_mae_atr20 for row in baseline)
+        accumulator.baseline_exit_untradable_values.extend(float(row.baseline_exit_untradable) for row in baseline)
+    accumulator.capacities.append(math.fsum(row.capacity for row in selected))
+    accumulator.baseline_capacities.append(math.fsum(row.baseline_capacity for row in baseline))
 
 
 def _accumulate_terminal_rank(
@@ -356,6 +408,9 @@ def _accumulate_terminal_rank(
 ) -> None:
     pairs = tuple((row.predicted_net_excess_return, row.actual_net_excess_returns[0]) for row in day_rows)
     value = PopulationSpearman(pairs)
+    ndcg = _ndcg_at_6(day_rows)
+    if ndcg is not None:
+        accumulator.ndcgs.append(ndcg)
     if value is None:
         return
     accumulator.rank_ics.append(value)
@@ -387,10 +442,10 @@ def _accumulate_terminal_horizon(
     if not day_rows[0].horizon_net_excess_returns:
         return
     accumulator.horizon.append(
-        tuple(_mean(tuple(row.horizon_net_excess_returns[index] for row in selected)) for index in range(4))
+        tuple(math.fsum(row.horizon_net_excess_returns[index] for row in selected) / 6.0 for index in range(4))
     )
     accumulator.baseline_horizon.append(
-        tuple(_mean(tuple(row.baseline_horizon_net_excess_returns[index] for row in baseline)) for index in range(4))
+        tuple(math.fsum(row.baseline_horizon_net_excess_returns[index] for row in baseline) / 6.0 for index in range(4))
     )
 
 
@@ -421,6 +476,11 @@ def _metrics(
     grouped: dict[date, list[TerminalHoldoutRow]] = defaultdict(list)
     for row in rows:
         grouped[row.trade_date].append(row)
+    if any(
+        sum(row.selected for row in day_rows) > 6 or sum(row.baseline_selected for row in day_rows) > 6
+        for day_rows in grouped.values()
+    ):
+        raise ValueError("terminal holdout selection must use at most six fixed slots")
     accumulator = _TerminalMetricAccumulator()
     for day in sorted(grouped):
         _accumulate_terminal_day(accumulator, tuple(sorted(grouped[day], key=lambda item: item.code)))
@@ -449,29 +509,48 @@ def _metrics(
     baseline_rows = sum(len(values) for values in accumulator.baseline_sets)
     max_board, maximum_industry_count = _portfolio_concentration(grouped, selected_rows)
     return TerminalHoldoutMetrics(
-        len(grouped),
-        len(rows),
-        selected_rows,
-        baseline_rows,
-        _cost_means(tuple(accumulator.candidate_daily)),
-        _cost_means(tuple(accumulator.baseline_daily)),
-        paired,
-        lowers,
-        _mean(tuple(accumulator.severe_values)) if accumulator.severe_values else None,
-        _mean(tuple(accumulator.baseline_severe_values)) if accumulator.baseline_severe_values else None,
-        _turnover(accumulator.candidate_sets),
-        _turnover(accumulator.baseline_sets),
-        _mean(tuple(accumulator.rank_ics)) if accumulator.rank_ics else None,
-        _mean(tuple(accumulator.spreads)) if accumulator.spreads else None,
-        shares[0] if shares else 0.0,
-        math.fsum(shares[:5]),
-        max_board,
-        maximum_industry_count,
-        selected_rows / len(grouped) if grouped else 0.0,
-        baseline_rows / len(grouped) if grouped else 0.0,
-        _horizon_means(accumulator.horizon),
-        _horizon_means(accumulator.baseline_horizon),
-        tuple(sorted(accumulator.state_counts.items())),
+        evaluated_trade_dates=len(grouped),
+        evaluated_rows=len(rows),
+        selected_rows=selected_rows,
+        baseline_selected_rows=baseline_rows,
+        mean_net_excess_returns=_cost_means(tuple(accumulator.candidate_daily)),
+        baseline_mean_net_excess_returns=_cost_means(tuple(accumulator.baseline_daily)),
+        paired_net_increments=paired,
+        bootstrap_lower_bounds=lowers,
+        severe_loss_rate=_mean(tuple(accumulator.severe_values)) if accumulator.severe_values else None,
+        baseline_severe_loss_rate=(
+            _mean(tuple(accumulator.baseline_severe_values)) if accumulator.baseline_severe_values else None
+        ),
+        turnover=_turnover(accumulator.candidate_sets),
+        baseline_turnover=_turnover(accumulator.baseline_sets),
+        rank_ic=_mean(tuple(accumulator.rank_ics)) if accumulator.rank_ics else None,
+        ndcg_at_6=_mean(tuple(accumulator.ndcgs)) if accumulator.ndcgs else None,
+        top_bottom_quintile_spread=_mean(tuple(accumulator.spreads)) if accumulator.spreads else None,
+        win_rate=sum(value[0] > 0.0 for value in accumulator.candidate_daily) / len(accumulator.candidate_daily),
+        baseline_win_rate=sum(value[0] > 0.0 for value in accumulator.baseline_daily) / len(accumulator.baseline_daily),
+        maximum_drawdown=_maximum_drawdown(tuple(value[0] for value in accumulator.candidate_daily)),
+        baseline_maximum_drawdown=_maximum_drawdown(tuple(value[0] for value in accumulator.baseline_daily)),
+        mean_mae_atr20=_mean(tuple(accumulator.mae_values)) if accumulator.mae_values else None,
+        baseline_mean_mae_atr20=(
+            _mean(tuple(accumulator.baseline_mae_values)) if accumulator.baseline_mae_values else None
+        ),
+        exit_untradable_rate=(
+            _mean(tuple(accumulator.exit_untradable_values)) if accumulator.exit_untradable_values else None
+        ),
+        baseline_exit_untradable_rate=(
+            _mean(tuple(accumulator.baseline_exit_untradable_values))
+            if accumulator.baseline_exit_untradable_values
+            else None
+        ),
+        maximum_stock_positive_fraction=shares[0] if shares else 0.0,
+        top_five_positive_fraction=math.fsum(shares[:5]),
+        maximum_board_fraction=max_board,
+        maximum_industry_count=maximum_industry_count,
+        capacity=_mean(tuple(accumulator.capacities)),
+        baseline_capacity=_mean(tuple(accumulator.baseline_capacities)),
+        horizon_mean_net_excess_returns=_horizon_means(accumulator.horizon),
+        baseline_horizon_mean_net_excess_returns=_horizon_means(accumulator.baseline_horizon),
+        state_sample_counts=tuple(sorted(accumulator.state_counts.items())),
     )
 
 
@@ -481,6 +560,34 @@ def _cost_means(values: tuple[tuple[float, float, float], ...]) -> tuple[float, 
         _mean(tuple(item[1] for item in values)),
         _mean(tuple(item[2] for item in values)),
     )
+
+
+def _six_slot_returns(values: tuple[tuple[float, float, float], ...]) -> tuple[float, float, float]:
+    return tuple(math.fsum(item[index] for item in values) / 6.0 for index in range(3))  # type: ignore[return-value]
+
+
+def _ndcg_at_6(rows: tuple[TerminalHoldoutRow, ...]) -> float | None:
+    actual = {row.code: row.actual_net_excess_returns[0] for row in rows}
+    shift = min(0.0, min(actual.values()))
+    ranked = sorted(rows, key=lambda row: (-row.predicted_net_excess_return, row.code))[:6]
+    ideal = sorted(rows, key=lambda row: (-actual[row.code], row.code))[:6]
+
+    def discounted(values: list[TerminalHoldoutRow]) -> float:
+        return math.fsum((actual[row.code] - shift) / math.log2(index + 2.0) for index, row in enumerate(values))
+
+    ideal_value = discounted(ideal)
+    return discounted(ranked) / ideal_value if ideal_value > 0.0 else None
+
+
+def _maximum_drawdown(values: tuple[float, ...]) -> float:
+    cumulative = 0.0
+    peak = 0.0
+    maximum = 0.0
+    for value in values:
+        cumulative += value
+        peak = max(peak, cumulative)
+        maximum = max(maximum, peak - cumulative)
+    return maximum
 
 
 def _cost_lowers(
@@ -554,6 +661,20 @@ def _risk_gate_failures(metrics: TerminalHoldoutMetrics) -> tuple[str, ...]:
         failures.append("severe_loss_rate_worse")
     if metrics.turnover - metrics.baseline_turnover > 0.05:
         failures.append("turnover_increase_above_5_percent")
+    if metrics.maximum_drawdown > metrics.baseline_maximum_drawdown:
+        failures.append("maximum_drawdown_worse")
+    if (
+        metrics.mean_mae_atr20 is None
+        or metrics.baseline_mean_mae_atr20 is None
+        or metrics.mean_mae_atr20 < metrics.baseline_mean_mae_atr20
+    ):
+        failures.append("mae_atr20_worse")
+    if (
+        metrics.exit_untradable_rate is None
+        or metrics.baseline_exit_untradable_rate is None
+        or metrics.exit_untradable_rate > metrics.baseline_exit_untradable_rate
+    ):
+        failures.append("exit_untradable_rate_worse")
     return tuple(failures)
 
 
@@ -570,26 +691,35 @@ def _concentration_gate_failures(metrics: TerminalHoldoutMetrics) -> tuple[str, 
 
 def _empty_metrics() -> TerminalHoldoutMetrics:
     return TerminalHoldoutMetrics(
-        0,
-        0,
-        0,
-        0,
-        (0.0, 0.0, 0.0),
-        (0.0, 0.0, 0.0),
-        (0.0, 0.0, 0.0),
-        (None, None, None),
-        None,
-        None,
-        0.0,
-        0.0,
-        None,
-        None,
-        0.0,
-        0.0,
-        0.0,
-        0,
-        0.0,
-        0.0,
+        evaluated_trade_dates=0,
+        evaluated_rows=0,
+        selected_rows=0,
+        baseline_selected_rows=0,
+        mean_net_excess_returns=(0.0, 0.0, 0.0),
+        baseline_mean_net_excess_returns=(0.0, 0.0, 0.0),
+        paired_net_increments=(0.0, 0.0, 0.0),
+        bootstrap_lower_bounds=(None, None, None),
+        severe_loss_rate=None,
+        baseline_severe_loss_rate=None,
+        turnover=0.0,
+        baseline_turnover=0.0,
+        rank_ic=None,
+        ndcg_at_6=None,
+        top_bottom_quintile_spread=None,
+        win_rate=0.0,
+        baseline_win_rate=0.0,
+        maximum_drawdown=0.0,
+        baseline_maximum_drawdown=0.0,
+        mean_mae_atr20=None,
+        baseline_mean_mae_atr20=None,
+        exit_untradable_rate=None,
+        baseline_exit_untradable_rate=None,
+        maximum_stock_positive_fraction=0.0,
+        top_five_positive_fraction=0.0,
+        maximum_board_fraction=0.0,
+        maximum_industry_count=0,
+        capacity=0.0,
+        baseline_capacity=0.0,
     )
 
 
@@ -599,7 +729,7 @@ def _turnover(sets: list[frozenset[str]]) -> float:
     previous: frozenset[str] = frozenset()
     values: list[float] = []
     for current in sets:
-        values.append(len(current - previous) / len(current) if current else 0.0)
+        values.append(len(current - previous) / 6.0)
         previous = current
     return _mean(tuple(values))
 
