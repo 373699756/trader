@@ -5,17 +5,14 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, wait
-from dataclasses import dataclass
-from datetime import date, datetime, timezone
-from threading import Lock
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+from threading import Lock, local
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.infra.failures import AdapterFailureCode, ClassifyAdapterFailure
-from trader.infra.workers import SubmitOrReject, WorkerExecutor
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneUnavailableError,
     RiskEvidenceRecord,
@@ -32,6 +29,8 @@ CNINFO_CURSOR_PREFIX = "cninfo.announcements:"
 CNINFO_ANNOUNCEMENT_PREFIX = "cninfo-announcement:"
 CNINFO_COMPONENT_PREFIX = "cninfo-risk-component:"
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+_INITIAL_HISTORY_START = date(1990, 1, 1)
+_CHECKPOINT_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -42,6 +41,8 @@ class CninfoAnnouncementQuery:
     observed_at: datetime
     cursor_value: str
     deadline: datetime | None
+    range_start: date | None = None
+    range_end: date | None = None
 
 
 class CninfoAnnouncementClient(Protocol):
@@ -80,24 +81,88 @@ class CninfoSyncResult:
     history_complete: bool
     cursor_value: str
     source_errors: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class _CninfoPersistBatch:
-    code: str
-    observed_at: datetime
-    source_time: datetime
-    data_version: str
-    announcements: tuple[CninfoAnnouncementRow, ...]
-    duplicate_rows: int
-    invalid_rows: int
-    history_complete: bool
+    pages_checkpointed: int = 0
+    checkpoint_advanced: bool = False
+    resumed: bool = False
+    terminal_failure: bool = False
 
 
 @dataclass(frozen=True)
 class _CninfoCursorState:
     value: str = ""
     issuer_history_complete: bool = False
+    observed_at: datetime | None = None
+    checkpoint_version: int = 0
+    initial_backfill_complete: bool = False
+    range_start: date | None = None
+    range_end: date | None = None
+    next_page: int = 1
+    latest_cursor_value: str = ""
+    total_pages_persisted: int = 0
+    total_saved_rows: int = 0
+    range_duplicate_rows: int = 0
+    range_invalid_rows: int = 0
+    risk_categories: tuple[CorporateRiskCategory, ...] = ()
+
+
+@dataclass
+class _CninfoSyncState:
+    range_start: date
+    range_end: date
+    next_page: int
+    latest_cursor_value: str
+    initial_backfill_complete: bool
+    total_pages_persisted: int
+    total_saved_rows: int
+    range_duplicate_rows: int
+    range_invalid_rows: int
+    risk_categories: set[CorporateRiskCategory]
+    checkpoint_observed_at: datetime | None
+    resumed: bool
+
+
+@dataclass(frozen=True)
+class _CninfoSyncContext:
+    code: str
+    observed_at: datetime
+    deadline: datetime | None
+
+
+@dataclass(frozen=True)
+class _CninfoFetchedPage:
+    page: int
+    rows: tuple[CninfoAnnouncementRow, ...]
+    duplicate_rows: int
+    invalid_rows: int
+    has_more: bool
+
+
+@dataclass
+class _CninfoRunCounters:
+    pages_fetched: int = 0
+    pages_checkpointed: int = 0
+    saved_announcements: int = 0
+    duplicate_rows: int = 0
+    invalid_rows: int = 0
+    checkpoint_advanced: bool = False
+    source_errors: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _CninfoPageOutcome:
+    history_complete: bool = False
+    terminal_failure: bool = False
+    should_stop: bool = False
+
+
+@dataclass(frozen=True)
+class _CninfoComponentBatch:
+    code: str
+    observed_at: datetime
+    source_time: datetime
+    data_version: str
+    statuses: Mapping[str, str]
+    announcement_count: int
 
 
 class CninfoAnnouncementIncrementalSync:
@@ -125,104 +190,128 @@ class CninfoAnnouncementIncrementalSync:
     ) -> CninfoSyncResult:
         _validate_code(code)
         _validate_time(observed_at, "observed_at")
-        cursor_name = f"{CNINFO_CURSOR_PREFIX}{code}"
-        cursor = self._load_cursor(cursor_name)
-        cursor_value = cursor.value if cursor.issuer_history_complete else ""
-        rows: list[CninfoAnnouncementRow] = []
-        seen: set[str] = set()
-        duplicate_rows = 0
-        invalid_rows = 0
-        pages_fetched = 0
+        context = _CninfoSyncContext(code, observed_at, deadline)
+        cursor = self._load_cursor(f"{CNINFO_CURSOR_PREFIX}{code}")
+        state = _build_sync_state(cursor, observed_at)
+        counters = _CninfoRunCounters()
         history_complete = False
+        terminal_failure = False
 
-        for page in range(1, self._max_pages + 1):
-            payload = self._client.fetch_announcements(
-                CninfoAnnouncementQuery(
-                    code=code,
-                    page=page,
-                    page_size=self._page_size,
-                    observed_at=observed_at,
-                    cursor_value=cursor_value,
-                    deadline=deadline,
-                )
-            )
-            pages_fetched += 1
-            parsed, page_invalid = ParseCninfoAnnouncementRows(code, payload, observed_at)
-            invalid_rows += page_invalid
-            for row in parsed:
-                if row.announcement_id in seen:
-                    duplicate_rows += 1
-                    continue
-                seen.add(row.announcement_id)
-                rows.append(row)
-            if not _payload_has_more(payload, page=page, page_size=self._page_size):
-                history_complete = True
+        for _ in range(self._max_pages):
+            try:
+                outcome = self._sync_next_page(context, state, counters)
+            except (TimeoutError, requests.ConnectionError, requests.Timeout) as exc:
+                if not counters.checkpoint_advanced:
+                    raise
+                counters.source_errors.append(f"cninfo_fetch_deferred:{type(exc).__name__}")
+                break
+            history_complete = outcome.history_complete
+            terminal_failure = outcome.terminal_failure
+            if outcome.should_stop:
                 break
 
-        history_complete = history_complete and invalid_rows == 0
-        data_version = _batch_version(rows, cursor_value, observed_at)
-        saved = 0
-        source_errors: list[str] = []
-        records = tuple(
-            RiskEvidenceRecord(
-                code=code,
-                observed_at=observed_at,
-                source=CNINFO_SOURCE,
-                source_time=row.published_at,
-                data_version=data_version,
-                evidence_id=f"{CNINFO_ANNOUNCEMENT_PREFIX}{row.announcement_id}",
-                payload={
-                    "announcement_id": row.announcement_id,
-                    "title": row.title,
-                    "published_at": row.published_at.isoformat(),
-                    "source_payload_hash": row.source_payload_hash,
-                    "id_derived": row.id_derived,
-                    "exchange_cross_check_status": "pending",
-                },
+        return CninfoSyncResult(
+            code=code,
+            pages_fetched=counters.pages_fetched,
+            saved_announcements=counters.saved_announcements,
+            duplicate_rows=counters.duplicate_rows,
+            invalid_rows=counters.invalid_rows,
+            history_complete=history_complete,
+            cursor_value=state.latest_cursor_value,
+            source_errors=tuple(counters.source_errors),
+            pages_checkpointed=counters.pages_checkpointed,
+            checkpoint_advanced=counters.checkpoint_advanced,
+            resumed=state.resumed,
+            terminal_failure=terminal_failure,
+        )
+
+    def _sync_next_page(
+        self,
+        context: _CninfoSyncContext,
+        state: _CninfoSyncState,
+        counters: _CninfoRunCounters,
+    ) -> _CninfoPageOutcome:
+        page = self._fetch_page(context, state)
+        counters.pages_fetched += 1
+        persist_errors = self._persist_page(context, state, counters, page)
+        counters.source_errors.extend(persist_errors)
+        if persist_errors:
+            return _CninfoPageOutcome(should_stop=True)
+        history_complete, terminal_failure, completion_errors = _complete_range_if_needed(
+            self._data_plane,
+            context,
+            state,
+            page,
+        )
+        counters.source_errors.extend(completion_errors)
+        if completion_errors:
+            return _CninfoPageOutcome(should_stop=True)
+        if terminal_failure:
+            counters.source_errors.append("cninfo_schema_invalid")
+        checkpoint_errors = _save_cursor_checkpoint(
+            self._data_plane,
+            context=context,
+            state=state,
+            history_complete=history_complete,
+        )
+        counters.source_errors.extend(checkpoint_errors)
+        if checkpoint_errors:
+            return _CninfoPageOutcome(should_stop=True)
+        counters.pages_checkpointed += 1
+        counters.checkpoint_advanced = True
+        return _CninfoPageOutcome(
+            history_complete=history_complete,
+            terminal_failure=terminal_failure,
+            should_stop=history_complete or terminal_failure,
+        )
+
+    def _fetch_page(self, context: _CninfoSyncContext, state: _CninfoSyncState) -> _CninfoFetchedPage:
+        page = state.next_page
+        payload = self._client.fetch_announcements(
+            CninfoAnnouncementQuery(
+                code=context.code,
+                page=page,
+                page_size=self._page_size,
+                observed_at=context.observed_at,
+                cursor_value=state.latest_cursor_value,
+                deadline=context.deadline,
+                range_start=state.range_start,
+                range_end=state.range_end,
             )
-            for row in rows
+        )
+        parsed, invalid_rows = ParseCninfoAnnouncementRows(context.code, payload, context.observed_at)
+        rows, duplicate_rows = _unique_announcement_rows(parsed)
+        return _CninfoFetchedPage(
+            page=page,
+            rows=rows,
+            duplicate_rows=duplicate_rows,
+            invalid_rows=invalid_rows,
+            has_more=_payload_has_more(payload, page=page, page_size=self._page_size),
+        )
+
+    def _persist_page(
+        self,
+        context: _CninfoSyncContext,
+        state: _CninfoSyncState,
+        counters: _CninfoRunCounters,
+        page: _CninfoFetchedPage,
+    ) -> tuple[str, ...]:
+        records = _announcement_records(
+            context.code,
+            context.observed_at,
+            page.rows,
+            data_version=_range_version(state.range_start, state.range_end),
         )
         if records:
             try:
                 self._data_plane.save_risk_evidence_recent_records(records)
-                saved = len(records)
             except DataPlaneUnavailableError as exc:
-                source_errors.append(f"cninfo_persist_unavailable:{type(exc).__name__}")
-
-        next_cursor = _next_cursor(cursor_value, rows, observed_at)
-        if not source_errors:
-            batch = _CninfoPersistBatch(
-                code=code,
-                observed_at=observed_at,
-                source_time=_latest_source_time(rows, observed_at),
-                data_version=data_version,
-                announcements=tuple(rows),
-                duplicate_rows=duplicate_rows,
-                invalid_rows=invalid_rows,
-                history_complete=history_complete,
-            )
-            if not cursor_value:
-                source_errors.extend(_save_component_statuses(self._data_plane, batch))
-            if not source_errors:
-                source_errors.extend(
-                    _save_cursor(
-                        self._data_plane,
-                        batch,
-                        cursor_name=cursor_name,
-                        cursor_value=next_cursor,
-                    )
-                )
-
-        return CninfoSyncResult(
-            code=code,
-            pages_fetched=pages_fetched,
-            saved_announcements=saved,
-            duplicate_rows=duplicate_rows,
-            invalid_rows=invalid_rows,
-            history_complete=history_complete,
-            cursor_value=next_cursor,
-            source_errors=tuple(source_errors),
-        )
+                return (f"cninfo_persist_unavailable:{type(exc).__name__}",)
+        counters.saved_announcements += len(records)
+        counters.duplicate_rows += page.duplicate_rows
+        counters.invalid_rows += page.invalid_rows
+        _apply_persisted_page(state, page, len(records))
+        return ()
 
     def _load_cursor(self, cursor_name: str) -> _CninfoCursorState:
         try:
@@ -235,10 +324,37 @@ class CninfoAnnouncementIncrementalSync:
         issuer_history_complete = (
             bool(payload.get("issuer_history_complete")) if isinstance(payload, Mapping) else False
         )
-        return _CninfoCursorState(cursor.cursor_value, issuer_history_complete)
+        if not isinstance(payload, Mapping):
+            return _CninfoCursorState(cursor.cursor_value, issuer_history_complete, cursor.observed_at)
+        categories = tuple(
+            category
+            for value in _string_sequence(payload.get("risk_categories"))
+            if (category := _corporate_risk_category(value)) is not None
+        )
+        return _CninfoCursorState(
+            value=cursor.cursor_value,
+            issuer_history_complete=issuer_history_complete,
+            observed_at=cursor.observed_at,
+            checkpoint_version=_positive_int(payload.get("checkpoint_version"), default=0),
+            initial_backfill_complete=bool(payload.get("initial_backfill_complete", issuer_history_complete)),
+            range_start=_payload_date(payload.get("range_start")),
+            range_end=_payload_date(payload.get("range_end")),
+            next_page=_positive_int(payload.get("next_page"), default=1),
+            latest_cursor_value=str(payload.get("latest_cursor_value") or cursor.cursor_value),
+            total_pages_persisted=_non_negative_int(payload.get("total_pages_persisted")),
+            total_saved_rows=_non_negative_int(payload.get("total_saved_rows") or payload.get("saved_rows")),
+            range_duplicate_rows=_non_negative_int(payload.get("range_duplicate_rows")),
+            range_invalid_rows=_non_negative_int(payload.get("range_invalid_rows")),
+            risk_categories=categories,
+        )
 
 
 CninfoPostFunction = Callable[..., requests.Response]
+CninfoSessionFactory = Callable[[], requests.Session]
+
+
+class _CninfoThreadState(local):
+    session: requests.Session | None = None
 
 
 class CninfoAnnouncementHttpClient:
@@ -250,19 +366,26 @@ class CninfoAnnouncementHttpClient:
     def __init__(
         self,
         *,
-        post: CninfoPostFunction,
+        post: CninfoPostFunction | None = None,
+        session_factory: CninfoSessionFactory | None = None,
         timeout_seconds: float,
         wall_clock: Callable[[], datetime],
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if timeout_seconds <= 0.0:
             raise ValueError("CNInfo timeout must be positive")
+        if (post is None) == (session_factory is None):
+            raise ValueError("CNInfo requires exactly one post function or session factory")
         self._post = post
+        self._session_factory = session_factory
         self._timeout_seconds = timeout_seconds
         self._wall_clock = wall_clock
         self._sleeper = sleeper
         self._organizations: dict[str, str] = {}
-        self._request_lock = Lock()
+        self._organization_lock = Lock()
+        self._thread_state = _CninfoThreadState()
+        self._sessions: list[requests.Session] = []
+        self._sessions_lock = Lock()
 
     def fetch_announcements(self, query: CninfoAnnouncementQuery) -> Mapping[str, object]:
         _validate_code(query.code)
@@ -271,7 +394,10 @@ class CninfoAnnouncementHttpClient:
             raise ValueError("CNInfo page coordinates must be positive")
         organization = self._organization_id(query.code, query.deadline)
         column, plate = _cninfo_market_scope(query.code)
-        start_date = _cursor_start_date(query.cursor_value)
+        start_date = query.range_start or _cursor_start_date(query.cursor_value)
+        end_date = query.range_end or query.observed_at.date()
+        if end_date < start_date:
+            raise ValueError("CNInfo query range end precedes start")
         payload = self._post_json(
             self._ANNOUNCEMENT_URL,
             data={
@@ -285,7 +411,7 @@ class CninfoAnnouncementHttpClient:
                 "secid": "",
                 "category": "",
                 "trade": "",
-                "seDate": f"{start_date.isoformat()}~{query.observed_at.date().isoformat()}",
+                "seDate": f"{start_date.isoformat()}~{end_date.isoformat()}",
                 "sortName": "time",
                 "sortType": "desc",
                 "isHLtitle": "true",
@@ -297,7 +423,8 @@ class CninfoAnnouncementHttpClient:
         return payload
 
     def _organization_id(self, code: str, deadline: datetime | None) -> str:
-        cached = self._organizations.get(code)
+        with self._organization_lock:
+            cached = self._organizations.get(code)
         if cached is not None:
             return cached
         payload = self._post_json(
@@ -318,8 +445,16 @@ class CninfoAnnouncementHttpClient:
         if not matches:
             raise RuntimeError("no_data")
         organization = str(matches[0]["orgId"]).strip()
-        self._organizations[code] = organization
+        with self._organization_lock:
+            self._organizations[code] = organization
         return organization
+
+    def close(self) -> None:
+        with self._sessions_lock:
+            sessions = tuple(self._sessions)
+            self._sessions.clear()
+        for session in sessions:
+            session.close()
 
     def _post_json(
         self,
@@ -333,19 +468,18 @@ class CninfoAnnouncementHttpClient:
             if delay:
                 self._sleep_before_retry(delay, deadline)
             try:
-                with self._request_lock:
-                    timeout = self._remaining_timeout(deadline)
-                    response = self._post(
-                        url,
-                        data=data,
-                        headers={
-                            "Accept": "application/json, text/plain, */*",
-                            "Referer": "https://www.cninfo.com.cn/",
-                            "User-Agent": "Mozilla/5.0",
-                            "X-Requested-With": "XMLHttpRequest",
-                        },
-                        timeout=timeout,
-                    )
+                timeout = self._remaining_timeout(deadline)
+                response = self._post_request(
+                    url,
+                    data=data,
+                    headers={
+                        "Accept": "application/json, text/plain, */*",
+                        "Referer": "https://www.cninfo.com.cn/",
+                        "User-Agent": "Mozilla/5.0",
+                        "X-Requested-With": "XMLHttpRequest",
+                    },
+                    timeout=timeout,
+                )
                 if response.status_code == 429:
                     raise RuntimeError("http_429")
                 response.raise_for_status()
@@ -362,6 +496,26 @@ class CninfoAnnouncementHttpClient:
         assert last_error is not None
         raise last_error
 
+    def _post_request(
+        self,
+        url: str,
+        *,
+        data: Mapping[str, str],
+        headers: Mapping[str, str],
+        timeout: float,
+    ) -> requests.Response:
+        if self._post is not None:
+            return self._post(url, data=data, headers=headers, timeout=timeout)
+        session = self._thread_state.session
+        if session is None:
+            if self._session_factory is None:
+                raise RuntimeError("CNInfo session factory is unavailable")
+            session = self._session_factory()
+            self._thread_state.session = session
+            with self._sessions_lock:
+                self._sessions.append(session)
+        return session.post(url, data=data, headers=headers, timeout=timeout)
+
     def _remaining_timeout(self, deadline: datetime | None) -> float:
         if deadline is None:
             return self._timeout_seconds
@@ -374,147 +528,6 @@ class CninfoAnnouncementHttpClient:
         if deadline is not None and (deadline - self._wall_clock()).total_seconds() <= delay:
             raise TimeoutError("CNInfo retry would exceed deadline")
         self._sleeper(delay)
-
-
-@dataclass(frozen=True)
-class CninfoBatchSyncReport:
-    changed_codes: tuple[str, ...]
-    completed_codes: tuple[str, ...]
-    attempted_codes: tuple[str, ...]
-    deferred_codes: tuple[str, ...]
-    failed_codes: tuple[str, ...]
-    pages_fetched: int
-    saved_announcements: int
-    deadline_reached: bool
-
-
-class CninfoAnnouncementBatchSynchronizer:
-    """Run bounded CNInfo code syncs and expose resumable aggregate progress."""
-
-    def __init__(
-        self,
-        syncer: CninfoAnnouncementIncrementalSync,
-        data_plane: CninfoDataPlane,
-        worker_pool: WorkerExecutor,
-        *,
-        wall_clock: Callable[[], datetime],
-    ) -> None:
-        self._syncer = syncer
-        self._data_plane = data_plane
-        self._worker_pool = worker_pool
-        self._wall_clock = wall_clock
-
-    def pending_codes(self, codes: Sequence[str], observed_at: datetime) -> tuple[str, ...]:
-        try:
-            records = self._data_plane.load_source_cursor_recent_records()
-        except DataPlaneUnavailableError:
-            return tuple(codes)
-        completed = {
-            record.cursor_name.removeprefix(CNINFO_CURSOR_PREFIX)
-            for record in records
-            if record.source == CNINFO_SOURCE
-            and record.cursor_name.startswith(CNINFO_CURSOR_PREFIX)
-            and record.observed_at.date() >= observed_at.date()
-            and isinstance(record.payload, Mapping)
-            and bool(record.payload.get("issuer_history_complete"))
-        }
-        return tuple(code for code in codes if code not in completed)
-
-    def sync_report(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        *,
-        deadline: datetime,
-        progress: Callable[[int, int, int, int], None] | None = None,
-    ) -> CninfoBatchSyncReport:
-        futures = self._submit_sync_futures(codes, observed_at, deadline)
-        results, failed, pending = self._collect_sync_results(futures, codes, deadline, progress)
-        completed_codes = tuple(sorted(code for code, result in results.items() if result.history_complete))
-        changed_codes = tuple(sorted(code for code, result in results.items() if result.saved_announcements > 0))
-        deferred = tuple(sorted(set(codes) - set(completed_codes) - failed))
-        return CninfoBatchSyncReport(
-            changed_codes=changed_codes,
-            completed_codes=completed_codes,
-            attempted_codes=tuple(sorted(set(results) | failed)),
-            deferred_codes=deferred,
-            failed_codes=tuple(sorted(failed)),
-            pages_fetched=sum(result.pages_fetched for result in results.values()),
-            saved_announcements=sum(result.saved_announcements for result in results.values()),
-            deadline_reached=bool(pending) or self._wall_clock() >= deadline,
-        )
-
-    def _submit_sync_futures(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-        deadline: datetime,
-    ) -> dict[Future[CninfoSyncResult], str]:
-        futures: dict[Future[CninfoSyncResult], str] = {}
-        for code in codes:
-            if self._wall_clock() >= deadline:
-                break
-            future = SubmitOrReject(
-                self._worker_pool,
-                self._syncer.sync_code,
-                code,
-                observed_at,
-                deadline=deadline,
-            )
-            futures[future] = code
-        return futures
-
-    def _collect_sync_results(
-        self,
-        futures: Mapping[Future[CninfoSyncResult], str],
-        codes: Sequence[str],
-        deadline: datetime,
-        progress: Callable[[int, int, int, int], None] | None,
-    ) -> tuple[dict[str, CninfoSyncResult], set[str], set[Future[CninfoSyncResult]]]:
-        pending = set(futures)
-        results: dict[str, CninfoSyncResult] = {}
-        failed: set[str] = set()
-        while pending:
-            timeout = max(0.0, (deadline - self._wall_clock()).total_seconds())
-            if timeout <= 0.0:
-                break
-            completed, pending = wait(pending, timeout=timeout, return_when=FIRST_COMPLETED)
-            if not completed:
-                break
-            rate_limited = self._consume_sync_results(completed, futures, codes, results, failed)
-            if progress is not None:
-                progress(
-                    min(len(codes), len(results) + len(failed)),
-                    len(codes),
-                    sum(result.pages_fetched for result in results.values()),
-                    sum(result.saved_announcements for result in results.values()),
-                )
-            if rate_limited:
-                break
-        for future in pending:
-            future.cancel()
-        return results, failed, pending
-
-    @staticmethod
-    def _consume_sync_results(
-        completed: set[Future[CninfoSyncResult]],
-        futures: Mapping[Future[CninfoSyncResult], str],
-        codes: Sequence[str],
-        results: dict[str, CninfoSyncResult],
-        failed: set[str],
-    ) -> bool:
-        for future in completed:
-            code = futures[future]
-            try:
-                results[code] = future.result()
-            except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
-                failure = ClassifyAdapterFailure(exc, provider=CNINFO_SOURCE, operation="announcements")
-                if failure.code is AdapterFailureCode.RATE_LIMITED:
-                    failed.update(codes)
-                    return True
-                if not failure.retryable:
-                    failed.add(code)
-        return False
 
 
 def ParseCninfoAnnouncementRows(
@@ -587,11 +600,213 @@ def _payload_has_more(payload: Mapping[str, object], *, page: int, page_size: in
     return total is not None and page * page_size < total
 
 
+def _build_sync_state(cursor: _CninfoCursorState, observed_at: datetime) -> _CninfoSyncState:
+    is_resumable = (
+        not cursor.issuer_history_complete
+        and cursor.checkpoint_version == _CHECKPOINT_VERSION
+        and cursor.range_start is not None
+        and cursor.range_end is not None
+        and cursor.range_start <= cursor.range_end
+    )
+    if is_resumable:
+        assert cursor.range_start is not None
+        assert cursor.range_end is not None
+        return _CninfoSyncState(
+            range_start=cursor.range_start,
+            range_end=cursor.range_end,
+            next_page=cursor.next_page,
+            latest_cursor_value=cursor.latest_cursor_value,
+            initial_backfill_complete=cursor.initial_backfill_complete,
+            total_pages_persisted=cursor.total_pages_persisted,
+            total_saved_rows=cursor.total_saved_rows,
+            range_duplicate_rows=cursor.range_duplicate_rows,
+            range_invalid_rows=cursor.range_invalid_rows,
+            risk_categories=set(cursor.risk_categories),
+            checkpoint_observed_at=cursor.observed_at,
+            resumed=True,
+        )
+    initial_backfill_complete = cursor.issuer_history_complete
+    range_start = _cursor_start_date(cursor.value) if initial_backfill_complete else _INITIAL_HISTORY_START
+    return _CninfoSyncState(
+        range_start=min(range_start, observed_at.date()),
+        range_end=observed_at.date(),
+        next_page=1,
+        latest_cursor_value=cursor.value if initial_backfill_complete else "",
+        initial_backfill_complete=initial_backfill_complete,
+        total_pages_persisted=cursor.total_pages_persisted,
+        total_saved_rows=cursor.total_saved_rows,
+        range_duplicate_rows=0,
+        range_invalid_rows=0,
+        risk_categories=set(),
+        checkpoint_observed_at=cursor.observed_at,
+        resumed=False,
+    )
+
+
+def _unique_announcement_rows(
+    rows: Sequence[CninfoAnnouncementRow],
+) -> tuple[tuple[CninfoAnnouncementRow, ...], int]:
+    unique: list[CninfoAnnouncementRow] = []
+    seen: set[str] = set()
+    duplicates = 0
+    for row in rows:
+        if row.announcement_id in seen:
+            duplicates += 1
+            continue
+        seen.add(row.announcement_id)
+        unique.append(row)
+    return tuple(unique), duplicates
+
+
+def _announcement_records(
+    code: str,
+    observed_at: datetime,
+    rows: Sequence[CninfoAnnouncementRow],
+    *,
+    data_version: str,
+) -> tuple[RiskEvidenceRecord, ...]:
+    return tuple(
+        RiskEvidenceRecord(
+            code=code,
+            observed_at=observed_at,
+            source=CNINFO_SOURCE,
+            source_time=row.published_at,
+            data_version=data_version,
+            evidence_id=f"{CNINFO_ANNOUNCEMENT_PREFIX}{row.announcement_id}",
+            payload={
+                "announcement_id": row.announcement_id,
+                "title": row.title,
+                "published_at": row.published_at.isoformat(),
+                "source_payload_hash": row.source_payload_hash,
+                "id_derived": row.id_derived,
+                "exchange_cross_check_status": "pending",
+            },
+        )
+        for row in rows
+    )
+
+
+def _risk_categories(rows: Sequence[CninfoAnnouncementRow]) -> set[CorporateRiskCategory]:
+    announcements = tuple(
+        ResearchAnnouncement(
+            title=item.title,
+            published_at=item.published_at,
+            announcement_id=f"{CNINFO_ANNOUNCEMENT_PREFIX}{item.announcement_id}",
+            source="issuer_disclosure",
+        )
+        for item in rows
+    )
+    return {fact.category for fact in CorporateRiskFactsFromAnnouncements(announcements)}
+
+
+def _apply_persisted_page(state: _CninfoSyncState, page: _CninfoFetchedPage, saved_rows: int) -> None:
+    state.latest_cursor_value = _next_cursor(state.latest_cursor_value, page.rows, state.range_end)
+    state.total_pages_persisted += 1
+    state.total_saved_rows += saved_rows
+    state.range_duplicate_rows += page.duplicate_rows
+    state.range_invalid_rows += page.invalid_rows
+    state.risk_categories.update(_risk_categories(page.rows))
+    state.next_page = page.page + 1
+
+
+def _complete_range_if_needed(
+    data_plane: CninfoDataPlane,
+    context: _CninfoSyncContext,
+    state: _CninfoSyncState,
+    page: _CninfoFetchedPage,
+) -> tuple[bool, bool, tuple[str, ...]]:
+    if page.has_more:
+        return False, False, ()
+    if state.range_invalid_rows:
+        errors = _save_confirmed_risk_statuses(
+            data_plane,
+            code=context.code,
+            observed_at=context.observed_at,
+            state=state,
+        )
+        if errors:
+            return False, False, errors
+        state.next_page = 1
+        return False, True, ()
+    errors = _finalize_completed_range(
+        data_plane,
+        code=context.code,
+        observed_at=context.observed_at,
+        state=state,
+    )
+    if errors:
+        return False, False, errors
+    if state.range_end < context.observed_at.date():
+        _advance_to_current_range(state, context.observed_at.date())
+        return False, False, ()
+    return True, False, ()
+
+
+def _finalize_completed_range(
+    data_plane: CninfoDataPlane,
+    *,
+    code: str,
+    observed_at: datetime,
+    state: _CninfoSyncState,
+) -> tuple[str, ...]:
+    if not state.initial_backfill_complete:
+        errors = _save_component_statuses(
+            data_plane,
+            _CninfoComponentBatch(
+                code=code,
+                observed_at=observed_at,
+                source_time=_cursor_source_time(state.latest_cursor_value, observed_at),
+                data_version=_range_version(state.range_start, state.range_end),
+                statuses=_component_statuses(state.risk_categories, history_complete=True),
+                announcement_count=state.total_saved_rows,
+            ),
+        )
+        if not errors:
+            state.initial_backfill_complete = True
+        return errors
+    return ()
+
+
+def _save_confirmed_risk_statuses(
+    data_plane: CninfoDataPlane,
+    *,
+    code: str,
+    observed_at: datetime,
+    state: _CninfoSyncState,
+) -> tuple[str, ...]:
+    statuses = {
+        component: status
+        for component, status in _component_statuses(state.risk_categories, history_complete=False).items()
+        if status == "known_risk"
+    }
+    if not statuses:
+        return ()
+    return _save_component_statuses(
+        data_plane,
+        _CninfoComponentBatch(
+            code=code,
+            observed_at=observed_at,
+            source_time=_cursor_source_time(state.latest_cursor_value, observed_at),
+            data_version=_range_version(state.range_start, state.range_end),
+            statuses=statuses,
+            announcement_count=state.total_saved_rows,
+        ),
+    )
+
+
+def _advance_to_current_range(state: _CninfoSyncState, range_end: date) -> None:
+    state.range_start = _cursor_start_date(state.latest_cursor_value)
+    state.range_end = range_end
+    state.next_page = 1
+    state.range_duplicate_rows = 0
+    state.range_invalid_rows = 0
+    state.risk_categories.clear()
+
+
 def _save_component_statuses(
     data_plane: CninfoDataPlane,
-    batch: _CninfoPersistBatch,
+    batch: _CninfoComponentBatch,
 ) -> tuple[str, ...]:
-    statuses = _component_statuses(batch.announcements, history_complete=batch.history_complete)
     records = tuple(
         RiskEvidenceRecord(
             code=batch.code,
@@ -602,12 +817,12 @@ def _save_component_statuses(
             evidence_id=f"{CNINFO_COMPONENT_PREFIX}{component}",
             payload={
                 "status": status,
-                "history_complete": batch.history_complete,
-                "announcement_count": len(batch.announcements),
+                "history_complete": False,
+                "announcement_count": batch.announcement_count,
                 "source": CNINFO_SOURCE,
             },
         )
-        for component, status in statuses.items()
+        for component, status in batch.statuses.items()
     )
     try:
         data_plane.save_risk_evidence_recent_records(records)
@@ -617,20 +832,10 @@ def _save_component_statuses(
 
 
 def _component_statuses(
-    announcements: tuple[CninfoAnnouncementRow, ...],
+    categories: set[CorporateRiskCategory],
     *,
     history_complete: bool,
 ) -> dict[str, str]:
-    research_announcements = tuple(
-        ResearchAnnouncement(
-            title=item.title,
-            published_at=item.published_at,
-            announcement_id=f"{CNINFO_ANNOUNCEMENT_PREFIX}{item.announcement_id}",
-            source="issuer_disclosure",
-        )
-        for item in announcements
-    )
-    categories = {fact.category for fact in CorporateRiskFactsFromAnnouncements(research_announcements)}
     announcement_clear = "known_clear" if history_complete else "stale"
     regulatory_clear = "stale"
     return {
@@ -644,43 +849,60 @@ def _component_statuses(
     }
 
 
-def _save_cursor(
+def _save_cursor_checkpoint(
     data_plane: CninfoDataPlane,
-    batch: _CninfoPersistBatch,
     *,
-    cursor_name: str,
-    cursor_value: str,
+    context: _CninfoSyncContext,
+    state: _CninfoSyncState,
+    history_complete: bool,
 ) -> tuple[str, ...]:
+    checkpoint_time = _next_checkpoint_time(context.observed_at, state.checkpoint_observed_at)
+    cursor_value = state.latest_cursor_value or f"empty:{state.range_end.isoformat()}"
     try:
         data_plane.save_source_cursor_recent(
             SourceCursorRecord(
-                cursor_name=cursor_name,
-                observed_at=batch.observed_at,
+                cursor_name=f"{CNINFO_CURSOR_PREFIX}{context.code}",
+                observed_at=checkpoint_time,
                 source=CNINFO_SOURCE,
-                source_time=batch.source_time,
-                data_version=batch.data_version,
+                source_time=_cursor_source_time(cursor_value, context.observed_at),
+                data_version=f"cninfo-checkpoint:{context.code}:{state.range_end.isoformat()}:{state.next_page}",
                 cursor_value=cursor_value,
                 payload={
                     "history_complete": False,
-                    "issuer_history_complete": batch.history_complete,
-                    "last_announcement_id": batch.announcements[-1].announcement_id if batch.announcements else "",
-                    "saved_rows": len(batch.announcements),
-                    "duplicate_rows": batch.duplicate_rows,
-                    "invalid_rows": batch.invalid_rows,
+                    "issuer_history_complete": history_complete,
+                    "checkpoint_version": _CHECKPOINT_VERSION,
+                    "initial_backfill_complete": state.initial_backfill_complete,
+                    "range_start": state.range_start.isoformat(),
+                    "range_end": state.range_end.isoformat(),
+                    "next_page": state.next_page,
+                    "latest_cursor_value": cursor_value,
+                    "last_announcement_id": cursor_value.partition("|")[2],
+                    "total_pages_persisted": state.total_pages_persisted,
+                    "total_saved_rows": state.total_saved_rows,
+                    "saved_rows": state.total_saved_rows,
+                    "range_duplicate_rows": state.range_duplicate_rows,
+                    "range_invalid_rows": state.range_invalid_rows,
+                    "duplicate_rows": state.range_duplicate_rows,
+                    "invalid_rows": state.range_invalid_rows,
+                    "risk_categories": tuple(sorted(category.value for category in state.risk_categories)),
                     "exchange_cross_check_status": "pending",
                 },
             )
         )
     except DataPlaneUnavailableError as exc:
         return (f"cninfo_cursor_persist_unavailable:{type(exc).__name__}",)
+    state.latest_cursor_value = cursor_value
+    state.checkpoint_observed_at = checkpoint_time
     return ()
 
 
-def _next_cursor(previous: str, rows: list[CninfoAnnouncementRow], observed_at: datetime) -> str:
+def _next_cursor(previous: str, rows: Sequence[CninfoAnnouncementRow], range_end: date) -> str:
     if rows:
         latest = max(rows, key=lambda item: (item.published_at, item.announcement_id))
-        return f"{latest.published_at.isoformat()}|{latest.announcement_id}"
-    return previous or f"empty:{observed_at.date().isoformat()}"
+        candidate = f"{latest.published_at.isoformat()}|{latest.announcement_id}"
+        if not previous or _cursor_sort_key(candidate) > _cursor_sort_key(previous):
+            return candidate
+    return previous or f"empty:{range_end.isoformat()}"
 
 
 def _cursor_start_date(cursor_value: str) -> date:
@@ -690,7 +912,65 @@ def _cursor_start_date(cursor_value: str) -> date:
     try:
         return datetime.fromisoformat(raw).date()
     except ValueError:
-        return date(1990, 1, 1)
+        return _INITIAL_HISTORY_START
+
+
+def _cursor_sort_key(cursor_value: str) -> tuple[datetime, str]:
+    raw_time, _separator, announcement_id = cursor_value.partition("|")
+    try:
+        parsed = datetime.fromisoformat(raw_time)
+    except ValueError:
+        parsed = datetime.min.replace(tzinfo=SHANGHAI_TZ)
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=SHANGHAI_TZ)
+    return parsed, announcement_id
+
+
+def _cursor_source_time(cursor_value: str, fallback: datetime) -> datetime:
+    parsed, _announcement_id = _cursor_sort_key(cursor_value)
+    return fallback if parsed == datetime.min.replace(tzinfo=SHANGHAI_TZ) else parsed
+
+
+def _next_checkpoint_time(observed_at: datetime, previous: datetime | None) -> datetime:
+    if previous is None or observed_at > previous:
+        return observed_at
+    return previous + timedelta(microseconds=1)
+
+
+def _range_version(range_start: date, range_end: date) -> str:
+    return f"cninfo-announcements:{range_start.isoformat()}:{range_end.isoformat()}"
+
+
+def _payload_date(value: object) -> date | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _positive_int(value: object, *, default: int) -> int:
+    parsed = _int_value(value)
+    return parsed if parsed is not None and parsed > 0 else default
+
+
+def _non_negative_int(value: object) -> int:
+    parsed = _int_value(value)
+    return parsed if parsed is not None and parsed >= 0 else 0
+
+
+def _string_sequence(value: object) -> tuple[str, ...]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return ()
+    return tuple(item for item in value if isinstance(item, str))
+
+
+def _corporate_risk_category(value: str) -> CorporateRiskCategory | None:
+    try:
+        return CorporateRiskCategory(value)
+    except ValueError:
+        return None
 
 
 def _cninfo_market_scope(code: str) -> tuple[str, str]:
@@ -699,12 +979,6 @@ def _cninfo_market_scope(code: str) -> tuple[str, str]:
     if code.startswith(("5", "6", "9")):
         return "sse", "sh"
     return "szse", "sz"
-
-
-def _latest_source_time(rows: list[CninfoAnnouncementRow], observed_at: datetime) -> datetime:
-    if not rows:
-        return observed_at
-    return max(row.published_at for row in rows)
 
 
 def _parse_cninfo_time(value: object) -> datetime | None:
@@ -762,10 +1036,6 @@ def _mapping_hash(row: Mapping[str, object]) -> str:
     return hashlib.sha256(repr(sorted((str(key), str(value)) for key, value in row.items())).encode()).hexdigest()
 
 
-def _batch_version(rows: list[CninfoAnnouncementRow], cursor_value: str, observed_at: datetime) -> str:
-    return f"cninfo-announcements:{observed_at.isoformat()}:{cursor_value}"
-
-
 def _validate_code(code: str) -> None:
     if len(code) != 6 or not code.isdigit():
         raise ValueError("CNInfo code must be six digits")
@@ -792,12 +1062,11 @@ __all__ = [
     "CNINFO_COMPONENT_PREFIX",
     "CNINFO_CURSOR_PREFIX",
     "CNINFO_SOURCE",
-    "CninfoAnnouncementBatchSynchronizer",
     "CninfoAnnouncementHttpClient",
     "CninfoAnnouncementIncrementalSync",
     "CninfoAnnouncementQuery",
     "CninfoAnnouncementRow",
-    "CninfoBatchSyncReport",
+    "CninfoDataPlane",
     "CninfoSyncResult",
     "ParseCninfoAnnouncementRows",
 ]

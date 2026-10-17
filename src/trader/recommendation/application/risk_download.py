@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from functools import partial
-from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypedDict
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -76,10 +76,19 @@ class RiskAnnouncementSyncReport(Protocol):
     def pages_fetched(self) -> int: ...
 
     @property
+    def pages_checkpointed(self) -> int: ...
+
+    @property
     def saved_announcements(self) -> int: ...
 
     @property
+    def resumed_codes(self) -> tuple[str, ...]: ...
+
+    @property
     def deadline_reached(self) -> bool: ...
+
+
+RiskAnnouncementProgress: TypeAlias = tuple[int, int, int, int, int]
 
 
 class RiskAnnouncementSynchronizer(Protocol):
@@ -91,7 +100,7 @@ class RiskAnnouncementSynchronizer(Protocol):
         observed_at: datetime,
         *,
         deadline: datetime,
-        progress: Callable[[int, int, int, int], None] | None = None,
+        progress: Callable[[RiskAnnouncementProgress], None] | None = None,
     ) -> RiskAnnouncementSyncReport: ...
 
 
@@ -126,7 +135,9 @@ class RiskDownloadResult:
     wave_count: int = 0
     stop_reason: str = "complete"
     official_pages_fetched: int = 0
+    official_pages_checkpointed: int = 0
     official_announcements_saved: int = 0
+    official_resumed_codes: int = 0
     official_failed_codes: int = 0
 
     @property
@@ -192,7 +203,9 @@ class RiskDownloadProgress:
     deferred_codes: int | None = None
     changed_codes: int | None = None
     official_pages_fetched: int = 0
+    official_pages_checkpointed: int = 0
     official_announcements_saved: int = 0
+    official_resumed_codes: int = 0
     stop_reason: str | None = None
 
 
@@ -221,6 +234,7 @@ class _RiskProgressIdentity:
     research_pending: tuple[str, ...]
     official_pending: tuple[str, ...]
     observations: tuple[_RiskObservationProgress, ...]
+    official_checkpoint_advances: int
 
 
 @dataclass
@@ -236,7 +250,10 @@ class _RiskDownloadState:
     research_pending_codes: int = 0
     official_pending_codes: int = 0
     official_pages_fetched: int = 0
+    official_pages_checkpointed: int = 0
     official_announcements_saved: int = 0
+    official_resumed_codes: set[str] = field(default_factory=set)
+    official_checkpoint_advances: int = 0
     wave_count: int = 0
     any_deadline: bool = False
     stop_reason: str = "complete"
@@ -256,7 +273,9 @@ class _RiskStageUpdate:
     completed_units: int
     total_units: int
     official_pages_fetched: int | None = None
+    official_pages_checkpointed: int | None = None
     official_announcements_saved: int | None = None
+    official_resumed_codes: int | None = None
 
 
 def DownloadRiskSnapshot(
@@ -317,7 +336,12 @@ def _run_download_waves(
             break
 
         state.wave_count += 1
-        before = _progress_identity(state.normalized, state.observations, pending)
+        before = _progress_identity(
+            state.normalized,
+            state.observations,
+            pending,
+            state.official_checkpoint_advances,
+        )
         if not _run_research_wave(loader, context, budget, state, pending):
             state.stop_reason = "task_deadline"
             break
@@ -334,7 +358,12 @@ def _run_download_waves(
             state_name="completed",
             completed_units=len(state.normalized) - len(unresolved),
         )
-        after = _progress_identity(state.normalized, state.observations, after_pending)
+        after = _progress_identity(
+            state.normalized,
+            state.observations,
+            after_pending,
+            state.official_checkpoint_advances,
+        )
         if not _made_durable_progress(before, after):
             state.stop_reason = "no_progress"
             break
@@ -484,7 +513,10 @@ def _run_official_wave(
     state.changed_codes.update(report.changed_codes)
     state.official_terminal_codes.update(report.failed_codes)
     state.official_pages_fetched += report.pages_fetched
+    state.official_pages_checkpointed += report.pages_checkpointed
     state.official_announcements_saved += report.saved_announcements
+    state.official_resumed_codes.update(report.resumed_codes)
+    state.official_checkpoint_advances += report.pages_checkpointed
     state.any_deadline = state.any_deadline or report.deadline_reached
     attempted = set(report.attempted_codes)
     deferred = set(report.deferred_codes)
@@ -500,6 +532,10 @@ def _run_official_wave(
             "deferred" if report.deferred_codes else "completed",
             len(report.completed_codes) + len(report.failed_codes),
             len(official_pending),
+            official_pages_fetched=state.official_pages_fetched,
+            official_pages_checkpointed=state.official_pages_checkpointed,
+            official_announcements_saved=state.official_announcements_saved,
+            official_resumed_codes=len(state.official_resumed_codes),
         ),
     )
     loader.recover_from_data_plane(context.observed_at, retain_stale=True)
@@ -518,11 +554,9 @@ def _publish_research_progress(
 
 def _publish_official_progress(
     state: _RiskDownloadState,
-    completed_units: int,
-    total_units: int,
-    pages_fetched: int,
-    announcements_saved: int,
+    update: RiskAnnouncementProgress,
 ) -> None:
+    completed_units, total_units, pages_fetched, pages_checkpointed, announcements_saved = update
     _publish_stage_progress(
         state,
         _RiskStageUpdate(
@@ -531,7 +565,9 @@ def _publish_official_progress(
             completed_units,
             total_units,
             state.official_pages_fetched + pages_fetched,
+            state.official_pages_checkpointed + pages_checkpointed,
             state.official_announcements_saved + announcements_saved,
+            len(state.official_resumed_codes),
         ),
     )
 
@@ -554,10 +590,20 @@ def _publish_stage_progress(state: _RiskDownloadState, update: _RiskStageUpdate)
             official_pages_fetched=(
                 state.official_pages_fetched if update.official_pages_fetched is None else update.official_pages_fetched
             ),
+            official_pages_checkpointed=(
+                state.official_pages_checkpointed
+                if update.official_pages_checkpointed is None
+                else update.official_pages_checkpointed
+            ),
             official_announcements_saved=(
                 state.official_announcements_saved
                 if update.official_announcements_saved is None
                 else update.official_announcements_saved
+            ),
+            official_resumed_codes=(
+                len(state.official_resumed_codes)
+                if update.official_resumed_codes is None
+                else update.official_resumed_codes
             ),
         )
     )
@@ -591,7 +637,9 @@ def _publish_summary_progress(
             deferred_codes=len(deferred),
             changed_codes=len(state.changed_codes),
             official_pages_fetched=state.official_pages_fetched,
+            official_pages_checkpointed=state.official_pages_checkpointed,
             official_announcements_saved=state.official_announcements_saved,
+            official_resumed_codes=len(state.official_resumed_codes),
         )
     )
 
@@ -618,7 +666,9 @@ def _publish_result_progress(
             deferred_codes=result.deferred_codes,
             changed_codes=result.changed_codes,
             official_pages_fetched=result.official_pages_fetched,
+            official_pages_checkpointed=result.official_pages_checkpointed,
             official_announcements_saved=result.official_announcements_saved,
+            official_resumed_codes=result.official_resumed_codes,
             stop_reason=result.stop_reason,
         )
     )
@@ -661,7 +711,9 @@ def _build_download_result(
         wave_count=state.wave_count,
         stop_reason=state.stop_reason,
         official_pages_fetched=state.official_pages_fetched,
+        official_pages_checkpointed=state.official_pages_checkpointed,
         official_announcements_saved=state.official_announcements_saved,
+        official_resumed_codes=len(state.official_resumed_codes),
         official_failed_codes=len(state.official_terminal_codes),
     )
 
@@ -699,6 +751,7 @@ def _progress_identity(
     codes: Sequence[str],
     observations: Mapping[str, ResearchObservation],
     pending: _RiskPendingCodes,
+    official_checkpoint_advances: int,
 ) -> _RiskProgressIdentity:
     return _RiskProgressIdentity(
         research_pending=tuple(sorted(set((*pending.missing, *pending.retryable)))),
@@ -708,6 +761,7 @@ def _progress_identity(
             for code in codes
             if (observation := observations.get(code)) is not None
         ),
+        official_checkpoint_advances=official_checkpoint_advances,
     )
 
 
@@ -745,6 +799,8 @@ def _made_durable_progress(before: _RiskProgressIdentity, after: _RiskProgressId
     if set(after.research_pending) < set(before.research_pending):
         return True
     if set(after.official_pending) < set(before.official_pending):
+        return True
+    if after.official_checkpoint_advances > before.official_checkpoint_advances:
         return True
     before_observations = {item.code: item for item in before.observations}
     return any(

@@ -57,7 +57,9 @@ class _AnnouncementReport:
     deferred_codes: tuple[str, ...] = ()
     failed_codes: tuple[str, ...] = ()
     pages_fetched = 3
+    pages_checkpointed = 3
     saved_announcements = 42
+    resumed_codes = ("600001",)
     deadline_reached = False
 
 
@@ -73,7 +75,7 @@ class _AnnouncementSync:
         del codes, observed_at, deadline
         self.completed = True
         if progress is not None:
-            progress(1, 1, 3, 42)
+            progress((1, 1, 3, 3, 42))
         return _AnnouncementReport()
 
 
@@ -84,7 +86,9 @@ class _EmptyAnnouncementReport:
     deferred_codes = ("600001",)
     failed_codes: tuple[str, ...] = ()
     pages_fetched = 0
+    pages_checkpointed = 0
     saved_announcements = 0
+    resumed_codes: tuple[str, ...] = ()
     deadline_reached = False
 
 
@@ -100,8 +104,40 @@ class _StuckAnnouncementSync:
         del codes, observed_at, deadline
         self.report_count += 1
         if progress is not None:
-            progress(0, 1, 0, 0)
+            progress((0, 1, 0, 0, 0))
         return _EmptyAnnouncementReport()
+
+
+class _CheckpointAnnouncementSync:
+    def __init__(self) -> None:
+        self.report_count = 0
+
+    def pending_codes(self, codes, observed_at):
+        del observed_at
+        return tuple(codes) if self.report_count < 2 else ()
+
+    def sync_report(self, codes, observed_at, *, deadline, progress=None):
+        del codes, observed_at, deadline
+        self.report_count += 1
+        completed = ("600001",) if self.report_count == 2 else ()
+        deferred = () if completed else ("600001",)
+        if progress is not None:
+            progress((1, 1, 1, 1, 30))
+        return _CheckpointAnnouncementReport(completed, deferred)
+
+
+class _CheckpointAnnouncementReport:
+    def __init__(self, completed_codes: tuple[str, ...], deferred_codes: tuple[str, ...]) -> None:
+        self.changed_codes = ("600001",)
+        self.completed_codes = completed_codes
+        self.attempted_codes = ("600001",)
+        self.deferred_codes = deferred_codes
+        self.failed_codes: tuple[str, ...] = ()
+        self.pages_fetched = 1
+        self.pages_checkpointed = 1
+        self.saved_announcements = 30
+        self.resumed_codes = completed_codes
+        self.deadline_reached = bool(deferred_codes)
 
 
 class _FairAnnouncementSync:
@@ -138,7 +174,7 @@ class _FairAnnouncementSync:
             )
         self.completed.update(report.completed_codes)
         if progress is not None:
-            progress(len(report.attempted_codes), len(requested), 0, 0)
+            progress((len(report.attempted_codes), len(requested), 0, 0, 0))
         return report
 
 
@@ -156,7 +192,9 @@ class _FairAnnouncementReport:
         self.deferred_codes = deferred_codes
         self.failed_codes: tuple[str, ...] = ()
         self.pages_fetched = 0
+        self.pages_checkpointed = 0
         self.saved_announcements = 0
+        self.resumed_codes: tuple[str, ...] = ()
         self.deadline_reached = bool(deferred_codes)
 
 
@@ -346,7 +384,9 @@ def test_risk_download_runs_official_source_until_issuer_checkpoint_completes() 
     assert result.stop_reason == "source_exhausted"
     assert result.changed_codes == 1
     assert result.official_pages_fetched == 3
+    assert result.official_pages_checkpointed == 3
     assert result.official_announcements_saved == 42
+    assert result.official_resumed_codes == 1
     assert result.official_failed_codes == 0
 
 
@@ -366,6 +406,26 @@ def test_risk_download_stops_when_only_volatile_cache_version_changes() -> None:
     assert result.wave_count == 1
     assert result.stop_reason == "no_progress"
     assert result.deferred_codes == 1
+
+
+def test_risk_download_treats_official_page_checkpoint_as_durable_wave_progress() -> None:
+    loader = _Loader()
+    loader.cached_observations = {"600001": ResearchObservation(data_version="existing")}
+    announcement_sync = _CheckpointAnnouncementSync()
+    observed_at = datetime(2026, 10, 16, 9, 15, tzinfo=SHANGHAI)
+
+    result = DownloadRiskSnapshot(
+        loader,
+        ("600001",),
+        RiskDownloadContext(date(2026, 10, 16), observed_at, lambda: 10.0, lambda: observed_at),
+        announcement_sync=announcement_sync,
+    )
+
+    assert announcement_sync.report_count == 2
+    assert result.wave_count == 2
+    assert result.official_pages_fetched == 2
+    assert result.official_pages_checkpointed == 2
+    assert result.official_resumed_codes == 1
 
 
 def test_risk_download_prioritizes_unattempted_official_codes_across_waves() -> None:
@@ -495,7 +555,9 @@ def test_risk_download_cli_reports_component_and_retained_inventory(monkeypatch,
     }
     assert payload["official_source"] == {
         "pages_fetched": 0,
+        "pages_checkpointed": 0,
         "announcements_saved": 0,
+        "resumed_codes": 0,
         "failed_codes": 0,
     }
     assert payload["elapsed_seconds"] == 123.457

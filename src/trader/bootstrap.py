@@ -141,8 +141,8 @@ from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.factory import CreateDeepseekClient
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
+from trader.recommendation.infra.market_data.announcement_batch_sync import CninfoAnnouncementBatchSynchronizer
 from trader.recommendation.infra.market_data.announcement_sync import (
-    CninfoAnnouncementBatchSynchronizer,
     CninfoAnnouncementHttpClient,
     CninfoAnnouncementIncrementalSync,
 )
@@ -237,7 +237,11 @@ def ExecuteRiskDownload(
         queue_capacity=len(codes),
         thread_name_prefix="risk-download",
     )
-    cninfo_session = requests.Session()
+    cninfo_client = CninfoAnnouncementHttpClient(
+        session_factory=requests.Session,
+        timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
+        wall_clock=clock.now,
+    )
     workers.start()
     try:
         runner = MarketTaskRunner(
@@ -271,11 +275,7 @@ def ExecuteRiskDownload(
         )
         cninfo_sync = CninfoAnnouncementBatchSynchronizer(
             CninfoAnnouncementIncrementalSync(
-                CninfoAnnouncementHttpClient(
-                    post=cninfo_session.post,
-                    timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
-                    wall_clock=clock.now,
-                ),
+                cninfo_client,
                 risk_data,
             ),
             risk_data,
@@ -290,7 +290,7 @@ def ExecuteRiskDownload(
         )
     finally:
         workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
-        cninfo_session.close()
+        cninfo_client.close()
     return replace(result, elapsed_seconds=max(0.0, time.monotonic() - command_started))
 
 

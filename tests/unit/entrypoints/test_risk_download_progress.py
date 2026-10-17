@@ -33,7 +33,9 @@ def test_risk_download_progress_uses_stderr_style_fields_and_checkpoint_counts()
             deferred_codes=4029,
             changed_codes=500,
             official_pages_fetched=30,
+            official_pages_checkpointed=28,
             official_announcements_saved=80,
+            official_resumed_codes=2,
         )
     )
 
@@ -43,7 +45,7 @@ def test_risk_download_progress_uses_stderr_style_fields_and_checkpoint_counts()
     assert "研究累计    998/  5027（ 19.85%） | 巨潮累计     40/  5027（  0.80%）" in output
     assert "请求   5027 | 研究待补   4029 | 巨潮待补   4987" in output
     assert "可用    998 | 完整     12 | 延后   4029 | 变更    500" in output
-    assert "官方分页     30 | 公告保存     80" in output
+    assert "官方分页     30 | 断点分页     28 | 公告保存     80 | 断点续传      2" in output
 
 
 def test_risk_download_progress_keeps_cumulative_counts_across_sources_and_waves() -> None:

@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime
 from pathlib import Path
+from threading import Barrier, Condition, Event
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -13,14 +14,15 @@ from trader.recommendation.application.ports.data_plane_records import (
 )
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
+from trader.recommendation.infra.market_data.announcement_batch_sync import CninfoAnnouncementBatchSynchronizer
 from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_ANNOUNCEMENT_PREFIX,
     CNINFO_COMPONENT_PREFIX,
     CNINFO_CURSOR_PREFIX,
-    CninfoAnnouncementBatchSynchronizer,
     CninfoAnnouncementHttpClient,
     CninfoAnnouncementIncrementalSync,
     CninfoAnnouncementQuery,
+    CninfoSyncResult,
     ParseCninfoAnnouncementRows,
 )
 from trader.recommendation.infra.market_data.market_cache_identity import _serialize_research_observation
@@ -115,6 +117,41 @@ def test_cninfo_http_client_uses_current_bse_market_scope() -> None:
     assert calls[1]["column"] == "third"
     assert calls[1]["plate"] == "bj"
     assert calls[1]["stock"] == "920002,gfbj0873843"
+
+
+def test_cninfo_http_client_allows_bounded_parallel_requests_without_a_global_post_lock() -> None:
+    announcement_barrier = Barrier(2)
+
+    def post(url: str, **kwargs: Any) -> _Response:
+        data = kwargs["data"]
+        if url.endswith("/topSearch/query"):
+            code = data["keyWord"]
+            return _Response([{"code": code, "category": "A股", "orgId": f"org-{code}"}])
+        announcement_barrier.wait(timeout=2.0)
+        return _Response({"announcements": (), "hasMore": False})
+
+    client = CninfoAnnouncementHttpClient(
+        post=post,
+        timeout_seconds=8.0,
+        wall_clock=lambda: OBSERVED_AT,
+        sleeper=lambda _seconds: None,
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = tuple(
+            pool.submit(
+                client.fetch_announcements,
+                CninfoAnnouncementQuery(
+                    code=code,
+                    page=1,
+                    page_size=30,
+                    observed_at=OBSERVED_AT,
+                    cursor_value="",
+                    deadline=OBSERVED_AT.replace(minute=51),
+                ),
+            )
+            for code in ("600001", "000001")
+        )
+        assert all(future.result()["hasMore"] is False for future in futures)
 
 
 def test_missing_announcement_id_uses_persistent_evidence_digest_once() -> None:
@@ -214,6 +251,43 @@ def test_cninfo_empty_increment_does_not_clear_existing_risk(tmp_path: Path) -> 
     assert component.payload["status"] == "known_risk"
 
 
+def test_cninfo_sync_checkpoints_each_page_and_resumes_fixed_range(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    first_client = _TimeoutAfterFirstPageCninfoClient()
+    first = CninfoAnnouncementIncrementalSync(first_client, data_plane).sync_code("600009", OBSERVED_AT)
+
+    assert first.pages_fetched == 1
+    assert first.pages_checkpointed == 1
+    assert first.checkpoint_advanced is True
+    assert first.history_complete is False
+    checkpoint = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600009")
+    assert checkpoint is not None
+    assert checkpoint.payload["range_start"] == "1990-01-01"
+    assert checkpoint.payload["range_end"] == "2026-07-30"
+    assert checkpoint.payload["next_page"] == 2
+
+    next_observed_at = OBSERVED_AT.replace(day=31)
+    second_client = _ResumeCninfoClient()
+    second = CninfoAnnouncementIncrementalSync(second_client, data_plane).sync_code("600009", next_observed_at)
+
+    assert second.resumed is True
+    assert second.pages_fetched == 2
+    assert second.pages_checkpointed == 2
+    assert second.history_complete is True
+    assert [(query.page, query.range_start, query.range_end) for query in second_client.queries] == [
+        (2, date(1990, 1, 1), date(2026, 7, 30)),
+        (1, date(2026, 7, 29), date(2026, 7, 31)),
+    ]
+    assert data_plane.load_risk_evidence_recent("600009", f"{CNINFO_ANNOUNCEMENT_PREFIX}resume-risk") is not None
+    assert data_plane.load_risk_evidence_recent("600009", f"{CNINFO_ANNOUNCEMENT_PREFIX}resume-old") is not None
+    component = data_plane.load_risk_evidence_recent("600009", f"{CNINFO_COMPONENT_PREFIX}penalty")
+    assert component is not None
+    assert component.payload["status"] == "known_risk"
+    completed = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600009")
+    assert completed is not None
+    assert completed.payload["issuer_history_complete"] is True
+
+
 def test_cninfo_benign_increment_does_not_downgrade_historical_risk(tmp_path: Path) -> None:
     data_plane = SQLiteDataPlane(tmp_path)
     CninfoAnnouncementIncrementalSync(
@@ -298,20 +372,20 @@ def test_cninfo_batch_sync_skips_completed_codes_on_same_day(tmp_path: Path) -> 
     with ThreadPoolExecutor(max_workers=2) as pool:
         batch = CninfoAnnouncementBatchSynchronizer(syncer, data_plane, pool, wall_clock=lambda: OBSERVED_AT)
         assert batch.pending_codes(("600006", "600007"), OBSERVED_AT) == ("600006", "600007")
-        progress: list[tuple[int, int, int, int]] = []
+        progress: list[tuple[int, int, int, int, int]] = []
 
         report = batch.sync_report(
             ("600006", "600007"),
             OBSERVED_AT,
             deadline=OBSERVED_AT.replace(minute=51),
-            progress=lambda completed, total, pages, saved: progress.append((completed, total, pages, saved)),
+            progress=progress.append,
         )
 
     assert report.completed_codes == ("600006", "600007")
     assert report.attempted_codes == ("600006", "600007")
     assert report.deferred_codes == ()
     assert report.failed_codes == ()
-    assert progress[-1] == (2, 2, 2, 0)
+    assert progress[-1] == (2, 2, 2, 2, 0)
     assert batch.pending_codes(("600006", "600007"), OBSERVED_AT) == ()
 
 
@@ -332,6 +406,27 @@ def test_cninfo_batch_sync_pauses_remaining_source_after_rate_limit(tmp_path: Pa
 
     assert report.failed_codes == ("600006", "600007")
     assert report.deferred_codes == ()
+
+
+def test_cninfo_batch_sync_limits_inflight_codes_to_three(tmp_path: Path) -> None:
+    data_plane = SQLiteDataPlane(tmp_path)
+    syncer = _BoundedCninfoSync()
+    codes = tuple(f"60000{index}" for index in range(1, 7))
+    with ThreadPoolExecutor(max_workers=5) as workers, ThreadPoolExecutor(max_workers=1) as coordinator:
+        batch = CninfoAnnouncementBatchSynchronizer(syncer, data_plane, workers, wall_clock=lambda: OBSERVED_AT)
+        future = coordinator.submit(
+            batch.sync_report,
+            codes,
+            OBSERVED_AT,
+            deadline=OBSERVED_AT.replace(minute=51),
+        )
+        assert syncer.wait_until_started(3)
+        assert syncer.started == 3
+        syncer.release.set()
+        report = future.result(timeout=2.0)
+
+    assert syncer.max_active == 3
+    assert report.completed_codes == codes
 
 
 def test_research_loader_recovers_cninfo_announcements_as_structured_risk(tmp_path: Path) -> None:
@@ -486,10 +581,71 @@ class _StaticCninfoClient:
         return self._pages[query.page - 1]
 
 
+class _TimeoutAfterFirstPageCninfoClient:
+    def fetch_announcements(self, query: CninfoAnnouncementQuery) -> Mapping[str, object]:
+        if query.page > 1:
+            raise TimeoutError("fixture deadline")
+        return {
+            "announcements": (
+                {
+                    "announcementId": "resume-risk",
+                    "announcementTitle": "关于收到中国证监会立案告知书的公告",
+                    "announcementTime": "2026-07-29 18:30:00",
+                },
+            ),
+            "hasMore": True,
+        }
+
+
+class _ResumeCninfoClient:
+    def __init__(self) -> None:
+        self.queries: list[CninfoAnnouncementQuery] = []
+
+    def fetch_announcements(self, query: CninfoAnnouncementQuery) -> Mapping[str, object]:
+        self.queries.append(query)
+        if query.range_end == date(2026, 7, 30):
+            return {
+                "announcements": (
+                    {
+                        "announcementId": "resume-old",
+                        "announcementTitle": "历史普通公告",
+                        "announcementTime": "2026-07-28 18:30:00",
+                    },
+                ),
+                "hasMore": False,
+            }
+        return {"announcements": (), "hasMore": False}
+
+
 class _RateLimitedCninfoSync:
     def sync_code(self, code: str, observed_at: datetime, *, deadline: datetime | None = None):
         del code, observed_at, deadline
         raise RuntimeError("http_429")
+
+
+class _BoundedCninfoSync:
+    def __init__(self) -> None:
+        self.condition = Condition()
+        self.release = Event()
+        self.started = 0
+        self.active = 0
+        self.max_active = 0
+
+    def wait_until_started(self, count: int) -> bool:
+        with self.condition:
+            return self.condition.wait_for(lambda: self.started >= count, timeout=2.0)
+
+    def sync_code(self, code: str, observed_at: datetime, *, deadline: datetime | None = None) -> CninfoSyncResult:
+        del observed_at, deadline
+        with self.condition:
+            self.started += 1
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            self.condition.notify_all()
+        assert self.release.wait(timeout=2.0)
+        with self.condition:
+            self.active -= 1
+        return CninfoSyncResult(code, 1, 0, 0, 0, True, "empty:2026-07-30", pages_checkpointed=1)
 
 
 class _Response:

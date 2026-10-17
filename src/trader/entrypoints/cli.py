@@ -225,7 +225,9 @@ def _run_history_maintenance_command(
                     },
                     "official_source": {
                         "pages_fetched": risk_result.official_pages_fetched,
+                        "pages_checkpointed": risk_result.official_pages_checkpointed,
                         "announcements_saved": risk_result.official_announcements_saved,
+                        "resumed_codes": risk_result.official_resumed_codes,
                         "failed_codes": risk_result.official_failed_codes,
                     },
                 },

@@ -87,8 +87,12 @@ class StderrRiskDownloadProgress:
             parts.append(f"变更 {progress.changed_codes:>6}")
         if progress.stage == "official_announcements" or progress.official_pages_fetched:
             parts.append(f"官方分页 {progress.official_pages_fetched:>6}")
+        if progress.stage == "official_announcements" or progress.official_pages_checkpointed:
+            parts.append(f"断点分页 {progress.official_pages_checkpointed:>6}")
         if progress.stage == "official_announcements" or progress.official_announcements_saved:
             parts.append(f"公告保存 {progress.official_announcements_saved:>6}")
+        if progress.stage == "official_announcements" or progress.official_resumed_codes:
+            parts.append(f"断点续传 {progress.official_resumed_codes:>6}")
         if progress.stop_reason is not None:
             parts.append(f"停止原因 {progress.stop_reason}")
         with self._lock:
