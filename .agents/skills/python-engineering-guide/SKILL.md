@@ -1,80 +1,42 @@
 ---
 name: python-engineering-guide
-description: "Design, scaffold, modernize, implement, and review maintainable Python projects with an evidence-backed engineering guide and coding standard. Use when Codex needs to start or restructure a Python library, CLI, service, data/automation project; choose package boundaries or dependency direction; define pyproject, testing, typing, linting, CI, logging, error-handling, and release conventions; write or refactor Python code; review a Python change; or produce an engineering checklist."
+description: "设计、实现、重构和审查 Python 工程；按仓库规则明确公开 API、命名、依赖与资源边界，并选择必要验证。适用于 Python 代码或工程规范修改，不用于仅运行现有命令或解释日志。"
 ---
 
 # Python 工程设计与编码规范
 
-## 核心原则
+## 适用与分工
 
-先服从用户目标和仓库现有约定，再应用本 skill 的默认值。保留已经有效的结构与工具，不为“统一风格”制造无关重构。把上游指南当作证据和启发，不把任何单一公司的规则当作不可变真理。
+用户要求和仓库 `AGENTS.md` 优先。本 skill 负责 Python 设计与编码判断；Trader 的任务登记、业务影响、诊断和提交推送由 `trader-delivery` 负责。保留已有工具链，不因加载本 skill 就重构无关代码。
 
-## 按需读取资料
+先读适用的 `AGENTS.md` 和 `pyproject.toml`，再按任务选择资料；已有上下文有效时不重复读取。
 
-- 设计、新建、拆分或现代化工程时，必须读取 [references/engineering-design.md](references/engineering-design.md)。
-- 编写、修改或审查 Python 代码时，必须读取 [references/coding-standard.md](references/coding-standard.md)。
-- 涉及规范出处、许可证、星数、旧建议或版本时，读取 [references/sources.md](references/sources.md)。
-- 同一任务同时涉及架构和代码时，同时读取前两份资料；不要只检查格式而忽略依赖方向、状态和错误边界。
+| 当前任务 | 必读资料 | 核对重点 |
+| --- | --- | --- |
+| 编写、修改或审查 Python | [编码规范](references/coding-standard.md) | 公开边界、命名、类型、错误与资源生命周期 |
+| 新建工程、拆分模块或改变依赖/状态所有权 | [工程设计](references/engineering-design.md) | 当前 owner、目标 owner、消费者、迁移和回退 |
+| 核对规则出处、许可证或旧建议 | [资料来源](references/sources.md) | 区分历史来源与当前项目约定 |
 
-## 工作流程
+同时涉及架构和代码时读取前两份。小范围实现不要求另写架构方案。
 
-### 1. 建立项目上下文
+## 先确定公开边界
 
-1. 查找并阅读 `AGENTS.md`、`CONTRIBUTING*`、`README*`、`pyproject.toml`、锁文件、CI 配置和测试配置。
-2. 确认项目类型、支持的 Python 版本、发布方式、运行环境和既有工具链。
-3. 用现有代码和测试识别实际边界；不要仅根据目录名猜测架构。
-4. 记录冲突：用户要求优先，其次是仓库强制规则，再其次才是本 skill 的默认建议。
+本仓库导出的顶层函数（包括 `async def`）、公开类和类型使用**大驼峰 `PascalCase`**，例如 `LoadPrices`、`PriceWindow`。模块内部函数用 `_snake_case`；方法、参数和局部变量的规则及外部固定接口例外见[命名分类](references/coding-standard.md#3-命名格式与可读性)。不要把普通方法改成大驼峰，也不要因函数未列入 `__all__` 就忽略其跨模块消费者。
 
-### 2. 选择与规模匹配的设计
+新增或调整接口前，用实际导入、调用和导出确认可见性。公开符号改名须一次更新定义、全部消费者、`__all__`、入口配置和相关测试；不保留旧名别名或转发层。已有符号职责、可见性和消费者未变化时，不顺手改名；明确的命名迁移任务按已授权范围执行。
 
-- 单文件脚本：保持简单，分离纯逻辑与 I/O，避免套用多层架构。
-- 可复用库：稳定公共 API，隔离可选依赖，验证构建与安装产物。
-- CLI 或服务：把入口、用例/业务逻辑和外部适配器分开，在组合根注入依赖。
-- 数据或自动化任务：显式描述输入、输出、幂等性、重试、检查点和数据质量约束。
-- 仅在存在多个入口、复杂业务规则或可替换外部系统时引入 service layer、repository、ports/adapters 等模式。
+## 实施与验证
 
-### 3. 形成可验证的方案
+1. 明确本批行为和文件范围；跨边界变更说明所有者、依赖方向、状态与资源生命周期。
+2. 先完成实现切片及全部消费者切换，再按实际风险补最小充分验证。保持外部数据字段和协议约定；确需改变时按仓库合同办理。
+3. 沿用仓库声明的工具与支持版本。Trader 直接 Python 命令只用 `python3` 或 `.venv/bin/python3`；不为这份规范另建工具配置。
 
-对设计或重构任务，至少给出：
+| 改动 | 必要验证 |
+| --- | --- |
+| 文档、注释、非运行元数据 | 完整 diff 与空白检查；skill 另核对元数据、引用和示例 |
+| Python 逻辑或公开符号改名 | 受影响 Ruff；改名另查旧引用、导出和入口，按风险验证消费者 |
+| 关键业务、公开合同或重要回归风险 | 实现后集中补必要回归并运行定向门禁 |
+| 公共类型或复杂边界 | 增加受影响 mypy |
+| 测试基础设施、全仓测试调整或发布 | 按 `AGENTS.md` 和工程设计执行相应完整门禁 |
 
-1. 当前约束和目标。
-2. 模块职责、公共接口与依赖方向。
-3. 状态、配置、错误、资源和并发模型。
-4. 测试层次、质量门禁和发布方式。
-5. 分阶段迁移计划、兼容性与回退策略。
-
-设计应能映射到具体文件、接口和测试。避免只给“高内聚、低耦合”之类无法验收的口号。
-
-### 4. 实现最小一致变更
-
-1. 先处理契约和边界，再处理内部实现。
-2. 保持公共 API、序列化格式、数据库结构和 CLI 行为兼容，除非任务明确要求破坏性修改。
-3. 同步更新测试、类型、文档和配置；不要留下半迁移状态。
-4. 不主动替换仓库已有 formatter、linter、type checker、测试框架或依赖管理器。
-5. 新增工具前说明收益、迁移成本和与现有工具的重叠。
-
-### 5. 分层验证
-
-优先运行仓库声明的命令。若没有统一命令，则按变更范围逐步执行：
-
-1. 受影响的最小测试集。
-2. formatter/linter 检查。
-3. type checker。
-4. 完整测试或集成测试。
-5. 对可发布包执行构建，并在干净环境验证安装和导入。
-
-不要声称未运行的检查已经通过。无法运行时，报告具体阻碍和仍需验证的风险。
-
-## 交付格式
-
-### 设计结果
-
-先给推荐方案，再说明关键权衡。包含目标结构、依赖方向、核心接口、质量门禁和迁移顺序；只在关系复杂时画图。
-
-### 实现结果
-
-说明完成的行为变化、关键文件、验证结果和剩余风险。避免逐文件流水账。
-
-### 审查结果
-
-按严重度列出可执行问题，给出文件位置、失败场景和最小修复方向。优先正确性、安全性、兼容性、资源生命周期和可测试性，最后才是纯样式问题。
+通过的定向检查不等于全量、实测或发布通过。交付说明行为变化、真实验证和未完成项；审查按严重度给出位置、触发场景与修复方向。

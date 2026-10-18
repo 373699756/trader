@@ -1,4 +1,4 @@
 interface:
   display_name: "Python 工程设计与编码规范"
-  short_description: "设计、实现、重构与审查可维护的现代 Python 工程规范"
-  default_prompt: "Use $python-engineering-guide to design or review this Python project against modern engineering and coding standards."
+  short_description: "按仓库命名与边界规则设计、实现和审查 Python 代码"
+  default_prompt: "使用 $python-engineering-guide 按仓库规则实现或审查 Python 改动，确认公开顶层函数与类型使用大驼峰，并按风险验证全部消费者。"

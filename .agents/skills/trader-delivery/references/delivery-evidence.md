@@ -20,7 +20,7 @@ When a plan is warranted, only one plan item may be in progress. A step is compl
 
 ## Regression proof
 
-For a defect, preserve evidence at both ends:
+When a defect changes key behavior or carries material regression risk, preserve evidence at both ends. Keep the original failure evidence, complete the implementation slice, then add the minimum necessary regression coverage; ordinary documentation and low-risk cleanup do not require new tests.
 
 1. Reproduce or deterministically model the first broken boundary.
 2. Assert the downstream user-visible result, not only an internal counter.
@@ -45,7 +45,8 @@ stage counts; do not summarize every zero as “no data”.
 
 - Compare the complete diff with the previously pushed baseline and with the original file allowlist.
 - Inspect new files, removed paths, duplicate owners, hidden fallbacks, TODOs, generated output, and source-file size.
+- For Python changes, review [public naming and migration](../../python-engineering-guide/references/coding-standard.md#3-命名格式与可读性). Confirm exported top-level functions/types use `PascalCase`, internal helpers and methods follow their own conventions, and all imports, exports, entrypoint strings and patch targets moved with a renamed symbol. Search old names without rewriting external protocol fields or immutable history; no compatibility alias or visibility change may conceal a missed consumer.
 - In a shared worktree, capture the initial staged set separately from unstaged files. Before commit, re-read `HEAD`, its upstream and `git diff --cached --name-only`; if another batch advanced the branch or touched a shared file, rebase the review baseline and stage only this batch's exact hunks.
 - Run `git diff --check` and `git diff --cached --check`; confirm every staged hunk belongs to the original file allowlist.
-- Record actual changes, verification, and unfinished work only in `docs/3_工程实施.md`. For a repeated defect, connect its stable `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
+- When a stage is required, record actual changes, verification, and unfinished work only in its existing `docs/3_工程实施.md` entry. Lightweight batches follow `AGENTS.md` without creating a stage for formality. For a repeated defect, connect its stable `Regression-Key`, confirmed cause or `pending verification`, behavior change, verification, and residual risks.
 - Do not mark the batch complete before its single commit is pushed and confirmed present on the upstream branch.

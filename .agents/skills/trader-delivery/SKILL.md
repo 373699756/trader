@@ -1,6 +1,6 @@
 ---
 name: trader-delivery
-description: Deliver and review Trader A-share dashboard changes with risk-based routing across data, training, recommendation, API/Web, runtime, and release boundaries. Use for repository mutations and engineering reviews; skip questions that require no repository inspection or change.
+description: "实施和审查 Trader 仓库改动，按风险选择业务合同、消费者检查、诊断和交付证据。适用于代码、配置、文档与 skill 修改；纯日志释义或无需仓库检查的问题不触发交付流程。"
 ---
 
 # Trader Delivery
@@ -9,10 +9,10 @@ Deliver one repository change without reopening a known failure or regressing an
 
 ## Start the batch
 
-1. Follow the repository `AGENTS.md`; this skill adds routing and evidence requirements but does not duplicate or override it.
+1. Follow the repository `AGENTS.md`; this skill owns delivery routing and evidence, not a second copy of business or Python rules. For Python changes, use the available [Python engineering guide](../python-engineering-guide/SKILL.md) for coding and interface decisions. Apply both once; do not repeat their workflows or create a second ledger.
 2. Record the current branch, its upstream relationship, staged and unstaged files, and the exact task file scope before editing. Preserve unrelated user changes.
 3. Read the applicable authority before planning: `docs/1_评分逻辑.md` owns scoring and profit-validation rules; `docs/2_工程设计.md` owns product, architecture, timeline, runtime, API/Web, operations and acceptance; `docs/4_下载训练.md` owns download, historical data, training artifacts and replay engineering. `docs/3_工程实施.md` is the only active progress and evidence ledger. Follow `docs/README.md` for navigation; do not recreate retired blueprint or Changelog owners.
-4. Read [the change-impact matrix](references/change-impact-matrix.md), select every affected row, and include its downstream consumers and proportionate evidence. A cross-boundary plan that names only the edited module is incomplete.
+4. Classify the change before selecting checks. For behavior or cross-boundary changes, use [the change-impact matrix](references/change-impact-matrix.md) and include affected consumers. For docs, skills or metadata, use the lightweight route in [delivery evidence](references/delivery-evidence.md); inspect only the contracts and references relevant to the edit.
 
 ## Plan and implement
 
@@ -20,6 +20,7 @@ Deliver one repository change without reopening a known failure or regressing an
 - For defects, repeated regressions, public-contract changes, or cross-boundary work, state the user-visible symptom, confirmed evidence, root cause status (`confirmed` or `pending verification`), target architecture, in-scope files, excluded boundaries, and completion conditions. Use a stable `Regression-Key` only for a repeated defect family.
 - Compare a local patch with a systemic repair when ownership, representation, resource orchestration, or timing crosses modules. Choose from evidence, not diff size.
 - Complete the implementation slice first, then add or change only the contracts and tests required by the actual risk. When regression proof is required, cover the first broken boundary and the final user-visible boundary; avoid asserting implementation wording alone.
+- For Python APIs, check the naming and migration rules in [the coding standard](../python-engineering-guide/references/coding-standard.md#3-命名格式与可读性): exported top-level functions, including async functions, and public types use `PascalCase`. Methods keep their own convention. Review actual imports, `__all__`, entrypoint strings and test patch targets; change the owner and all consumers atomically, without old-name aliases or forwarding modules. Do not expand a behavior fix into unrelated renaming.
 - For scheduling, freezing, current/history, or Web visibility changes, use the hot/cold five-period matrix in the authoritative design. A single timestamp or fixture is insufficient.
 - For state or JSON changes, trace the typed value from owner to final serializer and browser consumer. Do not add dictionary fallbacks or parallel status sources.
 - For candidate, score, model diagnostic, cost gate, risk, fusion, action, ranking, decision identity, or score research changes, read [the scoring-chain guide](references/scoring-chain.md) and trace the changed meaning through every listed owner and consumer.
@@ -27,7 +28,7 @@ Deliver one repository change without reopening a known failure or regressing an
 
 ## Diagnose and verify
 
-Read [the runtime diagnostics guide](references/runtime-diagnostics.md) whenever the task touches running behavior, suppliers, history, Web, performance, or browser delivery. Use `scripts/diagnose_runtime.py` as the only public diagnostic CLI. Keep each implementation in its owning `scripts/runtime_diagnostics/` module; do not recreate standalone wrapper scripts or duplicate probe logic in the orchestrator.
+Read [the runtime diagnostics guide](references/runtime-diagnostics.md) when diagnosing or changing running behavior, suppliers, history, Web, performance, or browser delivery. A documentation mention alone does not require live probes. Use `scripts/diagnose_runtime.py` as the only public diagnostic CLI. Keep each implementation in its owning `scripts/runtime_diagnostics/` module; do not recreate standalone wrapper scripts or duplicate probe logic in the orchestrator.
 
 For empty recommendations, a stuck collecting state, unexpected funnel counts, or disagreement between Web and runtime status, read [the recommendation-funnel incident playbook](references/recommendation-funnel-incidents.md) before assigning a root cause. Complete all six checkpoints even when the first probe appears decisive. A sandbox `connection_failed`, a generic runtime error category, HTTP 200, or a fixture browser pass is not enough to close a funnel incident.
 
@@ -38,5 +39,7 @@ Read [the delivery evidence guide](references/delivery-evidence.md) before marki
 Do not claim live verification from mocks, HTTP 200 alone, an old process, or source code inspection. If real service, supplier, token, browser, or time-window evidence is unavailable, record the precise unverified gate and keep the claim bounded.
 
 When this skill or its references change, verify that linked files, named source/test paths, commands, API routes, configuration paths, and stable identities still exist. A syntax-only skill validator cannot prove routing correctness.
+
+For code changes, use affected Ruff checks; add mypy for public types or complex boundaries and targeted tests for material behavior risks. Full regression and release gates follow `AGENTS.md` and the engineering design; they are not mandatory for every batch. Keep passed, failed and unrun checks distinct, including failures already present in the baseline.
 
 This skill is a repository delivery workflow loaded by the agent under `AGENTS.md`; it is not a product runtime hook and will never be triggered by Web, market-data, or scheduler events. If it was not loaded for an eligible repository mutation, record and correct the process omission instead of adding product trigger logic.
