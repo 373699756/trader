@@ -8,9 +8,11 @@ from collections.abc import Callable
 from threading import Event, Lock, Thread
 from typing import TextIO
 
-from trader.recommendation.application.risk_download import RiskDownloadProgress
+from trader.download.domain.history_sync import HistoryStEligibilitySummary
+from trader.recommendation.application.risk_download import RiskDownloadProgress, RiskDownloadProgressPort
 
 _STAGE_LABELS = {
+    "st_eligibility": "ST名单",
     "local_snapshot": "本地任务库",
     "research_initial": "公司研究",
     "research_retry": "研究重试",
@@ -92,6 +94,27 @@ class StderrRiskDownloadProgress:
 
     def publish(self, progress: RiskDownloadProgress) -> None:
         now = self._monotonic()
+        if progress.stage == "st_eligibility":
+            parts = [
+                _format_duration(now - self._started),
+                f"{self._command_name} 下载进度",
+                "ST名单",
+                _STATE_LABELS[progress.state],
+                _format_progress("已核验", progress.completed_units, progress.total_units),
+            ]
+            if progress.st_clear_codes is not None:
+                parts.extend(
+                    (
+                        f"合格 {progress.st_clear_codes}",
+                        f"曾ST排除 {progress.st_excluded_codes}",
+                        f"未知排除 {progress.st_unknown_codes}",
+                    )
+                )
+            with self._lock:
+                self._current_stage = "ST名单"
+                self._last_status_at = now
+                self._write_locked(" | ".join(parts), now)
+            return
         if progress.state == "running" and progress.stage in _WAVE_STAGES:
             with self._lock:
                 key = (progress.wave, progress.stage)
@@ -186,6 +209,28 @@ class StderrRiskDownloadProgress:
             self._write_locked(" | ".join(parts), now)
 
 
+def ReportRiskStProgress(
+    progress: RiskDownloadProgressPort | None,
+    completed: int,
+    total: int,
+    summary: HistoryStEligibilitySummary | None,
+) -> None:
+    if progress is not None:
+        progress.publish(
+            RiskDownloadProgress(
+                "st_eligibility",
+                "completed" if summary is not None else "running",
+                0,
+                completed,
+                total,
+                summary.clear if summary is not None else 0,
+                st_clear_codes=summary.clear if summary is not None else None,
+                st_excluded_codes=summary.ever_st if summary is not None else None,
+                st_unknown_codes=summary.unknown if summary is not None else None,
+            )
+        )
+
+
 def _format_duration(seconds: float) -> str:
     hours, remainder = divmod(int(max(0.0, seconds)), 3600)
     minutes, remaining_seconds = divmod(remainder, 60)
@@ -197,4 +242,4 @@ def _format_progress(label: str, completed: int, total: int) -> str:
     return f"{label} {completed:>6}/{total:>6}（{percent:6.2f}%）"
 
 
-__all__ = ["StderrRiskDownloadProgress"]
+__all__ = ["ReportRiskStProgress", "StderrRiskDownloadProgress"]

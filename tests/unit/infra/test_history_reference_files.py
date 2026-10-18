@@ -308,9 +308,10 @@ def test_small_worker_pool_checks_every_code_without_rejection(tmp_path):
         )
         result = source.fetch(_current_universe("600001", "600002", "600003", "600004"), date(2026, 10, 9))
         assert len(result) == 4 and all(item.status == "clear" for item in result)
-        assert reports[0] == (2, 4, None)
-        assert reports[1][:2] == (4, 4)
-        assert reports[1][2] == HistoryStEligibilitySummary(4, 0, 0)
+        assert reports[0] == (0, 4, None)
+        assert reports[1] == (2, 4, None)
+        assert reports[2][:2] == (4, 4)
+        assert reports[2][2] == HistoryStEligibilitySummary(4, 0, 0)
         assert executor.status().rejected_count == 0
     finally:
         executor.stop(wait=True, cancel_futures=True)

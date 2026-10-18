@@ -64,6 +64,12 @@ class HistoryStNameSource:
     def fetch(self, universe: tuple[BaoStockSecurity, ...], as_of: date) -> tuple[HistoryStEvidence, ...]:
         self._observed = ReadStEvidence(self._path)
         evidence = {item.code: item for item in self._observed}
+        for security in universe:
+            previous = evidence.get(security.code)
+            if IsStSecurityName(security.name) and (previous is None or previous.status != "ever_st"):
+                evidence[security.code] = HistoryStEvidence(security.code, as_of, "ever_st")
+        if any(evidence.get(item.code) != item for item in self._observed) or len(evidence) != len(self._observed):
+            self._write(evidence)
         total = len(universe)
         pending = tuple(
             security
@@ -74,6 +80,8 @@ class HistoryStNameSource:
             )
         )
         completed = total - len(pending)
+        if pending:
+            self._report(completed, total, None)
         reported = completed
         summary_reported = False
         dirty = 0

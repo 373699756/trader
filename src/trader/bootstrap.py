@@ -35,10 +35,7 @@ from trader.download.infra.exchange_security_universe import (
     SelectStEligibleUniverse,
 )
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_reference_files import (
-    HistoryStEvidencePath,
-    ReadStEvidence,
-)
+from trader.download.infra.history_reference_files import HistoryStEvidencePath
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_gateway import HistorySyncGateway
@@ -140,6 +137,7 @@ from trader.recommendation.domain.market.eligibility import IssuerEligibilityRea
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
+from trader.recommendation.entrypoints.risk_download_progress import ReportRiskStProgress
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.factory import CreateDeepseekClient
@@ -160,7 +158,6 @@ from trader.recommendation.infra.market_data.market_feature_service import (
     MarketFeatureService,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.recommendation.infra.market_data.official_static_reference import ParseOfficialStaticReference
 from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
@@ -220,20 +217,9 @@ def ExecuteRiskDownload(
     settings = LoadRuntimeSettings(config_path)
     strategy = LoadStrategySettings(settings.strategy_config_path)
     clock = ShanghaiClock(_utc_now)
-    st_evidence_path = HistoryStEvidencePath(settings.reference_dir)
-    if not st_evidence_path.is_file():
-        raise RuntimeError("risk download requires the historical ST evidence file")
-    st_excluded_codes = frozenset(item.code for item in ReadStEvidence(st_evidence_path) if item.status != "clear")
-    population_observed_at = clock.now()
+    population = _load_risk_st_universe(settings.reference_dir, clock.now().date(), progress)
     calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
     open_dates = calendar.open_dates()
-    official = ExchangeSecurityMasterClient(
-        sse_fetcher=partial(FetchSseListings, get=requests.get),
-        szse_fetcher=partial(FetchSzseListings, get=requests.get),
-        timeout_seconds=max(15.0, settings.market_data.eastmoney_timeout_seconds),
-        wall_clock=clock.now,
-    )
-    population = ParseOfficialStaticReference(official.fetch(population_observed_at)).records
     observed_at = clock.now()
     target_date = _risk_target_date(observed_at, open_dates)
     eligibility = SQLiteIssuerEligibilityIndex(settings.reference_dir, read_only=True)
@@ -242,11 +228,7 @@ def ExecuteRiskDownload(
         IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
     }
     excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
-    codes = tuple(
-        item.code
-        for item in population
-        if not item.is_st and item.code not in excluded and item.code not in st_excluded_codes
-    )
+    codes = tuple(item.code for item in population if item.code not in excluded)
     risk_root = settings.project_root / "data" / "risk"
     task_database: RiskDatabaseKind = "risk_history_download" if include_official_history else "risk_download"
     risk_data = SQLiteDataPlane(
@@ -324,6 +306,32 @@ def ExecuteRiskDownload(
         risk_data.close()
     PublishRiskSnapshot(risk_root)
     return replace(result, elapsed_seconds=max(0.0, time.monotonic() - command_started))
+
+
+def _load_risk_st_universe(
+    reference_root: Path, as_of: date, progress: RiskDownloadProgressPort | None
+) -> tuple[BaoStockSecurity, ...]:
+    universe = LoadCurrentAShareUniverse(
+        partial(FetchSseListings, get=requests.get), partial(FetchSzseListings, get=requests.get), 15.0
+    )
+    workers = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="risk-st-check")
+    workers.start()
+    resources = ExitStack()
+    try:
+        sessions = TencentSessionPool(tuple(resources.enter_context(requests.Session()) for _ in range(8)))
+        source = HistoryStNameSource(
+            HistoryStEvidencePath(reference_root),
+            sessions.borrow,
+            workers,
+            lambda: not workers.is_running(),
+            report=partial(ReportRiskStProgress, progress),
+        )
+        return SelectStEligibleUniverse(universe, source.fetch(universe, as_of))
+    finally:
+        stopped = workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
+        resources.close()
+        if not stopped.completed:
+            raise RuntimeError("history ST worker shutdown exceeded 30 seconds")
 
 
 def _risk_target_date(observed_at: datetime, open_dates: tuple[date, ...]) -> date:

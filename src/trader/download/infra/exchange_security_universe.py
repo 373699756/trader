@@ -6,6 +6,7 @@ from typing import cast
 
 from trader.download.domain.baostock_daily import BaoStockBoard, BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
+from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.infra.market_data.observations import ListingFetcher
 
 
@@ -31,13 +32,17 @@ def LoadCurrentAShareUniverse(
 def SelectStEligibleUniverse(
     universe: tuple[BaoStockSecurity, ...], evidence: tuple[HistoryStEvidence, ...]
 ) -> tuple[BaoStockSecurity, ...]:
-    """Apply the one historical-ST rule to either independent download population."""
+    """Apply the current and historical ST rule to every download population."""
 
     official_codes = {security.code for security in universe}
     current = {item.code: item for item in evidence if item.code in official_codes}
     if not official_codes or set(current) != official_codes:
         raise RuntimeError("historical ST evidence is unavailable or conflicts with the official universe")
-    eligible = frozenset(code for code, item in current.items() if item.status == "clear")
+    eligible = frozenset(
+        security.code
+        for security in universe
+        if current[security.code].status == "clear" and not IsStSecurityName(security.name)
+    )
     if not eligible:
         raise RuntimeError("historical ST eligible universe is empty")
     return tuple(security for security in universe if security.code in eligible)

@@ -205,6 +205,7 @@ _DEFAULT_RISK_DOWNLOAD_BUDGET = RiskDownloadBudget()
 
 
 RiskDownloadProgressStage = Literal[
+    "st_eligibility",
     "local_snapshot",
     "research_initial",
     "research_retry",
@@ -242,6 +243,9 @@ class RiskDownloadProgress:
     official_persistence_error: Literal["busy", "unavailable"] | None = None
     official_source_error: Literal["access_denied", "rate_limited"] | None = None
     stop_reason: str | None = None
+    st_clear_codes: int | None = None
+    st_excluded_codes: int | None = None
+    st_unknown_codes: int | None = None
 
 
 class RiskDownloadProgressPort(Protocol):
