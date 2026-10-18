@@ -23,6 +23,7 @@ from trader.download.domain.history_control import HistoryActiveSnapshot, Histor
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
 from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 from .reporting import emit_report
 
@@ -204,7 +205,7 @@ def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalS
             raise RuntimeError("history SQLite partition is unavailable")
         total_bytes += path.stat().st_size
         with closing(
-            sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True, timeout=5.0)
+            OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0))
         ) as connection:
             page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
             page_sizes.add(page_size)
@@ -272,7 +273,7 @@ def _measure_queries(
     year, month = _partition_identity(reference)
     month_start = date(year, month, 1)
     month_end = min(active.data_cutoff, date(year, month, calendar.monthrange(year, month)[1]))
-    with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True)) as connection:
+    with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
         seed = connection.execute(
             "SELECT trade_date, code, board FROM daily_records ORDER BY trade_date DESC, code LIMIT 1"
         ).fetchone()
@@ -381,7 +382,7 @@ def _timings(
 
 
 def _query_plan(path: Path, statement: str) -> tuple[str, ...]:
-    with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro&immutable=1", uri=True)) as connection:
+    with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
         rows = connection.execute(f"EXPLAIN QUERY PLAN {statement}")
         return tuple(str(row[3]) for row in rows)
 

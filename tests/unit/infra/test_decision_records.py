@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,6 +10,7 @@ import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision, pipeline, stage_snapshots
 from trader.http_api.response.decision_projection import SerializeDecisionView, SerializeEvent
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import BuildDecisionCommitted
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
 from trader.recommendation.application.pipeline.freeze_publish.event_stream import UnifiedDecisionEventStream
@@ -99,6 +100,45 @@ def test_same_strategy_date_hash_conflict_is_rejected(tmp_path: Path) -> None:
         records.commit(record(sequence=2))
 
 
+def test_daily_layout_has_no_empty_operational_directories(tmp_path: Path) -> None:
+    for profile in ("v2", "v3"):
+        root = tmp_path / profile
+        records = SQLiteDecisionRecords(root)
+        records.initialize()
+        assert {path.name for path in root.iterdir()} == {"freeze.sqlite3"}
+        for strategy in (Strategy.TOMORROW, Strategy.D25):
+            expected = record(strategy)
+            records.commit(expected)
+            assert (root / strategy.value / f"{expected.trade_date.isoformat()}.json").is_file()
+        restarted = SQLiteDecisionRecords(root)
+        restarted.initialize()
+        assert {path.name for path in root.iterdir()} == {"freeze.sqlite3", "tomorrow", "d25"}
+        assert restarted.load(Strategy.D25, NOW.date()) == record(Strategy.D25)
+
+
+def test_legacy_layout_is_rejected_before_creating_a_second_database(tmp_path: Path) -> None:
+    (tmp_path / "decisions").mkdir()
+    with pytest.raises(DecisionRecordUnavailableError, match="offline layout migration"):
+        SQLiteDecisionRecords(tmp_path).initialize()
+    assert not (tmp_path / "freeze.sqlite3").exists()
+
+
+def test_orphan_in_daily_directory_is_quarantined_without_hiding_valid_history(tmp_path: Path) -> None:
+    records = SQLiteDecisionRecords(tmp_path)
+    records.initialize()
+    expected = record()
+    records.commit(expected)
+    orphan = tmp_path / "tomorrow" / "2000-01-01.json"
+    orphan.write_bytes(b"orphan")
+
+    summary = records.recover()
+
+    assert summary.orphaned == 1
+    assert not orphan.exists()
+    assert records.load(Strategy.TOMORROW, expected.trade_date) == expected
+    assert records.list_dates(Strategy.TOMORROW) == (expected.trade_date,)
+
+
 def test_same_record_is_idempotent_across_concurrent_record_instances(tmp_path: Path) -> None:
     first = SQLiteDecisionRecords(tmp_path)
     second = SQLiteDecisionRecords(tmp_path)
@@ -174,7 +214,7 @@ def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Pa
     records.initialize()
     expected = record()
     records.commit(expected)
-    payload = next((tmp_path / "decisions" / "records").rglob("*.json"))
+    payload = tmp_path / "tomorrow" / f"{expected.trade_date.isoformat()}.json"
     payload.write_bytes(b"corrupt")
 
     summary = records.recover()
@@ -182,7 +222,7 @@ def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Pa
     assert summary.quarantined == 1
     with pytest.raises(DecisionRecordUnavailableError, match="quarantined"):
         records.load(Strategy.TOMORROW, expected.trade_date)
-    assert next((tmp_path / "decisions" / "quarantine").rglob("*.json")).is_file()
+    assert next((tmp_path / "quarantine").rglob("*.json")).is_file()
 
 
 def test_invalid_manifest_path_is_quarantined_without_accessing_outside_root(tmp_path: Path) -> None:
@@ -190,8 +230,8 @@ def test_invalid_manifest_path_is_quarantined_without_accessing_outside_root(tmp
     records.initialize()
     expected = record()
     records.commit(expected)
-    database = tmp_path / "decisions" / "decisions.sqlite3"
-    with sqlite3.connect(database) as connection:
+    database = tmp_path / "freeze.sqlite3"
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute(
             "UPDATE decision_records SET relative_path = '../outside.json' WHERE strategy = ?",
             (Strategy.TOMORROW.value,),
@@ -250,11 +290,11 @@ def test_corrupted_checkpoint_is_quarantined_and_never_restored(tmp_path: Path) 
     boundary = NOW.replace(hour=14, minute=50)
     checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
     records.save_checkpoint(checkpoint)
-    payload = next((tmp_path / "decisions" / "checkpoints").rglob("*.json"))
+    payload = next((tmp_path / "checkpoints").rglob("*.json"))
     payload.write_bytes(b"corrupt")
 
     summary = records.recover()
 
     assert summary.quarantined == 1
     assert records.load_checkpoint(Strategy.TOMORROW, NOW.date()) is None
-    assert next((tmp_path / "decisions" / "quarantine" / "checkpoint_invalid").rglob("*.json")).is_file()
+    assert next((tmp_path / "quarantine" / "checkpoint_invalid").rglob("*.json")).is_file()

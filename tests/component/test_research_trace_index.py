@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from hashlib import sha256
@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.unit.domain.test_decision_identity import decision
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     BuildDecisionCommitted,
     DecisionObservation,
@@ -125,7 +126,7 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
         current_schema_version="research_committed_event",
     )
     database = tmp_path / "research" / "committed-events.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute(
             """
             INSERT INTO committed_events (
@@ -213,7 +214,7 @@ def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
     event = _persistent_event(decision())
     archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
     database = tmp_path / "research" / "committed-events" / f"{event.trade_date.isoformat()}.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute(
             "UPDATE committed_events SET payload = ? WHERE decision_version = ?",
             (b"{}", event.decision_version),

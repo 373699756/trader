@@ -6,6 +6,7 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Literal
 
@@ -16,28 +17,45 @@ class SqliteConnectionOptions:
     timeout_seconds: float = 5.0
     journal_mode: Literal["WAL", "DELETE"] | None = None
     foreign_keys: bool = False
+    immutable: bool = False
+    query_only: bool | None = None
+    check_same_thread: bool = True
+    isolation_level: Literal["DEFERRED", "IMMEDIATE", "EXCLUSIVE"] | None = "DEFERRED"
 
     def __post_init__(self) -> None:
-        if self.timeout_seconds <= 0 or self.read_only and self.journal_mode is not None:
+        if (
+            not isfinite(self.timeout_seconds)
+            or self.timeout_seconds < 0
+            or self.read_only
+            and self.journal_mode is not None
+            or self.immutable
+            and not self.read_only
+        ):
             raise ValueError("invalid_sqlite_connection_options")
 
 
+_DEFAULT_OPTIONS = SqliteConnectionOptions()
+
+
 def OpenSqliteConnection(
-    path: Path,
-    options: SqliteConnectionOptions = SqliteConnectionOptions(),
+    path: Path | Literal[":memory:"],
+    options: SqliteConnectionOptions = _DEFAULT_OPTIONS,
     *,
     cancel_requested: Callable[[], bool] | None = None,
 ) -> sqlite3.Connection:
-    """Caller owns and closes the connection; never create directories or retry writes."""
+    """Caller closes the handle; immutable is only for offline, unchanging copies."""
     connection = sqlite3.connect(
-        f"{path.resolve().as_uri()}?mode=ro" if options.read_only else path,
+        _connection_target(path, options),
         uri=options.read_only,
         timeout=options.timeout_seconds,
+        check_same_thread=options.check_same_thread,
+        isolation_level=options.isolation_level,
     )
     try:
-        if options.read_only:
+        query_only = options.query_only if options.query_only is not None else options.read_only
+        if query_only:
             connection.execute("PRAGMA query_only=ON")
-        else:
+        if not options.read_only:
             if options.journal_mode is not None:
                 actual = connection.execute(f"PRAGMA journal_mode={options.journal_mode}").fetchone()[0]
                 if actual.upper() != options.journal_mode:
@@ -51,6 +69,17 @@ def OpenSqliteConnection(
     except BaseException:
         connection.close()
         raise
+
+
+def _connection_target(path: Path | Literal[":memory:"], options: SqliteConnectionOptions) -> Path | str:
+    if path == ":memory:":
+        if options.read_only:
+            raise ValueError("sqlite_memory_database_cannot_be_read_only")
+        return path
+    elif options.read_only:
+        return f"{path.resolve().as_uri()}?mode=ro" + ("&immutable=1" if options.immutable else "")
+    else:
+        return path
 
 
 @contextmanager

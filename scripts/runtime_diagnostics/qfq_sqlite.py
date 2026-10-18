@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 
 from trader.download.domain.qfq_window import QFQ_WINDOWS
 from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, QfqShardName
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 from .reporting import emit_report
 
@@ -122,7 +123,7 @@ def _audit_profile(root: Path, scratch: Path, profile: str, sessions: int) -> _P
         if not _copy_stable_shard(path, snapshot):
             unstable_snapshots += 1
             continue
-        connection = sqlite3.connect(f"{snapshot.resolve().as_uri()}?mode=ro", uri=True, timeout=1)
+        connection = OpenSqliteConnection(snapshot, SqliteConnectionOptions(read_only=True, timeout_seconds=1))
         try:
             quick_check = tuple(connection.execute("PRAGMA quick_check"))
             quick_check_failures += int(quick_check != (("ok",),))

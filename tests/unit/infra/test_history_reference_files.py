@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import replace
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -27,6 +27,7 @@ from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_st_source import HistoryStNameSource, ParseNameHistorySt
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 
 @pytest.mark.parametrize(
@@ -459,7 +460,9 @@ def test_new_st_exclusion_filters_old_physical_rows_for_all_consumers(tmp_path):
     assert manifest.universe_codes == ("600001",)
     assert [item.code for item in published.read_windows(manifest, ("600001", "600002"), sessions=2)] == ["600001"]
     assert [item.code for item in published.iter_windows(manifest, sessions=2)] == ["600001"]
-    import sqlite3
 
-    with sqlite3.connect(config.archive_root / snapshot.partitions[0].relative_path) as connection:
+    with (
+        closing(OpenSqliteConnection(config.archive_root / snapshot.partitions[0].relative_path)) as connection,
+        connection,
+    ):
         assert connection.execute("SELECT COUNT(*) FROM daily_records WHERE code='600002'").fetchone()[0] > 0

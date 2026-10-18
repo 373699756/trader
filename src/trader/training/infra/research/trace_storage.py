@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+
 SCHEMA = """
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = FULL;
@@ -50,10 +52,8 @@ def PartitionDate(path: Path) -> date | None:
 
 @contextmanager
 def Connection(database: Path, *, write: bool) -> Iterator[sqlite3.Connection]:
-    target = str(database) if write else f"file:{database.resolve()}?mode=ro"
-    conn = sqlite3.connect(target, timeout=5.0, uri=not write)
+    conn = OpenSqliteConnection(database, SqliteConnectionOptions(read_only=not write))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         with conn:
             yield conn

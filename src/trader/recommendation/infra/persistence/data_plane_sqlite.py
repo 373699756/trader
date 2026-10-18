@@ -7,16 +7,19 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+
 SCHEMA_VERSION = 3
 SCHEMA_META_KEY = "schema_version"
 
 
 def Connect(database_path: Path, *, cross_thread: bool = False) -> sqlite3.Connection:
-    connection = sqlite3.connect(database_path, timeout=10.0, check_same_thread=not cross_thread)
+    connection = OpenSqliteConnection(
+        database_path,
+        SqliteConnectionOptions(timeout_seconds=8.0, foreign_keys=True, check_same_thread=not cross_thread),
+    )
     try:
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=8000")
     except BaseException:
         connection.close()
         raise
@@ -24,12 +27,11 @@ def Connect(database_path: Path, *, cross_thread: bool = False) -> sqlite3.Conne
 
 
 def ReadConnect(database_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True, timeout=10.0)
+    connection = OpenSqliteConnection(
+        database_path, SqliteConnectionOptions(read_only=True, timeout_seconds=8.0, foreign_keys=True)
+    )
     try:
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only=ON")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=8000")
     except BaseException:
         connection.close()
         raise

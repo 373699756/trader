@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from contextlib import closing
 from datetime import datetime, timedelta
@@ -14,6 +13,7 @@ from zoneinfo import ZoneInfo
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
 from trader.download.infra.history_download_index import HistoryDownloadIndex
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 from .reporting import emit_report
 
@@ -48,13 +48,13 @@ def _measure(root: Path) -> dict[str, float | int]:
     assert reader.read(codes) == cold
     gaps = HistoryDownloadIndex(root / "control.sqlite3")
     gaps.initialize()
-    with sqlite3.connect(root / "control.sqlite3") as connection:
+    with closing(OpenSqliteConnection(root / "control.sqlite3")) as connection, connection:
         connection.executemany("INSERT INTO download_gaps VALUES(?,?)", ((code, "2026-10-16") for code in codes))
     started = time.monotonic()
     # Reproduce the retired per-stock connection/query workload, only on this fixture.
     all_gaps = 0
     for code in codes:
-        with closing(sqlite3.connect(root / "control.sqlite3")) as connection:
+        with closing(OpenSqliteConnection(root / "control.sqlite3")) as connection:
             all_gaps += len(
                 connection.execute(
                     "SELECT gap.trade_date,unusable.checked_cutoff FROM download_gaps gap "

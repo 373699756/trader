@@ -8,12 +8,13 @@ import math
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.application.pipeline.freeze_publish.read_only_queries import OutcomeTierSummary
 from trader.recommendation.application.ports.decision_records import DecisionRecordPort
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
@@ -56,8 +57,7 @@ class SQLiteOutcomeEvidenceRepository:
         if not database.is_file():
             return OutcomeEvidenceStatus(False, 0, 0, 0, None, "")
         try:
-            target = f"file:{database.resolve()}?mode=ro"
-            with sqlite3.connect(target, timeout=5.0, uri=True) as connection:
+            with closing(OpenSqliteConnection(database, SqliteConnectionOptions(read_only=True))) as connection:
                 benchmark = connection.execute("SELECT COUNT(*), MAX(trade_date) FROM benchmark_returns").fetchone()
                 outcomes = connection.execute(
                     "SELECT COUNT(*), COALESCE(SUM(status = 'complete'), 0) FROM recommendation_outcomes"
@@ -218,9 +218,8 @@ class SQLiteOutcomeEvidenceRepository:
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._database, timeout=10.0)
+        connection = OpenSqliteConnection(self._database, SqliteConnectionOptions(timeout_seconds=10.0))
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA busy_timeout = 10000")
         try:
             with connection:
                 yield connection
@@ -273,8 +272,7 @@ def _summary_rows(
     snapshot_ids = tuple(sorted({snapshot_id for snapshot_id, _code in identities}))
     placeholders = ",".join("?" for _snapshot_id in snapshot_ids)
     try:
-        target = f"file:{database.resolve()}?mode=ro"
-        with sqlite3.connect(target, timeout=5.0, uri=True) as connection:
+        with closing(OpenSqliteConnection(database, SqliteConnectionOptions(read_only=True))) as connection:
             return connection.execute(
                 "SELECT snapshot_id, stock_code, horizon, payload_hash, payload "
                 f"FROM recommendation_outcomes WHERE strategy = ? AND snapshot_id IN ({placeholders})",

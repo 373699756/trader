@@ -19,6 +19,7 @@ from trader.infra.market_data.history.history import BuildHistoryContext, DailyB
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import (
     ProductionModelScoringService,
@@ -85,7 +86,9 @@ def ReadReferences(runtime_dir: Path, at: datetime, industry_database: Path | No
     observations: list[SourceObservation] = []
     industries: dict[str, ModelIndustryReference] = {}
     if database.is_file():
-        with closing(sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as connection:
+        with closing(
+            OpenSqliteConnection(database, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
+        ) as connection:
             connection.row_factory = sqlite3.Row
             for row in connection.execute("SELECT * FROM security_master_recent WHERE status='committed'"):
                 record = RowToRecord("security_master_recent", row)

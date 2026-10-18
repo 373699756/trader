@@ -47,6 +47,7 @@ from trader.download.infra.history_reference_files import (
     WriteHistoryReference,
 )
 from trader.infra.serialization.canonical_codec import CanonicalDigest
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
 
 RepackProgress = Callable[[int, int, str], None]
@@ -562,7 +563,7 @@ def _repack_partition(
     source_sha = _sha256_file(source)
     HistoryMonthPrices.verify(source, reference)
     try:
-        with closing(_read_connection(source)) as connection:
+        with closing(_read_connection(source, copy_destination=True)) as connection:
             connection.execute("PRAGMA page_size=8192")
             connection.execute("VACUUM INTO ?", (str(pending),))
     except sqlite3.Error as exc:
@@ -950,18 +951,26 @@ def _activation_status(
     return replace(_status(action, state_name, state), released_bytes=released)
 
 
-def _read_connection(path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=30.0)
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA cache_size=-8192")
-    connection.execute("PRAGMA mmap_size=0")
-    connection.execute("PRAGMA temp_store=FILE")
+def _read_connection(path: Path, *, copy_destination: bool = False) -> sqlite3.Connection:
+    connection = OpenSqliteConnection(
+        path,
+        SqliteConnectionOptions(
+            read_only=True, timeout_seconds=30.0, foreign_keys=True, query_only=not copy_destination
+        ),
+    )
+    try:
+        connection.execute("PRAGMA cache_size=-8192")
+        connection.execute("PRAGMA mmap_size=0")
+        connection.execute("PRAGMA temp_store=FILE")
+    except BaseException:
+        connection.close()
+        raise
     return connection
 
 
 def _checkpoint_sqlite(path: Path) -> None:
     try:
-        with closing(sqlite3.connect(path, timeout=30.0)) as connection:
+        with closing(OpenSqliteConnection(path, SqliteConnectionOptions(timeout_seconds=30.0))) as connection:
             result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     except sqlite3.Error as exc:
         raise HistoryPartitionRepackError("history repack control checkpoint failed") from exc

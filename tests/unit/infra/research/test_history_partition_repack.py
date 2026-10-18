@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -32,6 +32,7 @@ from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackRequirements,
 )
 from trader.infra.serialization.canonical import ContentHash
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.history.history_training_due import EvaluateHistoryTrainingDue, HistoryTrainingDueQuery
 from trader.training.infra.model_bundles.bundle_snapshot import ActiveHeadBundle
@@ -121,7 +122,7 @@ def _archive(tmp_path: Path) -> tuple[Path, Path, HistoryActiveSnapshot]:
             _revision(date(2026, 9, 10), 3, 11.0),
         )
     )
-    with sqlite3.connect(month) as connection:
+    with closing(OpenSqliteConnection(month)) as connection, connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         connection.execute("PRAGMA journal_mode=DELETE")
         connection.execute("PRAGMA page_size=4096")
@@ -171,7 +172,7 @@ def test_repack_build_is_resumable_and_preserves_revision_replay(tmp_path: Path)
     assert first == repeated
     assert first.state == "completed"
     assert first.target_snapshot_hash != original.content_hash
-    with sqlite3.connect(target / "partitions/2026/09.sqlite3") as connection:
+    with closing(OpenSqliteConnection(target / "partitions/2026/09.sqlite3")) as connection, connection:
         assert connection.execute("PRAGMA page_size").fetchone() == (8192,)
         assert connection.execute("PRAGMA freelist_count").fetchone() == (0,)
     target_state = HistoryControlIndex(target / "control.sqlite3").load_state()

@@ -3,10 +3,11 @@
 import sqlite3
 
 from trader.download.infra.history_sync_failure import HistoryFailureDetail
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 
 def test_sqlite_failure_detail_keeps_safe_error_name_without_message() -> None:
-    connection = sqlite3.connect(":memory:")
+    connection = OpenSqliteConnection(":memory:")
     try:
         try:
             connection.execute("SELECT * FROM missing_private_table")

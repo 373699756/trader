@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -11,6 +11,7 @@ from scripts.runtime_diagnostics.long_watchlist import audit_code, financial_adm
 from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.infra.settings import LoadStrategySettings
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityReason
 from trader.recommendation.domain.market.research import FinancialReport
 
@@ -102,7 +103,7 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
 
 def test_historical_exclusions_ignore_retired_annual_loss_evidence(tmp_path: Path) -> None:
     database = tmp_path / "eligibility.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute(
             "create table issuer_eligibility_facts (code text, reason text, effective_at text, evidence_id text)"
         )

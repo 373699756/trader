@@ -15,6 +15,7 @@ import pytest
 from tests.unit.training.infra.profile.v3.test_profile import _publish_profile
 from trader.bootstrap import BuildSystem
 from trader.infra.initialization import InitializeIfAvailable
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.application.pipeline.data_source.source_router import MarketInputCoordinator
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import DecisionObserverStatus
 from trader.recommendation.application.ports.market_data import MarketSnapshotMetadata
@@ -112,7 +113,7 @@ def _config(tmp_path: Path) -> Path:
     reference_dir = tmp_path / "data" / "reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
     (reference_dir / "historical_st.json").write_text("{}\n", encoding="utf-8")
-    sqlite3.connect(reference_dir / "industry_queries.sqlite3").close()
+    OpenSqliteConnection(reference_dir / "industry_queries.sqlite3").close()
     for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
         _publish_profile(tmp_path / "data" / "train", profile)
     path = config_dir / "runtime.json"
@@ -140,7 +141,7 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
     assert not (tmp_path / "data" / "freeze").exists()
     assert system.scheduler is not None
     assert system.records is not None
-    assert system.records._root == tmp_path / "data" / "freeze" / "decisions"  # noqa: SLF001
+    assert system.records._root == tmp_path / "data" / "freeze"  # noqa: SLF001
     assert system.research_trace is not None
     assert system.quote_pool.status().workers == 4
     assert system.quote_pool.is_running() is False
@@ -187,11 +188,8 @@ def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_pat
 
     system.records.initialize()
 
-    freeze_root = tmp_path / "data" / "freeze" / "decisions"
-    assert (freeze_root / "decisions.sqlite3").is_file()
-    assert (freeze_root / "records").is_dir()
-    assert (freeze_root / "checkpoints").is_dir()
-    assert (freeze_root / "quarantine").is_dir()
+    freeze_root = tmp_path / "data" / "freeze"
+    assert tuple(path.name for path in freeze_root.iterdir()) == ("freeze.sqlite3",)
     assert not (tmp_path / "runtime" / "decisions").exists()
 
 

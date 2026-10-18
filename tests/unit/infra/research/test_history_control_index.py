@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -33,6 +33,7 @@ from trader.download.infra.history_control_index import (
     HistoryMaintenanceLock,
     InspectHistoryDisk,
 )
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -125,7 +126,7 @@ def test_published_control_rejects_tampered_required_record(tmp_path, kind):
     repository = HistoryControlIndex(path)
     repository.initialize()
     _save_all(repository, _values())
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         connection.execute("UPDATE immutable_records SET content_hash=? WHERE kind=?", ("f" * 64, kind))
     with pytest.raises(HistoryControlError, match="hash|pointer"):
         repository.load_published_state()

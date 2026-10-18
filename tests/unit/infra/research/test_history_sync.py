@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,7 @@ from trader.download.infra.history_month_partition import HistoryMonthPrices, Hi
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 NOW = datetime(2026, 9, 10, 20, 30, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -172,7 +174,7 @@ def test_transient_month_reader_lock_allows_download_to_finish(tmp_path, monkeyp
     days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     assert RunHistorySync(_configuration(tmp_path), FakeSupplier(days), clock=lambda: NOW).state == "completed"
     previous = _snapshot(tmp_path)
-    original_connect = sqlite3.connect
+    original_connect = OpenSqliteConnection
     failed = False
 
     class FirstReader:
@@ -195,12 +197,12 @@ def test_transient_month_reader_lock_allows_download_to_finish(tmp_path, monkeyp
     def connect(*args, **kwargs):
         nonlocal failed
         connection = original_connect(*args, **kwargs)
-        if not failed and isinstance(args[0], str) and "/partitions/" in args[0]:
+        if not failed and "partitions" in args[0].parts:
             failed = True
             return FirstReader(connection)
         return connection
 
-    monkeypatch.setattr(history_sqlite_read_connection.sqlite3, "connect", connect)
+    monkeypatch.setattr(history_sqlite_read_connection, "OpenSqliteConnection", connect)
     advanced = (*days[1:], date(2026, 9, 11))
     result = RunHistorySync(_configuration(tmp_path), FakeSupplier(advanced), clock=lambda: NOW + timedelta(days=1))
     assert failed and result.state == "completed" and result.unresolved_price_cells == 0
@@ -535,7 +537,7 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
     assert (
         len(tuple(month.iter_training_rows(days[0], days[-1], snapshot_sequence=snapshot.partitions[0].sequence))) == 6
     )
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         connection.execute(
             "UPDATE daily_records SET content_hash=? WHERE code='600001' AND trade_date=?",
             ("0" * 64, days[0].isoformat()),
@@ -546,7 +548,7 @@ def test_logical_proof_rejects_corruption_and_survives_unpublished_appends(tmp_p
 
 def test_old_database_format_is_rejected_without_conversion(tmp_path):
     path = tmp_path / "control.sqlite3"
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         connection.execute("CREATE TABLE metadata(singleton INTEGER PRIMARY KEY,schema_identity TEXT)")
         connection.execute("INSERT INTO metadata VALUES(1,'history_control')")
     result = RunHistorySync(
@@ -555,7 +557,7 @@ def test_old_database_format_is_rejected_without_conversion(tmp_path):
         clock=lambda: NOW,
     )
     assert result.state == "failed"
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         assert connection.execute("SELECT schema_identity FROM metadata").fetchone() == ("history_control",)
 
 

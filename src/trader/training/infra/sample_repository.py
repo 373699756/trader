@@ -13,6 +13,7 @@ from typing import Literal, cast
 import numpy as np
 
 from trader.download.domain.baostock_daily import BaoStockTrainingSplit
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
 
 TrainingSplitName = Literal["training", "early_stopping", "calibration", "validation"]
@@ -81,9 +82,9 @@ class SQLiteTrainingSampleRepository:
         self._prepared_split_hash = prepared_split_hash
         self._counts_by_target: dict[str, tuple[TrainingIndustryCounts, ...]] = {}
         self._connection = (
-            sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+            OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))
             if prepared_split_hash is not None
-            else sqlite3.connect(path)
+            else OpenSqliteConnection(path)
         )
         try:
             self._initialize()

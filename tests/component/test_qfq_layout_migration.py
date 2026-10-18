@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -13,6 +13,7 @@ from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_layout_migration import BuildQfqLayout
 from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, QfqShardName, SQLiteQfqWindowCache
 from trader.infra.atomic_files.json import AtomicWriteJson
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 
 def _legacy(root: Path) -> None:
@@ -66,7 +67,7 @@ def test_corrupt_source_never_publishes_target_or_changes_source(tmp_path, legac
     source = tmp_path / "legacy"
     target = tmp_path / "target"
     shutil.copytree(legacy_seed, source)
-    with sqlite3.connect(source / "v3/00001.sqlite3") as connection:
+    with closing(OpenSqliteConnection(source / "v3/00001.sqlite3")) as connection, connection:
         connection.execute("UPDATE identities SET digest='tampered'")
     before = _files(source)
     with pytest.raises(ValueError, match="identity mismatch"):

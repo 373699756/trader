@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import pytest
 
 from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.training.infra.sample_cache import TrainingSampleCache
 from trader.training.infra.sample_repository import TrainingSample
 
@@ -48,18 +49,26 @@ def test_partial_cache_is_never_reused(tmp_path):
 
 def test_failed_sample_initialization_closes_sqlite_connection(tmp_path, monkeypatch):
     connections = []
-    connect = sqlite3.connect
 
-    class FailingConnection(sqlite3.Connection):
+    class FailingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, *args):
+            return self.connection.execute(*args)
+
         def executescript(self, _script):
             raise sqlite3.OperationalError("fixture cannot initialize database")
 
+        def close(self):
+            self.connection.close()
+
     def failing_connect(*args, **kwargs):
-        connection = connect(*args, **kwargs, factory=FailingConnection)
+        connection = FailingConnection(OpenSqliteConnection(*args, **kwargs))
         connections.append(connection)
         return connection
 
-    monkeypatch.setattr("trader.training.infra.sample_repository.sqlite3.connect", failing_connect)
+    monkeypatch.setattr("trader.training.infra.sample_repository.OpenSqliteConnection", failing_connect)
     cache = TrainingSampleCache(tmp_path, "input", 1, "split")
     with pytest.raises(sqlite3.OperationalError, match="cannot initialize"):
         cache.open()

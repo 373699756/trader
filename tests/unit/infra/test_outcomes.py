@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+from contextlib import closing
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tests.unit.domain.test_decision_identity import NOW, decision
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.domain.publication.decision_identity import (
     CommittedDecisionRecord,
     DecisionDownside,
@@ -213,7 +214,7 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
     repository.save_recommendation_outcomes((_outcome(),))
 
     database = tmp_path / "research" / "outcomes.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         row = connection.execute("SELECT status, payload_hash, payload FROM recommendation_outcomes").fetchone()
 
     assert row is not None
@@ -248,7 +249,7 @@ def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_
     repository.save_recommendation_outcomes((outcome,))
 
     database = tmp_path / "research" / "outcomes.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         row = connection.execute("SELECT status, payload FROM recommendation_outcomes").fetchone()
     assert row is not None
     payload = json.loads(row[1])
@@ -272,7 +273,7 @@ def test_benchmark_read_rejects_tampered_columns(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     repository.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.6), observed_at=NOW)
     database = tmp_path / "research" / "outcomes.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute("UPDATE benchmark_returns SET return_pct = 9.9")
 
     with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):

@@ -20,6 +20,10 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.recommendation.application.ports.decision_records import DecisionRecordError
+from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     build = subparsers.add_parser("build", help="Validate and atomically publish an isolated copy.")
     build.add_argument("--source", type=Path, required=True)
     build.add_argument("--target", type=Path, required=True)
+    freeze = subparsers.add_parser("build-freeze", help="Flatten an isolated copy of daily frozen decisions.")
+    freeze.add_argument("--source", type=Path, required=True)
+    freeze.add_argument("--target", type=Path, required=True)
     references = subparsers.add_parser("build-references", help="Prepare generated references in an isolated copy.")
     references.add_argument("--source", type=Path, required=True)
     references.add_argument("--eligibility-database", type=Path, required=True)
@@ -74,6 +81,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.action == "build":
             manifest = migrate(args.source, args.target)
             result = {"state": "published", **manifest.as_json()}
+        elif args.action == "build-freeze":
+            manifest = migrate(args.source, args.target, freeze_layout=True)
+            result = {"state": "published", **manifest.as_json()}
         elif args.action == "build-references":
             manifest = migrate(
                 args.source,
@@ -91,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             rollback(args.target, args.backup)
             result = {"state": "rolled_back", "target": str(args.target.resolve())}
-    except (MigrationError, OSError, sqlite3.Error, ValueError) as exc:
+    except (MigrationError, DecisionRecordError, OSError, sqlite3.Error, ValueError) as exc:
         print(json.dumps({"state": "failed", "error_code": _error_code(exc)}, sort_keys=True))
         return 1
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
@@ -103,10 +113,17 @@ def migrate(
     target: Path,
     *,
     reference_layout: bool = False,
+    freeze_layout: bool = False,
     eligibility_database: Path | None = None,
 ) -> MigrationManifest:
     source_path = _external_directory(source)
     target_path = _external_path(target)
+    if source_path == target_path or source_path in target_path.parents or target_path in source_path.parents:
+        raise MigrationError("source and target must be separate directory trees")
+    if reference_layout and freeze_layout:
+        raise MigrationError("migration requires exactly one layout")
+    if freeze_layout:
+        _check_freeze_journals(source_path)
     inspect_layout(source_path, reference_layout=reference_layout)
     eligibility_path = _external_file(eligibility_database) if eligibility_database is not None else None
     if reference_layout != (eligibility_path is not None):
@@ -125,9 +142,17 @@ def migrate(
             shutil.copy2(path, destination)
         if eligibility_path is not None:
             SQLiteIssuerEligibilityIndex.migrate_legacy_database(eligibility_path, staging_path)
+        if freeze_layout:
+            _simplify_freeze_layout(staging_path)
         manifest = _manifest(
             staging_path,
-            schema_version="trader_reference_layout_migration" if reference_layout else "trader_data_layout_migration",
+            schema_version=(
+                "trader_freeze_layout_migration"
+                if freeze_layout
+                else "trader_reference_layout_migration"
+                if reference_layout
+                else "trader_data_layout_migration"
+            ),
             source=f"{source_path};{eligibility_path}" if eligibility_path is not None else str(source_path),
             reference_layout=reference_layout,
         )
@@ -149,6 +174,92 @@ def migrate(
         raise
     finally:
         _release_lock(lock_path)
+
+
+def _simplify_freeze_layout(root: Path) -> None:
+    """Change paths only; preserve the exact bytes and identities of frozen records."""
+    profiles = tuple(path for path in root.iterdir() if path.is_dir())
+    if not profiles or any(path.name not in {"v2", "v3"} for path in profiles):
+        raise MigrationError("freeze copy must contain only v2 or v3 profile directories")
+    for profile in profiles:
+        _simplify_freeze_profile(profile)
+
+
+def _check_freeze_journals(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.is_file() and path.name.endswith(("-wal", "-journal")) and path.stat().st_size:
+            raise MigrationError("freeze migration requires a stopped and checkpointed source")
+
+
+def _simplify_freeze_profile(profile: Path) -> None:
+    legacy = profile / "decisions"
+    database = legacy / "decisions.sqlite3"
+    if not database.is_file() or tuple(profile.iterdir()) != (legacy,):
+        raise MigrationError("freeze profile must contain exactly one legacy decisions directory")
+    # Empty journals carry no state. Discard them and their disposable SHM only
+    # from this isolated staging copy, after rejecting uncheckpointed data.
+    _check_freeze_journals(legacy)
+    for path in legacy.iterdir():
+        if path.name.endswith(("-wal", "-shm", "-journal")):
+            path.unlink()
+    connection = OpenSqliteConnection(database, SqliteConnectionOptions(timeout_seconds=10.0))
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute("SELECT * FROM decision_records").fetchall()
+        with connection:
+            for row in rows:
+                _move_frozen_record(legacy, row)
+                connection.execute(
+                    "UPDATE decision_records SET relative_path = ? WHERE strategy = ? AND trade_date = ?",
+                    (f"{row['strategy']}/{row['trade_date']}.json", row["strategy"], row["trade_date"]),
+                )
+    finally:
+        connection.close()
+    # Remove only empty hierarchy; unexpected/orphaned payloads must be reviewed.
+    old_records = legacy / "records"
+    if old_records.exists():
+        for directory in sorted(old_records.rglob("*"), key=lambda path: len(path.parts), reverse=True):
+            if directory.is_dir():
+                directory.rmdir()
+        old_records.rmdir()
+    for path in tuple(legacy.iterdir()):
+        if path.is_dir() and not any(path.iterdir()):
+            path.rmdir()
+        else:
+            destination = profile / ("freeze.sqlite3" if path == database else path.name)
+            path.rename(destination)
+    legacy.rmdir()
+    records = SQLiteDecisionRecords(profile)
+    for row in rows:
+        restored = records.load(Strategy(row["strategy"]), date.fromisoformat(row["trade_date"]))
+        if restored is None or restored.version != row["version"] or restored.payload_hash != row["payload_hash"]:
+            raise MigrationError("frozen record identity changed during migration")
+    connection = OpenSqliteConnection(profile / "freeze.sqlite3", SqliteConnectionOptions(timeout_seconds=10.0))
+    try:
+        checkpoints = connection.execute("SELECT strategy, trade_date FROM decision_checkpoints").fetchall()
+    finally:
+        connection.close()
+    for strategy, trade_date in checkpoints:
+        records.load_checkpoint(Strategy(strategy), date.fromisoformat(trade_date))
+    _check_sqlite(profile / "freeze.sqlite3")
+
+
+def _move_frozen_record(root: Path, row: sqlite3.Row) -> None:
+    if row["status"] != "committed" or row["strategy"] not in {"tomorrow", "d25"}:
+        raise MigrationError("freeze migration requires verified committed records")
+    trade_date = date.fromisoformat(row["trade_date"]).isoformat()
+    relative = Path(row["relative_path"])
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != "records":
+        raise MigrationError("freeze manifest path is invalid")
+    source = root / relative
+    payload = source.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != row["payload_sha256"]:
+        raise MigrationError("frozen record checksum mismatch")
+    destination = root / row["strategy"] / f"{trade_date}.json"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        raise MigrationError("freeze target record already exists")
+    source.rename(destination)
 
 
 def rollback(target: Path, backup: Path) -> None:
@@ -241,9 +352,13 @@ def _check_reference_layout(root: Path, files: tuple[Path, ...]) -> None:
 
 
 def _check_sqlite(path: Path) -> None:
-    uri = f"file:{path.as_posix()}?mode=ro"
-    with sqlite3.connect(uri, uri=True) as connection:
+    journals = (path.with_name(f"{path.name}{suffix}") for suffix in ("-wal", "-journal"))
+    immutable = all(not journal.exists() or journal.stat().st_size == 0 for journal in journals)
+    connection = OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, immutable=immutable))
+    try:
         result = connection.execute("PRAGMA integrity_check").fetchone()
+    finally:
+        connection.close()
     if result != ("ok",):
         raise MigrationError(f"sqlite integrity check failed: {path.name}")
 

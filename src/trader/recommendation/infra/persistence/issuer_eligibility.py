@@ -9,9 +9,11 @@ import sqlite3
 import threading
 from collections import Counter
 from collections.abc import Sequence
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.domain.market.eligibility import (
     IsActivePermanentEligibilityReason,
     IssuerEligibilityDecision,
@@ -71,7 +73,12 @@ class SQLiteIssuerEligibilityIndex:
         if (root / _ACTIVE_MANIFEST).exists() or not database_path.exists():
             return 0
         try:
-            with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5.0) as connection:
+            with (
+                closing(
+                    OpenSqliteConnection(database_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0))
+                ) as connection,
+                connection,
+            ):
                 rows = connection.execute(
                     """
                     SELECT code, reason, effective_at, evidence_id, source, evidence_hash, content_hash
@@ -261,7 +268,12 @@ class SQLiteIssuerEligibilityIndex:
             return
 
     def _load_database(self, database_path: Path) -> None:
-        with sqlite3.connect(f"file:{database_path}?mode=ro", uri=True, timeout=5.0) as connection:
+        with (
+            closing(
+                OpenSqliteConnection(database_path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0))
+            ) as connection,
+            connection,
+        ):
             if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise sqlite3.DatabaseError("eligibility database integrity check failed")
             rows = connection.execute(
@@ -308,7 +320,12 @@ class SQLiteIssuerEligibilityIndex:
         inserted = 0
         for category, category_facts in grouped.items():
             database_path = snapshot_dir / f"{category}.sqlite3"
-            with sqlite3.connect(database_path, timeout=5.0) as connection:
+            with (
+                closing(
+                    OpenSqliteConnection(database_path, SqliteConnectionOptions(timeout_seconds=5.0))
+                ) as connection,
+                connection,
+            ):
                 self._ensure_schema(connection)
                 for fact in category_facts:
                     identity_key = _identity_key(fact)

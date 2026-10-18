@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trader.infra.dated_query_cache import SQLiteDatedQueryCache
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.infra.market_data.local_industry_source import LocalIndustrySource
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -53,7 +54,7 @@ def test_current_industry_rejects_corrupt_local_evidence(tmp_path) -> None:
         minimum_rows=1,
     )
     source.fetch(_AT)
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         connection.execute("UPDATE current_industry_queries SET payload='[]'")
     assert source.load_cached(_AT) == ()
 
@@ -72,7 +73,7 @@ def test_current_industry_keeps_previous_valid_query_when_newest_is_corrupt(tmp_
     )
     source.fetch(_AT)
     source.fetch(_AT + timedelta(days=7))
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         connection.execute(
             "UPDATE current_industry_queries SET payload='[]' WHERE day=?",
             ((_AT + timedelta(days=7)).date().isoformat(),),

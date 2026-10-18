@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import argparse
 import resource
-import sqlite3
 import time
 from _thread import LockType
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as daytime
@@ -35,6 +35,7 @@ from trader.download.infra.history_storage_profile import (
     HistoryWriteTuning,
 )
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 from .reporting import emit_report
 
@@ -141,7 +142,10 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
             result = RunHistorySync(config, supplier, clock=_clock(now), write_tuning=tuning, progress=stage_times)
             rows = 0
             for path in root.glob("partitions/*/[0-9][0-9].sqlite3"):
-                with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+                with (
+                    closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection,
+                    connection,
+                ):
                     rows += connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0]
             results.append(
                 {

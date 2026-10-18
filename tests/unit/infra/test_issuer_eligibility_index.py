@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.recommendation.infra.persistence.issuer_eligibility import (
     IssuerEligibilityConflictError,
@@ -79,7 +80,7 @@ def test_index_detects_tampering_without_silently_clearing_exclusions(tmp_path) 
     index = SQLiteIssuerEligibilityIndex(root)
     index.record((_fact(),))
     database = next((root / "snapshots").glob("*/st_warning.sqlite3"))
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute("UPDATE issuer_eligibility_facts SET content_hash = ?", ("0" * 64,))
         connection.commit()
 

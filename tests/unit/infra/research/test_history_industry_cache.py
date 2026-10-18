@@ -1,4 +1,3 @@
-import sqlite3
 from contextlib import closing
 from dataclasses import replace
 from datetime import date, timedelta
@@ -9,6 +8,7 @@ from tests.unit.infra.research.test_baostock_gateway import _Result, _Sdk
 from trader.download.domain.baostock_daily import BaoStockCalendar, BaoStockDailySpec, BaoStockSecurity
 from trader.download.infra.baostock_gateway import BaoStockRowGateway
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 DATES = (date(2020, 2, 3), date(2020, 7, 1), date(2021, 1, 4), date(2026, 10, 9))
 UNIVERSE = (BaoStockSecurity("600001", "A", "main", date(2000, 1, 1), None, "test"),)
@@ -101,7 +101,7 @@ def test_corrupt_cached_payload_requeries_only_that_date_and_source_change_inval
     cache = HistoryIndustryQueryCache(tmp_path / "industry_queries.sqlite3")
     sdk = _IndustrySdk()
     original = _fetch(sdk, cache)
-    with closing(sqlite3.connect(cache.path)) as connection, connection:
+    with closing(OpenSqliteConnection(cache.path)) as connection, connection:
         connection.execute("UPDATE queries SET payload='[]' WHERE day=?", (str(DATES[1]),))
     sdk.calls.clear()
     assert _fetch(sdk, cache) == original

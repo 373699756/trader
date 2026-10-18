@@ -6,16 +6,16 @@ import pytest
 
 from trader.download.infra import history_sqlite_read_connection
 from trader.download.infra.history_sync_failure import HistoryFailureDetail
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 
 @pytest.mark.parametrize("code,attempts", ((sqlite3.SQLITE_BUSY, 2), (sqlite3.SQLITE_IOERR, 1), (None, 2)))
 def test_month_reader_retries_only_lock_contention_and_closes_failed_handle(tmp_path, monkeypatch, code, attempts):
-    original_connect = sqlite3.connect
     opened = []
 
     class Connection:
         def __init__(self):
-            self.inner = original_connect(":memory:")
+            self.inner = OpenSqliteConnection(":memory:")
             self.closed = False
 
         def execute(self, sql):
@@ -39,7 +39,7 @@ def test_month_reader_retries_only_lock_contention_and_closes_failed_handle(tmp_
         opened.append(connection)
         return connection
 
-    monkeypatch.setattr(history_sqlite_read_connection.sqlite3, "connect", connect)
+    monkeypatch.setattr(history_sqlite_read_connection, "OpenSqliteConnection", connect)
     monkeypatch.setattr(history_sqlite_read_connection.time, "sleep", lambda seconds: None)
     if code != sqlite3.SQLITE_IOERR:
         connection = history_sqlite_read_connection.OpenHistoryMonthReader(

@@ -8,11 +8,13 @@ import math
 import sqlite3
 import threading
 from collections.abc import Iterator, Sequence
+from contextlib import closing
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 from typing import cast
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.training.application.historical_backtest import HistoricalScreeningDay
 from trader.training.application.historical_screening import (
     HistoricalPriceHistoryIdentity,
@@ -48,7 +50,7 @@ class SQLiteHistoricalScreeningSnapshot:
         ordered = tuple(sorted(universe, key=lambda item: item.code))
         if len({item.code for item in ordered}) != len(ordered):
             raise ValueError("historical screening universe contains duplicate codes")
-        with self._write_connection() as connection:
+        with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             existing_codes = tuple(
                 str(row[0])
@@ -88,7 +90,7 @@ class SQLiteHistoricalScreeningSnapshot:
     def completed_codes(self, research_identity: str) -> frozenset[str]:
         if not self._database.is_file():
             return frozenset()
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             rows = connection.execute(
                 "SELECT code FROM downloads WHERE research_identity = ? AND status = 'complete'",
                 (research_identity,),
@@ -98,7 +100,7 @@ class SQLiteHistoricalScreeningSnapshot:
     def registered_universe(self, research_identity: str) -> tuple[HistoricalSecurity, ...]:
         if not self._database.is_file():
             return ()
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             rows = connection.execute(
                 """
                 SELECT code, board, name, is_st, is_suspended
@@ -119,7 +121,7 @@ class SQLiteHistoricalScreeningSnapshot:
     ) -> None:
         self._initialize()
         ordered = tuple(bars)
-        with self._write_connection() as connection:
+        with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             if (
                 connection.execute(
@@ -194,7 +196,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not error_code or len(error_code) > 64:
             raise ValueError("historical screening failure code is invalid")
         self._initialize()
-        with self._write_connection() as connection:
+        with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             connection.execute(
                 """
@@ -213,7 +215,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return HistoricalScreeningSnapshotStatus(research_identity=research_identity)
         try:
-            with self._read_connection() as connection:
+            with closing(self._read_connection()) as connection, connection:
                 spec = connection.execute(
                     "SELECT spec_hash FROM specs WHERE research_identity = ?", (research_identity,)
                 ).fetchone()
@@ -256,7 +258,7 @@ class SQLiteHistoricalScreeningSnapshot:
         empty_hash = _sha256(_canonical(()))
         if not self._database.is_file():
             return HistoricalScreeningSnapshotManifest(spec.research_identity, "", empty_hash, empty_hash, ())
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             persisted_spec = connection.execute(
                 "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
             ).fetchone()
@@ -345,7 +347,7 @@ class SQLiteHistoricalScreeningSnapshot:
 
         if not self._database.is_file():
             return ()
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             rows = connection.execute(
                 _SCREENING_QUERY,
                 {
@@ -382,7 +384,7 @@ class SQLiteHistoricalScreeningSnapshot:
 
         if not self._database.is_file():
             return
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             rows = connection.execute(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
@@ -412,7 +414,7 @@ class SQLiteHistoricalScreeningSnapshot:
 
         if not self._database.is_file():
             return ()
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             rows = connection.execute(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
@@ -446,7 +448,7 @@ class SQLiteHistoricalScreeningSnapshot:
     def _initialize(self) -> None:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(self._database) as connection:
+            with closing(OpenSqliteConnection(self._database)) as connection, connection:
                 connection.executescript(_SCHEMA)
 
     def _register_spec(self, connection: sqlite3.Connection, spec: HistoricalScreeningSpec) -> None:
@@ -461,13 +463,10 @@ class SQLiteHistoricalScreeningSnapshot:
         )
 
     def _write_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database, timeout=30.0)
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        return OpenSqliteConnection(self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True))
 
     def _read_connection(self) -> sqlite3.Connection:
-        uri = f"file:{self._database}?mode=ro"
-        return sqlite3.connect(uri, uri=True, timeout=5.0)
+        return OpenSqliteConnection(self._database, SqliteConnectionOptions(read_only=True))
 
 
 def _bar_payload(bar: HistoricalPriceBar) -> dict[str, object]:

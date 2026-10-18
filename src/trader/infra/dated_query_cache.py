@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+
 
 @dataclass(frozen=True)
 class DatedQuery:
@@ -35,8 +37,10 @@ class SQLiteDatedQueryCache:
             raise ValueError("dated_query_cache_path_unsafe")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with closing(sqlite3.connect(self.path, timeout=5)) as connection, connection:
-                connection.execute("PRAGMA synchronous=FULL")
+            with (
+                closing(OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=5))) as connection,
+                connection,
+            ):
                 connection.execute(
                     f"CREATE TABLE IF NOT EXISTS {self.table} (day TEXT PRIMARY KEY, source TEXT NOT NULL, "
                     "observed_on TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID"
@@ -51,7 +55,9 @@ class SQLiteDatedQueryCache:
         if not self.path.is_file():
             return None
         try:
-            with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as connection:
+            with closing(
+                OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
+            ) as connection:
                 if not self._table_exists(connection):
                     return None
                 rows = connection.execute(
@@ -67,7 +73,9 @@ class SQLiteDatedQueryCache:
         if not self.path.is_file():
             return None
         try:
-            with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as connection:
+            with closing(
+                OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
+            ) as connection:
                 if not self._table_exists(connection):
                     return None
                 row = connection.execute(
@@ -104,8 +112,10 @@ class SQLiteDatedQueryCache:
             raise ValueError("industry_cache_observation_invalid")
         self.prepare()
         try:
-            with closing(sqlite3.connect(self.path, timeout=5)) as connection, connection:
-                connection.execute("PRAGMA synchronous=FULL")
+            with (
+                closing(OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=5))) as connection,
+                connection,
+            ):
                 connection.execute(
                     f"INSERT OR REPLACE INTO {self.table} VALUES (?,?,?,?,?)",
                     (

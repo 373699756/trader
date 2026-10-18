@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, contextmanager
@@ -12,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
     DataPlaneConflictError,
@@ -31,7 +31,7 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 def test_data_plane_write_probe_classifies_concurrent_writer_without_changing_rows(tmp_path: Path) -> None:
     data_plane = SQLiteDataPlane(tmp_path)
     data_plane.initialize()
-    with closing(sqlite3.connect(tmp_path / "market-data" / "market-data.sqlite3")) as locker:
+    with closing(OpenSqliteConnection(tmp_path / "market-data" / "market-data.sqlite3")) as locker:
         locker.execute("BEGIN IMMEDIATE")
         with pytest.raises(DataPlaneBusyError, match="database lock"):
             data_plane.probe_writable(timeout_seconds=0.001)
@@ -62,7 +62,7 @@ def test_committed_write_uses_one_atomic_row_without_recovery_copy(tmp_path: Pat
 
     data_plane.save_security_master_recent(record)
 
-    with closing(sqlite3.connect(_database_path(tmp_path))) as connection:
+    with closing(OpenSqliteConnection(_database_path(tmp_path))) as connection:
         row = connection.execute(
             "SELECT status, recovery_payload, recovery_sha256 FROM security_master_recent WHERE code = ?",
             (record.code,),

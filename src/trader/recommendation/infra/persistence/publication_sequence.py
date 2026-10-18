@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import closing
 from pathlib import Path
+
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 
 class PublicationSequence:
@@ -26,8 +29,12 @@ class PublicationSequence:
                 return
             self._path.parent.mkdir(parents=True, exist_ok=True)
             try:
-                with sqlite3.connect(self._path, timeout=5.0) as connection:
-                    connection.execute("PRAGMA synchronous=FULL")
+                with (
+                    closing(
+                        OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=5.0))
+                    ) as connection,
+                    connection,
+                ):
                     connection.execute("BEGIN IMMEDIATE")
                     exists = (
                         connection.execute(
@@ -63,8 +70,10 @@ class PublicationSequence:
 
     def _reserve(self, *, minimum: int = 1) -> None:
         try:
-            with sqlite3.connect(self._path, timeout=5.0) as connection:
-                connection.execute("PRAGMA synchronous=FULL")
+            with (
+                closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=5.0))) as connection,
+                connection,
+            ):
                 connection.execute("BEGIN IMMEDIATE")
                 row = connection.execute("SELECT reserved_until FROM publication_sequence WHERE singleton=1").fetchone()
                 if row is None or not isinstance(row[0], int) or row[0] < 0 or row[0] > 2**63 - 1 - self._block_size:

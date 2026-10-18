@@ -5,12 +5,14 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.training.application.h1_point_in_time import H1PointInTimeSnapshotPort
 from trader.training.application.historical_screening import HistoricalSecurity, ResearchBoard
 from trader.training.domain.evaluation.h1_point_in_time import (
@@ -65,7 +67,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
 
     def _initialize(self) -> None:
         self._root.mkdir(parents=True, exist_ok=True)
-        with self._write_connection() as connection:
+        with closing(self._write_connection()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS specs (
@@ -101,7 +103,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         ordered = tuple(sorted(universe, key=lambda item: item.code))
         if len({item.code for item in ordered}) != len(ordered):
             raise ValueError("H1 universe contains duplicate codes")
-        with self._write_connection() as connection:
+        with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             existing = tuple(
                 str(row[0])
@@ -136,7 +138,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def registered_universe(self, strategy: ResearchStrategy) -> tuple[HistoricalSecurity, ...]:
         if not self._database.is_file():
             return ()
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             rows = connection.execute(
                 "SELECT code, board, name, is_st, is_suspended FROM universe WHERE strategy = ? ORDER BY code",
                 (strategy,),
@@ -149,7 +151,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def completed_codes(self, strategy: ResearchStrategy) -> frozenset[str]:
         if not self._database.is_file():
             return frozenset()
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             rows = connection.execute(
                 "SELECT code FROM downloads WHERE strategy = ? AND status = 'complete'", (strategy,)
             ).fetchall()
@@ -165,7 +167,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             raise ValueError("H1 record dates must be unique and ordered")
         if any(item.code != code or item.strategy != spec.strategy for item in ordered):
             raise ValueError("H1 record set identity mismatch")
-        with self._write_connection() as connection:
+        with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             if (
                 connection.execute(
@@ -228,7 +230,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if not error_code or len(error_code) > 64:
             raise ValueError("H1 failure code is invalid")
         self._initialize()
-        with self._write_connection() as connection:
+        with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             connection.execute(
                 "INSERT INTO downloads(strategy, code, status, record_count, content_hash, error_code) VALUES (?, ?, 'failed', 0, '', ?) ON CONFLICT(strategy, code) DO UPDATE SET status = CASE WHEN downloads.status = 'complete' THEN downloads.status ELSE excluded.status END, error_code = CASE WHEN downloads.status = 'complete' THEN downloads.error_code ELSE excluded.error_code END",
@@ -253,7 +255,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                 manifest.content_hash,
                 spec.source_cutoff,
             )
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             completed = tuple(
                 str(row[0])
                 for row in connection.execute(
@@ -322,7 +324,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         )
 
     def _manifest_snapshot(self, spec: H1PointInTimeSpec) -> _H1ManifestSnapshot:
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             persisted = connection.execute(
                 "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
             ).fetchone()
@@ -355,7 +357,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def inspect(self, spec: H1PointInTimeSpec) -> H1PointInTimeSnapshotStatus:
         if not self._database.is_file():
             return H1PointInTimeSnapshotStatus(strategy=spec.strategy)
-        with self._read_connection() as connection:
+        with closing(self._read_connection()) as connection, connection:
             spec_row = connection.execute("SELECT spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)).fetchone()
             universe_count = int(
                 connection.execute("SELECT COUNT(*) FROM universe WHERE strategy = ?", (spec.strategy,)).fetchone()[0]
@@ -391,14 +393,12 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         )
 
     def _write_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database, timeout=30, isolation_level="IMMEDIATE")
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        return OpenSqliteConnection(
+            self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True, isolation_level="IMMEDIATE")
+        )
 
     def _read_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._database)
-        connection.execute("PRAGMA query_only = ON")
-        return connection
+        return OpenSqliteConnection(self._database, SqliteConnectionOptions(read_only=True))
 
 
 def _h1_universe_hash(rows: tuple[tuple[object, ...], ...]) -> str:

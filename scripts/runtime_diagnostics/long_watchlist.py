@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sqlite3
 import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
@@ -21,6 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceReader  # noqa: E402
 from trader.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings  # noqa: E402
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions  # noqa: E402
 from trader.recommendation.domain.market.eligibility import (  # noqa: E402
     IsActivePermanentEligibilityReason,
     IssuerEligibilityReason,
@@ -89,7 +90,7 @@ def historical_exclusions(paths: tuple[Path, ...], observed_at: datetime) -> dic
     """Read historical fact databases without migrating or writing active state."""
     evidence: dict[str, list[str]] = {}
     for path in paths:
-        with sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True) as connection:
+        with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection, connection:
             for code, reason, effective_at, evidence_id in connection.execute(
                 "SELECT code, reason, effective_at, evidence_id FROM issuer_eligibility_facts"
             ):

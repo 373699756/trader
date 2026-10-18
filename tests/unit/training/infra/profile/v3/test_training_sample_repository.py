@@ -1,4 +1,4 @@
-import sqlite3
+from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.training.infra.profile.v3.contracts import (
     D25_HEAD_CONTRACT,
     TOMORROW_HEAD_CONTRACT,
@@ -136,5 +137,5 @@ def test_sample_repository_rolls_back_the_whole_workspace_build_on_failure(tmp_p
             repository.add_final((_sample("600001", date(2025, 1, 1)),))
             raise RuntimeError("forced")
 
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         assert connection.execute("SELECT COUNT(*) FROM samples").fetchone() == (0,)

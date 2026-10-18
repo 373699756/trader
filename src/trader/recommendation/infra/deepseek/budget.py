@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
 
 if TYPE_CHECKING:
@@ -667,10 +668,8 @@ class DeepSeekBudgetLedger:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._path, timeout=10.0)
+        connection = OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=10.0, foreign_keys=True))
         try:
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA busy_timeout=10000")
             with connection:
                 yield connection
         finally:

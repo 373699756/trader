@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
+from contextlib import closing
 from pathlib import Path
 
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.infra.persistence.data_plane_sqlite import (
     SCHEMA_VERSION,
     ConnectionScope,
@@ -24,7 +25,7 @@ def test_initialize_database_sets_schema_to_current_version(tmp_path: Path) -> N
 
 def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) -> None:
     database = tmp_path / "legacy-data.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         connection.execute("INSERT INTO schema_meta(key, value) VALUES('schema_version', '1')")
         connection.execute(
@@ -64,7 +65,7 @@ def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) ->
 
 def test_initialize_database_recovers_from_invalid_schema_version(tmp_path: Path) -> None:
     database = tmp_path / "invalid-version.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
         connection.execute("INSERT INTO schema_meta(key, value) VALUES('schema_version', 'N/A')")
 
@@ -79,7 +80,7 @@ def test_initialize_database_recovers_from_invalid_schema_version(tmp_path: Path
 
 def test_initialize_database_handles_data_plane_schema_without_schema_meta(tmp_path: Path) -> None:
     database = tmp_path / "without-meta.sqlite3"
-    with sqlite3.connect(database) as connection:
+    with closing(OpenSqliteConnection(database)) as connection, connection:
         connection.executescript(
             """
             CREATE TABLE security_master_recent(

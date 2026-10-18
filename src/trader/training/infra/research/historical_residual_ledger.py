@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import cast
 
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
@@ -48,7 +50,7 @@ class SQLiteHistoricalResidualLedger:
         self._initialize()
 
     def append_predictions(self, records: tuple[HistoricalPredictionRecord, ...]) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             for record in records:
                 self._append_row(
                     connection,
@@ -64,7 +66,7 @@ class SQLiteHistoricalResidualLedger:
                 )
 
     def append_outcomes(self, records: tuple[HistoricalOutcomeRecord, ...]) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             for record in records:
                 self._append_row(
                     connection,
@@ -79,7 +81,7 @@ class SQLiteHistoricalResidualLedger:
                 )
 
     def read_joined(self, strategy: ResearchStrategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             outcomes = connection.execute(
                 "SELECT content_hash, payload FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
                 (strategy, parent_split_hash),
@@ -100,7 +102,7 @@ class SQLiteHistoricalResidualLedger:
     def read_predictions(
         self, strategy: ResearchStrategy, parent_split_hash: str
     ) -> tuple[HistoricalPredictionRecord, ...]:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             rows = connection.execute(
                 "SELECT content_hash, payload FROM historical_prediction "
                 "WHERE strategy = ? AND parent_split_hash = ? "
@@ -116,7 +118,7 @@ class SQLiteHistoricalResidualLedger:
         return tuple(result)
 
     def _initialize(self) -> None:
-        with self._connect() as connection:
+        with closing(self._connect()) as connection, connection:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS historical_prediction (
@@ -171,7 +173,7 @@ class SQLiteHistoricalResidualLedger:
         connection.execute(f"INSERT INTO {row.table} VALUES ({placeholders})", values)
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._path)
+        return OpenSqliteConnection(self._path)
 
 
 def _base_identity(key: ResidualJoinKey, parent_split_hash: str) -> str:

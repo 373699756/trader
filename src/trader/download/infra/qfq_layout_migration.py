@@ -17,6 +17,7 @@ from trader.download.domain.qfq_window import QFQ_WINDOWS
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
 from trader.download.infra.qfq_codec import DecodeCell
 from trader.download.infra.qfq_sqlite import QFQ_SHARD_NAMES, QfqShardName, SQLiteQfqWindowCache
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 _LEGACY_NAME = re.compile(r"(?:[0-9]{5}(?:-[1-9][0-9]{0,3})?|range-[0-9]{5}-[0-9]{4})\.sqlite3")
 
@@ -88,7 +89,9 @@ def LegacyWindows(
         path = profile.root / name
         _check_source(path)
         with (
-            closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5)) as connection,
+            closing(
+                OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
+            ) as connection,
             connection,
         ):
             connection.execute("BEGIN")
@@ -141,7 +144,7 @@ def _verify_target(profiles: tuple[LegacyQfqProfile, ...], target_root: Path) ->
             codes += 1
             rows += len(window.cells)
         for path in cache.root.glob("*.sqlite3"):
-            with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as connection:
+            with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
                 if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
                     raise ValueError("qfq migrated integrity failure")
     return codes, rows
@@ -166,8 +169,7 @@ def BuildQfqLayout(source_root: Path, target_root: Path, lock_path: Path) -> Qfq
                 cache.replace_window(window, identity)
             # One-time offline packing; routine refresh never compacts or copies a database.
             for path in cache.root.glob("*.sqlite3"):
-                with closing(sqlite3.connect(path, timeout=5)) as connection:
-                    connection.execute("PRAGMA synchronous=FULL")
+                with closing(OpenSqliteConnection(path, SqliteConnectionOptions(timeout_seconds=5))) as connection:
                     connection.execute("VACUUM")
         codes, rows = _verify_target(profiles, staging)
         if LegacyFingerprint(profiles) != fingerprint:

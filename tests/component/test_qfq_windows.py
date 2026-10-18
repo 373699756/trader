@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -44,6 +45,7 @@ from trader.download.infra.qfq_update_runner import QfqUpdateRunner
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier
 from trader.download.infra.terminal_progress import RenderProgress, TerminalDownloadProgress
 from trader.entrypoints import cli
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 
@@ -283,7 +285,7 @@ def test_large_local_shard_keeps_primary_key_queries_without_splitting(tmp_path)
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
     cache.replace_window(_window(), "seed")
     shard = cache.root / "qfq_sse_main.sqlite3"
-    with sqlite3.connect(shard) as connection:
+    with closing(OpenSqliteConnection(shard)) as connection, connection:
         connection.execute("CREATE TABLE local_capacity_probe(payload BLOB)")
         connection.execute("INSERT INTO local_capacity_probe VALUES (zeroblob(11000000))")
         plan = connection.execute(
@@ -313,7 +315,7 @@ def test_tampered_cells_fail_closed(tmp_path) -> None:
     cache = SQLiteQfqWindowCache(tmp_path, "v2")
     cache.replace_window(_window(), "seed")
     shard = next(cache.root.glob("*.sqlite3"))
-    with sqlite3.connect(shard) as connection:
+    with closing(OpenSqliteConnection(shard)) as connection, connection:
         connection.execute("DELETE FROM bars WHERE day=?", (DAYS[-1].isoformat(),))
     with pytest.raises(RuntimeError, match="identity mismatch"):
         cache.read_code("600001")
@@ -322,10 +324,11 @@ def test_tampered_cells_fail_closed(tmp_path) -> None:
 def _leave_hot_journal(shard: Path) -> None:
     script = """
 import os
-import sqlite3
 import sys
+from pathlib import Path
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
-connection = sqlite3.connect(sys.argv[1])
+connection = OpenSqliteConnection(Path(sys.argv[1]))
 connection.execute("PRAGMA journal_mode=DELETE")
 connection.execute("PRAGMA synchronous=FULL")
 connection.execute("PRAGMA cache_size=1")
@@ -619,7 +622,7 @@ def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, pr
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     assert updater.execute(observed).completed_codes == 1
     cache = updater.v2 if profile == "v2" else updater.v3
-    with sqlite3.connect(cache.root / "qfq_sse_main.sqlite3") as connection:
+    with closing(OpenSqliteConnection(cache.root / "qfq_sse_main.sqlite3")) as connection, connection:
         connection.execute(f"UPDATE identities SET {field}=? WHERE code=?", (value, "600001"))
     assert not cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
     result = updater.execute(observed)

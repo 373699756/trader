@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from scripts.runtime_diagnostics import qfq_sqlite
 from scripts.runtime_diagnostics.qfq_sqlite import AuditActiveQfq, ClassifyQfqDiagnosticError
 from trader.download.infra.qfq_sqlite import QfqShardName
-
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 _SCHEMA = """
 CREATE TABLE bars(code TEXT NOT NULL, day TEXT NOT NULL, payload TEXT NOT NULL,
@@ -23,7 +24,7 @@ def _seed_profile(root: Path, profile: str, code: str, dates: tuple[str, ...], s
     profile_root = root / profile
     profile_root.mkdir(parents=True, exist_ok=True)
     path = profile_root / QfqShardName(code)
-    with sqlite3.connect(path) as connection:
+    with closing(OpenSqliteConnection(path)) as connection, connection:
         connection.executescript(_SCHEMA)
         connection.executemany("INSERT INTO bars VALUES (?,?,?)", ((code, day, "{}") for day in dates))
         connection.execute(

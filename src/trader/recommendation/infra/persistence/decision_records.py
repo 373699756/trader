@@ -14,6 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import cast
 
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.application.ports.decision_records import (
     DecisionCheckpoint,
     DecisionRecordConflictError,
@@ -87,9 +88,8 @@ class SQLiteDecisionRecords:
         *,
         fault_injector: FaultInjector | None = None,
     ) -> None:
-        self._root = freeze_dir / "decisions"
-        self._database = self._root / "decisions.sqlite3"
-        self._records = self._root / "records"
+        self._root = freeze_dir
+        self._database = self._root / "freeze.sqlite3"
         self._checkpoints = self._root / "checkpoints"
         self._quarantine = self._root / "quarantine"
         self._fault_injector = fault_injector or (lambda _stage: None)
@@ -97,8 +97,9 @@ class SQLiteDecisionRecords:
 
     def initialize(self) -> None:
         with self._lock:
-            for directory in (self._root, self._records, self._checkpoints, self._quarantine):
-                directory.mkdir(parents=True, exist_ok=True)
+            if (self._root / "decisions").exists():
+                raise DecisionRecordUnavailableError("legacy freeze layout requires an offline layout migration")
+            self._root.mkdir(parents=True, exist_ok=True)
             _fsync_directory(self._root)
             try:
                 with self._connect() as connection:
@@ -111,7 +112,7 @@ class SQLiteDecisionRecords:
     def commit(self, record: CommittedDecisionRecord) -> None:
         payload = CommittedRecordBytes(record)
         digest = _bounded_digest(payload)
-        relative = Path("records") / record.strategy.value / record.trade_date.isoformat() / f"{record.version}.json"
+        relative = Path(record.strategy.value) / f"{record.trade_date.isoformat()}.json"
         with self._lock:
             existing = self._manifest(record.strategy, record.trade_date)
             if existing is not None:
@@ -580,7 +581,11 @@ class SQLiteDecisionRecords:
             for row in connection.execute("SELECT relative_path FROM decision_checkpoints").fetchall()
         }
         count = 0
-        for root, known in ((self._records, known_records), (self._checkpoints, known_checkpoints)):
+        for root, known in (
+            (self._root / "tomorrow", known_records),
+            (self._root / "d25", known_records),
+            (self._checkpoints, known_checkpoints),
+        ):
             for path in root.rglob("*.json"):
                 relative = path.relative_to(self._root).as_posix()
                 if relative in known:
@@ -597,10 +602,9 @@ class SQLiteDecisionRecords:
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self._database, timeout=10.0)
+        connection = OpenSqliteConnection(self._database, SqliteConnectionOptions(timeout_seconds=10.0))
         try:
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA busy_timeout=10000")
             with connection:
                 yield connection
         finally:
