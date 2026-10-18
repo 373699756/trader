@@ -4,11 +4,11 @@ import json
 from datetime import date, timedelta
 
 import pytest
-import requests
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqOptions, TencentQfqSupplier
+from trader.infra.http_contracts import HttpTimeout
 
 _DAYS = tuple(date(2018, 1, 1) + timedelta(days=i) for i in range(2800) if i % 7 < 5)
 _SECURITY = BaoStockSecurity("600001", "fixture", "main", _DAYS[0], None, "fixture")
@@ -41,10 +41,10 @@ class _Session:
         _, _, start, end, count, mode = kwargs["params"]["param"].split(",")
         self.calls.append((url, start, end, int(count), mode))
         older_page = mode == "qfq" and end < _DAYS[-1].isoformat()
-        if self.behavior == "offline" or older_page and self.behavior == "partial_timeout":
-            raise requests.Timeout()
+        if self.behavior == "offline" or (older_page and self.behavior == "partial_timeout"):
+            raise HttpTimeout()
         if self.behavior == "alternate" and "proxy.finance" in url:
-            raise requests.Timeout()
+            raise HttpTimeout()
         days = tuple(day for day in _DAYS if day <= date.fromisoformat(end))
         days = days[-(min(int(count), 640) if mode == "qfq" else int(count)) :]
         if self.behavior == "unavailable" and mode == "qfq":

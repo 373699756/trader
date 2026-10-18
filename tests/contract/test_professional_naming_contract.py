@@ -198,6 +198,9 @@ def test_public_python_names_describe_business_roles() -> None:
             elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
                 names = (node.target.id,)
             for name in names:
+                # The shared HTTP protocol value has one technical owner; business wrappers remain retired.
+                if name == "HttpResponse" and path == SOURCE / "infra/http_contracts.py":
+                    continue
                 if name in FORBIDDEN_PUBLIC_NAMES:
                     violations.append(f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:{name}")
     assert violations == []

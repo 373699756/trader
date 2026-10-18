@@ -15,9 +15,12 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
-import requests
 
 from scripts.runtime_diagnostics.history_fallback import FallbackHistoryClient
+from trader.download.infra import tushare_records as tushare_records_module
+from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
+from trader.download.infra.exchange_security_master import ExchangeSecurityMasterClient
+from trader.download.infra.tushare import TushareClient
 from trader.infra.cache import BoundedLruCache
 from trader.infra.market_data.history.history import (
     BuildHistoryContext,
@@ -26,10 +29,6 @@ from trader.infra.market_data.history.history import (
     PriceAdjustment,
 )
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.providers import tushare_records as tushare_records_module
-from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
-from trader.infra.market_data.providers.exchange_security_master import ExchangeSecurityMasterClient
-from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 from trader.infra.settings import ConfigurationError, LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.workers import BoundedExecutor

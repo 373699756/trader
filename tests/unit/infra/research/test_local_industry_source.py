@@ -7,8 +7,8 @@ from contextlib import closing
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.download.infra.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
 from trader.infra.dated_query_cache import SQLiteDatedQueryCache
-from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient, BaoStockIndustryRow
 from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.recommendation.infra.market_data.local_industry_source import LocalIndustrySource
 

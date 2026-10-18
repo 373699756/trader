@@ -5,15 +5,12 @@ from __future__ import annotations
 import json
 import math
 import platform
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
 from queue import Queue
 from typing import Literal
-
-import requests
 
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
@@ -24,12 +21,9 @@ from trader.download.domain.baostock_daily import (
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError, HistorySupplierPendingReason
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistoryCell, PublishedHistorySide, PublishedHistoryWindow
+from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
+from trader.infra.http_contracts import HttpError, HttpTransport
 
-_ENDPOINTS = {
-    "proxy": "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
-    "direct": "https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get",
-}
-_PROXIES = {"http": "", "https": "", "all": ""}
 _QFQ_PAGE_ROWS = 640
 _MAX_QFQ_PAGES = 5
 
@@ -42,7 +36,7 @@ class TencentQfqOptions:
 
     def __post_init__(self) -> None:
         if (
-            self.history_host not in _ENDPOINTS
+            self.history_host not in {"proxy", "direct"}
             or not math.isfinite(self.timeout_seconds)
             or self.timeout_seconds <= 0
             or not 0 <= self.retries <= 2
@@ -52,18 +46,9 @@ class TencentQfqOptions:
 
 @dataclass(frozen=True)
 class TencentQfqDependencies:
-    session_factory: Callable[[], AbstractContextManager[requests.Session]]
+    session_factory: Callable[[], AbstractContextManager[HttpTransport]]
     load_universe: Callable[[date], tuple[BaoStockSecurity, ...]]
     cancel_requested: Callable[[], bool]
-
-
-@dataclass(frozen=True)
-class _DailyQuery:
-    symbol: str
-    start: date
-    end: date
-    mode: Literal["bfq", "qfq"]
-    count: int
 
 
 @dataclass(frozen=True)
@@ -76,7 +61,7 @@ class _WindowQuery:
 
 @dataclass(frozen=True)
 class _SideFetch:
-    session: requests.Session
+    session: HttpTransport
     query: _WindowQuery
     mode: Literal["bfq", "qfq"]
     host: Literal["proxy", "direct"]
@@ -117,15 +102,15 @@ class _QfqPagePendingError(Exception):
 class TencentSessionPool:
     """Borrow bootstrap-owned sessions exclusively so keep-alive survives stock boundaries."""
 
-    def __init__(self, sessions: tuple[requests.Session, ...]) -> None:
+    def __init__(self, sessions: tuple[HttpTransport, ...]) -> None:
         if not sessions:
             raise ValueError("Tencent qfq session pool cannot be empty")
-        self._available: Queue[requests.Session] = Queue(maxsize=len(sessions))
+        self._available: Queue[HttpTransport] = Queue(maxsize=len(sessions))
         for session in sessions:
             self._available.put_nowait(session)
 
     @contextmanager
-    def borrow(self) -> Iterator[requests.Session]:
+    def borrow(self) -> Iterator[HttpTransport]:
         session = self._available.get()
         try:
             yield session
@@ -172,14 +157,14 @@ class TencentQfqSupplier:
         if not 1 <= sessions <= 2000:
             raise ValueError("Tencent calendar sessions must be within 1..2000")
         count = sessions
-        query = _DailyQuery("sh000001", as_of - timedelta(days=count * 2), as_of, "bfq", count)
+        query = TencentDailyQuery("sh000001", as_of - timedelta(days=count * 2), as_of, "bfq", count)
         try:
             rows = self._request_rows(query)
         except RuntimeError:
             alternate: Literal["proxy", "direct"] = "direct" if self._options.history_host == "proxy" else "proxy"
             self._check_cancel()
             rows = self._request_rows(query, host=alternate)
-        dates = tuple(_row_date(row) for row in rows)
+        dates = tuple(row.day for row in rows)
         if dates != tuple(sorted(set(dates))) or any(day > as_of for day in dates) or len(dates) < sessions:
             raise ValueError("Tencent exchange calendar is incomplete or invalid")
         return BaoStockCalendar(dates[-sessions:])
@@ -238,9 +223,7 @@ class TencentQfqSupplier:
             raise HistorySupplierPendingError(window, reason, tuple(sorted(invalid_dates)))
         return window
 
-    def _download_side(
-        self, session: requests.Session, query: _WindowQuery, mode: Literal["bfq", "qfq"]
-    ) -> _SideDownload:
+    def _download_side(self, session: HttpTransport, query: _WindowQuery, mode: Literal["bfq", "qfq"]) -> _SideDownload:
         primary = self._options.history_host
         alternate: Literal["proxy", "direct"] = "direct" if primary == "proxy" else "proxy"
         initial = self._attempt_side(session, query, mode, primary)
@@ -259,7 +242,7 @@ class TencentQfqSupplier:
 
     def _attempt_side(
         self,
-        session: requests.Session,
+        session: HttpTransport,
         query: _WindowQuery,
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
@@ -292,7 +275,7 @@ class TencentQfqSupplier:
 
     def _fetch_side(
         self,
-        session: requests.Session,
+        session: HttpTransport,
         query: _WindowQuery,
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
@@ -359,7 +342,7 @@ class TencentQfqSupplier:
 
     def _read_side_page(
         self,
-        session: requests.Session,
+        session: HttpTransport,
         query: _WindowQuery,
         mode: Literal["bfq", "qfq"],
         host: Literal["proxy", "direct"],
@@ -367,7 +350,7 @@ class TencentQfqSupplier:
     ) -> tuple[dict[date, PublishedHistorySide], int, frozenset[date], bool]:
         symbol, dates = query.symbol, query.dates
         rows = self._request_rows(
-            _DailyQuery(symbol, dates[0], end, mode, query.request_count), session=session, host=host
+            TencentDailyQuery(symbol, dates[0], end, mode, query.request_count), session=session, host=host
         )
         result: dict[date, PublishedHistorySide] = {}
         invalid_dates: set[date] = set()
@@ -375,7 +358,7 @@ class TencentQfqSupplier:
         expected = frozenset(dates)
         previous: date | None = None
         for row in rows:
-            day = _row_date(row)
+            day = row.day
             if (previous is not None and day <= previous) or day > end:
                 raise ValueError("tencent_daily_rows_outside_calendar_or_duplicated")
             previous = day
@@ -399,11 +382,11 @@ class TencentQfqSupplier:
 
     def _request_rows(
         self,
-        query: _DailyQuery,
+        query: TencentDailyQuery,
         *,
-        session: requests.Session | None = None,
+        session: HttpTransport | None = None,
         host: Literal["proxy", "direct"] | None = None,
-    ) -> list[object]:
+    ) -> tuple[TencentDailyRow, ...]:
         for attempt in range(self._options.retries + 1):
             self._check_cancel()
             try:
@@ -411,121 +394,54 @@ class TencentQfqSupplier:
                     return self._request_once(session, query, host or self._options.history_host)
                 with self._dependencies.session_factory() as owned_session:
                     return self._request_once(owned_session, query, host or self._options.history_host)
-            except (requests.RequestException, OSError) as exc:
+            except (HttpError, OSError) as exc:
                 if attempt == self._options.retries:
                     raise RuntimeError("tencent_qfq_request_failed") from exc
         raise RuntimeError("tencent_qfq_request_failed")
 
     def _request_once(
-        self, session: requests.Session, query: _DailyQuery, host: Literal["proxy", "direct"]
-    ) -> list[object]:
-        symbol, start, end, mode, count = query.symbol, query.start, query.end, query.mode, query.count
-        response = session.get(
-            _ENDPOINTS[host],
-            params={
-                "_var": f"kline_day{mode}{end.year}",
-                "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},{count},{mode}",
-            },
-            headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-            timeout=self._options.timeout_seconds,
-            proxies=_PROXIES,
+        self, session: HttpTransport, query: TencentDailyQuery, host: Literal["proxy", "direct"]
+    ) -> tuple[TencentDailyRow, ...]:
+        rows = FetchTencentDailyRows(
+            session,
+            query,
+            host=host,
+            timeout_seconds=self._options.timeout_seconds,
+            cancel_requested=self._dependencies.cancel_requested,
         )
-        try:
-            response.raise_for_status()
-            marker = response.text.find("={")
-            payload: object = json.loads(response.text[marker + 1 :] if marker >= 0 else response.text)
-        finally:
-            response.close()
         self._check_cancel()
-        return _payload_rows(payload, symbol, mode, count)
+        return rows
 
     def _check_cancel(self) -> None:
         if self._dependencies.cancel_requested():
             raise RuntimeError("tencent_qfq_cancelled")
 
 
-def _payload_rows(payload: object, symbol: str, mode: str, count: int) -> list[object]:
-    if not isinstance(payload, Mapping) or payload.get("code", 0) != 0:
-        raise ValueError("tencent_daily_response_rejected")
-    data = payload.get("data")
-    stock = data.get(symbol) if isinstance(data, Mapping) else None
-    if not isinstance(stock, Mapping):
-        raise ValueError("tencent_daily_stock_data_missing")
-    rows = stock.get("qfqday" if mode == "qfq" else "day")
-    if mode == "qfq" and rows is None:
-        neutral = stock.get("day")
-        if isinstance(neutral, list) and neutral and all(_neutral_adjustment(row) for row in neutral):
-            rows = neutral
-        elif neutral is not None:
-            raise ValueError("tencent_daily_qualified_rows_missing")
-    # Tencent can append the current session to count historical rows.
-    # Calendar/window consumers still validate dates and trim only older padding.
-    if rows is None:
-        raise ValueError("tencent_daily_response_shape_invalid")
-    if not isinstance(rows, list) or len(rows) > count + 1:
-        raise ValueError("tencent_daily_response_shape_invalid")
-    return rows
-
-
-def _neutral_adjustment(row: object) -> bool:
-    return (
-        isinstance(row, list)
-        and len(row) >= 11
-        and isinstance(row[6], Mapping)
-        and not row[6]
-        and _finite_zero(row[9])
-        and _finite_zero(row[10])
-    )
-
-
-def _finite_zero(value: object) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        return False
-    try:
-        # Decimal preserves tiny nonzero values that float conversion could round to zero.
-        number = Decimal(str(value))
-    except InvalidOperation:
-        return False
-    return number.is_finite() and number.is_zero()
-
-
-def _row_date(row: object) -> date:
-    if not isinstance(row, list) or not row or not isinstance(row[0], str):
-        raise ValueError("tencent_daily_row_invalid")
-    return date.fromisoformat(row[0])
-
-
-def _unusable_qfq_price(row: object) -> bool:
-    if not isinstance(row, list) or len(row) < 9:
-        raise ValueError("tencent_daily_row_fields_missing")
-    prices = tuple(float(row[index]) for index in (1, 2, 3, 4))
-    open_price, close, high, low = prices
-    if not all(math.isfinite(value) for value in prices) or not (
-        low <= min(open_price, close) <= max(open_price, close) <= high
-    ):
+def _unusable_qfq_price(row: TencentDailyRow) -> bool:
+    open_price, close, high, low = row.prices()
+    if not low <= min(open_price, close) <= max(open_price, close) <= high:
         raise ValueError("tencent_daily_ohlc_range_invalid")
-    return any(value <= 0 for value in prices)
+    return min(open_price, close, high, low) <= 0
 
 
-def _parse_side(code: str, row: object, mode: str) -> PublishedHistorySide:
-    day = _row_date(row)
-    if not isinstance(row, list) or len(row) < 9:
+def _parse_side(code: str, row: TencentDailyRow, mode: str) -> PublishedHistorySide:
+    open_price, close, high, low = row.prices()
+    if row.volume is None or row.amount is None or (mode != "qfq" and not row.turnover_valid):
         raise ValueError("tencent_daily_row_fields_missing")
-    open_price, close, high, low, volume, amount = (float(row[index]) for index in (1, 2, 3, 4, 5, 8))
     if not low <= min(open_price, close) <= max(open_price, close) <= high:
         raise ValueError("tencent_daily_ohlc_range_invalid")
     return PublishedHistorySide(
         code,
-        day,
+        row.day,
         "qfq" if mode == "qfq" else "unadjusted",
         open_price,
         high,
         low,
         close,
-        volume * 100.0,
-        amount * 10000.0,
+        row.volume,
+        row.amount,
         None,
         None,
-        None if mode == "qfq" or row[7] in (None, "") else float(row[7]),
+        None if mode == "qfq" else row.turnover_rate,
         "trading",
     )

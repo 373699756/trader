@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import threading
 import time
@@ -13,9 +12,10 @@ from datetime import date, datetime, timedelta, timezone
 from typing import TypedDict
 from zoneinfo import ZoneInfo
 
-import requests
 from typing_extensions import NotRequired, Unpack
 
+from trader.download.infra.tencent_daily import FetchTencentDailyRows, TencentDailyQuery, TencentDailyRow
+from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import (
     BoundedExecutor,
@@ -32,15 +32,10 @@ from trader.recommendation.infra.normalization.quote import (
 )
 from trader.training.domain.evaluation.models import OutcomeBar
 
-SessionFactory = Callable[[], requests.Session]
-_DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
+SessionFactory = Callable[[], HttpTransport]
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _QUOTE_SHARD_SIZE = 120
 _QUOTE_MAX_CONCURRENCY = 3
-_HISTORY_ENDPOINTS = {
-    "proxy": "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
-    "direct": "https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get",
-}
 
 
 class _TencentClientOptions(TypedDict):
@@ -103,7 +98,7 @@ class TencentClient:
             for future in as_completed(futures):
                 try:
                     quotes.extend(future.result())
-                except (OSError, RuntimeError, requests.RequestException) as exc:
+                except (OSError, RuntimeError, HttpError) as exc:
                     failures.append(exc)
         self._ensure_running(monotonic_deadline, cancel_event)
         if not quotes:
@@ -158,7 +153,10 @@ class TencentClient:
                 "https://qt.gtimg.cn/q=" + ",".join(_symbol(code) for code in codes),
                 headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
                 timeout=request_timeout,
-                proxies=_DIRECT_PROXIES,
+                deadline=monotonic_deadline,
+                cancel_requested=lambda: (
+                    self._cancel_requested() or (cancel_event is not None and cancel_event.is_set())
+                ),
             )
             response.raise_for_status()
             text = response.content.decode("gb18030", errors="replace")
@@ -174,15 +172,12 @@ class TencentClient:
         )
 
     def fetch_history(self, code: str, *, days: int = 90, history_host: str = "proxy") -> tuple[DailyBar, ...]:
-        stock = self._fetch_history_stock(
+        rows = self._fetch_history_rows(
             code,
             days=days,
             history_host=history_host,
             adjustment=PriceAdjustment.QFQ,
         )
-        rows = _qfq_rows(stock)
-        if not isinstance(rows, list):
-            return ()
         return _history_bars(rows, days=days, adjustment=PriceAdjustment.QFQ)
 
     def fetch_outcome_history(
@@ -192,70 +187,57 @@ class TencentClient:
         days: int = 61,
         history_host: str = "proxy",
     ) -> tuple[OutcomeBar, ...]:
-        qfq_stock = self._fetch_history_stock(
+        qfq_rows = self._fetch_history_rows(
             code,
             days=days,
             history_host=history_host,
             adjustment=PriceAdjustment.QFQ,
         )
-        raw_stock = self._fetch_history_stock(
+        raw_rows = self._fetch_history_rows(
             code,
             days=days,
             history_host=history_host,
             adjustment=PriceAdjustment.RAW,
         )
-        qfq_rows = _qfq_rows(qfq_stock)
-        raw_rows = _raw_rows(raw_stock)
-        if not isinstance(qfq_rows, list) or not isinstance(raw_rows, list):
-            return ()
         return PairOutcomeHistory(
             _history_bars(qfq_rows, days=days, adjustment=PriceAdjustment.QFQ),
             _history_bars(raw_rows, days=days, adjustment=PriceAdjustment.RAW),
         )
 
-    def _fetch_history_stock(
+    def _fetch_history_rows(
         self,
         code: str,
         *,
         days: int,
         history_host: str,
         adjustment: PriceAdjustment,
-    ) -> object:
+    ) -> tuple[TencentDailyRow, ...]:
         if len(code) != 6 or not code.isdigit() or not code.startswith(("0", "3", "6")):
-            return None
+            return ()
+        if history_host not in {"proxy", "direct"}:
+            raise ValueError("Tencent history host must be proxy or direct")
         self._ensure_running()
-        try:
-            history_endpoint = _HISTORY_ENDPOINTS[history_host]
-        except KeyError as exc:
-            raise ValueError("Tencent history host must be proxy or direct") from exc
         end = self._wall_clock().astimezone(_SHANGHAI).date()
-        start = end - timedelta(days=max(days * 2, 180))
-        symbol = _symbol(code)
-        adjustment_mode = "qfq" if adjustment is PriceAdjustment.QFQ else "bfq"
-        with self._session_factory() as session:
-            response = session.get(
-                history_endpoint,
-                params={
-                    "_var": f"kline_day{adjustment_mode}{end.year}",
-                    "param": f"{symbol},day,{start.isoformat()},{end.isoformat()},{days},{adjustment_mode}",
-                    "r": "0.8205512681390605",
-                },
-                headers={"User-Agent": "Mozilla/5.0", "Referer": "https://gu.qq.com/"},
-                timeout=self._timeout_seconds,
-                proxies=_DIRECT_PROXIES,
-            )
-            response.raise_for_status()
-            text = response.text
-        self._ensure_running()
-        marker = text.find("={")
-        if marker < 0:
-            return None
+        query = TencentDailyQuery(
+            _symbol(code),
+            end - timedelta(days=max(days * 2, 180)),
+            end,
+            "qfq" if adjustment is PriceAdjustment.QFQ else "bfq",
+            days,
+        )
         try:
-            payload = json.loads(text[marker + 1 :])
-        except (TypeError, ValueError):
-            return None
-        data = payload.get("data") if isinstance(payload, Mapping) else None
-        return data.get(symbol) if isinstance(data, Mapping) else None
+            with self._session_factory() as transport:
+                rows = FetchTencentDailyRows(
+                    transport,
+                    query,
+                    host=history_host,
+                    timeout_seconds=self._timeout_seconds,
+                    cancel_requested=self._cancel_requested,
+                )
+        except ValueError:
+            return ()
+        self._ensure_running()
+        return rows
 
     def _ensure_running(
         self,
@@ -355,22 +337,16 @@ def _timestamp(raw: str, fallback: datetime) -> datetime:
 
 
 def _history_bars(
-    rows: Sequence[object],
+    rows: Sequence[TencentDailyRow],
     *,
     days: int,
     adjustment: PriceAdjustment,
 ) -> tuple[DailyBar, ...]:
     parsed: list[tuple[date, float, float, float, float, float, float, float | None]] = []
     for raw in rows:
-        if not isinstance(raw, list) or len(raw) < 9:
-            continue
-        try:
-            trade_date = date.fromisoformat(str(raw[0]))
-        except ValueError:
-            continue
-        open_price, close, high, low, volume, turnover_rate, amount = (
-            ToFloat(raw[index]) for index in (1, 2, 3, 4, 5, 7, 8)
-        )
+        trade_date = raw.day
+        open_price, close, high, low = raw.open_price, raw.close, raw.high, raw.low
+        volume, amount, turnover_rate = raw.volume, raw.amount, raw.turnover_rate
         if (
             open_price is None
             or close is None
@@ -396,8 +372,8 @@ def _history_bars(
                 close=close,
                 high=high,
                 low=low,
-                volume=volume * 100.0,
-                amount=amount * 10_000.0,
+                volume=volume,
+                amount=amount,
                 pct_change=pct_change,
                 turnover_rate=turnover_rate,
                 adjustment=adjustment,
@@ -406,41 +382,6 @@ def _history_bars(
         )
         previous_close = close
     return tuple(bars[-max(1, days) :])
-
-
-def _qfq_rows(stock: object) -> list[object] | None:
-    if not isinstance(stock, Mapping):
-        return None
-    adjusted = stock.get("qfqday")
-    if isinstance(adjusted, list):
-        return adjusted
-    raw = stock.get("day")
-    if not isinstance(raw, list) or not raw:
-        return None
-    if all(_day_row_is_qfq_equivalent(item) for item in raw):
-        return raw
-    return None
-
-
-def _raw_rows(stock: object) -> list[object] | None:
-    if not isinstance(stock, Mapping):
-        return None
-    raw = stock.get("day")
-    return raw if isinstance(raw, list) else None
-
-
-def _day_row_is_qfq_equivalent(raw: object) -> bool:
-    if not isinstance(raw, list) or len(raw) < 11:
-        return False
-    corporate_action = raw[6]
-    first_adjustment = ToFloat(raw[9])
-    second_adjustment = ToFloat(raw[10])
-    return (
-        isinstance(corporate_action, Mapping)
-        and not corporate_action
-        and first_adjustment == 0.0
-        and second_adjustment == 0.0
-    )
 
 
 __all__ = ["TencentClient", "TencentFullMarketSource"]

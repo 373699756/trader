@@ -14,8 +14,7 @@ from datetime import time as daytime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import requests
-
+from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.baostock_daily import (
     BaoStockCalendar,
     BaoStockCodeDownload,
@@ -97,7 +96,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
                 BaoStockHistorySupplier(config, price_policy=BaoStockRequestPolicy(timeout, 0))
             )
             pool = stack.enter_context(ThreadPoolExecutor(max_workers=workers))
-            sessions_pool = TencentSessionPool(tuple(stack.enter_context(requests.Session()) for _ in range(workers)))
+            sessions_pool = TencentSessionPool(tuple(stack.enter_context(OpenExternalHttp()) for _ in range(workers)))
             prices = TencentQfqSupplier(
                 TencentQfqDependencies(sessions_pool.borrow, lambda _day: universe, lambda: False),
                 TencentQfqOptions(timeout_seconds=timeout, retries=0),

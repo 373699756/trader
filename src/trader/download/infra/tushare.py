@@ -8,32 +8,32 @@ from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
-from typing import TYPE_CHECKING, Protocol, TypedDict
+from typing import TYPE_CHECKING, Literal, Protocol, TypedDict
 from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.providers.tushare_records import (
+from trader.download.infra.tushare_records import (
+    TushareSdk,
     _calendar_observation,
     _calendar_ranges,
     _data_version,
     _error_code,
     _failed_observation,
     _generic_observation,
-    _invoke,
     _percentile,
     _records,
     _require_aware,
     _security_master_observation,
     _ts_code,
 )
+from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ReferenceSourceHealth
 
 
 class _SdkFactory(Protocol):
-    def __call__(self, token: str, timeout_seconds: float) -> object: ...
+    def __call__(self, token: str, timeout_seconds: float) -> TushareSdk: ...
 
 
 class _SourceStoppedError(RuntimeError):
@@ -50,8 +50,8 @@ _ObservationConverter = Callable[
 class _RecordFetchRequest:
     dataset: str
     observed_at: datetime
-    method: str
-    arguments: Mapping[str, object]
+    method: Literal["stock_basic", "trade_cal"]
+    arguments: Mapping[str, str]
     converter: _ObservationConverter
     empty_is_error: bool = False
 
@@ -102,7 +102,7 @@ class TushareClient:
         self._monotonic = options.get("monotonic", time.monotonic)
         self._wall_clock = options.get("wall_clock", lambda: datetime.now(timezone.utc))
         self._lock = threading.Lock()
-        self._client: object | None = None
+        self._client: TushareSdk | None = None
         self._planned_count = 0
         self._success_count = 0
         self._error_count = 0
@@ -184,9 +184,7 @@ class TushareClient:
                 "daily_history",
                 normalized,
                 observed_at,
-                lambda client, code: _invoke(
-                    client,
-                    "daily",
+                lambda client, code: client.daily(
                     ts_code=_ts_code(code),
                     start_date=start_date.strftime("%Y%m%d"),
                     end_date=end_date.strftime("%Y%m%d"),
@@ -270,7 +268,19 @@ class TushareClient:
                         "local_rate_limit",
                     ),
                 )
-            records = _records(_invoke(client, request.method, **dict(request.arguments)))
+            arguments = request.arguments
+            if request.method == "stock_basic":
+                response = client.stock_basic(
+                    exchange=arguments["exchange"], list_status=arguments["list_status"], fields=arguments["fields"]
+                )
+            else:
+                response = client.trade_cal(
+                    exchange=arguments["exchange"],
+                    start_date=arguments["start_date"],
+                    end_date=arguments["end_date"],
+                    fields=arguments["fields"],
+                )
+            records = _records(response)
             if self._cancel_requested():
                 raise _SourceStoppedError
             received_at = max(observed_at, self._wall_clock())
@@ -348,7 +358,7 @@ class TushareClient:
         dataset: str,
         codes: Sequence[str],
         observed_at: datetime,
-        fetcher: Callable[[object, str], object],
+        fetcher: Callable[[TushareSdk, str], object],
         *,
         empty_is_error: bool = False,
     ) -> tuple[SourceObservation, ...]:
@@ -397,7 +407,7 @@ class TushareClient:
         dataset: str,
         codes: Sequence[str],
         observed_at: datetime,
-        fetcher: Callable[[object, str], object],
+        fetcher: Callable[[TushareSdk, str], object],
         *,
         empty_is_error: bool,
     ) -> _PerCodeRecords:
@@ -452,7 +462,7 @@ class TushareClient:
             raise _SourceStoppedError
         return _PerCodeRecords(tuple(rows), tuple(failures), tuple(failure_codes))
 
-    def _client_instance(self) -> object:
+    def _client_instance(self) -> TushareSdk:
         with self._lock:
             if self._client is None:
                 self._client = self._sdk_factory(self._token, self._timeout_seconds)

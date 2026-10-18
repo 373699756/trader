@@ -11,14 +11,13 @@ from contextlib import AbstractContextManager
 from datetime import date
 from pathlib import Path
 
-import requests
-
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.security_eligibility import IsStSecurityName
 from trader.download.infra.history_reference_files import ReadStEvidence
 from trader.download.infra.history_st_merge import MergeStEvidence
+from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor
 
 _NAME_HISTORY = re.compile(r"证券简称更名历史[：:]\s*</td>\s*<td[^>]*>(.*?)</td>", re.S)
@@ -44,7 +43,7 @@ class HistoryStNameSource:
     def __init__(  # noqa: PLR0913 - explicit supplier and cancellation boundaries
         self,
         path: Path,
-        session_factory: Callable[[], AbstractContextManager[requests.Session]],
+        session_factory: Callable[[], AbstractContextManager[HttpTransport]],
         executor: WorkerExecutor,
         cancel_requested: Callable[[], bool],
         *,
@@ -144,7 +143,7 @@ class HistoryStNameSource:
             code = futures.pop(future)
             try:
                 evidence[code] = future.result()
-            except (requests.RequestException, OSError, ValueError):
+            except (HttpError, OSError, ValueError):
                 evidence[code] = HistoryStEvidence(code, as_of, "unknown")
         return len(done)
 
@@ -173,13 +172,11 @@ class HistoryStNameSource:
                 f"https://vip.stock.finance.sina.com.cn/corp/go.php/vCI_CorpInfo/stockid/{code}.phtml",
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=15.0,
+                cancel_requested=self._cancel_requested,
             )
-            try:
-                response.raise_for_status()
-                text = response.content.decode("gb18030", errors="strict")
-                return ParseNameHistorySt(code, current_name, as_of, text)
-            finally:
-                response.close()
+            response.raise_for_status()
+            text = response.content.decode("gb18030", errors="strict")
+            return ParseNameHistorySt(code, current_name, as_of, text)
 
     def _check_cancel(self) -> None:
         if self._cancel_requested():

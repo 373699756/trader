@@ -21,7 +21,6 @@ from scripts.runtime_diagnostics import market_factor_eastmoney as eastmoney_pro
 from scripts.runtime_diagnostics.market_factor_audit import FactorAudit, MissingQuoteCodes, QuoteAudit
 from scripts.runtime_diagnostics.market_factor_baostock import BaostockCapability, BaoStockSourceResults
 from scripts.runtime_diagnostics.market_factor_budget import DiagnosticBudget
-from scripts.runtime_diagnostics.market_factor_eastmoney import ParseQuote
 from scripts.runtime_diagnostics.market_factor_inputs import (
     ActiveModelHead,
     FixedReferences,
@@ -35,6 +34,7 @@ from trader.infra.settings import LoadStrategySettings
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.publication.models import Strategy
+from trader.recommendation.infra.market_data.providers.eastmoney_spot import ParseEastmoneySpotQuote
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 
 AT = datetime.fromisoformat("2026-10-15T14:30:00+08:00")
@@ -622,10 +622,21 @@ def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unkno
 
 
 def test_diagnostic_eastmoney_parser_preserves_units_missing_and_source_time_uncertainty() -> None:
-    requested_fields = set(eastmoney_probe._FIELDS.split(","))
+    from trader.infra.http_contracts import HttpResponse
+    from trader.recommendation.infra.market_data.providers.eastmoney_spot import EastmoneySpotClient
+
+    calls = []
+
+    class Transport:
+        def get(self, url, **kwargs):
+            calls.append(kwargs)
+            return HttpResponse(200, b'{"data":{"diff":[],"total":0}}')
+
+    EastmoneySpotClient(Transport()).fetch_page(1, host="push2.eastmoney.com", timeout=2, deadline=3, received_at=AT)
+    requested_fields = set(calls[0]["params"]["fields"].split(","))
     assert {"f11", "f22"}.isdisjoint(requested_fields)
     assert "f100" in requested_fields
-    quote = ParseQuote(
+    quote = ParseEastmoneySpotQuote(
         {
             "f12": "600001",
             "f14": "fixture",

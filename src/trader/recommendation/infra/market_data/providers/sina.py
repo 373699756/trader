@@ -11,11 +11,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, TypedDict
 
-import requests
-
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
+from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.workers import (
     BoundedExecutor,
     InjectedExecutor,
@@ -29,17 +28,16 @@ from trader.recommendation.infra.normalization.quote import (
     ToFloat,
 )
 
-SessionFactory = Callable[[], requests.Session]
+SessionFactory = Callable[[], HttpTransport]
 COUNT_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeStockCount"
 QUOTE_URL = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData"
-_DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ATTEMPTS = 2
 
 
 @dataclass(frozen=True)
 class _SinaRequest:
     as_json: bool
-    session: requests.Session | None = None
+    session: HttpTransport | None = None
     deadline: datetime | None = None
     cancel_event: threading.Event | None = None
 
@@ -146,7 +144,7 @@ class SinaClient:
         self,
         page: int,
         *,
-        session: requests.Session | None = None,
+        session: HttpTransport | None = None,
         deadline: datetime | None = None,
         cancel_event: threading.Event | None = None,
     ) -> object:
@@ -171,7 +169,7 @@ class SinaClient:
         url: str,
         params: Mapping[str, str],
         *,
-        session: requests.Session | None = None,
+        session: HttpTransport | None = None,
         deadline: datetime | None = None,
         cancel_event: threading.Event | None = None,
     ) -> str:
@@ -194,7 +192,7 @@ class SinaClient:
         url: str,
         params: Mapping[str, str],
         *,
-        session: requests.Session | None = None,
+        session: HttpTransport | None = None,
         deadline: datetime | None = None,
         cancel_event: threading.Event | None = None,
     ) -> object:
@@ -226,7 +224,10 @@ class SinaClient:
                             params=dict(params),
                             headers={"User-Agent": "Mozilla/5.0"},
                             timeout=self._timeout_seconds,
-                            proxies=_DIRECT_PROXIES,
+                            cancel_requested=lambda: (
+                                self._cancel_requested()
+                                or (request.cancel_event is not None and request.cancel_event.is_set())
+                            ),
                         )
                         response.raise_for_status()
                         result = response.json() if request.as_json else response.text
@@ -236,11 +237,14 @@ class SinaClient:
                         params=dict(params),
                         headers={"User-Agent": "Mozilla/5.0"},
                         timeout=self._timeout_seconds,
-                        proxies=_DIRECT_PROXIES,
+                        cancel_requested=lambda: (
+                            self._cancel_requested()
+                            or (request.cancel_event is not None and request.cancel_event.is_set())
+                        ),
                     )
                     response.raise_for_status()
                     result = response.json() if request.as_json else response.text
-            except (requests.RequestException, ValueError, OSError) as exc:
+            except (HttpError, ValueError, OSError) as exc:
                 last_error = exc
                 continue
             self._ensure_running(request.deadline, request.cancel_event)

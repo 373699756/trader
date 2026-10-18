@@ -4,10 +4,10 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from scripts.runtime_diagnostics.exchange_security_master import collect
-from trader.infra.market_data.observations import ExchangeSecurityMasterListing
-from trader.infra.market_data.providers.exchange_security_master import (
+from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
 )
+from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 
 
 def test_security_master_probe_emits_only_bounded_coverage_counts() -> None:

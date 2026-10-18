@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 
-import requests
-
+from trader.bootstrap import OpenExternalHttp
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceReader
+from trader.infra.http_contracts import HttpError
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.research import LongResearchPolicy, ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
@@ -62,9 +62,9 @@ def ProbeAuxiliary(
         error = None
         try:
             bars = EastmoneyClient(
-                timeout_seconds=timeout, session_factory=requests.Session, worker_pool=pool
+                timeout_seconds=timeout, session_factory=OpenExternalHttp, worker_pool=pool
             ).fetch_intraday_minutes(code, now=at)
-        except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+        except (OSError, RuntimeError, ValueError, HttpError) as exc:
             bars = ()
             error = type(exc).__name__
         minutes[code] = bars

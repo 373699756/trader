@@ -12,7 +12,7 @@ from pathlib import Path
 
 from trader.recommendation.application.ports.runtime import TradingCalendarUnavailableError
 
-CalendarFetcher = Callable[[], Iterable[date]]
+CalendarFetcher = Callable[[float], Iterable[date]]
 
 
 class ChinaTradingCalendar:
@@ -21,7 +21,7 @@ class ChinaTradingCalendar:
         cache_path: Path,
         *,
         max_cache_age_days: int = 30,
-        fetcher: CalendarFetcher | None = None,
+        fetcher: CalendarFetcher,
         fetch_timeout_seconds: float = 5.0,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ) -> None:
@@ -29,16 +29,12 @@ class ChinaTradingCalendar:
             raise ValueError("calendar fetch timeout must be positive")
         self._cache_path = cache_path
         self._max_cache_age = timedelta(days=max_cache_age_days)
-        self._fetcher = fetcher or _fetch_akshare_calendar
+        self._fetcher = fetcher
         self._fetch_timeout_seconds = float(fetch_timeout_seconds)
         self._now = now
         self._dates: frozenset[date] = frozenset()
         self._fetched_at: datetime | None = None
         self._load_lock = threading.Lock()
-        self._fetch_thread: threading.Thread | None = None
-        self._fetch_completed: threading.Event | None = None
-        self._fetch_result: frozenset[date] | None = None
-        self._fetch_error: BaseException | None = None
 
     def is_trading_day(self, day: date) -> bool:
         self._ensure_loaded()
@@ -83,36 +79,10 @@ class ChinaTradingCalendar:
             self._save_cache()
 
     def _fetch_with_timeout(self) -> frozenset[date]:
-        if self._fetch_thread is None:
-            completed = threading.Event()
-            self._fetch_completed = completed
-            self._fetch_result = None
-            self._fetch_error = None
-
-            def fetch() -> None:
-                try:
-                    self._fetch_result = frozenset(self._fetcher())
-                except BaseException as exc:
-                    self._fetch_error = exc
-                finally:
-                    completed.set()
-
-            self._fetch_thread = threading.Thread(target=fetch, name="trading-calendar-fetch", daemon=True)
-            self._fetch_thread.start()
-        fetch_completed = self._fetch_completed
-        if fetch_completed is None:
-            raise TradingCalendarUnavailableError("trading calendar fetch state is unavailable")
-        if not fetch_completed.wait(self._fetch_timeout_seconds):
-            raise TradingCalendarUnavailableError("trading calendar fetch timed out")
-        result = self._fetch_result
-        error = self._fetch_error
-        self._fetch_thread = None
-        self._fetch_completed = None
-        self._fetch_result = None
-        self._fetch_error = None
-        if error is not None:
-            raise TradingCalendarUnavailableError(f"cannot refresh trading calendar: {error}") from error
-        return result or frozenset()
+        try:
+            return frozenset(self._fetcher(self._fetch_timeout_seconds))
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise TradingCalendarUnavailableError(f"calendar_refresh_{type(exc).__name__}") from exc
 
     def _load_cache(self) -> None:
         try:
@@ -149,17 +119,6 @@ class ChinaTradingCalendar:
             except FileNotFoundError:
                 pass
             raise
-
-
-def _fetch_akshare_calendar() -> Iterable[date]:
-    import akshare as ak
-
-    frame = ak.tool_trade_date_hist_sina()
-    if "trade_date" not in frame.columns:
-        return ()
-    return tuple(
-        value.date() if hasattr(value, "date") else date.fromisoformat(str(value)[:10]) for value in frame["trade_date"]
-    )
 
 
 __all__ = ["ChinaTradingCalendar", "TradingCalendarUnavailableError"]

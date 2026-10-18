@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import requests
-
 from trader.download.domain.company_evidence import CompanySourceFailure
+from trader.infra.http_contracts import HttpResponse, HttpStatusError
 
 
-def CheckCompanyResponse(response: requests.Response) -> None:
+def CheckCompanyResponse(response: HttpResponse) -> None:
     try:
         response.raise_for_status()
-    except requests.HTTPError as exc:
+    except HttpStatusError as exc:
         if response.status_code == 403:
             raise CompanySourceFailure("access_denied") from exc
         if response.status_code == 429:

@@ -6,10 +6,9 @@ import json
 import math
 from datetime import date
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
-import requests
-
+from trader.download.application.history_source_capability import HistorySourceCapability, HistorySourceSample
 from trader.infra.serialization.canonical import CanonicalJsonText
 from trader.infra.serialization.fields import IsBoolean, IsInteger, IsTextSequence
 from trader.infra.serialization.sealing import PublishImmutable
@@ -25,19 +24,6 @@ from trader.training.domain.evaluation.h1_point_in_time import (
 from trader.training.domain.evaluation.research_identity import CanonicalResearchHash
 
 
-class _Response(Protocol):
-    @property
-    def content(self) -> bytes: ...
-
-    def json(self) -> object: ...
-
-    def raise_for_status(self) -> None: ...
-
-
-class PointInTimeSourceSession(Protocol):
-    def get(self, url: str, *, params: dict[str, object], timeout: float) -> _Response: ...
-
-
 class H1CapabilityEvidenceConflictError(RuntimeError):
     """Raised when a capability artifact is missing, tampered, or conflicting."""
 
@@ -45,10 +31,10 @@ class H1CapabilityEvidenceConflictError(RuntimeError):
 class FreeSourceH1CapabilityProbe:
     """Probe only bounded metadata; supplier payload values are never retained."""
 
-    def __init__(self, session: PointInTimeSourceSession, *, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, source: HistorySourceCapability, *, timeout_seconds: float = 5.0) -> None:
         if timeout_seconds <= 0:
             raise ValueError("H1 capability timeout must be positive")
-        self._session = session
+        self._source = source
         self._timeout = timeout_seconds
 
     def run(self, *, code: str, historical_anchor_date: date) -> H1CapabilityAuditReport:
@@ -58,33 +44,15 @@ class FreeSourceH1CapabilityProbe:
             raise ValueError("H1 capability probe date exceeds source cutoff")
         failures: list[str] = []
         try:
-            tencent = self._request(
-                "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
-                {
-                    "_var": f"kline_dayqfq{H1_SOURCE_CUTOFF.year}",
-                    "param": (f"{_symbol(code)},day,2015-01-01,{H1_SOURCE_CUTOFF.isoformat()},1600,qfq"),
-                },
-            )
+            tencent = self._source.daily_sample(code, H1_SOURCE_CUTOFF, self._timeout)
             tencent_probe = self._tencent_probe(tencent, H1_SOURCE_CUTOFF)
-        except (OSError, TypeError, ValueError, requests.RequestException):
+        except (OSError, TypeError, ValueError):
             tencent_probe = _failed_probe("tencent_qfq_daily")
             failures.append("tencent_qfq_daily_probe_failed")
         try:
-            eastmoney = self._request(
-                "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-                {
-                    "secid": _secid(code),
-                    "klt": "1",
-                    "fqt": "0",
-                    "beg": historical_anchor_date.strftime("%Y%m%d"),
-                    "end": historical_anchor_date.strftime("%Y%m%d"),
-                    "lmt": "1000",
-                    "fields1": "f1,f2,f3,f4,f5,f6",
-                    "fields2": "f51,f52,f53,f54,f55,f56",
-                },
-            )
+            eastmoney = self._source.minute_sample(code, historical_anchor_date, self._timeout)
             eastmoney_probe = self._eastmoney_probe(eastmoney, historical_anchor_date)
-        except (OSError, TypeError, ValueError, requests.RequestException):
+        except (OSError, TypeError, ValueError):
             eastmoney_probe = _failed_probe("eastmoney_historical_minute")
             failures.append("eastmoney_historical_minute_probe_failed")
         return BuildH1CapabilityAudit(
@@ -92,13 +60,8 @@ class FreeSourceH1CapabilityProbe:
             probe_failures=tuple(failures),
         )
 
-    def _request(self, url: str, params: dict[str, object]) -> _Response:
-        response = self._session.get(url, params=params, timeout=self._timeout)
-        response.raise_for_status()
-        return response
-
-    def _tencent_probe(self, response: _Response, cutoff: date) -> H1CapabilityProbe:
-        all_rows = _date_rows(_json_payload(response), "data", "qfqday", date.max, nested=True)
+    def _tencent_probe(self, response: HistorySourceSample, cutoff: date) -> H1CapabilityProbe:
+        all_rows = response.dates
         rows = tuple(item for item in all_rows if item <= cutoff)
         estimated_requests = math.ceil(5000 * 1600 / max(1, len(all_rows)))
         return H1CapabilityProbe(
@@ -109,14 +72,14 @@ class FreeSourceH1CapabilityProbe:
             False,
             len(all_rows),
             estimated_requests,
-            len(response.content) * 5000,
+            response.response_bytes * 5000,
             estimated_requests * self._timeout,
         )
 
-    def _eastmoney_probe(self, response: _Response, cutoff: date) -> H1CapabilityProbe:
-        timestamps = _timestamp_rows(_json_payload(response), "data", "klines")
-        requested = tuple(item for item in timestamps if item.startswith(cutoff.isoformat()))
-        times = {item[11:16] for item in requested if len(item) >= 16}
+    def _eastmoney_probe(self, response: HistorySourceSample, cutoff: date) -> H1CapabilityProbe:
+        timestamps = response.timestamps
+        requested = tuple(item for item in timestamps if item.date() == cutoff)
+        times = {item.strftime("%H:%M") for item in requested}
         estimated_requests = 5000 * 1600 if not requested else 5000
         return H1CapabilityProbe(
             "eastmoney_historical_minute",
@@ -126,7 +89,7 @@ class FreeSourceH1CapabilityProbe:
             False,
             len(requested),
             estimated_requests,
-            len(response.content) * 5000,
+            response.response_bytes * 5000,
             estimated_requests * self._timeout,
         )
 
@@ -165,65 +128,6 @@ class H1CapabilityEvidenceIndex:
             return report
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise H1CapabilityEvidenceConflictError("H1 capability artifact schema or hash is invalid") from exc
-
-
-def _json_payload(response: _Response) -> object:
-    try:
-        return response.json()
-    except (TypeError, ValueError, json.JSONDecodeError):
-        try:
-            raw = response.content.decode("utf-8")
-            marker = raw.find("=")
-            return json.loads(raw[marker + 1 :] if marker >= 0 else raw)
-        except (AttributeError, UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("H1 capability supplier payload is invalid") from exc
-
-
-def _date_rows(payload: object, parent: str, child: str, cutoff: date, *, nested: bool) -> tuple[date, ...]:
-    if not isinstance(payload, dict):
-        return ()
-    value = payload.get(parent)
-    if not isinstance(value, dict):
-        return ()
-    if nested:
-        values: list[object] = []
-        for item in value.values():
-            if isinstance(item, dict) and isinstance(item.get(child), list):
-                values.extend(cast(list[object], item[child]))
-    else:
-        values = value.get(child, []) if isinstance(value.get(child), list) else []
-    dates: list[date] = []
-    for item in values:
-        raw = item[0] if isinstance(item, list) and item else item
-        if not isinstance(raw, str):
-            continue
-        try:
-            parsed = date.fromisoformat(raw[:10])
-        except ValueError:
-            continue
-        if parsed <= cutoff:
-            dates.append(parsed)
-    return tuple(dates)
-
-
-def _timestamp_rows(payload: object, parent: str, child: str) -> tuple[str, ...]:
-    if not isinstance(payload, dict):
-        return ()
-    value = payload.get(parent)
-    if not isinstance(value, dict):
-        return ()
-    rows = value.get(child)
-    if not isinstance(rows, list):
-        return ()
-    return tuple(item.split(",", 1)[0] for item in rows if isinstance(item, str))
-
-
-def _symbol(code: str) -> str:
-    return ("sh" if code.startswith(("5", "6", "9")) else "sz") + code
-
-
-def _secid(code: str) -> str:
-    return ("1." if code.startswith(("5", "6", "9")) else "0.") + code
 
 
 def _failed_probe(source: str) -> H1CapabilityProbe:
@@ -365,5 +269,4 @@ __all__ = [
     "FreeSourceH1CapabilityProbe",
     "H1CapabilityEvidenceConflictError",
     "H1CapabilityEvidenceIndex",
-    "PointInTimeSourceSession",
 ]

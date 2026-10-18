@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import math
 import sqlite3
 import time
@@ -16,8 +15,7 @@ from tempfile import TemporaryDirectory
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo
 
-import requests
-
+from trader.bootstrap import FetchExternalHttp, OpenExternalHttp
 from trader.download.application.progress_message import ProgressMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
@@ -26,17 +24,19 @@ from trader.download.domain.history_supplier_failure import HistorySupplierPendi
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.domain.published_history import PublishedHistorySide, PublishedHistoryWindow
 from trader.download.domain.qfq_window import CompletedDailyCutoff
+from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
+from trader.download.infra.tencent_daily import DecodeTencentDailyPayload
 from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqDependencies,
     TencentQfqOptions,
     TencentQfqSupplier,
     TencentSessionPool,
 )
-from trader.infra.market_data.providers.exchange_security_master import FetchSseListings, FetchSzseListings
+from trader.infra.http_contracts import HttpError, HttpRequest, HttpResponse, HttpTransport
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 
@@ -189,20 +189,20 @@ def main() -> int:
     args = _parser().parse_args()
     if args.whole_window:
         return _whole_window_probe(args)
-    sessions: tuple[requests.Session, ...] = ()
+    sessions: tuple[HttpTransport, ...] = ()
     try:
         if len(args.sizes) > 3 or any(not 1 <= size <= 100 for size in args.sizes) or not 1 <= args.workers <= 12:
             raise ValueError("Tencent diagnostic sizes/workers are out of bounds")
         observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
-        sessions = tuple(requests.Session() for _index in range(args.workers))
+        sessions = tuple(OpenExternalHttp() for _index in range(args.workers))
         session_pool = TencentSessionPool(sessions)
         supplier = TencentQfqSupplier(
             TencentQfqDependencies(
                 session_pool.borrow,
                 partial(
                     LoadCurrentAShareUniverse,
-                    partial(FetchSseListings, get=requests.get),
-                    partial(FetchSzseListings, get=requests.get),
+                    partial(FetchSseListings, get=FetchExternalHttp),
+                    partial(FetchSzseListings, get=FetchExternalHttp),
                     args.timeout_seconds,
                 ),
                 lambda: False,
@@ -238,7 +238,7 @@ def main() -> int:
                 ],
             },
         }
-    except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+    except (OSError, RuntimeError, ValueError, HttpError) as exc:
         report = {"schema_version": "tencent-download-diagnostic", "status": "failed", "error": type(exc).__name__}
     finally:
         for session in sessions:
@@ -252,9 +252,8 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
         raise ValueError("whole-window probe permits 1..3 securities")
     end = CompletedDailyCutoff(datetime.now(ZoneInfo("Asia/Shanghai")))
     results: list[dict[str, object]] = []
-    with requests.Session() as session:
-        observations: list[dict[str, object]] = []
-        session.hooks["response"].append(partial(_observe_history_response, observations))
+    observations: list[dict[str, object]] = []
+    with OpenExternalHttp(inspect_response=partial(_observe_history_response, observations)) as session:
         pool = TencentSessionPool((session,))
         supplier = TencentQfqSupplier(
             TencentQfqDependencies(pool.borrow, lambda day: (), lambda: False),
@@ -262,7 +261,7 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
         )
         try:
             dates = supplier.load_calendar(end, 2000).open_dates
-        except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+        except (OSError, RuntimeError, ValueError, HttpError) as exc:
             known_reasons = {
                 "tencent_qfq_request_failed",
                 "tencent_daily_response_rejected",
@@ -317,7 +316,7 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
                         "requests": list(observations),
                     }
                 )
-            except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+            except (OSError, RuntimeError, ValueError, HttpError) as exc:
                 results.append({"failure": type(exc).__name__, "seconds": round(time.monotonic() - started, 3)})
     failed = any("failure" in item or "pending_reason" in item for item in results)
     passed = all(item.get("paired_rows") == 2000 for item in results)
@@ -337,12 +336,12 @@ def _whole_window_probe(args: argparse.Namespace) -> int:
 
 
 def _observe_history_response(
-    observations: list[dict[str, object]], response: requests.Response, **_kwargs: object
+    observations: list[dict[str, object]], request: HttpRequest, response: HttpResponse
 ) -> None:
     """Report only bounded date/count metadata, never prices or vendor payloads."""
     if len(observations) >= 64:
         return
-    url = urlsplit(response.url)
+    url = urlsplit(request.url)
     param = parse_qs(url.query).get("param", [""])[0].split(",")
     if len(param) != 6:
         return
@@ -354,9 +353,7 @@ def _observe_history_response(
         "http_status": response.status_code,
     }
     try:
-        text = response.text
-        marker = text.find("={")
-        payload = json.loads(text[marker + 1 :] if marker >= 0 else text)
+        payload = DecodeTencentDailyPayload(response.text)
         stock = payload["data"][param[0]]
         row_kind = "qfqday" if param[5] == "qfq" and "qfqday" in stock else "day"
         rows = stock.get(row_kind, [])

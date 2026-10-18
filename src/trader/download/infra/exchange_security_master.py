@@ -12,9 +12,9 @@ from io import BytesIO
 from typing import Protocol, TypedDict, cast
 from zoneinfo import ZoneInfo
 
-import requests
 from typing_extensions import Unpack
 
+from trader.infra.http_contracts import HttpConnectionError, HttpResponse, HttpStatusError, HttpTimeout
 from trader.infra.market_data import observations
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import SecurityMasterSourceHealth
@@ -37,7 +37,7 @@ class OfficialGetFunction(Protocol):
         params: Mapping[str, str],
         headers: Mapping[str, str] | None,
         timeout: float,
-    ) -> requests.Response: ...
+    ) -> HttpResponse: ...
 
 
 class _RequiredClientOptions(TypedDict):
@@ -261,10 +261,7 @@ def FetchSseListings(
             headers=headers,
             timeout=timeout_seconds,
         )
-        try:
-            payload = response.json()
-        finally:
-            response.close()
+        payload = response.json()
         if not isinstance(payload, Mapping) or not isinstance(payload.get("result"), list):
             raise ValueError("SSE security master response shape is invalid")
         for raw in cast(list[object], payload["result"]):
@@ -303,10 +300,7 @@ def FetchSzseListings(
         },
         timeout=timeout_seconds,
     )
-    try:
-        content = response.content
-    finally:
-        response.close()
+    content = response.content
     from openpyxl import load_workbook
 
     with warnings.catch_warnings():
@@ -352,7 +346,7 @@ def _official_get(
     params: Mapping[str, str],
     timeout: float,
     headers: Mapping[str, str] | None = None,
-) -> requests.Response:
+) -> HttpResponse:
     last_error: Exception | None = None
     retry_delays = (1.0, 3.0, 5.0)
     for attempt in range(4):
@@ -360,10 +354,10 @@ def _official_get(
             response = get(url, params=params, headers=headers, timeout=timeout)
             response.raise_for_status()
             return response
-        except (requests.ConnectionError, requests.Timeout) as exc:
+        except (HttpConnectionError, HttpTimeout) as exc:
             last_error = exc
-        except requests.HTTPError as exc:
-            if exc.response is None or exc.response.status_code < 500:
+        except HttpStatusError as exc:
+            if exc.status_code < 500:
                 raise
             last_error = exc
         if attempt < len(retry_delays):
@@ -404,14 +398,14 @@ def _szse_board(value: object) -> str | None:
 def _error_code(exc: Exception) -> str:
     if isinstance(exc, _ExchangeSourceError):
         return f"{exc.source}_{_error_code(exc.cause)}"
-    if isinstance(exc, (requests.Timeout, TimeoutError)):
+    if isinstance(exc, (HttpTimeout, TimeoutError)):
         return "timeout"
     if isinstance(exc, ValueError):
         return "invalid_snapshot"
-    if isinstance(exc, (requests.ConnectionError, OSError)):
-        return "connection_failed"
-    if isinstance(exc, requests.HTTPError):
+    if isinstance(exc, HttpStatusError):
         return "http_error"
+    if isinstance(exc, (HttpConnectionError, OSError)):
+        return "connection_failed"
     return "adapter_error"
 
 

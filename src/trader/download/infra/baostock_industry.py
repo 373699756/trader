@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
-import multiprocessing
 import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from datetime import time as daytime
-from multiprocessing.connection import Connection
+from functools import partial
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
+from trader.download.infra.baostock_session import (
+    LoadBaostockSdk,
+    LoginBaostock,
+    LogoutBaostock,
+    RateLimitedBaoStockSdk,
+)
+from trader.infra.isolated_call import IsolatedCall
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth
 
@@ -38,14 +44,14 @@ class BaoStockIndustryClient:
     def __init__(
         self,
         *,
-        fetch_rows: BaoStockIndustryFetch | None = None,
+        fetch_rows: BaoStockIndustryFetch,
         timeout_seconds: float = 120.0,
         minimum_rows: int = 4_000,
         monotonic: Callable[[], float] = time.perf_counter,
     ) -> None:
         if timeout_seconds <= 0.0 or minimum_rows < 1:
             raise ValueError("BaoStock industry timeout and minimum rows must be positive")
-        self._fetch_rows = fetch_rows or _fetch_rows_in_bounded_process
+        self._fetch_rows = fetch_rows
         self._timeout_seconds = float(timeout_seconds)
         self._minimum_rows = minimum_rows
         self._monotonic = monotonic
@@ -185,60 +191,41 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
-def _fetch_rows_in_bounded_process(trade_date: str, timeout_seconds: float) -> tuple[BaoStockIndustryRow, ...]:
-    context = multiprocessing.get_context("spawn")
-    receiving, sending = context.Pipe(duplex=False)
-    process = context.Process(target=_baostock_worker, args=(trade_date, sending), daemon=True)
-    process.start()
-    sending.close()
+def FetchBaoStockIndustries(
+    trade_date: str,
+    timeout_seconds: float,
+    *,
+    execute: IsolatedCall,
+) -> tuple[BaoStockIndustryRow, ...]:
+    return execute(partial(_read_industry, trade_date), timeout_seconds)
+
+
+def _read_industry(trade_date: str) -> tuple[BaoStockIndustryRow, ...]:
+    sdk = LoadBaostockSdk()
     try:
-        if not receiving.poll(timeout_seconds):
-            process.terminate()
-            process.join(timeout=2.0)
-            raise TimeoutError("BaoStock industry query exceeded its deadline")
-        status, payload = receiving.recv()
-    finally:
-        receiving.close()
-        if process.is_alive():
-            process.terminate()
-        process.join(timeout=2.0)
-    if status != "success":
-        raise RuntimeError(str(payload))
-    return tuple(BaoStockIndustryRow(*item) for item in payload)
-
-
-def _baostock_worker(trade_date: str, sender: Connection) -> None:
-    try:
-        import baostock
-
-        login = baostock.login()
-        if str(login.error_code) != "0":
-            raise RuntimeError(f"supplier_login_rejected_{str(login.error_code)[:24]}")
-        try:
-            result = baostock.query_stock_industry(code="", date=trade_date)
-            if str(result.error_code) != "0":
-                raise RuntimeError(f"industry_query_rejected_{str(result.error_code)[:24]}")
-            rows: list[tuple[str, str, str, str]] = []
-            while result.next():
-                values = dict(zip(result.fields, result.get_row_data(), strict=True))
-                rows.append(
-                    (
-                        str(values.get("code", "")),
-                        str(values.get("industry", "")),
-                        str(values.get("industryClassification", "")),
-                        str(values.get("updateDate", "")),
-                    )
+        LoginBaostock(sdk)
+        limited = RateLimitedBaoStockSdk(sdk)
+        limited.protect_after_login()
+        result = limited.query_stock_industry(code="", date=trade_date)
+        if str(result.error_code) != "0":
+            raise RuntimeError("industry_query_rejected")
+        rows: list[BaoStockIndustryRow] = []
+        while result.next():
+            values = dict(zip(result.fields, result.get_row_data(), strict=True))
+            rows.append(
+                BaoStockIndustryRow(
+                    values["code"], values["industry"], values["industryClassification"], values["updateDate"]
                 )
-        finally:
-            baostock.logout()
-        sender.send(("success", tuple(rows)))
-    except BaseException as exc:
-        sender.send(("failed", type(exc).__name__))
+            )
+        if str(result.error_code) != "0":
+            raise RuntimeError("industry_pagination_rejected")
+        return tuple(rows)
     finally:
-        sender.close()
+        LogoutBaostock(sdk)
 
 
 __all__ = [
     "BaoStockIndustryClient",
     "BaoStockIndustryRow",
+    "FetchBaoStockIndustries",
 ]

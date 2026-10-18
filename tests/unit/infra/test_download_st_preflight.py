@@ -66,7 +66,7 @@ def st_sources(monkeypatch):
             return Response(code)
 
     monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: universe)
-    monkeypatch.setattr(bootstrap.requests, "Session", Session)
+    monkeypatch.setattr(bootstrap, "OpenExternalHttp", Session)
     monkeypatch.setattr(bootstrap, "_utc_now", lambda: NOW)
     return calls, sessions
 

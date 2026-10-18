@@ -132,6 +132,15 @@ are not changed by this command. Compare promising intervals with
 
 ## Research commands
 
+All HTTP diagnostics obtain the project transport from `bootstrap.OpenExternalHttp`;
+raw Requests/urllib calls and mutable response hooks are confined to the shared driver.
+Responses are immutable and already closed before parsing. The driver has no automatic
+retries or redirects and ignores environment proxy settings. Its default response cap
+is 16 MiB; official files/WebDriver use 32 MiB, PDFs/research samples 4 MiB, and Web health
+1 MiB. Timeout/cancellation checks run between raw reads and compressed content is also
+bounded after decompression. Supplier parsers belong to the product adapters; the
+Eastmoney spot diagnostic does not add a production source route.
+
 Research execution belongs to `trader-cli`; the four former standalone research
 scripts have been removed. Pass `--config /absolute/path/config/runtime.json`
 before the subcommand. Dependency construction and HTTP session lifetime belong

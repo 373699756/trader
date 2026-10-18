@@ -11,15 +11,14 @@ from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import requests
-
 from .reporting import emit_report
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.infra.market_data.providers.tushare import TushareClient  # noqa: E402
-from trader.infra.market_data.providers.tushare_records import BuildTushareSdk  # noqa: E402
+from trader.bootstrap import OpenExternalHttp  # noqa: E402
+from trader.download.infra.tushare import TushareClient  # noqa: E402
+from trader.download.infra.tushare_records import BuildTushareSdk  # noqa: E402
 from trader.infra.settings import LoadRuntimeSettings  # noqa: E402
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -50,7 +49,7 @@ def _report(args: argparse.Namespace, codes: tuple[str, ...]) -> dict[str, objec
     configured = settings.market_data.tushare
     now = datetime.now(_SHANGHAI)
     client = TushareClient(
-        sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
+        sdk_factory=partial(BuildTushareSdk, session_factory=OpenExternalHttp),
         token=configured.token if configured.enabled else "",
         points=configured.points,
         timeout_seconds=configured.timeout_seconds,

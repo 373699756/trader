@@ -9,10 +9,10 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 
 import pytest
-import requests
 
 from trader.http_api.route_services import UnifiedWebServices
 from trader.infra.failures import AdapterFailureCode
+from trader.infra.http_contracts import HttpStatusError, HttpTimeout
 from trader.infra.settings import DeepSeekSettings
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
@@ -543,7 +543,7 @@ def test_http_timeout_is_bounded_to_one_retry() -> None:
     def timeout(*_args, **_kwargs):
         nonlocal calls
         calls += 1
-        raise requests.Timeout("slow")
+        raise HttpTimeout("slow")
 
     result = DeepSeekHttpClient(post=timeout, sleep=lambda _seconds: None).complete(
         base_url="https://api.deepseek.example/v1",
@@ -862,7 +862,7 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
     budget = _budget(tmp_path / "runtime.sqlite3")
 
     def timeout(*_args, **_kwargs):
-        raise requests.Timeout("slow")
+        raise HttpTimeout("slow")
 
     reviewer = DeepSeekReviewer(
         _settings(),
@@ -1282,7 +1282,7 @@ class FakeHttpResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise requests.HTTPError(str(self.status_code))
+            raise HttpStatusError(self.status_code)
 
     def json(self) -> object:
         return self._payload

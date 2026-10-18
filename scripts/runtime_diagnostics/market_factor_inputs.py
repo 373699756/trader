@@ -14,10 +14,10 @@ from types import MappingProxyType
 from typing import cast
 from zoneinfo import ZoneInfo
 
+from trader.bootstrap import BuildIndustrySource
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.infra.market_data.history.history import BuildHistoryContext, DailyBar, HistoryContext
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
@@ -119,7 +119,7 @@ def ReadReferences(runtime_dir: Path, at: datetime, industry_database: Path | No
                 )
     industry_started = time.monotonic()
     if industry_database is not None:
-        for item in LocalIndustrySource(industry_database, BaoStockIndustryClient()).load_cached(at):
+        for item in LocalIndustrySource(industry_database, BuildIndustrySource()).load_cached(at):
             industry_fields = item.fields
             industries[item.subject_key] = ModelIndustryReference(
                 str(industry_fields["model_industry"]),

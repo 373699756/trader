@@ -4,16 +4,20 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-import requests
 
-from trader.infra.market_data.observations import ExchangeSecurityMasterListing
-from trader.infra.market_data.providers import exchange_security_master as exchange_module
-from trader.infra.market_data.providers.exchange_security_master import (
+from trader.download.infra import exchange_security_master as exchange_module
+from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
 )
+from trader.infra.http_contracts import HttpConnectionError, HttpStatusError, HttpTimeout
+from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _OBSERVED_AT = datetime(2026, 8, 28, 10, 0, tzinfo=_SHANGHAI)
+
+
+def test_http_status_is_not_misclassified_as_a_connection_failure():
+    assert exchange_module._error_code(HttpStatusError(503)) == "http_error"
 
 
 def _listing(code: str, board: str, exchange: str) -> ExchangeSecurityMasterListing:
@@ -89,7 +93,7 @@ def test_exchange_security_master_rejects_duplicate_code_even_when_rows_match() 
 
 def test_exchange_security_master_counts_source_staged_timeout() -> None:
     def timed_out(_timeout: float) -> tuple[ExchangeSecurityMasterListing, ...]:
-        raise requests.Timeout("timed out")
+        raise HttpTimeout("timed out")
 
     client = ExchangeSecurityMasterClient(
         timeout_seconds=3.0,
@@ -145,7 +149,7 @@ def test_official_exchange_request_retries_one_transient_disconnect(
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise requests.ConnectionError("transient disconnect")
+            raise HttpConnectionError("transient disconnect")
         return Response()
 
     monkeypatch.setattr(exchange_module.time, "sleep", delays.append)

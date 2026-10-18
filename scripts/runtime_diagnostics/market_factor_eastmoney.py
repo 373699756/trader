@@ -4,49 +4,15 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Mapping
 from concurrent.futures import as_completed
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-import requests
-
+from trader.bootstrap import OpenExternalHttp
+from trader.infra.http_contracts import HttpError
 from trader.infra.workers import BoundedExecutor, SubmitOrReject
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.infra.normalization.quote import BuildMarketQuote, MarketQuoteInput, ToFloat
-
-_FIELDS = "f2,f3,f6,f7,f8,f10,f12,f14,f15,f16,f17,f18,f20,f100"
-_PAGE_SIZE = 100
-
-
-def ParseQuote(row: Mapping[str, object], received_at: datetime) -> MarketQuote | None:
-    code = str(row.get("f12") or "")
-    if len(code) != 6 or not code.isdigit():
-        return None
-    return BuildMarketQuote(
-        MarketQuoteInput(
-            code=code,
-            name=str(row.get("f14") or ""),
-            price=ToFloat(row.get("f2")),
-            previous_close=ToFloat(row.get("f18")),
-            open_price=ToFloat(row.get("f17")),
-            high=ToFloat(row.get("f15")),
-            low=ToFloat(row.get("f16")),
-            pct_change=ToFloat(row.get("f3")),
-            change_5m=ToFloat(row.get("f11")),
-            speed=ToFloat(row.get("f22")),
-            volume_ratio=ToFloat(row.get("f10")),
-            turnover_rate=ToFloat(row.get("f8")),
-            amount=ToFloat(row.get("f6")),
-            amplitude=ToFloat(row.get("f7")),
-            market_cap=ToFloat(row.get("f20")),
-            industry=str(row.get("f100") or ""),
-            source="eastmoney",
-            source_time=received_at,
-            received_time=received_at,
-            data_version=f"eastmoney:{received_at.isoformat()}",
-        )
-    )
+from trader.recommendation.infra.market_data.providers.eastmoney_spot import EastmoneySpotClient
 
 
 def _page(number: int, timeout: float, deadline: float) -> tuple[tuple[MarketQuote, ...], int]:
@@ -56,43 +22,23 @@ def _page(number: int, timeout: float, deadline: float) -> tuple[tuple[MarketQuo
         if remaining <= 0:
             raise TimeoutError("eastmoney diagnostic deadline")
         try:
-            with requests.Session() as session:
-                response = session.get(
-                    f"https://{host}/api/qt/clist/get",
-                    params={
-                        "pn": str(number),
-                        "pz": str(_PAGE_SIZE),
-                        "po": "1",
-                        "np": "1",
-                        "fltt": "2",
-                        "invt": "2",
-                        "fid": "f12",
-                        "fs": "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23",
-                        "fields": _FIELDS,
-                        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-                    },
+            with OpenExternalHttp() as session:
+                page = EastmoneySpotClient(session).fetch_page(
+                    number,
+                    host=host,
                     timeout=min(timeout, remaining),
-                    headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"},
-                    proxies={"http": "", "https": "", "all": ""},
+                    deadline=deadline,
+                    received_at=datetime.now(ZoneInfo("Asia/Shanghai")),
                 )
-                response.raise_for_status()
-                payload = response.json()
-            data = payload.get("data") if isinstance(payload, dict) else None
-            if not isinstance(data, dict) or not isinstance(data.get("diff"), list):
-                raise ValueError("eastmoney malformed page")
-            at = datetime.now(ZoneInfo("Asia/Shanghai"))
-            quotes = tuple(
-                quote for row in data["diff"] if isinstance(row, dict) and (quote := ParseQuote(row, at)) is not None
-            )
-            return quotes, int(data.get("total", 0))
-        except (requests.RequestException, OSError, ValueError) as exc:
+            return page.quotes, page.total
+        except (HttpError, OSError, ValueError) as exc:
             last_error = exc
     raise RuntimeError("eastmoney diagnostic request failed") from last_error
 
 
 def FetchEastmoneyQuotes(timeout: float, deadline: float, pool: BoundedExecutor) -> tuple[MarketQuote, ...]:
     first, total = _page(1, timeout, deadline)
-    pages = math.ceil(total / _PAGE_SIZE)
+    pages = math.ceil(total / EastmoneySpotClient.PAGE_SIZE)
     if not first or not 1 <= pages <= 64:
         raise ValueError("eastmoney invalid population size")
     quotes = list(first)
@@ -114,4 +60,4 @@ def FetchEastmoneyQuotes(timeout: float, deadline: float, pool: BoundedExecutor)
     return tuple(quotes)
 
 
-__all__ = ["ParseQuote", "FetchEastmoneyQuotes"]
+__all__ = ["FetchEastmoneyQuotes"]

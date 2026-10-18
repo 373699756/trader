@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.runtime_diagnostics import tencent_download
+from trader.infra.http_contracts import HttpRequest, HttpResponse
 
 
 @pytest.mark.parametrize("returned,status", ((640, "degraded"), (0, "degraded"), (2000, "passed")))
@@ -46,14 +47,15 @@ def test_response_metadata_counts_nonpositive_qfq_without_exposing_prices():
         ["2026-01-01", "-1", "-1", "0", "-2"],
         ["2026-01-02", "1", "1", "1", "1"],
     ]
-    response = SimpleNamespace(
-        url="https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=sz000937,day,2026-01-01,2026-01-02,2,qfq",
-        status_code=200,
-        text="v=" + json.dumps({"data": {"sz000937": {"qfqday": rows}}}),
+    request = HttpRequest(
+        "GET",
+        "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get?param=sz000937,day,2026-01-01,2026-01-02,2,qfq",
+        1,
     )
+    response = HttpResponse(200, ("v=" + json.dumps({"data": {"sz000937": {"qfqday": rows}}})).encode())
     observations = []
 
-    tencent_download._observe_history_response(observations, response)
+    tencent_download._observe_history_response(observations, request, response)
 
     assert observations[0]["nonpositive_ohlc_rows"] == 1
     assert observations[0]["first_nonpositive"] == "2026-01-01"

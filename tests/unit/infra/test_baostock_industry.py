@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.infra.market_data.providers.baostock_industry import (
+from trader.download.infra.baostock_industry import (
     BaoStockIndustryClient,
     BaoStockIndustryRow,
 )

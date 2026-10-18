@@ -43,8 +43,6 @@ from tests.component.market_data_test_support import (
     json,
     pytest,
     replace,
-    threading,
-    time,
     timedelta,
 )
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth
@@ -733,7 +731,9 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
         json.dumps({"fetched_at": NOW.isoformat(), "dates": ["2026-07-16"]}),
         encoding="utf-8",
     )
-    calendar = ChinaTradingCalendar(cache, now=lambda: NOW)
+    calendar = ChinaTradingCalendar(
+        cache, fetcher=lambda _timeout: pytest.fail("fresh cache must avoid SDK"), now=lambda: NOW
+    )
 
     assert calendar.is_trading_day(date(2026, 7, 16)) is True
     assert calendar.is_trading_day(date(2026, 7, 18)) is False
@@ -741,7 +741,7 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
 
     unavailable = ChinaTradingCalendar(
         tmp_path / "missing.json",
-        fetcher=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+        fetcher=lambda _timeout: (_ for _ in ()).throw(RuntimeError("offline")),
         now=lambda: NOW,
     )
     with pytest.raises(TradingCalendarUnavailableError):
@@ -754,47 +754,26 @@ def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:
     )
     stale = ChinaTradingCalendar(
         stale_cache,
-        fetcher=lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+        fetcher=lambda _timeout: (_ for _ in ()).throw(RuntimeError("offline")),
         now=lambda: NOW,
     )
-    with pytest.raises(TradingCalendarUnavailableError, match="cannot refresh"):
+    with pytest.raises(TradingCalendarUnavailableError, match="calendar_refresh"):
         stale.is_trading_day(date(2026, 7, 16))
 
 
-def test_calendar_fetch_timeout_is_bounded(tmp_path) -> None:
-    release = threading.Event()
-    started = threading.Event()
-    completed = threading.Event()
-    calls = 0
+def test_calendar_passes_timeout_and_preserves_cache_on_failure(tmp_path) -> None:
+    calls = []
 
-    def slow_fetcher():
-        nonlocal calls
-        calls += 1
-        started.set()
-        release.wait(1.0)
-        completed.set()
-        return (date(2026, 7, 16),)
+    def timeout_fetcher(timeout):
+        calls.append(timeout)
+        raise TimeoutError("sdk_deadline_exceeded")
 
-    calendar = ChinaTradingCalendar(
-        tmp_path / "timeout-calendar.json",
-        fetcher=slow_fetcher,
-        fetch_timeout_seconds=0.02,
-        now=lambda: NOW,
-    )
-    began = time.monotonic()
-    try:
-        with pytest.raises(TradingCalendarUnavailableError, match="timed out"):
-            calendar.is_trading_day(date(2026, 7, 16))
-        with pytest.raises(TradingCalendarUnavailableError, match="timed out"):
-            calendar.is_trading_day(date(2026, 7, 16))
-    finally:
-        release.set()
-
-    assert started.is_set()
-    assert time.monotonic() - began < 0.5
-    assert completed.wait(1.0)
-    assert calendar.is_trading_day(date(2026, 7, 16)) is True
-    assert calls == 1
+    path = tmp_path / "calendar.json"
+    calendar = ChinaTradingCalendar(path, fetcher=timeout_fetcher, fetch_timeout_seconds=0.02, now=lambda: NOW)
+    with pytest.raises(TradingCalendarUnavailableError, match="TimeoutError"):
+        calendar.open_dates()
+    assert calls == [0.02]
+    assert not path.exists()
 
 
 def test_equal_quote_version_can_gain_new_tushare_board_metadata_from_cache_hit() -> None:

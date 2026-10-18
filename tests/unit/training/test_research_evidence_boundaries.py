@@ -6,42 +6,19 @@ import sys
 from pathlib import Path
 
 import pytest
-import requests
 
 from trader import bootstrap
 from trader.entrypoints.cli import Main as cli_main
+from trader.infra.http_contracts import HttpConnectionError, HttpError, HttpResponse, HttpResponseTooLarge, HttpTimeout
 from trader.training.infra.research.capability_http import BoundedCapabilitySession
 from trader.training.infra.research.command_evidence import CapabilityEvidencePublisher
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-class _Response:
-    def __init__(self, chunks=(b"{}",), *, status=200, advance=lambda: None):
-        self.chunks = chunks
-        self.status_code = status
-        self.advance = advance
-        self.closed = False
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args):
-        self.closed = True
-
-    def raise_for_status(self):
-        if self.status_code >= 400:
-            raise requests.HTTPError("private supplier payload")
-
-    def iter_content(self, *, chunk_size):
-        assert chunk_size == 65536
-        self.advance()
-        yield from self.chunks
-
-
 class _Session:
     def __init__(self, response=None, *, failure=None):
-        self.response = response or _Response()
+        self.response = response or HttpResponse(200, b"{}")
         self.failure = failure
         self.calls = []
         self.headers = {}
@@ -72,15 +49,15 @@ def test_transport_budget_starts_after_offline_scan_and_caps_physical_requests()
     clock[0] = 400.0
     assert _get(transport, timeout=60).json() == {}
     assert _get(transport).json() == {}
-    with pytest.raises(requests.Timeout):
+    with pytest.raises(HttpTimeout):
         _get(transport)
     assert len(session.calls) == 2
     assert session.calls[0][1]["timeout"] == 8
-    assert all(call[1]["allow_redirects"] is False for call in session.calls)
-    assert session.response.closed
+    assert all(call[1]["max_response_bytes"] == 4 * 1024 * 1024 for call in session.calls)
+    assert session.calls[0][1]["deadline"] == 416
 
 
-@pytest.mark.parametrize("failure", [requests.Timeout("private timeout"), requests.ConnectionError("private error")])
+@pytest.mark.parametrize("failure", [HttpTimeout("private timeout"), HttpConnectionError("private error")])
 def test_transport_failure_is_one_attempt_without_fallback(failure):
     session = _Session(failure=failure)
     transport = BoundedCapabilitySession(session, timeout_seconds=8, monotonic=lambda: 0)
@@ -90,32 +67,27 @@ def test_transport_failure_is_one_attempt_without_fallback(failure):
 
 
 @pytest.mark.parametrize("status", [302, 500])
-def test_transport_rejects_redirect_and_http_error_and_closes_response(status):
-    response = _Response(status=status)
-    transport = BoundedCapabilitySession(_Session(response), timeout_seconds=8, monotonic=lambda: 0)
-    with pytest.raises(requests.RequestException):
+def test_transport_rejects_redirect_and_http_error(status):
+    transport = BoundedCapabilitySession(_Session(HttpResponse(status, b"{}")), timeout_seconds=8, monotonic=lambda: 0)
+    with pytest.raises(HttpError):
         _get(transport)
-    assert response.closed
 
 
-def test_transport_rejects_oversized_response_and_closes_it():
-    response = _Response((b"x" * BoundedCapabilitySession.MAX_RESPONSE_BYTES, b"x"))
-    transport = BoundedCapabilitySession(_Session(response), timeout_seconds=8, monotonic=lambda: 0)
-    with pytest.raises(ValueError, match="byte budget"):
+def test_transport_propagates_driver_response_limit_failure():
+    session = _Session(failure=HttpResponseTooLarge("http_response_too_large"))
+    transport = BoundedCapabilitySession(session, timeout_seconds=8, monotonic=lambda: 0)
+    with pytest.raises(HttpResponseTooLarge):
         _get(transport)
-    assert response.closed
+    assert session.calls[0][1]["max_response_bytes"] == transport.MAX_RESPONSE_BYTES
 
 
-@pytest.mark.parametrize("chunks", [(b"{}",), ()])
-def test_transport_deadline_closes_stream_including_empty_response(chunks):
+def test_transport_deadline_prevents_another_request():
     clock = [0.0]
-    response = _Response(chunks, advance=lambda: clock.__setitem__(0, 16.0))
-    session = _Session(response)
+    session = _Session()
     transport = BoundedCapabilitySession(session, timeout_seconds=8, monotonic=lambda: clock[0])
-    with pytest.raises(requests.Timeout):
-        _get(transport)
-    assert response.closed
-    with pytest.raises(requests.Timeout):
+    _get(transport)
+    clock[0] = 16.0
+    with pytest.raises(HttpTimeout):
         _get(transport)
     assert len(session.calls) == 1
 
@@ -143,7 +115,7 @@ def test_bootstrap_closes_the_only_session_on_success_and_publication_failure(
         created.append(session)
         return session
 
-    monkeypatch.setattr(requests, "Session", create_session)
+    monkeypatch.setattr(bootstrap, "OpenExternalHttp", create_session)
     monkeypatch.setattr(bootstrap, "BuildSystem", lambda *_a, **_kw: pytest.fail("server must not start"))
     if publication_failure:
 
@@ -160,8 +132,7 @@ def test_bootstrap_closes_the_only_session_on_success_and_publication_failure(
     assert payload["production_authority"] is False
     assert "private" not in json.dumps(payload)
     assert created == [session]
-    assert session.closed and session.response.closed
-    assert session.trust_env is False
+    assert session.closed
     assert len(session.calls) == 2
 
 

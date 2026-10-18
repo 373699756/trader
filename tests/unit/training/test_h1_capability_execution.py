@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 
 from trader.entrypoints.cli import Main as cli_main
+from trader.infra.http_contracts import EncodeHttpParameters, HttpResponse
 from trader.training.infra.research.capability_http import BoundedCapabilitySession
-from trader.training.infra.research.capability_http import RequestParams as _request_params
 
 
 def main(argv, *, session_factory, monkeypatch):
@@ -15,16 +15,8 @@ def main(argv, *, session_factory, monkeypatch):
     return cli_main(["--config", str(config), "research-h1-capability", *argv])
 
 
-class _Response:
-    def __init__(self, payload: object) -> None:
-        self._payload = payload
-        self.content = b"bounded"
-
-    def json(self) -> object:
-        return self._payload
-
-    def raise_for_status(self) -> None:
-        return None
+def _response(payload: object) -> HttpResponse:
+    return HttpResponse(200, json.dumps(payload).encode())
 
 
 class _Session:
@@ -32,8 +24,8 @@ class _Session:
         del params, timeout
         if "qq.com" in url:
             rows = [[f"2023-01-{index + 1:02d}", "masked"] for index in range(10)]
-            return _Response({"code": 0, "data": {"sh600519": {"qfqday": rows}}})
-        return _Response({"rc": 0, "data": {"klines": ["2026-09-01 11:20,masked"]}})
+            return _response({"code": 0, "data": {"sh600519": {"qfqday": rows}}})
+        return _response({"rc": 0, "data": {"klines": ["2026-09-01 11:20,masked"]}})
 
 
 class _PartiallyUnavailableSession(_Session):
@@ -44,12 +36,11 @@ class _PartiallyUnavailableSession(_Session):
 
 
 def test_request_params_preserve_supported_supplier_shapes() -> None:
-    assert _request_params({"secid": "1.600519", "param": ("sh600519,day",)}) == {
-        "secid": "1.600519",
-        "param": ("sh600519,day",),
-    }
-    with pytest.raises(TypeError, match="unsupported H1 capability request parameter"):
-        _request_params({"invalid": object()})
+    assert EncodeHttpParameters("https://example.invalid/", {"secid": "1.600519", "param": ("sh600519,day",)}) == (
+        "https://example.invalid/?secid=1.600519&param=sh600519%2Cday"
+    )
+    with pytest.raises(TypeError, match="http_parameter_invalid"):
+        EncodeHttpParameters("https://example.invalid/", {"invalid": object()})
 
 
 def test_script_seals_sanitized_insufficient_terminal_chain_outside_repository(tmp_path, capsys, monkeypatch) -> None:

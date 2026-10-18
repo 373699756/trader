@@ -1,8 +1,10 @@
+import json
 from datetime import date
 
 import pytest
-import requests
 
+from trader.download.infra.history_source_capability import FreeHistorySourceCapability
+from trader.infra.http_contracts import HttpConnectionError, HttpResponse
 from trader.training.infra.research.h1_point_in_time_capability import (
     FreeSourceH1CapabilityProbe,
     H1CapabilityEvidenceConflictError,
@@ -10,24 +12,16 @@ from trader.training.infra.research.h1_point_in_time_capability import (
 )
 
 
-class _Response:
-    def __init__(self, payload: object, size: int = 1000) -> None:
-        self._payload = payload
-        self.content = b"x" * size
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> object:
-        return self._payload
+def _response(payload):
+    return HttpResponse(200, json.dumps(payload).encode())
 
 
 class _Session:
     def get(self, url, *, params, timeout):
         if "qq.com" in url:
             rows = [[f"2023-01-{index + 1:02d}"] for index in range(10)]
-            return _Response({"code": 0, "data": {"sh600519": {"qfqday": rows}}})
-        return _Response(
+            return _response({"code": 0, "data": {"sh600519": {"qfqday": rows}}})
+        return _response(
             {
                 "rc": 0,
                 "data": {
@@ -43,12 +37,12 @@ class _Session:
 class _PartiallyUnavailableSession(_Session):
     def get(self, url, *, params, timeout):
         if "eastmoney" in url:
-            raise requests.ConnectionError("bounded supplier failure")
+            raise HttpConnectionError("bounded supplier failure")
         return super().get(url, params=params, timeout=timeout)
 
 
 def test_free_source_probe_detects_ignored_old_minute_date_without_exposing_prices() -> None:
-    probe = FreeSourceH1CapabilityProbe(_Session(), timeout_seconds=3.0)
+    probe = FreeSourceH1CapabilityProbe(FreeHistorySourceCapability(_Session()), timeout_seconds=3.0)
 
     report = probe.run(code="600519", historical_anchor_date=date(2022, 1, 4))
 
@@ -62,9 +56,9 @@ def test_free_source_probe_detects_ignored_old_minute_date_without_exposing_pric
 
 
 def test_free_source_probe_preserves_success_when_another_supplier_fails(tmp_path) -> None:
-    report = FreeSourceH1CapabilityProbe(_PartiallyUnavailableSession(), timeout_seconds=3.0).run(
-        code="600519", historical_anchor_date=date(2022, 1, 4)
-    )
+    report = FreeSourceH1CapabilityProbe(
+        FreeHistorySourceCapability(_PartiallyUnavailableSession()), timeout_seconds=3.0
+    ).run(code="600519", historical_anchor_date=date(2022, 1, 4))
 
     by_source = {item.source: item for item in report.probes}
     assert by_source["tencent_qfq_daily"].page_size == 10
@@ -78,7 +72,7 @@ def test_free_source_probe_preserves_success_when_another_supplier_fails(tmp_pat
 
 
 def test_capability_artifact_is_immutable_and_tamper_evident(tmp_path) -> None:
-    report = FreeSourceH1CapabilityProbe(_Session(), timeout_seconds=3.0).run(
+    report = FreeSourceH1CapabilityProbe(FreeHistorySourceCapability(_Session()), timeout_seconds=3.0).run(
         code="600519", historical_anchor_date=date(2022, 1, 4)
     )
     archive = H1CapabilityEvidenceIndex(tmp_path)

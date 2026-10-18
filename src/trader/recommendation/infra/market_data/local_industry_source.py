@@ -8,9 +8,9 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from trader.download.infra.baostock_industry import BaoStockIndustryClient
 from trader.infra.dated_query_cache import DatedQuery, SQLiteDatedQueryCache
 from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.market_data.source_health import ModelIndustrySourceHealth
 from trader.recommendation.domain.market.models import ModelIndustryReference
 

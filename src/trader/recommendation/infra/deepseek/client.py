@@ -5,14 +5,14 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Protocol, TypedDict
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-import requests
 
 from trader.infra.failures import ClassifyAdapterFailure
+from trader.infra.http_contracts import HttpError, HttpResponse, HttpStatusError, HttpTimeout
 from trader.recommendation.infra.deepseek.completion_client_contract import (
     CompletionOptions,
     DeepSeekCompletionClient,
@@ -23,7 +23,9 @@ from trader.recommendation.infra.deepseek.completion_client_contract import (
 from trader.recommendation.infra.deepseek.model_capabilities import Capabilities as _lookup_capabilities
 from trader.recommendation.infra.deepseek.model_catalog import ValidateModel
 
-_POST_TYPE = Callable[..., "requests.Response"]
+
+class _HttpPost(Protocol):
+    def __call__(self, url: str, *, headers: Mapping[str, str], json: object, timeout: float) -> HttpResponse: ...
 
 
 @dataclass(frozen=True)
@@ -73,8 +75,8 @@ class _FailedAttemptOptions(TypedDict):
 class DeepSeekHttpClient(DeepSeekCompletionClient):
     RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
-    def __init__(self, post: _POST_TYPE | None = None, sleep: Callable[[float], None] = time.sleep) -> None:
-        self._post = post if post is not None else cast(_POST_TYPE, requests.post)
+    def __init__(self, post: _HttpPost, sleep: Callable[[float], None] = time.sleep) -> None:
+        self._post = post
         self._sleep = sleep
 
     def capabilities(self, model: str) -> ModelCapabilities:
@@ -187,7 +189,7 @@ class DeepSeekHttpClient(DeepSeekCompletionClient):
                 reasoning,
             )
             return _AttemptOutcome(result, status, "", False, False, 0.0, record)
-        except requests.Timeout as exc:
+        except HttpTimeout as exc:
             return _failed_attempt(
                 status,
                 str(exc) or "request_timed_out",
@@ -196,7 +198,7 @@ class DeepSeekHttpClient(DeepSeekCompletionClient):
                 retry_delay=0.2,
                 started=attempt_started,
             )
-        except requests.HTTPError as exc:
+        except HttpStatusError as exc:
             return _failed_attempt(
                 status,
                 str(exc) or exc.__class__.__name__,
@@ -205,7 +207,7 @@ class DeepSeekHttpClient(DeepSeekCompletionClient):
                 retry_delay=0.0,
                 started=attempt_started,
             )
-        except requests.RequestException as exc:
+        except HttpError as exc:
             return _failed_attempt(
                 status,
                 str(exc) or exc.__class__.__name__,
@@ -289,7 +291,7 @@ def _extract_content(
     )
 
 
-def _retry_delay(response: requests.Response) -> float:
+def _retry_delay(response: HttpResponse) -> float:
     raw = response.headers.get("Retry-After", "")
     try:
         return min(5.0, max(0.0, float(raw)))

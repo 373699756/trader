@@ -18,17 +18,15 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
-from trader.download.infra.company_disclosure_source import DisclosureSession
 from trader.download.infra.company_http import CheckCompanyResponse
+from trader.infra.http_contracts import HttpTransport
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 
 
 class EastmoneyCompanySource:
-    def __init__(
-        self, session: DisclosureSession, *, monotonic: Callable[[], float], timeout_seconds: float = 8.0
-    ) -> None:
+    def __init__(self, session: HttpTransport, *, monotonic: Callable[[], float], timeout_seconds: float = 8.0) -> None:
         self._session = session
         self._monotonic = monotonic
         self._timeout = timeout_seconds
@@ -41,6 +39,7 @@ class EastmoneyCompanySource:
             url,
             params=params,
             timeout=min(self._timeout, remaining),
+            deadline=deadline,
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"},
         )
         CheckCompanyResponse(response)
@@ -164,6 +163,7 @@ class EastmoneyCompanySource:
             params={"cb": "company", "param": json.dumps(parameter, ensure_ascii=False)},
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://so.eastmoney.com/"},
             timeout=min(self._timeout, remaining),
+            deadline=deadline,
         )
         CheckCompanyResponse(response)
         text = response.text.strip()

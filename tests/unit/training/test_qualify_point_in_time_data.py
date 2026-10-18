@@ -5,7 +5,9 @@ from datetime import date
 from pathlib import Path
 
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
+from trader.download.infra.history_source_capability import FreeHistorySourceCapability
 from trader.entrypoints.cli import Main as cli_main
+from trader.infra.http_contracts import HttpResponse
 from trader.training.application.point_in_time_data_qualification import QualifyPointInTimeData
 from trader.training.domain.evaluation.historical_industry_facts import (
     BuildHistoricalIndustryDatasetReport,
@@ -21,24 +23,16 @@ from trader.training.infra.research.h1_point_in_time_capability import FreeSourc
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
-class _Response:
-    def __init__(self, payload: object) -> None:
-        self._payload = payload
-        self.content = b"bounded"
-
-    def json(self) -> object:
-        return self._payload
-
-    def raise_for_status(self) -> None:
-        return None
+def _response(payload: object) -> HttpResponse:
+    return HttpResponse(200, json.dumps(payload).encode())
 
 
 class _Session:
     def get(self, url, *, params, timeout):
         del params, timeout
         if "qq.com" in url:
-            return _Response({"data": {"sh600519": {"qfqday": [["2024-01-09"]]}}})
-        return _Response({"data": {"klines": []}})
+            return _response({"code": 0, "data": {"sh600519": {"qfqday": [["2024-01-09"]]}}})
+        return _response({"rc": 0, "data": {"klines": []}})
 
 
 def _industry_report():
@@ -67,7 +61,7 @@ def test_script_assembles_sanitized_fail_closed_report_without_downloading(tmp_p
     report = QualifyPointInTimeData(
         lambda: InspectHistorySnapshot(tmp_path, verify_partitions=True),
         HistoricalIndustryEvidenceReader(tmp_path),
-        FreeSourceH1CapabilityProbe(_Session(), timeout_seconds=1.0),
+        FreeSourceH1CapabilityProbe(FreeHistorySourceCapability(_Session()), timeout_seconds=1.0),
     ).execute(
         code="600519",
         historical_anchor_date=date(2022, 1, 4),

@@ -5,11 +5,11 @@ from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
-import requests
 
 from trader.download.domain.company_evidence import CompanySourceFailure, DisclosurePartition, StructuredCompanyQuery
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from trader.infra.http_contracts import HttpResponse
 
 NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -21,10 +21,7 @@ class Session:
 
     def post(self, url, **kwargs):
         self.requests.append(kwargs)
-        response = requests.Response()
-        response.status_code = self.status
-        response._content = json.dumps(self.payload).encode()
-        return response
+        return HttpResponse(self.status, json.dumps(self.payload).encode())
 
     get = post
 

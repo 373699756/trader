@@ -62,7 +62,7 @@ def test_eastmoney_normalizes_unadjusted_intraday_minutes() -> None:
     assert session.calls[0][1]["params"]["ndays"] == "1"
     assert "fqt" not in session.calls[0][1]["params"]
     assert session.calls[0][1]["timeout"] == 2
-    assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
+    assert session.calls[0][1]["cancel_requested"]() is False
 
 
 def test_intraday_tail_has_a_lane_independent_from_full_market_refresh() -> None:

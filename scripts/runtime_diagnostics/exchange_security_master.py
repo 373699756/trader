@@ -11,14 +11,13 @@ from functools import partial
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import requests
-
 from .reporting import emit_report
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.infra.market_data.providers.exchange_security_master import (  # noqa: E402
+from trader.bootstrap import FetchExternalHttp  # noqa: E402
+from trader.download.infra.exchange_security_master import (  # noqa: E402
     ExchangeSecurityMasterClient,
     FetchSseListings,
     FetchSzseListings,
@@ -69,8 +68,8 @@ def main() -> int:
         parser.error("timeout and minimum rows must be positive")
     observed_at = datetime.now(_SHANGHAI)
     client = ExchangeSecurityMasterClient(
-        sse_fetcher=partial(FetchSseListings, get=requests.get),
-        szse_fetcher=partial(FetchSzseListings, get=requests.get),
+        sse_fetcher=partial(FetchSseListings, get=FetchExternalHttp),
+        szse_fetcher=partial(FetchSzseListings, get=FetchExternalHttp),
         timeout_seconds=args.timeout_seconds,
         minimum_rows=args.minimum_rows,
         wall_clock=lambda: datetime.now(_SHANGHAI),

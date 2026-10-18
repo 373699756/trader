@@ -18,10 +18,10 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
 )
-from trader.infra.market_data.observations import ExchangeSecurityMasterListing
-from trader.infra.market_data.providers.exchange_security_master import (
+from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
 )
+from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
 from trader.recommendation.domain.evidence.pipeline import SourceHealthState, StageState
 from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot, ManualBlacklistFact

@@ -11,10 +11,9 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-import requests
-
+from trader.bootstrap import OpenExternalHttp
 from trader.download.domain.company_evidence import DisclosurePartition, Market, StructuredCompanyQuery
-from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource, DisclosureSession
+from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -27,9 +26,8 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
     day = now.date() - timedelta(days=3)
     samples: list[dict[str, object]] = []
     failures: list[str] = []
-    with requests.Session() as session:
-        session.trust_env = False
-        transport = cast(DisclosureSession, session)
+    with OpenExternalHttp() as session:
+        transport = session
         source = CninfoMarketDisclosureSource(
             transport, monotonic=time.monotonic, sleeper=time.sleep, timeout_seconds=args.timeout_seconds
         )

@@ -8,12 +8,10 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as datetime_time
-from types import ModuleType
-from typing import Any, cast
+from typing import Protocol, cast
 from zoneinfo import ZoneInfo
 
-import requests
-
+from trader.infra.http_contracts import HttpTransport
 from trader.infra.market_data.observations import JsonScalar, SourceObservation
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -40,46 +38,51 @@ class _TushareApiError(RuntimeError):
         self.provider_code = provider_code
 
 
+class TushareSdk(Protocol):
+    def stock_basic(self, *, exchange: str, list_status: str, fields: str) -> object: ...
+
+    def trade_cal(self, *, exchange: str, start_date: str, end_date: str, fields: str) -> object: ...
+
+    def daily(self, *, ts_code: str, start_date: str, end_date: str, fields: str) -> object: ...
+
+
+class _TushareModule(Protocol):
+    def pro_api(self, token: str, *, timeout: float) -> TushareSdk: ...
+
+
 class _TushareSdkClientAdapter:
     def __init__(
         self,
-        module: ModuleType,
-        pro: object,
+        pro: TushareSdk,
         token: str,
         timeout_seconds: float,
-        session_factory: Callable[[], requests.Session],
+        session_factory: Callable[[], HttpTransport],
     ) -> None:
-        self._module = module
         self._pro = pro
         self._token = token
         self._timeout_seconds = timeout_seconds
         self._session_factory = session_factory
 
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._pro, name)
+    def stock_basic(self, *, exchange: str, list_status: str, fields: str) -> object:
+        return self._pro.stock_basic(exchange=exchange, list_status=list_status, fields=fields)
 
-    def pro_bar(self, **arguments: object) -> object:
-        return self._module.pro_bar(api=self._pro, **arguments)
+    def trade_cal(self, *, exchange: str, start_date: str, end_date: str, fields: str) -> object:
+        return self._pro.trade_cal(exchange=exchange, start_date=start_date, end_date=end_date, fields=fields)
 
-    def daily(self, **arguments: object) -> object:
-        params = dict(arguments)
-        fields = str(params.pop("fields", ""))
+    def daily(self, *, ts_code: str, start_date: str, end_date: str, fields: str) -> object:
+        params = {"ts_code": ts_code, "start_date": start_date, "end_date": end_date}
         with self._session_factory() as session:
-            session.trust_env = False
             return self._daily_response(session, params, fields)
 
-    def _daily_response(self, session: requests.Session, params: Mapping[str, object], fields: str) -> object:
+    def _daily_response(self, session: HttpTransport, params: Mapping[str, object], fields: str) -> object:
         response = session.post(
             "https://api.tushare.pro",
-            json=cast(
-                Any,
-                {
-                    "api_name": "daily",
-                    "token": self._token,
-                    "params": params,
-                    "fields": fields,
-                },
-            ),
+            json={
+                "api_name": "daily",
+                "token": self._token,
+                "params": params,
+                "fields": fields,
+            },
             timeout=self._timeout_seconds,
         )
         response.raise_for_status()
@@ -108,18 +111,11 @@ def BuildTushareSdk(
     token: str,
     timeout_seconds: float,
     *,
-    session_factory: Callable[[], requests.Session],
-) -> object:
-    module = importlib.import_module("tushare")
+    session_factory: Callable[[], HttpTransport],
+) -> TushareSdk:
+    module = cast(_TushareModule, importlib.import_module("tushare"))
     pro_api = module.pro_api
-    return _TushareSdkClientAdapter(
-        module, pro_api(token, timeout=timeout_seconds), token, timeout_seconds, session_factory
-    )
-
-
-def _invoke(client: object, method: str, **arguments: object) -> object:
-    function = getattr(client, method)
-    return function(**arguments)
+    return _TushareSdkClientAdapter(pro_api(token, timeout=timeout_seconds), token, timeout_seconds, session_factory)
 
 
 def _records(value: object) -> list[Mapping[str, object]]:
@@ -366,14 +362,14 @@ def _require_aware(value: datetime) -> None:
 
 
 __all__ = [
+    "BuildTushareSdk",
+    "TushareSdk",
     "_calendar_observation",
     "_calendar_ranges",
     "_data_version",
-    "BuildTushareSdk",
     "_error_code",
     "_failed_observation",
     "_generic_observation",
-    "_invoke",
     "_percentile",
     "_records",
     "_require_aware",

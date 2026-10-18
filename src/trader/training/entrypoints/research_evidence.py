@@ -10,6 +10,8 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from trader.infra.http_contracts import HttpError, HttpTimeout
+
 if TYPE_CHECKING:
     from trader.training.application.capability_completion import CapabilityExecution
     from trader.training.application.cross_strategy_conclusion import CrossStrategyConclusion
@@ -154,7 +156,6 @@ def _timeout(value: float) -> float:
 
 
 def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path) -> int:
-    import requests
 
     from trader.bootstrap import ExecuteResearchEvidence
     from trader.training.entrypoints.research_evidence_projection import ProjectEvidenceResult
@@ -172,7 +173,7 @@ def RunResearchEvidence(args: argparse.Namespace, *, repository_root: Path) -> i
         payload, exit_code = ProjectEvidenceResult(report, include_details=include_details)
         _write(payload, output)
         return exit_code
-    except (OSError, RuntimeError, TypeError, ValueError, requests.RequestException) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError, HttpError) as exc:
         schema, status = COMMAND_SCHEMAS[args.command]
         payload = {
             "schema_version": schema,
@@ -215,11 +216,10 @@ def _write(payload: dict[str, object], output: Path | None) -> None:
 
 
 def _error_code(exc: BaseException, command: str) -> str:
-    import requests
 
-    if isinstance(exc, requests.Timeout):
+    if isinstance(exc, HttpTimeout):
         return "source_timeout"
-    if isinstance(exc, requests.RequestException):
+    if isinstance(exc, HttpError):
         return "source_request_failed"
     if isinstance(exc, OSError):
         return "artifact_io_failed"

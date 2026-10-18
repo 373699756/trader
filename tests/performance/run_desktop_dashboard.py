@@ -10,13 +10,11 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import websocket
@@ -25,7 +23,9 @@ from werkzeug.serving import make_server
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from trader.bootstrap import OpenExternalHttp  # noqa: E402
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices  # noqa: E402
+from trader.infra.http_contracts import HttpRequest, HttpStatusError  # noqa: E402
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import (  # noqa: E402
     UnifiedDecisionDraftIndex,
 )
@@ -268,7 +268,7 @@ def _run(output_dir: Path, *, filter_counts_only: bool = False) -> dict[str, obj
                     f"http://127.0.0.1:{driver_port}/session/{session_id}",
                     method="DELETE",
                 )
-            except (OSError, RuntimeError, urllib.error.URLError):
+            except (OSError, RuntimeError):
                 pass
         if driver is not None:
             driver.terminate()
@@ -844,13 +844,17 @@ class _ChromeSession:
                 error = self._process.stderr.read() if self._process.stderr is not None else ""
                 raise RuntimeError(f"Chrome exited before readiness: {error[:300]}")
             try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/list", timeout=1) as response:
-                    targets = json.loads(response.read().decode())
+                with OpenExternalHttp() as transport:
+                    response = transport.get(
+                        f"http://127.0.0.1:{port}/json/list", timeout=1, max_response_bytes=1024 * 1024
+                    )
+                    response.raise_for_status()
+                    targets = response.json()
                 if isinstance(targets, list):
                     page = next((target for target in targets if target.get("type") == "page"), None)
                     if isinstance(page, dict) and isinstance(page.get("webSocketDebuggerUrl"), str):
                         return page["webSocketDebuggerUrl"]
-            except (OSError, json.JSONDecodeError, urllib.error.URLError):
+            except (OSError, json.JSONDecodeError):
                 pass
             time.sleep(0.05)
         raise RuntimeError("Chrome DevTools endpoint did not become ready")
@@ -942,7 +946,7 @@ def _wait_driver(port: int, process: subprocess.Popen[str]) -> None:
         try:
             if _request_json(f"http://127.0.0.1:{port}/status").get("value"):
                 return
-        except (OSError, RuntimeError, urllib.error.URLError):
+        except (OSError, RuntimeError):
             pass
         time.sleep(0.05)
     raise RuntimeError("geckodriver did not become ready")
@@ -966,18 +970,20 @@ def _free_port() -> int:
 def _request_json(
     url: str,
     *,
-    method: str = "GET",
+    method: Literal["GET", "POST", "DELETE"] = "GET",
     payload: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     data = json.dumps(payload).encode() if payload is not None else None
-    request = urllib.request.Request(url, data=data, method=method)
-    request.add_header("Content-Type", "application/json")
+    request = HttpRequest(
+        method, url, 45, (("Content-Type", "application/json"),), data, max_response_bytes=32 * 1024 * 1024
+    )
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
-            parsed = json.loads(response.read().decode())
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode(errors="replace")
-        raise RuntimeError(f"WebDriver HTTP {exc.code}: {detail[:500]}") from exc
+        with OpenExternalHttp() as transport:
+            response = transport.execute(request)
+            response.raise_for_status()
+            parsed = response.json()
+    except HttpStatusError as exc:
+        raise RuntimeError(f"WebDriver HTTP {exc.status_code}") from exc
     if not isinstance(parsed, dict):
         raise RuntimeError("WebDriver response must be an object")
     if parsed.get("value") and isinstance(parsed["value"], dict) and parsed["value"].get("error"):

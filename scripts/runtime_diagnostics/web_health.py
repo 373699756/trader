@@ -6,9 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,7 +14,9 @@ from types import MappingProxyType
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+from trader.bootstrap import OpenExternalHttp
 from trader.http_api.schemas.status_schema import STATUS_SCHEMA_VERSION as _STATUS_SCHEMA_VERSION
+from trader.infra.http_contracts import HttpConnectionError, HttpResponseTooLarge, HttpStatusError
 
 from .reporting import emit_report
 from .web_health_contract import (
@@ -1012,14 +1012,22 @@ class FetchError(RuntimeError):
 
 
 def _fetch_mapping(url: str, timeout_seconds: float) -> Mapping[str, object]:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            payload = response.read(_MAX_RESPONSE_BYTES + 1)
-    except urllib.error.HTTPError as exc:
-        raise FetchError(f"http_{exc.code}") from exc
-    except urllib.error.URLError as exc:
+        with OpenExternalHttp() as transport:
+            response = transport.get(
+                url,
+                headers={"Accept": "application/json"},
+                timeout=timeout_seconds,
+                max_response_bytes=_MAX_RESPONSE_BYTES,
+            )
+        response.raise_for_status()
+        payload = response.content
+    except HttpStatusError as exc:
+        raise FetchError(f"http_{exc.status_code}") from exc
+    except HttpConnectionError as exc:
         raise FetchError("connection_failed") from exc
+    except HttpResponseTooLarge as exc:
+        raise FetchError("response_too_large") from exc
     except TimeoutError as exc:
         raise FetchError("request_timeout") from exc
     except OSError as exc:

@@ -18,14 +18,14 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-import requests
-
-from trader.infra.market_data.observations import SourceObservation
-from trader.infra.market_data.providers.exchange_security_master import (
+from trader.bootstrap import FetchExternalHttp, OpenExternalHttp
+from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
     FetchSseListings,
     FetchSzseListings,
 )
+from trader.infra.http_contracts import HttpError
+from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadRuntimeSettings, LoadStrategySettings
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.pipeline.candidate_pool.candidate_builder import (
@@ -164,13 +164,13 @@ def FetchSource(
     try:
         if source == "tencent":
             quotes = TencentClient(
-                timeout_seconds=min(timeout, remaining), session_factory=requests.Session, worker_pool=pool
+                timeout_seconds=min(timeout, remaining), session_factory=OpenExternalHttp, worker_pool=pool
             ).fetch_quotes(codes, deadline=end_at)
         elif source == "eastmoney":
             quotes = FetchEastmoneyQuotes(min(timeout, remaining), deadline, pool)
         elif source == "sina":
             quotes = SinaClient(
-                timeout_seconds=min(timeout, remaining), session_factory=requests.Session, worker_pool=pool
+                timeout_seconds=min(timeout, remaining), session_factory=OpenExternalHttp, worker_pool=pool
             ).fetch_market(deadline=end_at)
         else:
             raise ValueError("unknown comparison source")
@@ -180,7 +180,7 @@ def FetchSource(
         if time.monotonic() > deadline:
             return SourceAttempt(source, (), _elapsed(started), physical_rows, "batch_deadline")
         return SourceAttempt(source, quotes, _elapsed(started), physical_rows, None)
-    except (OSError, RuntimeError, ValueError, requests.RequestException) as exc:
+    except (OSError, RuntimeError, ValueError, HttpError) as exc:
         return SourceAttempt(source, (), _elapsed(started), 0, type(exc).__name__)
 
 
@@ -883,19 +883,19 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
     baostock_capability: BaostockCapability | None = None
     active_references = base_references
     client = ExchangeSecurityMasterClient(
-        sse_fetcher=partial(FetchSseListings, get=requests.get),
-        szse_fetcher=partial(FetchSzseListings, get=requests.get),
+        sse_fetcher=partial(FetchSseListings, get=FetchExternalHttp),
+        szse_fetcher=partial(FetchSzseListings, get=FetchExternalHttp),
         timeout_seconds=15.0,
         minimum_rows=4000,
         wall_clock=_now,
     )
     official, official_mode = _official_references(client, at, base_references.observations)
     reference_tencent = TencentClient(
-        timeout_seconds=args.timeout_seconds, session_factory=requests.Session, worker_pool=None
+        timeout_seconds=args.timeout_seconds, session_factory=OpenExternalHttp, worker_pool=None
     )
     reference_gateway = MarketDataGateway(
         TencentFullMarketSource(reference_tencent, lambda: tuple(item.subject_key for item in official)),
-        SinaClient(timeout_seconds=args.timeout_seconds, session_factory=requests.Session, worker_pool=None),
+        SinaClient(timeout_seconds=args.timeout_seconds, session_factory=OpenExternalHttp, worker_pool=None),
         reference_tencent,
         minimum_market_rows=1,
         circuit_breaker_failures=3,

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from functools import partial
 
-import requests
-
 from tests.component.market_data_test_support import (
     FEATURE_WEIGHT_POLICY,
     LONG_POLICY,
@@ -33,7 +31,7 @@ from tests.component.market_data_test_support import (
     threading,
     tushare_records_module,
 )
-from trader.infra.market_data.providers.tushare_records import BuildTushareSdk
+from trader.download.infra.tushare_records import BuildTushareSdk
 
 
 def test_tushare_missing_token_is_explicit_degradation_without_sdk_import() -> None:
@@ -415,7 +413,7 @@ def test_tushare_daily_empty_code_result_is_an_explicit_failure() -> None:
     assert observations[0].error_code == "no_data"
 
 
-def test_tushare_default_daily_transport_uses_direct_https_without_environment_proxy(monkeypatch) -> None:
+def test_tushare_daily_uses_injected_transport_and_closes_it(monkeypatch) -> None:
     class DirectResponse:
         @staticmethod
         def raise_for_status() -> None:
@@ -450,14 +448,13 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
 
     session = DirectSession()
     module = type("FakeTushareModule", (), {"pro_api": staticmethod(lambda _token, timeout: object())})()
-    monkeypatch.setattr(tushare_records_module.requests, "Session", lambda: session)
     monkeypatch.setattr(tushare_records_module.importlib, "import_module", lambda _name: module)
     client = TushareClient(
         token="secret-token",
         points=120,
         timeout_seconds=8,
         wall_clock=lambda: NOW,
-        sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
+        sdk_factory=partial(BuildTushareSdk, session_factory=lambda: session),
     )
 
     observations = client.fetch_daily_history(
@@ -468,7 +465,6 @@ def test_tushare_default_daily_transport_uses_direct_https_without_environment_p
     )
 
     assert [item.subject_key for item in observations] == ["600001"]
-    assert session.trust_env is False
     assert session.closed is True
     assert session.calls[0][0] == "https://api.tushare.pro"
     assert session.calls[0][1]["json"]["api_name"] == "daily"
@@ -499,14 +495,13 @@ def test_tushare_daily_transport_preserves_only_numeric_provider_error_code(monk
             return ErrorResponse()
 
     module = type("FakeTushareModule", (), {"pro_api": staticmethod(lambda _token, timeout: object())})()
-    monkeypatch.setattr(tushare_records_module.requests, "Session", lambda: DirectSession())
     monkeypatch.setattr(tushare_records_module.importlib, "import_module", lambda _name: module)
     client = TushareClient(
         token="secret-token",
         points=120,
         timeout_seconds=8,
         wall_clock=lambda: NOW,
-        sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
+        sdk_factory=partial(BuildTushareSdk, session_factory=DirectSession),
     )
 
     observations = client.fetch_daily_history(("600001",), date(2026, 7, 1), date(2026, 7, 16), NOW)

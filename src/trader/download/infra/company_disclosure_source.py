@@ -9,27 +9,19 @@ import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Protocol
 from zoneinfo import ZoneInfo
-
-import requests
 
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage, DisclosurePartition
 from trader.download.infra.company_http import CheckCompanyResponse
+from trader.infra.http_contracts import HttpTransport
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
-
-
-class DisclosureSession(Protocol):
-    def post(self, url: str, **kwargs: object) -> requests.Response: ...
-
-    def get(self, url: str, **kwargs: object) -> requests.Response: ...
 
 
 class CninfoMarketDisclosureSource:
     def __init__(
         self,
-        session: DisclosureSession,
+        session: HttpTransport,
         *,
         monotonic: Callable[[], float],
         sleeper: Callable[[float], None],
@@ -65,6 +57,7 @@ class CninfoMarketDisclosureSource:
             },
             headers={"User-Agent": "Mozilla/5.0", "Referer": "https://www.cninfo.com.cn/"},
             timeout=min(self._timeout, deadline - self._monotonic()),
+            deadline=deadline,
         )
         CheckCompanyResponse(response)
         if self._monotonic() >= deadline:
@@ -97,26 +90,20 @@ class CninfoMarketDisclosureSource:
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
             raise ValueError("disclosure_document_unavailable")
         self._pace(deadline)
-        chunks: list[bytes] = []
-        size = 0
-        with self._session.get(
-            item.url, stream=True, allow_redirects=False, timeout=min(self._timeout, deadline - self._monotonic())
-        ) as response:
-            CheckCompanyResponse(response)
-            for chunk in response.iter_content(65536):
-                size += len(chunk)
-                if size > 4 * 1024 * 1024:
-                    raise ValueError("disclosure_document_oversized")
-                if self._monotonic() >= deadline:
-                    raise TimeoutError("disclosure_deadline")
-                chunks.append(chunk)
+        response = self._session.get(
+            item.url,
+            timeout=min(self._timeout, deadline - self._monotonic()),
+            deadline=deadline,
+            max_response_bytes=4 * 1024 * 1024,
+        )
+        CheckCompanyResponse(response)
         remaining = min(10.0, deadline - self._monotonic())
         if remaining <= 0:
             raise TimeoutError("disclosure_deadline")
         try:
             result = subprocess.run(
                 [sys.executable, "-m", "trader.download.infra.company_document_parser"],
-                input=b"".join(chunks),
+                input=response.content,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=remaining,
@@ -163,4 +150,4 @@ def _parse_disclosure(row: object, partition: DisclosurePartition) -> Disclosure
     )
 
 
-__all__ = ["CninfoMarketDisclosureSource", "DisclosureSession"]
+__all__ = ["CninfoMarketDisclosureSource"]

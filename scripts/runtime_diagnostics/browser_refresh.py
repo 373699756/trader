@@ -13,13 +13,11 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from werkzeug.serving import WSGIRequestHandler, make_server
 
@@ -28,7 +26,9 @@ from .reporting import emit_report
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from trader.bootstrap import OpenExternalHttp  # noqa: E402
 from trader.http_api.route_services import UnifiedWebServices, WebApiConfig  # noqa: E402
+from trader.infra.http_contracts import HttpRequest, HttpStatusError  # noqa: E402
 from trader.infra.settings import LoadRuntimeSettings  # noqa: E402
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep  # noqa: E402
 from trader.infra.workers import BoundedExecutor  # noqa: E402
@@ -406,20 +406,21 @@ def _free_port() -> int:
 def _request_json(
     url: str,
     *,
-    method: str = "GET",
+    method: Literal["GET", "POST", "DELETE"] = "GET",
     payload: dict[str, object] | None = None,
     timeout: float = 45.0,
 ) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    request = urllib.request.Request(url, data=body, method=method)
-    if body is not None:
-        request.add_header("Content-Type", "application/json")
+    request = HttpRequest(
+        method, url, timeout, (("Content-Type", "application/json"),), body, max_response_bytes=32 * 1024 * 1024
+    )
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"WebDriver HTTP {exc.code}: {detail[:300]}") from exc
+        with OpenExternalHttp() as transport:
+            response = transport.execute(request)
+        response.raise_for_status()
+        raw = response.content
+    except HttpStatusError as exc:
+        raise RuntimeError(f"WebDriver HTTP {exc.status_code}") from exc
     decoded = json.loads(raw.decode("utf-8")) if raw else {}
     if not isinstance(decoded, dict):
         raise RuntimeError("WebDriver response must be an object")
@@ -436,7 +437,7 @@ def _wait_driver(port: int, process: subprocess.Popen[bytes]) -> None:
             raise RuntimeError("geckodriver exited before becoming ready")
         try:
             response = _request_json(f"http://127.0.0.1:{port}/status", timeout=0.5)
-        except (OSError, RuntimeError, urllib.error.URLError):
+        except (OSError, RuntimeError):
             time.sleep(0.05)
             continue
         if isinstance(response.get("value"), dict) and response["value"].get("ready"):
@@ -682,7 +683,7 @@ def _run(
                 if session_id is not None:
                     try:
                         _request_json(f"http://127.0.0.1:{driver_port}/session/{session_id}", method="DELETE")
-                    except (OSError, RuntimeError, urllib.error.URLError):
+                    except (OSError, RuntimeError):
                         pass
             finally:
                 try:
@@ -796,7 +797,7 @@ def main() -> int:
             snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
             patch_to_paint_budget_ms=settings.performance_budgets.latency_p95_ms["browser_patch_to_paint"],
         )
-    except (OSError, RuntimeError, TypeError, ValueError, urllib.error.URLError) as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         report = {
             "schema_version": "web-refresh-interval",
             "passed": False,

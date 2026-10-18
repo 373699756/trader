@@ -22,7 +22,6 @@ from trader.recommendation.infra.deepseek.completion_client_contract import (
     DeepSeekHttpResult,
     ModelCapabilities,
 )
-from trader.recommendation.infra.deepseek.factory import CreateDeepseekClient
 from trader.recommendation.infra.deepseek.model_capabilities import MODELS, Capabilities
 from trader.recommendation.infra.deepseek.model_catalog import ValidateModel
 
@@ -99,21 +98,6 @@ class TestModelCatalog:
     def test_strict_unknown_raises(self) -> None:
         with pytest.raises(ValueError, match="Unknown DeepSeek model"):
             ValidateModel("unknown-model-xyz", strict=True)
-
-
-class TestDeepSeekClientFactory:
-    def test_default_provider_returns_http_client(self) -> None:
-        client = CreateDeepseekClient()
-        assert isinstance(client, DeepSeekCompletionClient)
-        assert isinstance(client, DeepSeekHttpClient)
-
-    def test_unknown_provider_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Unknown DeepSeek provider"):
-            CreateDeepseekClient(provider="unknown")
-
-    def test_removed_provider_alias_is_rejected(self) -> None:
-        with pytest.raises(ValueError, match="Unknown DeepSeek provider"):
-            CreateDeepseekClient(provider="deepseek_http")
 
 
 # ---------------------------------------------------------------------------
@@ -199,17 +183,17 @@ class TestDeepSeekCompletionClient:
 
 class TestDeepSeekHttpClientConcrete:
     def test_implements_base(self) -> None:
-        client = DeepSeekHttpClient()
+        client = DeepSeekHttpClient(post=lambda *_args, **_kwargs: pytest.fail("unexpected HTTP request"))
         assert isinstance(client, DeepSeekCompletionClient)
 
     def test_capabilities_delegates(self) -> None:
-        client = DeepSeekHttpClient()
+        client = DeepSeekHttpClient(post=lambda *_args, **_kwargs: pytest.fail("unexpected HTTP request"))
         caps = client.capabilities("deepseek-v4-flash")
         assert caps.requires_reasoning_roundtrip is False
         assert caps.preferred_structured_method == "json_object"
 
     def test_missing_api_key(self) -> None:
-        client = DeepSeekHttpClient()
+        client = DeepSeekHttpClient(post=lambda *_args, **_kwargs: pytest.fail("unexpected HTTP request"))
         result = client.complete(
             base_url="https://api.example.com",
             api_key="",
@@ -238,18 +222,18 @@ class TestReasoningContentRoundtrip:
         assert messages[1]["reasoning_content"] == "chain of thought..."
         # The payload-building is internal to client.py's _request_payload;
         # verify through the concrete client that the payload is formed correctly.
-        client = DeepSeekHttpClient()
+        client = DeepSeekHttpClient(post=lambda *_args, **_kwargs: pytest.fail("unexpected HTTP request"))
         assert isinstance(client, DeepSeekCompletionClient)
         caps = client.capabilities("deepseek-v4-pro")
         assert caps.requires_reasoning_roundtrip is True
 
     def test_reasoning_content_stripped_for_non_reasoner(self) -> None:
-        client = DeepSeekHttpClient()
+        client = DeepSeekHttpClient(post=lambda *_args, **_kwargs: pytest.fail("unexpected HTTP request"))
         caps = client.capabilities("deepseek-v4-flash")
         assert caps.requires_reasoning_roundtrip is False
 
     def test_no_temperature_for_reasoner(self) -> None:
-        client = DeepSeekHttpClient()
+        client = DeepSeekHttpClient(post=lambda *_args, **_kwargs: pytest.fail("unexpected HTTP request"))
         caps = client.capabilities("deepseek-v4-pro")
         assert caps.requires_reasoning_roundtrip is True
 

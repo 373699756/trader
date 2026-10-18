@@ -27,10 +27,10 @@ from tests.component.market_data_test_support import (
     _quote,
     _service,
 )
-from trader.infra.market_data.observations import ExchangeSecurityMasterListing
-from trader.infra.market_data.providers.exchange_security_master import (
+from trader.download.infra.exchange_security_master import (
     ExchangeSecurityMasterClient,
 )
+from trader.infra.market_data.observations import ExchangeSecurityMasterListing
 
 
 def _listing(code: str, board: str, exchange: str) -> ExchangeSecurityMasterListing:

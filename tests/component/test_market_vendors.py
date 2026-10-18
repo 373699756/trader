@@ -41,12 +41,12 @@ from tests.component.market_data_test_support import (
     json,
     pytest,
     replace,
-    requests,
     threading,
     time,
     timedelta,
     timezone,
 )
+from trader.infra.http_contracts import HttpStatusError, HttpTimeout
 from trader.recommendation.infra.market_data.providers.tencent import TencentFullMarketSource
 from trader.training.domain.evaluation.models import OutcomeBar, OutcomePrice, OutcomeTradingStatus
 
@@ -59,11 +59,10 @@ def test_eastmoney_normalizes_history() -> None:
     history = client.fetch_history("600001", days=90, now=NOW)
 
     assert history[0].amount == 100000000
-    assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
 
 
 def test_eastmoney_history_fallback_attempts_each_host_once() -> None:
-    session = FakeSession([requests.Timeout("slow host")] * 3)
+    session = FakeSession([HttpTimeout("slow host")] * 3)
     client = EastmoneyClient(worker_pool=None, timeout_seconds=2, session_factory=lambda: session)
 
     with pytest.raises(RuntimeError, match="eastmoney request failed"):
@@ -129,7 +128,6 @@ def test_tencent_normalizes_targeted_quote() -> None:
     assert quotes[0].market_cap == 12_050_000_000.0
     assert quotes[0].source_time.isoformat() == "2026-07-16T10:00:00+08:00"
     assert session.calls[0][1]["timeout"] == 0.75
-    assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
 def test_tencent_quote_without_supplier_timestamp_uses_shanghai_fallback() -> None:
@@ -314,7 +312,7 @@ def test_tencent_targeted_quotes_keep_successful_shards_when_one_shard_fails() -
         def get(self, url, **_kwargs):
             symbols = url.split("q=", 1)[1].split(",")
             if any(symbol.endswith("600120") for symbol in symbols):
-                raise requests.Timeout("one shard timed out")
+                raise HttpTimeout("one shard timed out")
             records = []
             for symbol in symbols:
                 fields = [""] * 50
@@ -373,7 +371,6 @@ def test_tencent_history_preserves_volume_amount_and_turnover_fields() -> None:
     assert session.calls[0][0][0].startswith("https://proxy.finance.qq.com/")
     assert ",2026-07-16,20,qfq" in session.calls[0][1]["params"]["param"]
     assert session.calls[0][1]["params"]["param"].endswith(",20,qfq")
-    assert session.calls[0][1]["proxies"] == {"http": "", "https": "", "all": ""}
 
 
 def test_tencent_outcome_history_requests_raw_and_qfq_from_one_source() -> None:
@@ -529,7 +526,7 @@ def test_outcome_history_fallback_keeps_raw_and_qfq_from_one_provider() -> None:
     assert fallback.outcome_calls == [("600001", 20)]
 
 
-def test_sina_market_request_bypasses_environment_proxy() -> None:
+def test_sina_market_request_uses_injected_transport() -> None:
     session = FakeSession(
         [
             b"1",
@@ -555,7 +552,6 @@ def test_sina_market_request_bypasses_environment_proxy() -> None:
     quotes = client.fetch_market(NOW)
 
     assert quotes[0].code == "600001"
-    assert all(call[1]["proxies"] == {"http": "", "https": "", "all": ""} for call in session.calls)
 
 
 def test_sina_full_market_pages_are_fetched_with_bounded_parallelism() -> None:
@@ -723,7 +719,7 @@ def test_sina_market_source_retries_transient_page_504() -> None:
     sina_session = FakeSession(
         [
             b"1",
-            requests.HTTPError("504 Server Error: Gateway Time-out"),
+            HttpStatusError(504),
             [{"symbol": "sh600001", "name": "测试股份", "trade": "12.00"}],
         ]
     )

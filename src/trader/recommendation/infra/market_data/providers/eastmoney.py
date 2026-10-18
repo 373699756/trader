@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 if TYPE_CHECKING:
     from typing_extensions import Unpack
 
-import requests
 
+from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.tail import MinuteBar
@@ -28,9 +28,8 @@ class JsonResponse(Protocol):
     def json(self) -> object: ...
 
 
-SessionFactory = Callable[[], requests.Session]
+SessionFactory = Callable[[], HttpTransport]
 
-_DIRECT_PROXIES = {"http": "", "https": "", "all": ""}
 _REQUEST_ROUNDS = 2
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -201,11 +200,11 @@ class EastmoneyClient:
                             params=dict(params),
                             headers=headers,
                             timeout=self._timeout_seconds,
-                            proxies=_DIRECT_PROXIES,
+                            cancel_requested=self._cancel_requested,
                         )
                         response.raise_for_status()
                         payload = response.json()
-                except (requests.RequestException, ValueError, OSError) as exc:
+                except (HttpError, ValueError, OSError) as exc:
                     last_error = exc
                     continue
                 self._ensure_running()

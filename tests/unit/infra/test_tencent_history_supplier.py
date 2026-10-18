@@ -4,7 +4,6 @@ import json
 from datetime import date, timedelta
 
 import pytest
-import requests
 
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
@@ -14,6 +13,7 @@ from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqSupplier,
     TencentSessionPool,
 )
+from trader.infra.http_contracts import HttpTimeout
 
 DAY = date(2026, 10, 9)
 SECURITY = BaoStockSecurity("600001", "fixture", "main", date(2020, 1, 1), None, "fixture")
@@ -375,7 +375,7 @@ def test_neutral_adjustment_requires_evidence_on_every_row(invalid):
 
 def test_retries_transport_only_and_cancellation_stops_attempts():
     http = _Http()
-    http.error = requests.Timeout()
+    http.error = HttpTimeout()
     with pytest.raises(RuntimeError, match="tencent_history_pending"):
         http.supplier().fetch_window(SECURITY, (DAY,))
     assert len(http.calls) == 6
