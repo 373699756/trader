@@ -24,6 +24,7 @@ from trader.recommendation.domain.market.research import (
     CorporateRiskFactsFromAnnouncements,
     ResearchAnnouncement,
 )
+from trader.recommendation.infra.market_data.announcement_request_gate import CninfoDeadlineExceeded, CninfoRequestGate
 
 CNINFO_SOURCE = "cninfo"
 CNINFO_CURSOR_PREFIX = "cninfo.announcements:"
@@ -94,6 +95,7 @@ class CninfoSyncResult:
     evidence_write_seconds: float = 0.0
     cursor_write_seconds: float = 0.0
     persistence_error: Literal["busy", "unavailable"] | None = None
+    deadline_reached: bool = False
 
 
 @dataclass(frozen=True)
@@ -230,11 +232,17 @@ class CninfoAnnouncementIncrementalSync:
         counters = _CninfoRunCounters()
         history_complete = False
         terminal_failure = False
+        deadline_reached = False
 
         for _ in range(self._max_pages):
             checkpointed_before = counters.pages_checkpointed
             try:
                 outcome = self._sync_next_page(context, state, counters)
+            except CninfoDeadlineExceeded as exc:
+                deadline_reached = True
+                if isinstance(exc.__cause__, (requests.RequestException, RuntimeError)):
+                    counters.source_errors.append(f"cninfo_fetch_deferred:{type(exc.__cause__).__name__}")
+                break
             except (TimeoutError, requests.ConnectionError, requests.Timeout) as exc:
                 if not counters.checkpoint_advanced:
                     raise
@@ -265,6 +273,7 @@ class CninfoAnnouncementIncrementalSync:
             evidence_write_seconds=counters.evidence_write_seconds,
             cursor_write_seconds=counters.cursor_write_seconds,
             persistence_error=counters.persistence_error,
+            deadline_reached=deadline_reached,
         )
 
     def _sync_next_page(
@@ -448,9 +457,11 @@ class CninfoAnnouncementHttpClient:
         self._wall_clock = wall_clock
         self._sleeper = sleeper
         self._monotonic = monotonic
-        self._minimum_request_interval_seconds = minimum_request_interval_seconds
-        self._request_lock = Lock()
-        self._next_request_at = 0.0
+        self._request_gate = CninfoRequestGate(
+            minimum_interval_seconds=minimum_request_interval_seconds,
+            monotonic=monotonic,
+            sleeper=sleeper,
+        )
         self._organizations: dict[str, str] = {}
         self._organization_lock = Lock()
         self._thread_state = _CninfoThreadState()
@@ -535,12 +546,13 @@ class CninfoAnnouncementHttpClient:
         data: Mapping[str, str],
         deadline: datetime | None,
     ) -> object:
+        remaining = self._timeout_seconds if deadline is None else (deadline - self._wall_clock()).total_seconds()
+        expires_at = self._monotonic() + max(0.0, remaining)
         last_error: BaseException | None = None
         for attempt, delay in enumerate((0.0, 1.0, 3.0)):
-            if delay:
-                self._sleep_before_retry(delay, deadline)
             try:
-                timeout = self._remaining_timeout(deadline)
+                if delay:
+                    self._sleep_before_retry(delay, expires_at)
                 response = self._post_request(
                     url,
                     data=data,
@@ -550,14 +562,17 @@ class CninfoAnnouncementHttpClient:
                         "User-Agent": "Mozilla/5.0",
                         "X-Requested-With": "XMLHttpRequest",
                     },
-                    timeout=timeout,
+                    deadline=expires_at,
                 )
                 if response.status_code == 429:
-                    raise RuntimeError("http_429")
+                    raise requests.HTTPError("http_429", response=response)
                 response.raise_for_status()
-                if deadline is not None and self._wall_clock() >= deadline:
-                    raise TimeoutError("CNInfo response completed after deadline")
-                return response.json()
+                payload = response.json()
+                if self._monotonic() >= expires_at:
+                    raise CninfoDeadlineExceeded("CNInfo response completed after wave deadline")
+                return payload
+            except CninfoDeadlineExceeded as exc:
+                raise exc from last_error
             except (requests.ConnectionError, requests.Timeout, requests.HTTPError, RuntimeError) as exc:
                 last_error = exc
                 retryable_http = not isinstance(exc, requests.HTTPError) or (
@@ -574,21 +589,10 @@ class CninfoAnnouncementHttpClient:
         *,
         data: Mapping[str, str],
         headers: Mapping[str, str],
-        timeout: float,
+        deadline: float,
     ) -> requests.Response:
-        queue_started = self._monotonic()
-        if not self._request_lock.acquire(timeout=timeout):
-            raise TimeoutError("CNInfo request queue exceeded deadline")
-        try:
-            queue_wait = max(0.0, self._monotonic() - queue_started)
-            delay = max(0.0, self._next_request_at - self._monotonic())
-            if queue_wait + delay >= timeout:
-                raise TimeoutError("CNInfo request pacing exceeded deadline")
-            if delay:
-                self._sleeper(delay)
-            request_started = self._monotonic()
-            self._next_request_at = request_started + self._minimum_request_interval_seconds
-            request_timeout = timeout - queue_wait - delay
+        with self._request_gate.enter(deadline) as remaining:
+            request_timeout = min(self._timeout_seconds, remaining)
             if self._post is not None:
                 return self._post(url, data=data, headers=headers, timeout=request_timeout)
             session = self._thread_state.session
@@ -600,20 +604,10 @@ class CninfoAnnouncementHttpClient:
                 with self._sessions_lock:
                     self._sessions.append(session)
             return session.post(url, data=data, headers=headers, timeout=request_timeout)
-        finally:
-            self._request_lock.release()
 
-    def _remaining_timeout(self, deadline: datetime | None) -> float:
-        if deadline is None:
-            return self._timeout_seconds
-        remaining = (deadline - self._wall_clock()).total_seconds()
-        if remaining <= 0.0:
-            raise TimeoutError("CNInfo request deadline exceeded")
-        return min(self._timeout_seconds, remaining)
-
-    def _sleep_before_retry(self, delay: float, deadline: datetime | None) -> None:
-        if deadline is not None and (deadline - self._wall_clock()).total_seconds() <= delay:
-            raise TimeoutError("CNInfo retry would exceed deadline")
+    def _sleep_before_retry(self, delay: float, deadline: float) -> None:
+        if deadline - self._monotonic() <= delay:
+            raise CninfoDeadlineExceeded("CNInfo retry would exceed wave deadline")
         self._sleeper(delay)
 
 

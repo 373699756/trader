@@ -190,3 +190,28 @@ def test_risk_download_progress_labels_database_lock_wait_without_false_wave_com
     assert "本波待处理   4798" in output
     assert "任务库写入 等待写锁" in output
     assert "本波处理      0/  4798" not in output
+
+
+def test_history_progress_keeps_global_percentage_and_labels_stock_population() -> None:
+    stream = StringIO()
+    reporter = StderrRiskDownloadProgress(stream, command_name="risk_history_download")
+    reporter.publish(
+        RiskDownloadProgress(
+            "official_announcements",
+            "running",
+            32,
+            1,
+            3446,
+            4402,
+            official_pending_codes=3445,
+            official_pages_checkpointed=2585,
+            official_announcements_saved=56161,
+        )
+    )
+    output = stream.getvalue()
+    assert "巨潮近一年累计    957/  4402（ 21.74%）" in output
+    assert "本波已结束      1只" in output
+    assert "目标股票   4402" in output
+    assert "断点分页   2585" in output
+    assert "0.03%" not in output
+    assert "请求   4402" not in output

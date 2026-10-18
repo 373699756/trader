@@ -8,6 +8,7 @@ from threading import Barrier, Condition, Event
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pytest
 import requests
 
 from trader.recommendation.application.ports.data_plane_records import (
@@ -19,6 +20,7 @@ from trader.recommendation.application.ports.data_plane_records import (
 from trader.recommendation.domain.market.models import Evidence
 from trader.recommendation.domain.market.research import FinancialReport, ResearchObservation
 from trader.recommendation.infra.market_data.announcement_batch_sync import CninfoAnnouncementBatchSynchronizer
+from trader.recommendation.infra.market_data.announcement_request_gate import CninfoDeadlineExceeded
 from trader.recommendation.infra.market_data.announcement_sync import (
     CNINFO_ANNOUNCEMENT_PREFIX,
     CNINFO_COMPONENT_PREFIX,
@@ -225,6 +227,190 @@ def test_cninfo_http_client_spaces_request_starts() -> None:
 
     assert request_starts == [0.0, 1.0, 2.0]
     assert sleeps == [1.0, 1.0]
+
+
+def test_cninfo_pacing_does_not_spend_http_timeout_or_fail_completed_batch(tmp_path: Path, caplog) -> None:
+    now = [0.0]
+    request_timeouts: list[float] = []
+    request_starts: list[float] = []
+
+    def sleeper(seconds: float) -> None:
+        now[0] += seconds
+
+    def post(url: str, **kwargs: Any) -> _Response:
+        request_starts.append(now[0])
+        request_timeouts.append(kwargs["timeout"])
+        if url.endswith("/topSearch/query"):
+            code = kwargs["data"]["keyWord"]
+            return _Response([{"code": code, "category": "A股", "orgId": f"org-{code}"}])
+        return _Response({"announcements": (), "hasMore": False})
+
+    client = CninfoAnnouncementHttpClient(
+        post=post,
+        timeout_seconds=0.5,
+        wall_clock=lambda: OBSERVED_AT + timedelta(seconds=now[0]),
+        monotonic=lambda: now[0],
+        sleeper=sleeper,
+    )
+    data_plane = SQLiteDataPlane(tmp_path)
+    codes = ("600001", "600002", "600003")
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            CninfoAnnouncementIncrementalSync(client, data_plane),
+            data_plane,
+            pool,
+            wall_clock=lambda: OBSERVED_AT + timedelta(seconds=now[0]),
+        )
+        report = batch.sync_report(codes, OBSERVED_AT, deadline=OBSERVED_AT + timedelta(seconds=60))
+
+    assert report.completed_codes == codes
+    assert report.deferred_codes == ()
+    assert report.pages_checkpointed == 3
+    assert request_starts == [0, 1, 2, 3, 4, 5]
+    assert request_timeouts == [0.5] * 6
+    assert "source failures" not in caplog.text
+
+
+@pytest.mark.parametrize("late_response", [False, True])
+def test_cninfo_wave_deadline_preserves_page_without_supplier_failure(tmp_path: Path, late_response: bool) -> None:
+    now = [0.0]
+    pages: list[int] = []
+
+    def sleeper(seconds: float) -> None:
+        now[0] += seconds
+
+    def post(url: str, **kwargs: Any) -> _Response:
+        if url.endswith("/topSearch/query"):
+            return _Response([{"code": "600009", "category": "A股", "orgId": "org-600009"}])
+        page = int(kwargs["data"]["pageNum"])
+        pages.append(page)
+        if page == 2:
+            now[0] = 3.0
+        return _Response(
+            {
+                "announcements": [
+                    {
+                        "announcementId": f"page-{page}",
+                        "announcementTitle": "普通公告",
+                        "announcementTime": "2026-07-29 18:30:00",
+                    }
+                ],
+                "hasMore": page == 1,
+            }
+        )
+
+    client = CninfoAnnouncementHttpClient(
+        post=post,
+        timeout_seconds=8.0,
+        wall_clock=lambda: OBSERVED_AT + timedelta(seconds=now[0]),
+        monotonic=lambda: now[0],
+        sleeper=sleeper,
+    )
+    data_plane = SQLiteDataPlane(tmp_path)
+    result = CninfoAnnouncementIncrementalSync(client, data_plane).sync_code(
+        "600009", OBSERVED_AT, deadline=OBSERVED_AT + timedelta(seconds=2.5 if late_response else 1.5)
+    )
+
+    assert pages == ([1, 2] if late_response else [1])
+    assert result.pages_checkpointed == 1
+    assert result.history_complete is False
+    assert result.deadline_reached is True
+    assert result.source_errors == ()
+    cursor = data_plane.load_source_cursor_recent(f"{CNINFO_CURSOR_PREFIX}600009")
+    assert cursor is not None
+    assert cursor.payload["next_page"] == 2
+    assert cursor.payload["issuer_history_complete"] is False
+    assert data_plane.load_risk_evidence_recent("600009", f"{CNINFO_ANNOUNCEMENT_PREFIX}page-2") is None
+
+
+def test_cninfo_real_network_timeout_is_retried_and_reported(tmp_path: Path, caplog) -> None:
+    requests_sent = 0
+
+    def post(_url: str, **_kwargs: Any) -> _Response:
+        nonlocal requests_sent
+        requests_sent += 1
+        raise requests.ReadTimeout("fixture network timeout")
+
+    client = CninfoAnnouncementHttpClient(
+        post=post,
+        timeout_seconds=8.0,
+        wall_clock=lambda: OBSERVED_AT,
+        sleeper=lambda _seconds: None,
+        minimum_request_interval_seconds=0.0,
+    )
+    data_plane = SQLiteDataPlane(tmp_path)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            CninfoAnnouncementIncrementalSync(client, data_plane), data_plane, pool, wall_clock=lambda: OBSERVED_AT
+        )
+        report = batch.sync_report(("600009",), OBSERVED_AT, deadline=OBSERVED_AT + timedelta(seconds=60))
+
+    assert requests_sent == 3
+    assert report.attempted_codes == ("600009",)
+    assert report.deferred_codes == ("600009",)
+    assert report.failed_codes == ()
+    assert report.pages_checkpointed == 0
+    assert "timeout:ReadTimeout" in caplog.text
+
+
+def test_cninfo_expired_wave_does_not_send_request() -> None:
+    def post(_url: str, **_kwargs: Any) -> _Response:
+        pytest.fail("expired wave must not send HTTP")
+
+    client = CninfoAnnouncementHttpClient(post=post, timeout_seconds=8.0, wall_clock=lambda: OBSERVED_AT)
+    with pytest.raises(CninfoDeadlineExceeded):
+        client.fetch_announcements(CninfoAnnouncementQuery("600009", 1, 30, OBSERVED_AT, "", OBSERVED_AT))
+
+
+def test_cninfo_retry_deadline_keeps_prior_network_failure(tmp_path: Path) -> None:
+    now = [0.0]
+
+    def post(_url: str, **_kwargs: Any) -> _Response:
+        now[0] = 1.5
+        raise requests.ReadTimeout("fixture network timeout")
+
+    client = CninfoAnnouncementHttpClient(
+        post=post,
+        timeout_seconds=8.0,
+        wall_clock=lambda: OBSERVED_AT + timedelta(seconds=now[0]),
+        monotonic=lambda: now[0],
+    )
+    result = CninfoAnnouncementIncrementalSync(client, SQLiteDataPlane(tmp_path)).sync_code(
+        "600009", OBSERVED_AT, deadline=OBSERVED_AT + timedelta(seconds=2)
+    )
+
+    assert result.deadline_reached is True
+    assert result.pages_checkpointed == 0
+    assert result.source_errors == ("cninfo_fetch_deferred:ReadTimeout",)
+
+
+def test_cninfo_http_rate_limit_stops_without_retry_or_deadline_masking(tmp_path: Path, caplog) -> None:
+    requests_sent = 0
+
+    def post(_url: str, **_kwargs: Any) -> requests.Response:
+        nonlocal requests_sent
+        requests_sent += 1
+        response = requests.Response()
+        response.status_code = 429
+        return response
+
+    client = CninfoAnnouncementHttpClient(post=post, timeout_seconds=8.0, wall_clock=lambda: OBSERVED_AT)
+    data_plane = SQLiteDataPlane(tmp_path)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            CninfoAnnouncementIncrementalSync(client, data_plane),
+            data_plane,
+            pool,
+            wall_clock=lambda: OBSERVED_AT,
+            max_inflight=1,
+        )
+        report = batch.sync_report(("600008", "600009"), OBSERVED_AT, deadline=OBSERVED_AT + timedelta(seconds=0.5))
+
+    assert requests_sent == 1
+    assert report.source_error == "rate_limited"
+    assert report.deferred_codes == ("600008", "600009")
+    assert report.failed_codes == ()
+    assert "http_429" in caplog.text
 
 
 def test_missing_announcement_id_uses_persistent_evidence_digest_once() -> None:
@@ -581,6 +767,30 @@ def test_cninfo_batch_throttles_repeated_transient_failure_progress(tmp_path: Pa
     assert report.pages_checkpointed == 0
     assert len(progress) <= 2
     assert "CNInfo batch source failures by class" in caplog.text
+
+
+def test_cninfo_local_deadline_stops_dispatch_without_supplier_warning(tmp_path: Path, caplog) -> None:
+    class DeadlineClient:
+        def fetch_announcements(self, _query: CninfoAnnouncementQuery) -> Mapping[str, object]:
+            raise CninfoDeadlineExceeded("fixture local wave deadline")
+
+    data_plane = SQLiteDataPlane(tmp_path)
+    codes = tuple(f"6{index:05d}" for index in range(100))
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        batch = CninfoAnnouncementBatchSynchronizer(
+            CninfoAnnouncementIncrementalSync(DeadlineClient(), data_plane),
+            data_plane,
+            pool,
+            wall_clock=lambda: OBSERVED_AT,
+        )
+        report = batch.sync_report(codes, OBSERVED_AT, deadline=OBSERVED_AT + timedelta(seconds=60))
+
+    assert 1 <= len(report.attempted_codes) <= 3
+    assert report.deferred_codes == codes
+    assert report.failed_codes == ()
+    assert report.deadline_reached is True
+    assert report.source_error is None
+    assert "source failures" not in caplog.text
 
 
 def test_cninfo_batch_reports_confirmed_pages_before_stock_completion(tmp_path: Path) -> None:

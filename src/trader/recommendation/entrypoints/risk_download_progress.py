@@ -132,12 +132,14 @@ class StderrRiskDownloadProgress:
                 )
             )
         if progress.stage in _WAVE_STAGES:
-            parts.append(
-                f"本波待处理 {progress.total_units:>6}"
-                if progress.state == "started" or (progress.state == "waiting" and progress.completed_units == 0)
-                else _format_progress("本波处理", progress.completed_units, progress.total_units)
-            )
-        parts.append(f"请求 {progress.requested_codes:>6}")
+            if progress.state == "started" or (progress.state == "waiting" and progress.completed_units == 0):
+                parts.append(f"本波待处理 {progress.total_units:>6}")
+            elif progress.stage == "official_announcements":
+                parts.append(f"本波已结束 {progress.completed_units:>6}只")
+            else:
+                parts.append(_format_progress("本波处理", progress.completed_units, progress.total_units))
+        population_label = "目标股票" if self._command_name == "risk_history_download" else "请求"
+        parts.append(f"{population_label} {progress.requested_codes:>6}")
         if progress.research_pending_codes is not None:
             parts.append(f"研究待补 {progress.research_pending_codes:>6}")
         if progress.official_pending_codes is not None:
@@ -162,7 +164,7 @@ class StderrRiskDownloadProgress:
             parts.append(f"来源耗时 {progress.official_sync_seconds:.2f}秒")
             parts.append(
                 "分项累计 "
-                f"请求{progress.official_request_seconds:.2f}/"
+                f"请求及排队{progress.official_request_seconds:.2f}/"
                 f"解析{progress.official_parse_seconds:.2f}/"
                 f"公告写入{progress.official_evidence_write_seconds:.2f}/"
                 f"断点写入{progress.official_cursor_write_seconds:.2f}秒"
