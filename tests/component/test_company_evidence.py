@@ -1,5 +1,6 @@
 """Fresh SQLite, production use case and reader contracts without supplier writes."""
 
+import json
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta
@@ -17,8 +18,9 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyPage,
     StructuredCompanyQuery,
 )
+from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
-from trader.infra.http_contracts import HttpTimeout
+from trader.infra.http_contracts import HttpResponse, HttpTimeout
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
@@ -514,3 +516,58 @@ def test_document_failure_counts_unique_pending_documents_and_retries_only_unfin
     assert source.document_calls == 2 and not source.calls
     third = SyncCompanyEvidence(dependencies, codes, NOW)
     assert source.document_calls == 2 and not third.needs_retry
+
+
+@pytest.mark.parametrize("failures_before_success", [1, 3])
+def test_cninfo_recovers_same_uncommitted_page_without_replaying_saved_prefix(tmp_path, failures_before_success):
+    index = _index(tmp_path)
+    target = index.partitions(("sse",), NOW)[0]
+    span = f"{target.start.isoformat()}~{target.end.isoformat()}"
+    clock = [0.0]
+    pages = []
+    events = []
+
+    class Transport:
+        def post(self, url, **kwargs):
+            clock[0] += 0.1
+            query = kwargs["data"]
+            rows, total, more = [], 0, False
+            if query["seDate"] == span:
+                page = int(query["pageNum"])
+                pages.append(page)
+                if page == 2 and pages.count(2) <= failures_before_success:
+                    clock[0] += 8
+                    raise HttpTimeout("fixture")
+                total, more = 2, page == 1
+                rows = [
+                    {
+                        "announcementId": str(page),
+                        "secCode": "600001",
+                        "announcementTitle": "普通公告",
+                        "announcementTime": NOW.timestamp() * 1000,
+                        "adjunctUrl": "",
+                    }
+                ]
+            return HttpResponse(
+                200, json.dumps({"totalRecordNum": total, "hasMore": more, "announcements": rows}).encode()
+            )
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    source = CninfoMarketDisclosureSource(Transport(), monotonic=lambda: clock[0], sleeper=sleep)
+    dependencies = CompanyEvidenceDependencies(index, source, Sources(), lambda: clock[0], events.append)
+    result = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    news = [event for event in events if event.component == "news"]
+    assert len(news) == 1 and news[0].status == "complete" and news[0].pending == 0
+    if failures_before_success == 3:
+        assert result.failures == ("announcements:timeout",) and result.pending_partitions > 0
+        checkpoint = next(
+            part for part in index.partitions(("sse",), NOW) if (part.start, part.end) == (target.start, target.end)
+        )
+        assert (checkpoint.page, checkpoint.received_rows) == (2, 1)
+        result = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    assert not result.needs_retry and result.pending_partitions == 0
+    assert pages == [1] + [2] * (failures_before_success + 1)
+    assert events[-1].status == "complete" and not events[-1].failure
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete

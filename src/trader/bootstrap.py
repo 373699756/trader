@@ -263,6 +263,7 @@ def _sync_company_evidence(
                     monotonic=time.monotonic,
                     sleeper=time.sleep,
                     timeout_seconds=timeout_seconds,
+                    cancel_requested=cancel_requested,
                 ),
                 EastmoneyCompanySource(
                     structured_session,

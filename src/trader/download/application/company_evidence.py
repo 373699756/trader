@@ -257,6 +257,9 @@ def _news(
     )
     candidates = tuple(code for code in index.candidate_codes(observed_at) if code in population)
     total = len(candidates)
+    if not candidates:
+        _report(dependencies, "news", state, 0, completed=0, status="complete")
+        return ()
     _report(dependencies, "news", state, total, completed=0)
     for code in () if structured_blocked else candidates:
         if not _running(dependencies, deadline):
