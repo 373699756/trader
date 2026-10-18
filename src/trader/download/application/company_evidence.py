@@ -17,6 +17,7 @@ from trader.download.domain.company_evidence import (
     DisclosurePage,
     DisclosurePartition,
     EvidenceMarket,
+    EvidenceProgressState,
     EvidenceSyncProgress,
     Market,
     StructuredCompanyPage,
@@ -99,22 +100,36 @@ def SyncCompanyEvidence(
         index.record_candidates(tuple(code for code in news_codes if code in population), observed_at)
     components: tuple[Literal["financial", "pledge", "unlock"], ...] = ("financial", "pledge", "unlock")
     for component in components:
-        _structured(dependencies, component, observed_at, min(deadline, dependencies.monotonic() + 600), state)
         if any(item.endswith((":access_denied", ":rate_limited")) for item in state.failures):
-            break
+            _report(dependencies, component, state, None, completed=0, status="deferred")
+            continue
+        _structured(dependencies, component, observed_at, min(deadline, dependencies.monotonic() + 600), state)
     pending = _announcements(dependencies, population, observed_at, started + budget_seconds * 0.7, state)
     _documents(dependencies, population, observed_at, started + budget_seconds * 0.95, state)
+    _report(dependencies, "publish", state, len(population), completed=0)
     published = index.publish(population, observed_at)
+    _report(dependencies, "publish", state, len(population) - published, completed=published, status="complete")
     news_updates = _news(dependencies, population, observed_at, deadline, state)
     if news_updates:
-        index.publish(news_updates, observed_at)
+        _report(dependencies, "publish", state, len(news_updates), completed=0)
+        updated = index.publish(news_updates, observed_at)
+        _report(dependencies, "publish", state, len(news_updates) - updated, completed=updated, status="complete")
     if dependencies.monotonic() >= deadline:
         state.failures += ("task:deadline",)
     if dependencies.cancel_requested is not None and dependencies.cancel_requested():
         state.failures += ("task:cancelled",)
-    if index.pending_documents(population, observed_at):
+    pending_documents = len(_unique_documents(index.pending_documents(population, observed_at)))
+    if pending_documents:
         state.failures += ("risk_documents:pending",)
-    _report(dependencies, "complete", state, pending, completed=published)
+    _report(
+        dependencies,
+        "complete",
+        state,
+        pending,
+        completed=published,
+        status="deferred" if state.failures or pending else "complete",
+        pending_documents=pending_documents,
+    )
     return CompanyEvidenceSyncResult(
         observed_at,
         len(population),
@@ -125,6 +140,7 @@ def SyncCompanyEvidence(
         pending,
         tuple(sorted(set(state.failures))),
         max(0.0, dependencies.monotonic() - started),
+        pending_documents,
     )
 
 
@@ -146,10 +162,11 @@ def _announcements(
 ) -> int:
     index = dependencies.index
     markets = tuple(sorted({EvidenceMarket(code) for code in population}))
+    _report(dependencies, "announcements", state, None)
     partitions = deque(index.partitions(markets, observed_at))
     while partitions and _running(dependencies, deadline):
         partition = partitions.popleft()
-        _report(dependencies, "announcements", state, len(partitions) + 1)
+        _report(dependencies, "announcements", state, len(partitions) + 1, scope=partition)
         try:
             page = dependencies.disclosures.fetch(partition, deadline=deadline)
             state.pages += 1
@@ -169,12 +186,14 @@ def _announcements(
                 )
             else:
                 state.completed += 1
+            _report(dependencies, "announcements", state, len(partitions), scope=partition)
         except (OSError, RuntimeError, ValueError) as exc:
             failure = _failure(exc)
             index.partition_failure(partition, failure)
             state.failures += (f"announcements:{failure}",)
             partitions.appendleft(partition)
             break  # Do not hammer another partition after a source/transport rejection.
+    _report(dependencies, "announcements", state, len(partitions), status="deferred" if partitions else "complete")
     return len(partitions)
 
 
@@ -185,19 +204,17 @@ def _documents(
     deadline: float,
     state: _SyncState,
 ) -> None:
-    if any(item in {"announcements:access_denied", "announcements:rate_limited"} for item in state.failures):
-        return
     index = dependencies.index
-    pending_documents = index.pending_documents(population, observed_at)
-    seen: set[tuple[str, str]] = set()
+    pending_documents = _unique_documents(index.pending_documents(population, observed_at))
+    total = len(pending_documents)
+    if any(item in {"announcements:access_denied", "announcements:rate_limited"} for item in state.failures):
+        _report(dependencies, "risk_documents", state, total, completed=0, status="deferred")
+        return
     completed = 0
+    _report(dependencies, "risk_documents", state, total, completed=0)
     for item in pending_documents:
         if not _running(dependencies, deadline):
             break
-        if (item.source, item.identity) in seen:
-            continue
-        seen.add((item.source, item.identity))
-        _report(dependencies, "risk_documents", state, len(pending_documents) - len(seen) + 1, completed=completed)
         try:
             text = dependencies.disclosures.document(item, deadline=deadline)
             index.commit_document(item, text)
@@ -206,8 +223,22 @@ def _documents(
         except (OSError, RuntimeError, ValueError) as exc:
             state.failures += (f"risk_documents:{_failure(exc)}",)
             if isinstance(exc, ValueError):
+                _report(dependencies, "risk_documents", state, total - completed, completed=completed)
                 continue  # An unreadable/oversized PDF must not starve all other documents.
             break
+        _report(dependencies, "risk_documents", state, total - completed, completed=completed)
+    _report(
+        dependencies,
+        "risk_documents",
+        state,
+        total - completed,
+        completed=completed,
+        status="complete" if completed == total else "deferred",
+    )
+
+
+def _unique_documents(items: Sequence[Disclosure]) -> tuple[Disclosure, ...]:
+    return tuple({(item.source, item.identity): item for item in items}.values())
 
 
 def _news(
@@ -224,16 +255,18 @@ def _news(
         item.startswith(("financial:", "pledge:", "unlock:")) and item.endswith((":access_denied", ":rate_limited"))
         for item in state.failures
     )
-    for code in () if structured_blocked else index.candidate_codes(observed_at):
+    candidates = tuple(code for code in index.candidate_codes(observed_at) if code in population)
+    total = len(candidates)
+    _report(dependencies, "news", state, total, completed=0)
+    for code in () if structured_blocked else candidates:
         if not _running(dependencies, deadline):
             break
-        if code not in population:
-            continue
         if not index.component_due("news", code, observed_at):
             state.reused += 1
+            completed += 1
             continue
         attempted.append(code)
-        _report(dependencies, "news", state, 1, completed=completed)
+        _report(dependencies, "news", state, total - completed, completed=completed)
         try:
             rows = dependencies.structured.news(code, observed_at=observed_at, deadline=deadline)
             state.changes += index.commit_news(code, rows, observed_at)
@@ -243,6 +276,14 @@ def _news(
             index.component_failure("news", code, failure)
             state.failures += (f"news:{failure}",)
             break
+    _report(
+        dependencies,
+        "news",
+        state,
+        total - completed,
+        completed=completed,
+        status="complete" if completed == total else "deferred",
+    )
     return tuple(attempted)
 
 
@@ -256,11 +297,15 @@ def _structured(
     index = dependencies.index
     if not index.component_due(component, "market", now):
         state.reused += 1
+        _report(dependencies, component, state, 0, completed=0, status="reused")
         return
     if not _running(dependencies, deadline):
+        _report(dependencies, component, state, None, completed=0, status="deferred")
         return
-    _report(dependencies, component, state, 1, completed=0)
+    _report(dependencies, component, state, None, completed=0)
     completed = 0
+    pending: int | None = None
+    query: StructuredCompanyQuery | None = None
     try:
         if component == "financial":
             start, end = index.component_since(component, "market", now), now.date()
@@ -271,16 +316,20 @@ def _structured(
         requested = StructuredCompanyQuery(component, start, end)
         query = index.structured_cursor(requested)
         while _running(dependencies, deadline):
+            completed = query.page - 1
+            _report(dependencies, component, state, pending, completed=completed, scope=query)
             page = dependencies.structured.fetch(query, observed_at=now, deadline=deadline)
             state.pages += 1
             state.changes += index.commit_structured(query, page, now)
-            completed += 1
-            _report(dependencies, component, state, page.pages - page.page, completed=completed)
+            completed, pending = page.page, page.pages - page.page
+            _report(dependencies, component, state, pending, completed=completed, scope=query)
             if page.page == page.pages:
                 remaining = _remaining_query(index, query, requested, now)
                 if remaining is None:
+                    _report(dependencies, component, state, 0, completed=completed, status="complete", scope=query)
                     return
                 query = remaining
+                pending = None
                 continue
             query = replace(
                 query, received_rows=query.received_rows + page.row_count, expected_rows=page.total, page=page.page + 1
@@ -290,6 +339,7 @@ def _structured(
         failure = _failure(exc)
         index.component_failure(component, "market", failure)
         state.failures += (f"{component}:{failure}",)
+        _report(dependencies, component, state, pending, completed=completed, status="deferred", scope=query)
 
 
 def _remaining_query(
@@ -305,11 +355,15 @@ def _remaining_query(
 def _failure(exc: BaseException) -> str:
     # Suppliers expose bounded categories, never raw URLs, documents or transport error text.
     if isinstance(exc, CompanySourceFailure):
+        if exc.category == "http_error" and exc.status_code is not None:
+            return f"http_{exc.status_code}"
         return exc.category
     if isinstance(exc, (ValueError, TimeoutError, RuntimeError)) and re.fullmatch(
         r"(?:cninfo|company|disclosure|structured|financial|pledge|news)_[a-z_]{1,60}", str(exc)
     ):
         return str(exc)
+    if isinstance(exc, TimeoutError):
+        return "timeout"
     return type(exc).__name__
 
 
@@ -323,11 +377,19 @@ def _report(
     dependencies: CompanyEvidenceDependencies,
     component: str,
     state: _SyncState,
-    pending: int,
+    pending: int | None,
     *,
     completed: int | None = None,
+    status: EvidenceProgressState = "running",
+    scope: DisclosurePartition | StructuredCompanyQuery | None = None,
+    pending_documents: int = 0,
 ) -> None:
     if dependencies.progress is not None:
+        failures = tuple(
+            dict.fromkeys(
+                item for item in state.failures if component == "complete" or item.startswith(f"{component}:")
+            )
+        )
         dependencies.progress(
             EvidenceSyncProgress(
                 component,
@@ -336,7 +398,10 @@ def _report(
                 state.pages,
                 state.changes,
                 state.reused,
-                state.failures[-1] if state.failures else "",
+                ",".join(failures),
+                status,
+                scope,
+                pending_documents,
             )
         )
 

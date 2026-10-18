@@ -6,10 +6,15 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from trader.download.domain.company_evidence import CompanySourceFailure, DisclosurePartition, StructuredCompanyQuery
+from trader.download.domain.company_evidence import (
+    CompanySourceFailure,
+    Disclosure,
+    DisclosurePartition,
+    StructuredCompanyQuery,
+)
 from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource
 from trader.download.infra.company_structured_source import EastmoneyCompanySource
-from trader.infra.http_contracts import HttpResponse
+from trader.infra.http_contracts import HttpResponse, HttpResponseTooLarge
 
 NOW = datetime(2026, 10, 18, 9, 15, tzinfo=ZoneInfo("Asia/Shanghai"))
 
@@ -59,6 +64,20 @@ def test_rejections_have_distinct_safe_categories(status, category):
     with pytest.raises(CompanySourceFailure) as caught:
         source.fetch(DisclosurePartition("sse", NOW.date(), NOW.date()), deadline=8)
     assert caught.value.category == category
+    assert caught.value.status_code == status
+
+
+def test_oversized_pdf_remains_a_document_failure_instead_of_stopping_the_source():
+    class Oversized:
+        def get(self, *args, **kwargs):
+            raise HttpResponseTooLarge("http_response_too_large")
+
+    source = CninfoMarketDisclosureSource(Oversized(), monotonic=lambda: 0, sleeper=lambda value: None)
+    item = Disclosure(
+        "cninfo", "fixture", ("600001",), "风险公告", NOW, "https://static.cninfo.com.cn/finalpage/a.PDF", "a"
+    )
+    with pytest.raises(ValueError, match="disclosure_document_oversized"):
+        source.document(item, deadline=8)
 
 
 def test_financial_non_a_shares_are_excluded_without_corrupting_raw_page_count():

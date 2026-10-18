@@ -180,6 +180,7 @@ def _run_company_download(raw_config_path: str) -> int:
                 "changed_rows": risk_result.changed_rows,
                 "reused_partitions": risk_result.reused_partitions,
                 "pending_partitions": risk_result.pending_partitions,
+                "pending_documents": risk_result.pending_documents,
                 "failures": risk_result.failures,
                 "elapsed_seconds": round(risk_result.elapsed_seconds, 3),
             },

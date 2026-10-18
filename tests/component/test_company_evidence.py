@@ -10,6 +10,7 @@ import pytest
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.domain.company_evidence import (
     CompanyRatio,
+    CompanySourceFailure,
     Disclosure,
     DisclosurePage,
     DisclosurePartition,
@@ -17,6 +18,7 @@ from trader.download.domain.company_evidence import (
     StructuredCompanyQuery,
 )
 from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.infra.http_contracts import HttpTimeout
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
@@ -415,3 +417,100 @@ def test_access_denied_stops_pdf_requests_and_keeps_checkpoint(tmp_path):
     assert "announcements:access_denied" in result.failures
     assert "risk_documents:pending" in result.failures
     assert index.partitions(("sse",), NOW)[0].page == 2
+
+
+@pytest.mark.parametrize(
+    "failure,category",
+    [
+        (HttpTimeout("private transport message"), "timeout"),
+        (CompanySourceFailure("http_error", status_code=503), "http_503"),
+    ],
+)
+def test_announcements_failure_does_not_leak_into_pdf_progress_and_restarts_at_failed_page(tmp_path, failure, category):
+    index = _index(tmp_path)
+    target = index.partitions(("sse",), NOW)[0]
+    events = []
+
+    class Resumable(Sources):
+        blocked = True
+
+        def __init__(self):
+            super().__init__()
+            self.pages = []
+            self.documents = []
+
+        def fetch(self, query, **kwargs):
+            if not isinstance(query, DisclosurePartition):
+                return super().fetch(query, **kwargs)
+            if (query.start, query.end) != (target.start, target.end):
+                return DisclosurePage((), 0, False)
+            self.pages.append(query.page)
+            if query.page == 1:
+                return DisclosurePage((_disclosure(title="关于本公司被立案调查的公告"),), 2, True)
+            if self.blocked:
+                raise failure
+            return DisclosurePage((_disclosure("second"),), 2, False)
+
+        def document(self, item, **kwargs):
+            self.documents.append(item.identity)
+            return "已取得正文"
+
+    source = Resumable()
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
+    first = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    assert first.failures == (f"announcements:{category}",)
+    assert first.pending_partitions > 0 and first.pending_documents == 0
+    assert source.pages == [1, 2] and source.documents == ["first"]
+    body_events = [event for event in events if event.component == "risk_documents"]
+    assert all(not event.failure for event in body_events)
+    assert (body_events[-1].completed, body_events[-1].pending, body_events[-1].status) == (1, 0, "complete")
+    assert any(event.component == "announcements" and event.scope and event.scope.page == 2 for event in events)
+
+    source.blocked = False
+    source.calls.clear()
+    events.clear()
+    second = SyncCompanyEvidence(dependencies, ("600001",), NOW)
+    assert not second.needs_retry
+    assert source.pages == [1, 2, 2] and source.documents == ["first"]
+    assert not source.calls
+    assert all(
+        next(event for event in events if event.component == component).status == "reused"
+        for component in ("financial", "pledge", "unlock")
+    )
+    assert SQLiteCompanyEvidenceReader(index.path).read(("600001",))[0].announcement_complete
+
+
+def test_document_failure_counts_unique_pending_documents_and_retries_only_unfinished_bodies(tmp_path):
+    index = _index(tmp_path)
+    source = Sources()
+    codes = ("600001", "600002")
+    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), codes, NOW)
+    part = DisclosurePartition("sse", NOW.date(), NOW.date())
+    item = replace(_disclosure(title="关于本公司被立案调查的公告"), codes=codes)
+    index.commit_page(part, DisclosurePage((item,), 1, False), NOW)
+    events = []
+
+    class Documents(Sources):
+        blocked = True
+        document_calls = 0
+
+        def document(self, item, **kwargs):
+            self.document_calls += 1
+            if self.blocked:
+                raise HttpTimeout("private transport message")
+            return "已取得正文"
+
+    source = Documents()
+    dependencies = CompanyEvidenceDependencies(index, source, source, lambda: 0, events.append)
+    first = SyncCompanyEvidence(dependencies, codes, NOW)
+    assert first.pending_partitions == 0 and first.pending_documents == 1
+    assert first.failures == ("risk_documents:pending", "risk_documents:timeout")
+    body = next(event for event in events if event.component == "risk_documents")
+    assert body.pending == 1  # One disclosure associated with two stocks is still one PDF.
+    assert events[-1].pending_documents == 1
+    source.blocked = False
+    second = SyncCompanyEvidence(dependencies, codes, NOW)
+    assert second.pending_documents == 0 and not second.needs_retry
+    assert source.document_calls == 2 and not source.calls
+    third = SyncCompanyEvidence(dependencies, codes, NOW)
+    assert source.document_calls == 2 and not third.needs_retry

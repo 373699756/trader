@@ -9,11 +9,15 @@ from typing import Literal
 
 Market = Literal["sse", "szse", "bse"]
 Component = Literal["announcements", "financial", "pledge", "unlock", "news"]
+EvidenceProgressState = Literal["running", "complete", "reused", "deferred"]
 
 
 class CompanySourceFailure(RuntimeError):
-    def __init__(self, category: Literal["access_denied", "rate_limited", "http_error"]) -> None:
+    def __init__(
+        self, category: Literal["access_denied", "rate_limited", "http_error"], *, status_code: int | None = None
+    ) -> None:
         self.category = category
+        self.status_code = status_code
         super().__init__(category)
 
 
@@ -204,11 +208,14 @@ class StructuredCompanyPage:
 class EvidenceSyncProgress:
     component: str
     completed: int
-    pending: int
+    pending: int | None
     fetched_pages: int
     changed_rows: int
     reused_partitions: int
     failure: str = ""
+    status: EvidenceProgressState = "running"
+    scope: DisclosurePartition | StructuredCompanyQuery | None = None
+    pending_documents: int = 0
 
 
 @dataclass(frozen=True)
@@ -222,10 +229,11 @@ class CompanyEvidenceSyncResult:
     pending_partitions: int
     failures: tuple[str, ...]
     elapsed_seconds: float
+    pending_documents: int = 0
 
     @property
     def needs_retry(self) -> bool:
-        return bool(self.failures or self.pending_partitions)
+        return bool(self.failures or self.pending_partitions or self.pending_documents)
 
 
 def EvidenceMarket(code: str) -> Market:
@@ -259,6 +267,7 @@ __all__ = [
     "DisclosurePartition",
     "EvidenceMarket",
     "EvidenceSyncProgress",
+    "EvidenceProgressState",
     "Market",
     "StructuredCompanyPage",
     "CompanySourceFailure",

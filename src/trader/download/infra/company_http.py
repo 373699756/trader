@@ -11,10 +11,10 @@ def CheckCompanyResponse(response: HttpResponse) -> None:
         response.raise_for_status()
     except HttpStatusError as exc:
         if response.status_code == 403:
-            raise CompanySourceFailure("access_denied") from exc
+            raise CompanySourceFailure("access_denied", status_code=exc.status_code) from exc
         if response.status_code == 429:
-            raise CompanySourceFailure("rate_limited") from exc
-        raise CompanySourceFailure("http_error") from exc
+            raise CompanySourceFailure("rate_limited", status_code=exc.status_code) from exc
+        raise CompanySourceFailure("http_error", status_code=exc.status_code) from exc
 
 
 __all__ = ["CheckCompanyResponse"]

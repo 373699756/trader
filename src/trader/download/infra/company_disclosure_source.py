@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from trader.download.domain.company_evidence import Disclosure, DisclosurePage, DisclosurePartition
 from trader.download.infra.company_http import CheckCompanyResponse
-from trader.infra.http_contracts import HttpTransport
+from trader.infra.http_contracts import HttpResponseTooLarge, HttpTransport
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -90,12 +90,15 @@ class CninfoMarketDisclosureSource:
         if not item.url.startswith("https://static.cninfo.com.cn/finalpage/"):
             raise ValueError("disclosure_document_unavailable")
         self._pace(deadline)
-        response = self._session.get(
-            item.url,
-            timeout=min(self._timeout, deadline - self._monotonic()),
-            deadline=deadline,
-            max_response_bytes=4 * 1024 * 1024,
-        )
+        try:
+            response = self._session.get(
+                item.url,
+                timeout=min(self._timeout, deadline - self._monotonic()),
+                deadline=deadline,
+                max_response_bytes=4 * 1024 * 1024,
+            )
+        except HttpResponseTooLarge as exc:
+            raise ValueError("disclosure_document_oversized") from exc
         CheckCompanyResponse(response)
         remaining = min(10.0, deadline - self._monotonic())
         if remaining <= 0:
