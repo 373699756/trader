@@ -190,9 +190,9 @@ DERIVED_FEATURE_SCHEMA: tuple[FeatureSchema, ...] = (
     FeatureSchema("illegal_guarantee_history", "float", description="违规担保历史"),
     FeatureSchema("forced_delisting_risk", "float", description="强制退市程序风险"),
     FeatureSchema(
-        "corporate_risk_history_unavailable",
+        "corporate_risk_window_unavailable",
         "float",
-        description="公司严重风险历史覆盖不完整",
+        description="近一年公司风险披露覆盖不完整",
     ),
     FeatureSchema("price_volume_divergence", "float", description="量价背离"),
     FeatureSchema("short_term_overheat", "float", description="短期过热极端结构"),
@@ -415,7 +415,7 @@ class FeatureBuilder:
                 DeriveCorporateRiskFeatures(
                     observation.corporate_risk_facts,
                     observed_at,
-                    history_complete=observation.corporate_risk_history_complete,
+                    window_complete=observation.corporate_risk_window_complete,
                 )
             )
             values.update(
@@ -611,7 +611,7 @@ class FeatureBuilder:
             "fund_occupation_history": None,
             "illegal_guarantee_history": None,
             "forced_delisting_risk": None,
-            "corporate_risk_history_unavailable": None,
+            "corporate_risk_window_unavailable": None,
             "news_sentiment": None,
             "evidence_freshness": None,
             "value_score": None,

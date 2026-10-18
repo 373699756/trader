@@ -8,7 +8,7 @@ details do not cross the market-data boundary.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from datetime import date, datetime
 from typing import Protocol
 
@@ -18,8 +18,7 @@ from trader.infra.market_data.source_health import (
     ReferenceSourceHealth,
     SecurityMasterSourceHealth,
 )
-from trader.recommendation.domain.market.models import Evidence, MarketQuote
-from trader.recommendation.domain.market.research import ResearchObservation
+from trader.recommendation.domain.market.models import MarketQuote
 from trader.recommendation.domain.market.tail import MinuteBar
 
 
@@ -41,29 +40,6 @@ class IntradaySource(Protocol):
 
 
 FullMarketFetcher = Callable[[datetime | None, threading.Event], Sequence[MarketQuote]]
-
-
-class ResearchSource(Protocol):
-    def fetch_snapshot(self, code: str, *, observed_at: datetime) -> ResearchObservation: ...
-
-    def fetch_news(self, code: str, *, observed_at: datetime, limit: int = 5) -> Sequence[Evidence]: ...
-
-
-class RiskSnapshotBatchSource(Protocol):
-    def fetch_risk_snapshots(
-        self,
-        codes: Sequence[str],
-        *,
-        observed_at: datetime,
-    ) -> Mapping[str, ResearchObservation]: ...
-
-    def fetch_risk_refresh_snapshot(
-        self,
-        code: str,
-        *,
-        observed_at: datetime,
-        previous: ResearchObservation,
-    ) -> ResearchObservation: ...
 
 
 class IndustryReferenceSource(Protocol):
@@ -116,7 +92,5 @@ __all__ = [
     "IntradaySource",
     "ModelIndustrySource",
     "ReferenceSource",
-    "ResearchSource",
-    "RiskSnapshotBatchSource",
     "SecurityMasterSource",
 ]

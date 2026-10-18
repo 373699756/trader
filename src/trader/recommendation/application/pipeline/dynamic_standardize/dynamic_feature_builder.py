@@ -171,13 +171,13 @@ def _apply_research_risk_values(
     current = DeriveCorporateRiskFeatures(
         research.corporate_risk_facts,
         observed_at,
-        history_complete=research.corporate_risk_history_complete,
+        window_complete=research.corporate_risk_window_complete,
     )
-    if research.corporate_risk_history_complete:
+    if research.corporate_risk_window_complete:
         values.update(current)
         return
     for name, value in current.items():
-        if name == "corporate_risk_history_unavailable":
+        if name == "corporate_risk_window_unavailable":
             values[name] = 1.0
         elif value:
             values[name] = max(values.get(name) or 0.0, value)

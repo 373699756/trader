@@ -19,7 +19,6 @@ from trader.recommendation.application.ports.market_data import (
 )
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.eligibility import (
-    EligibilityFactsFromResearch,
     IssuerEligibilityFact,
     IssuerEligibilityReason,
 )
@@ -30,7 +29,6 @@ from trader.recommendation.domain.market.models import (
     MarketQuote,
 )
 from trader.recommendation.domain.market.refresh import ResearchRefreshResult
-from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import (
@@ -41,9 +39,9 @@ from trader.recommendation.infra.market_data.market_cache_identity import (
 )
 from trader.recommendation.infra.market_data.market_data_health import MarketDataHealth
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
+from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.research_load_status import ResearchComponentCoverage, ResearchLoadReport
-from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.training.domain.evaluation.models import OutcomeBar
 
@@ -52,7 +50,7 @@ from trader.training.domain.evaluation.models import OutcomeBar
 class MarketFeatureDependencies:
     quotes: QuoteCache
     history: PublishedHistoryCache
-    research: ResearchLoader
+    research: PublishedCompanyResearch
     intraday: IntradayLoader
     references: ReferenceLoader
     runner: MarketTaskRunner
@@ -235,7 +233,6 @@ class MarketFeatureService:
             action_restrictions=action_restrictions,
         )
         if include_structured_research:
-            self._record_research_eligibility(research)
             normalized = self._eligible_codes(normalized, observed_at)
             if not normalized:
                 return ()
@@ -417,15 +414,12 @@ class MarketFeatureService:
     ) -> ResearchRefreshResult:
         requested = self._eligible_codes(codes, observed_at)
         started_at = self.runner.wall_clock()
-        self.research.recover_from_data_plane(observed_at)
+        self.research.refresh(requested, observed_at, deadline=deadline)
         report = self.research.load_report(
             requested,
             observed_at,
             include_structured=True,
-            force=False,
-            deadline=deadline,
         )
-        self._record_research_eligibility(report.observations)
         return _research_refresh_result(
             requested,
             report,
@@ -551,14 +545,6 @@ class MarketFeatureService:
     def _eligible_quotes(self, quotes: Sequence[MarketQuote], observed_at: datetime) -> tuple[MarketQuote, ...]:
         eligible = set(self._eligible_codes(tuple(quote.code for quote in quotes), observed_at))
         return tuple(quote for quote in quotes if quote.code in eligible)
-
-    def _record_research_eligibility(self, observations: Mapping[str, ResearchObservation]) -> None:
-        facts = tuple(
-            fact
-            for code, observation in observations.items()
-            for fact in EligibilityFactsFromResearch(code, observation)
-        )
-        self._record_eligibility(facts)
 
     def _record_eligibility(self, facts: Sequence[IssuerEligibilityFact]) -> None:
         try:

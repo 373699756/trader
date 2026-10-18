@@ -34,7 +34,6 @@ from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadStrategySettings
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote, ModelIndustryReference
-from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.policy_settings import _recommendation_policy
 
@@ -607,9 +606,7 @@ def test_baostock_reports_reference_coverage_without_claiming_instant_quotes() -
 def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        auxiliary.AkshareResearchClient, "fetch_snapshot", lambda *args, **kwargs: ResearchObservation()
-    )
+    monkeypatch.setattr(auxiliary.SQLiteCompanyEvidenceReader, "visit", lambda *args, **kwargs: None)
     monkeypatch.setattr(auxiliary.EastmoneyClient, "fetch_intraday_minutes", lambda *args, **kwargs: ())
     pool = BoundedExecutor(worker_count=1, queue_capacity=1, thread_name_prefix="factor-test")
     pool.start()
@@ -620,7 +617,7 @@ def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unkno
     finally:
         pool.stop(wait=True, cancel_futures=True)
     assert result.report[0]["financial"] is False
-    assert result.report[0]["corporate_risk_history_complete"] is False
+    assert result.report[0]["corporate_risk_window_complete"] is False
     assert result.report[1]["rows"] == 0
 
 

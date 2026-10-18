@@ -5,18 +5,17 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, cast
+from typing import cast
 
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
-    RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
     TradingCalendarRecord,
@@ -211,107 +210,6 @@ class SQLiteDataPlane:
         return cast(
             tuple[SecurityMasterRecord, ...],
             self._load_records("security_master", mode="formal", freeze_id=freeze_id, codes=codes),
-        )
-
-    def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None:
-        self._save("risk_evidence", mode="recent", record=record)
-
-    def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None:
-        self._save_many("risk_evidence", mode="recent", records=records)
-
-    def save_risk_evidence_formal(self, freeze_id: str, record: RiskEvidenceRecord) -> None:
-        self._save("risk_evidence", mode="formal", freeze_id=freeze_id, record=record)
-
-    def load_risk_evidence_recent(self, code: str, evidence_id: str) -> RiskEvidenceRecord | None:
-        return cast(
-            RiskEvidenceRecord | None,
-            self._load("risk_evidence", mode="recent", code=code, evidence_id=evidence_id),
-        )
-
-    def load_risk_evidence_recent_records(
-        self,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[RiskEvidenceRecord, ...]:
-        return cast(tuple[RiskEvidenceRecord, ...], self._load_records("risk_evidence", mode="recent", codes=codes))
-
-    def scan_risk_evidence_recent_records(
-        self,
-        consume: Callable[[RiskEvidenceRecord], None],
-        codes: Sequence[str] | None = None,
-        *,
-        research_only: bool = False,
-    ) -> None:
-        self.initialize()
-        selected = tuple(sorted(set(codes))) if codes is not None else None
-        if selected == ():
-            return
-        selected_set = set(selected) if selected is not None else None
-        with self._lock:
-            try:
-                with self._read_scope() as connection:
-                    evidence_filter = (
-                        " AND (evidence_id = 'risk-observation:structured' "
-                        "OR (evidence_id >= 'risk-component:' AND evidence_id < 'risk-component;'))"
-                        if research_only
-                        else ""
-                    )
-                    sort_order = "evidence_id, code" if research_only else "code, evidence_id"
-                    if selected is not None and len(selected) <= 900:
-                        placeholders = ", ".join("?" for _ in selected)
-                        query = (
-                            "SELECT * FROM risk_evidence_recent WHERE status = 'committed' "
-                            f"AND code IN ({placeholders}){evidence_filter} ORDER BY {sort_order}"
-                        )
-                        rows = connection.execute(query, selected)
-                    else:
-                        rows = connection.execute(
-                            "SELECT * FROM risk_evidence_recent WHERE status = 'committed'"
-                            f"{evidence_filter} ORDER BY {sort_order}"
-                        )
-                    for row in rows:
-                        if (
-                            selected_set is not None
-                            and len(selected_set) > 900
-                            and _text(row["code"]) not in selected_set
-                        ):
-                            continue
-                        try:
-                            _assert_committed_record_integrity("risk_evidence_recent", row)
-                            record = cast(RiskEvidenceRecord, _row_to_record("risk_evidence_recent", row))
-                        except (TypeError, ValueError, KeyError):
-                            self._quarantine_row(
-                                connection, "risk_evidence_recent", row, reason="load_verification_failed"
-                            )
-                            continue
-                        consume(record)
-            except sqlite3.DatabaseError as exc:
-                raise _map_sqlite_error(exc, operation="load") from exc
-
-    def load_risk_evidence_formal(
-        self,
-        freeze_id: str,
-        code: str,
-        evidence_id: str,
-    ) -> RiskEvidenceRecord | None:
-        return cast(
-            RiskEvidenceRecord | None,
-            self._load(
-                "risk_evidence",
-                mode="formal",
-                freeze_id=freeze_id,
-                code=code,
-                evidence_id=evidence_id,
-            ),
-        )
-
-    def load_risk_evidence_formal_records(
-        self,
-        freeze_id: str,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[RiskEvidenceRecord, ...]:
-        return cast(
-            tuple[RiskEvidenceRecord, ...],
-            self._load_records("risk_evidence", mode="formal", freeze_id=freeze_id, codes=codes),
         )
 
     def save_source_cursor_recent(self, record: SourceCursorRecord) -> None:

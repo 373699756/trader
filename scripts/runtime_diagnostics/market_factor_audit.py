@@ -64,7 +64,7 @@ _RESEARCH = frozenset(
         "fund_occupation_history",
         "illegal_guarantee_history",
         "forced_delisting_risk",
-        "corporate_risk_history_unavailable",
+        "corporate_risk_window_unavailable",
         "reduction_or_unlock",
         "shareholder_reduction_level",
         "risk_protection_score",

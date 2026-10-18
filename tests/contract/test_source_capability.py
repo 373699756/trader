@@ -18,7 +18,9 @@ def test_unimplemented_sources_are_not_wired_into_market_runtime() -> None:
     for missing in ("exchange.py", "baostock.py", "mootdx.py"):
         assert not (MARKET_DIR / missing).exists()
     assert not (MARKET_DIR / "providers" / "cninfo.py").exists()
-    assert (ROOT / "src/trader/recommendation/infra/market_data/announcement_sync.py").is_file()
+    assert (ROOT / "src/trader/download/infra/company_disclosure_source.py").is_file()
+    assert (ROOT / "src/trader/download/infra/company_structured_source.py").is_file()
+    assert not (ROOT / "src/trader/recommendation/infra/market_data/announcement_sync.py").exists()
 
     for path in (BOOTSTRAP, GATEWAY, COORDINATOR):
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -41,7 +43,7 @@ def test_source_contracts_contract_expected_five_sources() -> None:
         for token in expected_raw.group(1).replace("\n", " ").split(",")
         if token.strip()
     }
-    assert actual == {"eastmoney", "sina", "tencent", "tushare", "akshare"}
+    assert actual == {"eastmoney", "sina", "tencent", "tushare"}
 
 
 def test_source_contract_freezes_unified_read_and_persisted_calendar_ports() -> None:

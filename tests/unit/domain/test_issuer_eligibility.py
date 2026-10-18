@@ -1,23 +1,16 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from trader.recommendation.domain.market.eligibility import (
     EligibilityFactsFromQuote,
-    EligibilityFactsFromResearch,
     IssuerEligibilityFact,
     IssuerEligibilityReason,
     IssuerEligibilityState,
     ResolveIssuerEligibility,
 )
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.domain.market.research import (
-    CorporateRiskCategory,
-    CorporateRiskFact,
-    FinancialReport,
-    ResearchObservation,
-)
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 OBSERVED_AT = datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI)
@@ -96,34 +89,16 @@ def test_quote_fact_identity_accepts_untrusted_supplier_version() -> None:
     assert len(facts[0].evidence_id) < 80
 
 
-def test_research_creates_confirmed_permanent_risk_facts_only() -> None:
-    annual_loss = FinancialReport(
-        report_date=date(2024, 12, 31),
-        published_at=OBSERVED_AT - timedelta(days=400),
-        parent_net_profit=-1.0,
-        core_net_profit=-2.0,
-    )
-    fraud = CorporateRiskFact(
-        category=CorporateRiskCategory.FINANCIAL_FRAUD,
-        announced_at=OBSERVED_AT - timedelta(days=200),
-        evidence_id="announcement:fraud",
+def test_old_confirmed_company_risk_does_not_create_permanent_exclusion() -> None:
+    fact = IssuerEligibilityFact(
+        code="600001",
+        reason=IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD,
+        effective_at=OBSERVED_AT - timedelta(days=400),
+        evidence_id="announcement:old-fraud",
         source="issuer_disclosure",
+        evidence_hash="c" * 64,
     )
-    investigation = CorporateRiskFact(
-        category=CorporateRiskCategory.OFFICIAL_INVESTIGATION,
-        announced_at=OBSERVED_AT - timedelta(days=100),
-        evidence_id="announcement:investigation",
-        source="issuer_disclosure",
-    )
-    observation = ResearchObservation(
-        financial=annual_loss,
-        financial_history=(annual_loss,),
-        corporate_risk_facts=(fraud, investigation),
-    )
-
-    facts = EligibilityFactsFromResearch("600001", observation)
-
-    assert {fact.reason for fact in facts} == {IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD}
+    assert ResolveIssuerEligibility((fact,), "600001", OBSERVED_AT).state is IssuerEligibilityState.ELIGIBLE_UNVERIFIED
 
 
 def test_retired_historical_loss_fact_is_auditable_but_not_an_active_exclusion() -> None:

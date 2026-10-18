@@ -37,7 +37,6 @@ from trader.recommendation.application.pipeline.static_market.static_pipeline im
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
-    RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
 )
@@ -81,13 +80,11 @@ from trader.recommendation.infra.market_data.market_feature_service import (
     MarketFeatureService,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient
-from trader.recommendation.infra.market_data.research_component_persistence import PersistResearchComponentStatuses
+from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.research_load_status import RESEARCH_COMPONENT_IDS
-from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.trading_calendar import (
     ChinaTradingCalendar,
     TradingCalendarUnavailableError,
@@ -292,19 +289,14 @@ def _service(
     eligibility = kwargs.pop("eligibility", _AllowAllEligibility())
     historical_st_eligibility = kwargs.pop("historical_st_eligibility", None)
     historical_st_source = (lambda: historical_st_eligibility) if historical_st_eligibility is not None else None
-    research = ResearchLoader(
-        kwargs.pop("research_client", None),
-        runner,
-        data_plane=data_plane,
-        risk_batch_client=kwargs.pop("risk_batch_client", None),
-        workers=kwargs.pop("research_workers", 4),
-        ttl_seconds=kwargs.pop("research_ttl_seconds", 600),
-        circuit_breaker_failures=kwargs.pop("research_circuit_breaker_failures", 3),
-        circuit_breaker_seconds=kwargs.pop("research_circuit_breaker_seconds", 60),
-        capacity=kwargs.pop("research_cache_limit", 360),
-        cache_dir=kwargs.pop("research_cache_dir", None),
-        json_writer=kwargs.pop("json_writer", None),
-        monotonic=monotonic,
+
+    class EmptyPublishedEvidence:
+        def visit(self, codes, consume):
+            return None
+
+    research = PublishedCompanyResearch(
+        kwargs.pop("company_evidence_reader", EmptyPublishedEvidence()),
+        wall_clock=wall_clock,
     )
     intraday_capacity = kwargs.pop("intraday_cache_limit", 360)
     candidate_quote_capacity = kwargs.pop("candidate_quote_cache_limit", 1080)
@@ -717,7 +709,7 @@ class PartiallyBlockingStructuredResearchClient:
             self.release.wait(2.0)
         return ResearchObservation(
             announcements_available=True,
-            corporate_risk_history_complete=True,
+            corporate_risk_window_complete=True,
             corporate_risk_evidence_version=f"evidence:{code}",
             pledge_ratio_pct=0.0,
             unlock_ratio_pct=0.0,

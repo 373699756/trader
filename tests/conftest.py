@@ -404,7 +404,7 @@ def application_feature_factory():
             "fund_occupation_history": 0.0,
             "illegal_guarantee_history": 0.0,
             "forced_delisting_risk": 0.0,
-            "corporate_risk_history_unavailable": 0.0,
+            "corporate_risk_window_unavailable": 0.0,
             "trend_breakdown": 0.0,
             "short_term_overheat": 0.0,
             "intraday_reversal": 0.0,

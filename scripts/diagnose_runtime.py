@@ -194,7 +194,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--long-watchlist", type=Path, default=PROJECT_ROOT / "config/long_watchlist.json")
     parser.add_argument("--long-evidence-output", type=Path, help="stock evidence report outside the repository")
     parser.add_argument(
-        "--long-evidence-cache", type=Path, action="append", help="supplier evidence cache root (repeatable, read-only)"
+        "--company-evidence-database",
+        type=Path,
+        default=PROJECT_ROOT / "data/risk/company_evidence.sqlite3",
+        help="published company evidence database (read-only)",
     )
     parser.add_argument(
         "--eligibility-evidence",
@@ -301,13 +304,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             baostock_rounds=args.baostock_rounds,
             long_watchlist=args.long_watchlist,
             long_evidence_output=long_evidence_output,
-            long_evidence_cache=tuple(
-                args.long_evidence_cache
-                or (
-                    PROJECT_ROOT / ".runtime/trader/evidence_cache",
-                    PROJECT_ROOT / ".runtime/v2/evidence_cache",
-                )
-            ),
+            company_evidence_database=args.company_evidence_database,
             eligibility_evidence=tuple(args.eligibility_evidence),
             download_sizes=tuple(args.download_sizes),
             qfq_root=args.qfq_root.expanduser().resolve(),
@@ -413,7 +410,8 @@ def build_commands(
                 str(options.long_watchlist),
                 "--timeout-seconds",
                 str(min(options.source_timeout_seconds, 15)),
-                *(argument for path in options.long_evidence_cache for argument in ("--evidence-cache", str(path))),
+                "--company-evidence-database",
+                str(options.company_evidence_database),
                 *(
                     argument
                     for path in options.eligibility_evidence
@@ -942,6 +940,8 @@ def _research_source_compare_details(
     source: Mapping[str, object],
     payload: dict[str, object],
 ) -> None:
+    payload["market_pagination"] = _mapping(source.get("market_pagination"))
+    payload["structured_samples"] = source.get("structured_samples", [])
     sources = source.get("sources")
     source_values = sources if isinstance(sources, list) else []
     projected_sources: list[dict[str, object]] = []

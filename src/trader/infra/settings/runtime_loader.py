@@ -373,7 +373,7 @@ def _parse_tushare_settings(raw: Mapping[str, object], project_root: Path) -> Tu
 def _text_mapping(raw: Mapping[str, object], key: str) -> dict[str, str]:
     values = _mapping(raw, key)
     result = {str(name): _text(values, str(name)) for name in values}
-    expected = {"eastmoney", "sina", "tencent", "tushare", "akshare"}
+    expected = {"eastmoney", "sina", "tencent", "tushare"}
     if set(result) != expected:
         raise ConfigurationError("market_data.source_contracts must define all five sources")
     return result

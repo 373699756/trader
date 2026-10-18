@@ -145,12 +145,12 @@ def test_structured_negative_risks_are_hard_filters(
 
 
 def test_missing_structured_risk_is_audited_without_blocking_local_fallback(feature_factory, observed_at) -> None:
-    snapshot = feature_factory(values={"corporate_risk_history_unavailable": 1.0})
+    snapshot = feature_factory(values={"corporate_risk_window_unavailable": 1.0})
 
     result = HardFilter(snapshot, observed_at, max_age_seconds=20)
 
     assert result.allowed is True
-    assert "corporate_risk_history_unavailable" in {item.filter_code for item in result.optional_flags}
+    assert "corporate_risk_window_unavailable" in {item.filter_code for item in result.optional_flags}
 
 
 def test_configured_blacklist_is_a_hard_filter(feature_factory, observed_at) -> None:

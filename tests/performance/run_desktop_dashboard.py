@@ -616,7 +616,7 @@ def _browser_input_quality(*, empty: bool = False) -> dict[str, object]:
         "supply_reason_counts": {
             "below_score_threshold": 54,
             "risk_veto": 2,
-            "corporate_risk_history_unavailable": 1,
+            "corporate_risk_window_unavailable": 1,
             "stale_quote": 1,
         },
         "primary_blocker": "security_master_coverage_incomplete",

@@ -58,8 +58,9 @@ def BuildParser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "qfq_download", help="Update Tencent V2/V3 bounded daily windows concurrently; resume automatically."
     )
-    subparsers.add_parser("risk_download", help="Prepare current company research within a bounded task budget.")
-    subparsers.add_parser("risk_history_download", help="Resume the latest year of CNInfo issuer announcements.")
+    subparsers.add_parser(
+        "risk_download", help="Incrementally update one year of company disclosures and current risk snapshots."
+    )
     subparsers.add_parser(
         "scheduled-history-maintenance",
         help="Run the installed zero-argument history task without environment installation.",
@@ -177,80 +178,64 @@ def _lower_tomorrow_training_priority() -> None:
     _TOMORROW_PRIORITY_LOWERED = True
 
 
+def _run_company_download(raw_config_path: str) -> int:
+    from trader.bootstrap import ExecuteRiskDownload
+    from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
+    from trader.infra.process_lock import ProcessLockError
+
+    try:
+        risk_result = ExecuteRiskDownload(
+            _absolute_config_path(raw_config_path),
+            progress=CompanyEvidenceProgress(),
+        )
+    except ProcessLockError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except (OSError, RuntimeError, ValueError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "failure": type(exc).__name__,
+                    "database": "company_evidence.sqlite3",
+                    "resume_available": True,
+                },
+                ensure_ascii=False,
+            )
+        )
+        print("risk_download 未完成；已提交数据保留，请检查来源/数据库状态后续传。", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "observed_at": risk_result.observed_at.isoformat(),
+                "window_days": 365,
+                "database": "company_evidence.sqlite3",
+                "requested_codes": risk_result.requested_codes,
+                "published_codes": risk_result.published_codes,
+                "fetched_pages": risk_result.fetched_pages,
+                "changed_rows": risk_result.changed_rows,
+                "reused_partitions": risk_result.reused_partitions,
+                "pending_partitions": risk_result.pending_partitions,
+                "failures": risk_result.failures,
+                "elapsed_seconds": round(risk_result.elapsed_seconds, 3),
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 1 if risk_result.needs_retry else 0
+
+
 def _run_history_maintenance_command(
     command: str,
     raw_config_path: str,
     profile: str | None,
     parser: argparse.ArgumentParser,
 ) -> int | None:
-    if command in {"risk_download", "risk_history_download"}:
+    if command == "risk_download":
         if profile is not None:
-            parser.error(f"{command} does not accept --profile")
-        from trader.infra.process_lock import ProcessLock, ProcessLockError
-        from trader.recommendation.entrypoints.risk_download_progress import StderrRiskDownloadProgress
-
-        try:
-            settings = LoadRuntimeSettings(_absolute_config_path(raw_config_path))
-            with ProcessLock(settings.runtime_dir / "risk_snapshot.lock", label=command):
-                risk_progress = StderrRiskDownloadProgress(command_name=command)
-                risk_progress.start()
-                try:
-                    from trader.bootstrap import ExecuteRiskDownload
-
-                    risk_result = ExecuteRiskDownload(
-                        _absolute_config_path(raw_config_path),
-                        progress=risk_progress,
-                        include_official_history=command == "risk_history_download",
-                    )
-                finally:
-                    risk_progress.close()
-        except ProcessLockError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        print(
-            json.dumps(
-                {
-                    "target_date": risk_result.target_date.isoformat(),
-                    "download_scope": "history" if command == "risk_history_download" else "current",
-                    "requested_codes": risk_result.requested_codes,
-                    "available_codes": risk_result.available_codes,
-                    "covered_codes": risk_result.covered_codes,
-                    "partial_codes": risk_result.partial_codes,
-                    "changed_codes": risk_result.changed_codes,
-                    "deferred_codes": risk_result.deferred_codes,
-                    "failed_codes": risk_result.failed_codes,
-                    "deadline_reached": risk_result.deadline_reached,
-                    "wave_count": risk_result.wave_count,
-                    "stop_reason": risk_result.stop_reason,
-                    "elapsed_seconds": round(risk_result.elapsed_seconds, 3),
-                    "component_codes": {
-                        "financial": risk_result.inventory.financial_codes,
-                        "announcements": risk_result.inventory.announcement_codes,
-                        "pledge": risk_result.inventory.pledge_codes,
-                        "unlock": risk_result.inventory.unlock_codes,
-                        "regulatory_history": risk_result.inventory.regulatory_history_codes,
-                        "regulatory_evidence": risk_result.inventory.regulatory_evidence_codes,
-                        "news_queried": risk_result.inventory.news_queried_codes,
-                    },
-                    "retained_items": {
-                        "news": risk_result.inventory.news_items,
-                        "announcements": risk_result.inventory.announcement_items,
-                        "financial_reports": risk_result.inventory.financial_reports,
-                    },
-                    "official_source": {
-                        "pages_fetched": risk_result.official_pages_fetched,
-                        "pages_checkpointed": risk_result.official_pages_checkpointed,
-                        "announcements_saved": risk_result.official_announcements_saved,
-                        "resumed_codes": risk_result.official_resumed_codes,
-                        "failed_codes": risk_result.official_failed_codes,
-                        "persistence_error": risk_result.official_persistence_error,
-                        "source_error": risk_result.official_source_error,
-                    },
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 1 if risk_result.needs_retry else 0
+            parser.error("risk_download does not accept --profile")
+        return _run_company_download(raw_config_path)
     if command == "qfq_download":
         if profile is not None:
             parser.error("qfq_download does not accept --profile")

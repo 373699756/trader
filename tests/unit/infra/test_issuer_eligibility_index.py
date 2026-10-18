@@ -19,10 +19,10 @@ OBSERVED_AT = datetime(2026, 9, 1, 10, 0, tzinfo=SHANGHAI)
 def _fact(*, evidence_hash: str = "a" * 64) -> IssuerEligibilityFact:
     return IssuerEligibilityFact(
         code="600001",
-        reason=IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD,
+        reason=IssuerEligibilityReason.HISTORICAL_ST,
         effective_at=OBSERVED_AT,
-        evidence_id="announcement:fraud-1",
-        source="issuer_disclosure",
+        evidence_id="security:ever-st",
+        source="security_master",
         evidence_hash=evidence_hash,
     )
 
@@ -78,7 +78,7 @@ def test_index_detects_tampering_without_silently_clearing_exclusions(tmp_path) 
     root = tmp_path / "filter_config"
     index = SQLiteIssuerEligibilityIndex(root)
     index.record((_fact(),))
-    database = next((root / "snapshots").glob("*/financial_fraud.sqlite3"))
+    database = next((root / "snapshots").glob("*/st_warning.sqlite3"))
     with sqlite3.connect(database) as connection:
         connection.execute("UPDATE issuer_eligibility_facts SET content_hash = ?", ("0" * 64,))
         connection.commit()
@@ -94,7 +94,7 @@ def test_index_migrates_legacy_single_file_once(tmp_path) -> None:
     legacy = tmp_path / "issuer-eligibility.sqlite3"
     legacy_index = SQLiteIssuerEligibilityIndex(tmp_path / "legacy")
     legacy_index.record((_fact(),))
-    legacy_file = next((tmp_path / "legacy" / "snapshots").glob("*/financial_fraud.sqlite3"))
+    legacy_file = next((tmp_path / "legacy" / "snapshots").glob("*/st_warning.sqlite3"))
     legacy_file.replace(legacy)
 
     root = tmp_path / "filter_config"

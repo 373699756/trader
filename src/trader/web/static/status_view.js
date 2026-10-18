@@ -513,6 +513,7 @@
     els.inputQualityBlockers.textContent = `本轮阻断：${blockers.length ? blockers.join(" · ") : "无"}`;
     const optional = inputQuality && inputQuality.candidate_optional_reason_counts || {};
     const labels = [
+      ["corporate_risk_window_unavailable", "近一年风险覆盖不足"],
       ["corporate_risk_history_unavailable", "风险历史未核验"],
       ["structured_risk_unavailable", "结构化风险未就绪"],
       ["cross_source_deviation", "跨源价格偏差"],

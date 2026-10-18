@@ -16,6 +16,7 @@
     sina: "新浪行情",
     tushare: "专业行情",
     akshare: "公开行情",
+    company_evidence: "本地公司证据",
   };
 
   const ACTION_REASON_LABELS = {
@@ -33,6 +34,7 @@
     missing_liquidity_history: "流动性历史待下载/更新",
     invalid_liquidity_history: "流动性历史待校验",
     insufficient_core_features: "核心数据不足，仅供观察",
+    corporate_risk_window_unavailable: "近一年公司风险覆盖不足",
     corporate_risk_history_unavailable: "公司风险历史暂不可核验",
     board_data_reliability_below_threshold: "板块数据可靠度不足",
     observation_window: "当前处于观察时段",
@@ -85,6 +87,7 @@
     illegal_guarantee_history: "违规担保历史",
     forced_delisting_risk: "强制退市风险",
     unlock_risk: "限售股解禁风险",
+    corporate_risk_window_unavailable: "近一年公司风险覆盖不足",
     corporate_risk_history_unavailable: "公司风险历史暂不可核验",
   };
 
@@ -110,6 +113,7 @@
     deepseek_pending: "模型复核进行中",
     tomorrow_tail_data_incomplete: "尾盘量价数据不完整",
     d25_structured_research_incomplete: "2至5日结构化研究数据不完整",
+    corporate_risk_window_unavailable: "近一年公司风险覆盖不足",
     corporate_risk_history_unavailable: "公司风险历史暂不可核验",
     strategy_history_coverage_partial: "候选历史数据覆盖不完整",
     structured_risk_unavailable: "结构化风险数据尚未就绪",
@@ -602,7 +606,7 @@
       if (BOARD_LABELS[prefix] && DEGRADED_REASON_LABELS[suffix]) {
         return `${BOARD_LABELS[prefix]}：${DEGRADED_REASON_LABELS[suffix]}`;
       }
-      if (["eastmoney", "sina", "tencent", "tencent_market", "tushare", "akshare"].includes(prefix)) {
+      if (["eastmoney", "sina", "tencent", "tencent_market", "tushare", "akshare", "company_evidence"].includes(prefix)) {
         return "行情数据源暂不可用";
       }
     }

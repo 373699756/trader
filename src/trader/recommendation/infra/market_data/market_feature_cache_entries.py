@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from trader.infra.market_data.history.history import DailyBar, HistoryContext
-from trader.recommendation.domain.market.research import ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
 
 
@@ -15,12 +14,6 @@ class _HistoryEntry:
     expires_at: float
     source: str = "eastmoney"
     context: HistoryContext | None = None
-
-
-@dataclass(frozen=True)
-class _ResearchEntry:
-    observation: ResearchObservation
-    expires_at: float
 
 
 @dataclass(frozen=True)

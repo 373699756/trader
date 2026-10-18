@@ -192,7 +192,7 @@ def test_action_policy_observes_missing_core_features(feature_factory) -> None:
 
 def test_action_policy_observes_incomplete_corporate_risk_history(feature_factory) -> None:
     recommendation = _recommendation(
-        feature_factory(values={"corporate_risk_history_unavailable": 1.0}),
+        feature_factory(values={"corporate_risk_window_unavailable": 1.0}),
         90.0,
     )
 
@@ -205,7 +205,7 @@ def test_action_policy_observes_incomplete_corporate_risk_history(feature_factor
     )
 
     assert action is RecommendationAction.OBSERVE
-    assert reason == "corporate_risk_history_unavailable"
+    assert reason == "corporate_risk_window_unavailable"
 
 
 def test_action_policy_does_not_apply_bearish_audit_rating(feature_factory) -> None:

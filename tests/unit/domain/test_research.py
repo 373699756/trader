@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta
 import pytest
 
 from trader.recommendation.domain.market.research import (
+    AnnouncementRiskVerified,
     CorporateRiskCategory,
     CorporateRiskFact,
     CorporateRiskFactsFromAnnouncements,
@@ -258,7 +259,7 @@ def test_long_event_risk_levels_use_exact_configured_boundaries(
     assert features["reduction_or_unlock"] == expected_unlock
 
 
-def test_corporate_risk_history_applies_permanent_cooling_and_coverage_rules() -> None:
+def test_corporate_risk_window_does_not_keep_old_permanent_or_three_year_rules() -> None:
     facts = (
         CorporateRiskFact(
             category=CorporateRiskCategory.FINANCIAL_FRAUD,
@@ -282,19 +283,19 @@ def test_corporate_risk_history_applies_permanent_cooling_and_coverage_rules() -
         ),
     )
 
-    features = DeriveCorporateRiskFeatures(facts, NOW, history_complete=False)
+    features = DeriveCorporateRiskFeatures(facts, NOW, window_complete=False)
 
-    assert features["financial_fraud_history"] == 1.0
+    assert features["financial_fraud_history"] == 0.0
     assert features["official_investigation_history"] == 0.0
     assert features["major_shareholder_reduction"] == 0.0
-    assert features["corporate_risk_history_unavailable"] == 1.0
+    assert features["corporate_risk_window_unavailable"] == 1.0
 
 
 def test_current_announcement_coverage_does_not_claim_regulatory_history() -> None:
-    observation = ResearchObservation(announcements_available=True, corporate_risk_history_complete=False)
+    observation = ResearchObservation(announcements_available=True, corporate_risk_window_complete=False)
 
     assert ResearchComponentsFromObservation(observation).announcements == "known_clear"
-    assert DeriveCorporateRiskFeatures((), NOW, history_complete=False)["corporate_risk_history_unavailable"] == 1.0
+    assert DeriveCorporateRiskFeatures((), NOW, window_complete=False)["corporate_risk_window_unavailable"] == 1.0
 
 
 def test_active_reduction_and_unresolved_investigation_are_hard_risk_facts() -> None:
@@ -313,22 +314,30 @@ def test_active_reduction_and_unresolved_investigation_are_hard_risk_facts() -> 
         ),
     )
 
-    features = DeriveCorporateRiskFeatures(facts, NOW, history_complete=True)
+    features = DeriveCorporateRiskFeatures(facts, NOW, window_complete=True)
 
     assert features["major_shareholder_reduction"] == 1.0
     assert features["official_investigation_history"] == 1.0
-    assert features["corporate_risk_history_unavailable"] == 0.0
+    assert features["corporate_risk_window_unavailable"] == 0.0
 
 
-def test_only_strict_official_disclosure_titles_create_corporate_hard_risk_facts() -> None:
+def test_titles_alone_never_create_hard_risks_and_official_bodies_are_required() -> None:
     announcements = (
         ResearchAnnouncement("关于收到问询函及普通诉讼的公告", NOW, "official:generic"),
-        ResearchAnnouncement("控股股东拟减持股份的计划公告", NOW, "official:reduction"),
+        ResearchAnnouncement(
+            "控股股东拟减持股份的计划公告",
+            NOW,
+            "official:reduction",
+            body="本公司控股股东拟减持股份，详见减持计划。",
+            body_checked=True,
+        ),
         ResearchAnnouncement(
             "关于收到行政处罚决定书确认财务造假的公告",
             NOW,
             "official:fraud",
             "exchange_disclosure",
+            "本公司收到证监会行政处罚决定书，确认财务造假。",
+            True,
         ),
         ResearchAnnouncement("公司不存在资金占用及违规担保的说明", NOW, "official:negative"),
     )
@@ -339,6 +348,9 @@ def test_only_strict_official_disclosure_titles_create_corporate_hard_risk_facts
         CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION,
         CorporateRiskCategory.FINANCIAL_FRAUD,
     }
+    title_only = ResearchAnnouncement("关于收到立案告知书的公告", NOW, "unverified")
+    assert not AnnouncementRiskVerified(title_only)
+    assert not CorporateRiskFactsFromAnnouncements((title_only,))
 
 
 def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -> None:
@@ -347,6 +359,8 @@ def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -
             "控股股东拟减持股份的计划公告",
             NOW - timedelta(days=10),
             "official:reduction-plan",
+            body="本公司控股股东拟减持股份，减持计划〔2026〕减持1号。",
+            body_checked=True,
         ),
         ResearchAnnouncement(
             "关于控股股东减持计划实施进展的公告",
@@ -357,11 +371,15 @@ def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -
             "关于控股股东提前终止减持计划的公告",
             NOW,
             "official:reduction-end",
+            body="本公司控股股东提前终止减持计划〔2026〕减持1号。",
+            body_checked=True,
         ),
         ResearchAnnouncement(
             "关于收到立案调查告知书的公告",
             NOW - timedelta(days=20),
             "official:investigation-start",
+            body="本公司收到证监会立案告知书〔2026〕调查1号。",
+            body_checked=True,
         ),
         ResearchAnnouncement(
             "关于立案调查进展的公告",
@@ -372,6 +390,8 @@ def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -
             "关于立案调查终结的公告",
             NOW,
             "official:investigation-end",
+            body="本公司收到证监会〔2026〕调查1号通知，立案调查终结。",
+            body_checked=True,
         ),
     )
 
@@ -379,6 +399,42 @@ def test_resolution_title_does_not_create_and_resolve_a_duplicate_risk_cycle() -
 
     assert len(facts) == 2
     assert all(fact.resolved_at == NOW for fact in facts)
+
+
+def test_closure_cannot_resolve_an_unrelated_case_and_negation_cannot_create_risk() -> None:
+    opened = ResearchAnnouncement(
+        "收到立案告知书",
+        NOW - timedelta(days=1),
+        "case-a",
+        body="本公司收到证监会立案告知书〔2026〕调查1号。",
+        body_checked=True,
+    )
+    unrelated = ResearchAnnouncement(
+        "立案调查终结", NOW, "case-b", body="本公司收到证监会〔2026〕调查2号，立案调查终结。", body_checked=True
+    )
+    facts = CorporateRiskFactsFromAnnouncements((opened, unrelated))
+    assert len(facts) == 1 and facts[0].resolved_at is None
+    negated = ResearchAnnouncement(
+        "公司不存在财务造假的说明", NOW, "negated", body="本公司不存在财务造假。", body_checked=True
+    )
+    assert not CorporateRiskFactsFromAnnouncements((negated,))
+
+
+def test_investigation_ends_without_three_year_cooldown_and_window_has_exact_boundary() -> None:
+    fact = CorporateRiskFact(
+        CorporateRiskCategory.OFFICIAL_INVESTIGATION, NOW - timedelta(days=365), "case", "issuer_disclosure"
+    )
+    assert DeriveCorporateRiskFeatures((fact,), NOW, window_complete=True)["official_investigation_history"] == 1
+    assert (
+        DeriveCorporateRiskFeatures((fact,), NOW + timedelta(microseconds=1), window_complete=True)[
+            "official_investigation_history"
+        ]
+        == 0
+    )
+    from dataclasses import replace
+
+    resolved = replace(fact, resolved_at=NOW)
+    assert DeriveCorporateRiskFeatures((resolved,), NOW, window_complete=True)["official_investigation_history"] == 0
 
 
 def _derive_long_research_features(

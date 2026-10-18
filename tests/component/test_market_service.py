@@ -15,7 +15,6 @@ from tests.component.market_data_test_support import (
     BoundedLruCache,
     CountingHistoryClient,
     CountingMarketClient,
-    Evidence,
     FailFirstTencentClient,
     FailingMarketClient,
     FeatureBuilder,
@@ -24,8 +23,6 @@ from tests.component.market_data_test_support import (
     MarketQuote,
     MutableMonotonic,
     Path,
-    ResearchObservation,
-    SourceLaneScheduler,
     StaticGateway,
     StaticGatewayWithSeparateQuotes,
     StaticHistoryClient,
@@ -252,81 +249,7 @@ def test_final_refresh_bypasses_fresh_cache_but_remains_single_flight() -> None:
     assert sina.calls == 0
 
 
-def test_akshare_circuit_skips_excess_requests_and_recovers_with_one_probe() -> None:
-    monotonic = MutableMonotonic()
-    pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
-    lanes = SourceLaneScheduler(pool)
-
-    class ToggleResearchClient:
-        calls = 0
-        should_fail = True
-
-        def fetch_news(self, code: str, *, observed_at: datetime):
-            self.calls += 1
-            if self.should_fail:
-                raise RuntimeError("offline")
-            return (Evidence(f"news:{code}", "news", "恢复", "fixture", observed_at),)
-
-    research = ToggleResearchClient()
-    service = _service(
-        StaticGateway((_quote(),)),
-        StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-        research_client=research,
-        research_workers=1,
-        worker_pool=pool,
-        source_lanes=lanes,
-        monotonic=monotonic,
-        wall_clock=lambda: NOW,
-    )
-    pool.start()
-
-    try:
-        lanes.submit(
-            "akshare",
-            "research-cycle-1",
-            NOW,
-            service.research.load,
-            ("600001", "600002", "600003", "600004"),
-            NOW,
-            include_structured=False,
-            force=True,
-        ).result()
-        lanes.submit(
-            "akshare",
-            "research-cycle-2",
-            NOW,
-            service.research.load,
-            ("600005",),
-            NOW,
-            include_structured=False,
-            force=True,
-        ).result()
-        assert research.calls == 3
-        assert service.health()["sources"]["akshare"]["circuit_open"] is True
-
-        monotonic.value = 60.001
-        research.should_fail = False
-        lanes.submit(
-            "akshare",
-            "research-cycle-3",
-            NOW,
-            service.research.load,
-            ("600006",),
-            NOW,
-            include_structured=False,
-            force=True,
-        ).result()
-    finally:
-        lanes.stop(wait=True, timeout_seconds=1.0)
-        pool.stop(wait=True, cancel_futures=True)
-
-    assert research.calls == 4
-    assert service.health()["sources"]["akshare"]["circuit_open"] is False
-    assert service.health()["sources"]["akshare"]["consecutive_failures"] == 0
-
-
-def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
+def test_stale_intraday_and_missing_published_research_remain_observe_only() -> None:
     runtime = LoadRuntimeSettings(Path(__file__).parents[2] / "config" / "runtime.json")
     measured_at = AFTERNOON + timedelta(seconds=91)
     cache: BoundedLruCache[object] = BoundedLruCache(
@@ -354,19 +277,6 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
         )
         for bar in _tail_minute_bars()
     )
-    research = ResearchObservation(
-        evidence=(
-            Evidence(
-                "news-old",
-                "news",
-                "中标",
-                "fixture",
-                measured_at - timedelta(seconds=1201),
-                received_at=measured_at - timedelta(seconds=1201),
-                data_version="news-old",
-            ),
-        )
-    )
     cache.put(
         service.runner.cache_identity(
             "intraday_minutes",
@@ -378,18 +288,6 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
         intraday,
         data_version="intraday-old",
         source_time=measured_at - timedelta(seconds=91),
-    )
-    cache.put(
-        service.runner.cache_identity(
-            "research_success",
-            "akshare",
-            quote.code,
-            {"code": quote.code, "include_structured": False},
-            measured_at,
-        ),
-        research,
-        data_version="research-old",
-        source_time=measured_at - timedelta(seconds=1201),
     )
 
     features = service.read_candidate_features(
@@ -404,7 +302,7 @@ def test_auxiliary_cache_action_age_marks_new_features_observe_only() -> None:
         "research_data_degraded",
     )
     assert features[0].history_days == 60
-    assert features[0].evidence[-1].evidence_id == "news-old"
+    assert all(item.evidence_id != "news-old" for item in features[0].evidence)
 
 
 def test_feature_market_data_health_reports_bounded_quote_age_summaries() -> None:

@@ -13,13 +13,13 @@ from tests.unit.infra.research.test_history_sync import NOW
 from tests.unit.infra.test_history_supplier_router import Baseline, _current_universe
 from trader import bootstrap
 from trader.download.domain.baostock_daily import BaoStockCalendar
+from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySyncConfiguration
+from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
 from trader.download.infra.history_reference_files import ReadStEvidence, WriteStEvidence
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 from trader.infra.settings import LoadRuntimeSettings
-from trader.recommendation.application.risk_download import RiskDownloadInventory, RiskDownloadResult
-from trader.recommendation.entrypoints.risk_download_progress import StderrRiskDownloadProgress
 
 _ROOT = Path(__file__).resolve().parents[3]
 _DAYS = (NOW.date() - timedelta(days=2), NOW.date() - timedelta(days=1), NOW.date())
@@ -85,11 +85,8 @@ def _seed_st(path):
     )
 
 
-@pytest.mark.parametrize("include_official_history", (False, True))
 @pytest.mark.parametrize("existing_cache", (False, True))
-def test_risk_commands_refresh_st_then_download_only_confirmed_codes(
-    tmp_path, monkeypatch, st_sources, include_official_history, existing_cache
-):
+def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, monkeypatch, st_sources, existing_cache):
     calls, sessions = st_sources
     settings = replace(
         LoadRuntimeSettings(_ROOT / "config/runtime.json"),
@@ -106,54 +103,26 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(
     if not existing_cache:
         expected_queries |= {"600001", "600003"}
 
-    class Calendar:
-        def __init__(self, _path):
-            assert set(calls) == expected_queries
-            assert all(session.closed for session in sessions)
-            events.append("calendar")
-
-        def open_dates(self):
-            return (*_DAYS, NOW.date() + timedelta(days=1))
-
-    def download(_loader, codes, context, **options):
-        assert events == ["calendar"]
+    def download(root, progress, request, *, timeout_seconds):
+        codes, observed_at = request.codes, request.observed_at
+        assert set(calls) == expected_queries
+        assert all(session.closed for session in sessions)
         assert codes == ("600001", "600005", "600007")
-        assert (options["announcement_sync"] is not None) == include_official_history
-        assert options["research_enabled"] == (not include_official_history)
         events.append("business_download")
-        return RiskDownloadResult(
-            context.target_date,
-            len(codes),
-            3,
-            3,
-            0,
-            3,
-            0,
-            0,
-            False,
-            0.0,
-            RiskDownloadInventory(3, 3, 3, 3, 0, 0, 3, 0, 0, 0),
-        )
+        return CompanyEvidenceSyncResult(observed_at, len(codes), 3, 0, 0, 0, 0, (), 0.0)
 
-    monkeypatch.setattr(bootstrap, "ChinaTradingCalendar", Calendar)
-    monkeypatch.setattr(bootstrap, "DownloadRiskSnapshot", download)
-    monkeypatch.setattr(bootstrap, "PublishRiskSnapshot", lambda _root: events.append("publish"))
+    monkeypatch.setattr(bootstrap, "_sync_company_evidence", download)
     stream = StringIO()
-    progress = StderrRiskDownloadProgress(stream)
-    result = bootstrap.ExecuteRiskDownload(
-        "unused", progress=progress, include_official_history=include_official_history
-    )
-
+    result = bootstrap.ExecuteRiskDownload("unused", progress=CompanyEvidenceProgress(stream))
     assert result.requested_codes == 3
-    assert events == ["calendar", "business_download", "publish"]
+    assert events == ["business_download"]
     assert set(calls) == expected_queries
     assert {item.code for item in ReadStEvidence(evidence_path) if item.status == "ever_st"} == {
         "600002",
         "600003",
         "600006",
     }
-    assert "ST名单 | 完成" in stream.getvalue()
-    assert "合格 3 | 曾ST排除 3 | 未知排除 1" in stream.getvalue()
+    assert "ST资格" in stream.getvalue()
     assert all(session.closed for session in sessions)
     assert not any(thread.name.startswith("risk-st-check") for thread in enumerate_threads())
 
@@ -204,10 +173,7 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
     assert all(session.closed for session in sessions)
 
 
-@pytest.mark.parametrize("include_official_history", (False, True))
-def test_corrupt_st_cache_stops_risk_commands_before_business_requests(
-    tmp_path, monkeypatch, st_sources, include_official_history
-):
+def test_corrupt_st_cache_stops_risk_commands_before_business_requests(tmp_path, monkeypatch, st_sources):
     calls, sessions = st_sources
     settings = replace(
         LoadRuntimeSettings(_ROOT / "config/runtime.json"),
@@ -223,9 +189,9 @@ def test_corrupt_st_cache_stops_risk_commands_before_business_requests(
         raise AssertionError("business preparation must wait for valid ST evidence")
 
     monkeypatch.setattr(bootstrap, "ChinaTradingCalendar", forbidden)
-    monkeypatch.setattr(bootstrap, "DownloadRiskSnapshot", forbidden)
+    monkeypatch.setattr(bootstrap, "_sync_company_evidence", forbidden)
     with pytest.raises(ValueError, match="history ST evidence"):
-        bootstrap.ExecuteRiskDownload("unused", include_official_history=include_official_history)
+        bootstrap.ExecuteRiskDownload("unused")
     assert calls == []
     assert all(session.closed for session in sessions)
     assert not any(thread.name.startswith("risk-st-check") for thread in enumerate_threads())

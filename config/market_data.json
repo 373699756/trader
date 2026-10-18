@@ -14,8 +14,7 @@
       "eastmoney": "eastmoney_quote_security_master",
       "sina": "sina_quote_backup",
       "tencent": "tencent_quote",
-      "tushare": "tushare_sdk_120_point_daily_audit",
-      "akshare": "akshare_research_component_cache"
+      "tushare": "tushare_sdk_120_point_daily_audit"
     },
     "tushare": {
       "enabled": true,

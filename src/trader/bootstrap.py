@@ -15,12 +15,18 @@ from typing import TYPE_CHECKING, cast
 import requests
 from flask import Flask
 
+from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage, ProgressNumber
 from trader.download.application.qfq_download_progress import QfqMessage
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
+from trader.download.domain.company_evidence import (
+    CompanyEvidenceRequest,
+    CompanyEvidenceSyncResult,
+    EvidenceSyncProgress,
+)
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import (
     HistoryStEligibilitySummary,
@@ -30,10 +36,10 @@ from trader.download.domain.history_sync import (
 )
 from trader.download.domain.qfq_window import QfqUpdateResult
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
-from trader.download.infra.exchange_security_universe import (
-    LoadCurrentAShareUniverse,
-    SelectStEligibleUniverse,
-)
+from trader.download.infra.company_disclosure_source import CninfoMarketDisclosureSource, DisclosureSession
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex, SQLiteCompanyEvidenceReader
+from trader.download.infra.company_structured_source import EastmoneyCompanySource
+from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse, SelectStEligibleUniverse
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_reference_files import HistoryStEvidencePath
 from trader.download.infra.history_st_source import HistoryStNameSource
@@ -44,11 +50,7 @@ from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
-from trader.download.infra.tencent_qfq_supplier import (
-    TencentQfqDependencies,
-    TencentQfqSupplier,
-    TencentSessionPool,
-)
+from trader.download.infra.tencent_qfq_supplier import TencentQfqDependencies, TencentQfqSupplier, TencentSessionPool
 from trader.download.infra.terminal_progress import TerminalDownloadProgress
 from trader.http_api.route_services import ProfiledWebServices, UnifiedWebServices, WebApiConfig
 from trader.infra.atomic_files.json import RuntimeJsonWriter
@@ -56,7 +58,6 @@ from trader.infra.cache import BoundedLruCache
 from trader.infra.clock.shanghai import ShanghaiClock
 from trader.infra.clock.utc import UtcNow as _utc_now
 from trader.infra.initialization import InitializeIfAvailable as _initialize_if_available
-from trader.infra.market_data.providers.akshare_http_contracts import AkshareGetFunction
 from trader.infra.market_data.providers.baostock_industry import BaoStockIndustryClient
 from trader.infra.market_data.providers.exchange_security_master import (
     ExchangeSecurityMasterClient,
@@ -65,6 +66,7 @@ from trader.infra.market_data.providers.exchange_security_master import (
 )
 from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.providers.tushare_records import BuildTushareSdk
+from trader.infra.process_lock import ProcessLock
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings import (
     LoadLongWatchlist,
@@ -116,13 +118,6 @@ from trader.recommendation.application.pipeline.local_score.model_scoring import
 from trader.recommendation.application.pipeline.local_score.unavailable_model import UnavailableModelCapability
 from trader.recommendation.application.pipeline.score_merge.score_fusion import ScoreFusionService
 from trader.recommendation.application.pipeline.static_market.static_pipeline import StaticMarketPipeline
-from trader.recommendation.application.risk_download import (
-    DownloadRiskSnapshot,
-    RiskDownloadBudget,
-    RiskDownloadContext,
-    RiskDownloadProgressPort,
-    RiskDownloadResult,
-)
 from trader.recommendation.application.runtime.cadence import CadencePlanner, CadencePolicy, PipelineTask
 from trader.recommendation.application.runtime.latency import LatencyWaterfall
 from trader.recommendation.application.runtime.runtime_dependencies import RuntimeDependencies
@@ -137,17 +132,11 @@ from trader.recommendation.domain.market.eligibility import IssuerEligibilityRea
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
-from trader.recommendation.entrypoints.risk_download_progress import ReportRiskStProgress
 from trader.recommendation.infra.deepseek.budget import DeepSeekBudgetLedger
 from trader.recommendation.infra.deepseek.cache import ReviewCache
 from trader.recommendation.infra.deepseek.factory import CreateDeepseekClient
 from trader.recommendation.infra.deepseek.health_gate import DeepSeekHealthPolicy
 from trader.recommendation.infra.deepseek.reviewer import DeepSeekReviewer
-from trader.recommendation.infra.market_data.announcement_batch_sync import CninfoAnnouncementBatchSynchronizer
-from trader.recommendation.infra.market_data.announcement_sync import (
-    CninfoAnnouncementHttpClient,
-    CninfoAnnouncementIncrementalSync,
-)
 from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteCache, QuoteCacheDependencies
 from trader.recommendation.infra.market_data.gateway import MarketDataGateway
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
@@ -158,13 +147,12 @@ from trader.recommendation.infra.market_data.market_feature_service import (
     MarketFeatureService,
 )
 from trader.recommendation.infra.market_data.market_task_runner import MarketTaskRunner
-from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
 from trader.recommendation.infra.market_data.providers.sina import SinaClient
 from trader.recommendation.infra.market_data.providers.tencent import TencentClient, TencentFullMarketSource
+from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 from trader.recommendation.infra.market_data.published_history_observer import PublishedHistoryObserver
-from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.trading_calendar import ChinaTradingCalendar
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.normalization.features import FeatureBuilder
@@ -173,20 +161,13 @@ from trader.recommendation.infra.persistence.data_plane_initialization import _i
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
-from trader.recommendation.infra.persistence.risk_snapshot import (
-    PublishRiskSnapshot,
-    RiskDatabaseKind,
-    RiskDatabasePath,
-)
 from trader.recommendation.infra.policy_settings import (
     _long_group_definitions,
     _long_item_definitions,
     _recommendation_policy,
 )
 from trader.recommendation.infra.runtime.application_system import ApplicationSystem, RuntimeWorkerResources
-from trader.recommendation.infra.runtime.initialization import (
-    FixedCacheTtl as _fixed_cache_ttl,
-)
+from trader.recommendation.infra.runtime.initialization import FixedCacheTtl as _fixed_cache_ttl
 from trader.recommendation.infra.runtime.profiled_application import ProfiledApplicationSystem
 from trader.recommendation.infra.runtime.startup_readiness import WarnMissingLocalData
 from trader.recommendation.infra.scoring.cost_settings import LoadExecutionCostPolicy
@@ -207,109 +188,68 @@ if TYPE_CHECKING:
 
 
 def ExecuteRiskDownload(
-    config_path: str | Path,
-    *,
-    progress: RiskDownloadProgressPort | None = None,
-    include_official_history: bool = False,
-) -> RiskDownloadResult:
-    """Prepare current research, or explicitly backfill issuer history."""
-    command_started = time.monotonic()
+    config_path: str | Path, *, progress: Callable[[EvidenceSyncProgress], None] | None = None
+) -> CompanyEvidenceSyncResult:
+    """Build or increment the fresh company evidence database, without legacy reads."""
+    started = time.monotonic()
     settings = LoadRuntimeSettings(config_path)
-    strategy = LoadStrategySettings(settings.strategy_config_path)
     clock = ShanghaiClock(_utc_now)
     population = _load_risk_st_universe(settings.reference_dir, clock.now().date(), progress)
-    calendar = ChinaTradingCalendar(settings.runtime_dir / "calendar.json")
-    open_dates = calendar.open_dates()
-    observed_at = clock.now()
-    target_date = _risk_target_date(observed_at, open_dates)
-    eligibility = SQLiteIssuerEligibilityIndex(settings.reference_dir, read_only=True)
-    st_reasons = {
-        IssuerEligibilityReason.HISTORICAL_ST,
-        IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
-    }
-    excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
-    codes = tuple(item.code for item in population if item.code not in excluded)
-    risk_root = settings.project_root / "data" / "risk"
-    task_database: RiskDatabaseKind = "risk_history_download" if include_official_history else "risk_download"
-    risk_data = SQLiteDataPlane(
-        risk_root,
-        database_path=RiskDatabasePath(risk_root, task_database),
-        buffered_writes=True,
+    remaining = 3480.0 - (time.monotonic() - started)
+    if remaining <= 0:
+        raise TimeoutError("company_task_deadline")
+    result = _sync_company_evidence(
+        settings.project_root / "data" / "risk",
+        progress,
+        CompanyEvidenceRequest(
+            tuple(item.code for item in population),
+            clock.now(),
+            budget_seconds=remaining,
+        ),
+        timeout_seconds=settings.market_data.research_timeout_seconds,
     )
-    risk_data.initialize()
-    workers = BoundedExecutor(
-        worker_count=settings.pipeline.market_workers,
-        queue_capacity=len(codes),
-        thread_name_prefix="risk-download",
-    )
-    cninfo_client = CninfoAnnouncementHttpClient(
-        session_factory=requests.Session,
-        timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
-        wall_clock=clock.now,
-    )
-    workers.start()
-    try:
-        runner = MarketTaskRunner(
-            worker_pool=workers,
-            source_lanes=None,
-            cache=None,
-            source_contracts=settings.market_data.source_contracts,
-            config_version=settings.config_version,
-            schema_version="risk_snapshot",
-            wall_clock=clock.now,
-        )
-        research_client = AkshareResearchClient(
-            get=cast(AkshareGetFunction, requests.get),
-            timeout_seconds=min(8.0, settings.market_data.research_timeout_seconds),
-            long_research_policy=strategy.long_research,
-            cancel_requested=lambda: not workers.is_running(),
-        )
-        loader = ResearchLoader(
-            research_client,
-            runner,
-            data_plane=risk_data,
-            risk_batch_client=research_client,
-            workers=settings.pipeline.market_workers,
-            ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
-            circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
-            circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
-            capacity=max(1, len(codes)),
-            cache_dir=None,
-            json_writer=None,
-            monotonic=time.monotonic,
-        )
-        cninfo_sync = (
-            CninfoAnnouncementBatchSynchronizer(
-                CninfoAnnouncementIncrementalSync(cninfo_client, risk_data),
-                risk_data,
-                workers,
-                wall_clock=clock.now,
+    return replace(result, elapsed_seconds=max(0.0, time.monotonic() - started))
+
+
+def _sync_company_evidence(
+    root: Path,
+    progress: Callable[[EvidenceSyncProgress], None] | None,
+    request: CompanyEvidenceRequest,
+    *,
+    cancel_requested: Callable[[], bool] | None = None,
+    timeout_seconds: float = 8.0,
+) -> CompanyEvidenceSyncResult:
+    with ProcessLock(root / "company_evidence.lock", label="risk_download"):
+        with requests.Session() as disclosure_session, requests.Session() as structured_session:
+            disclosure_session.trust_env = structured_session.trust_env = False
+            dependencies = CompanyEvidenceDependencies(
+                SQLiteCompanyEvidenceIndex(root / "company_evidence.sqlite3"),
+                CninfoMarketDisclosureSource(
+                    cast(DisclosureSession, disclosure_session),
+                    monotonic=time.monotonic,
+                    sleeper=time.sleep,
+                    timeout_seconds=timeout_seconds,
+                ),
+                EastmoneyCompanySource(
+                    cast(DisclosureSession, structured_session),
+                    monotonic=time.monotonic,
+                    timeout_seconds=timeout_seconds,
+                ),
+                time.monotonic,
+                progress,
+                cancel_requested,
             )
-            if include_official_history
-            else None
-        )
-        budget = RiskDownloadBudget(
-            task_seconds=None if include_official_history else max(1.0, 3480.0 - (time.monotonic() - command_started))
-        )
-        result = DownloadRiskSnapshot(
-            loader,
-            codes,
-            RiskDownloadContext(target_date, observed_at, time.monotonic, clock.now, progress=progress),
-            budget=budget,
-            announcement_sync=cninfo_sync,
-            require_current_window=not include_official_history,
-            research_enabled=not include_official_history,
-        )
-    finally:
-        workers.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
-        cninfo_client.close()
-        risk_data.close()
-    PublishRiskSnapshot(risk_root)
-    return replace(result, elapsed_seconds=max(0.0, time.monotonic() - command_started))
+            return SyncCompanyEvidence(
+                dependencies,
+                request.codes,
+                request.observed_at,
+                budget_seconds=request.budget_seconds,
+                news_codes=request.news_codes,
+            )
 
 
 def _load_risk_st_universe(
-    reference_root: Path, as_of: date, progress: RiskDownloadProgressPort | None
+    reference_root: Path, as_of: date, progress: Callable[[EvidenceSyncProgress], None] | None
 ) -> tuple[BaoStockSecurity, ...]:
     universe = LoadCurrentAShareUniverse(
         partial(FetchSseListings, get=requests.get), partial(FetchSzseListings, get=requests.get), 15.0
@@ -324,7 +264,21 @@ def _load_risk_st_universe(
             sessions.borrow,
             workers,
             lambda: not workers.is_running(),
-            report=partial(ReportRiskStProgress, progress),
+            report=lambda completed, total, summary: (
+                progress(
+                    EvidenceSyncProgress(
+                        "st_eligibility",
+                        completed,
+                        total - completed,
+                        0,
+                        0,
+                        0,
+                        f"unknown:{summary.unknown}" if summary and summary.unknown else "",
+                    )
+                )
+                if progress
+                else None
+            ),
         )
         return SelectStEligibleUniverse(universe, source.fetch(universe, as_of))
     finally:
@@ -332,14 +286,6 @@ def _load_risk_st_universe(
         resources.close()
         if not stopped.completed:
             raise RuntimeError("history ST worker shutdown exceeded 30 seconds")
-
-
-def _risk_target_date(observed_at: datetime, open_dates: tuple[date, ...]) -> date:
-    local_date = observed_at.date()
-    eligible = tuple(day for day in open_dates if day > local_date or (day == local_date and observed_at.hour < 15))
-    if not eligible:
-        raise RuntimeError("risk download cannot resolve a current or next trading date")
-    return eligible[0]
 
 
 def ExecuteHistoryDownload(
@@ -352,9 +298,7 @@ def ExecuteHistoryDownload(
 ) -> HistoryMaintenanceStatus:
     """Compose both manual and scheduled history routes in the unique root."""
     history_pool = BoundedExecutor(
-        worker_count=configuration.history_workers,
-        queue_capacity=0,
-        thread_name_prefix="history-download",
+        worker_count=configuration.history_workers, queue_capacity=0, thread_name_prefix="history-download"
     )
     history_pool.start()
     history_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="history-writer")
@@ -368,9 +312,7 @@ def ExecuteHistoryDownload(
             15.0,
         )
         with BaoStockHistorySupplier(
-            configuration,
-            progress=supplier_progress or progress,
-            cancel_requested=cancel_requested,
+            configuration, progress=supplier_progress or progress, cancel_requested=cancel_requested
         ) as baseline:
             http_pool = TencentSessionPool(
                 tuple(
@@ -378,11 +320,7 @@ def ExecuteHistoryDownload(
                 )
             )
             prices = TencentQfqSupplier(
-                TencentQfqDependencies(
-                    http_pool.borrow,
-                    lambda _as_of: load_current_securities(),
-                    cancel_requested,
-                )
+                TencentQfqDependencies(http_pool.borrow, lambda _as_of: load_current_securities(), cancel_requested)
             )
             return DownloadHistoryUseCase(
                 HistorySyncGateway(worker_pool=history_pool, writer_pool=history_writer)
@@ -400,11 +338,7 @@ def ExecuteHistoryDownload(
                         report=lambda done, total, summary: (
                             progress.publish(
                                 HistorySyncProgress(
-                                    "history_st_reference",
-                                    "completed",
-                                    done,
-                                    total,
-                                    st_summary=summary,
+                                    "history_st_reference", "completed", done, total, st_summary=summary
                                 )
                             )
                             if progress is not None
@@ -464,19 +398,11 @@ def ExecuteQfqDownload(
 
             def load_qfq_universe(as_of: date) -> tuple[BaoStockSecurity, ...]:
                 official = LoadCurrentAShareUniverse(
-                    partial(FetchSseListings, get=requests.get),
-                    partial(FetchSzseListings, get=requests.get),
-                    15.0,
+                    partial(FetchSseListings, get=requests.get), partial(FetchSzseListings, get=requests.get), 15.0
                 )
                 return SelectStEligibleUniverse(official, st_source.fetch(official, as_of))
 
-            tencent = TencentQfqSupplier(
-                TencentQfqDependencies(
-                    http_pool.borrow,
-                    load_qfq_universe,
-                    cancel_requested,
-                )
-            )
+            tencent = TencentQfqSupplier(TencentQfqDependencies(http_pool.borrow, load_qfq_universe, cancel_requested))
             updater = UpdateQfqWindows(
                 v2,
                 v3,
@@ -488,12 +414,7 @@ def ExecuteQfqDownload(
                 worker_pool=qfq_pool,
             )
             return QfqUpdateRunner(
-                history,
-                updater,
-                v2,
-                v3,
-                root / ".maintenance.lock",
-                ShanghaiClock(now).now,
+                history, updater, v2, v3, root / ".maintenance.lock", ShanghaiClock(now).now
             ).execute()
     finally:
         stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
@@ -635,11 +556,7 @@ def BuildSystem(
     budget_path: Path | None = None,
     owns_shared_runtime: bool = True,
 ) -> ApplicationSystem[
-    SQLiteResearchTraceIndex,
-    SQLiteOutcomeEvidenceRepository,
-    QfqDailyMaintenance,
-    UnifiedWebServices,
-    Flask,
+    SQLiteResearchTraceIndex, SQLiteOutcomeEvidenceRepository, QfqDailyMaintenance, UnifiedWebServices, Flask
 ]:
     settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
@@ -648,10 +565,7 @@ def BuildSystem(
             runtime_dir=settings.runtime_dir / "profiles" / runtime_scope,
             freeze_dir=settings.freeze_dir / runtime_scope,
         )
-    strategy = LoadStrategySettings(
-        settings.strategy_config_path,
-        scoring_profile=scoring_profile,
-    )
+    strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=scoring_profile)
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)
     cost_policy = LoadExecutionCostPolicy(Path(config_path).expanduser().resolve().parent)
     effective_config_version = (
@@ -708,16 +622,8 @@ def BuildSystem(
             },
         )
     )
-    candidate_filtering = CandidateFilteringService(
-        policy,
-        model_scoring,
-        settings.market_data.candidate_pool_size,
-    )
-    local_scoring = LocalScoringService(
-        model_scoring,
-        RankingSelectionService(),
-        RiskControlService(),
-    )
+    candidate_filtering = CandidateFilteringService(policy, model_scoring, settings.market_data.candidate_pool_size)
+    local_scoring = LocalScoringService(model_scoring, RankingSelectionService(), RiskControlService())
     publication_io = PublicationIoTracker(now=ShanghaiClock(now).now, monotonic=time.monotonic)
     publication = _build_publication(
         context,
@@ -768,10 +674,7 @@ def BuildSystem(
         current = publication.tomorrow_index.snapshot(overlay.strategy).current
         if not isinstance(current, ScoredDecision) or current.version != overlay.parent_version:
             raise ValueError("overlay event parent decision is unavailable")
-        return publication.decision_events.publish_overlay(
-            overlay,
-            parent_version=current.version,
-        )
+        return publication.decision_events.publish_overlay(overlay, parent_version=current.version)
 
     scheduler = SchedulerRuntime(
         RuntimeDependencies(
@@ -784,17 +687,11 @@ def BuildSystem(
             reviews=deepseek,
             index=publication.tomorrow_index,
             observer=publication.observer,
-            freezes=FreezeAdapter(
-                publication.tomorrow_freezer,
-                publication.d25_freezer,
-            ),
+            freezes=FreezeAdapter(publication.tomorrow_freezer, publication.d25_freezer),
             settlement=OutcomeSettlementAdapter(
                 market_data,
                 OutcomeSettlementService(
-                    market_data,
-                    persistence.outcomes,
-                    persistence.outcomes,
-                    session_distance=calendar.session_distance,
+                    market_data, persistence.outcomes, persistence.outcomes, session_distance=calendar.session_distance
                 ),
             ),
             research_factory=ResearchRuntime,
@@ -838,12 +735,7 @@ def BuildSystem(
     web_services = UnifiedWebServices(
         publication.decision_queries,
         publication.decision_events,
-        lambda: _runtime_status(
-            scheduler,
-            reviewer,
-            market_data.health,
-            model_scoring.status(),
-        ),
+        lambda: _runtime_status(scheduler, reviewer, market_data.health, model_scoring.status()),
         WebApiConfig(
             heartbeat_seconds=settings.pipeline.publish_heartbeat_seconds,
             snapshot_retention_seconds=settings.api.web_snapshot_retention_seconds,
@@ -885,18 +777,10 @@ def BuildProfiledSystem(config_path: str | Path) -> ProfiledApplicationSystem[Fl
     shared_budget = settings.runtime_dir / "shared" / "deepseek-budget.sqlite3"
     systems = (
         BuildSystem(
-            config_path,
-            scoring_profile="v2",
-            runtime_scope="v2",
-            budget_path=shared_budget,
-            owns_shared_runtime=True,
+            config_path, scoring_profile="v2", runtime_scope="v2", budget_path=shared_budget, owns_shared_runtime=True
         ),
         BuildSystem(
-            config_path,
-            scoring_profile="v3",
-            runtime_scope="v3",
-            budget_path=shared_budget,
-            owns_shared_runtime=False,
+            config_path, scoring_profile="v3", runtime_scope="v3", budget_path=shared_budget, owns_shared_runtime=False
         ),
     )
     default_profile = LoadStrategySettings(settings.strategy_config_path).scoring_profile
@@ -918,10 +802,7 @@ def BuildProfiledSystem(config_path: str | Path) -> ProfiledApplicationSystem[Fl
 def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) -> RuntimeWorkerResources:
     urgent_worker_count = 1 if settings.pipeline.market_workers > 1 else 0
     control_pool = BoundedExecutor(
-        worker_count=2,
-        urgent_worker_count=1,
-        queue_capacity=4,
-        thread_name_prefix="trader-control",
+        worker_count=2, urgent_worker_count=1, queue_capacity=4, thread_name_prefix="trader-control"
     )
     data_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers + urgent_worker_count,
@@ -930,16 +811,8 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
         thread_name_prefix="source-data",
     )
     source_lanes = SourceLaneScheduler(data_pool, latency=latency)
-    quote_pool = BoundedExecutor(
-        worker_count=4,
-        queue_capacity=4,
-        thread_name_prefix="candidate-quotes",
-    )
-    market_quote_pool = BoundedExecutor(
-        worker_count=3,
-        queue_capacity=3,
-        thread_name_prefix="market-quotes",
-    )
+    quote_pool = BoundedExecutor(worker_count=4, queue_capacity=4, thread_name_prefix="candidate-quotes")
+    market_quote_pool = BoundedExecutor(worker_count=3, queue_capacity=3, thread_name_prefix="market-quotes")
     research_pool = BoundedExecutor(
         worker_count=settings.pipeline.market_workers,
         queue_capacity=settings.market_data.candidate_pool_size,
@@ -952,9 +825,7 @@ def _build_worker_context(settings: RuntimeSettings, latency: LatencyWaterfall) 
     )
     json_writer = RuntimeJsonWriter(persistence_pool)
     market_cache: BoundedLruCache[object] = BoundedLruCache(
-        settings.market_data.cache_policy,
-        cadence_seconds=settings.pipeline.cadence_seconds,
-        wall_clock=_utc_now,
+        settings.market_data.cache_policy, cadence_seconds=settings.pipeline.cadence_seconds, wall_clock=_utc_now
     )
     return RuntimeWorkerResources(
         control_pool=control_pool,
@@ -1011,10 +882,7 @@ def _build_market_data(
         if snapshot is None:
             return ()
         observed_at = now()
-        st_reasons = {
-            IssuerEligibilityReason.HISTORICAL_ST,
-            IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
-        }
+        st_reasons = {IssuerEligibilityReason.HISTORICAL_ST, IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING}
         excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
         codes = tuple(issuer.code for issuer in snapshot.records if not issuer.is_st and issuer.code not in excluded)
         historical_st = history_cache.historical_st_eligibility()
@@ -1040,18 +908,11 @@ def _build_market_data(
         full_market_primary_timeout_seconds=settings.market_data.full_market_primary_timeout_seconds,
         full_market_fetchers={
             "tencent_market": lambda deadline, cancel_event: tencent_market.fetch_market(
-                deadline=deadline,
-                cancel_event=cancel_event,
+                deadline=deadline, cancel_event=cancel_event
             ),
-            "sina": lambda deadline, cancel_event: sina.fetch_market(
-                deadline=deadline,
-                cancel_event=cancel_event,
-            ),
+            "sina": lambda deadline, cancel_event: sina.fetch_market(deadline=deadline, cancel_event=cancel_event),
         },
-        recovery_probes={
-            "tencent_market": tencent_market.probe_market,
-            "sina": sina.probe_market,
-        },
+        recovery_probes={"tencent_market": tencent_market.probe_market, "sina": sina.probe_market},
         worker_pool=data_pool,
         source_lanes=source_lanes,
         cache=market_cache,
@@ -1062,7 +923,6 @@ def _build_market_data(
         latency=context.latency,
         listing_open_dates=calendar.open_dates,
     )
-    evidence_cache_dir = settings.runtime_dir / "evidence_cache"
     feature_builder = FeatureBuilder(
         strategy.news_signal,
         strategy.tomorrow_tail_signal,
@@ -1070,14 +930,6 @@ def _build_market_data(
         strategy.long_research,
         strategy.feature_component_weights,
         model_momentum_horizons=model_momentum_horizons,
-    )
-    research_client = AkshareResearchClient(
-        get=cast(AkshareGetFunction, requests.get),
-        timeout_seconds=settings.market_data.research_timeout_seconds,
-        long_research_policy=strategy.long_research,
-        evidence_cache_dir=evidence_cache_dir,
-        json_writer=workers.json_writer,
-        cancel_requested=lambda: not workers.research_pool.is_running(),
     )
     tushare_client = TushareClient(
         sdk_factory=partial(BuildTushareSdk, session_factory=requests.Session),
@@ -1098,15 +950,6 @@ def _build_market_data(
         schema_version="market_snapshot",
         wall_clock=now,
     )
-    research_runner = MarketTaskRunner(
-        worker_pool=workers.research_pool,
-        source_lanes=None,
-        cache=market_cache,
-        source_contracts=settings.market_data.source_contracts,
-        config_version=settings.config_version,
-        schema_version="market_snapshot",
-        wall_clock=now,
-    )
     history_root = settings.project_root / "data" / "history"
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
     history_cache = PublishedHistoryCache(
@@ -1117,10 +960,7 @@ def _build_market_data(
         outcome_history=published_history,
         open_dates=calendar.open_dates,
     )
-    industry_source = LocalIndustrySource(
-        settings.reference_dir / "industry_queries.sqlite3",
-        BaoStockIndustryClient(),
-    )
+    industry_source = LocalIndustrySource(settings.reference_dir / "industry_queries.sqlite3", BaoStockIndustryClient())
     references = ReferenceLoader(
         gateway,
         runner,
@@ -1147,36 +987,26 @@ def _build_market_data(
     if context.owns_shared_runtime:
         try:
             eligibility.record_manual_blacklist(
-                strategy.hard_filters.blacklist_codes,
-                now(),
-                context.effective_config_version,
+                strategy.hard_filters.blacklist_codes, now(), context.effective_config_version
             )
         except RuntimeError:
             # The typed index retains any facts it could verify; persistence degradation stays observable.
             pass
     risk_root = settings.project_root / "data" / "risk"
-    risk_data = SQLiteDataPlane(
-        risk_root,
-        database_path=RiskDatabasePath(risk_root, "risk_download"),
-    )
-    risk_snapshot = SQLiteDataPlane(
-        risk_root,
-        database_path=RiskDatabasePath(risk_root, "risk_snapshot"),
-        read_only=True,
-    )
-    research = ResearchLoader(
-        research_client,
-        research_runner,
-        data_plane=risk_data,
-        recovery_data_plane=risk_snapshot,
-        workers=settings.pipeline.market_workers,
-        ttl_seconds=_fixed_cache_ttl(settings, "research_success"),
-        circuit_breaker_failures=settings.market_data.circuit_breaker_failures,
-        circuit_breaker_seconds=settings.market_data.circuit_breaker_seconds,
-        capacity=settings.market_data.cache_policy.datasets["research_success"].capacity,
-        cache_dir=evidence_cache_dir,
-        json_writer=workers.json_writer,
-        monotonic=time.monotonic,
+    research = PublishedCompanyResearch(
+        SQLiteCompanyEvidenceReader(risk_root / "company_evidence.sqlite3"),
+        wall_clock=now,
+        refresh=(
+            partial(
+                _sync_company_evidence,
+                risk_root,
+                None,
+                cancel_requested=partial(source_lanes.is_stopped, "company_evidence"),
+                timeout_seconds=settings.market_data.research_timeout_seconds,
+            )
+            if context.owns_shared_runtime
+            else None
+        ),
     )
     intraday_loader = IntradayLoader(
         intraday_client,
@@ -1194,14 +1024,7 @@ def _build_market_data(
         monotonic=time.monotonic,
     )
     market_health = MarketDataHealth(
-        MarketDataHealthDependencies(
-            quote_cache,
-            history_cache,
-            research,
-            intraday_loader,
-            references,
-            eligibility,
-        ),
+        MarketDataHealthDependencies(quote_cache, history_cache, research, intraday_loader, references, eligibility),
         wall_clock=now,
     )
     market_data = MarketFeatureService(
@@ -1216,9 +1039,7 @@ def _build_market_data(
             eligibility,
             time.monotonic,
             StaticMarketPipeline(
-                eligibility,
-                monotonic=time.monotonic,
-                historical_st_eligibility=history_cache.historical_st_eligibility,
+                eligibility, monotonic=time.monotonic, historical_st_eligibility=history_cache.historical_st_eligibility
             ),
         )
     )
@@ -1316,9 +1137,7 @@ def _build_publication(
         records,
         clock,
         runtime_identity=DecisionRuntimeIdentity(
-            context.effective_config_version,
-            context.strategy.strategy_version,
-            context.strategy.fusion.version,
+            context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
         ),
         strategy=Strategy.TOMORROW,
         publication_io=publication_io,
@@ -1328,9 +1147,7 @@ def _build_publication(
         records,
         clock,
         runtime_identity=DecisionRuntimeIdentity(
-            context.effective_config_version,
-            context.strategy.strategy_version,
-            context.strategy.fusion.version,
+            context.effective_config_version, context.strategy.strategy_version, context.strategy.fusion.version
         ),
         strategy=Strategy.D25,
         publication_io=publication_io,

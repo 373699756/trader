@@ -433,17 +433,17 @@ class _DefaultFilterRules:
             )
         return None
 
-    def corporate_risk_history_unavailable(
+    def corporate_risk_window_unavailable(
         self,
         snapshot: FeatureSnapshot,
         _now: datetime,
     ) -> FilterAudit | None:
-        value = snapshot.values.get("corporate_risk_history_unavailable")
+        value = snapshot.values.get("corporate_risk_window_unavailable")
         if value is not None and math.isfinite(value) and value > 0.0:
             return _make_audit(
                 snapshot,
-                "corporate_risk_history_unavailable",
-                "complete official-history coverage",
+                "corporate_risk_window_unavailable",
+                "complete recent-year issuer disclosure coverage",
                 value,
             )
         return None
@@ -526,9 +526,9 @@ def LevelTwoFilterRules(
         ),
         FilterRule("structured_risk_unavailable", FilterSeverity.OPTIONAL, rules.structured_risk_unavailable),
         FilterRule(
-            "corporate_risk_history_unavailable",
+            "corporate_risk_window_unavailable",
             FilterSeverity.OPTIONAL,
-            rules.corporate_risk_history_unavailable,
+            rules.corporate_risk_window_unavailable,
         ),
     )
 

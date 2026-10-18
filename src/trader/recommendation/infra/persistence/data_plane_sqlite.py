@@ -100,42 +100,6 @@ def InitializeDatabase(database_path: Path) -> None:
                 PRIMARY KEY(freeze_id, code)
             );
 
-            CREATE TABLE IF NOT EXISTS risk_evidence_recent(
-                code TEXT NOT NULL,
-                evidence_id TEXT NOT NULL,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined')),
-                PRIMARY KEY(code, evidence_id)
-            );
-            CREATE TABLE IF NOT EXISTS risk_evidence_formal(
-                freeze_id TEXT NOT NULL,
-                code TEXT NOT NULL,
-                evidence_id TEXT NOT NULL,
-                observed_at TEXT NOT NULL,
-                source_time TEXT NOT NULL,
-                source TEXT NOT NULL,
-                data_version TEXT NOT NULL,
-                schema_version TEXT NOT NULL,
-                payload_hash TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'committed',
-                error TEXT NOT NULL DEFAULT '',
-                recovery_payload BLOB,
-                recovery_sha256 TEXT NOT NULL DEFAULT '',
-                CHECK(status IN ('staged', 'committed', 'quarantined')),
-                PRIMARY KEY(freeze_id, code, evidence_id)
-            );
-
             CREATE TABLE IF NOT EXISTS source_cursor_recent(
                 cursor_name TEXT PRIMARY KEY,
                 observed_at TEXT NOT NULL,
@@ -216,13 +180,6 @@ def InitializeDatabase(database_path: Path) -> None:
             """
         )
         ApplyMigrations(connection)
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS risk_evidence_research_lookup "
-            "ON risk_evidence_recent(evidence_id, code) "
-            "WHERE status = 'committed' AND "
-            "(evidence_id = 'risk-observation:structured' OR "
-            "(evidence_id >= 'risk-component:' AND evidence_id < 'risk-component;'))"
-        )
         if _current_schema_version(connection) < SCHEMA_VERSION:
             connection.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
@@ -286,14 +243,6 @@ MIGRATIONS: dict[int, tuple[str, ...]] = {
         "ALTER TABLE historical_feature_formal ADD COLUMN error TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE historical_feature_formal ADD COLUMN recovery_payload BLOB",
         "ALTER TABLE historical_feature_formal ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE risk_evidence_recent ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE risk_evidence_recent ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE risk_evidence_recent ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE risk_evidence_recent ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE risk_evidence_formal ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
-        "ALTER TABLE risk_evidence_formal ADD COLUMN error TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE risk_evidence_formal ADD COLUMN recovery_payload BLOB",
-        "ALTER TABLE risk_evidence_formal ADD COLUMN recovery_sha256 TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE source_cursor_recent ADD COLUMN status TEXT NOT NULL DEFAULT 'committed'",
         "ALTER TABLE source_cursor_recent ADD COLUMN error TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE source_cursor_recent ADD COLUMN recovery_payload BLOB",

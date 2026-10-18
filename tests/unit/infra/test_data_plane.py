@@ -17,7 +17,6 @@ from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneConflictError,
     DataPlaneRecoverySummary,
     DataPlaneUnavailableError,
-    RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
     TradingCalendarRecord,
@@ -45,7 +44,6 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     data_plane.initialize()
 
     data_plane.save_security_master_recent(_security_master_record("600001", payload={"field": "sm"}))
-    data_plane.save_risk_evidence_recent(_risk_evidence_record("600001", "r1"))
     data_plane.save_source_cursor_recent(_source_cursor_record("cursor-1"))
     data_plane.save_trading_calendar_recent(_trading_calendar_record())
     data_plane.save_trading_calendar_formal("calendar-freeze-1", _trading_calendar_record())
@@ -53,7 +51,6 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
     assert data_plane.load_security_master_recent("600001") == _security_master_record(
         "600001", payload={"field": "sm"}
     )
-    assert data_plane.load_risk_evidence_recent("600001", "r1") == _risk_evidence_record("600001", "r1")
     assert data_plane.load_source_cursor_recent("cursor-1") == _source_cursor_record("cursor-1")
     assert data_plane.load_trading_calendar_recent("sse_szse") == _trading_calendar_record()
     assert data_plane.load_trading_calendar_formal("calendar-freeze-1", "sse_szse") == _trading_calendar_record()
@@ -61,32 +58,31 @@ def test_recent_records_for_all_families_round_trip(tmp_path: Path) -> None:
 
 def test_committed_write_uses_one_atomic_row_without_recovery_copy(tmp_path: Path) -> None:
     data_plane = SQLiteDataPlane(tmp_path)
-    record = _risk_evidence_record("600001", "announcement-1")
+    record = _security_master_record("600001", payload={"field": "snapshot"})
 
-    data_plane.save_risk_evidence_recent(record)
+    data_plane.save_security_master_recent(record)
 
     with closing(sqlite3.connect(_database_path(tmp_path))) as connection:
         row = connection.execute(
-            "SELECT status, recovery_payload, recovery_sha256 FROM risk_evidence_recent "
-            "WHERE code = ? AND evidence_id = ?",
-            (record.code, record.evidence_id),
+            "SELECT status, recovery_payload, recovery_sha256 FROM security_master_recent WHERE code = ?",
+            (record.code,),
         ).fetchone()
     assert row == ("committed", None, "")
-    assert data_plane.load_risk_evidence_recent(record.code, record.evidence_id) == record
+    assert data_plane.load_security_master_recent(record.code) == record
 
 
 def test_buffered_daily_writer_serializes_threads_and_survives_reopen(tmp_path: Path) -> None:
     data_plane = SQLiteDataPlane(tmp_path, buffered_writes=True)
-    records = tuple(_risk_evidence_record("600001", f"announcement-{index}") for index in range(30))
+    records = tuple(
+        _security_master_record(f"{600001 + index:06d}", payload={"field": "snapshot"}) for index in range(30)
+    )
 
     with ThreadPoolExecutor(max_workers=3) as workers:
-        list(workers.map(data_plane.save_risk_evidence_recent, records))
+        list(workers.map(data_plane.save_security_master_recent, records))
     data_plane.close()
 
     reopened = SQLiteDataPlane(tmp_path)
-    assert reopened.load_risk_evidence_recent_records(("600001",)) == tuple(
-        sorted(records, key=lambda record: record.evidence_id)
-    )
+    assert reopened.load_security_master_recent_records() == records
 
 
 def test_security_master_batch_uses_one_write_transaction(
@@ -115,41 +111,6 @@ def test_security_master_batch_uses_one_write_transaction(
     assert connection_count == 2
     assert data_plane.load_security_master_recent_records() == records
     assert connection_count == 3
-
-
-def test_risk_evidence_scan_reads_only_requested_codes_without_materializing_all_rows(tmp_path: Path) -> None:
-    data_plane = SQLiteDataPlane(tmp_path)
-    records = (
-        _risk_evidence_record("600001", "a"),
-        _risk_evidence_record("600001", "b"),
-        _risk_evidence_record("600002", "c"),
-    )
-    data_plane.save_risk_evidence_recent_records(records)
-    seen: list[RiskEvidenceRecord] = []
-
-    data_plane.scan_risk_evidence_recent_records(seen.append, ("600001",))
-
-    assert seen == list(records[:2])
-    assert data_plane.load_risk_evidence_recent_records(("600001",)) == records[:2]
-
-
-def test_research_scan_skips_large_official_history_without_hiding_component_rows(tmp_path: Path) -> None:
-    data_plane = SQLiteDataPlane(tmp_path)
-    records = (
-        _risk_evidence_record("600001", "cninfo-announcement:older"),
-        _risk_evidence_record("600001", "risk-component:announcements"),
-        _risk_evidence_record("600001", "risk-observation:structured"),
-        _risk_evidence_record("600002", "cninfo-announcement:other"),
-    )
-    data_plane.save_risk_evidence_recent_records(records)
-    seen: list[RiskEvidenceRecord] = []
-
-    data_plane.scan_risk_evidence_recent_records(seen.append, research_only=True)
-
-    assert [record.evidence_id for record in seen] == [
-        "risk-component:announcements",
-        "risk-observation:structured",
-    ]
 
 
 def test_security_master_batch_rolls_back_when_one_record_conflicts(tmp_path: Path) -> None:
@@ -368,21 +329,6 @@ def _security_master_record(
         source_time=_timestamp(9, 29),
         source="unit",
         data_version=data_version,
-        payload=payload_data,
-        payload_hash=_payload_hash(payload_data),
-        schema_version="data_plane",
-    )
-
-
-def _risk_evidence_record(code: str, evidence_id: str) -> RiskEvidenceRecord:
-    payload_data = {"code": code, "evidence_id": evidence_id}
-    return RiskEvidenceRecord(
-        code=code,
-        evidence_id=evidence_id,
-        observed_at=_timestamp(9, 30),
-        source_time=_timestamp(9, 29),
-        source="unit",
-        data_version="fixture",
         payload=payload_data,
         payload_hash=_payload_hash(payload_data),
         schema_version="data_plane",

@@ -974,8 +974,8 @@
         1
       ]
     },
-    "corporate_risk_history_unavailable": {
-      "factor_id": "corporate_risk_history_unavailable",
+    "corporate_risk_window_unavailable": {
+      "factor_id": "corporate_risk_window_unavailable",
       "strategies": [
         "tomorrow",
         "d25",

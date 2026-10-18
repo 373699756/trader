@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
@@ -189,6 +190,8 @@ class ResearchAnnouncement:
     published_at: datetime
     announcement_id: str = ""
     source: str = "issuer_disclosure"
+    body: str = ""
+    body_checked: bool = False
 
     def __post_init__(self) -> None:
         if not self.title.strip():
@@ -219,14 +222,6 @@ _OFFICIAL_CORPORATE_RISK_SOURCES = frozenset(
         "eastmoney_announcement",
     }
 )
-_PERMANENT_CORPORATE_RISKS = frozenset(
-    {
-        CorporateRiskCategory.FINANCIAL_FRAUD,
-        CorporateRiskCategory.MAJOR_ILLEGAL,
-        CorporateRiskCategory.FUND_OCCUPATION,
-        CorporateRiskCategory.ILLEGAL_GUARANTEE,
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -236,6 +231,7 @@ class CorporateRiskFact:
     evidence_id: str
     source: str
     resolved_at: datetime | None = None
+    case_id: str = ""
 
     def __post_init__(self) -> None:
         if self.announced_at.tzinfo is None or self.announced_at.utcoffset() is None:
@@ -264,13 +260,18 @@ class ResearchObservation:
     pledge_ratio_pct: float | None = None
     unlock_ratio_pct: float | None = None
     corporate_risk_facts: tuple[CorporateRiskFact, ...] = ()
-    corporate_risk_history_complete: bool = False
+    corporate_risk_window_complete: bool = False
+    risk_window_start: date | None = None
+    risk_window_end: date | None = None
     corporate_risk_evidence_version: str = ""
     news_queried: bool = False
     evidence: tuple[Evidence, ...] = ()
     source_errors: tuple[str, ...] = ()
+    snapshot_at: datetime | None = None
 
     def __post_init__(self) -> None:
+        if self.snapshot_at is not None and self.snapshot_at.utcoffset() is None:
+            raise ValueError("research snapshot time must be timezone-aware")
         if self.announcements and not self.announcements_available:
             raise ValueError("announcement rows require an available announcement source")
         if self.financial is not None and self.financial_history and self.financial not in self.financial_history:
@@ -299,6 +300,8 @@ def ResearchComponentsFromObservation(observation: ResearchObservation | None) -
     if observation is None:
         return ResearchComponentCoverage("unknown", "unknown", "unknown", "unknown")
     financial: ResearchComponentStatus = "known_clear" if observation.financial is not None else "unknown"
+    if any(item.startswith(("financial:", "company_snapshot:")) for item in observation.source_errors):
+        financial = "stale" if observation.financial is not None else "unknown"
     if not observation.announcements_available:
         announcements: ResearchComponentStatus = "unknown"
     elif any(
@@ -367,6 +370,8 @@ def DeriveLatestDisclosedReportLoss(
         return 1.0
     if parent_profit is None or core_profit is None:
         return None
+    if any(item.startswith(("financial:", "company_snapshot:")) for item in observation.source_errors):
+        return None
     return 0.0
 
 
@@ -374,7 +379,7 @@ def DeriveCorporateRiskFeatures(
     facts: tuple[CorporateRiskFact, ...],
     observed_at: datetime,
     *,
-    history_complete: bool,
+    window_complete: bool,
 ) -> dict[str, float | None]:
     if observed_at.tzinfo is None or observed_at.utcoffset() is None:
         raise ValueError("corporate risk observation time must be timezone-aware")
@@ -384,26 +389,33 @@ def DeriveCorporateRiskFeatures(
         if fact.announced_at <= observed_at and _corporate_risk_is_active(fact, observed_at)
     }
     values: dict[str, float | None] = {category.value: float(category in active) for category in CorporateRiskCategory}
-    values["corporate_risk_history_unavailable"] = float(not history_complete)
+    values["corporate_risk_window_unavailable"] = float(not window_complete)
     return values
 
 
 def CorporateRiskFactsFromAnnouncements(
     announcements: tuple[ResearchAnnouncement, ...],
 ) -> tuple[CorporateRiskFact, ...]:
-    """Map issuer/exchange disclosure metadata to conservative hard-risk facts."""
+    """Accept official document conclusions, never a title alone or unrelated party."""
 
     ordered = sorted(announcements, key=lambda item: (item.published_at, item.announcement_id, item.title))
+    known_ids = tuple(item.announcement_id for item in ordered if item.announcement_id)
     facts: list[CorporateRiskFact] = []
     for announcement in ordered:
         normalized = "".join(announcement.title.split())
-        if _negated_risk_title(normalized):
+        body = "".join(announcement.body.split())
+        if not AnnouncementRiskVerified(announcement, known_ids) or _negated_risk_title(normalized):
+            continue
+        # A bounded deterministic verifier intentionally abstains on ambiguous subjects.
+        own_subject = any(marker in body for marker in ("本公司", "公司收到", "控股股东", "实际控制人", "持股5%以上"))
+        authority = any(
+            marker in body for marker in ("中国证券监督管理", "证监会", "证券交易所", "人民法院", "减持计划")
+        )
+        if not own_subject or not authority:
             continue
         resolved_categories = _resolved_categories_for_title(normalized)
         for category in _risk_categories_for_title(normalized):
             if category in resolved_categories:
-                continue
-            if category in _PERMANENT_CORPORATE_RISKS and any(item.category is category for item in facts):
                 continue
             facts.append(
                 CorporateRiskFact(
@@ -412,20 +424,53 @@ def CorporateRiskFactsFromAnnouncements(
                     evidence_id=announcement.announcement_id
                     or f"official:{category.value}:{announcement.published_at.isoformat()}",
                     source=announcement.source,
+                    case_id=_case_ids(body)[0] if _case_ids(body) else "",
                 )
             )
         for category in resolved_categories:
-            unresolved_index = next(
-                (
-                    index
-                    for index in range(len(facts) - 1, -1, -1)
-                    if facts[index].category is category and facts[index].resolved_at is None
-                ),
-                None,
-            )
-            if unresolved_index is not None:
-                facts[unresolved_index] = replace(facts[unresolved_index], resolved_at=announcement.published_at)
+            if category not in _resolved_categories_for_title(body):
+                continue
+            # Only an explicit original disclosure ID closes a case. Same-category chronology is insufficient.
+            for index, fact in enumerate(facts):
+                if (
+                    fact.category is category
+                    and fact.resolved_at is None
+                    and (fact.evidence_id in body or fact.case_id and fact.case_id in _case_ids(body))
+                ):
+                    facts[index] = replace(fact, resolved_at=announcement.published_at)
     return tuple(sorted(facts, key=lambda item: (item.category.value, item.announced_at, item.evidence_id)))
+
+
+def AnnouncementRiskVerified(announcement: ResearchAnnouncement, known_ids: tuple[str, ...] = ()) -> bool:
+    title = "".join(announcement.title.split())
+    categories = _risk_categories_for_title(title)
+    closures = _resolved_categories_for_title(title)
+    if not categories and not closures:
+        return not any(marker in title for marker in ("处罚", "处分", "造假", "违法", "立案", "退市"))
+    body = "".join(announcement.body.split())
+    if (
+        not announcement.body_checked
+        or not body
+        or _negated_risk_title(body)
+        or announcement.source
+        not in {"issuer_disclosure", "exchange_disclosure", "regulator_disclosure", "court_disclosure"}
+    ):
+        return False
+    if any(marker in title for marker in ("董事", "监事", "高级管理", "子公司", "参股")) and "公司及" not in title:
+        return False
+    if not any(marker in body for marker in ("本公司", "公司收到", "控股股东", "实际控制人", "持股5%以上")):
+        return False
+    if not any(marker in body for marker in ("中国证券监督管理", "证监会", "证券交易所", "人民法院", "减持计划")):
+        return False
+    return (
+        all(item in _risk_categories_for_title(body) for item in categories)
+        and all(item in _resolved_categories_for_title(body) for item in closures)
+        and (not closures or bool(_case_ids(body)) or any(identity in body for identity in known_ids))
+    )
+
+
+def _case_ids(text: str) -> tuple[str, ...]:
+    return tuple(sorted(set(re.findall(r"(?:证监立案字|[〔（(【]\d{4}[〕）)】])[\w—\-]{1,30}号", text))))
 
 
 def _risk_categories_for_title(title: str) -> tuple[CorporateRiskCategory, ...]:
@@ -441,7 +486,7 @@ def _risk_categories_for_title(title: str) -> tuple[CorporateRiskCategory, ...]:
     if decision and fraud:
         categories.append(CorporateRiskCategory.FINANCIAL_FRAUD)
     investigation_start = any(marker in title for marker in ("立案告知书", "收到立案", "决定立案", "被立案"))
-    if investigation_start and "进展" not in title:
+    if investigation_start:
         categories.append(CorporateRiskCategory.OFFICIAL_INVESTIGATION)
     if decision and "重大违法" in title:
         categories.append(CorporateRiskCategory.MAJOR_ILLEGAL)
@@ -479,20 +524,13 @@ def _negated_risk_title(title: str) -> bool:
 
 
 def _corporate_risk_is_active(fact: CorporateRiskFact, observed_at: datetime) -> bool:
-    if fact.category in _PERMANENT_CORPORATE_RISKS:
-        return True
+    if not observed_at - timedelta(days=365) <= fact.announced_at <= observed_at:
+        return False
     if fact.resolved_at is None:
         return True
     if fact.category is CorporateRiskCategory.MAJOR_SHAREHOLDER_REDUCTION:
         return observed_at < fact.resolved_at + timedelta(days=90)
-    return observed_at < _replace_year(fact.resolved_at, fact.resolved_at.year + 3)
-
-
-def _replace_year(value: datetime, year: int) -> datetime:
-    try:
-        return value.replace(year=year)
-    except ValueError:
-        return value.replace(year=year, day=28)
+    return observed_at < fact.resolved_at
 
 
 def _valuation_score(
@@ -722,6 +760,7 @@ __all__ = [
     "ResearchAnnouncement",
     "ResearchObservation",
     "AnnouncementLevel",
+    "AnnouncementRiskVerified",
     "CorporateRiskFactsFromAnnouncements",
     "DeriveCorporateRiskFeatures",
     "DeriveLatestDisclosedReportLoss",

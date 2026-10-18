@@ -11,7 +11,6 @@ from typing import TypedDict, cast
 
 from trader.infra.serialization.canonical import CanonicalJsonText
 from trader.recommendation.application.ports.data_plane_records import (
-    RiskEvidenceRecord,
     SecurityMasterRecord,
     SourceCursorRecord,
     TradingCalendarRecord,
@@ -33,8 +32,6 @@ class _CommonRecordFields(TypedDict):
 def RecordToRow(profile: _Profile, record: Record, *, freeze_id: str | None = None) -> dict[str, object]:
     if profile.family == "security_master":
         base = _security_master_identity(record)
-    elif profile.family == "risk_evidence":
-        base = _risk_evidence_identity(record)
     elif profile.family == "source_cursor":
         base = _source_cursor_identity(record)
     elif profile.family == "trading_calendar":
@@ -50,12 +47,6 @@ def _security_master_identity(record: Record) -> dict[str, object]:
     if not isinstance(record, SecurityMasterRecord):
         raise TypeError("security master family requires SecurityMasterRecord")
     return {"code": record.code}
-
-
-def _risk_evidence_identity(record: Record) -> dict[str, object]:
-    if not isinstance(record, RiskEvidenceRecord):
-        raise TypeError("risk evidence family requires RiskEvidenceRecord")
-    return {"code": record.code, "evidence_id": record.evidence_id}
 
 
 def _source_cursor_identity(record: Record) -> dict[str, object]:
@@ -93,12 +84,6 @@ def RowToRecord(table: str, row: sqlite3.Row) -> Record:
     }
     if table in {"security_master_recent", "security_master_formal"}:
         return SecurityMasterRecord(code=Text(row["code"]), **common)
-    if table in {"risk_evidence_recent", "risk_evidence_formal"}:
-        return RiskEvidenceRecord(
-            code=Text(row["code"]),
-            evidence_id=Text(row["evidence_id"]),
-            **common,
-        )
     if table in {"source_cursor_recent", "source_cursor_formal"}:
         return SourceCursorRecord(
             cursor_name=Text(row["cursor_name"]),
@@ -115,7 +100,6 @@ def RecordPayloadForTable(table: str, payload: JsonObject) -> None:
         raise TypeError("payload root must be an object")
     supported = (
         "security_master_",
-        "risk_evidence_",
         "source_cursor_",
         "trading_calendar_",
     )
@@ -130,7 +114,6 @@ def RecordPayloadForTable(table: str, payload: JsonObject) -> None:
 def TableToRecordKind(table: str) -> str:
     for prefix, kind in (
         ("security_master_", "security_master"),
-        ("risk_evidence_", "risk_evidence"),
         ("source_cursor_", "source_cursor"),
         ("trading_calendar_", "trading_calendar"),
     ):
@@ -151,8 +134,6 @@ def PkFieldsFromTable(table: str) -> tuple[str, ...]:
 def IdentityFieldsForTable(table: str) -> tuple[str, ...]:
     if table.startswith("security_master_"):
         return ("code",)
-    if table.startswith("risk_evidence_"):
-        return ("code", "evidence_id")
     if table.startswith("source_cursor_"):
         return ("cursor_name",)
     if table.startswith("trading_calendar_"):

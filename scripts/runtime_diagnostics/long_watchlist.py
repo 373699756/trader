@@ -12,24 +12,21 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
-from typing import NoReturn, cast
 from zoneinfo import ZoneInfo
-
-import requests
 
 from .reporting import emit_report
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from trader.infra.atomic_files.json import RuntimeJsonWriter  # noqa: E402
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceReader  # noqa: E402
 from trader.infra.settings.loading import LoadLongWatchlist, LoadStrategySettings  # noqa: E402
 from trader.recommendation.domain.market.eligibility import (  # noqa: E402
     IsActivePermanentEligibilityReason,
     IssuerEligibilityReason,
 )
 from trader.recommendation.domain.market.research import FinancialReport, LongResearchPolicy  # noqa: E402
-from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient  # noqa: E402
+from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -41,11 +38,6 @@ class Admission:
     latest_period: str = ""
     annual_periods: tuple[str, ...] = ()
     evidence_as_of: str = ""
-
-
-class _ReadOnlyJsonWriter:
-    def write(self, _path: Path, _payload: object) -> None:
-        raise RuntimeError("read-only diagnostic cannot write evidence cache")
 
 
 def required_period(as_of: date) -> date:
@@ -74,9 +66,8 @@ def financial_admission(code: str, history: tuple[FinancialReport, ...], complet
     if reasons:
         disposition = "excluded"
     else:
-        years = sorted({report.report_date.year for report in annual})
-        if not complete or not annual or not years or years != list(range(years[0], as_of.year)):
-            reasons.append("financial_history_incomplete")
+        if not complete:
+            reasons.append("financial_report_unavailable")
         if latest is None or latest.report_date < required_period(as_of):
             reasons.append("latest_report_missing")
         if latest is None or any(
@@ -113,26 +104,6 @@ def historical_exclusions(paths: tuple[Path, ...], observed_at: datetime) -> dic
     return {code: tuple(sorted(set(ids))) for code, ids in evidence.items()}
 
 
-def cached_observation(
-    caches: tuple[Path, ...], source: str, code: str, observed_at: datetime
-) -> tuple[datetime, Path] | None:
-    observations: list[tuple[datetime, Path]] = []
-    for cache in caches:
-        path = cache / "raw" / source / f"{code}.json"
-        try:
-            record = json.loads(path.read_text(encoding="utf-8"))
-            observed = datetime.fromisoformat(record["observed_at"])
-            if observed.tzinfo is not None and observed.utcoffset() is not None and observed <= observed_at:
-                observations.append((observed, cache))
-        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-            continue
-    return max(observations, default=None, key=lambda item: item[0])
-
-
-def _reject_network(*_args: object, **_kwargs: object) -> NoReturn:
-    raise RuntimeError("read-only archive diagnostic cannot request uncached evidence")
-
-
 def audit_code(
     code: str,
     *,
@@ -140,80 +111,33 @@ def audit_code(
     policy: LongResearchPolicy,
     timeout: float,
     exclusions: dict[str, tuple[str, ...]],
-    evidence_caches: tuple[Path, ...],
+    evidence_database: Path,
 ) -> Admission:
     if code in exclusions:
         return Admission(code, "excluded", ("existing_permanent_exclusion",), exclusions[code])
-    financial_observation = cached_observation(evidence_caches, "financial", code, observed_at)
-    announcement_observation = cached_observation(evidence_caches, "announcement", code, observed_at)
-    if financial_observation is None:
-        return Admission(code, "pending", ("point_in_time_evidence_missing",))
-    financial_time, financial_cache = financial_observation
-    client = AkshareResearchClient(
-        timeout_seconds=timeout,
-        get=_reject_network,
-        evidence_cache_dir=financial_cache,
-        json_writer=cast(RuntimeJsonWriter, _ReadOnlyJsonWriter()),
+    reader = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(evidence_database), wall_clock=lambda: observed_at)
+    observation = reader.load((code,), observed_at, include_structured=True).get(code)
+    if observation is None:
+        return Admission(code, "pending", ("company_snapshot_missing",))
+    admission = financial_admission(
+        code, observation.financial_history, observation.financial_history_complete, observed_at.date()
     )
-    try:
-        _latest, history, complete, _evidence = client._fetch_financial(code, financial_time, policy)
-        admission = financial_admission(code, history, complete, observed_at.date())
-        admission = replace(admission, evidence_as_of=financial_time.isoformat())
-        if admission.disposition != "financial_pass":
-            return admission
-    except (requests.RequestException, OSError, RuntimeError, TypeError, ValueError):
-        return Admission(code, "pending", ("financial_supplier_evidence_unavailable",))
-    if announcement_observation is None:
-        return replace(admission, disposition="pending", reasons=("announcement_history_missing",))
-    announcement_time, announcement_cache = announcement_observation
-    try:
-        # Extend the diagnostic window only; production policy is untouched.
-        client = AkshareResearchClient(
-            timeout_seconds=timeout,
-            get=_reject_network,
-            evidence_cache_dir=announcement_cache,
-            json_writer=cast(RuntimeJsonWriter, _ReadOnlyJsonWriter()),
-        )
-        announcements, _evidence, _risks, complete, _version = client._fetch_announcements(
-            code, announcement_time, replace(policy, announcement_lookback_days=20_000)
-        )
-        signals = tuple(
-            item.announcement_id
-            for item in announcements
-            if any(
-                marker in item.title
-                for marker in (
-                    "处罚",
-                    "立案",
-                    "纪律处分",
-                    "风险警示",
-                    "特别处理",
-                    "资金占用",
-                    "违规担保",
-                    "造假",
-                    "虚假记载",
-                )
-            )
-        )
-        # Titles are review leads, never newly confirmed permanent facts.
-        if signals:
-            return replace(
-                admission,
-                disposition="pending",
-                reasons=("regulatory_disclosure_review",),
-                evidence_ids=signals,
-                evidence_as_of=announcement_time.isoformat(),
-            )
-        if not complete or not announcements:
-            return replace(admission, disposition="pending", reasons=("announcement_history_incomplete",))
+    if admission.disposition != "financial_pass":
+        return admission
+    if observation.corporate_risk_facts:
         return replace(
             admission,
             disposition="pending",
-            reasons=("permanent_eligibility_coverage_unverified",),
-            evidence_as_of=min(financial_time, announcement_time).isoformat(),
+            reasons=("recent_risk_review",),
+            evidence_ids=tuple(item.evidence_id for item in observation.corporate_risk_facts),
         )
-    except (requests.RequestException, OSError, RuntimeError, TypeError, ValueError):
-        return replace(admission, disposition="pending", reasons=("announcement_supplier_evidence_unavailable",))
+    return replace(
+        admission,
+        disposition="pending",
+        reasons=("long_qualification_unverified",)
+        if observation.corporate_risk_window_complete
+        else ("corporate_risk_window_unavailable",),
+    )
 
 
 def main() -> int:
@@ -222,7 +146,9 @@ def main() -> int:
     parser.add_argument("--strategy", type=Path, default=PROJECT_ROOT / "config/strategy.json")
     parser.add_argument("--eligibility-evidence", type=Path, action="append", default=[])
     parser.add_argument("--evidence-output", type=Path)
-    parser.add_argument("--evidence-cache", type=Path, action="append", default=[])
+    parser.add_argument(
+        "--company-evidence-database", type=Path, default=PROJECT_ROOT / "data/risk/company_evidence.sqlite3"
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--timeout-seconds", type=float, default=5)
     args = parser.parse_args()
@@ -235,10 +161,6 @@ def main() -> int:
     observed_at = datetime.now(ZoneInfo("Asia/Shanghai"))
     watchlist = LoadLongWatchlist(args.watchlist)
     policy = LoadStrategySettings(args.strategy).long_research
-    evidence_caches = tuple(args.evidence_cache) or (
-        PROJECT_ROOT / ".runtime/trader/evidence_cache",
-        PROJECT_ROOT / ".runtime/v2/evidence_cache",
-    )
     exclusions = historical_exclusions(tuple(args.eligibility_evidence), observed_at)
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         results = tuple(
@@ -249,7 +171,7 @@ def main() -> int:
                     policy=policy,
                     timeout=args.timeout_seconds,
                     exclusions=exclusions,
-                    evidence_caches=evidence_caches,
+                    evidence_database=args.company_evidence_database,
                 ),
                 watchlist.items,
             )
@@ -262,7 +184,7 @@ def main() -> int:
         "pending": counts["pending"],
         "collected_at": observed_at.isoformat(),
         "evidence_as_of_range": "per-item; see detailed report",
-        "coverage": "read-only cached evidence; full permanent eligibility and current risk not certified",
+        "coverage": "read-only cached evidence; recent-year scope; full historical risk not certified",
     }
     if args.evidence_output:
         args.evidence_output.write_text(

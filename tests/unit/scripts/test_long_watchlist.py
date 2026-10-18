@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from datetime import date, datetime
 from pathlib import Path
@@ -9,6 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from scripts.runtime_diagnostics.long_watchlist import audit_code, financial_admission, historical_exclusions
+from trader.download.domain.company_evidence import CompanyFinancial, StructuredCompanyPage, StructuredCompanyQuery
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceIndex
 from trader.infra.settings import LoadStrategySettings
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityReason
 from trader.recommendation.domain.market.research import FinancialReport
@@ -69,29 +70,19 @@ def test_missing_latest_report_does_not_pass_using_an_old_cache_date() -> None:
 
 
 def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Path) -> None:
-    financial = tmp_path / "raw" / "financial" / "000001.json"
-    financial.parent.mkdir(parents=True)
-    financial.write_text(
-        json.dumps(
-            {
-                "observed_at": "2026-10-08T16:00:00+08:00",
-                "payload": {
-                    "result": {
-                        "count": 1,
-                        "data": [
-                            {
-                                "REPORT_DATE": "2025-12-31",
-                                "NOTICE_DATE": "2026-03-20",
-                                "PARENTNETPROFIT": -1,
-                                "KCFJCXSYJLR": 10,
-                            }
-                        ],
-                    }
-                },
-            }
-        ),
-        encoding="utf-8",
+    financial = tmp_path / "company_evidence.sqlite3"
+    index = SQLiteCompanyEvidenceIndex(financial)
+    index.initialize()
+    now = datetime(2026, 10, 8, 16, tzinfo=SHANGHAI)
+    report = CompanyFinancial(
+        "000001", date(2025, 12, 31), datetime(2026, 3, 20, tzinfo=SHANGHAI), None, None, None, None, None, None, -1, 10
     )
+    index.commit_structured(
+        StructuredCompanyQuery("financial", date(2026, 3, 20), now.date()),
+        StructuredCompanyPage("financial", 1, 1, 1, financials=(report,)),
+        now,
+    )
+    index.publish(("000001",), now)
     original = financial.read_bytes()
 
     result = audit_code(
@@ -100,13 +91,13 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
         policy=LoadStrategySettings(PROJECT_ROOT / "config/strategy.json").long_research,
         timeout=1,
         exclusions={},
-        evidence_caches=(tmp_path,),
+        evidence_database=financial,
     )
 
     assert result.disposition == "excluded"
     assert "latest_disclosed_report_loss" in result.reasons
     assert financial.read_bytes() == original
-    assert tuple(tmp_path.rglob("*.json")) == (financial,)
+    assert not tuple(tmp_path.rglob("*.json"))
 
 
 def test_historical_exclusions_ignore_retired_annual_loss_evidence(tmp_path: Path) -> None:
@@ -135,4 +126,4 @@ def test_historical_exclusions_ignore_retired_annual_loss_evidence(tmp_path: Pat
 
     exclusions = historical_exclusions((database,), datetime(2026, 10, 9, 16, tzinfo=SHANGHAI))
 
-    assert exclusions == {"000002": ("announcement:fraud",)}
+    assert exclusions == {}

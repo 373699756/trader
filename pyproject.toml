@@ -16,6 +16,7 @@ dependencies = [
     "lightgbm>=4.7,<5",
     "numpy>=2,<2.5",
     "polars>=1.43,<2",
+    "pypdf>=6.21.1,<7",
     "requests>=2.22.0",
     "tushare>=1.4,<2",
 ]

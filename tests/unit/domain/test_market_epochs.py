@@ -493,7 +493,7 @@ def test_epoch_rejects_invalid_quote_and_research_event_time_ordering() -> None:
                             source="regulator_disclosure",
                         ),
                     ),
-                    corporate_risk_history_complete=True,
+                    corporate_risk_window_complete=True,
                     corporate_risk_evidence_version="risk-fixture",
                 )
             },

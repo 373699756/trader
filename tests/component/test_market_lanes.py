@@ -138,7 +138,7 @@ def test_source_lane_stop_cancels_runner_that_has_not_started() -> None:
 def test_source_lane_marks_running_future_and_skips_cancelled_pending_io() -> None:
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     pool.start()
-    lane = LatestRequestLane("akshare", pool)
+    lane = LatestRequestLane("company_evidence", pool)
     started = threading.Event()
     release = threading.Event()
     calls: list[str] = []

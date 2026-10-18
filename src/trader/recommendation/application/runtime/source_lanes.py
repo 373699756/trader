@@ -30,7 +30,7 @@ _SOURCE_NAMES = (
     "tencent_market",
     "tencent_topk",
     "tushare",
-    "akshare",
+    "company_evidence",
 )
 
 

@@ -489,12 +489,12 @@ def test_market_component_suite_remains_partitioned_by_behavior() -> None:
         "test_market_intraday.py",
         "test_market_lanes.py",
         "test_market_references.py",
-        "test_market_research.py",
         "test_market_service.py",
         "test_market_tushare.py",
         "test_market_vendors.py",
     }
     assert expected <= {path.name for path in component_root.glob("test_market_*.py")}
+    assert (component_root / "test_company_evidence.py").is_file()
     assert all(len((component_root / name).read_text(encoding="utf-8").splitlines()) < 1200 for name in expected)
 
 

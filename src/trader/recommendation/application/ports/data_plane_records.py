@@ -52,18 +52,6 @@ class SecurityMasterRecord(DataPlaneRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RiskEvidenceRecord(DataPlaneRecord):
-    """Per-code risk evidence payload for a specific evidence component."""
-
-    evidence_id: str
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if not self.evidence_id:
-            raise ValueError("evidence_id must not be empty")
-
-
-@dataclass(frozen=True, kw_only=True)
 class SourceCursorRecord:
     """Incremental sync cursor state for an external data source."""
 
@@ -162,12 +150,6 @@ class DataPlaneWriterPort(Protocol):
 
     def save_security_master_formal(self, freeze_id: str, record: SecurityMasterRecord) -> None: ...
 
-    def save_risk_evidence_recent(self, record: RiskEvidenceRecord) -> None: ...
-
-    def save_risk_evidence_recent_records(self, records: Sequence[RiskEvidenceRecord]) -> None: ...
-
-    def save_risk_evidence_formal(self, freeze_id: str, record: RiskEvidenceRecord) -> None: ...
-
     def save_source_cursor_recent(self, record: SourceCursorRecord) -> None: ...
 
     def save_source_cursor_formal(self, freeze_id: str, record: SourceCursorRecord) -> None: ...
@@ -194,21 +176,6 @@ class DataPlaneReaderPort(Protocol):
         freeze_id: str,
         codes: Sequence[str] | None = None,
     ) -> tuple[SecurityMasterRecord, ...]: ...
-
-    def load_risk_evidence_recent(self, code: str, evidence_id: str) -> RiskEvidenceRecord | None: ...
-
-    def load_risk_evidence_recent_records(
-        self,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[RiskEvidenceRecord, ...]: ...
-
-    def load_risk_evidence_formal(self, freeze_id: str, code: str, evidence_id: str) -> RiskEvidenceRecord | None: ...
-
-    def load_risk_evidence_formal_records(
-        self,
-        freeze_id: str,
-        codes: Sequence[str] | None = None,
-    ) -> tuple[RiskEvidenceRecord, ...]: ...
 
     def load_source_cursor_recent(self, cursor_name: str) -> SourceCursorRecord | None: ...
 
@@ -250,7 +217,6 @@ class DataPlanePorts(DataPlaneWriterPort, DataPlaneReaderPort, Protocol):
 
 
 __all__ = [
-    "RiskEvidenceRecord",
     "SecurityMasterRecord",
     "SourceCursorRecord",
     "TradingCalendarRecord",

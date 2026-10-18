@@ -63,8 +63,6 @@ def _parse_cache_datasets(datasets_raw: Mapping[str, object]) -> dict[str, Cache
         "full_market_quotes",
         "candidate_quotes",
         "intraday_minutes",
-        "research_success",
-        "research_failure",
         "security_master_calendar",
         "daily_valuation_financials",
         "canonical_market_snapshot",
@@ -125,8 +123,6 @@ def _validate_fixed_cache_datasets(datasets: Mapping[str, CacheDatasetPolicy]) -
         "full_market_quotes": (None, None, "full_market", 3.0, 10.0, 6000, "observation", False),
         "candidate_quotes": (None, None, "candidate_quotes", 3.0, 3.0, 1080, "observation", False),
         "intraday_minutes": (45.0, 90.0, None, None, 45.0, 360, "observation", False),
-        "research_success": (600.0, 1200.0, None, None, 60.0, 360, "observation", True),
-        "research_failure": (60.0, 60.0, None, None, 60.0, 360, "observation", False),
         "security_master_calendar": (
             86400.0,
             86400.0,

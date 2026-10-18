@@ -102,7 +102,7 @@ def _data_snapshot() -> MarketDataPlaneSnapshot:
         "forced_delisting_risk": 0.0,
         "unlock_risk": 0.0,
         "pledge_risk": 0.0,
-        "corporate_risk_history_unavailable": 0.0,
+        "corporate_risk_window_unavailable": 0.0,
     }
     daily = DailyFeaturePack(
         trade_date=NOW.date(),
@@ -329,7 +329,7 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
                         source="exchange_disclosure",
                     ),
                 ),
-                corporate_risk_history_complete=True,
+                corporate_risk_window_complete=True,
                 corporate_risk_evidence_version="risk-1",
                 evidence=(evidence,),
             )
@@ -347,7 +347,7 @@ def test_feature_assembly_applies_coherent_research_evidence_and_current_corpora
     assembled = AssembleScoredFeatures(replace(snapshot, research=research))
 
     assert assembled[0].values["official_investigation_history"] == 1.0
-    assert assembled[0].values["corporate_risk_history_unavailable"] == 0.0
+    assert assembled[0].values["corporate_risk_window_unavailable"] == 0.0
     assert assembled[0].values["latest_disclosed_report_loss"] == 1.0
     assert evidence in assembled[0].evidence
     assert {item.evidence_type for item in assembled[0].evidence} == {

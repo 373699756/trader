@@ -16,8 +16,8 @@ from trader.recommendation.infra.market_data.candidate_quote_cache import QuoteC
 from trader.recommendation.infra.market_data.gateway_health import MarketGatewayHealthStatus, MarketSourceHealthStatus
 from trader.recommendation.infra.market_data.intraday_loader import IntradayLoader
 from trader.recommendation.infra.market_data.market_cache_identity import _quote_age_summary, _reference_epoch
+from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
-from trader.recommendation.infra.market_data.research_observation_loader import ResearchLoader
 from trader.recommendation.infra.market_data.tushare_reference_loader import ReferenceLoader
 from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
 
@@ -26,7 +26,7 @@ from trader.recommendation.infra.market_data.vendor_routing import RouteOutcome
 class MarketDataHealthDependencies:
     quotes: QuoteCache
     history: PublishedHistoryCache
-    research: ResearchLoader
+    research: PublishedCompanyResearch
     intraday: IntradayLoader
     references: ReferenceLoader
     eligibility: IssuerEligibilityPort
@@ -63,7 +63,9 @@ class MarketDataHealth:
         }
         latencies = research.latencies_ms
         latest_research = research.latest_source_time
-        sources["akshare"] = {
+        sources["company_evidence"] = {
+            "measurement": "published_rows",
+            "physical_http_requests": 0,
             "planned_count": research.planned_count,
             "success_count": research.success_count,
             "error_count": research.error_count,

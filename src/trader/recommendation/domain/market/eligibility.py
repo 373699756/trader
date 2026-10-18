@@ -11,7 +11,6 @@ from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.domain.market.research import CorporateRiskCategory, ResearchObservation
 from trader.recommendation.domain.market.static import StaticIssuer
 
 _CODE = re.compile(r"^[0-9]{6}$")
@@ -39,7 +38,11 @@ class IssuerEligibilityState(str, Enum):
 
 
 _ACTIVE_PERMANENT_REASONS = frozenset(
-    reason for reason in IssuerEligibilityReason if reason is not IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS
+    {
+        IssuerEligibilityReason.HISTORICAL_ST,
+        IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING,
+        IssuerEligibilityReason.MANUAL_PERMANENT_BLACKLIST,
+    }
 )
 
 
@@ -292,28 +295,6 @@ def EligibilityFactsFromStaticIssuer(
     )
 
 
-_PERMANENT_RISK_REASONS = {
-    CorporateRiskCategory.FINANCIAL_FRAUD: IssuerEligibilityReason.CONFIRMED_FINANCIAL_FRAUD,
-    CorporateRiskCategory.MAJOR_ILLEGAL: IssuerEligibilityReason.CONFIRMED_MAJOR_ILLEGAL,
-    CorporateRiskCategory.FUND_OCCUPATION: IssuerEligibilityReason.CONFIRMED_FUND_OCCUPATION,
-    CorporateRiskCategory.ILLEGAL_GUARANTEE: IssuerEligibilityReason.CONFIRMED_ILLEGAL_GUARANTEE,
-    CorporateRiskCategory.FORCED_DELISTING: IssuerEligibilityReason.CONFIRMED_FORCED_DELISTING,
-}
-
-
-def EligibilityFactsFromResearch(
-    code: str,
-    observation: ResearchObservation,
-) -> tuple[IssuerEligibilityFact, ...]:
-    facts: list[IssuerEligibilityFact] = []
-    for risk in observation.corporate_risk_facts:
-        reason = _PERMANENT_RISK_REASONS.get(risk.category)
-        if reason is None:
-            continue
-        facts.append(_fact(code, reason, risk.announced_at, _FactEvidence(risk.evidence_id, risk.source)))
-    return tuple(sorted(facts))
-
-
 def ManualBlacklistFact(code: str, effective_at: datetime, config_hash: str) -> IssuerEligibilityFact:
     evidence_version = config_hash
     return _fact(
@@ -383,7 +364,6 @@ __all__ = [
     "IsActivePermanentEligibilityReason",
     "EligibilityFactsFromQuote",
     "EligibilityFactsFromStaticIssuer",
-    "EligibilityFactsFromResearch",
     "IssuerEligibilityFactHash",
     "ManualBlacklistFact",
     "ResolveIssuerEligibility",

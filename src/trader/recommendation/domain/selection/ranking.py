@@ -120,9 +120,9 @@ def _action_blocker(
         (recommendation.veto, RecommendationAction.UNAVAILABLE, "risk_veto"),
         (policy.is_stale, RecommendationAction.OBSERVE, "stale_quote"),
         (
-            recommendation.features.value("corporate_risk_history_unavailable", 0.0) > 0.0,
+            recommendation.features.value("corporate_risk_window_unavailable", 0.0) > 0.0,
             RecommendationAction.OBSERVE,
-            "corporate_risk_history_unavailable",
+            "corporate_risk_window_unavailable",
         ),
         (
             not recommendation.features.board_policy_id and recommendation.features.missing_ratio(CORE_FIELDS) > 0.30,

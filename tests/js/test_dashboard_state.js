@@ -920,7 +920,7 @@ const degradedHealth = state.healthView({
       recovery_status: "active",
     },
   ],
-}, ["corporate_risk_history_unavailable"]);
+}, ["corporate_risk_window_unavailable"]);
 assert.strictEqual(degradedHealth.level, "degraded");
 assert.strictEqual(degradedHealth.issueCount, 2);
 assert.strictEqual(degradedHealth.badge, "降级 · 2项");
@@ -930,7 +930,7 @@ assert.strictEqual(degradedHealth.primary.meta.includes("数据刷新"), true);
 assert.strictEqual(degradedHealth.issues.length, 2);
 const runtimeRows = state.runtimeErrorRows(degradedHealth.issues);
 assert.strictEqual(runtimeRows.includes("refresh:source_unavailable"), true);
-assert.strictEqual(runtimeRows.includes("公司风险历史暂不可核验"), true);
+assert.strictEqual(runtimeRows.includes("近一年公司风险覆盖不足"), true);
 assert.strictEqual(runtimeRows.includes("活动中"), true);
 const normalHealth = state.healthView({ health: { level: "normal", issue_count: 0 }, recent_errors: [] }, []);
 assert.strictEqual(normalHealth.badge, "正常 · 无最近错误");
@@ -1260,14 +1260,14 @@ assert.strictEqual(
           { key: "executable_threshold_met", count: 0, total: 239 },
         ] }] },
       supply_reason_counts: {
-        corporate_risk_history_unavailable: 360,
+        corporate_risk_window_unavailable: 360,
         stale_quote: 360,
         structured_risk_unavailable: 360,
         model_net_utility_non_positive: 239,
       },
     },
   ),
-  "评分已完成｜最高统一评分 100.00；239 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓；主要原因：公司风险历史暂不可核验（360只）、行情已过期，仅供观察（360只）、结构化风险数据尚未就绪（360只）",
+  "评分已完成｜最高统一评分 100.00；239 只已评分股票的预测成本后净超额均未转正，因此观察池和正式推荐均为 0只，保持空仓；主要原因：近一年公司风险覆盖不足（360只）、行情已过期，仅供观察（360只）、结构化风险数据尚未就绪（360只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
@@ -1324,21 +1324,21 @@ assert.strictEqual(
       supply_reason_counts: {
         below_score_threshold: 12,
         risk_veto: 5,
-        corporate_risk_history_unavailable: 3,
+        corporate_risk_window_unavailable: 3,
         stale_quote: 1,
       },
     },
   ),
-  "评分已完成｜最高分 76.40，距离正式线 1.60；达到观察线 15只、正式线 0只；主要原因：评分未达到执行门槛（12只）、风险事实触发限制（5只）、公司风险历史暂不可核验（3只）",
+  "评分已完成｜最高分 76.40，距离正式线 1.60；达到观察线 15只、正式线 0只；主要原因：评分未达到执行门槛（12只）、风险事实触发限制（5只）、近一年公司风险覆盖不足（3只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
     selection_diagnostics: {
       empty_reason: "risk_or_execution_blocked",
-      blocked_reason_counts: { "corporate_risk_history_unavailable": 1 },
+      blocked_reason_counts: { "corporate_risk_window_unavailable": 1 },
     },
   }),
-  "达到观察门槛的候选均不可执行：公司风险历史暂不可核验（1只）",
+  "达到观察门槛的候选均不可执行：近一年公司风险覆盖不足（1只）",
 );
 assert.strictEqual(
   state.emptyRecommendationMessage({
@@ -2119,7 +2119,7 @@ assert.deepStrictEqual(
 assert.deepStrictEqual(
   JSON.parse(JSON.stringify(sandbox.window.TraderRender.reasonLabels([
     "main:board_data_reliability_below_threshold",
-    "corporate_risk_history_unavailable",
+    "corporate_risk_window_unavailable",
     "strategy_history_coverage_partial",
     "structured_risk_unavailable",
     "cross_source_deviation",
@@ -2127,7 +2127,7 @@ assert.deepStrictEqual(
   ]))),
   [
     "主板：板块数据可靠度不足",
-    "公司风险历史暂不可核验",
+    "近一年公司风险覆盖不足",
     "候选历史数据覆盖不完整",
     "结构化风险数据尚未就绪",
     "跨源价格校验存在偏差",

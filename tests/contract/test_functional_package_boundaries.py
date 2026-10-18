@@ -179,9 +179,13 @@ def test_market_provider_and_normalization_packages_are_partitioned() -> None:
     assert recommendation_provider_root.is_dir()
     assert normalization_root.is_dir()
     assert (normalization_root / "quote.py").is_file()
-    assert {"akshare.py", "akshare_news.py", "eastmoney.py", "sina.py", "tencent.py"} <= {
+    assert {"eastmoney.py", "sina.py", "tencent.py"} <= {
         path.name for path in recommendation_provider_root.glob("*.py")
     }
+    assert {"company_disclosure_source.py", "company_structured_source.py"} <= {
+        path.name for path in (SOURCE_ROOT / "download" / "infra").glob("*.py")
+    }
+    assert not (recommendation_provider_root / "akshare.py").exists()
     assert not any(
         (provider_root / name).exists()
         for name in ("akshare.py", "akshare_news.py", "eastmoney.py", "sina.py", "tencent.py")

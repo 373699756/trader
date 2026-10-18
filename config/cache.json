@@ -31,26 +31,6 @@
         "group": "observation",
         "persisted": false
       },
-      "research_success": {
-        "refresh_ttl_seconds": 600,
-        "action_max_age_seconds": 1200,
-        "cadence_task": null,
-        "action_max_age_multiplier": null,
-        "negative_ttl_seconds": 60,
-        "capacity": 360,
-        "group": "observation",
-        "persisted": true
-      },
-      "research_failure": {
-        "refresh_ttl_seconds": 60,
-        "action_max_age_seconds": 60,
-        "cadence_task": null,
-        "action_max_age_multiplier": null,
-        "negative_ttl_seconds": 60,
-        "capacity": 360,
-        "group": "observation",
-        "persisted": false
-      },
       "security_master_calendar": {
         "refresh_ttl_seconds": 86400,
         "action_max_age_seconds": 86400,

@@ -290,7 +290,7 @@ def test_reference_data_plane_recovery_is_fail_open() -> None:
 
     data_plane.initialize.assert_called_once_with()
     market_data.references.recover.assert_not_called()
-    market_data.research.recover_from_data_plane.assert_not_called()
+    market_data.research.load_report.assert_not_called()
 
 
 def test_reference_data_plane_recovery_schedules_official_security_master_on_startup() -> None:
@@ -317,7 +317,7 @@ def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -
     _initialize_reference_data_plane(market_data, SQLiteDataPlane(tmp_path))
 
     market_data.references.recover.assert_not_called()
-    market_data.research.recover_from_data_plane.assert_not_called()
+    market_data.research.load_report.assert_not_called()
 
 
 def test_research_trace_initialization_is_fail_open() -> None:

@@ -71,10 +71,7 @@ class DiagnosticOptions:
     baostock_rounds: int = 1
     long_watchlist: Path = PROJECT_ROOT / "config/long_watchlist.json"
     long_evidence_output: Path | None = None
-    long_evidence_cache: tuple[Path, ...] = (
-        PROJECT_ROOT / ".runtime/trader/evidence_cache",
-        PROJECT_ROOT / ".runtime/v2/evidence_cache",
-    )
+    company_evidence_database: Path = PROJECT_ROOT / "data/risk/company_evidence.sqlite3"
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
     qfq_root: Path = PROJECT_ROOT / "data/qfq"

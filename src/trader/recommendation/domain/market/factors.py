@@ -79,7 +79,7 @@ PRODUCTION_FACTOR_IDS = frozenset(
         "tail_volume_ratio_raw",
         "trend_score",
         "trend_breakdown",
-        "corporate_risk_history_unavailable",
+        "corporate_risk_window_unavailable",
         "turnover_median_20d",
         "unlock_risk",
         "upward_consistency",

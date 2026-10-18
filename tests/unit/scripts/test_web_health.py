@@ -843,7 +843,7 @@ def test_frozen_no_positive_inconsistency_is_a_controlled_degradation() -> None:
 def test_snapshot_degradation_and_company_research_are_visible_in_diagnostic_report() -> None:
     sample = _sample(
         1,
-        degraded_reasons=("corporate_risk_history_unavailable", "strategy_history_coverage_partial"),
+        degraded_reasons=("corporate_risk_window_unavailable", "strategy_history_coverage_partial"),
     )
 
     findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=1)

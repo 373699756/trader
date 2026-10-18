@@ -6,17 +6,17 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from types import MappingProxyType
-from typing import cast
 
 import requests
 
-from trader.infra.market_data.providers.akshare_http_contracts import AkshareGetFunction, AkshareHttpResponse
+from trader.download.infra.company_evidence_index import SQLiteCompanyEvidenceReader
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.research import LongResearchPolicy, ResearchObservation
 from trader.recommendation.domain.market.tail import MinuteBar
-from trader.recommendation.infra.market_data.providers.akshare import AkshareResearchClient
 from trader.recommendation.infra.market_data.providers.eastmoney import EastmoneyClient
+from trader.recommendation.infra.market_data.published_company_research import PublishedCompanyResearch
 
 
 @dataclass(frozen=True)
@@ -29,46 +29,33 @@ class AuxiliaryInputs:
 def ProbeAuxiliary(
     codes: tuple[str, ...], at: datetime, policy: LongResearchPolicy, timeout: float, pool: BoundedExecutor
 ) -> AuxiliaryInputs:
-    """Three board samples, at most 12 research requests per code; no cache writes."""
+    """Read the published risk snapshot; only minute probes contact a supplier."""
     research: dict[str, ResearchObservation] = {}
     minutes: dict[str, tuple[MinuteBar, ...]] = {}
     reports: list[dict[str, object]] = []
     for index, code in enumerate(codes[:3]):
         started = time.monotonic()
-        deadline = started + 20.0
-        requests_made = 0
-
-        def bounded_get(url: str, _deadline: float = deadline, **kwargs: object) -> AkshareHttpResponse:
-            nonlocal requests_made
-            remaining = _deadline - time.monotonic()
-            if remaining <= 0 or requests_made >= 12:
-                raise requests.Timeout("diagnostic_auxiliary_budget")
-            requests_made += 1
-            kwargs["timeout"] = min(timeout, remaining)
-            transport = cast(AkshareGetFunction, requests.get)
-            return transport(url, **kwargs)
-
-        client = AkshareResearchClient(
-            get=bounded_get,
-            timeout_seconds=timeout,
-            long_research_policy=policy,
-            cancel_requested=lambda limit=deadline: time.monotonic() >= limit,
+        reader = PublishedCompanyResearch(
+            SQLiteCompanyEvidenceReader(Path(__file__).resolve().parents[2] / "data/risk/company_evidence.sqlite3"),
+            wall_clock=lambda: at,
         )
-        observation = client.fetch_snapshot(code, observed_at=at)
-        research[code] = observation
+        observation = reader.load((code,), at, include_structured=True).get(code)
+        if observation is not None:
+            research[code] = observation
         reports.append(
             {
                 "sample": index + 1,
-                "source": "eastmoney_research",
+                "source": "published_company_evidence",
                 "elapsed_ms": (time.monotonic() - started) * 1000,
-                "physical_http_requests": requests_made,
-                "financial": observation.financial is not None,
-                "financial_history_complete": observation.financial_history_complete,
-                "announcements": observation.announcements_available,
-                "corporate_risk_history_complete": observation.corporate_risk_history_complete,
-                "pledge": observation.pledge_ratio_pct is not None,
-                "unlock": observation.unlock_ratio_pct is not None,
-                "component_error_count": len(observation.source_errors),
+                "physical_http_requests": 0,
+                "financial": observation is not None and observation.financial is not None,
+                "financial_history_complete": observation is not None and observation.financial_history_complete,
+                "announcements": observation is not None and observation.announcements_available,
+                "corporate_risk_window_complete": observation is not None
+                and observation.corporate_risk_window_complete,
+                "pledge": observation is not None and observation.pledge_ratio_pct is not None,
+                "unlock": observation is not None and observation.unlock_ratio_pct is not None,
+                "component_error_count": len(observation.source_errors) if observation is not None else 1,
             }
         )
         started = time.monotonic()
