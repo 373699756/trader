@@ -422,6 +422,64 @@ def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
     )
 
 
+@pytest.mark.parametrize("cancel_during_write", (False, True))
+def test_network_continues_while_writer_is_busy_and_shutdown_waits_for_commit(
+    tmp_path, monkeypatch, cancel_during_write
+):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    from trader.infra.workers import BoundedExecutor
+
+    writing, release, downloaded, cancelled = Event(), Event(), Event(), Event()
+
+    class RollingSupplier(Supplier):
+        def fetch_window(self, security, dates):
+            result = super().fetch_window(security, dates)
+            if len(self.calls) >= 24:
+                downloaded.set()
+            return result
+
+    supplier = RollingSupplier(codes=tuple(str(600001 + index) for index in range(40)))
+    updater = _updater(tmp_path, supplier)
+    commit = updater.v2.replace_paired_windows
+
+    def blocked_commit(*args):
+        writing.set()
+        assert release.wait(10)
+        return commit(*args)
+
+    monkeypatch.setattr(updater.v2, "replace_paired_windows", blocked_commit)
+    network = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="test-qfq-network")
+    writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="test-qfq-writer")
+    network.start()
+    writer.start()
+    updater = replace(updater, worker_pool=network, writer_pool=writer, cancel_requested=cancelled.is_set)
+    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as coordinator:
+            future = coordinator.submit(updater.execute, observed)
+            try:
+                assert writing.wait(5)
+                assert downloaded.wait(5)
+                assert len(supplier.calls) <= 32
+                assert not (tmp_path / ".checkpoint.json").exists()
+                if cancel_during_write:
+                    cancelled.set()
+                assert not future.done()
+            finally:
+                release.set()
+            result = future.result(timeout=10)
+            if cancel_during_write:
+                assert result.failure_reason == "cancelled"
+            else:
+                assert result.completed_codes == 40 and not result.needs_retry
+    finally:
+        release.set()
+        assert writer.stop(wait=True, cancel_futures=True).completed
+        assert network.stop(wait=True, cancel_futures=True).completed
+
+
 def test_inferred_suspension_keeps_only_tencent_real_bars_without_backfill(tmp_path):
     class SuspendedSupplier(Supplier):
         def fetch_window(self, security, dates):
@@ -886,7 +944,7 @@ def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_p
         result = updater.execute(observed)
         assert result.completed_codes == 3 and result.pending_codes == 1
         assert [event[0] for event in events] == ["tencent"] * 4
-        assert sum(" | qfq_download 股票进度 | " in line for line in logs) == 4
+        assert sum(" | download_qfq 股票进度 | " in line for line in logs) == 4
         assert any("已处理 4/4（100.00%） | 合格 3 | 待重试 1" in line for line in logs)
         for cache in (updater.v2, updater.v3):
             assert cache.codes() == frozenset({"600001", "600002", "600003"})
@@ -1236,7 +1294,7 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         result = updater.execute(observed)
         assert result.completed_codes == 3
         assert sorted(writes) == ["600001", "600002", "600003"]
-        stock_progress = [message for message in messages if " | qfq_download 股票进度 | " in message]
+        stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
         assert len(stock_progress) == 3
         assert all("处理 Tencent下载 | 结果 合格" in message for message in stock_progress)
         assert all(
@@ -1250,7 +1308,7 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         resumed = updater.execute(observed)
         assert resumed.skipped_codes == 3 and resumed.changed_files == ()
         assert len(supplier.calls) == 3
-        stock_progress = [message for message in messages if " | qfq_download 股票进度 | " in message]
+        stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
         assert len(stock_progress) == 3
         assert all("处理 本地复用 | 结果 复用" in message for message in stock_progress)
         assert "合格 3 | 待重试 0 | 其中复用 3" in messages[-1]
@@ -1277,7 +1335,7 @@ def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 1
     assert updater.v2.read_code("600001") == before
-    stock_progress = [message for message in messages if " | qfq_download 股票进度 | " in message]
+    stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
     assert len(stock_progress) == 2
     pending = next(message for message in stock_progress if "600001 fixture" in message)
     assert "处理 Tencent下载 | 结果 待重试" in pending
@@ -1312,7 +1370,7 @@ def test_reused_codes_do_not_reduce_actual_download_wave_size(tmp_path):
     supplier.codes = tuple(f"60000{index}" for index in range(1, 9))
     messages = []
     result = replace(updater, report=lambda message: messages.append(_plain_feedback(message))).execute(observed)
-    stock_progress = [message for message in messages if " | qfq_download 股票进度 | " in message]
+    stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
     downloaded = [message for message in stock_progress if "处理 Tencent下载" in message]
     reused = [message for message in stock_progress if "处理 本地复用" in message]
     assert len(stock_progress) == 8 and len(downloaded) == len(reused) == 4
@@ -1344,7 +1402,7 @@ def test_preparation_pending_is_reported_without_any_download_and_hides_payload(
     assert result.completed_codes == 0 and result.pending_codes == 1
     assert supplier.calls == []
     assert "已处理 1/1（100.00%） | 合格 0 | 待重试 1" in messages[-1]
-    details = next(message for message in messages if " | qfq_download 股票进度 | " in message)
+    details = next(message for message in messages if " | download_qfq 股票进度 | " in message)
     assert "600001 fixture | 处理 本地检查 | 结果 失败" in details
     assert "raw -/251 | qfq -/251 | 完整配对 -/251 | 缺日 未知 | 原因 RuntimeError" in details
     assert "payload" not in "\n".join(messages) and "secret" not in "\n".join(messages)
@@ -1374,7 +1432,7 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     assert result.completed_codes == result.pending_codes == result.skipped_codes == 0
     assert supplier.calls == []
     assert messages[0].startswith("00:00:00 | qfq 准备 | ")
-    stock_progress = next(message for message in messages if " | qfq_download 股票进度 | " in message)
+    stock_progress = next(message for message in messages if " | download_qfq 股票进度 | " in message)
     assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
     assert messages[-1].startswith("00:01:05 | qfq 完成 | 已处理 1/1（100.00%）")
     assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0 | 未处理 0" in messages[-1]
@@ -1405,7 +1463,7 @@ def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_process
     assert len(supplier.calls) == 1
     assert " | qfq 已取消 | 已处理 0/3（0.00%） | 合格 0 | 待重试 0" in messages[-1]
     assert "未处理 3" in messages[-1]
-    assert not any(" | qfq_download 股票进度 | " in message for message in messages)
+    assert not any(" | download_qfq 股票进度 | " in message for message in messages)
 
 
 def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path):
@@ -1608,7 +1666,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
         lambda _path: SimpleNamespace(project_root=tmp_path, reference_dir=reference_root),
     )
     monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", execute)
-    assert cli.Main(["--config", str(tmp_path / "runtime.json"), "qfq_download"]) == exit_code
+    assert cli.Main(["--config", str(tmp_path / "runtime.json"), "download_qfq"]) == exit_code
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert captured.err == "qfq fixture progress\n"
@@ -1619,7 +1677,7 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
     assert payload["failure_reason"] is None
     assert calls == [(tmp_path, reference_root)]
     with pytest.raises(SystemExit) as rejected:
-        cli.Main(["--config", str(tmp_path / "runtime.json"), "qfq_download", "--profile", "v3"])
+        cli.Main(["--config", str(tmp_path / "runtime.json"), "download_qfq", "--profile", "v3"])
     assert rejected.value.code == 2
     assert calls == [(tmp_path, reference_root)]
 

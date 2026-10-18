@@ -22,13 +22,9 @@ usage() {
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh download                零参数历史维护" \
-    "  ./run.sh qfq_download            Tencent并发更新短窗口，支持断点续传" \
-    "  ./run.sh risk_download           增量更新近一年公告和当前风险单库" \
-    "  ./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" \
-    "  ./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" \
-    "  ./run.sh train-both              一次历史扫描生成 V2/V3 样本并训练双档" \
-    "  ./run.sh download-train          先维护完整历史，再联合训练 V2/V3" \
+    "  ./run.sh download_qfq            Tencent并发更新短窗口，支持断点续传" \
+    "  ./run.sh download_risk           增量更新近一年公告和当前风险单库" \
+    "  ./run.sh download_train          先维护完整历史，再联合训练 V2/V3" \
     "" \
     "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数。" \
     "" \
@@ -58,7 +54,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download|qfq_download|risk_download|train-v2|train-v3|train-both|download-train)
+    help|-h|--help|check|download_train|download_qfq|download_risk)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -91,7 +87,7 @@ if [[ "$MODE" == "check" && "$SCORING_PROFILE" == "both" ]]; then
   exit 2
 fi
 
-if [[ "$MODE" == "download" || "$MODE" == "qfq_download" || "$MODE" == "risk_download" || "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" || "$MODE" == "download-train" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
+if [[ "$MODE" == "download_train" || "$MODE" == "download_qfq" || "$MODE" == "download_risk" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
   printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
   exit 2
 fi
@@ -104,7 +100,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download|qfq_download|risk_download|train-v2|train-v3|train-both|download-train)
+  check|download_train|download_qfq|download_risk)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -115,27 +111,7 @@ case "$MODE" in
     ;;
 esac
 
-if [[ "$MODE" == "download-train" ]]; then
-  PIPELINE_STARTED=$SECONDS
-  if "$ROOT_DIR/run.sh" download; then
-    :
-  else
-    PIPELINE_EXIT_CODE=$?
-    printf '%s\n' '完整历史维护失败；未启动双档训练。' >&2
-    exit "$PIPELINE_EXIT_CODE"
-  fi
-  if "$ROOT_DIR/run.sh" train-both; then
-    :
-  else
-    PIPELINE_EXIT_CODE=$?
-    printf '联合训练失败；总耗时 %s 秒。\n' "$((SECONDS - PIPELINE_STARTED))" >&2
-    exit "$PIPELINE_EXIT_CODE"
-  fi
-  printf '下载与双档训练完成；总耗时 %s 秒。\n' "$((SECONDS - PIPELINE_STARTED))" >&2
-  exit 0
-fi
-
-if [[ "$MODE" == "risk_download" ]]; then
+if [[ "$MODE" == "download_risk" ]]; then
   printf '%s: 正在检查运行环境。\n' "$MODE" >&2
 fi
 
@@ -189,36 +165,15 @@ fi
 if [[ "$COMMAND_KIND" == "server" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${PROFILE_ARGS[@]}" "${FORWARD_ARGS[@]}"
 fi
-if [[ "$MODE" == "download" ]]; then
-  if [[ "$(uname -s)" == "Linux" ]]; then
-    if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
-      exec systemd-run --user --scope --quiet --collect \
-        --unit="trader-history-download-${BASHPID}" \
-        --slice=background.slice \
-        --property=MemoryHigh=1792M \
-        --property=MemoryMax=2048M \
-        --property=MemorySwapMax=2048M \
-        --property=CPUWeight=100 \
-        --property=IOWeight=100 \
-        -- "$ENTRYPOINT" --config "$CONFIG_PATH" download
-    fi
-    printf '%s\n' '警告：当前用户 systemd scope 不可用；历史下载仍可断点续传，但不能隔离桌面终端的内存压力。' >&2
-  fi
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" download
+if [[ "$MODE" == "download_qfq" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" download_qfq
 fi
-if [[ "$MODE" == "qfq_download" ]]; then
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" qfq_download
-fi
-if [[ "$MODE" == "risk_download" ]]; then
+if [[ "$MODE" == "download_risk" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
 fi
-if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" ]]; then
-  TRAINING_MEMORY_HIGH=1792M
-  TRAINING_MEMORY_MAX=2048M
-  if [[ "$MODE" == "train-both" ]]; then
-    TRAINING_MEMORY_HIGH=4608M
-    TRAINING_MEMORY_MAX=5120M
-  fi
+if [[ "$MODE" == "download_train" ]]; then
+  TRAINING_MEMORY_HIGH=4608M
+  TRAINING_MEMORY_MAX=5120M
   if [[ "$(uname -s)" == "Linux" ]]; then
     if command -v systemd-run >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
       exec systemd-run --user --scope --quiet --collect \
@@ -231,7 +186,7 @@ if [[ "$MODE" == "train-v2" || "$MODE" == "train-v3" || "$MODE" == "train-both" 
         --property=IOWeight=20 \
         -- "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
     fi
-    printf '%s\n' '警告：当前用户 systemd scope 不可用；训练仍按 2 GiB 目标运行，但不能提供 cgroup 硬隔离。' >&2
+    printf '%s\n' '警告：当前用户 systemd scope 不可用；联合下载训练仍使用有界资源，但不能提供 cgroup 硬隔离。' >&2
   fi
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
 fi

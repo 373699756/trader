@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from collections.abc import Callable
 
 from trader.infra.shutdown import ShutdownDeadline, ShutdownStep
 from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
@@ -12,10 +13,17 @@ from trader.recommendation.infra.market_data.published_history_cache import Publ
 class PublishedHistoryObserver:
     """Rebuild the projection off market deadlines without acquiring a supplier."""
 
-    def __init__(self, history: PublishedHistoryCache, *, interval_seconds: float = 30.0) -> None:
+    def __init__(
+        self,
+        history: PublishedHistoryCache,
+        *,
+        interval_seconds: float = 30.0,
+        observe_company: Callable[[], None] | None = None,
+    ) -> None:
         if interval_seconds <= 0:
             raise ValueError("history observation interval must be positive")
         self._history = history
+        self._observe_company = observe_company
         self._interval = interval_seconds
         self._cancel = threading.Event()
         self._lock = threading.Lock()
@@ -53,6 +61,8 @@ class PublishedHistoryObserver:
                 self._history.record_projection_observation()
             except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
                 self._history.record_maintenance("failed", type(exc).__name__, stage="reading_active_snapshot")
+            if self._observe_company is not None:
+                self._observe_company()
             if self._cancel.wait(self._interval):
                 return
 

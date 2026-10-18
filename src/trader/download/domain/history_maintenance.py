@@ -20,6 +20,21 @@ HistoryMaintenanceState = Literal[
 
 
 @dataclass(frozen=True)
+class HistoryPriceGapReason:
+    reason: str
+    cells: int
+
+
+@dataclass(frozen=True)
+class HistoryPriceGapSummary:
+    stocks: int
+    cells: int
+    first_date: date | None
+    last_date: date | None
+    reasons: tuple[HistoryPriceGapReason, ...]
+
+
+@dataclass(frozen=True)
 class HistoryMaintenanceStatus:
     state: HistoryMaintenanceState
     reason: str | None
@@ -34,11 +49,12 @@ class HistoryMaintenanceStatus:
     training_due_reason: HistoryTrainingDueReason
     automatic_training: bool
     unresolved_price_cells: int = 0
+    price_gap_summary: HistoryPriceGapSummary | None = None
 
     def __post_init__(self) -> None:
         if self.matured_label_days_since_training < 0 or self.unresolved_price_cells < 0:
             raise ValueError("matured label days must not be negative")
-        due_reasons = {"initial_training_required", "cadence_due", "input_revision_due"}
+        due_reasons = {"initial_training_required", "cadence_due", "input_revision_due", "training_contract_due"}
         if self.training_due != (self.training_due_reason in due_reasons):
             raise ValueError("training due flag and reason disagree")
 
@@ -46,5 +62,7 @@ class HistoryMaintenanceStatus:
 __all__ = [
     "HistoryMaintenanceState",
     "HistoryMaintenanceStatus",
+    "HistoryPriceGapReason",
+    "HistoryPriceGapSummary",
     "HistoryTrainingDueReason",
 ]

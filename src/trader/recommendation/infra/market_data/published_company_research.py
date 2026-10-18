@@ -30,6 +30,8 @@ from trader.recommendation.infra.market_data.research_load_status import (
 
 
 class CompanyEvidenceReadPort(Protocol):
+    def publication_version(self) -> str: ...
+
     def visit(self, codes: Sequence[str], consume: Callable[[CompanyEvidenceSnapshot], None]) -> None: ...
 
 
@@ -54,6 +56,27 @@ class PublishedCompanyResearch:
         self._last_error = ""
         self._refresh_error = ""
         self._missing: frozenset[str] = frozenset()
+        self._publication_version = ""
+        self._load_lock = threading.RLock()
+
+    def observe_publication(self) -> None:
+        """Called by the existing local-data observer, never by an HTTP request."""
+        with self._load_lock:
+            try:
+                version = self._reader.publication_version()
+            except (OSError, RuntimeError, ValueError) as exc:
+                with self._lock:
+                    self._last_error = f"company_snapshot:{type(exc).__name__}"
+                return
+            if version == self._publication_version and not self._last_error:
+                return
+            with self._lock:
+                codes = tuple(sorted(set(self._observations).union(self._missing)))
+            if codes:
+                self.load_report(codes, self._wall_clock(), include_structured=True)
+            with self._lock:
+                if not self._last_error:
+                    self._publication_version = version
 
     def cached(
         self,
@@ -113,6 +136,16 @@ class PublishedCompanyResearch:
         *,
         include_structured: bool,
         action_restrictions: dict[str, set[str]] | None = None,
+    ) -> ResearchLoadReport:
+        with self._load_lock:
+            return self._read_report(codes, observed_at, action_restrictions=action_restrictions)
+
+    def _read_report(
+        self,
+        codes: Sequence[str],
+        observed_at: datetime,
+        *,
+        action_restrictions: dict[str, set[str]] | None,
     ) -> ResearchLoadReport:
         observations: dict[str, ResearchObservation] = {}
 

@@ -74,7 +74,7 @@ def test_remaining_offline_research_is_historical_and_production_isolated() -> N
         assert token in research_sources
     assert "旧 H0 历史归档、回测和筛选命令已经退役" in design
     assert "download" in design
-    assert "train-v3" in design
+    assert "download_train" in design
     training = _compact(ROOT / "docs/4_下载训练.md")
     assert "不接入HTTP、SSE、生产调度或活动数据库" in training
 

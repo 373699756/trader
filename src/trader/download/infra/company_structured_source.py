@@ -101,7 +101,9 @@ class EastmoneyCompanySource:
                 _DATA_URL,
                 {
                     "reportName": "RPT_CSDC_LIST" if component == "pledge" else "RPT_LIFT_STAGE",
-                    "columns": "ALL",
+                    "columns": "SECURITY_CODE,TRADE_DATE,PLEDGE_RATIO"
+                    if component == "pledge"
+                    else "SECURITY_CODE,FREE_DATE,TOTAL_RATIO",
                     "sortColumns": f"{field},SECURITY_CODE",
                     "sortTypes": "1,1",
                     "pageNumber": str(page),

@@ -46,8 +46,8 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
             assert head["active"] is False
             assert head["model_hash"] == ""
             assert head["historical_failure_reasons"] == ["production_model_artifacts_missing"]
-        assert f"train-{selected}" in caplog.text
-    assert "./run.sh qfq_download" in caplog.text
+        assert "./run.sh download_train" in caplog.text
+    assert "./run.sh download_qfq" in caplog.text
     assert "history" in caplog.text
     assert started == []
     assert not (tmp_path / "data").exists()

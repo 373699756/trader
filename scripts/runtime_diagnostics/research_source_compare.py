@@ -74,7 +74,7 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
         structured = EastmoneyCompanySource(transport, monotonic=time.monotonic, timeout_seconds=args.timeout_seconds)
         component_samples: list[dict[str, object]] = []
         structured_deadline = min(deadline, time.monotonic() + args.source_loop_seconds)
-        for label in ("financial", "financial_baseline", "pledge", "unlock"):
+        for label in ("financial", "pledge", "unlock", "financial_baseline"):
             component = "financial" if label == "financial_baseline" else label
             try:
                 if component == "financial":

@@ -93,6 +93,15 @@ class _DownloadJob:
 
 
 @dataclass(frozen=True)
+class _WriteReceipt:
+    codes: tuple[str, ...]
+    files: tuple[str, ...]
+    rows: int
+    failure: RuntimeError | OSError | ValueError | None = None
+    write_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
 class UpdateQfqWindows:
     v2: QfqWindowPort
     v3: QfqWindowPort
@@ -102,6 +111,7 @@ class UpdateQfqWindows:
     report: Callable[[ProgressMessage], None]
     workers: int = 8
     worker_pool: WorkerExecutor | None = None
+    writer_pool: WorkerExecutor | None = None
     monotonic: Callable[[], float] = monotonic
 
     def __post_init__(self) -> None:
@@ -265,37 +275,95 @@ class UpdateQfqWindows:
         remaining = iter(plans)
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob] = {}
         downloaded: list[tuple[_DownloadJob, PublishedHistoryWindow]] = []
+        writing: Future[_WriteReceipt] | None = None
+        write_batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...] = ()
         exhausted = False
         failure_reason: Literal["qfq_worker_unavailable"] | None = None
-        last_feedback = self.monotonic()
+        last_feedback = last_flush = self.monotonic()
         try:
             while not self.cancel_requested():
-                capacity = self.workers - len(futures)
+                if writing is not None and writing.done():
+                    checkpoint_codes.extend(self._accept_write(write_batch, writing.result(), progress))
+                    self._flush_checkpoint(checkpoint_codes, progress, threshold=256)
+                    writing, write_batch = None, ()
+                buffered = len(downloaded) + len(write_batch) + len(futures)
+                cells = sum(len(window.cells) for _, window in (*downloaded, *write_batch))
+                cells += sum(len(job.dates) for job in futures.values())
+                capacity = min(self.workers - len(futures), max(0, 32 - buffered), max(0, (8192 - cells) // 251))
                 plan_batch = tuple(islice(remaining, capacity)) if not exhausted else ()
-                if len(plan_batch) < capacity:
+                if capacity and len(plan_batch) < capacity:
                     exhausted = True
                 if plan_batch:
                     failure_reason = self._fill_slots(plan_batch, futures, progress)
                     exhausted = exhausted or failure_reason is not None
-                if downloaded and (len(downloaded) >= self.workers or not futures):
-                    checkpoint_codes.extend(self._commit_downloaded(downloaded[: self.workers], progress))
-                    del downloaded[: self.workers]
-                    self._flush_checkpoint(checkpoint_codes, progress, threshold=256)
-                if not futures:
-                    if exhausted and not downloaded:
-                        break
-                    continue
-                done, _pending = wait(tuple(futures), timeout=1.0, return_when=FIRST_COMPLETED)
-                if self.monotonic() - last_feedback >= 10.0:
-                    progress.publish("请求中", f"在途 {len(futures)} 只 | 已处理 {progress.processed}/{progress.total}")
+                if (
+                    downloaded
+                    and writing is None
+                    and (
+                        len(downloaded) >= 16
+                        or sum(len(window.cells) for _, window in downloaded) >= 4096
+                        or self.monotonic() - last_flush >= 1
+                        or not futures
+                    )
+                ):
+                    count, batch_cells = 0, 0
+                    for _, window in downloaded[:16]:
+                        if count and batch_cells + len(window.cells) > 4096:
+                            break
+                        count, batch_cells = count + 1, batch_cells + len(window.cells)
+                    write_batch = tuple(downloaded[:count])
+                    del downloaded[:count]
+                    writing = self._submit_write(write_batch, progress.source)
+                    last_flush = self.monotonic()
+                if not futures and exhausted and not downloaded and writing is None:
+                    break
+                if self.monotonic() - last_feedback >= 5:
+                    progress.publish(
+                        "请求/落库中",
+                        f"网络在途 {len(futures)} | 待写 {len(downloaded)} | 写入 {len(write_batch)} | 已处理 {progress.processed}/{progress.total}",
+                    )
                     last_feedback = self.monotonic()
+                if futures or writing is not None:
+                    wait(
+                        (*futures, *((writing,) if writing is not None else ())), timeout=1, return_when=FIRST_COMPLETED
+                    )
                 if self.cancel_requested():
                     break
-                downloaded.extend(self._collect_completed(done, futures, progress))
+                downloaded.extend(
+                    self._collect_completed({future for future in futures if future.done()}, futures, progress)
+                )
         finally:
             for future in futures:
                 future.cancel()
+            if writing is not None:
+                # Never release the maintenance lock while a paired transaction is still running.
+                writing.result()
         return failure_reason
+
+    def _submit_write(
+        self, batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...], source: str
+    ) -> Future[_WriteReceipt]:
+        if self.writer_pool is not None:
+            return SubmitWithBackpressure(self.writer_pool, self._write_downloaded, batch, source)
+        result: Future[_WriteReceipt] = Future()
+        result.set_result(self._write_downloaded(batch, source))
+        return result
+
+    def _write_downloaded(
+        self, batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...], source: str
+    ) -> _WriteReceipt:
+        if self.cancel_requested():
+            return _WriteReceipt((), (), 0, RuntimeError("cancelled"))
+        started = self.monotonic()
+        try:
+            files, rows = self.v2.replace_paired_windows(self.v3, tuple(window for _, window in batch), source)
+            return _WriteReceipt(
+                tuple(window.code for _, window in batch), files, rows, write_seconds=self.monotonic() - started
+            )
+        except QfqPairPublicationError as exc:
+            return _WriteReceipt(exc.codes, exc.files, exc.rows, exc, self.monotonic() - started)
+        except (RuntimeError, OSError, ValueError) as exc:
+            return _WriteReceipt((), (), 0, exc, self.monotonic() - started)
 
     def _fill_slots(
         self,
@@ -353,35 +421,28 @@ class UpdateQfqWindows:
             future.set_exception(exc)
         return future
 
-    def _commit_downloaded(
-        self, downloaded: list[tuple[_DownloadJob, PublishedHistoryWindow]], progress: QfqDownloadProgress
+    def _accept_write(
+        self,
+        batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...],
+        receipt: _WriteReceipt,
+        progress: QfqDownloadProgress,
     ) -> tuple[str, ...]:
-        if self.cancel_requested():
-            return ()
-        try:
-            self._commit_many(tuple(window for _job, window in downloaded), progress, progress.source)
-        except QfqPairPublicationError as exc:
-            progress.changed.update(exc.files)
-            progress.rows += exc.rows
-            for job, window in downloaded:
-                if window.code in exc.codes:
-                    progress.completed += 1
-                    self._record_completed(progress, job, window)
-                else:
-                    progress.record_pending(
-                        job.security, exc, job.dates, action="Tencent下载", failure_level=ProgressLevel.ERROR
-                    )
-            return exc.codes
-        except (RuntimeError, OSError, ValueError) as exc:
-            for job, _window in downloaded:
+        progress.changed.update(receipt.files)
+        progress.rows += receipt.rows
+        progress.write_seconds += receipt.write_seconds
+        for job, window in batch:
+            if window.code in receipt.codes:
+                progress.completed += 1
+                self._record_completed(progress, job, window)
+            else:
                 progress.record_pending(
-                    job.security, exc, job.dates, action="Tencent下载", failure_level=ProgressLevel.ERROR
+                    job.security,
+                    receipt.failure or RuntimeError("qfq_pair_publication_failed"),
+                    job.dates,
+                    action="配对落库",
+                    failure_level=ProgressLevel.ERROR,
                 )
-            return ()
-        for job, window in downloaded:
-            progress.completed += 1
-            self._record_completed(progress, job, window)
-        return tuple(window.code for _job, window in downloaded)
+        return receipt.codes
 
     @staticmethod
     def _record_completed(progress: QfqDownloadProgress, job: _DownloadJob, window: PublishedHistoryWindow) -> None:
@@ -400,21 +461,6 @@ class UpdateQfqWindows:
                 inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in window.cells),
             ),
         )
-
-    def _commit_many(
-        self, windows: tuple[PublishedHistoryWindow, ...], progress: QfqDownloadProgress, source: str
-    ) -> None:
-        started = self.monotonic()
-        files, delta = self.v2.replace_paired_windows(self.v3, windows, source)
-        progress.changed.update(files)
-        progress.rows += delta
-        elapsed = self.monotonic() - started
-        if elapsed >= 5.0:
-            progress.publish(
-                "配对落库",
-                f"完成 | 股票 {len(windows)} | 变更行 {delta} | 阶段耗时 {elapsed:.2f} 秒",
-                level=ProgressLevel.SUCCESS,
-            )
 
     def _flush_checkpoint(self, checkpoint_codes: list[str], progress: QfqDownloadProgress, *, threshold: int) -> None:
         if self.cancel_requested() or len(checkpoint_codes) < threshold:

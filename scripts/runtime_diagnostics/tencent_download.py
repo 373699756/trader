@@ -66,7 +66,9 @@ def _benchmark(
     sample_supplier = _SampleSupplier(replace(context, universe=subset), supplier)
     pool = BoundedExecutor(worker_count=workers, queue_capacity=0, thread_name_prefix="tencent-diagnostic")
     pool.start()
+    writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="tencent-diagnostic-writer")
     try:
+        writer.start()
         with TemporaryDirectory(prefix="trader-tencent-qfq-") as scratch:
             root = Path(scratch)
             failures: Counter[str] = Counter()
@@ -84,6 +86,7 @@ def _benchmark(
                 feedback,
                 workers=workers,
                 worker_pool=pool,
+                writer_pool=writer,
             )
             started = time.monotonic()
             result = updater.execute(observed_at)
@@ -109,8 +112,10 @@ def _benchmark(
                 "restart_failure_categories": dict(failures),
             }
     finally:
-        stopped = pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30))
-        if not stopped.completed:
+        deadline = ShutdownDeadline.start(30)
+        writer_stopped = writer.stop(wait=True, cancel_futures=True, deadline=deadline)
+        stopped = pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+        if not stopped.completed or not writer_stopped.completed:
             raise RuntimeError("diagnostic_worker_shutdown_incomplete")
 
 

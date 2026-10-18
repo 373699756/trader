@@ -19,7 +19,7 @@ from werkzeug.serving import BaseWSGIServer, make_server
 
 from trader.bootstrap import BuildProfiledSystem, BuildSystem
 from trader.infra.process_lock import ProcessLock, ProcessLockError
-from trader.infra.settings import RuntimeSettings
+from trader.infra.settings import LoadRuntimeSettings, RuntimeSettings
 from trader.infra.shutdown import (
     ShutdownDeadline,
     ShutdownReport,
@@ -55,18 +55,19 @@ def BuildParser() -> argparse.ArgumentParser:
 def Main(argv: list[str] | None = None) -> int:
     args = BuildParser().parse_args(argv)
     config_path = _absolute_config_path(args.config)
-    system = (
-        BuildProfiledSystem(config_path)
-        if args.profile == "both"
-        else BuildSystem(config_path, scoring_profile=cast(ScoringProfileId | None, args.profile))
-    )
-    _validate_bind(system.settings)
+    settings = LoadRuntimeSettings(config_path)
+    _validate_bind(settings)
     try:
-        lock = ProcessLock(system.settings.runtime_dir / "server.lock")
+        lock = ProcessLock(settings.runtime_dir / "server.lock")
         lock.acquire()
     except ProcessLockError as exc:
-        raise SystemExit(_active_service_message(exc, system.settings)) from None
+        raise SystemExit(_active_service_message(exc, settings)) from None
     with lock:
+        system = (
+            BuildProfiledSystem(config_path)
+            if args.profile == "both"
+            else BuildSystem(config_path, scoring_profile=cast(ScoringProfileId | None, args.profile))
+        )
         return _run_system(
             system,
             timeout_seconds=system.settings.pipeline.shutdown_timeout_seconds,

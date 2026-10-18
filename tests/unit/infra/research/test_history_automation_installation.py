@@ -27,7 +27,7 @@ def test_platform_plans_use_one_fixed_zero_argument_command_and_never_train(
     plan = PlanHistoryAutomationInstallation(request)
     rendered = "\n".join(item.content for item in plan.files)
 
-    assert "scheduled-history-maintenance" in rendered
+    assert "download_scheduled" in rendered
     assert "train-tomorrow" not in rendered
     assert "pip install" not in rendered
     assert str(root) in rendered

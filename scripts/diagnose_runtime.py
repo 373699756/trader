@@ -52,6 +52,7 @@ _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
     "market-factor-compare": ("market_factor_compare",),
     "research-source-compare": ("research_source_compare",),
     "history-write": ("history_write_benchmark",),
+    "download-performance": ("download_performance",),
     "history-space": ("history_space",),
     "history-industry": ("history_industry",),
     "qfq-sqlite": ("qfq_sqlite_audit",),
@@ -594,6 +595,11 @@ def build_commands(
             ),
             common_timeout,
         ),
+        "download_performance": DiagnosticCommand(
+            "download_performance",
+            (python_executable, "-m", "scripts.runtime_diagnostics.download_performance"),
+            common_timeout,
+        ),
         "history_source_compare": DiagnosticCommand(
             "history_source_compare",
             (
@@ -1097,6 +1103,7 @@ _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], d
     "market_factor_compare": _market_factor_compare_details,
     "research_source_compare": _research_source_compare_details,
     "history_write_benchmark": _history_sqlite_performance_details,
+    "download_performance": _history_sqlite_performance_details,
     "history_space": _history_sqlite_performance_details,
     "history_industry": _history_sqlite_performance_details,
     "baostock_qfq_shadow": _baostock_qfq_shadow_details,

@@ -21,7 +21,6 @@ _T = TypeVar("_T")
 SLOW_DATASETS = frozenset(
     {
         "security_master_calendar",
-        "daily_valuation_financials",
     }
 )
 

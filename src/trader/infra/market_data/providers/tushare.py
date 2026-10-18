@@ -169,34 +169,6 @@ class TushareClient:
                 break
         return tuple(observations)
 
-    def fetch_forward_adjusted_daily(
-        self,
-        codes: Sequence[str],
-        start_date: date,
-        end_date: date,
-        observed_at: datetime,
-    ) -> tuple[SourceObservation, ...]:
-        if not self.supports("forward_adjusted_daily"):
-            return self._insufficient_points("forward_adjusted_daily", observed_at)
-        return _with_price_adjustment(
-            self._fetch_per_code(
-                "forward_adjusted_daily",
-                codes,
-                observed_at,
-                lambda client, code: _invoke(
-                    client,
-                    "pro_bar",
-                    ts_code=_ts_code(code),
-                    start_date=start_date.strftime("%Y%m%d"),
-                    end_date=end_date.strftime("%Y%m%d"),
-                    adj="qfq",
-                    freq="D",
-                ),
-                empty_is_error=True,
-            ),
-            "qfq",
-        )
-
     def fetch_daily_history(
         self,
         codes: Sequence[str],
@@ -225,60 +197,17 @@ class TushareClient:
             "raw",
         )
 
-    def fetch_daily_valuations(
-        self,
-        codes: Sequence[str],
-        trade_date: date,
-        observed_at: datetime,
-    ) -> tuple[SourceObservation, ...]:
-        if not self.supports("daily_valuation"):
-            return self._insufficient_points("daily_valuation", observed_at)
-        return self._fetch_per_code(
-            "daily_valuation",
-            codes,
-            observed_at,
-            lambda client, code: _invoke(
-                client,
-                "daily_basic",
-                ts_code=_ts_code(code),
-                trade_date=trade_date.strftime("%Y%m%d"),
-                fields="ts_code,trade_date,close,turnover_rate,volume_ratio,pe,pb,total_mv,circ_mv",
-            ),
-        )
-
-    def fetch_financial_indicators(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-    ) -> tuple[SourceObservation, ...]:
-        if not self.supports("financial_indicators"):
-            return self._insufficient_points("financial_indicators", observed_at)
-        return self._fetch_per_code(
-            "financial_indicators",
-            codes,
-            observed_at,
-            lambda client, code: _invoke(
-                client,
-                "fina_indicator",
-                ts_code=_ts_code(code),
-                fields="ts_code,ann_date,end_date,eps,dt_eps,roe,roe_dt,assets_turn,debt_to_assets",
-            ),
-        )
-
     def supports(self, dataset: str) -> bool:
         minimum_points = {
             "daily_history": 120,
             "security_master": 2000,
             "trading_calendar": 2000,
-            "forward_adjusted_daily": 2000,
-            "daily_valuation": 2000,
-            "financial_indicators": 2000,
         }
         required = minimum_points.get(dataset)
         return required is not None and self._points >= required
 
     def history_mode(self) -> str:
-        return "forward_adjusted" if self.supports("forward_adjusted_daily") else "unadjusted_daily"
+        return "unadjusted_daily"
 
     def health(self) -> ReferenceSourceHealth:
         measured_at = self._wall_clock()

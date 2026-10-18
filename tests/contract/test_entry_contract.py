@@ -6,7 +6,6 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -19,7 +18,6 @@ from trader.entrypoints.cli import BuildParser, Main
 from trader.entrypoints.server import BuildParser as build_server_parser
 from trader.infra.process_lock import ProcessLockError
 from trader.infra.settings import LoadRuntimeSettings
-from trader.recommendation.domain.publication.models import Strategy
 from trader.training.application.tomorrow_research_orchestrator import TomorrowResearchPrerequisiteStatus
 from trader.training.infra.research.h1_point_in_time_snapshot import H1PointInTimeSnapshotConflictError
 from trader.training.infra.research.tomorrow_research_evidence import TomorrowResearchEvidenceIndexError
@@ -74,9 +72,9 @@ def test_cli_exposes_current_maintenance_and_explicit_offline_research_commands(
         assert removed not in help_text
     for retained in (
         "check",
-        "download",
-        "train-v2",
-        "train-v3",
+        "download_train",
+        "download_qfq",
+        "download_risk",
         "validate-config",
         "performance-check",
         "research-status",
@@ -148,9 +146,9 @@ def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
     shell = (ROOT / "run.sh").read_text(encoding="utf-8")
 
     assert "check" in shell
-    assert "download" in shell
-    assert "train-v2" in shell
-    assert "train-v3" in shell
+    assert "download_train" in shell
+    assert "download_qfq" in shell
+    assert "download_risk" in shell
     assert "research-r7-dossier" not in shell
     assert "serve|app" not in shell
     for internal_stage in (
@@ -182,11 +180,7 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh --profile both          同一进程同时启动 V2 和 V3" in completed.stdout
     assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh download                零参数历史维护" in completed.stdout
-    assert "./run.sh train-v2                按 V2 1000 拟合日、251 日特征窗训练双头" in completed.stdout
-    assert "./run.sh train-v3                按 V3 750 拟合日、61 日特征窗训练双头" in completed.stdout
-    assert "./run.sh train-both              一次历史扫描生成 V2/V3 样本并训练双档" in completed.stdout
-    assert "./run.sh download-train          先维护完整历史，再联合训练 V2/V3" in completed.stdout
+    assert "./run.sh download_train          先维护完整历史，再联合训练 V2/V3" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
     assert "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数" in completed.stdout
@@ -217,9 +211,9 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
 @pytest.mark.parametrize(
     "arguments",
     (
-        ("download", "--sessions", "2000"),
-        ("download", "--mode", "update"),
-        ("--profile", "v2", "download"),
+        ("download_train", "--sessions", "2000"),
+        ("download_train", "--mode", "update"),
+        ("--profile", "v2", "download_train"),
     ),
 )
 def test_run_script_rejects_download_arguments_before_environment_setup(
@@ -238,7 +232,7 @@ def test_run_script_rejects_download_arguments_before_environment_setup(
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert "download 不接受任何参数" in completed.stderr
+    assert "download_train 不接受任何参数" in completed.stderr
     assert not missing_venv.exists()
 
 
@@ -371,7 +365,7 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download"),
+        ("bash", str(ROOT / "run.sh"), "download_train"),
         cwd=ROOT,
         env={
             **os.environ,
@@ -385,46 +379,22 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} download\n"
+    assert completed.stdout == f"cli:--config {config} download_train\n"
 
 
-@pytest.mark.parametrize(
-    ("failed_command", "expected_commands"),
-    (("", ("download", "train-both")), ("download", ("download",)), ("train-both", ("download", "train-both"))),
-)
-def test_download_train_runs_joint_training_only_after_successful_download(
-    tmp_path: Path, failed_command: str, expected_commands: tuple[str, ...]
-) -> None:
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
-    _write_fake_entrypoint(
-        venv_bin / "trader-cli",
-        f'printf \'cli:%s\\n\' "$*"\nif [[ "${{!#}}" == "{failed_command}" ]]; then exit 1; fi',
-    )
-    _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
-    config = tmp_path / "runtime.json"
+@pytest.mark.parametrize("download_result", (0, 1, 130))
+def test_download_train_stops_before_training_on_history_failure(monkeypatch, download_result):
+    from trader.bootstrap import ExecuteDownloadTrain
 
-    completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download-train"),
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{venv_bin}:{os.environ['PATH']}",
-            "VENV_DIR": str(venv_bin.parent),
-            "TRADER_CONFIG": str(config),
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == int(bool(failed_command))
-    assert completed.stdout.splitlines() == [f"cli:--config {config} {command}" for command in expected_commands]
+    calls = []
+    monkeypatch.setattr(research_commands, "ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr("trader.download.entrypoints.commands.RunDownload", lambda *args, **kwargs: download_result)
+    monkeypatch.setattr(research_commands, "RunJointTraining", lambda runtime: calls.append(runtime) or 7)
+    assert ExecuteDownloadTrain(ROOT / "config/runtime.json") == (download_result or 7)
+    assert len(calls) == int(download_result == 0)
 
 
-def test_train_both_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
+def test_download_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python3", "exit 99")
@@ -436,7 +406,7 @@ def test_train_both_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "train-both"),
+        ("bash", str(ROOT / "run.sh"), "download_train"),
         cwd=ROOT,
         env={
             **os.environ,
@@ -452,44 +422,7 @@ def test_train_both_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     assert completed.returncode == 0
     assert "--property=MemoryHigh=4608M" in completed.stdout
     assert "--property=MemoryMax=5120M" in completed.stdout
-    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} train-both")
-
-
-def test_run_script_isolates_history_download_from_the_desktop_terminal(tmp_path: Path) -> None:
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
-    _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
-    _write_fake_entrypoint(venv_bin / "systemctl", "exit 0")
-    _write_fake_entrypoint(venv_bin / "systemd-run", "printf 'scope:%s\\n' \"$*\"")
-    config = tmp_path / "runtime.json"
-
-    completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download"),
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{venv_bin}:{os.environ['PATH']}",
-            "VENV_DIR": str(venv_bin.parent),
-            "TRADER_CONFIG": str(config),
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0
-    assert "scope:--user --scope --quiet --collect" in completed.stdout
-    assert "--unit=trader-history-download-" in completed.stdout
-    assert "--slice=background.slice" in completed.stdout
-    assert "--property=MemoryHigh=1792M" in completed.stdout
-    assert "--property=MemoryMax=2048M" in completed.stdout
-    assert "--property=MemorySwapMax=2048M" in completed.stdout
-    assert "--property=CPUWeight=100" in completed.stdout
-    assert "--property=IOWeight=100" in completed.stdout
-    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} download")
+    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} download_train")
 
 
 def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: Path) -> None:
@@ -503,7 +436,7 @@ def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: P
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download"),
+        ("bash", str(ROOT / "run.sh"), "download_train"),
         cwd=ROOT,
         env={
             **os.environ,
@@ -517,98 +450,8 @@ def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: P
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} download\n"
-    assert "不能隔离桌面终端的内存压力" in completed.stderr
-
-
-@pytest.mark.parametrize("command", ("train-v2", "train-v3"))
-def test_run_script_forwards_each_zero_argument_training_command(command: str, tmp_path: Path) -> None:
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
-    _write_fake_entrypoint(venv_bin / "uname", "printf 'Darwin\\n'")
-    config = tmp_path / "runtime.json"
-
-    completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), command),
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{venv_bin}:{os.environ['PATH']}",
-            "VENV_DIR": str(venv_bin.parent),
-            "TRADER_CONFIG": str(config),
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} {command}\n"
-
-
-@pytest.mark.parametrize("command", ("train-v2", "train-v3"))
-def test_run_script_isolates_training_in_a_two_gib_linux_scope(command: str, tmp_path: Path) -> None:
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-cli", "exit 0")
-    _write_fake_entrypoint(venv_bin / "uname", "printf 'Linux\\n'")
-    _write_fake_entrypoint(venv_bin / "systemctl", "exit 0")
-    _write_fake_entrypoint(venv_bin / "systemd-run", "printf 'scope:%s\\n' \"$*\"")
-    config = tmp_path / "runtime.json"
-
-    completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), command),
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{venv_bin}:{os.environ['PATH']}",
-            "VENV_DIR": str(venv_bin.parent),
-            "TRADER_CONFIG": str(config),
-        },
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode == 0
-    assert "scope:--user --scope --quiet --collect" in completed.stdout
-    assert f"--unit=trader-{command}-training" in completed.stdout
-    assert "--slice=background.slice" in completed.stdout
-    assert "--property=MemoryHigh=1792M" in completed.stdout
-    assert "--property=MemoryMax=2048M" in completed.stdout
-    assert "--property=MemorySwapMax=2048M" in completed.stdout
-    assert "--property=CPUWeight=20" in completed.stdout
-    assert "--property=IOWeight=20" in completed.stdout
-    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} {command}")
-
-
-@pytest.mark.parametrize("command", ("train-v2", "train-v3"))
-def test_run_script_rejects_training_arguments_before_environment_setup(command: str, tmp_path: Path) -> None:
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    _write_fake_entrypoint(venv_bin / "python3", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-server", "exit 99")
-    _write_fake_entrypoint(venv_bin / "trader-cli", "printf 'cli:%s\\n' \"$*\"")
-    config = tmp_path / "runtime.json"
-    history = tmp_path / "history"
-
-    completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), command, "--runtime-dir", str(history)),
-        cwd=ROOT,
-        env={**os.environ, "VENV_DIR": str(venv_bin.parent), "TRADER_CONFIG": str(config)},
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert completed.returncode != 0
-    assert completed.stdout == ""
-    assert f"{command} 不接受任何参数" in completed.stderr
+    assert completed.stdout == f"cli:--config {config} download_train\n"
+    assert "不能提供 cgroup 硬隔离" in completed.stderr
 
 
 def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path: Path) -> None:
@@ -672,11 +515,8 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "离线研究（仅在明确执行研究任务时使用）:" in powershell
     assert ".\\run.ps1                         以默认 V2 启动并加载共享双头模型" in powershell
     assert ".\\run.ps1 --profile v2|v3         显式使用 V2 或 V3 启动" in powershell
-    assert ".\\run.ps1 download                零参数历史维护" in powershell
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
-    assert ".\\run.ps1 train-v2                按 V2 251 日特征训练独立双头" in powershell
-    assert ".\\run.ps1 train-v3                按 V3 61 日特征训练独立双头" in powershell
     assert "--allow-partial-history" not in powershell
     assert "看板和 check 可追加 --profile v2|v3；离线数据与训练命令均为零参数" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
@@ -685,7 +525,7 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
     assert (
-        '$PublicModes = @("help", "-h", "--help", "check", "download", "train-v2", "train-v3", "train-both", "download-train")'
+        '$PublicModes = @("help", "-h", "--help", "check", "download_train", "download_qfq", "download_risk")'
         in powershell
     )
     assert "install-history-automation" not in powershell
@@ -763,108 +603,18 @@ def test_tomorrow_training_resource_policy_is_two_threads_and_lower_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     observed: list[int] = []
-    monkeypatch.setattr(cli_module, "_TOMORROW_PRIORITY_LOWERED", False)
-    monkeypatch.setattr(cli_module.os, "name", "posix")
-    monkeypatch.setattr(cli_module.os, "nice", observed.append)
+    monkeypatch.setattr(research_commands, "_TRAINING_PRIORITY_LOWERED", False)
+    monkeypatch.setattr(research_commands.os, "name", "posix")
+    monkeypatch.setattr(research_commands.os, "nice", observed.append)
 
-    cli_module._configure_tomorrow_training_resources()
-    cli_module._configure_tomorrow_training_resources()
+    research_commands.ConfigureTrainingResources()
+    research_commands.ConfigureTrainingResources()
 
     assert observed == [10]
     assert {
         os.environ[name]
         for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS")
     } == {"2"}
-
-
-def test_train_v3_passes_fixed_roots_and_projects_two_head_results(
-    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = _runtime_config(tmp_path)
-    history = tmp_path / "project-history"
-    observed: list[tuple[Path, Path]] = []
-    monkeypatch.setattr(research_commands, "_history_data_root", lambda: history)
-
-    def train(history_root: Path, train_root: Path, *, settings: object, progress: object) -> SimpleNamespace:
-        assert settings is not None
-        assert progress is not None
-        observed.append((history_root, train_root))
-        heads = tuple(
-            SimpleNamespace(
-                strategy=strategy,
-                status="engineering_ready",
-                label_cutoff=date(2026, 9, 8),
-                report_hash="a" * 64,
-                model_hash="b" * 64,
-                industry_count=42,
-                training_rows=100,
-                validation_rows=20,
-                failure_reasons=(),
-            )
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
-        )
-        return SimpleNamespace(
-            status="engineering_ready",
-            run_id=None,
-            training_input_hash="c" * 64,
-            sample_database_peak_bytes=0,
-            heads=heads,
-        )
-
-    monkeypatch.setattr("trader.training.infra.profile.v3.training.RunV3Training", train)
-
-    assert Main(["--config", str(config), "train-v3"]) == 0
-
-    assert observed == [(history, ROOT / "data" / "train")]
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "v3_training_result"
-    assert tuple(payload["heads"]) == ("d25", "tomorrow")
-    assert payload["heads"]["tomorrow"]["artifact_root"].endswith("data/train/v3/tomorrow")
-    assert "training_due" not in payload["heads"]["tomorrow"]
-
-
-def test_train_v2_uses_its_own_command_adapter_and_artifact_roots(
-    tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    config = _runtime_config(tmp_path)
-    history = tmp_path / "project-history"
-    observed: list[tuple[Path, Path]] = []
-    monkeypatch.setattr(research_commands, "_history_data_root", lambda: history)
-
-    def train(history_root: Path, train_root: Path, *, settings: object, progress: object) -> SimpleNamespace:
-        assert settings is not None
-        assert progress is not None
-        observed.append((history_root, train_root))
-        heads = tuple(
-            SimpleNamespace(
-                strategy=strategy,
-                status="engineering_ready",
-                label_cutoff=date(2026, 9, 8),
-                report_hash="a" * 64,
-                model_hash="b" * 64,
-                industry_count=42,
-                training_rows=100,
-                validation_rows=20,
-                failure_reasons=(),
-            )
-            for strategy in (Strategy.TOMORROW, Strategy.D25)
-        )
-        return SimpleNamespace(
-            status="engineering_ready",
-            run_id=None,
-            training_input_hash="c" * 64,
-            sample_database_peak_bytes=0,
-            heads=heads,
-        )
-
-    monkeypatch.setattr("trader.training.infra.profile.v2.training.RunV2Training", train)
-
-    assert Main(["--config", str(config), "train-v2"]) == 0
-
-    assert observed == [(history, ROOT / "data" / "train")]
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["schema_version"] == "v2_training_result"
-    assert payload["heads"]["tomorrow"]["artifact_root"].endswith("data/train/v2/tomorrow")
 
 
 def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(tmp_path: Path, monkeypatch) -> None:
@@ -911,6 +661,13 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
 @pytest.mark.parametrize(
     "command",
     (
+        "download",
+        "download-train",
+        "qfq_download",
+        "risk_download",
+        "train-v2",
+        "train-v3",
+        "train-both",
         "migrate-v17",
         "recommendation-archive",
         "tomorrow-cutover-evidence",
@@ -953,7 +710,7 @@ def test_entrypoints_and_lock_are_runtime_directory_relative() -> None:
     server = (ROOT / "src/trader/entrypoints/server.py").read_text(encoding="utf-8")
     lock = (ROOT / "src/trader/infra/process_lock.py").read_text(encoding="utf-8")
 
-    assert 'ProcessLock(system.settings.runtime_dir / "server.lock")' in server
+    assert 'ProcessLock(settings.runtime_dir / "server.lock")' in server
     assert "class ProcessLock" in lock
     assert ".runtime/v17" not in server
     assert ".runtime/v17" not in lock
@@ -973,11 +730,12 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
         runtime_dir=tmp_path,
         server=SimpleNamespace(host="127.0.0.1", port=5050, allow_insecure_non_loopback=False),
     )
-    monkeypatch.setattr(
-        server_module,
-        "BuildSystem",
-        lambda _config, *, scoring_profile: SimpleNamespace(settings=settings),
-    )
+
+    def forbidden_build(*args, **kwargs):
+        raise AssertionError("duplicate server must be rejected before loading resources")
+
+    monkeypatch.setattr(server_module, "BuildSystem", forbidden_build)
+    monkeypatch.setattr(server_module, "LoadRuntimeSettings", lambda _path: settings)
     monkeypatch.setattr(server_module, "ProcessLock", _LockedProcess)
 
     with pytest.raises(SystemExit) as error:

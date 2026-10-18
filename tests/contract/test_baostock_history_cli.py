@@ -16,9 +16,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_download_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["download"])
+    args = BuildParser().parse_args(["download_train"])
 
-    assert args.command == "download"
+    assert args.command == "download_train"
     assert not hasattr(args, "runtime_dir")
     assert not hasattr(args, "sessions")
     assert not hasattr(args, "mode")
@@ -34,7 +34,7 @@ def test_download_rejects_every_legacy_argument_during_parsing(arguments: tuple[
     runtime_dir = tmp_path / "must-not-exist"
 
     with pytest.raises(SystemExit):
-        BuildParser().parse_args(["download", *arguments])
+        BuildParser().parse_args(["download_train", *arguments])
 
     assert not runtime_dir.exists()
 
@@ -69,7 +69,12 @@ def test_download_runs_the_typed_zero_argument_synchronization(
 
     monkeypatch.setattr("trader.download.infra.history_sync_runner.RunHistorySync", synchronize)
 
-    assert Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download"]) == 0
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr(
+        "trader.training.entrypoints.commands.RunJointTraining",
+        lambda _runtime: pytest.fail("incomplete history must block training"),
+    )
+    assert Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download_train"]) == 1
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -87,10 +92,16 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "state": "completed",
         "training_due": False,
         "training_due_reason": "data_incomplete",
+        "unresolved_price_cells": 0,
+        "price_gaps": None,
     }
     assert "\x1b" not in captured.err and "\x1b" not in captured.out
     progress_lines = re.sub(r" +", " ", captured.err).splitlines()
-    assert progress_lines == ["00:00:00 | 交易日历 | 等待 | 调用 00:00:05", "00:00:00 | 同步完成"]
+    assert progress_lines == [
+        "00:00:00 | 交易日历 | 等待 | 调用 00:00:05",
+        "00:00:00 | 同步完成",
+        "完整历史未通过训练准入；未启动双档训练。",
+    ]
     assert "completed_units" not in captured.err
     assert "total_units" not in captured.err
 
@@ -136,24 +147,24 @@ def test_train_tomorrow_is_removed_from_the_public_cli() -> None:
         BuildParser().parse_args(["train-tomorrow"])
 
 
-def test_train_v3_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["train-v3"])
+def test_download_risk_is_a_zero_argument_command() -> None:
+    args = BuildParser().parse_args(["download_risk"])
 
-    assert args.command == "train-v3"
+    assert args.command == "download_risk"
     assert not hasattr(args, "runtime_dir")
 
 
-def test_train_v2_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["train-v2"])
+def test_download_qfq_is_a_zero_argument_command() -> None:
+    args = BuildParser().parse_args(["download_qfq"])
 
-    assert args.command == "train-v2"
+    assert args.command == "download_qfq"
     assert not hasattr(args, "runtime_dir")
 
 
-def test_train_both_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["train-both"])
+def test_download_train_is_a_zero_argument_command() -> None:
+    args = BuildParser().parse_args(["download_train"])
 
-    assert args.command == "train-both"
+    assert args.command == "download_train"
     assert not hasattr(args, "runtime_dir")
 
 

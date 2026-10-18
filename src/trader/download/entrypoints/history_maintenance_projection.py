@@ -20,6 +20,16 @@ def ProjectHistoryMaintenanceStatus(status: HistoryMaintenanceStatus) -> dict[st
         "training_due": status.training_due,
         "training_due_reason": status.training_due_reason,
         "automatic_training": status.automatic_training,
+        "unresolved_price_cells": status.unresolved_price_cells,
+        "price_gaps": None
+        if status.price_gap_summary is None
+        else {
+            "stocks": status.price_gap_summary.stocks,
+            "cells": status.price_gap_summary.cells,
+            "first_date": str(status.price_gap_summary.first_date) if status.price_gap_summary.first_date else None,
+            "last_date": str(status.price_gap_summary.last_date) if status.price_gap_summary.last_date else None,
+            "reasons": [{"reason": item.reason, "cells": item.cells} for item in status.price_gap_summary.reasons],
+        },
     }
 
 

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 # SQLite primary result codes are stable across supported Python versions.
 _RETRYABLE_PRIMARY_CODES = frozenset({5, 6})  # SQLITE_BUSY, SQLITE_LOCKED
@@ -33,11 +34,9 @@ def OpenHistoryMonthReader(
     for attempt in range(3):
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+            connection = OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, foreign_keys=True))
             if statement_trace is not None:
                 connection.set_trace_callback(statement_trace)
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA query_only=ON")
             connection.execute("PRAGMA cache_size=-8192")
             connection.execute(f"PRAGMA mmap_size={mmap_bytes}")
             connection.execute("PRAGMA temp_store=FILE")

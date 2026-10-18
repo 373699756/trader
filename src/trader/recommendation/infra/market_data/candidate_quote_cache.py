@@ -130,13 +130,7 @@ class QuoteCache:
             intraday_minutes=intraday_minutes,
             history_summaries=history_summaries,
         )
-        feature_codes = {feature.quote.code for feature in features}
-        tushare_fields = self._references.fields(tuple(feature_codes))
-        enriched = tuple(
-            replace(feature, values={**feature.values, **tushare_fields.get(feature.quote.code, {})})
-            for feature in features
-        )
-        return _apply_action_restrictions(self._with_model_industries(enriched), action_restrictions or {})
+        return _apply_action_restrictions(self._with_model_industries(features), action_restrictions or {})
 
     def build_market_features(
         self,

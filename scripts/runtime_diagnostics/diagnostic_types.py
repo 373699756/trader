@@ -25,6 +25,7 @@ Profile = Literal[
     "market-factor-compare",
     "research-source-compare",
     "history-write",
+    "download-performance",
     "history-space",
     "history-industry",
     "qfq-sqlite",

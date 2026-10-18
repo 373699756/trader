@@ -5,6 +5,10 @@ Its profile implementations live under `scripts/runtime_diagnostics/` and
 must return bounded, sanitized summaries. A new runtime probe is added as a
 module and profile there; it is not added as another top-level script.
 
+`--profile download-performance` runs three rounds on disposable synthetic SQLite databases outside the repository.
+It reports company write/publication/cold and warm reads, unchanged publication, and equivalent per-stock versus batch gap queries.
+It makes zero HTTP requests and cannot establish full-market supplier download speed.
+
 ## Retained tools
 
 This table is the sole declaration of the eight retained top-level tools.
@@ -92,7 +96,7 @@ does not switch active data. A separately authorized switch must stop readers
 and writers, retain the full old directory, verify a common filesystem, rename
 the full verified candidate into `data/qfq`, and restart against the new layout.
 Keep the old directory outside the repository for recovery. Routine downloads
-then use `./run.sh qfq_download`; old `index.json` layouts fail explicitly until
+then use `./run.sh download_qfq`; old `index.json` layouts fail explicitly until
 migrated. Neither databases nor backup data belong in Git.
 
 ## BaoStock rate experiments

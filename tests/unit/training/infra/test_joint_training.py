@@ -120,6 +120,66 @@ def test_joint_training_rejects_duplicate_profile_without_touching_history(tmp_p
         engine.RunJointProfileTraining((requests[0], requests[0]), parallel_fit=False)
 
 
+def test_joint_matching_artifacts_skip_sample_scan_and_fit_under_history_lock(tmp_path, monkeypatch):
+    requests = _requests(tmp_path)
+    (tmp_path / "history").mkdir()
+    snapshot = SimpleNamespace(active_snapshot_hash="a" * 64)
+    monkeypatch.setattr(
+        engine.SQLiteHistoryTrainingInputSnapshot,
+        "open",
+        lambda root: SimpleNamespace(archive_root=root, snapshot=snapshot),
+    )
+    monkeypatch.setattr(engine, "RequireHistoryPartitionRepackInactive", lambda root: None)
+    monkeypatch.setattr(engine, "_reuse_profile", lambda snapshot, request: _ready_result(request))
+    monkeypatch.setattr(engine, "BuildJointTrainingSamples", lambda *_: pytest.fail("must not read prices"))
+    monkeypatch.setattr(engine, "_run_locked", lambda *_: pytest.fail("must not refit"))
+    result = engine.RunJointProfileTraining(requests, parallel_fit=False, reuse_matching=True)
+    assert result.reused and result.status == "engineering_ready"
+    assert result.history_scan_passes == result.history_rows_read == result.fit_seconds == 0
+
+
+@pytest.mark.parametrize("mismatch", ("none", "input", "cutoff", "settings", "implementation", "corrupt"))
+def test_reuse_requires_valid_bundles_and_current_input_contract(tmp_path, monkeypatch, mismatch):
+    from dataclasses import replace
+    from datetime import date
+
+    request = _requests(tmp_path)[0]
+    cutoff = date(2026, 10, 16)
+    snapshot = SimpleNamespace(active_snapshot_hash="a" * 64)
+    monkeypatch.setattr(engine, "_mature_label_cutoff", lambda *_: cutoff)
+    bundles = tuple(
+        SimpleNamespace(
+            training_input_hash="a" * 64,
+            label_cutoff=cutoff,
+            training_contract_hash=engine._training_contract_hash(request.profile, head, request.settings),
+            training_run_hash="run",
+            report_hash="b" * 64,
+            model_hash="c" * 64,
+            model=SimpleNamespace(
+                training_input_codes=1, training_universe_codes=1, industries=(), training_rows=10, validation_rows=2
+            ),
+        )
+        for head in request.contracts
+    )
+
+    def inspect(*_):
+        if mismatch == "corrupt":
+            raise ValueError("bundle hash mismatch")
+        return bundles
+
+    monkeypatch.setattr(engine, "InspectActiveProfileBundles", inspect)
+    if mismatch == "input":
+        snapshot.active_snapshot_hash = "d" * 64
+    elif mismatch == "cutoff":
+        bundles[0].label_cutoff = date(2026, 10, 15)
+    elif mismatch == "settings":
+        request = replace(request, settings=replace(request.settings, fit_dates=request.settings.fit_dates + 1))
+    elif mismatch == "implementation":
+        monkeypatch.setattr(engine, "TrainingImplementationIdentity", lambda: "changed")
+    result = engine._reuse_profile(snapshot, request)
+    assert (result is not None) == (mismatch == "none")
+
+
 def test_joint_training_missing_history_blocks_both_without_publishing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

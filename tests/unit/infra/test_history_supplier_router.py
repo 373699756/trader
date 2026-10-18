@@ -22,7 +22,7 @@ from trader.download.entrypoints.history_sync_progress import StderrHistorySyncP
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
-from trader.download.infra.history_supplier_router import HistorySupplierRouter
+from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow, HistorySupplierRouter
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.training.infra.history.history_training_input import SQLiteHistoryTrainingInputSnapshot
@@ -118,6 +118,31 @@ def test_history_context_uses_the_current_exchange_universe() -> None:
     assert context.universe == tuple(sorted(universe, key=lambda item: item.code))
     assert context.universe[0].board == "chinext"
     assert HISTORY_UNIVERSE_CONTRACT in context.source_versions.dependency_versions
+
+
+def test_st_check_uses_current_check_day_instead_of_resumed_price_cutoff():
+    dates = (date(2026, 10, 8), date(2026, 10, 9))
+    checked = date(2026, 10, 18)
+    prices = Prices()
+    prices.dates = dates
+    context = HistorySupplierRouter(
+        Baseline(dates), prices, lambda: _current_universe("600001"), StSource(), eligibility_date=checked
+    ).load_context(dates[-1], len(dates))
+    assert context.calendar.open_dates == dates
+    assert context.st_evidence[0].checked_on == checked
+
+
+@pytest.mark.parametrize("positions,expected", (((8, 9), 5), ((0, 9), 10), ((-1, 9), 2000)))
+def test_sparse_gap_request_count_covers_date_span(positions, expected):
+    calendar = tuple(date(2026, 10, 1) + timedelta(days=i) for i in range(10))
+    requested = tuple(calendar[0] + timedelta(days=i) for i in positions)
+
+    class RecordingPrices(Prices):
+        def fetch_window(self, security, dates, **kwargs):
+            assert kwargs == {"request_count": expected, "allow_interior_padding": True}
+            return super().fetch_window(security, dates, **kwargs)
+
+    assert FetchTencentHistoryWindow(RecordingPrices(), _current_universe("600001")[0], requested, calendar)
 
 
 def test_history_calendar_is_loaded_from_tencent_before_industry_only_query() -> None:

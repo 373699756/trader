@@ -15,7 +15,7 @@ from trader.download.entrypoints.history_sync_progress import StderrHistorySyncP
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 
 
-def RunDownload(repository_root: Path, config_path: Path) -> int:
+def RunDownload(repository_root: Path, config_path: Path, *, quiet_success: bool = False) -> int:
     """Run zero-argument initial or incremental archive maintenance."""
 
     from trader.bootstrap import ExecuteHistoryDownload
@@ -24,8 +24,16 @@ def RunDownload(repository_root: Path, config_path: Path) -> int:
     progress = StderrHistorySyncProgress()
     status = ExecuteHistoryDownload(configuration, progress=progress)
     progress.publish_result(status)
-    print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True))
-    return 0 if status.state in {"completed", "already_current"} else 1
+    ready = (
+        status.state in {"completed", "already_current"}
+        and not status.unresolved_price_cells
+        and status.training_due_reason != "data_incomplete"
+    )
+    if not ready or not quiet_success:
+        print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True))
+    if not ready:
+        print("完整历史未通过训练准入；未启动双档训练。", file=sys.stderr)
+    return 0 if ready else 1
 
 
 def BuildHistorySyncConfiguration(repository_root: Path, config_path: Path) -> HistorySyncConfiguration:
@@ -39,10 +47,6 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
     """Run one download-owned public command after root dispatch."""
 
     repository_root = _repository_root()
-    if command == "download":
-        if config_path is None:
-            raise ValueError("download requires a runtime configuration path")
-        return RunDownload(repository_root, config_path)
     if command == "history-automation-status":
         from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationStatus
         from trader.download.infra.history_automation_status import ReadHistoryAutomationStatus
@@ -56,7 +60,7 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
             )
         )
         return 0
-    if command != "scheduled-history-maintenance" or config_path is None:
+    if command != "download_scheduled" or config_path is None:
         raise ValueError(f"unsupported download command: {command}")
     from trader.bootstrap import ExecuteHistoryDownload
     from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationRunStatus

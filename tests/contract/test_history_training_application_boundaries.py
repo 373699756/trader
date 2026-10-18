@@ -115,12 +115,14 @@ def test_training_application_package_is_profile_owned_and_infrastructure_free()
     assert violations == []
 
 
-def test_entrypoints_route_download_and_training_through_application_use_cases() -> None:
+def test_entrypoints_route_download_and_joint_training_through_current_owners() -> None:
     commands = (ROOT / "src" / "trader" / "training" / "entrypoints" / "commands.py").read_text(encoding="utf-8")
     download_commands = (ROOT / "src" / "trader" / "download" / "entrypoints" / "commands.py").read_text(
         encoding="utf-8"
     )
     assert "ExecuteHistoryDownload" in download_commands
     assert "DownloadHistoryUseCase" in (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
-    assert "TrainV2UseCase" in commands
-    assert "TrainV3UseCase" in commands
+    assert "RunJointProfileTraining" in commands
+    assert "reuse_matching=True" in commands
+    assert "TrainV2UseCase" not in commands
+    assert "TrainV3UseCase" not in commands

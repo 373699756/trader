@@ -27,6 +27,7 @@ from trader.download.infra.history_revision_codec import (
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 from trader.download.infra.history_sqlite_read_connection import OpenHistoryMonthReader
 from trader.download.infra.published_history_codec import DecodePublishedHistoryCell
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 _SCHEMA_IDENTITY = "history_direct_prices"
 _CODE = re.compile(r"^[0-9]{6}$")
@@ -254,13 +255,12 @@ class HistoryMonthPrices:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         new_database = not self._path.exists() or self._path.stat().st_size == 0
         try:
-            with closing(sqlite3.connect(self._path, timeout=5.0)) as connection, connection:
+            with closing(OpenSqliteConnection(self._path)) as connection, connection:
                 if self._statement_trace is not None:
                     connection.set_trace_callback(self._statement_trace)
                 if new_database:
                     connection.execute("PRAGMA page_size=8192")
                 connection.execute("PRAGMA journal_mode=WAL")
-                connection.execute("PRAGMA synchronous=FULL")
                 # One durable schema transaction, not one FULL fsync per table/index.
                 connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
                 connection.execute(
@@ -950,12 +950,9 @@ class HistoryMonthPrices:
         return row_count
 
     def _write_connection(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=5.0)
+        connection = OpenSqliteConnection(self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True))
         if self._statement_trace is not None:
             connection.set_trace_callback(self._statement_trace)
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA cache_size=-8192")
         connection.execute("PRAGMA mmap_size=0")
         connection.execute("PRAGMA temp_store=FILE")

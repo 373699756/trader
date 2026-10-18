@@ -45,12 +45,13 @@ from trader.training.infra.history.history_training_input import (
     HistoryTrainingInputSnapshot,
     SQLiteHistoryTrainingInputSnapshot,
 )
+from trader.training.infra.implementation_identity import TrainingImplementationIdentity
 from trader.training.infra.joint_fit_evidence import LoadJointFitEvidence
 from trader.training.infra.model_bundles.bundle_snapshot import (
     MakeBundleStagingDirectory,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract, TrainedProfileContract
-from trader.training.infra.model_bundles.profile_publication import PublishProfileBundles
+from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles, PublishProfileBundles
 from trader.training.infra.model_fitting import FitIndustryModels, LightGBMFittingParameters
 from trader.training.infra.sample_builder import (
     BuildJointTrainingSamples,
@@ -131,6 +132,7 @@ class JointTrainingRunResult:
     fit_mode: Literal["serial", "parallel"]
     preparation_seconds: float
     fit_seconds: float
+    reused: bool = False
 
     @property
     def status(self) -> TrainingStatus:
@@ -231,6 +233,7 @@ def RunJointProfileTraining(
     requests: tuple[ProfileTrainingRequest, ProfileTrainingRequest],
     *,
     parallel_fit: bool,
+    reuse_matching: bool = False,
 ) -> JointTrainingRunResult:
     """Build both profile caches from one published scan, then fit under the same history lock."""
 
@@ -267,6 +270,18 @@ def RunJointProfileTraining(
                 for request in normalized
             ):
                 raise ValueError("history_archive_repack_target_mismatch")
+            if reuse_matching:
+                reused = tuple(_reuse_profile(snapshot, request) for request in normalized)
+                if all(result is not None for result in reused):
+                    return JointTrainingRunResult(
+                        cast(tuple[TrainingRunResult, TrainingRunResult], reused),
+                        0,
+                        0,
+                        "serial",
+                        time.monotonic() - started,
+                        0,
+                        True,
+                    )
             pending: list[tuple[TrainingSampleBuildRequest, TrainingSampleCache]] = []
             with ExitStack() as samples_scope:
                 for request in normalized:
@@ -553,6 +568,7 @@ def _sample_cache_for(
     feature_count = max(max(contract.feature_positions) for contract in request.contracts) + 1
     cache_identity = ContentHash(
         (
+            TrainingImplementationIdentity(),
             snapshot.active_snapshot_hash,
             snapshot.input_descriptor_hash,
             request.profile.profile_id,
@@ -922,12 +938,51 @@ def _common_document(context: _TrainingRunContext) -> dict[str, object]:
     }
 
 
+def _reuse_profile(snapshot: HistoryTrainingInputSnapshot, request: ProfileTrainingRequest) -> TrainingRunResult | None:
+    try:
+        bundles = InspectActiveProfileBundles(request.train_root, request.profile)
+    except (OSError, ValueError, RuntimeError):
+        return None
+    heads: list[HeadTrainingResult] = []
+    for bundle, contract in zip(bundles, request.contracts, strict=True):
+        if (
+            bundle.training_input_hash != snapshot.active_snapshot_hash
+            or bundle.label_cutoff != _mature_label_cutoff(snapshot, contract)
+            or bundle.training_contract_hash != _training_contract_hash(request.profile, contract, request.settings)
+        ):
+            return None
+        model = bundle.model
+        heads.append(
+            HeadTrainingResult(
+                contract.strategy,
+                "engineering_ready",
+                "complete_manifest",
+                bundle.training_run_hash,
+                bundle.training_input_hash,
+                model.training_input_codes,
+                model.training_universe_codes,
+                bundle.report_hash,
+                bundle.model_hash,
+                len(model.industries),
+                model.training_rows,
+                model.validation_rows,
+                (),
+                bundle.label_cutoff,
+            )
+        )
+    return TrainingRunResult(bundles[0].training_run_hash, snapshot.active_snapshot_hash, 0, tuple(heads))
+
+
 def _training_contract_hash(
     profile: TrainedProfileContract, contract: TrainedHeadContract, settings: ProfileTrainingSettings
 ) -> str:
     fitting = settings.fitting
     return ContentHash(
         {
+            "implementation_identity": TrainingImplementationIdentity(),
+            "dependencies": {"numpy": version("numpy"), "lightgbm": version("lightgbm")}
+            if profile.algorithm == "lightgbm"
+            else {"numpy": version("numpy")},
             "schema_version": f"{profile.profile_id}_head_training_contract",
             "profile_id": profile.profile_id,
             "history_sessions": profile.history_sessions,

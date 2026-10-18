@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
-from dataclasses import replace
+from contextlib import closing, contextmanager
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
@@ -31,6 +31,7 @@ from trader.download.infra.company_evidence_codec import (
     EncodeCompanySnapshot,
 )
 from trader.download.infra.company_evidence_sql import SCHEMA
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteTransaction
 
 
 class SQLiteCompanyEvidenceIndex:
@@ -43,10 +44,8 @@ class SQLiteCompanyEvidenceIndex:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = None
         try:
-            connection = sqlite3.connect(self.path, timeout=8.0)
+            connection = OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=8, foreign_keys=True))
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute("PRAGMA synchronous=FULL")
             with connection:
                 yield connection
         except sqlite3.Error as exc:
@@ -334,17 +333,19 @@ class SQLiteCompanyEvidenceIndex:
         )
         keys = tuple((item[0], item[1]) for item in members)
         with self._connect() as connection:
-            duplicate = len(keys) != len(set(keys)) or (
-                page.page > 1
-                and any(
-                    connection.execute(
-                        "SELECT 1 FROM structured_members WHERE component=? AND code=? AND day=?",
-                        (page.component, code, day.isoformat()),
-                    ).fetchone()
-                    is not None
-                    for code, day in keys
-                )
-            )
+            existing = set()
+            if page.page > 1 and keys:
+                # At most 500 supplier rows; read membership once instead of once per row.
+                codes = tuple(sorted({code for code, _ in keys}))
+                placeholders = ",".join("?" for _ in codes)
+                existing = {
+                    (row[0], date.fromisoformat(row[1]))
+                    for row in connection.execute(
+                        f"SELECT code,day FROM structured_members WHERE component=? AND code IN ({placeholders})",
+                        (page.component, *codes),
+                    )
+                }
+            duplicate = len(keys) != len(set(keys)) or bool(existing.intersection(keys))
         if duplicate:
             self._restart_structured(page.component, scope)
             raise ValueError("structured_duplicate_page_rows")
@@ -357,8 +358,8 @@ class SQLiteCompanyEvidenceIndex:
                 ((page.component, code, day.isoformat(), ratio) for code, day, ratio in members),
             )
             before = connection.total_changes
-            for item in page.financials:
-                values = (
+            financial_values = tuple(
+                (
                     item.code,
                     item.report_date.isoformat(),
                     item.published_at.isoformat(),
@@ -371,11 +372,21 @@ class SQLiteCompanyEvidenceIndex:
                     item.parent_net_profit,
                     item.core_net_profit,
                 )
-                old = connection.execute(
-                    "SELECT * FROM financials WHERE code=? AND report_date=?", values[:2]
-                ).fetchone()
-                if old is None or tuple(old) != values:
-                    connection.execute("INSERT OR REPLACE INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?)", values)
+                for item in page.financials
+            )
+            connection.executemany(
+                "INSERT INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code,report_date) DO UPDATE SET "
+                "published_at=excluded.published_at,basic_eps=excluded.basic_eps,book_value_per_share=excluded.book_value_per_share,"
+                "revenue_growth_pct=excluded.revenue_growth_pct,net_profit_growth_pct=excluded.net_profit_growth_pct,"
+                "core_profit_growth_pct=excluded.core_profit_growth_pct,roe_pct=excluded.roe_pct,"
+                "parent_net_profit=excluded.parent_net_profit,core_net_profit=excluded.core_net_profit "
+                "WHERE (published_at,basic_eps,book_value_per_share,revenue_growth_pct,net_profit_growth_pct,"
+                "core_profit_growth_pct,roe_pct,parent_net_profit,core_net_profit) IS NOT "
+                "(excluded.published_at,excluded.basic_eps,excluded.book_value_per_share,excluded.revenue_growth_pct,"
+                "excluded.net_profit_growth_pct,excluded.core_profit_growth_pct,excluded.roe_pct,"
+                "excluded.parent_net_profit,excluded.core_net_profit)",
+                financial_values,
+            )
             changes = connection.total_changes - before
             if page.page == page.pages:
                 if page.component != "financial":
@@ -482,16 +493,24 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             digest = hashlib.sha256()
-            for code in codes:
-                snapshot = _build_snapshot(connection, code, observed_at)
-                digest.update(snapshot.version.encode())
-                payload = EncodeCompanySnapshot(snapshot)
-                connection.execute(
+            shared = _snapshot_shared(connection, observed_at)
+            for offset in range(0, len(codes), 128):
+                batch = tuple(codes[offset : offset + 128])
+                inputs = _snapshot_rows(connection, batch, observed_at)
+                values = []
+                for code in batch:
+                    snapshot = _build_snapshot(code, observed_at, inputs[code], shared)
+                    values.append(
+                        (snapshot.code, snapshot.version, observed_at.isoformat(), EncodeCompanySnapshot(snapshot))
+                    )
+                connection.executemany(
                     "INSERT INTO published VALUES(?,?,?,?) ON CONFLICT(code) DO UPDATE "
                     "SET version=excluded.version,published_at=excluded.published_at,payload=excluded.payload "
                     "WHERE version<>excluded.version",
-                    (snapshot.code, snapshot.version, observed_at.isoformat(), payload),
+                    values,
                 )
+            for row in connection.execute("SELECT version FROM published ORDER BY code"):
+                digest.update(row[0].encode())
             version = digest.hexdigest()
             connection.execute("INSERT OR REPLACE INTO publication VALUES(1,?,?)", (version, observed_at.isoformat()))
             # Only this fresh evidence database is pruned; frozen decisions and old databases are untouched.
@@ -550,22 +569,78 @@ def _disclosure(row: sqlite3.Row) -> Disclosure:
     )
 
 
-def _build_snapshot(connection: sqlite3.Connection, code: str, now: datetime) -> CompanyEvidenceSnapshot:
-    start, end = now.date() - timedelta(days=365), now.date()
-    rows = connection.execute(
+@dataclass(frozen=True)
+class _SnapshotRows:
+    disclosures: tuple[sqlite3.Row, ...]
+    financials: tuple[sqlite3.Row, ...]
+    ratios: tuple[sqlite3.Row, ...]
+    checks: tuple[sqlite3.Row, ...]
+
+
+@dataclass(frozen=True)
+class _SnapshotShared:
+    coverage: tuple[sqlite3.Row, ...]
+    checks: tuple[sqlite3.Row, ...]
+    errors: tuple[sqlite3.Row, ...]
+    pledge_day: str | None
+
+
+def _snapshot_shared(connection: sqlite3.Connection, now: datetime) -> _SnapshotShared:
+    cutoff = (now.date() - timedelta(days=365)).isoformat()
+    pledge = connection.execute("SELECT start FROM ratio_snapshots WHERE component='pledge'").fetchone()
+    return _SnapshotShared(
+        tuple(connection.execute("SELECT start,end,market FROM coverage WHERE end>=? ORDER BY start", (cutoff,))),
+        tuple(connection.execute("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
+        tuple(
+            connection.execute("SELECT DISTINCT failure,market FROM partitions WHERE end>=? AND failure<>''", (cutoff,))
+        ),
+        pledge[0] if pledge else None,
+    )
+
+
+def _snapshot_rows(connection: sqlite3.Connection, codes: tuple[str, ...], now: datetime) -> dict[str, _SnapshotRows]:
+    placeholders = ",".join("?" for _ in codes)
+    disclosures = connection.execute(
         "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
-        "WHERE c.code=? AND d.published_at>=? AND d.published_at<=? ORDER BY d.published_at,d.id",
-        (code, start.isoformat(), now.isoformat()),
-    ).fetchall()
+        f"WHERE c.code IN ({placeholders}) AND d.published_at>=? AND d.published_at<=? ORDER BY d.published_at,d.id",
+        (*codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
+    )
+    documents: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
+    for row in disclosures:
+        documents[row["code"]].append(row)
+    financials: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
+    for row in connection.execute(
+        f"SELECT * FROM financials WHERE code IN ({placeholders}) AND report_date>=? AND published_at<=? ORDER BY report_date",
+        (*codes, (now.date() - timedelta(days=550)).isoformat(), now.isoformat()),
+    ):
+        financials[row["code"]].append(row)
+    ratios: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
+    for row in connection.execute(
+        f"SELECT code,day,ratio_pct,component FROM ratios WHERE code IN ({placeholders}) ORDER BY day", codes
+    ):
+        ratios[row["code"]].append(row)
+    checks: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
+    for row in connection.execute(
+        f"SELECT component,checked_at,failure,scope FROM component_checks WHERE scope IN ({placeholders})", codes
+    ):
+        checks[row["scope"]].append(row)
+    return {
+        code: _SnapshotRows(tuple(documents[code]), tuple(financials[code]), tuple(ratios[code]), tuple(checks[code]))
+        for code in codes
+    }
+
+
+def _build_snapshot(
+    code: str, now: datetime, inputs: _SnapshotRows, shared: _SnapshotShared
+) -> CompanyEvidenceSnapshot:
+    start, end = now.date() - timedelta(days=365), now.date()
+    rows = inputs.disclosures
     documents = tuple(
         CompanyDocument(_disclosure(row), row["body"], bool(row["body_checked"]))
         for row in rows
         if row["kind"] == "announcement"
     )
-    ranges = connection.execute(
-        "SELECT start,end FROM coverage WHERE market=? AND end>=? ORDER BY start",
-        (EvidenceMarket(code), start.isoformat()),
-    ).fetchall()
+    ranges = tuple(row for row in shared.coverage if row["market"] == EvidenceMarket(code))
     frontier = start
     for row in ranges:
         if date.fromisoformat(row[0]) <= frontier:
@@ -575,29 +650,19 @@ def _build_snapshot(connection: sqlite3.Connection, code: str, now: datetime) ->
     )
     financials = tuple(
         CompanyFinancial(row[0], date.fromisoformat(row[1]), datetime.fromisoformat(row[2]), *tuple(row)[3:])
-        for row in connection.execute(
-            "SELECT * FROM financials WHERE code=? AND report_date>=? AND published_at<=? ORDER BY report_date",
-            (code, (end - timedelta(days=550)).isoformat(), now.isoformat()),
-        )
+        for row in inputs.financials
     )
-    pledge_snapshot = connection.execute("SELECT start FROM ratio_snapshots WHERE component='pledge'").fetchone()
-    pledge_row = connection.execute(
-        "SELECT code,day,ratio_pct FROM ratios WHERE component='pledge' AND code=? AND day<=? ORDER BY day DESC LIMIT 1",
-        (code, end.isoformat()),
-    ).fetchone()
+    pledge_rows = tuple(row for row in inputs.ratios if row["component"] == "pledge" and row["day"] <= end.isoformat())
+    pledge_row = pledge_rows[-1] if pledge_rows else None
     pledge = CompanyRatio(pledge_row[0], date.fromisoformat(pledge_row[1]), pledge_row[2]) if pledge_row else None
-    if pledge is None and pledge_snapshot:
-        pledge = CompanyRatio(code, date.fromisoformat(pledge_snapshot[0]), 0.0)
+    if pledge is None and shared.pledge_day:
+        pledge = CompanyRatio(code, date.fromisoformat(shared.pledge_day), 0.0)
     unlocks = tuple(
         CompanyRatio(row[0], date.fromisoformat(row[1]), row[2])
-        for row in connection.execute(
-            "SELECT code,day,ratio_pct FROM ratios WHERE component='unlock' AND code=? AND day BETWEEN ? AND ? ORDER BY day",
-            (code, end.isoformat(), (end + timedelta(days=90)).isoformat()),
-        )
+        for row in inputs.ratios
+        if row["component"] == "unlock" and end.isoformat() <= row["day"] <= (end + timedelta(days=90)).isoformat()
     )
-    checks = connection.execute(
-        "SELECT component,checked_at,failure FROM component_checks WHERE scope='market' OR scope=?", (code,)
-    ).fetchall()
+    checks = (*shared.checks, *inputs.checks)
     failures = tuple(f"{row[0]}:{row[2]}" for row in checks if row[2])
     for component in ("financial", "pledge", "unlock"):
         if not any(
@@ -607,10 +672,7 @@ def _build_snapshot(connection: sqlite3.Connection, code: str, now: datetime) ->
             failures += (f"{component}:not_current",)
     if pledge is not None and pledge.day < end - timedelta(days=10):
         failures += ("pledge:source_stale",)
-    partition_errors = connection.execute(
-        "SELECT DISTINCT failure FROM partitions WHERE market=? AND end>=? AND failure<>''",
-        (EvidenceMarket(code), start.isoformat()),
-    ).fetchall()
+    partition_errors = tuple(row for row in shared.errors if row["market"] == EvidenceMarket(code))
     failures += tuple(f"announcements:{row[0]}" for row in partition_errors)
     complete = complete and not partition_errors
     if not complete:
@@ -654,34 +716,55 @@ class SQLiteCompanyEvidenceReader:
         self.visit(codes, snapshots.append)
         return tuple(snapshots)
 
+    def publication_version(self) -> str:
+        if not self.path.exists():
+            return ""
+        try:
+            with closing(
+                OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2))
+            ) as connection:
+                row = connection.execute("SELECT version FROM publication WHERE singleton=1").fetchone()
+                return row[0] if row else ""
+        except sqlite3.Error as exc:
+            raise RuntimeError("company_snapshot_unreadable") from exc
+
     def visit(self, codes: Sequence[str], consume: Callable[[CompanyEvidenceSnapshot], None]) -> None:
         if not self.path.exists():
             return
+        captured: list[tuple[str, str, str, str]] = []
         try:
-            connection = sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True, timeout=2.0)
-            try:
-                connection.execute("PRAGMA query_only=ON")
-                connection.execute("BEGIN")
-                contract = connection.execute("SELECT identity FROM contract").fetchall()
-                if contract != [("company_evidence",)]:
-                    raise ValueError("company_snapshot_contract_mismatch")
-                for code in codes:
-                    row = connection.execute(
-                        "SELECT version,published_at,payload FROM published WHERE code=?", (code,)
-                    ).fetchone()
-                    if row:
-                        snapshot = DecodeCompanySnapshot(row[2])
-                        if (
-                            snapshot.code != code
-                            or snapshot.version != row[0]
-                            or snapshot.published_at.isoformat() != row[1]
-                        ):
-                            raise ValueError("company_snapshot_identity_mismatch")
-                        consume(snapshot)
-            finally:
-                connection.close()
+            with closing(
+                OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2))
+            ) as connection:
+                with SqliteTransaction(connection):
+                    contract = connection.execute("SELECT identity FROM contract").fetchall()
+                    if contract != [("company_evidence",)]:
+                        raise ValueError("company_snapshot_contract_mismatch")
+                    for offset in range(0, len(codes), 128):
+                        batch = tuple(codes[offset : offset + 128])
+                        placeholders = ",".join("?" for _ in batch)
+                        captured.extend(
+                            connection.execute(
+                                f"SELECT code,version,published_at,payload FROM published WHERE code IN ({placeholders})",
+                                batch,
+                            )
+                        )
         except sqlite3.Error as exc:
             raise RuntimeError("company_snapshot_unreadable") from exc
+        # Decode and invoke consumers after releasing the pinned SQLite snapshot.
+        by_code = {row[0]: row for row in captured}
+        for code in codes:
+            if code not in by_code:
+                continue
+            _, version, published_at, payload = by_code[code]
+            snapshot = DecodeCompanySnapshot(payload)
+            if (
+                snapshot.code != code
+                or snapshot.version != version
+                or snapshot.published_at.isoformat() != published_at
+            ):
+                raise ValueError("company_snapshot_identity_mismatch")
+            consume(snapshot)
 
 
 __all__ = ["NeedsDocumentReview", "SQLiteCompanyEvidenceIndex", "SQLiteCompanyEvidenceReader"]

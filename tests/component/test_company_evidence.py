@@ -148,6 +148,76 @@ def test_reader_does_not_initialize_or_write_missing_database(tmp_path):
     assert not reader.path.exists()
 
 
+def test_reader_releases_transaction_before_consumers_and_pins_all_requested_rows(tmp_path):
+    index = _index(tmp_path)
+    codes = ("600002", "600001")
+    index.publish(codes, NOW)
+    reader = SQLiteCompanyEvidenceReader(index.path)
+    before = reader.read(codes)
+    observed = []
+
+    def consume(snapshot):
+        if not observed:
+            index.publish(codes, NOW + timedelta(days=1))
+            with sqlite3.connect(index.path, timeout=0) as connection:
+                assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+        observed.append(snapshot)
+
+    reader.visit(codes, consume)
+    assert tuple(observed) == before
+    assert reader.read(codes) != before
+
+
+def test_company_observer_adopts_manual_publication_without_supplier_or_restart(tmp_path):
+    index = _index(tmp_path)
+    source = Sources()
+    SyncCompanyEvidence(CompanyEvidenceDependencies(index, source, source, lambda: 0), ("600001",), NOW)
+    research = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: NOW)
+    before = research.load(("600001",), NOW, include_structured=True)
+    research.observe_publication()
+    index.commit_structured(
+        StructuredCompanyQuery("pledge", NOW.date(), NOW.date()),
+        StructuredCompanyPage("pledge", 1, 1, 1, ratios=(CompanyRatio("600001", NOW.date(), 80),)),
+        NOW,
+    )
+    index.publish(("600001",), NOW)
+    research.observe_publication()
+    after = research.cached(("600001",), include_structured=True)
+    assert after != before
+    assert after["600001"].pledge_ratio_pct == 80
+
+
+def test_company_observer_retries_missing_codes_after_later_publication(tmp_path):
+    index = _index(tmp_path)
+    index.publish(("600001",), NOW)
+    research = PublishedCompanyResearch(SQLiteCompanyEvidenceReader(index.path), wall_clock=lambda: NOW)
+    assert not research.load(("600002",), NOW, include_structured=True)
+    research.observe_publication()
+    index.publish(("600002",), NOW)
+    research.observe_publication()
+    assert research.status().entries == 1
+
+
+def test_company_observer_recovers_transient_read_error_with_unchanged_version(tmp_path, monkeypatch):
+    index = _index(tmp_path)
+    index.publish(("600001",), NOW)
+    reader = SQLiteCompanyEvidenceReader(index.path)
+    research = PublishedCompanyResearch(reader, wall_clock=lambda: NOW)
+    research.load(("600001",), NOW, include_structured=True)
+    research.observe_publication()
+    original = reader.publication_version
+
+    def unavailable():
+        raise RuntimeError("temporarily_unavailable")
+
+    monkeypatch.setattr(reader, "publication_version", unavailable)
+    research.observe_publication()
+    assert research.status().last_error
+    monkeypatch.setattr(reader, "publication_version", original)
+    research.observe_publication()
+    assert not research.status().last_error
+
+
 def test_reader_and_candidate_load_never_invoke_background_download(tmp_path):
     index = _index(tmp_path)
     source = Sources()

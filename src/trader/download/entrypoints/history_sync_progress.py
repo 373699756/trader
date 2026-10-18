@@ -412,6 +412,10 @@ class StderrHistorySyncProgress:
             if status.state == "completed":
                 parts.append("数据不完整")
             parts.append(f"未修复价格缺口 {status.unresolved_price_cells} 股日")
+            if status.price_gap_summary is not None:
+                summary = status.price_gap_summary
+                parts.append(f"涉及 {summary.stocks} 股 | 日期 {summary.first_date}～{summary.last_date}")
+                parts.extend(f"{item.reason} {item.cells} 股日" for item in summary.reasons)
         return parts
 
     def publish_result(self, status: HistoryMaintenanceStatus) -> None:

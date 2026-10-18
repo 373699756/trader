@@ -139,8 +139,8 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
     assert result.unresolved_price_cells == (1 if repair_retryable else 3)
     assert set(prices.requested_codes) == {"600003", "600004"}
     assert baseline.calls == []
-    assert index.gaps("600002") == (days[0],)
-    assert index.retryable_gaps("600002", days) == ()
+    assert index.gaps_by_code().get("600002", ()) == (days[0],)
+    assert index.gaps_by_code(days).get("600002", ()) == ()
     active = control.load_state().active_snapshot
     assert active is not None and active.sequence == previous.sequence + 1
     assert index.pending(active.sequence) is None

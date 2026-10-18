@@ -21,7 +21,6 @@ from tests.component.market_data_test_support import (
     Path,
     ReferenceLoadRequest,
     SourceLaneScheduler,
-    SourceObservation,
     StaticGateway,
     StaticHistoryClient,
     TushareClient,
@@ -32,46 +31,9 @@ from tests.component.market_data_test_support import (
     pytest,
     replace,
     threading,
-    timedelta,
     tushare_records_module,
 )
 from trader.infra.market_data.providers.tushare_records import BuildTushareSdk
-
-
-def test_tushare_reference_version_uses_response_time_before_hash_order() -> None:
-    service = _service(
-        StaticGateway((_quote(),)),
-        StaticHistoryClient(),
-        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
-    )
-    newer = SourceObservation(
-        source="tushare",
-        subject_key="600001",
-        observed_at=NOW,
-        source_time=NOW,
-        received_at=NOW,
-        effective_at=NOW,
-        data_version="a-newer",
-        fields={"pe": 12.0},
-        missing_reasons={},
-        payload_hash="newer",
-        status="success",
-        error_code=None,
-    )
-    older = replace(
-        newer,
-        observed_at=NOW - timedelta(seconds=1),
-        source_time=NOW - timedelta(seconds=1),
-        received_at=NOW - timedelta(seconds=1),
-        effective_at=NOW - timedelta(seconds=1),
-        data_version="z-older",
-        payload_hash="older",
-    )
-
-    service.references.apply_fields("valuation", (newer,))
-    service.references.apply_fields("valuation", (older,))
-
-    assert service.references.versions()["valuation"] == "a-newer"
 
 
 def test_tushare_missing_token_is_explicit_degradation_without_sdk_import() -> None:
@@ -233,19 +195,19 @@ def test_tushare_per_code_batch_stops_before_next_sdk_call_during_lane_shutdown(
     pool = BoundedExecutor(worker_count=5, queue_capacity=5, thread_name_prefix="source-data")
     lanes = SourceLaneScheduler(pool)
 
-    class BlockingValuationPro:
+    class BlockingDailyPro:
         def __init__(self) -> None:
             self.calls: list[str] = []
             self.started = threading.Event()
             self.release = threading.Event()
 
-        def daily_basic(self, **kwargs):
+        def daily(self, **kwargs):
             self.calls.append(str(kwargs["ts_code"]))
             self.started.set()
             assert self.release.wait(1.0)
             return FakeTushareFrame([{"ts_code": kwargs["ts_code"], "trade_date": "20260715", "pe": 12.0}])
 
-    pro = BlockingValuationPro()
+    pro = BlockingDailyPro()
     client = TushareClient(
         token="secret-token",
         timeout_seconds=8,
@@ -256,10 +218,11 @@ def test_tushare_per_code_batch_stops_before_next_sdk_call_during_lane_shutdown(
     pool.start()
     future = lanes.submit(
         "tushare",
-        "valuation-batch",
+        "daily-batch",
         NOW,
-        client.fetch_daily_valuations,
+        client.fetch_daily_history,
         ("600001", "600002"),
+        date(2026, 7, 15),
         date(2026, 7, 15),
         NOW,
     )
@@ -282,7 +245,7 @@ def test_tushare_per_code_batch_stops_before_next_sdk_call_during_lane_shutdown(
 
 def test_tushare_per_code_batch_keeps_successes_when_one_code_fails() -> None:
     class PartiallyFailingPro:
-        def pro_bar(self, **kwargs):
+        def daily(self, **kwargs):
             code = str(kwargs["ts_code"])
             if code == "600002.SH":
                 raise TimeoutError("one code timed out")
@@ -309,7 +272,7 @@ def test_tushare_per_code_batch_keeps_successes_when_one_code_fails() -> None:
         wall_clock=lambda: NOW,
     )
 
-    observations = client.fetch_forward_adjusted_daily(
+    observations = client.fetch_daily_history(
         ("600001", "600002", "600003"),
         date(2026, 7, 1),
         date(2026, 7, 16),
@@ -317,7 +280,7 @@ def test_tushare_per_code_batch_keeps_successes_when_one_code_fails() -> None:
     )
 
     assert {item.subject_key for item in observations if item.status == "success"} == {"600001", "600003"}
-    assert all(item.fields.get("price_adjustment") == "qfq" for item in observations if item.status == "success")
+    assert all(item.fields.get("price_adjustment") == "raw" for item in observations if item.status == "success")
     assert any(
         item.status == "failed" and item.subject_key == "600002" and item.error_code == "timeout"
         for item in observations
@@ -550,33 +513,6 @@ def test_tushare_daily_transport_preserves_only_numeric_provider_error_code(monk
 
     assert observations[0].error_code == "provider_error_-2002"
     assert "sensitive" not in str(observations[0])
-
-
-def test_tushare_date_only_financial_records_become_effective_at_shanghai_day_end() -> None:
-    class FinancialPro:
-        def fina_indicator(self, **_kwargs):
-            return FakeTushareFrame(
-                [
-                    {
-                        "ts_code": "600001.SH",
-                        "ann_date": "20260716",
-                        "end_date": "20260630",
-                        "eps": 1.0,
-                    }
-                ]
-            )
-
-    client = TushareClient(
-        token="secret-token",
-        timeout_seconds=8,
-        sdk_factory=lambda _token, _timeout: FinancialPro(),
-        wall_clock=lambda: NOW,
-    )
-
-    observations = client.fetch_financial_indicators(("600001",), NOW)
-
-    assert len(observations) == 1
-    assert observations[0].effective_at.isoformat() == "2026-07-16T23:59:59+08:00"
 
 
 def test_tushare_negative_refresh_marks_preserved_reference_data_degraded() -> None:

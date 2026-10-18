@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+
 _QFQ_UNUSABLE_RECHECK_SESSIONS = 20
 
 
@@ -98,10 +101,7 @@ class HistoryDownloadIndex:
         self._path = path
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=5.0)
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA busy_timeout=5000")
-        return connection
+        return OpenSqliteConnection(self._path)
 
     def initialize(self) -> None:
         with closing(self._connect()) as connection, connection:
@@ -173,49 +173,35 @@ class HistoryDownloadIndex:
             if updated.rowcount != 1:
                 raise RuntimeError("history_download_identity_conflict")
 
-    def gaps(self, code: str) -> tuple[date, ...]:
-        with closing(self._connect()) as connection:
-            return tuple(
-                date.fromisoformat(row[0])
-                for row in connection.execute(
-                    "SELECT trade_date FROM download_gaps WHERE code=? ORDER BY trade_date",
-                    (code,),
-                )
-            )
-
-    def retryable_gaps(self, code: str, calendar_dates: tuple[date, ...]) -> tuple[date, ...]:
-        """Defer confirmed nonpositive qfq dates for a bounded market-session interval."""
-        if not calendar_dates:
-            raise ValueError("history_retry_calendar_invalid")
-        with closing(self._connect()) as connection:
-            rows = connection.execute(
-                """SELECT gap.trade_date, unusable.checked_cutoff
-                   FROM download_gaps AS gap
-                   LEFT JOIN download_qfq_unusable AS unusable
-                     ON unusable.code=gap.code AND unusable.trade_date=gap.trade_date
-                   WHERE gap.code=? ORDER BY gap.trade_date""",
-                (code,),
-            ).fetchall()
-        if not any(checked_cutoff is not None for _, checked_cutoff in rows):
-            return tuple(date.fromisoformat(trade_date) for trade_date, _ in rows)
-        if calendar_dates != tuple(sorted(set(calendar_dates))):
-            raise ValueError("history_retry_calendar_invalid")
-        positions = {day: index for index, day in enumerate(calendar_dates)}
-        cutoff_position = len(calendar_dates) - 1
-        retryable: list[date] = []
-        for trade_date, checked_cutoff in rows:
-            day = date.fromisoformat(trade_date)
-            if checked_cutoff is None or (
-                cutoff_position - positions.get(date.fromisoformat(checked_cutoff), -_QFQ_UNUSABLE_RECHECK_SESSIONS)
-                >= _QFQ_UNUSABLE_RECHECK_SESSIONS
-            ):
-                retryable.append(day)
-        return tuple(retryable)
-
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""
         with closing(self._connect()) as connection:
             return frozenset(row[0] for row in connection.execute("SELECT DISTINCT code FROM download_gaps"))
+
+    def gaps_by_code(self, calendar_dates: tuple[date, ...] | None = None) -> dict[str, tuple[date, ...]]:
+        """One bounded-cursor scan per phase; calendar selects only retryable gaps."""
+        if calendar_dates is not None and (not calendar_dates or calendar_dates != tuple(sorted(set(calendar_dates)))):
+            raise ValueError("history_retry_calendar_invalid")
+        positions = {day: index for index, day in enumerate(calendar_dates or ())}
+        last = len(positions) - 1
+        grouped: dict[str, list[date]] = {}
+        with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))) as connection:
+            for code, day, checked in connection.execute(
+                "SELECT g.code,g.trade_date,u.checked_cutoff FROM download_gaps g "
+                "LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
+                "ORDER BY g.code,g.trade_date"
+            ):
+                if (
+                    calendar_dates is not None
+                    and checked is not None
+                    and (
+                        last - positions.get(date.fromisoformat(checked), -_QFQ_UNUSABLE_RECHECK_SESSIONS)
+                        < _QFQ_UNUSABLE_RECHECK_SESSIONS
+                    )
+                ):
+                    continue
+                grouped.setdefault(code, []).append(date.fromisoformat(day))
+        return {code: tuple(days) for code, days in grouped.items()}
 
     def finish(self, completions: tuple[HistoryDownloadCompletion, ...]) -> None:
         """Advance one durable batch only after all of its monthly price commits succeed."""
@@ -266,16 +252,31 @@ class HistoryDownloadIndex:
             connection.execute("UPDATE download_tasks SET attempts=attempts+1 WHERE code=? AND attempts<3", (code,))
             return int(connection.execute("SELECT attempts FROM download_tasks WHERE code=?", (code,)).fetchone()[0])
 
-    def unresolved(self, codes: tuple[str, ...]) -> int:
+    def gap_summary(self, codes: tuple[str, ...]) -> HistoryPriceGapSummary:
         selected = frozenset(codes)
-        if not selected:
-            return 0
-        with closing(self._connect()) as connection:
-            return sum(
-                count
-                for code, count in connection.execute("SELECT code,COUNT(*) FROM download_gaps GROUP BY code")
-                if code in selected
+        stocks: set[str] = set()
+        reasons: dict[str, int] = {}
+        dates: list[date] = []
+        with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))) as connection:
+            rows = connection.execute(
+                "SELECT g.code,CASE WHEN u.trade_date IS NOT NULL THEN 'tencent_qfq_invalid_price' "
+                "ELSE COALESCE(NULLIF(t.failure,'tencent_qfq_invalid_price'),'history_price_pending') "
+                "END AS reason,COUNT(*),MIN(g.trade_date),MAX(g.trade_date) "
+                "FROM download_gaps g LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
+                "LEFT JOIN download_tasks t ON t.code=g.code GROUP BY g.code,reason"
             )
+            for code, reason, count, first, last in rows:
+                if code in selected:
+                    stocks.add(code)
+                    reasons[reason] = reasons.get(reason, 0) + count
+                    dates.extend((date.fromisoformat(first), date.fromisoformat(last)))
+        return HistoryPriceGapSummary(
+            len(stocks),
+            sum(reasons.values()),
+            min(dates) if dates else None,
+            max(dates) if dates else None,
+            tuple(HistoryPriceGapReason(reason, count) for reason, count in sorted(reasons.items())),
+        )
 
 
 __all__ = ["HistoryDownloadBatch", "HistoryDownloadCompletion", "HistoryDownloadIndex", "HistoryDownloadTask"]

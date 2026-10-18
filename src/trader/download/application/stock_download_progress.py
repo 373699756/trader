@@ -17,7 +17,7 @@ from trader.download.application.progress_message import (
     ProgressMessage,
 )
 
-_DownloadCommand = Literal["download", "qfq_download"]
+_DownloadCommand = Literal["download", "download_qfq"]
 _STOCK_NAME_WIDTH = 8
 
 
@@ -44,7 +44,7 @@ class StockDownloadProgress:
     def __post_init__(self) -> None:
         counts = (self.raw, self.qfq, self.paired)
         if (
-            self.command not in ("download", "qfq_download")
+            self.command not in ("download", "download_qfq")
             or type(self.completed) is not int
             or type(self.total) is not int
             or not 0 <= self.completed <= self.total

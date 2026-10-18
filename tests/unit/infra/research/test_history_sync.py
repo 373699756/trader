@@ -359,7 +359,7 @@ def test_unpublished_gap_repair_resumes_same_sequence_without_changing_complete_
     first = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert first.state == "failed"
     assert HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot is None
-    assert HistoryDownloadIndex(tmp_path / "control.sqlite3").gaps("600001") == days
+    assert HistoryDownloadIndex(tmp_path / "control.sqlite3").gaps_by_code().get("600001", ()) == days
     month = HistoryMonthPrices(tmp_path / "partitions/2026/09.sqlite3", 2026, 9)
     assert month.read_code("600001", days[0], days[-1], snapshot_sequence=1)[0].cell.status == "unknown_missing"
     complete_before = month.read_code("600002", days[0], days[-1], snapshot_sequence=1)
@@ -422,7 +422,7 @@ def test_pending_batch_replaces_incomplete_day_before_first_publication(tmp_path
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", interrupt_publication)
     assert RunHistorySync(configuration(root), supplier, clock=lambda: NOW).state == "failed"
     assert HistoryControlIndex(root / "control.sqlite3").load_state().active_snapshot is None
-    assert len(HistoryDownloadIndex(root / "control.sqlite3").gaps("600001")) == 1
+    assert len(HistoryDownloadIndex(root / "control.sqlite3").gaps_by_code().get("600001", ())) == 1
 
     monkeypatch.setattr(history_sync_module, "PublishHistorySnapshot", publish)
     supplier.partial = False

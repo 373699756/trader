@@ -7,5 +7,5 @@
   </Triggers>
   <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings><MultipleInstancesPolicy>Parallel</MultipleInstancesPolicy><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT12H</ExecutionTimeLimit><Enabled>true</Enabled></Settings>
-  <Actions Context="Author"><Exec><Command>{{PYTHON_EXECUTABLE}}</Command><Arguments>-m trader.entrypoints.cli --config {{CONFIG_PATH_ARGUMENT}} scheduled-history-maintenance</Arguments><WorkingDirectory>{{WORKING_DIRECTORY}}</WorkingDirectory></Exec></Actions>
+  <Actions Context="Author"><Exec><Command>{{PYTHON_EXECUTABLE}}</Command><Arguments>-m trader.entrypoints.cli --config {{CONFIG_PATH_ARGUMENT}} download_scheduled</Arguments><WorkingDirectory>{{WORKING_DIRECTORY}}</WorkingDirectory></Exec></Actions>
 </Task>

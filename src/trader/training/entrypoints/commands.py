@@ -9,9 +9,7 @@ import sys
 import time
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass
-from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
@@ -50,11 +48,6 @@ from trader.training.infra.research.tomorrow_research_evidence import (
     TomorrowResearchEvidenceIndexError,
 )
 
-if TYPE_CHECKING:
-    from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.infra.engine import TrainingRunResult
-
 _TRAINING_PRIORITY_LOWERED = False
 
 
@@ -91,20 +84,6 @@ def _lower_training_priority() -> None:
     _TRAINING_PRIORITY_LOWERED = True
 
 
-class _ProfileTrainingCallable(Protocol):
-    def __call__(
-        self,
-        history_root: Path,
-        train_root: Path,
-        *,
-        progress: TomorrowTrainingProgressPort | None = None,
-    ) -> TrainingRunResult: ...
-
-
-class _TrainingProgressFactory(Protocol):
-    def __call__(self, *, command_label: str) -> StderrTomorrowTrainingProgress: ...
-
-
 class _TomorrowResearchProgress(TomorrowResearchProgressPort):
     def __init__(self) -> None:
         self._started_at: dict[TomorrowResearchStage, float] = {}
@@ -139,12 +118,6 @@ def RunResearchCommand(
 
         LoadResearchSettings(config_path.parent)
         LoadEvaluationCostScenarios(config_path.parent)
-    if command == "train-v2":
-        return _run_v2_training_orchestrator(runtime)
-    if command == "train-v3":
-        return _run_v3_training_orchestrator(runtime)
-    if command == "train-both":
-        return _run_joint_training_orchestrator(runtime)
     if command == "research-status":
         trace = SQLiteResearchTraceIndex(runtime.runtime_dir)
         status = trace.inspect_status()
@@ -261,30 +234,15 @@ def _run_baseline_identity_audit(runtime: RuntimeSettings) -> int:
     return 0 if audit.status == "baseline_identity_consistent" else 1
 
 
-def _run_v3_training_orchestrator(runtime: RuntimeSettings) -> int:
-    from trader.training.application.profile_training_secondary import TrainV3UseCase
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.infra.profile.v3.training import RunV3Training
-    from trader.training.infra.training_settings import LoadProfileTrainingSettings
-
-    return _run_profile_training_command(
-        "v3",
-        TrainV3UseCase(
-            partial(RunV3Training, settings=LoadProfileTrainingSettings(runtime.project_root, "v3"))
-        ).execute,
-        StderrTomorrowTrainingProgress,
-    )
-
-
-def _run_joint_training_orchestrator(runtime: RuntimeSettings) -> int:
+def RunJointTraining(runtime: RuntimeSettings) -> int:
     from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
     from trader.training.infra.engine import ChooseJointFitMode, ProfileTrainingRequest, RunJointProfileTraining
     from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
     from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
-    history_root = _history_data_root()
-    train_root = _train_data_root()
+    history_root = runtime.project_root / "data/history"
+    train_root = runtime.project_root / "data/train"
     with ExitStack() as progress_scope:
         profiles = (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE)
         progresses = tuple(
@@ -311,6 +269,7 @@ def _run_joint_training_orchestrator(runtime: RuntimeSettings) -> int:
             result = RunJointProfileTraining(
                 (requests[0], requests[1]),
                 parallel_fit=ChooseJointFitMode(history_root, evidence_path=evidence_path) == "parallel",
+                reuse_matching=True,
             )
         except KeyboardInterrupt:
             for progress in progresses:
@@ -332,6 +291,7 @@ def _run_joint_training_orchestrator(runtime: RuntimeSettings) -> int:
                 "history_scan_passes": result.history_scan_passes,
                 "history_rows_read": result.history_rows_read,
                 "fit_mode": result.fit_mode,
+                "reused": result.reused,
                 "preparation_seconds": round(result.preparation_seconds, 3),
                 "fit_seconds": round(result.fit_seconds, 3),
                 "elapsed_seconds": round(time.monotonic() - started, 3),
@@ -344,68 +304,6 @@ def _run_joint_training_orchestrator(runtime: RuntimeSettings) -> int:
             sort_keys=True,
         )
     )
-    return 0 if result.status == "engineering_ready" else 1
-
-
-def _run_v2_training_orchestrator(runtime: RuntimeSettings) -> int:
-    from trader.training.application.profile_training_primary import TrainV2UseCase
-    from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress
-    from trader.training.infra.profile.v2.training import RunV2Training
-    from trader.training.infra.training_settings import LoadProfileTrainingSettings
-
-    return _run_profile_training_command(
-        "v2",
-        TrainV2UseCase(
-            partial(RunV2Training, settings=LoadProfileTrainingSettings(runtime.project_root, "v2"))
-        ).execute,
-        StderrTomorrowTrainingProgress,
-    )
-
-
-def _run_profile_training_command(
-    profile_id: str,
-    train: _ProfileTrainingCallable,
-    progress_factory: _TrainingProgressFactory,
-) -> int:
-    with progress_factory(command_label=f"{profile_id.upper()}训练") as progress:
-        try:
-            result = train(
-                _history_data_root(),
-                _train_data_root(),
-                progress=progress,
-            )
-            failure = next((reason for head in result.heads for reason in head.failure_reasons), None)
-            progress.publish_result(result.status, failure)
-        except KeyboardInterrupt:
-            progress.publish_cancelled()
-            return 130
-    payload = {
-        "schema_version": f"{profile_id}_training_result",
-        "status": result.status,
-        "run_id": result.run_id,
-        "training_input_hash": result.training_input_hash,
-        "sample_database_peak_bytes": result.sample_database_peak_bytes,
-        "process_peak_rss_bytes": _process_peak_rss_bytes(),
-        "heads": {
-            head.strategy.value: {
-                "artifact_root": str(_train_data_root() / profile_id / head.strategy.value),
-                "status": head.status,
-                "label_cutoff": head.label_cutoff.isoformat() if head.label_cutoff is not None else None,
-                "report_hash": head.report_hash,
-                "model_hash": head.model_hash,
-                "industry_count": head.industry_count,
-                "training_rows": head.training_rows,
-                "validation_rows": head.validation_rows,
-                "failure_reasons": list(head.failure_reasons),
-            }
-            for head in result.heads
-        },
-        "training_anchor": "15:00_close_proxy",
-        "point_in_time_parity": False,
-        "production_authority": False,
-        "automatic_model_update": False,
-    }
-    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0 if result.status == "engineering_ready" else 1
 
 
@@ -572,4 +470,4 @@ def _read_tomorrow_historical_risk_status(runtime: RuntimeSettings) -> dict[str,
         }
 
 
-__all__ = ["ResearchCommandOptions", "RunResearchCommand"]
+__all__ = ["ConfigureTrainingResources", "ResearchCommandOptions", "RunJointTraining", "RunResearchCommand"]

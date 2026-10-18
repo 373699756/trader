@@ -33,8 +33,18 @@ class CompanyEvidenceProgress:
             "news": "候选新闻",
             "complete": "本轮结束",
         }
+        units = {
+            "st_eligibility": "股",
+            "financial": "页",
+            "pledge": "页",
+            "unlock": "页",
+            "announcements": "分片",
+            "risk_documents": "篇",
+            "news": "股",
+            "complete": "股",
+        }
         print(
-            f"risk_download | {labels[progress.component]} | 已完成分片 {progress.completed} | "
+            f"download_risk | {labels[progress.component]} | 已完成 {progress.completed} {units[progress.component]} | "
             f"待处理 {progress.pending} | 成功页 {progress.fetched_pages} | 变更行 {progress.changed_rows} | "
             f"本地复用 {progress.reused_partitions} | 累计 {now - self._started:.1f}秒"
             + (f" | 待续传 {progress.failure}" if progress.failure else ""),

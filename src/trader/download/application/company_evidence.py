@@ -105,15 +105,16 @@ def SyncCompanyEvidence(
     pending = _announcements(dependencies, population, observed_at, started + budget_seconds * 0.7, state)
     _documents(dependencies, population, observed_at, started + budget_seconds * 0.95, state)
     published = index.publish(population, observed_at)
-    if _news(dependencies, population, observed_at, deadline, state):
-        index.publish(population, observed_at)
+    news_updates = _news(dependencies, population, observed_at, deadline, state)
+    if news_updates:
+        index.publish(news_updates, observed_at)
     if dependencies.monotonic() >= deadline:
         state.failures += ("task:deadline",)
     if dependencies.cancel_requested is not None and dependencies.cancel_requested():
         state.failures += ("task:cancelled",)
     if index.pending_documents(population, observed_at):
         state.failures += ("risk_documents:pending",)
-    _report(dependencies, "complete", state, pending)
+    _report(dependencies, "complete", state, pending, completed=published)
     return CompanyEvidenceSyncResult(
         observed_at,
         len(population),
@@ -189,16 +190,18 @@ def _documents(
     index = dependencies.index
     pending_documents = index.pending_documents(population, observed_at)
     seen: set[tuple[str, str]] = set()
+    completed = 0
     for item in pending_documents:
         if not _running(dependencies, deadline):
             break
         if (item.source, item.identity) in seen:
             continue
         seen.add((item.source, item.identity))
-        _report(dependencies, "risk_documents", state, len(pending_documents) - len(seen) + 1)
+        _report(dependencies, "risk_documents", state, len(pending_documents) - len(seen) + 1, completed=completed)
         try:
             text = dependencies.disclosures.document(item, deadline=deadline)
             index.commit_document(item, text)
+            completed += 1
             state.changes += 1
         except (OSError, RuntimeError, ValueError) as exc:
             state.failures += (f"risk_documents:{_failure(exc)}",)
@@ -213,9 +216,10 @@ def _news(
     observed_at: datetime,
     deadline: float,
     state: _SyncState,
-) -> bool:
+) -> tuple[str, ...]:
     index = dependencies.index
-    attempted = False
+    attempted: list[str] = []
+    completed = 0
     structured_blocked = any(
         item.startswith(("financial:", "pledge:", "unlock:")) and item.endswith((":access_denied", ":rate_limited"))
         for item in state.failures
@@ -228,17 +232,18 @@ def _news(
         if not index.component_due("news", code, observed_at):
             state.reused += 1
             continue
-        attempted = True
-        _report(dependencies, "news", state, 1)
+        attempted.append(code)
+        _report(dependencies, "news", state, 1, completed=completed)
         try:
             rows = dependencies.structured.news(code, observed_at=observed_at, deadline=deadline)
             state.changes += index.commit_news(code, rows, observed_at)
+            completed += 1
         except (OSError, RuntimeError, ValueError) as exc:
             failure = _failure(exc)
             index.component_failure("news", code, failure)
             state.failures += (f"news:{failure}",)
             break
-    return attempted
+    return tuple(attempted)
 
 
 def _structured(
@@ -254,7 +259,8 @@ def _structured(
         return
     if not _running(dependencies, deadline):
         return
-    _report(dependencies, component, state, 1)
+    _report(dependencies, component, state, 1, completed=0)
+    completed = 0
     try:
         if component == "financial":
             start, end = index.component_since(component, "market", now), now.date()
@@ -268,8 +274,9 @@ def _structured(
             page = dependencies.structured.fetch(query, observed_at=now, deadline=deadline)
             state.pages += 1
             state.changes += index.commit_structured(query, page, now)
+            completed += 1
+            _report(dependencies, component, state, page.pages - page.page, completed=completed)
             if page.page == page.pages:
-                state.completed += 1
                 remaining = _remaining_query(index, query, requested, now)
                 if remaining is None:
                     return
@@ -312,12 +319,19 @@ def _running(dependencies: CompanyEvidenceDependencies, deadline: float) -> bool
     )
 
 
-def _report(dependencies: CompanyEvidenceDependencies, component: str, state: _SyncState, pending: int) -> None:
+def _report(
+    dependencies: CompanyEvidenceDependencies,
+    component: str,
+    state: _SyncState,
+    pending: int,
+    *,
+    completed: int | None = None,
+) -> None:
     if dependencies.progress is not None:
         dependencies.progress(
             EvidenceSyncProgress(
                 component,
-                state.completed,
+                state.completed if completed is None else completed,
                 pending,
                 state.pages,
                 state.changes,

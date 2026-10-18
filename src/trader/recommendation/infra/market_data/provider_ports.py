@@ -68,19 +68,6 @@ class ReferenceSource(Protocol):
         observed_at: datetime,
     ) -> Sequence[SourceObservation]: ...
 
-    def fetch_daily_valuations(
-        self,
-        codes: Sequence[str],
-        trade_date: date,
-        observed_at: datetime,
-    ) -> Sequence[SourceObservation]: ...
-
-    def fetch_financial_indicators(
-        self,
-        codes: Sequence[str],
-        observed_at: datetime,
-    ) -> Sequence[SourceObservation]: ...
-
     def health(self) -> ReferenceSourceHealth: ...
 
 

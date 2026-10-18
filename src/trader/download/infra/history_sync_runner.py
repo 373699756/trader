@@ -20,7 +20,11 @@ from trader.download.domain.history_control import (
     HistorySyncCheckpoint,
     HistoryUniverseIdentity,
 )
-from trader.download.domain.history_maintenance import HistoryMaintenanceState, HistoryMaintenanceStatus
+from trader.download.domain.history_maintenance import (
+    HistoryMaintenanceState,
+    HistoryMaintenanceStatus,
+    HistoryPriceGapSummary,
+)
 from trader.download.domain.history_price_qualification import HISTORY_UNIVERSE_CONTRACT
 from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_sync import (
@@ -108,28 +112,32 @@ class _HistorySync:
             inputs = self._prepare(active, pending, target)
             if inputs is None:
                 unresolved = (
-                    self.index.unresolved(tuple(_active_universe(self.control, active))) if active is not None else 0
+                    self.index.gap_summary(tuple(_active_universe(self.control, active)))
+                    if active is not None
+                    else None
                 )
                 return _status(
                     "completed" if published else "already_current",
-                    "history_price_gaps_remaining" if unresolved else None,
+                    "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
                     self.configuration,
                     active,
                     self.observed_at,
-                    unresolved_price_cells=unresolved,
+                    unresolved_price_cells=unresolved.cells if unresolved else 0,
+                    price_gap_summary=unresolved,
                 )
             snapshot = self._download(inputs, active)
             published = True
             if pending is not None and target < _latest_completed_daily_date(self.observed_at):
                 continue
-            unresolved = self.index.unresolved(tuple(item.code for item in inputs.context.universe))
+            unresolved = self.index.gap_summary(tuple(item.code for item in inputs.context.universe))
             return _status(
                 "completed",
-                "history_price_gaps_remaining" if unresolved else None,
+                "history_price_gaps_remaining" if unresolved and unresolved.cells else None,
                 self.configuration,
                 snapshot,
                 self.observed_at,
-                unresolved_price_cells=unresolved,
+                unresolved_price_cells=unresolved.cells if unresolved else 0,
+                price_gap_summary=unresolved,
             )
 
     def _prepare(
@@ -261,8 +269,9 @@ class _HistorySync:
             )
         )
         flow.tencent()
+        remaining_gaps = self.index.gaps_by_code()
         for security in inputs.context.universe:
-            if gaps := self.index.gaps(security.code):
+            if gaps := remaining_gaps.get(security.code):
                 prices.record_missing(security, gaps)
         if self.cancel():
             raise KeyboardInterrupt
@@ -385,17 +394,14 @@ def _download_tasks(
     reread: int,
 ) -> tuple[HistoryDownloadTask, ...]:
     previous = _active_universe(control, active)
+    retryable = index.gaps_by_code(context.calendar.open_dates)
     tasks = []
     for security in context.universe:
         expected = context.calendar.expected_dates(security)
         if active is None or security.code not in previous:
             dates = expected
         else:
-            missing = {
-                day
-                for day in index.retryable_gaps(security.code, context.calendar.open_dates)
-                if day <= context.calendar.open_dates[-1]
-            }
+            missing = {day for day in retryable.get(security.code, ()) if day <= context.calendar.open_dates[-1]}
             new = {day for day in expected if day > active.data_cutoff}
             anchors = tuple(day for day in expected if day <= active.data_cutoff)[-reread:] if new or missing else ()
             dates = tuple(sorted(missing | new | set(anchors)))
@@ -494,6 +500,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
     observed_at: datetime,
     *,
     unresolved_price_cells: int = 0,
+    price_gap_summary: HistoryPriceGapSummary | None = None,
 ) -> HistoryMaintenanceStatus:
     root = configuration.archive_root
     due = None
@@ -521,6 +528,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
         training_due_reason=(due_state.reason if due_state else "data_incomplete"),
         automatic_training=False,
         unresolved_price_cells=unresolved_price_cells,
+        price_gap_summary=price_gap_summary,
     )
 
 

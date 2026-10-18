@@ -78,7 +78,6 @@ def _report(args: argparse.Namespace, codes: tuple[str, ...]) -> dict[str, objec
             "history_mode": health.history_mode,
             "minute_call_limit": health.minute_call_limit,
             "daily_call_limit": health.daily_call_limit,
-            "forward_adjusted_daily": client.supports("forward_adjusted_daily"),
             "price_adjustment": "raw" if all_raw else None,
         },
         "usage": {

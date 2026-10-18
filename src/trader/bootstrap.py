@@ -17,8 +17,8 @@ from flask import Flask
 
 from trader.download.application.company_evidence import CompanyEvidenceDependencies, SyncCompanyEvidence
 from trader.download.application.download_history import DownloadHistoryUseCase
-from trader.download.application.progress_message import ProgressLevel, ProgressMessage, ProgressNumber
-from trader.download.application.qfq_download_progress import QfqMessage
+from trader.download.application.progress_message import ProgressLevel, ProgressMessage
+from trader.download.application.qfq_download_progress import QfqMessage, ReportQfqStProgress
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
@@ -29,7 +29,6 @@ from trader.download.domain.company_evidence import (
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import (
-    HistoryStEligibilitySummary,
     HistorySyncConfiguration,
     HistorySyncProgress,
     HistorySyncProgressPort,
@@ -67,6 +66,7 @@ from trader.infra.market_data.providers.exchange_security_master import (
 from trader.infra.market_data.providers.tushare import TushareClient
 from trader.infra.market_data.providers.tushare_records import BuildTushareSdk
 from trader.infra.process_lock import ProcessLock
+from trader.infra.progress_heartbeat import ProgressHeartbeat
 from trader.infra.serialization.canonical import ContentHash
 from trader.infra.settings import (
     LoadLongWatchlist,
@@ -219,7 +219,7 @@ def _sync_company_evidence(
     cancel_requested: Callable[[], bool] | None = None,
     timeout_seconds: float = 8.0,
 ) -> CompanyEvidenceSyncResult:
-    with ProcessLock(root / "company_evidence.lock", label="risk_download"):
+    with ProcessLock(root / "company_evidence.lock", label="download_risk"), ProgressHeartbeat(progress) as heartbeat:
         with requests.Session() as disclosure_session, requests.Session() as structured_session:
             disclosure_session.trust_env = structured_session.trust_env = False
             dependencies = CompanyEvidenceDependencies(
@@ -236,7 +236,7 @@ def _sync_company_evidence(
                     timeout_seconds=timeout_seconds,
                 ),
                 time.monotonic,
-                progress,
+                heartbeat,
                 cancel_requested,
             )
             return SyncCompanyEvidence(
@@ -286,6 +286,19 @@ def _load_risk_st_universe(
         resources.close()
         if not stopped.completed:
             raise RuntimeError("history ST worker shutdown exceeded 30 seconds")
+
+
+def ExecuteDownloadTrain(config_path: Path) -> int:
+    """One process, history validation before training, no server resources."""
+    from trader.download.entrypoints.commands import RunDownload
+    from trader.training.entrypoints.commands import ConfigureTrainingResources, RunJointTraining
+
+    runtime = LoadRuntimeSettings(config_path)
+    ConfigureTrainingResources()
+    result = RunDownload(runtime.project_root, config_path, quiet_success=True)
+    if result:
+        return result
+    return RunJointTraining(runtime)
 
 
 def ExecuteHistoryDownload(
@@ -349,6 +362,7 @@ def ExecuteHistoryDownload(
                     industry_cache=HistoryIndustryQueryCache(
                         HistoryStEvidencePath(configuration.reference_root).with_name("industry_queries.sqlite3")
                     ),
+                    eligibility_date=ShanghaiClock(clock or _utc_now).now().date(),
                 ),
                 clock=clock,
                 progress=progress,
@@ -382,8 +396,10 @@ def ExecuteQfqDownload(
     started = time.monotonic()
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
     qfq_pool.start()
-    try:
-        with ExitStack() as http_resources:
+    qfq_writer = BoundedExecutor(worker_count=1, queue_capacity=0, thread_name_prefix="qfq-writer")
+    with ExitStack() as http_resources:
+        try:
+            qfq_writer.start()
             http_pool = TencentSessionPool(
                 tuple(http_resources.enter_context(requests.Session()) for _index in range(8))
             )
@@ -392,7 +408,9 @@ def ExecuteQfqDownload(
                 http_pool.borrow,
                 qfq_pool,
                 cancel_requested,
-                report=lambda done, total, summary: _report_qfq_st_progress(report, started, done, total, summary),
+                report=lambda done, total, summary: ReportQfqStProgress(
+                    report, time.monotonic() - started, done, total, summary
+                ),
                 batch_size=8,
             )
 
@@ -400,7 +418,7 @@ def ExecuteQfqDownload(
                 official = LoadCurrentAShareUniverse(
                     partial(FetchSseListings, get=requests.get), partial(FetchSzseListings, get=requests.get), 15.0
                 )
-                return SelectStEligibleUniverse(official, st_source.fetch(official, as_of))
+                return SelectStEligibleUniverse(official, st_source.fetch(official, ShanghaiClock(now).now().date()))
 
             tencent = TencentQfqSupplier(TencentQfqDependencies(http_pool.borrow, load_qfq_universe, cancel_requested))
             updater = UpdateQfqWindows(
@@ -412,33 +430,21 @@ def ExecuteQfqDownload(
                 report,
                 workers=8,
                 worker_pool=qfq_pool,
+                writer_pool=qfq_writer,
             )
             return QfqUpdateRunner(
                 history, updater, v2, v3, root / ".maintenance.lock", ShanghaiClock(now).now
             ).execute()
-    finally:
-        stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=ShutdownDeadline.start(30.0))
-        if not stopped.completed:
-            report(
-                QfqMessage(
-                    time.monotonic() - started, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR
+        finally:
+            deadline = ShutdownDeadline.start(30.0)
+            writer_stopped = qfq_writer.stop(wait=True, cancel_futures=True, deadline=deadline)
+            stopped = qfq_pool.stop(wait=True, cancel_futures=True, deadline=deadline)
+            if not stopped.completed or not writer_stopped.completed:
+                report(
+                    QfqMessage(
+                        time.monotonic() - started, "关闭失败", "worker_deadline_exceeded", level=ProgressLevel.ERROR
+                    )
                 )
-            )
-
-
-def _report_qfq_st_progress(
-    report: Callable[[ProgressMessage], None],
-    started: float,
-    completed: int,
-    total: int,
-    summary: HistoryStEligibilitySummary | None,
-) -> None:
-    if summary is None and completed % 256 != 0:
-        return
-    details = f"{ProgressNumber(completed)}/{ProgressNumber(total)}"
-    if summary is not None:
-        details += f" | 合格 {ProgressNumber(summary.clear)} | 曾ST排除 {ProgressNumber(summary.ever_st)} | 未知排除 {ProgressNumber(summary.unknown)}"
-    report(QfqMessage(time.monotonic() - started, "ST资格", details))
 
 
 def ExecuteResearchEvidence(command: ResearchEvidenceCommand) -> ResearchEvidenceResult:
@@ -704,7 +710,9 @@ def BuildSystem(
         shutdown_timeout_seconds=settings.pipeline.shutdown_timeout_seconds,
     )
 
-    history_observer = PublishedHistoryObserver(market_data.history)
+    history_observer = PublishedHistoryObserver(
+        market_data.history, observe_company=market_data.research.observe_publication
+    )
     qfq_maintenance = QfqDailyMaintenance(
         lambda cancel: ExecuteQfqDownload(
             settings.project_root, reference_root=settings.reference_dir, cancel_requested=cancel, now=now
@@ -1185,5 +1193,6 @@ __all__ = [
     "ProfiledApplicationSystem",
     "BuildProfiledSystem",
     "BuildSystem",
+    "ExecuteDownloadTrain",
     "ExecuteRiskDownload",
 ]

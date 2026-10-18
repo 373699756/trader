@@ -36,6 +36,7 @@ from trader.download.domain.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.infra.process_lock import ProcessLock, ProcessLockError
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 FaultInjector = Callable[[str], None]
 ControlKind = Literal[
@@ -492,13 +493,10 @@ class HistoryControlIndex:
             raise HistoryControlError("history immutable control record write failed") from exc
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._path, timeout=5.0)
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA synchronous=FULL")
-        return connection
+        return OpenSqliteConnection(self._path, SqliteConnectionOptions(foreign_keys=True))
 
     def _read_connection(self) -> sqlite3.Connection:
-        return sqlite3.connect(f"file:{self._path.as_posix()}?mode=ro", uri=True, timeout=5.0)
+        return OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))
 
 
 def _read_publication_record(connection: sqlite3.Connection, kind: ControlKind, key: str) -> ControlRecord:
@@ -896,7 +894,7 @@ def _remove_sqlite_sidecars(path: Path) -> None:
 
 def _checkpoint_wal(path: Path) -> None:
     try:
-        with closing(sqlite3.connect(path)) as connection:
+        with closing(OpenSqliteConnection(path)) as connection:
             result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     except sqlite3.Error as exc:
         raise HistoryControlError("history control WAL checkpoint failed") from exc

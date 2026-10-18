@@ -22,6 +22,7 @@ from trader.download.application.stock_download_progress import (
 )
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
+from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.domain.qfq_window import QfqPendingReason, QfqUpdateResult, QfqWindowIncompleteError
 
@@ -39,6 +40,21 @@ def QfqMessage(
             ),
         )
     )
+
+
+def ReportQfqStProgress(
+    report: Callable[[ProgressMessage], None],
+    elapsed: float,
+    completed: int,
+    total: int,
+    summary: HistoryStEligibilitySummary | None,
+) -> None:
+    if summary is None and completed % 256 != 0:
+        return
+    details = f"{ProgressNumber(completed)}/{ProgressNumber(total)}"
+    if summary is not None:
+        details += f" | 合格 {ProgressNumber(summary.clear)} | 曾ST排除 {ProgressNumber(summary.ever_st)} | 未知排除 {ProgressNumber(summary.unknown)}"
+    report(QfqMessage(elapsed, "ST资格", details))
 
 
 def QfqFailureCode(exc: Exception) -> str:
@@ -81,6 +97,7 @@ class QfqDownloadProgress:
     latest_missing: int = 0
     rows: int = 0
     errors: int = 0
+    write_seconds: float = 0.0
     changed: set[str] = field(default_factory=set)
     pending_reasons: tuple[QfqPendingReason, ...] = ()
 
@@ -96,7 +113,7 @@ class QfqDownloadProgress:
             FormatStockDownloadProgress(
                 self.elapsed(),
                 StockDownloadProgress(
-                    command="qfq_download",
+                    command="download_qfq",
                     completed=self.processed,
                     total=self.total,
                     code=security.code,
@@ -190,7 +207,8 @@ class QfqDownloadProgress:
             f"| 其中复用 {ProgressNumber(self.skipped)} | 无需下载 {ProgressNumber(self.not_applicable)} "
             f"| 无真实日线 {ProgressNumber(self.no_trade_data)} "
             f"| 未处理 {ProgressNumber(self.total - self.processed)} "
-            f"| 变更文件 {ProgressNumber(len(self.changed))} | 变更行 {ProgressNumber(self.rows)}",
+            f"| 变更文件 {ProgressNumber(len(self.changed))} | 变更行 {ProgressNumber(self.rows)} "
+            f"| 落库耗时 {ProgressDuration(self.write_seconds)}",
             level=level,
         )
 

@@ -723,18 +723,8 @@ def test_reference_refresh_does_not_query_tushare_history() -> None:
         pool.stop(wait=True, cancel_futures=True)
         cache.stop()
 
-    assert [name for name, _arguments in pro.calls] == [
-        "stock_basic",
-        "trade_cal",
-        "daily_basic",
-        "fina_indicator",
-    ]
-    daily_basic_arguments = next(arguments for name, arguments in pro.calls if name == "daily_basic")
-    assert daily_basic_arguments["trade_date"] == "20260715"
+    assert [name for name, _arguments in pro.calls] == ["stock_basic", "trade_cal"]
     assert service.history.entries() == {}
-    reference_fields = service.references.fields(("600001",))
-    assert reference_fields["600001"]["tushare_valuation_pe"] == 12.0
-    assert reference_fields["600001"]["tushare_financial_eps"] == 1.0
 
 
 def test_calendar_uses_cache_and_fails_closed(tmp_path) -> None:

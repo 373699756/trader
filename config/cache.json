@@ -41,16 +41,6 @@
         "group": "observation",
         "persisted": false
       },
-      "daily_valuation_financials": {
-        "refresh_ttl_seconds": 86400,
-        "action_max_age_seconds": 86400,
-        "cadence_task": null,
-        "action_max_age_multiplier": null,
-        "negative_ttl_seconds": 300,
-        "capacity": 360,
-        "group": "observation",
-        "persisted": false
-      },
       "board_cross_section": {
         "refresh_ttl_seconds": 86400,
         "action_max_age_seconds": 86400,

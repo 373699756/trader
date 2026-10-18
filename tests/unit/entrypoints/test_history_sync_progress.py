@@ -424,7 +424,7 @@ def _stock_progress(**changes) -> StockDownloadProgress:
 )
 def test_stock_fields_remain_compact_across_names_and_counts(name, result, actual) -> None:
     progress = _stock_progress(
-        command="qfq_download",
+        command="download_qfq",
         completed=4400,
         name=name,
         result=result,

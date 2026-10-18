@@ -141,7 +141,6 @@ class ReferenceLoader:
         self._data_plane = data_plane
         self._monotonic = monotonic
         self._lock = threading.Lock()
-        self._reference_fields: dict[str, dict[str, float]] = {}
         self._reference_versions: dict[str, str] = {}
         self._reference_version_order: dict[str, tuple[datetime, datetime, str]] = {}
         self._persisted_security_master_signatures: dict[str, tuple[str, tuple[tuple[str, JsonScalar], ...]]] = {}
@@ -184,17 +183,17 @@ class ReferenceLoader:
             force=force,
         )
         self._model_industries.schedule(observed_at, force=force)
+        if self._client is None or not self._client.supports("security_master"):
+            return
         lanes = self._runner.source_lanes
         if lanes is None:
             self._refresh_tushare_reference_data(
-                normalized,
                 observed_at,
                 force=force,
             )
             return
         if lanes.owns_current_thread("tushare"):
             self._refresh_tushare_reference_data(
-                normalized,
                 observed_at,
                 force=force,
             )
@@ -211,13 +210,10 @@ class ReferenceLoader:
                 tushare_identity,
                 observed_at,
                 self._refresh_tushare_reference_data,
-                normalized,
                 observed_at,
                 force=force,
             )
             tushare_future.add_done_callback(_observe_reference_refresh)
-        if not normalized:
-            return
 
     def _schedule_exchange_security_master(
         self,
@@ -353,7 +349,6 @@ class ReferenceLoader:
         normalized = _normalize_codes(codes)
         self.schedule_security_master_persistence(self._gateway.reference_observations(normalized))
         self._refresh_tushare_reference_data(
-            normalized,
             observed_at,
             force=force,
         )
@@ -361,7 +356,6 @@ class ReferenceLoader:
 
     def _refresh_tushare_reference_data(
         self,
-        normalized: Sequence[str],
         observed_at: datetime,
         *,
         force: bool,
@@ -418,48 +412,6 @@ class ReferenceLoader:
                 else ()
             )
             self._gateway.update_reference_observations((*calendars, *masters))
-            valuation_observations: tuple[SourceObservation, ...] = ()
-            financial_observations: tuple[SourceObservation, ...] = ()
-            if normalized:
-                valuation_trade_date = _latest_effective_trade_date(calendars, observed_at)
-                valuation_observations = (
-                    self.load(
-                        ReferenceLoadRequest(
-                            "daily_valuation_financials",
-                            "daily_valuation:" + ",".join(normalized),
-                            {
-                                "dataset": "daily_valuation",
-                                "codes": normalized,
-                                "trade_date": valuation_trade_date.isoformat(),
-                            },
-                            _ReferenceLoadOptions(
-                                observed_at=observed_at,
-                                function=self._client.fetch_daily_valuations,
-                                args=(normalized, valuation_trade_date, observed_at),
-                                force=force,
-                                kwargs={},
-                            ),
-                        )
-                    )
-                    if valuation_trade_date is not None
-                    else ()
-                )
-                financial_observations = self.load(
-                    ReferenceLoadRequest(
-                        "daily_valuation_financials",
-                        "financial_indicators:" + ",".join(normalized),
-                        {"dataset": "financial_indicators", "codes": normalized},
-                        _ReferenceLoadOptions(
-                            observed_at=observed_at,
-                            function=self._client.fetch_financial_indicators,
-                            args=(normalized, observed_at),
-                            force=force,
-                            kwargs={},
-                        ),
-                    )
-                )
-            self.apply_fields("valuation", valuation_observations)
-            self.apply_fields("financial", financial_observations)
         self._persist_reference_data(observed_at, masters=masters, calendars=calendars)
 
     def recover(self) -> DataPlaneRecoverySummary:
@@ -787,57 +739,6 @@ class ReferenceLoader:
 
         lanes.submit("tushare", refresh_identity, request.options.observed_at, refresh)
 
-    def apply_fields(
-        self,
-        namespace: str,
-        observations: Sequence[SourceObservation],
-    ) -> None:
-        latest: dict[str, SourceObservation] = {}
-        for observation in observations:
-            current = latest.get(observation.subject_key)
-            if current is None or (
-                observation.effective_at,
-                observation.received_at,
-                observation.data_version,
-                observation.payload_hash,
-            ) > (
-                current.effective_at,
-                current.received_at,
-                current.data_version,
-                current.payload_hash,
-            ):
-                latest[observation.subject_key] = observation
-        if not latest:
-            return
-        with self._lock:
-            for code, observation in latest.items():
-                if len(code) != 6 or not code.isdigit():
-                    continue
-                fields = self._reference_fields.setdefault(code, {})
-                for name, value in observation.fields.items():
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        fields[f"tushare_{namespace}_{name}"] = float(value)
-            self._record_tushare_version_locked(namespace, tuple(latest.values()))
-
-    def _record_tushare_version_locked(
-        self,
-        namespace: str,
-        observations: Sequence[SourceObservation],
-    ) -> None:
-        if not observations:
-            return
-        latest = max(observations, key=lambda item: (item.source_time, item.received_at, item.data_version))
-        order = (latest.source_time, latest.received_at, latest.data_version)
-        current = self._reference_version_order.get(namespace)
-        if current is None or order > current:
-            self._reference_version_order[namespace] = order
-            self._reference_versions[namespace] = latest.data_version
-
-    def fields(self, codes: Sequence[str]) -> Mapping[str, Mapping[str, float]]:
-        selected = set(codes)
-        with self._lock:
-            return {code: dict(values) for code, values in self._reference_fields.items() if code in selected}
-
     def model_industries(self, codes: Sequence[str]) -> Mapping[str, ModelIndustryReference]:
         return self._model_industries.references(codes)
 
@@ -916,25 +817,6 @@ def _source_fields_for_observation(payload: Mapping[str, JsonValue]) -> dict[str
             continue
         fields[key] = str(value)
     return fields
-
-
-def _latest_effective_trade_date(
-    observations: Sequence[SourceObservation],
-    observed_at: datetime,
-) -> date | None:
-    local = ShanghaiNow(observed_at)
-    available: list[date] = []
-    for observation in observations:
-        if observation.status != "success" or observation.fields.get("is_open") is not True:
-            continue
-        raw = observation.fields.get("calendar_date")
-        parsed = _parse_date(raw) if isinstance(raw, str) else None
-        if parsed is None:
-            continue
-        effective_at = datetime.combine(parsed, _DAY_END, _SHANGHAI)
-        if effective_at <= local:
-            available.append(parsed)
-    return max(available, default=None)
 
 
 def _finite_number(value: object) -> float | None:

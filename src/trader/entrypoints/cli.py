@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import ctypes
 import json
 import os
 import sys
@@ -20,7 +19,6 @@ from trader.training.entrypoints.research_evidence import COMMAND_SCHEMAS, AddRe
 _COMMAND_GROUPS = {
     "check": ("validate-config", "research-status", "history-automation-status", "performance-check"),
 }
-_TOMORROW_PRIORITY_LOWERED = False
 
 
 def BuildParser() -> argparse.ArgumentParser:
@@ -41,9 +39,6 @@ def BuildParser() -> argparse.ArgumentParser:
         "check",
         help="Run config validation, research readiness, and the active-profile performance gate.",
     )
-    subparsers.add_parser("train-v2", help="Rebuild both V2 heads with 251-session features and overwrite artifacts.")
-    subparsers.add_parser("train-v3", help="Rebuild both heads with one scan and overwrite fixed V3 artifacts.")
-    subparsers.add_parser("train-both", help="Build V2/V3 samples from one history scan and fit both profiles.")
     subparsers.add_parser("validate-config", help="Validate runtime and strategy configuration.")
     performance = subparsers.add_parser(
         "performance-check",
@@ -52,17 +47,17 @@ def BuildParser() -> argparse.ArgumentParser:
     performance.add_argument("--output", type=Path)
     performance.add_argument("--baseline", type=Path)
     subparsers.add_parser(
-        "download",
-        help="Run the zero-argument historical-data maintenance workflow.",
+        "download_train",
+        help="Maintain history and train both profiles, reusing verified matching artifacts.",
     )
     subparsers.add_parser(
-        "qfq_download", help="Update Tencent V2/V3 bounded daily windows concurrently; resume automatically."
+        "download_qfq", help="Update Tencent V2/V3 bounded daily windows concurrently; resume automatically."
     )
     subparsers.add_parser(
-        "risk_download", help="Incrementally update one year of company disclosures and current risk snapshots."
+        "download_risk", help="Incrementally update one year of company disclosures and current risk snapshots."
     )
     subparsers.add_parser(
-        "scheduled-history-maintenance",
+        "download_scheduled",
         help="Run the installed zero-argument history task without environment installation.",
     )
     subparsers.add_parser(
@@ -99,12 +94,6 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
     )
     if maintenance_exit is not None:
         return maintenance_exit
-    if args.command in {"train-v2", "train-v3", "train-both"}:
-        if args.profile is not None:
-            parser.error(f"{args.command} does not accept --profile")
-        from trader.training.entrypoints.commands import ConfigureTrainingResources
-
-        ConfigureTrainingResources()
     config_path = _absolute_config_path(args.config)
     runtime = LoadRuntimeSettings(config_path)
     profile_override = cast(ScoringProfileId | None, args.profile)
@@ -131,7 +120,7 @@ def Main(argv: list[str] | None = None) -> int:  # noqa: PLR0911 - explicit CLI 
         return 0 if isinstance(baseline, dict) and baseline.get("status") == "passed" else 1
     if args.command == "eligibility-list":
         return _run_eligibility_list(runtime, as_of=args.as_of)
-    if args.command in {"train-v2", "train-v3", "train-both"} or args.command.startswith("research-"):
+    if args.command.startswith("research-"):
         return _run_training_command(args, config_path, runtime, parser)
     return _run_config_validation(runtime, profile_override)
 
@@ -150,32 +139,6 @@ def _run_training_command(
     return RunResearchCommand(
         args.command, config_path, runtime, ResearchCommandOptions(workers=int(getattr(args, "workers", 5)))
     )
-
-
-def _configure_tomorrow_training_resources() -> None:
-    from trader.training.application.tomorrow_training import TOMORROW_TRAINING_COMPUTE_THREADS
-
-    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ[name] = str(TOMORROW_TRAINING_COMPUTE_THREADS)
-    _lower_tomorrow_training_priority()
-
-
-def _lower_tomorrow_training_priority() -> None:
-    global _TOMORROW_PRIORITY_LOWERED  # noqa: PLW0603 - one process-level resource policy
-    if _TOMORROW_PRIORITY_LOWERED:
-        return
-    if os.name == "posix":
-        os.nice(10)
-        _TOMORROW_PRIORITY_LOWERED = True
-        return
-    if os.name != "nt":
-        _TOMORROW_PRIORITY_LOWERED = True
-        return
-    below_normal_priority_class = 0x00004000
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-    if not kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), below_normal_priority_class):
-        raise OSError(ctypes.__dict__["get_last_error"](), "could not lower Tomorrow training priority")
-    _TOMORROW_PRIORITY_LOWERED = True
 
 
 def _run_company_download(raw_config_path: str) -> int:
@@ -203,7 +166,7 @@ def _run_company_download(raw_config_path: str) -> int:
                 ensure_ascii=False,
             )
         )
-        print("risk_download 未完成；已提交数据保留，请检查来源/数据库状态后续传。", file=sys.stderr)
+        print("download_risk 未完成；已提交数据保留，请检查来源/数据库状态后续传。", file=sys.stderr)
         return 1
     print(
         json.dumps(
@@ -232,13 +195,13 @@ def _run_history_maintenance_command(
     profile: str | None,
     parser: argparse.ArgumentParser,
 ) -> int | None:
-    if command == "risk_download":
+    if command == "download_risk":
         if profile is not None:
-            parser.error("risk_download does not accept --profile")
+            parser.error("download_risk does not accept --profile")
         return _run_company_download(raw_config_path)
-    if command == "qfq_download":
+    if command == "download_qfq":
         if profile is not None:
-            parser.error("qfq_download does not accept --profile")
+            parser.error("download_qfq does not accept --profile")
         from trader.bootstrap import ExecuteQfqDownload
 
         runtime = LoadRuntimeSettings(_absolute_config_path(raw_config_path))
@@ -266,15 +229,15 @@ def _run_history_maintenance_command(
             )
         )
         return 1 if qfq_result.needs_retry else 0
-    if command == "download":
+    if command == "download_train":
         if profile is not None:
-            parser.error("download does not accept --profile")
+            parser.error("download_train does not accept --profile")
         return _run_history_download(_absolute_config_path(raw_config_path))
     if command == "history-automation-status":
         from trader.download.entrypoints.commands import RunDownloadCommand
 
         return RunDownloadCommand(command)
-    if command != "scheduled-history-maintenance":
+    if command != "download_scheduled":
         return None
     if profile is not None:
         parser.error(f"{command} does not accept --profile")
@@ -283,15 +246,18 @@ def _run_history_maintenance_command(
 
 
 def _run_history_download(config_path: Path) -> int:
-    from trader.download.entrypoints.commands import RunDownloadCommand
+    from trader.training.entrypoints.commands import ConfigureTrainingResources
 
-    return RunDownloadCommand("download", config_path=config_path)
+    ConfigureTrainingResources()
+    from trader.bootstrap import ExecuteDownloadTrain
+
+    return ExecuteDownloadTrain(config_path)
 
 
 def _run_scheduled_history_maintenance(config_path: Path) -> int:
     from trader.download.entrypoints.commands import RunDownloadCommand
 
-    return RunDownloadCommand("scheduled-history-maintenance", config_path=config_path)
+    return RunDownloadCommand("download_scheduled", config_path=config_path)
 
 
 def _shanghai_now() -> datetime:

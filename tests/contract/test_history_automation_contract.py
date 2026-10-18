@@ -24,7 +24,7 @@ def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_
     parser = BuildParser()
 
     for command in (
-        "scheduled-history-maintenance",
+        "download_scheduled",
         "history-automation-status",
     ):
         assert parser.parse_args([command]).command == command
@@ -153,13 +153,13 @@ def test_scheduled_cli_does_not_create_a_supplier_before_weekly_cadence_is_due(m
         pytest.fail("a no-op scheduled wakeup must not construct a supplier")
 
     monkeypatch.setattr("trader.download.infra.baostock_sync_supplier.BaoStockHistorySupplier", unexpected_supplier)
-    assert RunDownloadCommand("scheduled-history-maintenance", config_path=tmp_path / "config.json") == 0
+    assert RunDownloadCommand("download_scheduled", config_path=tmp_path / "config.json") == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["maintenance_state"] == "not_due"
     assert payload["maintenance_reason"] == "weekly_cadence_not_due"
     assert payload["automatic_model_update"] is False
     status = replace(status, data_cutoff=None)
-    assert RunDownloadCommand("scheduled-history-maintenance", config_path=tmp_path / "config.json") == 1
+    assert RunDownloadCommand("download_scheduled", config_path=tmp_path / "config.json") == 1
     assert json.loads(capsys.readouterr().out)["maintenance_state"] == "blocked"
 
 

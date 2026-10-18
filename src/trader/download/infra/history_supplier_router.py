@@ -28,17 +28,19 @@ class HistorySupplierRouter:
         load_universe: Callable[[], tuple[BaoStockSecurity, ...]],
         st_source: HistoryStNameSource,
         industry_cache: HistoryIndustryQueryCache | None = None,
+        eligibility_date: date | None = None,
     ) -> None:
         self._baseline = baseline
         self._prices = prices
         self._load_universe = load_universe
         self._st_source = st_source
         self._industry_cache = industry_cache
+        self._eligibility_date = eligibility_date
         self._calendar: tuple[date, ...] = ()
 
     def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
         universe = self._load_universe()
-        evidence = self._st_source.fetch(universe, as_of)
+        evidence = self._st_source.fetch(universe, self._eligibility_date or as_of)
         universe = SelectStEligibleUniverse(universe, evidence)
         price_context = self._prices.load_history_context(as_of, sessions, universe)
         try:
@@ -79,4 +81,5 @@ def FetchTencentHistoryWindow(
         raise ValueError("Tencent history dates must be non-empty, ordered, and unique")
     if not calendar or any(day >= calendar[0] and day not in calendar for day in dates):
         raise ValueError("Tencent history dates must belong to the exchange calendar")
-    return prices.fetch_window(security, dates, request_count=2000, allow_interior_padding=True)
+    count = 2000 if dates[0] < calendar[0] else sum(dates[0] <= day <= dates[-1] for day in calendar)
+    return prices.fetch_window(security, dates, request_count=max(5, count), allow_interior_padding=True)

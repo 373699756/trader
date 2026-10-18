@@ -15,6 +15,7 @@ from trader.download.application.update_qfq import QfqPairPublicationError, QfqW
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
 from trader.download.infra.qfq_codec import DecodeCell, EncodeCell
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 QFQ_SHARD_NAMES = (
     "qfq_sse_main.sqlite3",
@@ -88,7 +89,7 @@ class SQLiteQfqWindowCache:
                     continue
                 if path.is_symlink() or journal.is_symlink():
                     raise RuntimeError("qfq shard recovery path is unsafe")
-                with closing(sqlite3.connect(path, timeout=5)) as connection:
+                with closing(OpenSqliteConnection(path)) as connection:
                     if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
                         raise RuntimeError("qfq shard recovery integrity check failed")
                 recovered.append(f"{self.root.name}/{name}")
@@ -402,11 +403,9 @@ class SQLiteQfqWindowCache:
         )
 
     def _write_connection(self, name: str) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.root / name, timeout=5)
+        connection = OpenSqliteConnection(self.root / name, SqliteConnectionOptions(journal_mode="DELETE"))
         try:
             connection.execute("PRAGMA page_size=4096")
-            connection.execute("PRAGMA journal_mode=DELETE")
-            connection.execute("PRAGMA synchronous=FULL")
             if not connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchone():
                 connection.executescript(_SCHEMA)
             return connection
@@ -419,7 +418,7 @@ class SQLiteQfqWindowCache:
         if not path.is_file() or path.is_symlink():
             raise RuntimeError("qfq shard missing or unsafe")
         try:
-            return sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+            return OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))
         except sqlite3.Error as exc:
             raise RuntimeError("qfq shard unavailable") from exc
 

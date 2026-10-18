@@ -45,51 +45,27 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 ./run.sh --profile v2
 ./run.sh --profile v3
 ./run.sh --profile both
-./run.sh download
-./run.sh train-v2
-./run.sh train-v3
-./run.sh train-both
-./run.sh download-train
-./run.sh qfq_download
+./run.sh download_train
+./run.sh download_qfq
+./run.sh download_risk
 ./run.sh help
 ```
 
 日常启动不需要参数，默认使用 V2 并加载 `data/train/v2/{tomorrow,d25}` 双头工件；
 追加 `--profile v2|v3` 可单独启动一档，`--profile both` 在同一进程启动两档；这些选择不会写回配置。双档模式的 Tomorrow/D25 结果、冻结和历史按档位隔离，Long 固定由 V2 单一采集并供两档页面只读。启动不执行训练，所选档位任一bundle损坏时失败关闭。
-`check` 依次执行配置校验、只读研究状态、持久化训练 due/提醒状态和所选档位的离线性能门禁；`download` 维护完整历史；
-`qfq_download` 使用 Tencent 有界并发维护在线短窗口。`train-v2`使用1000个有效拟合日和251日特征窗，只拟合LightGBM；`train-v3`使用750个有效拟合日和61日特征窗，只拟合Ridge。独立命令各自扫描完整历史，`train-both`在同一快照下一次扫描生成两档样本；`download-train`先完成历史维护再执行联合训练。每档内部仍顺序训练Tomorrow/D25，不训练Today。
-联合训练默认串行拟合；仅在资源门和仓库外隔离副本的同输入速度基准同时通过后，才按`docs/4_下载训练.md`启用并行。
-两个命令每次直接重建并覆盖`data/train/{v2,v3}/{tomorrow,d25}`，不检查到期、不比较旧历史修订、不创建额外训练快照。
-stderr显示累计/阶段耗时，索引、统计和拟合等耗时阶段每30秒有反馈；失败保留该头上一完整工件组。V2/V3共享历史事实和
-训练引擎，但不共享特征合同、模型身份或输出目录。旧 H0 历史归档、回测和筛选入口已退役，
-不再通过启动流程执行。离线研究不会随服务启动自动执行。底层
-`trader-cli performance-check` 仍可用 `--output` 保存报告或用 `--baseline` 执行 5% 相对回归门禁；它
-禁止外网并直接测量活动生产标准化、合并、三策略评分、overlay CAS、API/ETag/status、SSE 和 100 tick RSS。
-BaoStock 行业数据适配器所需依赖由 `run.sh` / `run.ps1` 按 `pyproject.toml` 自动安装，无需手动补装。
-完整历史下载仍须显式运行 `./run.sh download`。路径、滚动 2000 日和资源
-参数不对用户开放；`--runtime-dir`、`--sessions`、`--mode`、`--profile` 等参数都会在环境创建前拒绝。零参数
-重构控制库、稳定年月月分片读取面和零参数同步已经交付：命令自动执行初次最近 2000 日、日更缺口、最近 5 日
-回读或返回`already_current`，失败与取消不改变上一active snapshot；启动、`check`、Web和训练入口
-均不会隐式调用完整历史下载。启动只读恢复短窗口，每30秒接纳变更，缺历史明确待就绪。
-交互式下载进度固定在 stderr 显示紧凑单行：累计和调用耗时使用 `HH:MM:SS`，股票和月分片使用
-`n/m (百分比)`，供应商重试使用“尝试 n/m”；日历、行业等子阶段只显示真实当前项，不再把内部 `0/1`
-占位冒充整体进度。失败摘要保留最后一个具体供应商阶段、当前日期或股票和稳定错误码；最终 stdout JSON 保持不变，
-供脚本消费。
+`check`执行配置、研究状态和离线性能检查。`download_train`先维护完整历史，验收后在同一进程联合训练V2/V3；双档工件与当前数据、配置、实现身份完整匹配时复用。`download_qfq`独立更新在线短窗口；`download_risk`增量更新公司资料单库。三个下载入口均先确认ST资格。
 
-`./run.sh download` 按每股实际请求日数选择来源：不超过640日用 Tencent raw/qfq，超过640日和缺失的2000日完整历史用 BaoStock。短请求仍由一次 BaoStock raw 查询补齐真实训练字段，核对价格及已有 qfq 重叠；缺日或冲突保留旧快照。完成行显示来源和请求日数，history 首建与元数据查询仍受 BaoStock 限速。
+`./run.sh download_train`使用Tencent取得完整历史的raw/qfq价格对，BaoStock只提供历史行业证据。缺口、冲突和参考数据不完整保持可诊断状态，阻断训练；不跨来源拼价格。
 
-`./run.sh qfq_download` 不接受参数：独立取得官方股票名单与 Tencent 日历，默认8个worker下载短窗口，不调用 BaoStock 网络。
+`./run.sh download_qfq` 不接受参数：独立取得官方股票名单与 Tencent 日历，默认8个worker下载短窗口，不调用 BaoStock 网络。
 在线 V2/V3 分别读取 `data/qfq/v2`、`data/qfq/v3`，保留251/61根日线（250/60日特征加一根前置日线），新日进入时删除最老日线。
-固定64代码范围分片，接近8 MB时拆分，每个SQLite文件严格小于10,000,000字节；分片和稳定索引可提交Git，断点和锁不提交。
-文件名如 `00002.sqlite3`；只有该组需要拆分时才追加序号，如 `00002-1.sqlite3`，省略首片的零序号。
-无变化不打开写连接；普通日更只改涉及分片和变更行，不VACUUM或全库重排。补尾带3日精确重叠，复权冲突只重取该股有界窗口。
-服务运行时上海时间15:10后自动更新，晚启动补执行；未完成每30分钟续传，当天完成后停止。短库缺失时也可后台初始化。
+两档按沪市主板、深市主板、创业板、科创板各最多四库；同板块以DELETE/FULL配对事务提交，提交后才确认断点。下载与单写入者通过有界队列并行；失败保留原有效窗口。服务只在已经运行到上海时间15:10时尝试一次日更，晚启动或失败时手工运行`download_qfq`补齐，不启动补跑或定时反复重试。
 完整history继续用于训练、研究和结果结算；在线请求只读已有投影，不等待下载。
 
 历史自动化固定为“每日检查、归档周更、训练到期只提醒”。当前版本不再提供公开的安装/卸载入口；已有系统任务仍可调用内部
-`trader.entrypoints.cli scheduled-history-maintenance` 零参数命令，不会因升级自动删除。每天按上海时间 15:10 和
+`trader.entrypoints.cli download_scheduled` 零参数命令；旧任务须更新命令配置，模板已同步。每天按上海时间 15:10 和
 20:30唤醒同一维护命令，只有归档截止日落后至少7个自然日且上海时间不早于15:10才执行下载；未到期返回`not_due`，
-无归档返回`blocked`并等待手工`./run.sh download`初始化。手工下载不受周更门槛限制，失败后下次到期唤醒可续传。
+无归档返回`blocked`并等待手工`./run.sh download_train`初始化。手工下载不受周更门槛限制，失败后下次到期唤醒可续传。
 任务日志写入`.runtime/trader/logs/history-automation.log`并按大小轮转。同一训练due
 身份在每个上海日期最多通知一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会
 自动训练、切换档位或重启服务。只读 `history-automation-status` 仍可查看持久化 due、提醒和活动快照状态。
@@ -179,10 +155,7 @@ python3 -m venv .venv
 
 ## Tushare 慢数据
 
-当前 120 积分档按官方 50 次/分钟、8000 次/日权限，只用 Tushare `daily` 单证券未复权日线做
-低频能力审计和来源健康观测。生产参考 lane 以固定审计代码复用 6 小时缓存，评分历史仍直接使用
-腾讯/东方财富前复权日线；证券主数据、交易日历、复权因子、日度估值和财务指标等 2000 积分能力
-不调用。SDK 已由 `pyproject.toml` 作为默认运行依赖安装；Token 缺失时显式降级。
+当前120积分档的Tushare只保留`daily`未复权日线的独立研究审计。生产股票身份使用交易所官方列表，qfq使用Tencent，公司财务和风险使用已发布公司资料；无消费者的Tushare估值、财务增强和前复权接口已删除。权限不足的参考能力不提交空任务，Token缺失仍明确报告。
 `scripts/diagnose_runtime.py --profile tushare --output -` 可只读实测当前 Token，统一报告输出延迟、
 能力和进程内配额计数，不会输出 Token、价格、逐股载荷或完整供应商响应。
 
@@ -215,7 +188,7 @@ chmod 600 .token_key
 ```
 
 Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。服务从 `data/qfq` 短窗口构造历史特征，
-后台短窗口维护与 `./run.sh qfq_download` 共用 Tencent 有界并发用例；不依赖 Tushare 或 BaoStock 网络。
+后台短窗口维护与 `./run.sh download_qfq` 共用 Tencent 有界并发用例；不依赖 Tushare 或 BaoStock 网络。
 短窗口暂不可用时页面明确显示待下载/待更新，
 已有最近有效视图则继续降级使用。东方财富/新浪全市场实时行情、腾讯
 候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会写入配置、
