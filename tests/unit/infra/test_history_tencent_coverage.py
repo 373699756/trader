@@ -8,11 +8,13 @@ import pytest
 from tests.component.test_qfq_windows import DAYS, SHANGHAI, Supplier, _plain_feedback, _updater, _window
 from tests.unit.entrypoints.test_history_sync_progress import _compact_log
 from tests.unit.infra.research.test_history_sync import NOW
-from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _router
+from tests.unit.infra.test_history_supplier_router import Baseline, Prices, _current_universe, _router
 from trader.download.domain.history_supplier_failure import HistorySupplierPendingError
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.history_sync_progress import StderrHistorySyncProgress
+from trader.download.infra import history_sync_runner
 from trader.download.infra.history_control_index import HistoryControlIndex
+from trader.download.infra.history_download_index import HistoryDownloadIndex
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import RunHistorySync
 
@@ -72,6 +74,89 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
         assert retried.reason == "history_price_gaps_remaining"
         assert retry_prices.calls == []
     assert HistorySnapshotReader(tmp_path).read_day(days[-1], previous) == old_rows
+
+
+@pytest.mark.parametrize("repair_retryable", (False, True))
+@pytest.mark.parametrize("interrupt_publication", (False, True))
+def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
+    tmp_path, capsys, monkeypatch, repair_retryable, interrupt_publication
+):
+    days = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
+
+    class MixedPrices(Prices):
+        def __init__(self):
+            super().__init__()
+            self.repair = False
+            self.requested_codes = []
+
+        def fetch_window(self, security, dates, **kwargs):
+            self.requested_codes.append(security.code)
+            window = super().fetch_window(security, dates, **kwargs)
+            if security.code == "600001" or (self.repair and security.code != "600002"):
+                return window
+            partial = replace(
+                window, cells=(replace(window.cells[0], qfq=None, status="qfq_missing"), *window.cells[1:])
+            )
+            if security.code == "600002":
+                raise HistorySupplierPendingError(partial, "tencent_qfq_invalid_price", (days[0],))
+            reason = "tencent_history_pending" if security.code == "600003" else "tencent_qfq_page_stalled"
+            raise HistorySupplierPendingError(partial, reason)
+
+    prices = MixedPrices()
+    baseline = Baseline(days)
+    supplier = _router(baseline, prices, _current_universe("600001", "600002", "600003", "600004"))
+    config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    first = RunHistorySync(config, supplier, clock=lambda: NOW)
+    assert first.state == "completed" and first.unresolved_price_cells == 3
+    control = HistoryControlIndex(tmp_path / "control.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    previous = control.load_state().active_snapshot
+    assert previous is not None
+    reader = HistorySnapshotReader(tmp_path)
+    old_rows = reader.read_day(days[0], previous)
+    prices.repair = repair_retryable
+    prices.requested_codes.clear()
+
+    if interrupt_publication:
+
+        def fail_publication(*_args):
+            raise RuntimeError("fixture_publication_failed")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(history_sync_runner, "PublishHistorySnapshot", fail_publication)
+            interrupted = RunHistorySync(config, supplier, clock=lambda: NOW)
+        assert interrupted.state == "failed"
+        assert interrupted.reason == "fixture_publication_failed"
+        assert control.load_state().active_snapshot == previous
+        assert index.pending(previous.sequence) is not None
+
+    progress = StderrHistorySyncProgress()
+    result = RunHistorySync(config, supplier, clock=lambda: NOW, progress=progress)
+    progress.publish_result(result)
+
+    assert result.state == "completed", result.reason
+    assert result.reason == "history_price_gaps_remaining"
+    assert result.unresolved_price_cells == (1 if repair_retryable else 3)
+    assert set(prices.requested_codes) == {"600003", "600004"}
+    assert baseline.calls == []
+    assert index.gaps("600002") == (days[0],)
+    assert index.retryable_gaps("600002", days) == ()
+    active = control.load_state().active_snapshot
+    assert active is not None and active.sequence == previous.sequence + 1
+    assert index.pending(active.sequence) is None
+    assert reader.read_day(days[0], previous) == old_rows
+    rows = reader.read_day(days[0], active)
+    assert next(row.cell.status for row in rows if row.cell.code == "600002") == "qfq_missing"
+    expected_status = "complete" if repair_retryable else "qfq_missing"
+    assert all(row.cell.status == expected_status for row in rows if row.cell.code in {"600003", "600004"})
+
+    logs = _compact_log(capsys.readouterr().err)
+    successful = 3 if repair_retryable else 1
+    failed = 0 if repair_retryable else 2
+    reused = 3 if repair_retryable and interrupt_publication else 1
+    assert f"完整 {successful} 股 | 部分 1 股 | 失败 {failed} 股 | 其中待重试 {failed} 股" in logs
+    assert f"其中本地复用 {reused} 股" in logs
+    assert "history_validation_failed" not in logs
 
 
 def test_qfq_transport_failure_preserves_old_window_and_never_calls_baostock(tmp_path):

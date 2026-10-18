@@ -197,6 +197,10 @@ class HistoryDownloadFlow:
         partial = sum(task.failure is None and task.code in gap_codes for task in finished)
         pending = sum(task.failure in HISTORY_SUPPLIER_PENDING_REASONS for task in finished)
         conflicts = sum(task.failure == "history_tail_raw_price_conflict" for task in finished)
+        # No request may also mean a deferred qfq gap, which remains partial.
+        reused = sum(
+            task.code in self._reused_codes and task.failure is None and task.code not in gap_codes for task in finished
+        )
         self._emit(
             HistorySyncProgress(
                 "tencent_history",
@@ -210,7 +214,7 @@ class HistoryDownloadFlow:
                     conflicts,
                     partial,
                     pending,
-                    len(self._reused_codes),
+                    reused,
                 ),
             )
         )
