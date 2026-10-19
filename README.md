@@ -55,7 +55,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
 追加 `--profile v2|v3` 可单独启动一档，`--profile both` 在同一进程启动两档；这些选择不会写回配置。双档模式的 Tomorrow/D25 结果、冻结和历史按档位隔离，Long 固定由 V2 单一采集并供两档页面只读。启动不执行训练，所选档位任一bundle损坏时失败关闭。
 `check`执行配置、研究状态和离线性能检查。`download_train`先维护完整历史，验收后在同一进程联合训练V2/V3；双档工件与当前数据、配置、实现身份完整匹配时复用。`download_qfq`独立更新在线短窗口；`download_risk`增量更新公司资料单库。三个下载入口均先确认ST资格。
 
-`./run.sh download_train`使用Tencent取得完整历史的raw/qfq价格对，BaoStock只提供历史行业证据。缺口、冲突和参考数据不完整保持可诊断状态，阻断训练；不跨来源拼价格。
+`./run.sh download_train`使用Tencent取得完整历史的raw/qfq价格对，BaoStock只提供历史行业证据。已发布快照中的价格缺口会继续报告和补取；训练只使用有效样本，并由各档样本覆盖门禁判断能否发布。历史维护失败或参考数据不完整仍阻断训练；不跨来源拼价格。
 
 `./run.sh download_qfq` 不接受参数：独立取得官方股票名单与 Tencent 日历，默认8个worker下载短窗口，不调用 BaoStock 网络。
 在线 V2/V3 分别读取 `data/qfq/v2`、`data/qfq/v3`，保留251/61根日线（250/60日特征加一根前置日线），新日进入时删除最老日线。

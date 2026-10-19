@@ -5,10 +5,15 @@ import re
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
-from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
+from trader.download.domain.history_maintenance import (
+    HistoryMaintenanceStatus,
+    HistoryPriceGapReason,
+    HistoryPriceGapSummary,
+)
 from trader.download.domain.history_sync import HistorySyncProgress
 from trader.entrypoints.cli import BuildParser, Main
 
@@ -104,6 +109,67 @@ def test_download_runs_the_typed_zero_argument_synchronization(
     ]
     assert "completed_units" not in captured.err
     assert "total_units" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("state", "due_reason", "gap_reason", "starts_training"),
+    (
+        ("completed", "initial_training_required", "tencent_qfq_invalid_price", True),
+        ("already_current", "initial_training_required", "history_price_pending", True),
+        ("completed", "data_incomplete", "tencent_qfq_invalid_price", False),
+        ("failed", "initial_training_required", "tencent_qfq_invalid_price", False),
+    ),
+)
+def test_download_train_uses_valid_samples_despite_reported_price_gaps(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    state: Literal["completed", "already_current", "failed"],
+    due_reason: Literal["initial_training_required", "data_incomplete"],
+    gap_reason: str,
+    starts_training: bool,
+) -> None:
+    status = HistoryMaintenanceStatus(
+        state,
+        "history_price_gaps_remaining" if state != "failed" else "fixture_failure",
+        Path("data/history"),
+        "tencent_with_baostock_reference",
+        "tencent",
+        "a" * 64,
+        date(2026, 10, 16),
+        date(2026, 10, 15),
+        0,
+        due_reason == "initial_training_required",
+        due_reason,
+        False,
+        3267,
+        HistoryPriceGapSummary(
+            25,
+            3267,
+            date(2018, 7, 17),
+            date(2022, 4, 27),
+            (HistoryPriceGapReason(gap_reason, 3267),),
+        ),
+    )
+    calls: list[object] = []
+    monkeypatch.setattr("trader.bootstrap.ExecuteHistoryDownload", lambda *_args, **_kwargs: status)
+    monkeypatch.setattr("trader.training.entrypoints.commands.ConfigureTrainingResources", lambda: None)
+    monkeypatch.setattr(
+        "trader.training.entrypoints.commands.RunJointTraining",
+        lambda runtime: calls.append(runtime) or 0,
+    )
+
+    result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download_train"])
+
+    assert result == (0 if starts_training else 1)
+    assert len(calls) == int(starts_training)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["price_gaps"]["cells"] == 3267
+    assert ("价格缺口待补" in captured.err) == (state != "failed")
+    if starts_training:
+        assert "按有效样本尝试双档训练" in captured.err
+        assert "未启动双档训练" not in captured.err
+    else:
+        assert "未启动双档训练" in captured.err
 
 
 def test_download_contract_exposes_an_immutable_typed_status() -> None:

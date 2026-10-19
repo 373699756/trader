@@ -409,8 +409,8 @@ class StderrHistorySyncProgress:
             if status.reason is not None:
                 parts.append(f"错误 {status.reason}")
         if status.unresolved_price_cells:
-            if status.state == "completed":
-                parts.append("数据不完整")
+            if status.state in {"completed", "already_current"}:
+                parts.append("价格缺口待补")
             parts.append(f"未修复价格缺口 {status.unresolved_price_cells} 股日")
             if status.price_gap_summary is not None:
                 summary = status.price_gap_summary
@@ -435,7 +435,7 @@ class StderrHistorySyncProgress:
                         if index == 1
                         or index == len(parts) - 1
                         or part == f"错误 {status.reason}"
-                        or part == "数据不完整"
+                        or part == "价格缺口待补"
                         or part == f"未修复价格缺口 {status.unresolved_price_cells} 股日"
                         else ProgressLevel.NORMAL,
                     )

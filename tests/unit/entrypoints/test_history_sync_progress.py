@@ -55,7 +55,7 @@ def test_industry_retry_and_incomplete_publication_are_explicit(capsys):
     )
     lines = _compact_log(capsys.readouterr().err).splitlines()
     assert "0/45" in lines[0] and "尝试 2/3" in lines[0]
-    assert "同步完成 | 数据不完整 | 未修复价格缺口 2000 股日" in lines[1]
+    assert "同步完成 | 价格缺口待补 | 未修复价格缺口 2000 股日" in lines[1]
 
 
 def test_legacy_resume_progress_is_visible_with_counts_and_month(capsys):

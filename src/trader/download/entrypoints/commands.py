@@ -24,15 +24,14 @@ def RunDownload(repository_root: Path, config_path: Path, *, quiet_success: bool
     progress = StderrHistorySyncProgress()
     status = ExecuteHistoryDownload(configuration, progress=progress)
     progress.publish_result(status)
-    ready = (
-        status.state in {"completed", "already_current"}
-        and not status.unresolved_price_cells
-        and status.training_due_reason != "data_incomplete"
-    )
-    if not ready or not quiet_success:
+    # Published price gaps remain visible; training checks effective samples per head.
+    ready = status.state in {"completed", "already_current"} and status.training_due_reason != "data_incomplete"
+    if not ready or not quiet_success or status.unresolved_price_cells:
         print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True))
     if not ready:
         print("完整历史未通过训练准入；未启动双档训练。", file=sys.stderr)
+    elif quiet_success and status.unresolved_price_cells:
+        print("历史仍有价格缺口；按有效样本尝试双档训练。", file=sys.stderr)
     return 0 if ready else 1
 
 
