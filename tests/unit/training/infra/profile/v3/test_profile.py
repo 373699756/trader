@@ -225,7 +225,7 @@ def _publish_profile(training_root: Path, profile: TrainedProfileContract) -> No
     PublishProfileBundles(training_root / profile.output_directory, profile, tuple(staged))
 
 
-def test_profile_pair_pointer_keeps_old_generation_when_second_head_or_commit_fails(
+def test_profile_pair_pointer_keeps_old_files_when_second_head_or_commit_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     profile_root = tmp_path / "v3"
@@ -269,11 +269,44 @@ def test_profile_pair_pointer_keeps_old_generation_when_second_head_or_commit_fa
     )
 
 
+def test_profile_directory_switch_failure_restores_the_previous_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _publish_profile(tmp_path, V3_TRAINING_PROFILE)
+    profile_root = tmp_path / "v3"
+    old_pointer = (profile_root / "active-profile.json").read_bytes()
+    old_hashes = tuple(item.model_hash for item in InspectActiveProfileBundles(profile_root, V3_TRAINING_PROFILE))
+    staged = []
+    for contract in V3_TRAINING_PROFILE.heads:
+        staging = tmp_path / f"replacement-{contract.strategy.value}"
+        _write_bundle(staging, contract)
+        staged.append((contract.strategy, staging))
+
+    from trader.training.infra.model_bundles import profile_publication
+
+    real_replace = profile_publication.os.replace
+
+    def fail_switch(source: Path, destination: Path) -> None:
+        if Path(source).name.startswith(".v3.publication.") and Path(destination) == profile_root:
+            raise OSError("fixture_directory_switch_failed")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(profile_publication.os, "replace", fail_switch)
+    with pytest.raises(OSError, match="fixture_directory_switch_failed"):
+        PublishProfileBundles(profile_root, V3_TRAINING_PROFILE, tuple(staged))
+    assert (profile_root / "active-profile.json").read_bytes() == old_pointer
+    assert (
+        tuple(item.model_hash for item in InspectActiveProfileBundles(profile_root, V3_TRAINING_PROFILE)) == old_hashes
+    )
+
+
 def test_v3_publication_uses_only_four_portable_fixed_files(tmp_path: Path) -> None:
     _publish_profile(tmp_path, V3_TRAINING_PROFILE)
     selected = InspectActiveProfileBundles(tmp_path / "v3", V3_TRAINING_PROFILE)[0].model_path
 
     assert selected.parent.name == "tomorrow"
+    assert selected.parent.parent == tmp_path / "v3"
+    assert not any(path.name.startswith(".profile-bundle.") for path in selected.parent.parent.iterdir())
     assert sorted(path.name for path in selected.parent.iterdir()) == [
         "active-bundle.json",
         "model.json",
@@ -301,12 +334,12 @@ def test_shared_loader_builds_two_distinct_heads_for_v2_and_v3(tmp_path: Path) -
         assert profile.heads[Strategy.D25].evidence.runtime_anchor == "15:00"
     assert (
         tuple(
-            item.model_path.parent.parent.parent.name
+            item.model_path.parent.parent.name
             for item in InspectActiveProfileBundles(tmp_path / "v2", V2_TRAINING_PROFILE)
         )
         == ("v2",) * 2
     )
-    assert tuple(item.model_path.parent.parent.parent.name for item in located) == ("v3",) * 2
+    assert tuple(item.model_path.parent.parent.name for item in located) == ("v3",) * 2
     for strategy in (Strategy.TOMORROW, Strategy.D25):
         v2_predictor = profiles[0].heads[strategy].predictor
         v3_predictor = profiles[1].heads[strategy].predictor

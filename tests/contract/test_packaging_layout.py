@@ -102,6 +102,10 @@ def test_repository_stages_profile_owned_training_artifacts() -> None:
 
     assert "/data/history/" in ignore
     assert "/data/train/**/*" in ignore
+    for profile in ("v2", "v3"):
+        pointer = repository / "data" / "train" / profile / "active-profile.json"
+        assert f"!/data/train/{profile}/active-profile.json" in ignore
+        assert pointer.stat().st_size > 0
     for strategy in ("tomorrow", "d25"):
         assert f"!/data/train/v2/{strategy}/" in ignore
         assert f"!/data/train/v2/{strategy}/.gitkeep" in ignore

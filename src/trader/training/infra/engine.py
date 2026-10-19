@@ -260,7 +260,9 @@ def RunJointProfileTraining(
             locks.enter_context(HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"))
             for request in normalized:
                 request.train_root.mkdir(parents=True, exist_ok=True)
-                locks.enter_context(HistoryMaintenanceLock(request.train_root / ".training.lock"))
+                locks.enter_context(
+                    HistoryMaintenanceLock(request.train_root.parent / f".{request.profile.profile_id}.training.lock")
+                )
             archive = SQLiteHistoryTrainingInputSnapshot.open(requests[0].history_root)
             RequireHistoryPartitionRepackInactive(archive.archive_root)
             snapshot = archive.snapshot
@@ -414,7 +416,7 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
         # Full-history maintenance and either training profile are deliberately
         # serialized: concurrent multi-gigabyte scans make a rotating disk seek
         # bound even though the published snapshot itself is immutable.
-        training_lock = request.train_root / ".training.lock"
+        training_lock = request.train_root.parent / f".{request.profile.profile_id}.training.lock"
         with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"), HistoryMaintenanceLock(training_lock):
             archive = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
             try:

@@ -16,6 +16,7 @@ data/filter_config/
 # staging directories, and logs stay local.
 /data/train/**/*
 !/data/train/v2/
+!/data/train/v2/active-profile.json
 !/data/train/v2/tomorrow/
 !/data/train/v2/tomorrow/.gitkeep
 !/data/train/v2/tomorrow/active-bundle.json
@@ -29,6 +30,7 @@ data/filter_config/
 !/data/train/v2/d25/report.json
 !/data/train/v2/d25/training-input.json
 !/data/train/v3/
+!/data/train/v3/active-profile.json
 !/data/train/v3/tomorrow/
 !/data/train/v3/tomorrow/active-bundle.json
 !/data/train/v3/tomorrow/model.json
