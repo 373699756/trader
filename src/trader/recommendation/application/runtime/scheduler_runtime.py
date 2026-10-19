@@ -503,11 +503,13 @@ class SchedulerRuntime:
             outcome = self._dependencies.data.refresh_task(request)
         except DataRefreshUnavailableError as exc:
             with SessionGuard(scheduled.session):
-                self._record_failure("refresh", FailureCode(exc, "refresh_unavailable"))
+                self._record_failure("refresh", FailureCode(exc, "refresh_unavailable"), task=scheduled.task)
                 self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
             return
         with SessionGuard(scheduled.session):
             self._after_successful_data_refresh(scheduled, outcome, observed_at=request.observed_at)
+            with self._lock:
+                self._resolve_issues_locked(stages=frozenset({"refresh"}), task=scheduled.task)
             self._record_pipeline_result(scheduled, SchedulePointResult.COMPLETED)
 
     def _after_successful_data_refresh(
@@ -846,7 +848,14 @@ class SchedulerRuntime:
                 self._settlement_completed_count += 1
             self._resolve_issues_locked(strategy=strategy, stages=frozenset({stage}))
 
-    def _record_failure(self, stage: str, code: str, strategy: Strategy | None = None) -> None:
+    def _record_failure(
+        self,
+        stage: str,
+        code: str,
+        strategy: Strategy | None = None,
+        *,
+        task: PipelineTask | None = None,
+    ) -> None:
         occurred_at = ShanghaiNow(self._dependencies.clock.now())
         with self._lock:
             if stage == "refresh":
@@ -862,7 +871,7 @@ class SchedulerRuntime:
             elif stage == "settlement":
                 self._settlement_failure_count += 1
             qualified = f"{stage}:{code}"
-            self._issues.record(qualified, stage, strategy, occurred_at)
+            self._issues.record(qualified, stage, strategy, occurred_at, task=task)
 
     def _record_overlay_success(self, strategy: Strategy, *, published: bool) -> None:
         with self._lock:
@@ -875,11 +884,13 @@ class SchedulerRuntime:
         *,
         strategy: Strategy | None = None,
         stages: frozenset[str] | None = None,
+        task: PipelineTask | None = None,
     ) -> None:
         self._issues.resolve(
             ShanghaiNow(self._dependencies.clock.now()),
             strategy=strategy,
             stages=stages,
+            task=task,
         )
 
 

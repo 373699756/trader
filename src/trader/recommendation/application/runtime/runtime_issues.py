@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
+from trader.recommendation.application.runtime.cadence import PipelineTask
 from trader.recommendation.domain.publication.models import Strategy
 
 _ISSUE_HISTORY_CAPACITY = 20
@@ -23,6 +24,7 @@ class RuntimeIssue:
     count: int
     recovery_status: Literal["active", "recovered"]
     resolved_at: datetime | None
+    task: PipelineTask | None
 
 
 @dataclass(frozen=True)
@@ -38,10 +40,18 @@ class RuntimeIssueIndex:
     def __init__(self) -> None:
         self._system_error_code = ""
         self._strategy_error_codes: dict[Strategy, str] = {}
-        self._recent_errors: OrderedDict[tuple[str, str], RuntimeIssue] = OrderedDict()
+        self._recent_errors: OrderedDict[tuple[str, PipelineTask | None, str], RuntimeIssue] = OrderedDict()
 
-    def record(self, code: str, stage: str, strategy: Strategy | None, occurred_at: datetime) -> None:
-        key = (strategy.value if strategy is not None else "system", code)
+    def record(
+        self,
+        code: str,
+        stage: str,
+        strategy: Strategy | None,
+        occurred_at: datetime,
+        *,
+        task: PipelineTask | None = None,
+    ) -> None:
+        key = (strategy.value if strategy is not None else "system", task, code)
         existing = self._recent_errors.pop(key, None)
         self._recent_errors[key] = RuntimeIssue(
             code=code,
@@ -53,6 +63,7 @@ class RuntimeIssueIndex:
             count=existing.count + 1 if existing is not None else 1,
             recovery_status="active",
             resolved_at=None,
+            task=task,
         )
         while len(self._recent_errors) > _ISSUE_HISTORY_CAPACITY:
             self._recent_errors.popitem(last=False)
@@ -67,6 +78,7 @@ class RuntimeIssueIndex:
         *,
         strategy: Strategy | None = None,
         stages: frozenset[str] | None = None,
+        task: PipelineTask | None = None,
     ) -> None:
         for key, issue in tuple(self._recent_errors.items()):
             if issue.recovery_status != "active":
@@ -74,6 +86,8 @@ class RuntimeIssueIndex:
             if strategy is not None and issue.strategy is not strategy:
                 continue
             if stages is not None and issue.stage not in stages:
+                continue
+            if task is not None and issue.task is not task:
                 continue
             self._recent_errors[key] = replace(issue, recovery_status="recovered", resolved_at=resolved_at)
         if strategy is None and stages is not None:

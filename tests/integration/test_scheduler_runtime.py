@@ -2321,6 +2321,80 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
     assert recovered.recent_errors[0].resolved_at == NOW + timedelta(minutes=1)
 
 
+def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
+    class FailingTasks(DataRefresh):
+        failing_tasks = {PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES}
+
+        def refresh_task(self, request) -> RefreshOutcome:
+            if request.task in self.failing_tasks:
+                raise DataRefreshUnavailableError("history_projection_loading")
+            return super().refresh_task(request)
+
+    class StatusReviewer:
+        def status(self):
+            return {"status": "ready", "budget": {"limit": 168, "used": 0, "remaining": 168}}
+
+    data = FailingTasks()
+    clock = FixedClock(NOW)
+    runtime = SchedulerRuntime(
+        RuntimeDependencies(
+            control_pool=BoundedExecutor(
+                worker_count=2,
+                urgent_worker_count=1,
+                queue_capacity=4,
+                thread_name_prefix="test-task-issue-control",
+            ),
+            clock=clock,
+            calendar=TradingCalendar(),
+            cadence=_cadence(NOW),
+            data=data,
+            decisions=Decisions(),
+            reviews=SharedReviews(),
+            index=UnifiedDecisionIndex(),
+            observer=AsyncDecisionObserver((), capacity=1, thread_name="test-task-issue-observer"),
+            freezes=Freezes(),
+            settlement=Settlement(),
+            research_factory=noop_research_factory,
+            publish_decision=lambda _event: None,
+            publish_overlay=lambda _overlay: None,
+        ),
+        config_version="runtime-current",
+    )
+    full_market = ScheduledPipelineTask(PipelineTask.FULL_MARKET, NOW, MarketPhase.MORNING_MAIN)
+    candidate_quotes = ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, NOW, MarketPhase.MORNING_MAIN)
+    runtime.start()
+    try:
+        runtime._process_pipeline_task(full_market)
+        runtime._process_pipeline_task(full_market)
+        runtime._process_pipeline_task(candidate_quotes)
+        failed = runtime.status()
+        assert failed.refresh_failure_count == 3
+        assert len(failed.recent_errors) == 2
+        assert next(issue for issue in failed.recent_errors if issue.task is PipelineTask.FULL_MARKET).count == 2
+
+        data.failing_tasks = {PipelineTask.CANDIDATE_QUOTES}
+        clock.current = NOW + timedelta(minutes=1)
+        runtime._process_pipeline_task(full_market)
+        recovered = runtime.status()
+        issues = {issue.task: issue for issue in recovered.recent_errors}
+        assert issues[PipelineTask.FULL_MARKET].recovery_status == "recovered"
+        assert issues[PipelineTask.FULL_MARKET].resolved_at == clock.current
+        assert issues[PipelineTask.CANDIDATE_QUOTES].recovery_status == "active"
+
+        payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
+        assert payload["health"]["issue_count"] == 1
+        assert sum(issue["recovery_status"] == "active" for issue in payload["recent_errors"]) == 1
+
+        data.failing_tasks = set()
+        clock.current = NOW + timedelta(minutes=2)
+        runtime._process_pipeline_task(candidate_quotes)
+        payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
+        assert payload["health"]["issue_count"] == 0
+        assert all(issue["recovery_status"] == "recovered" for issue in payload["recent_errors"])
+    finally:
+        runtime.stop(ShutdownDeadline.start(2.0))
+
+
 def test_successful_hybrid_publish_recovers_decision_path_issues() -> None:
     runtime = SchedulerRuntime(
         RuntimeDependencies(
