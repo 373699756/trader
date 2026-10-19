@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import cProfile
 import hashlib
 import math
 import os
@@ -289,6 +290,8 @@ def RunSample(
     number: int,
     size: int,
     auxiliary: AuxiliaryInputs,
+    *,
+    cpu_profile_dir: Path | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     attempts = batch.attempts
@@ -319,14 +322,22 @@ def RunSample(
     local_quotes = tuple(
         QuoteWithIndustry(quote, references.model_industries.get(quote.code), received_at.date()) for quote in quotes
     )
-    features = inputs.builder.build(
-        local_quotes,
-        inputs.histories,
-        received_at,
-        history_summaries=inputs.contexts,
-        research_observations=auxiliary.research,
-        intraday_minutes=auxiliary.minutes,
-    )
+    profiler = cProfile.Profile() if cpu_profile_dir is not None else None
+    if profiler is not None:
+        profiler.enable()
+    try:
+        features = inputs.builder.build(
+            local_quotes,
+            inputs.histories,
+            received_at,
+            history_summaries=inputs.contexts,
+            research_observations=auxiliary.research,
+            intraday_minutes=auxiliary.minutes,
+        )
+    finally:
+        if profiler is not None and cpu_profile_dir is not None:
+            profiler.disable()
+            profiler.dump_stats(cpu_profile_dir / f"features-{inputs.profile}-{size}-{number}-{plan.name}.pstats")
     features = AttachModelIndustries(features, references)
     feature_ms = _elapsed(feature_started)
     audit = FactorAudit(features, inputs, codes)
@@ -871,7 +882,7 @@ def _official_references(
         return previous, "cached_exchange_degraded"
 
 
-def Collect(args: argparse.Namespace) -> dict[str, object]:
+def Collect(args: argparse.Namespace, *, cpu_profile_dir: Path | None = None) -> dict[str, object]:
     budget = DiagnosticBudget(args.source_loop_seconds, args.task_seconds)
     settings = LoadRuntimeSettings(args.config)
     at = _now()
@@ -919,9 +930,10 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
     setup_ms = _elapsed(started)
     profiles = []
     preparation = []
+    input_codes = tuple(dict.fromkeys(code for size in args.sizes for code in SelectCodes(official, size)))
     for profile in args.profiles:
         try:
-            inputs = LoadFactorInputs(args.config, args.qfq_root, profile, all_codes, at)
+            inputs = LoadFactorInputs(args.config, args.qfq_root, profile, input_codes, at)
             profiles.append(inputs)
             preparation.append(
                 {
@@ -1005,6 +1017,7 @@ def Collect(args: argparse.Namespace) -> dict[str, object]:
                                 number,
                                 size,
                                 auxiliary,
+                                cpu_profile_dir=cpu_profile_dir,
                             )
                         except (OSError, RuntimeError, ValueError, TypeError) as exc:
                             sample = {
@@ -1152,6 +1165,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--qfq-root", type=Path, required=True)
+    parser.add_argument("--cpu-profile-dir", type=Path)
     parser.add_argument("--sources", nargs="+", choices=_SOURCES, default=list(_SOURCES))
     parser.add_argument("--profiles", nargs="+", choices=("v2", "v3"), default=["v2", "v3"])
     parser.add_argument("--sizes", nargs="+", type=int, default=[120, 720, 0])
@@ -1188,7 +1202,7 @@ def main() -> int:
         os.dup2(2, 1)
         try:
             with redirect_stdout(sys.stderr):
-                report = Collect(args)
+                report = Collect(args, cpu_profile_dir=args.cpu_profile_dir)
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             report = {
                 "schema_version": "market-factor-comparison",

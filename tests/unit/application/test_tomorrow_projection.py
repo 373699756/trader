@@ -17,6 +17,7 @@ from trader.recommendation.application.pipeline.final_selection.decision_project
     BuildScoredLocal,
     ScoredProjectionInputs,
 )
+from trader.recommendation.application.pipeline.freeze_publish.decision_coverage import ScoredDecisionCoverage
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
 from trader.recommendation.application.pipeline.local_score.model_router import ModelScoringRouter
 from trader.recommendation.application.pipeline.local_score.model_scoring import ProductionModelScoringService
@@ -29,6 +30,7 @@ from trader.recommendation.application.ports.loaded_profile import ModelInput, M
 from trader.recommendation.application.ports.scoring import D25NativeInput, ScoredNativeInput, TomorrowNativeInput
 from trader.recommendation.domain.evidence.pipeline import PipelineStage, StageState, ValidateStageBatchContinuity
 from trader.recommendation.domain.market.models import FeatureSnapshot
+from trader.recommendation.domain.publication.decision_identity import ScoredTopSix
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.residualization import (
     LEGACY_EXPOSURE_CONTRACT,
@@ -80,6 +82,40 @@ class _NonPositiveProductionPredictor(_ProductionPredictor):
 class _IndustryProductionPredictor(_ProductionPredictor):
     exposure_contract = TRAINED_HEAD_EXPOSURE_CONTRACT
     industry_ids = ("J66货币金融服务",)
+
+
+def test_fourteenth_stage_cannot_select_beyond_the_global_score_six(application_feature_factory) -> None:
+    class LastRowPositivePredictor(_ProductionPredictor):
+        def predict(self, inputs: tuple[ModelInput, ...]) -> tuple[ModelPrediction, ...]:
+            return tuple(ModelPrediction(item.code, 1.0 if item.code == "600006" else -0.10) for item in inputs)
+
+    policy = _recommendation_policy(LoadStrategySettings(PROJECT_ROOT / "config" / "strategy.json"))
+    policy = replace(policy, selection=replace(policy.selection, thresholds={"tomorrow": 0.0, "d25": 0.0}))
+    features = tuple(
+        _with_model_features(
+            _verified_feature(application_feature_factory(f"600{index:03d}", EVALUATED_AT - timedelta(seconds=10))),
+            0,
+        )
+        for index in range(7)
+    )
+    native = _native_input(features)
+    _, quality = observed_quality_input(features, policy, EVALUATED_AT)
+    projection = BuildScoredLocal(
+        native,
+        policy,
+        sequence=1,
+        runtime=ScoredProjectionInputs(
+            model_scoring=_router(LastRowPositivePredictor()),
+            quality_batch=QualityScoringBatch(quality, native),
+        ),
+    )
+    stages = projection.stages.snapshots
+
+    assert stages[-2].output_count == 1
+    assert stages[-1].input_count == 1
+    assert stages[-1].output_count == 0
+    assert ScoredDecisionCoverage(projection.local).selected_count == 0
+    assert not any(item.selected for item in ScoredTopSix(projection.local.items))
 
 
 def _router(predictor: object) -> ModelScoringRouter:

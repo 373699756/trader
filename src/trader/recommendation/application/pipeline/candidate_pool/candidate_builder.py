@@ -255,7 +255,7 @@ def _planning_evaluated_at(
     values = [observed_at]
     for features in feature_groups:
         for feature in features:
-            values.extend((feature.observed_at, feature.quote.source_time, feature.quote.received_time))
+            values.extend((feature.observed_at, feature.quote.received_time))
     return max(value.astimezone(observed_at.tzinfo) for value in values)
 
 

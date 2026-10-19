@@ -21,6 +21,10 @@ class MarketDataUnavailableError(RuntimeError):
     """No usable current or cached market data is available."""
 
 
+class MarketDataPendingError(MarketDataUnavailableError):
+    """A local input is still loading and the current task must retry."""
+
+
 class MarketDataDeadlineExceededError(MarketDataUnavailableError):
     """A deadline-bound market-data operation exhausted its budget."""
 

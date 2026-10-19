@@ -104,6 +104,9 @@ def _parser() -> argparse.ArgumentParser:
         help="Tencent K-line host for bounded history probes",
     )
     parser.add_argument("--base-url", default="http://127.0.0.1:5000", help="running trader-server base URL")
+    parser.add_argument(
+        "--cpu-profile-dir", type=Path, help="external directory for market-factor-compare feature CPU profiles"
+    )
     parser.add_argument("--qfq-root", type=Path, default=PROJECT_ROOT / "data/qfq")
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument("--market-sources", nargs="+", choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
@@ -276,6 +279,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         output_format = "json"
     if output_format == "text" and args.profile != "market-factor-compare":
         raise ValueError("--format text is only available for market-factor-compare")
+    if args.cpu_profile_dir is not None and args.profile != "market-factor-compare":
+        raise ValueError("--cpu-profile-dir is only available for market-factor-compare")
     return (
         DiagnosticOptions(
             profile=args.profile,
@@ -317,6 +322,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             market_source_loop_seconds=args.market_source_loop_seconds,
             market_task_seconds=args.market_task_seconds,
             output_format=output_format,
+            cpu_profile_dir=_external_path(args.cpu_profile_dir, "--cpu-profile-dir")
+            if args.cpu_profile_dir is not None
+            else None,
         ),
         output,
     )
@@ -665,7 +673,8 @@ def build_commands(
             + ("--timeout-seconds", str(options.source_timeout_seconds))
             + ("--batch-seconds", str(options.market_batch_seconds))
             + ("--source-loop-seconds", str(options.market_source_loop_seconds))
-            + ("--task-seconds", str(options.market_task_seconds)),
+            + ("--task-seconds", str(options.market_task_seconds))
+            + (("--cpu-profile-dir", str(options.cpu_profile_dir)) if options.cpu_profile_dir is not None else ()),
             min(common_timeout, options.market_task_seconds),
         ),
         "research_source_compare": DiagnosticCommand(
@@ -1237,6 +1246,8 @@ def main() -> int:
     try:
         options, output = _validate(args)
         output_format = options.output_format
+        if options.cpu_profile_dir is not None:
+            options.cpu_profile_dir.mkdir(parents=True, exist_ok=True)
         report = run_diagnostics(options.profile, build_commands(options))
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         output = args.output if args.output == "-" else "-"

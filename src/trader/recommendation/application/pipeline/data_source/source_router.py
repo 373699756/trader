@@ -62,17 +62,23 @@ from trader.recommendation.application.pipeline.quality_check.pipeline_status im
 from trader.recommendation.application.pipeline.stage_output import MeasuredOutput, PipelineStageOutput
 from trader.recommendation.application.ports.loaded_profile import ModelScoringPort
 from trader.recommendation.application.ports.long import LongRefreshRequest
-from trader.recommendation.application.ports.market_data import FullMarketFeatureBatch, MarketDataUnavailableError
+from trader.recommendation.application.ports.market_data import (
+    FullMarketFeatureBatch,
+    MarketDataPendingError,
+    MarketDataUnavailableError,
+)
 from trader.recommendation.application.ports.read_only_queries import InputQualityStatus, SupplySummary
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
     DataRefreshPort,
+    DataRefreshPendingError,
     DataRefreshUnavailableError,
     PipelineTaskRequest,
     RefreshOutcome,
 )
 from trader.recommendation.application.ports.scoring_inputs import InputBatch, TopKQuoteBatch
 from trader.recommendation.application.runtime.cadence import PipelineTask
+from trader.recommendation.application.runtime.schedule import ShanghaiNow
 from trader.recommendation.application.runtime.trading_session import SessionGuard, SessionLease
 from trader.recommendation.domain.evidence.pipeline import PipelineStageSnapshot
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityBatch
@@ -251,6 +257,8 @@ class MarketInputCoordinator(DataRefreshPort):
         deadline = _task_deadline(request)
         try:
             return self._run_refresh_task(request, deadline)
+        except MarketDataPendingError as exc:
+            raise DataRefreshPendingError(_failure_code(exc)) from exc
         except DataRefreshUnavailableError:
             raise
         except (MarketDataUnavailableError, OSError, RuntimeError, TypeError, ValueError) as exc:
@@ -302,7 +310,7 @@ class MarketInputCoordinator(DataRefreshPort):
         features = market_batch.features
         issuer_eligibility = market_batch.issuer_eligibility
         data_version = self._versions.features("market", features)
-        completed_at = _refresh_completed_at(request, features)
+        completed_at = max(_refresh_completed_at(request, features), market_batch.dynamic_stage.snapshot.as_of)
         apply_model_eligibility = request.task is not PipelineTask.CLOSE_QUOTES
         candidate_pipeline = self._candidate_filtering.plan_observed(
             market_batch.dynamic_stage,
@@ -374,7 +382,7 @@ class MarketInputCoordinator(DataRefreshPort):
             candidate_pipeline = self._candidate_pipeline
             market_version = self._market_version
         if not population or initial_plans is None or issuer_eligibility is None or candidate_pipeline is None:
-            raise DataRefreshUnavailableError("candidate_universe_unavailable")
+            raise DataRefreshPendingError("candidate_universe_unavailable")
         started = self._monotonic()
         refresh_plan = self._candidate_filtering.refresh(
             population,
@@ -401,6 +409,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 )
             raise DataRefreshUnavailableError("candidate_refresh_deadline_exceeded")
         features = refresh_plan.features
+        completed_at = max(_refresh_completed_at(request, features), ShanghaiNow(self._now()))
         final_plans = refresh_plan.plans
         strategy_requested = {strategy: final_plans.strategy_codes(strategy) for strategy in SCORED_STRATEGIES}
         requested = tuple(
@@ -420,8 +429,10 @@ class MarketInputCoordinator(DataRefreshPort):
                 candidate_pipeline.filtered[strategy],
                 final_plans.plans[strategy],
                 final_plans.limit_per_board,
-                request.observed_at,
+                completed_at,
                 latency_ms=refresh_ms,
+                initial_plan=initial_plans.plans[strategy],
+                refreshed_codes=frozenset(features_by_code),
             )
             for strategy in SCORED_STRATEGIES
         }
@@ -453,7 +464,7 @@ class MarketInputCoordinator(DataRefreshPort):
                 self._score_feature_batches[(generation, epoch, False, codes)] = strategy_features[strategy]
             self._record_pending_quality_locked(
                 _PendingQualityContext(
-                    request.observed_at,
+                    completed_at,
                     len(self._latest_market_features),
                     initial_plans,
                     {strategy: len(strategy_features[strategy]) for strategy in SCORED_STRATEGIES},
@@ -466,7 +477,7 @@ class MarketInputCoordinator(DataRefreshPort):
             changed,
             data_version,
             changed_codes if changed else (),
-            _refresh_completed_at(request, final_features),
+            completed_at,
             _uses_fallback(final_features, expected_source="tencent"),
         )
 

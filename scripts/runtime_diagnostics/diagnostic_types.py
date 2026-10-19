@@ -84,6 +84,7 @@ class DiagnosticOptions:
     market_source_loop_seconds: float = 120.0
     market_task_seconds: float = 600.0
     output_format: str = "json"
+    cpu_profile_dir: Path | None = None
 
 
 @dataclass(frozen=True)

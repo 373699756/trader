@@ -174,7 +174,7 @@ def CompleteScoredStages(
 
     RequirePreviousStage(action, PipelineStage.FINAL_SELECTION)
     started = monotonic()
-    ranked = SelectScoredActionPools(action.records, request.policy)
+    ranked = SelectScoredActionPools(action.records, request.policy, scored_population=actions)
     selected = tuple(sorted((item for item in ranked if item.selected), key=lambda item: item.rank))
     final = MeasuredOutput(
         StageOutput(

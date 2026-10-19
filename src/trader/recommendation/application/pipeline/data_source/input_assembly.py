@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from trader.recommendation.application.ports.loaded_profile import ModelScoringContext
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
-    DataRefreshUnavailableError,
+    DataRefreshPendingError,
     DecisionUnavailableError,
     PipelineTaskRequest,
 )
@@ -116,7 +116,7 @@ def CandidateBatchIsComplete(
 
 def RequireCodes(codes: tuple[str, ...], error_code: str) -> None:
     if not codes:
-        raise DataRefreshUnavailableError(error_code)
+        raise DataRefreshPendingError(error_code)
 
 
 def RefreshCompletedAt(request: PipelineTaskRequest, features: tuple[FeatureSnapshot, ...]) -> datetime:

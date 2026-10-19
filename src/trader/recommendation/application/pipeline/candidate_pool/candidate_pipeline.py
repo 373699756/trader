@@ -119,6 +119,8 @@ def SelectCandidateOutput(
     as_of: datetime,
     *,
     latency_ms: int = 0,
+    initial_plan: ScoredCandidatePlan | None = None,
+    refreshed_codes: frozenset[str] = frozenset(),
 ) -> PipelineStageOutput[SelectedCandidateInput]:
     codes = plan.limited_codes(limit)
     by_code = {feature.quote.code: feature for feature in source.records}
@@ -126,13 +128,21 @@ def SelectCandidateOutput(
         raise ValueError("candidate selection exceeds the observed dynamic population")
     selected = set(codes)
     evaluations = {item.code: item for item in plan.evaluations}
+    initial = {item.code: item for item in initial_plan.evaluations} if initial_plan is not None else {}
+    input_pending = {"candidate_core_missing", "production_model_features_missing", "strategy_history_insufficient"}
     reasons: Counter[str] = Counter()
     for feature in source.records:
         code = feature.quote.code
         if code in selected:
             continue
         item = evaluations[code]
-        reasons[item.selection_skip_reason or item.candidate_audit_pruning_reason or "board_limit"] += 1
+        original = initial.get(code)
+        reason = (
+            original.selection_skip_reason
+            if code not in refreshed_codes and original is not None and original.selection_skip_reason in input_pending
+            else item.selection_skip_reason or item.candidate_audit_pruning_reason or "board_limit"
+        )
+        reasons[reason] += 1
     output = StageOutput(
         PipelineStage.CANDIDATE_POOL,
         tuple(SelectedCandidateInput(code) for code in codes),
@@ -147,6 +157,8 @@ def SelectCandidateOutput(
                 "candidate_core_missing",
                 "production_model_features_missing",
                 "strategy_history_insufficient",
+                "refresh_pending",
+                "data_pending",
             }
         ),
         reasons=ReasonAggregates(reasons),

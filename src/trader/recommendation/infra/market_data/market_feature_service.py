@@ -110,6 +110,7 @@ class MarketFeatureService:
         if observed_at.tzinfo is None or observed_at.utcoffset() is None:
             raise ValueError("market observation time must be timezone aware")
         observed_at = observed_at.astimezone(SHANGHAI)
+        self.history.require_projection()
         reference = self.references.static_reference()
         reference_epoch = reference.reference_epoch
         with self._eligibility_lock:
@@ -146,7 +147,10 @@ class MarketFeatureService:
             )
             features = self._apply_issuer_risk_facts(features, observed_at)
             dynamic = self._static_pipeline.dynamic_snapshot(
-                filtered, features, as_of=observed_at, latency_ms=self._elapsed_ms(started)
+                filtered,
+                features,
+                as_of=max(observed_at, self.runner.wall_clock().astimezone(SHANGHAI)),
+                latency_ms=self._elapsed_ms(started),
             )
             return FullMarketFeatureBatch(features, eligibility_batch, static_stages, dynamic)
         acquisition_started = self._monotonic()
@@ -206,7 +210,7 @@ class MarketFeatureService:
         dynamic = self._static_pipeline.dynamic_snapshot(
             filtered,
             tuple(published),
-            as_of=observed_at,
+            as_of=max(observed_at, self.runner.wall_clock().astimezone(SHANGHAI)),
             latency_ms=collection_ms + self._elapsed_ms(assembly_started),
         )
         return FullMarketFeatureBatch(tuple(published), eligibility_batch, static_stages, dynamic)

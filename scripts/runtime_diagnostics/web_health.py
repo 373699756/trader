@@ -599,7 +599,7 @@ def _decision_contract_findings(
             )
         )
     selected_count = decision.coverage.selected_count
-    if selected_count is None or decision.item_count is None:
+    if selected_count is None or decision.item_count is None or decision.selected_item_count is None:
         findings.append(
             _finding(
                 "error",
@@ -609,15 +609,23 @@ def _decision_contract_findings(
                 "current decision coverage or item collection is invalid",
             )
         )
-    if selected_count is not None and decision.item_count is not None and selected_count != decision.item_count:
+    if (
+        selected_count is not None
+        and decision.selected_item_count is not None
+        and selected_count != decision.selected_item_count
+    ):
         findings.append(
             _finding(
                 "error",
                 "coverage_item_count_mismatch",
                 sample,
                 strategy,
-                "current decision selected count does not match its item count",
-                {"selected_count": selected_count, "item_count": decision.item_count},
+                "current decision selected count does not match selected display rows",
+                {
+                    "selected_count": selected_count,
+                    "item_count": decision.item_count,
+                    "selected_item_count": decision.selected_item_count,
+                },
             )
         )
     if decision.status == "ready" and selected_count == 0 and decision.frozen is not True and not decision.empty_reason:

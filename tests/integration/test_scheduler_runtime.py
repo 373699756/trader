@@ -16,9 +16,10 @@ from trader.recommendation.application.pipeline.data_source.source_quality impor
 from trader.recommendation.application.pipeline.freeze_publish.decision_observers import AsyncDecisionObserver
 from trader.recommendation.application.pipeline.freeze_publish.publication_io import PublicationIoTracker
 from trader.recommendation.application.pipeline.freeze_publish.snapshot_publisher import UnifiedDecisionIndex
-from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
+    DataRefreshPendingError,
     DataRefreshUnavailableError,
     DecisionUnavailableError,
     FreezeUnavailableError,
@@ -93,14 +94,21 @@ class DataRefresh:
 
 
 class BlockingScoringInputs(DataRefresh):
-    def __init__(self) -> None:
+    def __init__(self, *, block_full_market: bool = False) -> None:
         super().__init__()
+        self.full_market_started = threading.Event()
+        self.release_full_market = threading.Event()
+        if not block_full_market:
+            self.release_full_market.set()
         self.candidate_started = threading.Event()
         self.release_candidate = threading.Event()
 
     def refresh_task(self, request) -> RefreshOutcome:
         outcome = super().refresh_task(request)
-        if request.task is PipelineTask.CANDIDATE_QUOTES:
+        if request.task is PipelineTask.FULL_MARKET:
+            self.full_market_started.set()
+            assert self.release_full_market.wait(2.0)
+        elif request.task is PipelineTask.CANDIDATE_QUOTES:
             self.candidate_started.set()
             assert self.release_candidate.wait(2.0)
         elif request.task is PipelineTask.RESEARCH_SNAPSHOT:
@@ -968,9 +976,10 @@ def test_calendar_failure_fails_closed_with_backoff_and_observable_recovery() ->
         runtime.stop(ShutdownDeadline.start(2.0))
 
 
-def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
+@pytest.mark.parametrize("block_full_market", (False, True))
+def test_periodic_tick_does_not_score_until_a_scoring_input_finishes(block_full_market: bool) -> None:
     observed_at = datetime(2026, 8, 11, 10, 0, tzinfo=SHANGHAI)
-    data = BlockingScoringInputs()
+    data = BlockingScoringInputs(block_full_market=block_full_market)
     index = UnifiedDecisionIndex()
 
     class TrackingDecisions(Decisions):
@@ -1011,6 +1020,15 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
     runtime.start()
     try:
         runtime.submit_due(observed_at)
+        if block_full_market:
+            assert data.full_market_started.wait(1.0)
+            assert not data.candidate_started.wait(0.05)
+            runtime.submit_due(observed_at + timedelta(seconds=1))
+            assert runtime._periodic_task_inflight(
+                ScheduledPipelineTask(PipelineTask.CANDIDATE_QUOTES, observed_at, MarketPhase.MORNING_MAIN)
+            )
+            assert not data.candidate_started.is_set()
+            data.release_full_market.set()
         assert data.candidate_started.wait(1.0)
         runtime.submit_due(observed_at + timedelta(seconds=2))
         candidate_lane = next(
@@ -1029,6 +1047,7 @@ def test_periodic_tick_does_not_score_until_a_scoring_input_finishes() -> None:
         data.release_candidate.set()
         assert runtime.wait_idle(2.0)
     finally:
+        data.release_full_market.set()
         data.release_candidate.set()
         runtime.stop(ShutdownDeadline.start(2.0))
 
@@ -1525,8 +1544,8 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
                     if loading_history:
                         try:
                             history.load(("600001",), deadline=request.observed_at + timedelta(seconds=20))
-                        except MarketDataUnavailableError as exc:
-                            raise DataRefreshUnavailableError(FailureCode(exc)) from exc
+                        except MarketDataPendingError as exc:
+                            raise DataRefreshPendingError(FailureCode(exc)) from exc
                     raise DataRefreshUnavailableError("controlled_close_source_failure")
             return outcome
 
@@ -1568,7 +1587,7 @@ def test_after_close_source_failure_retries_before_publishing_formal_records(
         runtime.submit_due(after_close)
         assert runtime.wait_idle(2.0)
         failed = runtime.status()
-        assert failed.refresh_failure_count == 1
+        assert failed.refresh_failure_count == (0 if loading_history else 1)
         assert failed.cadence.schedule_points[close_key].status is SchedulePointStatus.RETRY_WAIT
         assert all(index.snapshot(strategy).formal is None for strategy in (Strategy.TOMORROW, Strategy.D25))
         assert index.snapshot(Strategy.LONG).current is not None
@@ -2324,8 +2343,11 @@ def test_refresh_failure_retains_last_valid_decision_without_cascading_build_fai
 def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
     class FailingTasks(DataRefresh):
         failing_tasks = {PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES}
+        pending = True
 
         def refresh_task(self, request) -> RefreshOutcome:
+            if self.pending:
+                raise DataRefreshPendingError("history_projection_loading")
             if request.task in self.failing_tasks:
                 raise DataRefreshUnavailableError("history_projection_loading")
             return super().refresh_task(request)
@@ -2365,6 +2387,10 @@ def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
     runtime.start()
     try:
         runtime._process_pipeline_task(full_market)
+        assert runtime.status().refresh_failure_count == 0
+        assert runtime.status().recent_errors == ()
+        data.pending = False
+        runtime._process_pipeline_task(full_market)
         runtime._process_pipeline_task(full_market)
         runtime._process_pipeline_task(candidate_quotes)
         failed = runtime.status()
@@ -2375,6 +2401,7 @@ def test_successful_data_task_recovers_only_its_own_refresh_issue() -> None:
         data.failing_tasks = {PipelineTask.CANDIDATE_QUOTES}
         clock.current = NOW + timedelta(minutes=1)
         runtime._process_pipeline_task(full_market)
+        assert runtime.wait_idle(1.0)
         recovered = runtime.status()
         issues = {issue.task: issue for issue in recovered.recent_errors}
         assert issues[PipelineTask.FULL_MARKET].recovery_status == "recovered"

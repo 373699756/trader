@@ -80,6 +80,22 @@ def test_live_profile_combines_runtime_and_all_source_probes() -> None:
     assert all("--output" not in command.argv for command in commands)
 
 
+def test_cpu_profile_keeps_the_selected_diagnostic_and_external_output(tmp_path: Path) -> None:
+    args = _parser().parse_args(["--profile", "market-factor-compare", "--cpu-profile-dir", str(tmp_path)])
+    options, _ = _validate(args)
+    command = build_commands(options, python_executable="python3")[0]
+
+    assert command.name == "market_factor_compare"
+    assert command.argv[:3] == ("python3", "-m", "scripts.runtime_diagnostics.market_factor_compare")
+    assert command.argv[-2:] == ("--cpu-profile-dir", str(tmp_path))
+    with pytest.raises(ValueError, match="outside"):
+        _validate(
+            _parser().parse_args(
+                ["--profile", "market-factor-compare", "--cpu-profile-dir", str(Path.cwd() / "profiles")]
+            )
+        )
+
+
 def test_tencent_download_profile_uses_actual_updater_with_bounded_samples():
     commands = build_commands(_options(profile="tencent-download", download_sizes=(10, 50, 100)))
     assert len(commands) == 1 and commands[0].name == "tencent_download"

@@ -115,7 +115,7 @@ def _sample(
     projection_version: str = "projection-1",
     event_sequence: int | None = None,
     phase: str = "morning_main",
-    items: list[dict[str, str]] | None = None,
+    items: list[dict[str, object]] | None = None,
     include_quality_trade_date: bool = True,
     warmup: tuple[int, int, int, int] = (20, 15, 0, 5),
     warmup_timeout_count: int = 0,
@@ -716,6 +716,18 @@ def test_status_and_current_coverage_mismatch_is_reported() -> None:
     findings = analyze_samples((mismatched,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
 
     assert any(finding.code == "status_current_selected_count_mismatch" for finding in findings)
+
+
+@pytest.mark.parametrize("selected_count,action_count,mismatch", ((0, 0, False), (2, 2, False), (3, 2, True)))
+def test_six_display_slots_count_only_selected_rows(selected_count, action_count, mismatch) -> None:
+    sample = _sample(1, items=[{"selected": True}] * action_count + [{"selected": False}] * (6 - action_count))
+    decision = sample.decisions[_STRATEGY]
+    decision = replace(decision, coverage=replace(decision.coverage, selected_count=selected_count))
+    sample = replace(sample, decisions={_STRATEGY: decision})
+
+    findings = analyze_samples((sample,), strategies=(_STRATEGY,), consecutive_zero_threshold=3)
+
+    assert any(finding.code == "coverage_item_count_mismatch" for finding in findings) is mismatch
 
 
 def test_ready_zero_selection_without_empty_reason_is_reported() -> None:

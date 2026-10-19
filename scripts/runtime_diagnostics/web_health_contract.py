@@ -158,6 +158,7 @@ class ProjectionSnapshot:
     highest_top_score: float | None
     pipeline: PipelineSnapshot | None
     degraded_reasons: tuple[str, ...] = ()
+    selected_item_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -434,6 +435,9 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
     coverage = _mapping(payload.get("coverage"))
     diagnostics = _mapping(payload.get("selection_diagnostics"))
     items = payload.get("items")
+    selected_flags = (
+        tuple(_mapping(item).get("selected") for item in items) if include_items and isinstance(items, list) else None
+    )
     frozen = payload.get("frozen")
     top_score_count, highest_top_score = _top_score_summary(payload.get("top_scores"))
     pipeline_payload = _mapping_or_none(payload.get("pipeline"))
@@ -456,6 +460,9 @@ def _parse_projection(payload: Mapping[str, object], *, include_items: bool) -> 
         highest_top_score=highest_top_score,
         pipeline=_parse_pipeline(pipeline_payload) if pipeline_payload is not None else None,
         degraded_reasons=_text_tuple(payload.get("degraded_reasons"), limit=32),
+        selected_item_count=sum(value is True for value in selected_flags)
+        if selected_flags is not None and all(isinstance(value, bool) for value in selected_flags)
+        else None,
     )
 
 

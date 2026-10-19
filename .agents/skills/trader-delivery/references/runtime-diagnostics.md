@@ -32,6 +32,8 @@ Useful options:
 
 Only add `--persistence-runtime-dir /absolute/outside/repository/path` when comparing history transaction behavior. Combined report files must likewise use an explicit repository-external absolute path. Do not create an ad hoc `/tmp` or top-level wrapper script; extend the unified CLI or the owning `scripts/runtime_diagnostics/` module and its tests.
 
+For a CPU-bound feature-build investigation, add `--cpu-profile-dir /absolute/outside/repository/path` to `market-factor-compare`. It writes standard `.pstats` files for the diagnostic feature builder; it does not profile the running server. Profiling adds overhead, so keep its durations distinct from ordinary live timing. The comparison loads local histories only for the union of its selected sample sizes.
+
 Interpretation order:
 
 For empty or abnormal recommendation funnels, first apply the mandatory six-checkpoint sequence in

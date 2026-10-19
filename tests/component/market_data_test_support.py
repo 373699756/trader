@@ -170,6 +170,9 @@ class _FixtureHistory:
     def refresh(self) -> bool:
         return False
 
+    def require_projection(self) -> None:
+        pass
+
     def load(self, codes, **_kwargs):
         for code in tuple(dict.fromkeys(codes)):
             try:

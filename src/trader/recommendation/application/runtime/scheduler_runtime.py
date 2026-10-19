@@ -19,6 +19,7 @@ from trader.recommendation.application.pipeline.freeze_publish.publication_io im
 )
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
+    DataRefreshPendingError,
     DataRefreshUnavailableError,
     PipelineTaskRequest,
     RefreshOutcome,
@@ -425,9 +426,14 @@ class SchedulerRuntime:
     def _periodic_task_inflight(self, scheduled: ScheduledPipelineTask) -> bool:
         if scheduled.task not in PERIODIC_TASKS or scheduled.schedule_point is not None:
             return False
-        if scheduled.task is PipelineTask.FULL_MARKET:
-            candidate = self._task_lanes[PipelineTask.CANDIDATE_QUOTES].status()
-            if candidate.running or candidate.pending:
+        if scheduled.task in {PipelineTask.FULL_MARKET, PipelineTask.CANDIDATE_QUOTES}:
+            other_task = (
+                PipelineTask.CANDIDATE_QUOTES
+                if scheduled.task is PipelineTask.FULL_MARKET
+                else PipelineTask.FULL_MARKET
+            )
+            other = self._task_lanes[other_task].status()
+            if other.running or other.pending:
                 return True
         lane = (
             self._lanes[Strategy.LONG].status()
@@ -501,6 +507,10 @@ class SchedulerRuntime:
         )
         try:
             outcome = self._dependencies.data.refresh_task(request)
+        except DataRefreshPendingError:
+            with SessionGuard(scheduled.session):
+                self._record_pipeline_result(scheduled, SchedulePointResult.RETRY)
+            return
         except DataRefreshUnavailableError as exc:
             with SessionGuard(scheduled.session):
                 self._record_failure("refresh", FailureCode(exc, "refresh_unavailable"), task=scheduled.task)
@@ -521,7 +531,18 @@ class SchedulerRuntime:
     ) -> None:
         if scheduled.task is PipelineTask.TOPK_QUOTES and outcome.changed:
             self._refresh_selected_overlays(scheduled, observed_at)
-        elif scheduled.task is PipelineTask.FULL_MARKET and scheduled.phase is MarketPhase.MIDDAY:
+        elif scheduled.task in {PipelineTask.FULL_MARKET, PipelineTask.CURRENT_QUOTES}:
+            completed_at = ShanghaiNow(self._dependencies.clock.now())
+            if completed_at.date() == scheduled.scheduled_at.date() and completed_at.time() < wall_time(15, 0):
+                self._dispatch_pipeline_task(
+                    ScheduledPipelineTask(
+                        PipelineTask.CANDIDATE_QUOTES,
+                        completed_at,
+                        scheduled.phase,
+                        session=scheduled.session,
+                    )
+                )
+        elif scheduled.task is PipelineTask.CANDIDATE_QUOTES and scheduled.phase is MarketPhase.MIDDAY:
             for strategy in self._midday_recovery_strategies(scheduled.scheduled_at):
                 if strategy is Strategy.LONG:
                     continue

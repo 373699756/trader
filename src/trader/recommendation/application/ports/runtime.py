@@ -121,6 +121,10 @@ class DataRefreshUnavailableError(RuntimeError):
     """A refresh failed while the last valid data plane remained readable."""
 
 
+class DataRefreshPendingError(DataRefreshUnavailableError):
+    """A refresh is waiting for a local dependency and has not failed."""
+
+
 class DecisionUnavailableError(RuntimeError):
     """A local decision could not be produced from the retained data plane."""
 
@@ -244,6 +248,7 @@ __all__ = [
     "CycleRequest",
     "DataRefreshPort",
     "DataRefreshUnavailableError",
+    "DataRefreshPendingError",
     "DecisionBuilderPort",
     "DecisionUnavailableError",
     "DeepSeekUpgradePort",

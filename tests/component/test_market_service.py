@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
+
+import pytest
 
 from tests.component.market_data_test_support import (
     AFTERNOON,
@@ -40,11 +43,15 @@ from tests.component.market_data_test_support import (
     time,
     timedelta,
 )
+from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
+from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
 from trader.infra.market_data.observations import SourceObservation
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneConflictError,
     DataPlaneUnavailableError,
 )
+from trader.recommendation.application.ports.market_data import MarketDataPendingError
+from trader.recommendation.infra.market_data.published_history_cache import PublishedHistoryCache
 
 
 def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_lock() -> None:
@@ -64,6 +71,50 @@ def test_market_service_components_own_distinct_locks_and_facade_has_no_shared_l
 
     assert len({id(lock) for lock in component_locks}) == len(component_locks)
     assert not hasattr(service, "_lock")
+
+
+def test_initial_history_projection_defers_market_io(tmp_path, monkeypatch) -> None:
+    gateway = StaticGateway((_quote(),))
+
+    def fetch_market(**kwargs):
+        raise AssertionError("market I/O must wait for the initial local projection")
+
+    monkeypatch.setattr(gateway, "fetch_market", fetch_market)
+    history = PublishedHistoryCache(
+        ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(tmp_path / "history")), lookback_sessions=61
+    )
+    history.record_maintenance("loading", stage="reading_active_snapshot")
+    service = _service(
+        gateway,
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        published_history=history,
+    )
+
+    with pytest.raises(MarketDataPendingError, match="history_projection_loading"):
+        service.fetch_market_features(NOW, force=True, deadline=NOW + timedelta(seconds=20))
+
+
+@pytest.mark.parametrize("source_delay_seconds", (5, 20))
+def test_market_stage_health_uses_completion_time_without_accepting_future_quotes(source_delay_seconds) -> None:
+    received_at = NOW + timedelta(seconds=5)
+    quote = replace(
+        _quote(),
+        source_time=NOW + timedelta(seconds=source_delay_seconds),
+        received_time=received_at,
+    )
+    service = _service(
+        StaticGateway((quote,)),
+        StaticHistoryClient(),
+        FeatureBuilder(NEWS_POLICY, TAIL_POLICY, MARKET_REGIME_POLICY, LONG_POLICY, FEATURE_WEIGHT_POLICY),
+        wall_clock=lambda: received_at,
+    )
+
+    batch = service.fetch_market_feature_batch(NOW, force=True)
+
+    assert batch.dynamic_stage.snapshot.as_of == received_at
+    expected = "ready" if source_delay_seconds == 5 else "unavailable"
+    assert batch.dynamic_stage.snapshot.source_health.state.value == expected
 
 
 def test_unknown_source_contract_fallback_uses_stable_cache_identity() -> None:

@@ -9,6 +9,7 @@ from typing import Literal
 
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
+    DataRefreshPendingError,
     DataRefreshUnavailableError,
     FreezeUnavailableError,
     PipelineTaskRequest,
@@ -83,6 +84,9 @@ class CloseControlCoordinator:
                 )
                 if outcome.completed_at.date() != at.date():
                     raise DataRefreshUnavailableError("close_input_trade_date_mismatch")
+            except DataRefreshPendingError:
+                self._hooks.pipeline_result(scheduled, SchedulePointResult.RETRY)
+                return
             except DataRefreshUnavailableError as exc:
                 self._hooks.failure("refresh", FailureCode(exc, "refresh_unavailable"), None)
                 self._hooks.pipeline_result(scheduled, SchedulePointResult.RETRY)

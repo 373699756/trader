@@ -15,7 +15,7 @@ from trader.infra.market_data.history.history import (
     HistoryContext,
     RequireQfqHistory,
 )
-from trader.recommendation.application.ports.market_data import MarketDataUnavailableError
+from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.runtime.schedule import SHANGHAI
 from trader.recommendation.domain.market.eligibility import HistoricalStEligibilitySnapshot
 from trader.recommendation.domain.market.history_tail import HistoryQuality
@@ -198,9 +198,7 @@ class PublishedHistoryCache:
         # Full published-history verification/rebuild cannot fit its real-time budget.
         if deadline is None:
             self.refresh(wait=False)
-        with self._lock:
-            if self._manifest is None and (self._refresh_lock.locked() or self._maintenance_state == "loading"):
-                raise MarketDataUnavailableError("history_projection_loading")
+        self.require_projection()
         result = self.cached(codes, observed_at=observed_at)
         if self._open_dates is not None and observed_at is not None:
             result = self._fresh_entries(result, observed_at)
@@ -221,6 +219,12 @@ class PublishedHistoryCache:
                 if code not in result:
                     action_restrictions.setdefault(code, set()).add("history_data_pending")
         return result
+
+    def require_projection(self) -> None:
+        """Defer a realtime attempt while its first local projection is loading."""
+        with self._lock:
+            if self._manifest is None and (self._refresh_lock.locked() or self._maintenance_state == "loading"):
+                raise MarketDataPendingError("history_projection_loading")
 
     def _load_tail(
         self,

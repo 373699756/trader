@@ -601,9 +601,14 @@ def _unavailable_reason(
 def SelectScoredActionPools(
     entries: tuple[ScoredDecisionEntry, ...],
     policy: ScoredDecisionPolicy,
+    *,
+    scored_population: tuple[ScoredDecisionEntry, ...] | None = None,
 ) -> tuple[ScoredDecisionEntry, ...]:
     by_code = {item.code: item for item in entries}
-    leader_codes = {item.code for item in sorted(entries, key=_decision_order)[:6]}
+    population = scored_population if scored_population is not None else entries
+    if not set(by_code).issubset(item.code for item in population):
+        raise ValueError("action candidates must belong to the scored population")
+    leader_codes = {item.code for item in sorted(population, key=_decision_order)[:6]}
     executable = _select_pool(
         tuple(item for item in entries if item.action is RecommendationAction.EXECUTABLE),
         limit=policy.top_k,

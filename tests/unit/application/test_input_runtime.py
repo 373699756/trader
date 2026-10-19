@@ -18,8 +18,10 @@ from trader.recommendation.application.pipeline.data_source.input_assembly impor
 )
 from trader.recommendation.application.pipeline.data_source.input_assembly import MergeOverlayQuote
 from trader.recommendation.application.pipeline.freeze_publish.draft_index import UnifiedDecisionDraftIndex
+from trader.recommendation.application.ports.market_data import MarketDataPendingError
 from trader.recommendation.application.ports.runtime import (
     CycleRequest,
+    DataRefreshPendingError,
     DataRefreshUnavailableError,
     DecisionUnavailableError,
     PipelineTaskRequest,
@@ -144,6 +146,23 @@ class _Market:
 class _LongRuntime:
     def offer_refresh(self, _request):
         return True
+
+
+def test_loading_local_history_is_pending_without_a_refresh_failure(application_feature_factory, caplog) -> None:
+    class LoadingMarket(_Market):
+        def fetch_market_features(self, _observed_at, *, force=False, deadline=None):
+            raise MarketDataPendingError("history_projection_loading")
+
+    adapter = build_cycle_fixture(
+        LoadingMarket((application_feature_factory("600001", TEST_NOW),)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(),
+    )
+
+    with pytest.raises(DataRefreshPendingError, match="history_projection_loading"):
+        adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, TEST_NOW))
+    assert not any("refresh failed" in record.getMessage() for record in caplog.records)
 
 
 class _RejectingLongRuntime:
@@ -1377,6 +1396,78 @@ def test_candidate_refresh_keeps_population_watermark_but_checks_raw_quote_age(
 
     with pytest.raises(DataRefreshUnavailableError, match="candidate_population_trade_date_mismatch"):
         adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, refresh_at + timedelta(days=1)))
+
+
+@pytest.mark.parametrize("source_delay_seconds", [5, 20])
+def test_candidate_refresh_checks_quotes_at_receipt_time_without_accepting_future_source_time(
+    application_feature_factory,
+    source_delay_seconds: int,
+) -> None:
+    requested_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    received_at = requested_at + timedelta(seconds=5)
+    feature = application_feature_factory("600001", requested_at)
+    current_time = [requested_at]
+
+    class LaterCandidateMarket(_Market):
+        def refresh_candidate_quotes(self, codes, observed_at, *, force=False, deadline=None):
+            current_time[0] = received_at
+            return tuple(
+                replace(
+                    item,
+                    observed_at=received_at,
+                    quote=replace(
+                        item.quote,
+                        source_time=requested_at + timedelta(seconds=source_delay_seconds),
+                        received_time=received_at,
+                    ),
+                )
+                for item in super().refresh_candidate_quotes(codes, observed_at, force=force, deadline=deadline)
+            )
+
+    adapter = build_cycle_fixture(
+        LaterCandidateMarket((feature,)),
+        config_version="test-config",
+        candidate_pool_size=1,
+        decision_build=_decision_build(now=lambda: current_time[0]),
+    )
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, requested_at))
+    outcome = adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, requested_at))
+    statuses = adapter.data.input_quality_status()
+
+    assert outcome.completed_at == received_at
+    assert adapter.data._candidate_plans.population_evaluated_at == requested_at
+    for status in statuses:
+        candidate = next(stage for stage in status.stage_snapshots if stage.stage.value == "candidate_pool")
+        quality = next(stage for stage in status.stage_snapshots if stage.stage.value == "quality_check")
+        if source_delay_seconds == 5:
+            assert candidate.output_count == 1
+            assert quality.output_count == 1
+            assert not any(reason.code == "future_quote" for reason in quality.reasons)
+        else:
+            assert candidate.output_count == 0
+            assert candidate.pending_count == 1
+            assert any(reason.code == "refresh_pending" for reason in candidate.reasons)
+
+
+def test_candidate_refresh_retains_unrequested_history_pending_reasons(application_feature_factory) -> None:
+    observed_at = datetime(2026, 8, 12, 10, 0, tzinfo=SHANGHAI)
+    ready = application_feature_factory("600001", observed_at)
+    short = replace(application_feature_factory("600002", observed_at), history_days=19)
+    adapter = build_cycle_fixture(
+        _Market((ready, short)),
+        config_version="test-config",
+        candidate_pool_size=2,
+        decision_build=_decision_build(now=lambda: observed_at),
+    )
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.FULL_MARKET, observed_at))
+    adapter.data.refresh_task(PipelineTaskRequest(PipelineTask.CANDIDATE_QUOTES, observed_at))
+
+    for status in adapter.data.input_quality_status():
+        stage = next(item for item in status.stage_snapshots if item.stage.value == "candidate_pool")
+        assert stage.input_count == 2
+        assert stage.output_count == 1
+        assert stage.pending_count == 1
+        assert any(reason.code == "strategy_history_insufficient" and reason.count == 1 for reason in stage.reasons)
 
 
 def test_deadline_stops_refill_and_preserves_the_last_complete_candidate_batch(

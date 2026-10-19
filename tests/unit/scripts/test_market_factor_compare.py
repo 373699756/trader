@@ -343,7 +343,9 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
         acquired.append(args)
         return batch
 
-    def replay(plan, codes, inputs, references, official, received, args, number, size, auxiliary):
+    def replay(
+        plan, codes, inputs, references, official, received, args, number, size, auxiliary, *, cpu_profile_dir=None
+    ):
         replayed.append((received, references))
         return {
             "profile": inputs.profile,
@@ -683,7 +685,7 @@ def test_child_sdk_stdout_cannot_corrupt_json_report(
     import os
     import sys
 
-    def Collect(args):
+    def Collect(args, *, cpu_profile_dir=None):
         os.write(1, b"supplier login success\n")
         return {"status": "degraded", "summary": {"complete": False}}
 
