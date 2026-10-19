@@ -56,12 +56,16 @@ class CompanyEvidenceProgress:
         }
         statuses = {"running": "进行中", "complete": "完成", "reused": "本地复用", "deferred": "待续传"}
         status = "complete" if progress.component == "st_eligibility" and progress.pending == 0 else progress.status
+        failure = progress.failure
+        if progress.status == "running" and previous is not None and progress.component == previous.component:
+            reported = set(previous.failure.split(","))
+            failure = ",".join(item for item in failure.split(",") if item and item not in reported)
         print(
             f"download_risk | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
             + _scope(progress)
             + f" | 成功页 {progress.fetched_pages} | 变更行 {progress.changed_rows} | "
             f"累计复用 {progress.reused_partitions} | 累计 {ProgressDuration(now - self._started)} | "
-            f"状态 {statuses[status]}" + (f" | 原因 {progress.failure}" if progress.failure else ""),
+            f"状态 {statuses[status]}" + (f" | 原因 {failure}" if failure else ""),
             file=self._stream,
             flush=True,
         )

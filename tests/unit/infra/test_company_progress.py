@@ -37,6 +37,35 @@ def test_unknown_total_and_cache_reuse_are_not_reported_as_partial_downloads():
     assert "状态 本地复用" in reused and "100.00%" not in reused
 
 
+def test_document_progress_reports_each_new_failure_once_and_summarizes_at_end():
+    clock = [0.0]
+    stream = StringIO()
+    report = CompanyEvidenceProgress(stream, monotonic=lambda: clock[0])
+    unreadable = "risk_documents:disclosure_document_unreadable"
+    oversized = "risk_documents:disclosure_document_oversized"
+
+    report(EvidenceSyncProgress("risk_documents", 151, 1095, 1028, 23107, 2, unreadable))
+    clock[0] = 2.1
+    report(EvidenceSyncProgress("risk_documents", 153, 1093, 1028, 23109, 2, unreadable))
+    clock[0] = 4.2
+    report(EvidenceSyncProgress("risk_documents", 154, 1092, 1028, 23110, 2, f"{unreadable},{oversized}"))
+    clock[0] = 6.3
+    report(EvidenceSyncProgress("risk_documents", 156, 1090, 1028, 23112, 2, f"{unreadable},{oversized}"))
+    clock[0] = 6.4
+    report(
+        EvidenceSyncProgress(
+            "risk_documents", 156, 1090, 1028, 23112, 2, f"{unreadable},{oversized}", status="deferred"
+        )
+    )
+
+    first, second, third, fourth, final = stream.getvalue().splitlines()
+    assert f"原因 {unreadable}" in first
+    assert "进度 153/1246 篇" in second and "原因" not in second
+    assert f"原因 {oversized}" in third and unreadable not in third
+    assert "进度 156/1246 篇" in fourth and "原因" not in fourth
+    assert f"原因 {unreadable},{oversized}" in final and "状态 待续传" in final
+
+
 def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(monkeypatch, capsys):
     stream = StringIO()
     report = CompanyEvidenceProgress(stream, monotonic=lambda: 0)
