@@ -331,8 +331,9 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
 
     def publish(output, _profile, staged) -> None:
         for strategy, staging in staged:
-            assert {path.name for path in staging.iterdir()} == {"model.json", "report.json", "training-input.json"}
-            report = json.loads((staging / "report.json").read_text(encoding="utf-8"))
+            assert {path.name for path in staging.iterdir()} == {"model.json", "metadata.json"}
+            metadata = json.loads((staging / "metadata.json").read_text(encoding="utf-8"))
+            report = metadata["validation_report"]
             assert report["artifact_structure_valid"] is True
             assert report["artifact_structure_failure_reasons"] == []
             assert report["prediction_return_validation_passed"] is False

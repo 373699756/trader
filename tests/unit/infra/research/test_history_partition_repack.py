@@ -318,6 +318,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
         "b" * 64,
         "c" * 64,
         "d" * 64,
+        "e" * 64,
     )
     monkeypatch.setattr(due_module, "_active_bundle", lambda _root, _profile, _strategy: (bundle, False))
 

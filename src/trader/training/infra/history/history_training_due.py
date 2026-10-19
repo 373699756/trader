@@ -222,8 +222,7 @@ def _active_bundle(
     profile: TrainedProfileContract,
     strategy: Strategy,
 ) -> tuple[ActiveHeadBundle | None, bool]:
-    pointer = training_root / "active-profile.json"
-    if not pointer.exists():
+    if not training_root.exists():
         return None, False
     try:
         return next(

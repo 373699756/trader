@@ -6,10 +6,6 @@ import tempfile
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import cast
-
-from trader.infra.atomic_files.json import AtomicReadJson
-from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle, TrainedHeadModelBundle
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
@@ -26,6 +22,7 @@ class ActiveHeadBundle:
     model_hash: str
     report_hash: str
     training_input_document_hash: str
+    metadata_hash: str
     training_run_hash: str
 
 
@@ -44,32 +41,19 @@ def InspectActiveHeadBundle(
     strategy: Strategy,
     profile: TrainedProfileContract,
 ) -> LoadedActiveHeadBundle:
+    if not head_root.exists() and not head_root.is_symlink():
+        raise FileNotFoundError(head_root)
     if not head_root.is_dir() or head_root.is_symlink():
         raise ValueError("trained head directory is invalid")
-    raw = AtomicReadJson(head_root / "active-bundle.json")
-    if not isinstance(raw, dict):
-        raise ValueError("trained head pointer is invalid")
-    pointer = cast(dict[str, object], raw)
-    expected = {"model_hash", "report_hash", "training_input_hash", "content_hash"}
-    if (
-        set(pointer) != expected
-        or any(not _sha256(pointer.get(key)) for key in expected)
-        or pointer["content_hash"]
-        != ContentHash({key: value for key, value in pointer.items() if key != "content_hash"})
-    ):
-        raise ValueError("trained head pointer is invalid")
     model_path = head_root / "model.json"
-    for name in ("model.json", "report.json", "training-input.json", "active-bundle.json"):
+    if {path.name for path in head_root.iterdir()} != {"model.json", "metadata.json"}:
+        raise ValueError("trained head fixed files are incomplete")
+    for name in ("model.json", "metadata.json"):
         path = head_root / name
         if not path.is_file() or path.is_symlink():
             raise ValueError("trained head fixed file is invalid")
     bundle = LoadHeadBundle(model_path, strategy, profile)
-    if (
-        bundle.content_hash != pointer["model_hash"]
-        or bundle.training_input_document_hash != pointer["training_input_hash"]
-        or bundle.report_hash != pointer["report_hash"]
-    ):
-        raise ValueError("trained head pointer does not match its fixed files")
+    metadata = bundle.metadata_hash
     return LoadedActiveHeadBundle(
         model_path,
         strategy,
@@ -80,13 +64,10 @@ def InspectActiveHeadBundle(
         bundle.content_hash,
         bundle.report_hash,
         bundle.training_input_document_hash,
+        metadata,
         bundle.training_run_hash,
         bundle,
     )
-
-
-def _sha256(value: object) -> bool:
-    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 __all__ = ["ActiveHeadBundle", "InspectActiveHeadBundle", "LoadedActiveHeadBundle", "MakeBundleStagingDirectory"]

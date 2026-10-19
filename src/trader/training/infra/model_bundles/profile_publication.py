@@ -8,16 +8,12 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import cast
 
-from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
-from trader.infra.serialization.canonical import ContentHash
 from trader.recommendation.domain.publication.models import Strategy
 from trader.training.infra.model_bundles.bundle_codec import LoadHeadBundle
 from trader.training.infra.model_bundles.bundle_snapshot import InspectActiveHeadBundle, LoadedActiveHeadBundle
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
 
-_POINTER_NAME = "active-profile.json"
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -44,18 +40,11 @@ def PublishProfileBundles(
     previous = profile_root.with_name(f".{profile_root.name}.previous.{uuid.uuid4().hex}")
     old_moved = False
     try:
-        for (strategy, staging), bundle in zip(staged, bundles, strict=True):
+        for strategy, staging in staged:
             destination = publication / strategy.value
-            shutil.copytree(staging, destination)
-            if profile.profile_id == "v2":
-                (destination / ".gitkeep").write_text("\n", encoding="utf-8")
-            pointer: dict[str, object] = {
-                "model_hash": bundle.content_hash,
-                "report_hash": bundle.report_hash,
-                "training_input_hash": bundle.training_input_document_hash,
-            }
-            pointer["content_hash"] = ContentHash(pointer)
-            AtomicWriteJson(destination / "active-bundle.json", pointer)
+            destination.mkdir()
+            for name in ("model.json", "metadata.json"):
+                shutil.copyfile(staging / name, destination / name)
             for path in destination.iterdir():
                 if path.is_file():
                     with path.open("rb") as handle:
@@ -66,17 +55,7 @@ def PublishProfileBundles(
             InspectActiveHeadBundle(publication / contract.directory_name, contract.strategy, profile)
             for contract in profile.heads
         )
-        pointer = {
-            "profile_id": profile.profile_id,
-            "training_input_hash": bundles[0].training_input_hash,
-            "training_run_hash": bundles[0].training_run_hash,
-            "source_identity_hash": bundles[0].source_identity_hash,
-            "model_hashes": [item.model_hash for item in heads],
-        }
-        pointer["content_hash"] = ContentHash(pointer)
-        AtomicWriteJson(publication / _POINTER_NAME, pointer)
-        _fsync_directory(publication)
-        InspectActiveProfileBundles(publication, profile)
+        _validate_profile_pair(heads)
         if profile_root.exists():
             os.replace(profile_root, previous)
             old_moved = True
@@ -109,43 +88,28 @@ def PublishProfileBundles(
 def InspectActiveProfileBundles(
     profile_root: Path, profile: TrainedProfileContract
 ) -> tuple[LoadedActiveHeadBundle, ...]:
-    """Pin one generation for all readers, then verify its two head hashes."""
+    """Validate the two fixed heads from one selected profile directory."""
 
-    raw = AtomicReadJson(profile_root / _POINTER_NAME)
-    if not isinstance(raw, dict):
-        raise ValueError("trained profile pointer is invalid")
-    pointer = cast(dict[str, object], raw)
-    model_hashes = pointer.get("model_hashes")
-    expected = {
-        "profile_id",
-        "training_input_hash",
-        "training_run_hash",
-        "source_identity_hash",
-        "model_hashes",
-        "content_hash",
-    }
-    if (
-        set(pointer) != expected
-        or pointer.get("profile_id") != profile.profile_id
-        or not isinstance(model_hashes, list)
-        or len(model_hashes) != 2
-        or any(not isinstance(value, str) or len(value) != 64 for value in model_hashes)
-        or pointer.get("content_hash")
-        != ContentHash({key: value for key, value in pointer.items() if key != "content_hash"})
-    ):
-        raise ValueError("trained profile pointer is invalid")
+    if not profile_root.exists() and not profile_root.is_symlink():
+        raise FileNotFoundError(profile_root)
+    if not profile_root.is_dir() or profile_root.is_symlink():
+        raise ValueError("trained profile directory is invalid")
     heads = tuple(
         InspectActiveHeadBundle(profile_root / contract.directory_name, contract.strategy, profile)
         for contract in profile.heads
     )
+    _validate_profile_pair(heads)
+    return heads
+
+
+def _validate_profile_pair(heads: tuple[LoadedActiveHeadBundle, ...]) -> None:
     if (
-        tuple(item.model_hash for item in heads) != tuple(model_hashes)
-        or any(item.training_input_hash != pointer["training_input_hash"] for item in heads)
-        or any(item.training_run_hash != pointer["training_run_hash"] for item in heads)
-        or any(item.source_identity_hash != pointer["source_identity_hash"] for item in heads)
+        len(heads) != 2
+        or len({item.training_input_hash for item in heads}) != 1
+        or len({item.training_run_hash for item in heads}) != 1
+        or len({item.source_identity_hash for item in heads}) != 1
     ):
         raise ValueError("trained profile pair identity is inconsistent")
-    return heads
 
 
 def _fsync_directory(path: Path) -> None:

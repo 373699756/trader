@@ -76,11 +76,11 @@ def test_partial_profile_disables_both_heads_and_corruption_is_not_swallowed(tmp
     assert all(head["active"] is False for head in scoring["heads"].values())
 
     _publish_profile(tmp_path / "data/train", V3_TRAINING_PROFILE)
-    pointer = (
+    metadata = (
         InspectActiveProfileBundles(tmp_path / "data/train/v3", V3_TRAINING_PROFILE)[0].model_path.parent
-        / "active-bundle.json"
+        / "metadata.json"
     )
-    pointer.write_text("{}", encoding="utf-8")
+    metadata.write_text("{}", encoding="utf-8")
     with pytest.raises(RuntimeError, match="models are invalid"):
         BuildSystem(config, scoring_profile="v3")
 

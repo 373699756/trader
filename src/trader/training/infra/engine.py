@@ -744,9 +744,10 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
             validation_rows,
             request.run_id,
         )
-        provisional_model = _model_document(context, "0" * 64, models)
-        model_payload_hash = cast(str, provisional_model["model_payload_hash"])
-        report = _report_document(context, models, model_payload_hash, request.metrics)
+        model = _model_document(models)
+        model_hash = ContentHash(model)
+        model["content_hash"] = model_hash
+        report = _report_document(context, models, model_hash, request.metrics)
         report_hash = ContentHash(report)
         report["content_hash"] = report_hash
         if not report["artifact_structure_valid"]:
@@ -767,13 +768,11 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
                 label_cutoff=plan.label_cutoff,
                 sample_database_peak_bytes=request.peak_bytes,
             ), None
-        model = _model_document(context, report_hash, models)
-        model_hash = ContentHash(model)
-        model["content_hash"] = model_hash
+        metadata = _metadata_document(context, model_hash, models, training_input, report)
+        metadata["content_hash"] = ContentHash(metadata)
         staging = MakeBundleStagingDirectory(request.train_root)
-        _write_json(staging / "training-input.json", training_input)
-        _write_json(staging / "report.json", report)
         _write_json(staging / "model.json", model)
+        _write_json(staging / "metadata.json", metadata)
         result = HeadTrainingResult(
             contract.strategy,
             "engineering_ready",
@@ -806,7 +805,7 @@ def _fit_and_prepare_head(request: _HeadFitRequest) -> tuple[HeadTrainingResult,
 def _report_document(
     context: _TrainingRunContext,
     models: dict[str, dict[str, object]],
-    model_payload_hash: str,
+    model_hash: str,
     metrics: tuple[TargetMetric, ...],
 ) -> dict[str, object]:
     structure_reasons = [] if models and context.validation_rows > 0 else ["industry_model_validation_insufficient"]
@@ -821,12 +820,12 @@ def _report_document(
     )
     document: dict[str, object] = {
         **_common_document(context),
-        "schema_version": f"{context.profile.profile_id}_head_training_report_validation_split",
+        "schema_version": f"{context.profile.profile_id}_head_validation_report",
         "profile_id": context.profile.profile_id,
         "model_id": context.contract.model_id,
         "strategy_head": context.contract.strategy.value,
         "training_input_document_hash": context.training_input_document_hash,
-        "model_payload_hash": model_payload_hash,
+        "model_hash": model_hash,
         "training_anchor": "15:00_close_proxy",
         "runtime_anchor": context.contract.runtime_anchor,
         "point_in_time_parity": False,
@@ -845,14 +844,26 @@ def _report_document(
     return document
 
 
-def _model_document(
+def _model_document(models: dict[str, dict[str, object]]) -> dict[str, object]:
+    return {
+        "industries": {
+            industry: {
+                key: value for key, value in parameters.items() if key not in {"training_rows", "validation_rows"}
+            }
+            for industry, parameters in models.items()
+        }
+    }
+
+
+def _metadata_document(
     context: _TrainingRunContext,
-    report_hash: str,
+    model_hash: str,
     models: dict[str, dict[str, object]],
+    training_input: dict[str, object],
+    report: dict[str, object],
 ) -> dict[str, object]:
-    document: dict[str, object] = {
-        **_common_document(context),
-        "schema_version": f"{context.profile.profile_id}_head_scoring_model",
+    return {
+        "schema_version": f"{context.profile.profile_id}_head_metadata",
         "profile_id": context.profile.profile_id,
         "model_id": context.contract.model_id,
         "strategy_head": context.contract.strategy.value,
@@ -865,27 +876,20 @@ def _model_document(
             "log_average_amount_20d": True,
             "order": list(TRAINED_HEAD_EXPOSURE_CONTRACT.order),
         },
-        "training_input_document_hash": context.training_input_document_hash,
-        "report_hash": report_hash,
-        "historical_status": "historical_data_insufficient",
-        "historical_failure_reasons": ["daily_close_proxy_not_point_in_time"],
-        "training_anchor": "15:00_close_proxy",
-        "runtime_anchor": context.contract.runtime_anchor,
-        "point_in_time_parity": False,
-        "training_rows": context.training_rows,
-        "validation_rows": context.validation_rows,
-        "industry_count": len(models),
         "algorithm": context.profile.algorithm,
-        "industries": models,
         "dependencies": (
             {"lightgbm": version("lightgbm"), "numpy": version("numpy")}
             if context.profile.algorithm == "lightgbm"
             else {"numpy": version("numpy")}
         ),
-        "automatic_model_update": False,
+        "training_input": training_input,
+        "validation_report": report,
+        "industry_sample_counts": {
+            industry: {key: parameters[key] for key in ("training_rows", "validation_rows")}
+            for industry, parameters in models.items()
+        },
+        "model_hash": model_hash,
     }
-    document["model_payload_hash"] = _model_payload_hash(document)
-    return document
 
 
 def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str, object]:
@@ -893,7 +897,7 @@ def _training_input_document(context: _TrainingInputDocumentContext) -> dict[str
     snapshot = context.snapshot
     contract = context.contract
     document: dict[str, object] = {
-        "schema_version": f"{profile.profile_id}_head_training_input",
+        "schema_version": f"{profile.profile_id}_head_training_input_manifest",
         "profile_id": profile.profile_id,
         "strategy_head": contract.strategy.value,
         "training_input_scope": snapshot.input_scope,
@@ -1064,16 +1068,6 @@ def _metric_payload(metric: TargetMetric) -> dict[str, object]:
         "mean": metric.mean,
         "standard_deviation": metric.standard_deviation,
     }
-
-
-def _model_payload_hash(document: dict[str, object]) -> str:
-    return ContentHash(
-        {
-            key: value
-            for key, value in document.items()
-            if key not in {"content_hash", "report_hash", "model_payload_hash"}
-        }
-    )
 
 
 def _base_result(

@@ -21,7 +21,8 @@ from trader.recommendation.domain.scoring.profile_identity import ScoringProfile
 from trader.recommendation.domain.scoring.residualization import TRAINED_HEAD_EXPOSURE_CONTRACT, ExposureContract
 from trader.training.infra.model_bundles.contracts import TrainedAlgorithm, TrainedProfileContract
 
-_MODEL_FIELDS = {
+_MODEL_FIELDS = {"industries"}
+_METADATA_FIELDS = {
     "schema_version",
     "profile_id",
     "model_id",
@@ -29,35 +30,12 @@ _MODEL_FIELDS = {
     "feature_ids",
     "feature_units",
     "exposure_contract",
-    "training_input_scope",
-    "training_input_hash",
-    "training_run_hash",
-    "label_cutoff",
-    "source_identity_hash",
-    "training_input_document_hash",
-    "training_input_codes",
-    "training_universe_codes",
-    "split_hash",
-    "report_hash",
-    "feature_manifest_hash",
-    "training_contract_hash",
-    "label_target",
-    "training_cost_bps",
-    "validation_scope",
-    "historical_status",
-    "historical_failure_reasons",
-    "model_payload_hash",
-    "training_anchor",
-    "runtime_anchor",
-    "point_in_time_parity",
-    "training_rows",
-    "validation_rows",
-    "industry_count",
     "algorithm",
-    "industries",
     "dependencies",
-    "automatic_model_update",
-    "production_authority",
+    "training_input",
+    "validation_report",
+    "industry_sample_counts",
+    "model_hash",
 }
 _REPORT_COMMON_FIELDS = {
     "schema_version",
@@ -75,7 +53,7 @@ _REPORT_COMMON_FIELDS = {
     "feature_manifest_hash",
     "split_hash",
     "training_contract_hash",
-    "model_payload_hash",
+    "model_hash",
     "label_target",
     "training_cost_bps",
     "training_anchor",
@@ -127,8 +105,6 @@ _INDUSTRY_COMMON_FIELDS = {
     "transformer_scales",
     "calibration_intercept",
     "calibration_slope",
-    "training_rows",
-    "validation_rows",
 }
 
 
@@ -138,8 +114,6 @@ class TrainedIndustryModelSnapshot:
     transformer_scales: tuple[float, ...]
     calibration_intercept: float
     calibration_slope: float
-    training_rows: int
-    validation_rows: int
 
 
 @dataclass(frozen=True)
@@ -175,7 +149,6 @@ class TrainedHeadModelBundle:
     report_hash: str
     feature_manifest_hash: str
     training_contract_hash: str
-    model_payload_hash: str
     label_target: str
     historical_status: Literal["historical_data_insufficient"]
     historical_failure_reasons: tuple[str, ...]
@@ -186,6 +159,7 @@ class TrainedHeadModelBundle:
     validation_rows: int
     industries: tuple[tuple[str, TrainedRidgeModelSnapshot | TrainedLightGBMModelSnapshot], ...]
     dependencies: tuple[tuple[str, str], ...]
+    metadata_hash: str
     content_hash: str
 
 
@@ -202,9 +176,12 @@ class _GroupIdentity:
     feature_manifest_hash: str
     split_hash: str
     training_contract_hash: str
-    model_payload_hash: str | None
+    model_hash: str | None
     training_input_codes: int
     training_universe_codes: int
+    industry_count: int | None
+    training_rows: int | None
+    validation_rows: int | None
 
 
 def LoadHeadBundle(
@@ -212,90 +189,63 @@ def LoadHeadBundle(
     strategy: Strategy,
     profile: TrainedProfileContract,
 ) -> TrainedHeadModelBundle:
-    bundle = DecodeHeadBundle(json.loads(path.read_text(encoding="utf-8")), strategy, profile)
-    report = _decode_group_document(
-        json.loads(path.with_name("report.json").read_text(encoding="utf-8")), strategy, profile, report=True
+    return DecodeHeadBundle(
+        json.loads(path.read_text(encoding="utf-8")),
+        json.loads(path.with_name("metadata.json").read_text(encoding="utf-8")),
+        strategy,
+        profile,
     )
-    training_input = _decode_group_document(
-        json.loads(path.with_name("training-input.json").read_text(encoding="utf-8")), strategy, profile, report=False
-    )
-    expected = (
-        bundle.strategy,
-        bundle.model_id,
-        bundle.training_input_hash,
-        bundle.training_run_hash,
-        bundle.label_cutoff,
-        bundle.source_identity_hash,
-        bundle.feature_manifest_hash,
-        bundle.split_hash,
-        bundle.training_contract_hash,
-        bundle.training_input_codes,
-        bundle.training_universe_codes,
-    )
-    if (
-        bundle.report_hash != report.content_hash
-        or bundle.training_input_document_hash != training_input.content_hash
-        or report.training_input_document_hash != training_input.content_hash
-        or report.model_payload_hash != bundle.model_payload_hash
-        or _identity_tuple(report) != expected
-        or _identity_tuple(training_input) != expected
-    ):
-        raise ValueError("trained strategy-head bundle files have inconsistent identities")
-    return bundle
 
 
 def DecodeHeadBundle(
-    document: object,
+    model_document: object,
+    metadata_document: object,
     strategy: Strategy,
     profile: TrainedProfileContract,
 ) -> TrainedHeadModelBundle:
-    payload, declared_hash = _hashed_object(document, _MODEL_FIELDS, "model")
+    model, declared_hash = _hashed_object(model_document, _MODEL_FIELDS, "model")
+    metadata, metadata_hash = _hashed_object(metadata_document, _METADATA_FIELDS, "metadata")
     contract = profile.head_for_strategy(strategy)
-    feature_ids = tuple(_string_list(payload, "feature_ids"))
-    feature_units = tuple(_string_list(payload, "feature_units"))
-    industries = _decode_industries(payload, len(feature_ids), profile.algorithm)
-    dependencies = _dependencies(payload, profile.algorithm)
+    feature_ids = tuple(_string_list(metadata, "feature_ids"))
+    feature_units = tuple(_string_list(metadata, "feature_units"))
+    industries = _decode_industries(model, len(feature_ids), profile.algorithm)
+    dependencies = _dependencies(metadata, profile.algorithm)
+    training_input = _decode_group_document(metadata.get("training_input"), strategy, profile, report=False)
+    report = _decode_group_document(metadata.get("validation_report"), strategy, profile, report=True)
+    counts = metadata.get("industry_sample_counts")
+    if not isinstance(counts, dict) or set(counts) != {name for name, _ in industries}:
+        raise ValueError("trained-head industry sample counts are invalid")
+    for values in counts.values():
+        if (
+            not isinstance(values, dict)
+            or set(values) != {"training_rows", "validation_rows"}
+            or _integer(values, "training_rows") < 1
+            or _integer(values, "validation_rows") < 1
+        ):
+            raise ValueError("trained-head industry sample counts are invalid")
     if (
-        _text(payload, "schema_version") != f"{profile.profile_id}_head_scoring_model"
-        or _text(payload, "profile_id") != profile.profile_id
-        or _text(payload, "strategy_head") != strategy.value
-        or _text(payload, "model_id") != contract.model_id
-        or _text(payload, "algorithm") != profile.algorithm
+        _text(metadata, "schema_version") != f"{profile.profile_id}_head_metadata"
+        or _text(metadata, "profile_id") != profile.profile_id
+        or _text(metadata, "strategy_head") != strategy.value
+        or _text(metadata, "model_id") != contract.model_id
+        or _text(metadata, "algorithm") != profile.algorithm
+        or _text(metadata, "model_hash") != declared_hash
         or feature_ids != contract.feature_manifest.names
         or feature_units != contract.feature_manifest.units
-        or _text(payload, "feature_manifest_hash") != contract.feature_manifest.content_hash
-        or _text(payload, "label_target") != contract.label_target
-        or _text(payload, "training_anchor") != "15:00_close_proxy"
-        or _text(payload, "runtime_anchor") != contract.runtime_anchor
-        or _text(payload, "validation_scope") != "daily_close_engineering_proxy"
-        or _text(payload, "historical_status") != "historical_data_insufficient"
-        or tuple(_string_list(payload, "historical_failure_reasons")) != ("daily_close_proxy_not_point_in_time",)
-        or _integer(payload, "training_cost_bps") != 0
-        or _boolean(payload, "point_in_time_parity")
-        or _boolean(payload, "automatic_model_update")
-        or _boolean(payload, "production_authority")
-        or _exposure_contract(payload) != TRAINED_HEAD_EXPOSURE_CONTRACT
-        or len(industries) != _integer(payload, "industry_count")
+        or _exposure_contract(metadata) != TRAINED_HEAD_EXPOSURE_CONTRACT
+        or len(industries) != report.industry_count
         or not industries
-        or _integer(payload, "training_rows") < 1
-        or _integer(payload, "validation_rows") < 1
-        or _model_payload_hash(payload) != _text(payload, "model_payload_hash")
+        or report.training_rows is None
+        or report.training_rows < 1
+        or report.validation_rows is None
+        or report.validation_rows < 1
+        or report.model_hash != declared_hash
+        or report.training_input_document_hash != training_input.content_hash
+        or _identity_tuple(report) != _identity_tuple(training_input)
     ):
-        raise ValueError("trained strategy-head model contract is invalid")
-    for name in (
-        "training_input_hash",
-        "training_run_hash",
-        "source_identity_hash",
-        "training_input_document_hash",
-        "split_hash",
-        "report_hash",
-        "feature_manifest_hash",
-        "training_contract_hash",
-        "model_payload_hash",
-    ):
-        _require_sha256(payload, name)
-    input_codes = _integer(payload, "training_input_codes")
-    universe_codes = _integer(payload, "training_universe_codes")
+        raise ValueError("trained strategy-head metadata or model contract is invalid")
+    input_codes = report.training_input_codes
+    universe_codes = report.training_universe_codes
     if input_codes < 1 or universe_codes != input_codes:
         raise ValueError("trained-head complete training input coverage is invalid")
     return TrainedHeadModelBundle(
@@ -307,28 +257,28 @@ def DecodeHeadBundle(
         TRAINED_HEAD_EXPOSURE_CONTRACT,
         profile.algorithm,
         "complete_manifest",
-        _text(payload, "training_input_hash"),
-        _text(payload, "training_run_hash"),
-        _date(payload, "label_cutoff"),
-        _text(payload, "source_identity_hash"),
-        _text(payload, "training_input_document_hash"),
+        report.training_input_hash,
+        report.training_run_hash,
+        report.label_cutoff,
+        report.source_identity_hash,
+        training_input.content_hash,
         input_codes,
         universe_codes,
-        _text(payload, "split_hash"),
-        _text(payload, "report_hash"),
-        _text(payload, "feature_manifest_hash"),
-        _text(payload, "training_contract_hash"),
-        _text(payload, "model_payload_hash"),
+        report.split_hash,
+        report.content_hash,
+        report.feature_manifest_hash,
+        report.training_contract_hash,
         contract.label_target,
         "historical_data_insufficient",
         ("daily_close_proxy_not_point_in_time",),
         "15:00_close_proxy",
         contract.runtime_anchor,
         False,
-        _integer(payload, "training_rows"),
-        _integer(payload, "validation_rows"),
+        report.training_rows,
+        report.validation_rows,
         industries,
         dependencies,
+        metadata_hash,
         declared_hash,
     )
 
@@ -344,9 +294,9 @@ def _decode_group_document(
     payload, declared_hash = _hashed_object(document, fields, "report" if report else "training input")
     contract = profile.head_for_strategy(strategy)
     expected_schema = (
-        f"{profile.profile_id}_head_training_report_validation_split"
+        f"{profile.profile_id}_head_validation_report"
         if report
-        else f"{profile.profile_id}_head_training_input"
+        else f"{profile.profile_id}_head_training_input_manifest"
     )
     if (
         _text(payload, "schema_version") != expected_schema
@@ -387,11 +337,11 @@ def _decode_group_document(
         "training_contract_hash",
     ):
         _require_sha256(payload, name)
-    model_payload_hash = _text(payload, "model_payload_hash") if report else None
+    model_hash = _text(payload, "model_hash") if report else None
     training_document_hash = _text(payload, "training_input_document_hash") if report else declared_hash
     if report:
         _require_sha256(payload, "training_input_document_hash")
-        _require_sha256(payload, "model_payload_hash")
+        _require_sha256(payload, "model_hash")
     input_codes = _integer(payload, "training_input_codes")
     universe_codes = _integer(payload, "training_universe_codes")
     if input_codes < 1 or input_codes != universe_codes:
@@ -410,9 +360,12 @@ def _decode_group_document(
         _text(payload, "feature_manifest_hash"),
         _text(payload, "split_hash"),
         _text(payload, "training_contract_hash"),
-        model_payload_hash,
+        model_hash,
         input_codes,
         universe_codes,
+        _integer(payload, "industry_count") if report else None,
+        _integer(payload, "training_rows") if report else None,
+        _integer(payload, "validation_rows") if report else None,
     )
 
 
@@ -479,18 +432,10 @@ def _decode_industries(
             raise ValueError("trained-head industry model fields are invalid")
         means = tuple(_number_list(values, "transformer_means"))
         scales = tuple(_number_list(values, "transformer_scales"))
-        if (
-            len(means) != width
-            or len(scales) != width
-            or any(value <= 0.0 for value in scales)
-            or _integer(values, "training_rows") < 1
-            or _integer(values, "validation_rows") < 1
-        ):
+        if len(means) != width or len(scales) != width or any(value <= 0.0 for value in scales):
             raise ValueError("trained-head industry model dimensions are invalid")
         calibration_intercept = _number(values, "calibration_intercept")
         calibration_slope = _number(values, "calibration_slope")
-        training_rows = _integer(values, "training_rows")
-        validation_rows = _integer(values, "validation_rows")
         if algorithm == "lightgbm":
             if _integer(values, "lightgbm_best_iteration") < 1:
                 raise ValueError("trained-head LightGBM iteration is invalid")
@@ -499,8 +444,6 @@ def _decode_industries(
                 transformer_scales=scales,
                 calibration_intercept=calibration_intercept,
                 calibration_slope=calibration_slope,
-                training_rows=training_rows,
-                validation_rows=validation_rows,
                 lightgbm_model=_text(values, "lightgbm_model"),
                 lightgbm_best_iteration=_integer(values, "lightgbm_best_iteration"),
             )
@@ -513,8 +456,6 @@ def _decode_industries(
                 transformer_scales=scales,
                 calibration_intercept=calibration_intercept,
                 calibration_slope=calibration_slope,
-                training_rows=training_rows,
-                validation_rows=validation_rows,
                 ridge_intercept=_number(values, "ridge_intercept"),
                 ridge_coefficients=coefficients,
             )
@@ -572,12 +513,6 @@ def _valid_target_metrics(value: object, strategy: Strategy) -> bool:
         ):
             return False
     return True
-
-
-def _model_payload_hash(payload: dict[str, object]) -> str:
-    return ContentHash(
-        {key: value for key, value in payload.items() if key not in {"report_hash", "model_payload_hash"}}
-    )
 
 
 def _require_sha256(payload: dict[str, object], name: str) -> None:

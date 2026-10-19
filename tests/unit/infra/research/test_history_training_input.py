@@ -472,6 +472,7 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
         "b" * 64,
         "c" * 64,
         "d" * 64,
+        "e" * 64,
     )
     later_dates = (*first_dates, date(2026, 9, 10))
     RunHistorySync(configuration, _Supplier(later_dates), clock=lambda: NOW)
