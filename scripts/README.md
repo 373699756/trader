@@ -88,6 +88,24 @@ No service or supplier is required. Invalid configuration marks dependent checks
 as unexecuted. Insufficient research evidence is degraded locally; the standalone
 research profile remains strict. Performance results are separate for each profile.
 
+Compare the annual layout with an isolated checkout of the pre-migration monthly
+layout (for example, commit `c235ffa3` extracted outside this repository):
+
+```bash
+.venv/bin/python3 scripts/diagnose_runtime.py --profile history-write \
+  --baseline-checkout /absolute/external/baseline \
+  --download-sizes 8 --command-timeout-seconds 900 --output -
+```
+
+The comparison alternates old and new workers for five rounds by default. It
+uses 8 synthetic stocks, 100 logical months and 2000 simulated sessions, and
+reports medians, connections, transactions, database and auxiliary file counts,
+allocated bytes, sampled WAL peak and process RSS. It requires improvement in
+the main hot reads, training scan and incremental writes; startup projections
+must stay within the 10% regression limit. Files
+and databases are disposable; warm operating-system cache and the small fixture
+do not establish full-market or physical cold-cache performance.
+
 Build an isolated migration candidate from a stopped copy containing `data/`
 and `.runtime/trader/`:
 

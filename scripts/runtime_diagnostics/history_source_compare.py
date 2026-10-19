@@ -135,7 +135,10 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
         mixed_time = float(str(results[1]["seconds"]))
         selected_source = "tencent_then_baostock_gap" if mixed_time < baseline_time * 0.9 else "baostock"
     elif qualified:
-        selected_source = qualified[0]["source"]
+        source = qualified[0]["source"]
+        if not isinstance(source, str):
+            raise ValueError("comparison_source_invalid")
+        selected_source = source
     return {
         "schema_version": "history-source-comparison",
         "status": "passed" if len(qualified) == 2 else "degraded",

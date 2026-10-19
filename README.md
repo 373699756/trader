@@ -1,6 +1,6 @@
 # A股策略看板
 
-本项目是在个人 PC 上运行的 A 股推荐研究工具。它从公开行情构建候选，执行确定性本地评分，可选使用 DeepSeek 五维复核，并通过只读 Web 看板展示 today、tomorrow、d25 和 long 四类结果。
+本项目是在个人 PC 上运行的 A 股推荐研究工具。它从公开行情构建候选，执行确定性本地评分，可选使用 DeepSeek 结构化风险复核，并通过只读 Web 看板展示 Tomorrow、D25 和 Long 三类结果。
 
 结果只用于研究，不构成投资建议，不提供真实下单能力，也不保证收益。
 
@@ -10,7 +10,7 @@
 - 当前稳定版 Chrome、Edge 或 Firefox 桌面浏览器。
 - 仅支持个人 PC；手机和平板浏览器不属于产品范围，也不纳入发布验收。
 - 默认仅监听 `127.0.0.1`，不提供远程身份认证。
-- SQLite 和 JSON 运行数据写入 `.runtime/trader`，不需要 Redis、Celery、Node 或外部数据库。
+- 持久数据写入配置中的 `data_dir`（默认 `data/`）；`.runtime/trader` 保存进程锁、日志和临时产物。不需要 Redis、Celery、Node 或外部数据库。
 
 ## 一键启动
 
@@ -117,7 +117,7 @@ TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
   --output -
 ```
 
-脚本同时读取 status 与 today/tomorrow/d25 current，检测候选、特征、证券身份、历史和完整评分
+脚本同时读取 status 与 tomorrow/d25 current，检测候选、特征、证券身份、历史和完整评分
 持续为 0、已形成阶段回退为 0、input quality 消失、release/schema 及 status/current 身份不一致。
 正式推荐或观察数量单独为 0 可以是合法业务空集，不会据此报警；合法空 current 缺少
 `selection_diagnostics.empty_reason` 才会报错。报告只包含聚合计数和版本身份，不输出股票代码。
@@ -194,9 +194,9 @@ Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。服�
 
 ## Web API
 
-- `GET /api/decisions/<today|tomorrow|d25|long>/current`
-- `GET /api/decisions/<today|tomorrow|d25>/history?date=YYYY-MM-DD`
-- `GET /api/decisions/<today|tomorrow|d25>/dates`
+- `GET /api/decisions/<tomorrow|d25|long>/current`
+- `GET /api/decisions/<tomorrow|d25>/history?date=YYYY-MM-DD`
+- `GET /api/decisions/<tomorrow|d25>/dates`
 - `GET /api/status`
 - `GET /api/events`
 
@@ -206,15 +206,7 @@ Long 的三个固定分类和股票身份由打包资源立即显示；当前决
 
 ## 关键契约
 
-融合公式固定为：
-
-```text
-final_score = clamp(local_score * 0.68
-                    + deepseek_score * 0.32
-                    - deepseek_risk_penalty, 0, 100)
-```
-
-`local_score` 已扣本地风险。DeepSeek 风险扣分由本地规则根据已验证风险事实映射，不能采用模型自由生成的数值。
+Tomorrow/D25 的最终分使用已扣本地风险的 `local_score`，按 `ROUND_HALF_UP` 保留两位小数。模型只提供预测诊断和成本净效用门；DeepSeek 只提供经证据核验的结构化风险 veto，不参与数值评分。
 
 - tomorrow 和 d25 于 15:00 first-wins 冻结，运行与新研究评价锚点同为 15:00。
 - long 不冻结、不进入历史推荐。
@@ -246,5 +238,6 @@ docs/               工程设计、评分逻辑、工程实施与下载训练文
 scripts/            工程辅助脚本
 src/trader/         唯一活动产品包
 tests/              单元、组件、契约和集成测试
-.runtime/trader/        本地运行数据，不进入 Git
+data/                  业务持久数据，不进入 Git
+.runtime/trader/        进程锁、日志和临时产物，不进入 Git
 ```

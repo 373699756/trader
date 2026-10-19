@@ -63,8 +63,19 @@ def _revision(code: str, day: date, sequence: int = 1) -> HistoryRevision:
     )
 
 
-def test_training_stream_consumes_narrow_rows_and_releases_each_month(tmp_path: Path, monkeypatch) -> None:
-    dates = (date(2026, 8, 31), date(2026, 9, 1))
+@pytest.mark.parametrize(
+    ("dates", "expected_events"),
+    (
+        ((date(2026, 8, 31), date(2026, 9, 1)), (("consume", "08"), ("consume", "09"), ("release", "09"))),
+        (
+            (date(2026, 12, 31), date(2027, 1, 1)),
+            (("consume", "12"), ("release", "12"), ("consume", "01"), ("release", "01")),
+        ),
+    ),
+)
+def test_training_stream_releases_pages_after_each_annual_file(
+    tmp_path: Path, monkeypatch, dates, expected_events
+) -> None:
     snapshot = _build_snapshot(tmp_path, tuple(_revision("600001", day) for day in dates))
     events = []
     consume = HistoryPricePartition.iter_training_rows
@@ -82,7 +93,24 @@ def test_training_stream_consumes_narrow_rows_and_releases_each_month(tmp_path: 
     monkeypatch.setattr(HistoryPricePartition, "release_read_pages", releasing)
     rows = tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, ("600001",)))
     assert len(rows) == 2
-    assert events == [(phase, month) for month in ("08", "09") for phase in ("consume", "release")]
+    assert events == list(expected_events)
+
+
+def test_training_stream_early_close_releases_active_annual_file(tmp_path: Path, monkeypatch) -> None:
+    dates = (date(2026, 8, 31), date(2026, 9, 1))
+    snapshot = _build_snapshot(tmp_path, tuple(_revision("600001", day) for day in dates))
+    released = []
+    release = HistoryPricePartition.release_read_pages
+
+    def releasing(self):
+        released.append(self._calendar_month)
+        release(self)
+
+    monkeypatch.setattr(HistoryPricePartition, "release_read_pages", releasing)
+    stream = HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, ("600001",))
+    assert next(stream).trade_date == dates[0]
+    stream.close()
+    assert released == [8]
 
 
 def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_path: Path) -> None:

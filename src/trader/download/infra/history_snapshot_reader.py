@@ -6,11 +6,12 @@ import calendar
 import heapq
 import re
 import threading
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Collection, Generator, Iterator
+from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from trader.download.domain.baostock_daily import BAOSTOCK_MAX_SESSIONS
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
@@ -470,22 +471,37 @@ class HistorySnapshotReader:
         processed_rows = 0
         reference_index = self.reference_index(snapshot)
         selected = tuple(item for item in snapshot.partitions if _reference_month(item) in expected_months)
-        for reference in selected:
+        for position, reference in enumerate(selected):
             partition = self._shadow_partition(reference)
+            completed_month = False
             try:
-                for row in partition.iter_training_rows(dates[0], dates[-1], snapshot_sequence=reference.sequence):
-                    if row.code not in allowed_codes or not dates[0] <= row.trade_date <= dates[-1]:
-                        continue
-                    processed_rows += 1
-                    if row.trade_date not in allowed_dates:
-                        raise HistorySnapshotReadError("history training row is outside the active calendar")
-                    yield _with_training_industry(row, reference_index)
-                    if progress is not None and processed_rows % 512 == 0:
-                        progress(processed_rows)
+                with closing(
+                    cast(
+                        Generator[HistoryTrainingRow, None, None],
+                        partition.iter_training_rows(dates[0], dates[-1], snapshot_sequence=reference.sequence),
+                    )
+                ) as rows:
+                    for row in rows:
+                        if row.code not in allowed_codes or not dates[0] <= row.trade_date <= dates[-1]:
+                            continue
+                        processed_rows += 1
+                        if row.trade_date not in allowed_dates:
+                            raise HistorySnapshotReadError("history training row is outside the active calendar")
+                        yield _with_training_industry(row, reference_index)
+                        if progress is not None and processed_rows % 512 == 0:
+                            progress(processed_rows)
+                completed_month = True
             except (HistoryPricePartitionError, OSError, ValueError) as exc:
                 raise HistorySnapshotReadError("history training partition read failed") from exc
             finally:
-                partition.release_read_pages()
+                # Several logical months share one annual file. Releasing its
+                # pages after each month forces the next month to reload them.
+                if (
+                    not completed_month
+                    or position + 1 == len(selected)
+                    or selected[position + 1].relative_path != reference.relative_path
+                ):
+                    partition.release_read_pages()
         if progress is not None:
             progress(processed_rows)
 

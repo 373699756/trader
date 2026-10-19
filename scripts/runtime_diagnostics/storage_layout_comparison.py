@@ -14,12 +14,31 @@ import statistics
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
+from typing import TypedDict
 from zoneinfo import ZoneInfo
+
+
+class _MeasuredCase(TypedDict):
+    milliseconds: float
+    connections: int
+    transactions: int
+
+
+class _LayoutRun(TypedDict):
+    cases: dict[str, _MeasuredCase]
+    history_database_files: int
+    window_database_files: int
+    auxiliary_files: int
+    logical_bytes: int
+    allocated_bytes: int
+    sampled_wal_peak_bytes: int
+    peak_rss_bytes: int
 
 
 def CompareLayouts(baseline: Path, *, rounds: int, size: int) -> dict[str, object]:
@@ -29,7 +48,7 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int) -> dict[str, objec
         raise ValueError("baseline must be an isolated checkout outside the active repository")
     if not 5 <= rounds <= 10 or not 4 <= size <= 64:
         raise ValueError("comparison requires 5..10 rounds and 4..64 securities")
-    runs = {"monthly": [], "annual": []}
+    runs: dict[str, list[_LayoutRun]] = {"monthly": [], "annual": []}
     for number in range(rounds):
         order = ("monthly", "annual") if number % 2 == 0 else ("annual", "monthly")
         for layout in order:
@@ -53,6 +72,14 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int) -> dict[str, objec
                 check=True,
             )
             runs[layout].append(json.loads(completed.stdout))
+    required_improvements = {
+        "history_startup_load",
+        "history_hot_read",
+        "training_narrow_scan",
+        "history_incremental_write",
+        "window_hot_projection",
+        "window_incremental_write",
+    }
     comparison = []
     for name in runs["monthly"][0]["cases"]:
         old = statistics.median(run["cases"][name]["milliseconds"] for run in runs["monthly"])
@@ -64,11 +91,18 @@ def CompareLayouts(baseline: Path, *, rounds: int, size: int) -> dict[str, objec
                 "candidate_median_ms": new,
                 "ratio": new / old,
                 "within_regression_limit": new <= old * 1.1,
+                "improvement_required": name in required_improvements,
+                "improved": new < old,
             }
         )
     return {
         "schema_version": "storage-layout-comparison",
-        "status": "passed" if all(item["within_regression_limit"] for item in comparison) else "failed",
+        "status": "passed"
+        if all(
+            item["within_regression_limit"] and (not item["improvement_required"] or item["improved"])
+            for item in comparison
+        )
+        else "failed",
         "summary": {
             "fixture": True,
             "rounds": rounds,
@@ -90,11 +124,11 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
     counters = {"connections": 0, "transactions": 0}
     original_open = sqlite_connection.OpenSqliteConnection
 
-    def trace(sql):
+    def trace(sql: str) -> None:
         if sql.lstrip().upper().startswith("BEGIN"):
             counters["transactions"] += 1
 
-    def observed_open(*args, **kwargs):
+    def observed_open(*args, **kwargs):  # type: ignore[no-untyped-def]  # two checkout APIs return different handles
         counters["connections"] += 1
         connection = original_open(*args, **kwargs)
         if layout == "annual":
@@ -105,7 +139,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
 
     sqlite_connection.OpenSqliteConnection = observed_open
     from scripts.runtime_diagnostics.history_write_benchmark import _FixtureSupplier
-    from trader.download.domain.history_sync import HistorySyncConfiguration
+    from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
     from trader.download.infra.history_control_index import HistoryControlIndex
     from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
     from trader.download.infra.history_sync_runner import RunHistorySync
@@ -117,7 +151,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
     days = tuple(date(2018 + month // 12, month % 12 + 1, day) for month in range(100) for day in range(1, 21))
 
     class Supplier(_FixtureSupplier):
-        def load_context(self, as_of, sessions):
+        def load_context(self, as_of: date, sessions: int) -> HistorySupplierContext:
             context = super().load_context(as_of, sessions)
             universe = tuple(
                 replace(
@@ -131,14 +165,18 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             return replace(context, universe=universe, st_evidence=evidence)
 
     supplier = Supplier(days, size)
-    cases = {}
+    cases: dict[str, _MeasuredCase] = {}
 
-    def measure(name, action):
+    def measure(name: str, action: Callable[[], object]) -> object:
         before = dict(counters)
         started = time.perf_counter()
         value = action()
         elapsed = (time.perf_counter() - started) * 1000
-        cases[name] = {"milliseconds": elapsed, **{key: counters[key] - before[key] for key in counters}}
+        cases[name] = {
+            "milliseconds": elapsed,
+            "connections": counters["connections"] - before["connections"],
+            "transactions": counters["transactions"] - before["transactions"],
+        }
         return value
 
     with TemporaryDirectory(prefix="trader-layout-comparison-") as scratch:
@@ -154,7 +192,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
         stopped = Event()
         wal_peak = 0
 
-        def sample_wal():
+        def sample_wal() -> None:
             nonlocal wal_peak
             while not stopped.wait(0.005):
                 total = 0
@@ -169,7 +207,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
         sampler.start()
         try:
 
-            def sync():
+            def sync() -> object:
                 at = datetime.combine(supplier.days[-1], datetime.min.time(), ZoneInfo("Asia/Shanghai")).replace(
                     hour=20
                 )
@@ -184,7 +222,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             assert snapshot is not None
             publication = SQLitePublishedHistorySnapshot(history)
 
-            def load():
+            def load() -> object:
                 manifest = publication.manifest()
                 assert manifest is not None
                 windows = publication.read_windows(manifest, codes, sessions=251)
@@ -195,7 +233,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             measure("history_hot_read", load)
             reader = HistorySnapshotReader(history)
 
-            def scan():
+            def scan() -> None:
                 assert sum(1 for _ in reader.iter_training_rows(snapshot, days, codes)) == size * 2000
 
             measure("training_narrow_scan", scan)
@@ -208,7 +246,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
             calendar = supplier.days[-251:]
             windows = tuple(supplier.fetch_tencent_window(security, calendar) for security in context.universe)
 
-            def publish():
+            def publish() -> object:
                 if layout == "annual":
                     return primary.replace_paired_windows(
                         secondary, windows, "fixture", calendar=calendar, completed_day=calendar[-1]
@@ -217,7 +255,7 @@ def _worker(checkout: Path, layout: str, size: int) -> dict[str, object]:
 
             measure("window_initial_write", publish)
 
-            def projection():
+            def projection() -> None:
                 for cache, length in ((primary, 251), (secondary, 61)):
                     manifest = cache.manifest()
                     assert manifest is not None

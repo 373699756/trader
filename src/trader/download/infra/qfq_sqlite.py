@@ -132,6 +132,33 @@ class SQLiteQfqWindowCache:
             raise RuntimeError("qfq_code_identity_mismatch")
         return rows
 
+    def _batch_rows(self, connection: SqliteConnection, codes: tuple[str, ...]) -> tuple[tuple[str, _Rows], ...]:
+        placeholders = ",".join("?" for _ in codes)
+        identities = {
+            str(code): str(digest)
+            for code, digest in connection.run(
+                f"SELECT code,digest FROM identities WHERE profile=? AND code IN ({placeholders})",
+                (self.profile, *codes),
+            )
+        }
+        grouped: dict[str, list[tuple[str, PriceValues]]] = {code: [] for code in identities}
+        for code, day, *values in connection.run(
+            f"SELECT bars.code,bars.day,{_SELECT} FROM identities AS identity "
+            "JOIN bars ON bars.code=identity.code "
+            "AND bars.day BETWEEN identity.first_day AND identity.cutoff "
+            f"WHERE identity.profile=? AND identity.code IN ({placeholders}) ORDER BY bars.code,bars.day",
+            (self.profile, *codes),
+        ):
+            grouped[str(code)].append((str(day), tuple(values)))
+        result = []
+        for code in codes:
+            rows = tuple(grouped.get(code, ()))
+            digest = identities.get(code)
+            if digest is not None and (len(rows) > self.sessions or _digest(rows) != digest):
+                raise RuntimeError("qfq_code_identity_mismatch")
+            result.append((code, rows))
+        return tuple(result)
+
     def read_code(self, code: str) -> PublishedHistoryWindow:
         return self.read_codes((code,))[0]
 
@@ -144,13 +171,15 @@ class SQLiteQfqWindowCache:
         result: list[PublishedHistoryWindow] = []
         try:
             with closing(self._connection()) as connection:
-                for code in requested:
+                for start in range(0, len(requested), 32):
+                    batch = requested[start : start + 32]
                     with SqliteTransaction(connection):
-                        rows = self._rows(connection, code)
-                    result.append(
+                        raw_rows = self._batch_rows(connection, batch)
+                    result.extend(
                         PublishedHistoryWindow(
                             code, tuple(PriceCellFromColumns(code, day, values) for day, values in rows)
                         )
+                        for code, rows in raw_rows
                     )
         except sqlite3.Error as exc:
             raise RuntimeError("qfq_read_failed") from exc

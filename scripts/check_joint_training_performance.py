@@ -21,6 +21,7 @@ for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUME
 from trader.download.infra.history_storage_profile import ClassifyHistoryStorage  # noqa: E402
 from trader.training.entrypoints.tomorrow_training_progress import StderrTomorrowTrainingProgress  # noqa: E402
 from trader.training.infra.engine import (  # noqa: E402
+    JointTrainingRunResult,
     ParallelFitResourcesAvailable,
     ProfileTrainingRequest,
     RunJointProfileTraining,
@@ -107,7 +108,9 @@ def _publish_rejected(output: Path, status: str, *, exit_code: int) -> int:
     return exit_code
 
 
-def _run_benchmark(history_root: Path, train_root: Path, snapshot_hash: str, *, parallel_fit: bool):
+def _run_benchmark(
+    history_root: Path, train_root: Path, snapshot_hash: str, *, parallel_fit: bool
+) -> JointTrainingRunResult:
     with ExitStack() as progress_scope:
         profiles = (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE)
         progresses = tuple(
