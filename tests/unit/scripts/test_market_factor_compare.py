@@ -31,6 +31,7 @@ from scripts.runtime_diagnostics.market_factor_text import RenderMarketFactorTex
 from trader.infra.market_data.history.history import DailyBar, PriceAdjustment
 from trader.infra.market_data.observations import SourceObservation
 from trader.infra.settings import LoadStrategySettings
+from trader.infra.settings.data_paths import DataPaths
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.domain.market.models import Board, FeatureSnapshot, MarketQuote, ModelIndustryReference
 from trader.recommendation.domain.publication.models import Strategy
@@ -273,7 +274,9 @@ def test_market_factor_profile_uses_unified_output_and_explicit_bounds() -> None
 
 
 def test_reference_probe_never_initializes_missing_runtime_database(tmp_path: Path) -> None:
-    snapshot = ReadReferences(tmp_path, AT)
+    snapshot = ReadReferences(
+        tmp_path / "snapshots.sqlite3", AT, tmp_path / "industry.sqlite3", tmp_path / "calendar.json"
+    )
     assert not snapshot.observations
     assert not tuple(tmp_path.iterdir())
 
@@ -308,7 +311,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     monkeypatch.setattr(
         comparison,
         "LoadRuntimeSettings",
-        lambda path: SimpleNamespace(runtime_dir=path, strategy_config_path=path, reference_dir=path),
+        lambda path: SimpleNamespace(runtime_dir=path, strategy_config_path=path, data_paths=DataPaths(path)),
     )
     monkeypatch.setattr(
         comparison,
@@ -325,12 +328,12 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
             filter_codes=lambda codes, at: tuple(codes),
         ),
     )
-    monkeypatch.setattr(comparison, "ReadReferences", lambda path, at, industry_path: references)
+    monkeypatch.setattr(comparison, "ReadReferences", lambda path, at, industry_path, calendar_path: references)
     monkeypatch.setattr(
         comparison, "ExchangeSecurityMasterClient", lambda **kwargs: SimpleNamespace(fetch=lambda at: ())
     )
     monkeypatch.setattr(comparison, "LoadStrategySettings", lambda path: SimpleNamespace(long_research=None))
-    monkeypatch.setattr(comparison, "ProbeAuxiliary", lambda *args: SimpleNamespace(report=()))
+    monkeypatch.setattr(comparison, "ProbeAuxiliary", lambda *args, **kwargs: SimpleNamespace(report=()))
     monkeypatch.setattr(
         comparison,
         "LoadFactorInputs",
@@ -360,7 +363,7 @@ def test_profiles_share_exactly_one_acquisition_per_route_and_round(monkeypatch:
     comparison.Collect(
         Namespace(
             config=Path("unused"),
-            qfq_root=Path("unused"),
+            qfq_database=Path("unused"),
             profiles=("v2", "v3"),
             sources=("tencent",),
             mode="single",
@@ -614,7 +617,12 @@ def test_auxiliary_probe_uses_injected_pool_and_keeps_unavailable_evidence_unkno
     pool.start()
     try:
         result = auxiliary.ProbeAuxiliary(
-            ("600001",), AT, LoadStrategySettings(Path("config/strategy.json")).long_research, 1, pool
+            ("600001",),
+            AT,
+            LoadStrategySettings(Path("config/strategy.json")).long_research,
+            1,
+            pool,
+            company_database=Path("unused/evidence.sqlite3"),
         )
     finally:
         pool.stop(wait=True, cancel_futures=True)
@@ -690,7 +698,7 @@ def test_child_sdk_stdout_cannot_corrupt_json_report(
         return {"status": "degraded", "summary": {"complete": False}}
 
     monkeypatch.setattr(comparison, "Collect", Collect)
-    monkeypatch.setattr(sys, "argv", ["probe", "--config", "config/runtime.json", "--qfq-root", "data/qfq"])
+    monkeypatch.setattr(sys, "argv", ["probe", "--config", "config/runtime.json", "--qfq-database", "data/qfq"])
     assert comparison.main() == 0
     output = capfd.readouterr()
     assert json.loads(output.out)["status"] == "degraded"

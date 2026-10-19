@@ -19,10 +19,6 @@ from trader.download.infra.history_control_index import (
     HistoryControlError,
     HistoryControlIndex,
 )
-from trader.download.infra.history_reference_files import (
-    HistoryReferencePath,
-    WriteHistoryReference,
-)
 
 _REFERENCE_SOURCE_CONTRACT = re.compile(r"history_ref_[0-9a-f]{64}_([0-9a-f]{16})")
 
@@ -37,18 +33,15 @@ class HistoryPublication:
 
 
 def PublishHistorySnapshot(control: HistoryControlIndex, publication: HistoryPublication) -> None:
-    """Publish a reference file and control identity as one recoverable operation."""
+    """Publish the bound reference and snapshot pointer in the control transaction."""
 
-    WriteHistoryReference(
-        HistoryReferencePath(publication.root, publication.reference.content_hash), publication.reference
-    )
     try:
         source, calendar, universe = publication.identities
         control.save_source(source)
         control.save_calendar(calendar)
         control.save_universe(universe)
         control.save_checkpoint(publication.checkpoint)
-        control.publish_snapshot(publication.snapshot)
+        control.publish_snapshot(publication.snapshot, reference=publication.reference)
     except BaseException:
         try:
             active_hash = control.load_state().active_snapshot_hash

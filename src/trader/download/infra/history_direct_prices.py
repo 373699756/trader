@@ -16,7 +16,7 @@ from trader.download.domain.history_price_qualification import QualifyHistoryPai
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import PublishedHistoryWindow
 from trader.download.infra.history_download_index import HistoryDownloadTask
-from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
+from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
 
 
@@ -51,24 +51,20 @@ class HistoryDirectPrices:
         self._activity = activity
         self._fresh = fresh
         self._written_codes: set[str] = set()
-        self._write_sessions: dict[tuple[int, int], HistoryMonthWriteSession] = {}
+        self._write_sessions: dict[int, HistoryPriceWriteSession] = {}
         self._write_thread: int | None = None
         self._download_months = frozenset(
-            (int(path.parent.name), int(path.stem))
-            for path in (root / "partitions").glob("[0-9][0-9][0-9][0-9]/[0-9][0-9].sqlite3")
+            (int(path.stem[7:]), month)
+            for path in root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3")
+            for month in range(1, 13)
         )
         self._previous = (
-            {
-                (int(Path(item.relative_path).parts[1]), int(Path(item.relative_path).stem)): item
-                for item in active.partitions
-            }
-            if active
-            else {}
+            {(item.calendar_year, item.calendar_month): item for item in active.partitions} if active else {}
         )
 
-    def _month(self, year: int, month: int) -> HistoryMonthPrices:
-        return HistoryMonthPrices(
-            self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3",
+    def _month(self, year: int, month: int) -> HistoryPricePartition:
+        return HistoryPricePartition(
+            self._root / f"prices_{year:04d}.sqlite3",
             year,
             month,
             activity=self._activity,
@@ -83,7 +79,7 @@ class HistoryDirectPrices:
         cells: list[BaoStockDailyCell] = []
         for (year, month), keys in groups.items():
             self._activity.tick()
-            path = self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3"
+            path = self._root / f"prices_{year:04d}.sqlite3"
             if path.exists():
                 cells.extend(
                     item.cell for item in self._month(year, month).read_price_keys(tuple(keys), self._sequence)
@@ -150,10 +146,10 @@ class HistoryDirectPrices:
         )
 
     def commit(self, results: tuple[HistoryPriceResult, ...]) -> None:
-        for (year, month), revisions in self._revision_groups(results):
+        for year, revisions in self._revision_groups(results):
             self._activity.tick()
-            target = self._month(year, month)
-            if not (self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3").exists():
+            target = self._month(year, 1)
+            if not (self._root / f"prices_{year:04d}.sqlite3").exists():
                 target.initialize()
             target.save_revision_batches(revisions)
         self._written_codes.update(result.task.code for result in results if result.revisions)
@@ -165,15 +161,15 @@ class HistoryDirectPrices:
             self._write_thread = thread
         elif self._write_thread != thread:
             raise RuntimeError("history_month_writer_thread_conflict")
-        for (year, month), revisions in self._revision_groups(results):
+        for year, revisions in self._revision_groups(results):
             self._activity.tick()
-            key = year, month
+            key = year
             session = self._write_sessions.get(key)
             if session is None:
-                if len(self._write_sessions) >= 128:
+                if len(self._write_sessions) >= 32:
                     raise RuntimeError("history_month_writer_capacity_exceeded")
-                target = self._month(year, month)
-                if not (self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3").exists():
+                target = self._month(year, 1)
+                if not (self._root / f"prices_{year:04d}.sqlite3").exists():
                     target.initialize()
                 session = target.open_write_session(
                     fresh=self._fresh, pending_sequence=self._sequence if not self._fresh else None
@@ -203,11 +199,11 @@ class HistoryDirectPrices:
     @staticmethod
     def _revision_groups(
         results: tuple[HistoryPriceResult, ...],
-    ) -> tuple[tuple[tuple[int, int], tuple[HistoryRevision, ...]], ...]:
-        groups: dict[tuple[int, int], list[HistoryRevision]] = defaultdict(list)
+    ) -> tuple[tuple[int, tuple[HistoryRevision, ...]], ...]:
+        groups: dict[int, list[HistoryRevision]] = defaultdict(list)
         for result in results:
             for revision in result.revisions:
-                groups[(revision.trade_date.year, revision.trade_date.month)].append(revision)
+                groups[revision.trade_date.year].append(revision)
         return tuple(
             (key, tuple(sorted(revisions, key=lambda item: (item.trade_date, item.code))))
             for key, revisions in sorted(groups.items())
@@ -251,7 +247,7 @@ class HistoryDirectPrices:
             progress(index - 1, len(months), f"{year:04d}-{month:02d}")
             target = self._month(year, month)
             # Resume detects changes from persisted observation sequences, not an in-memory flag.
-            if not (self._root / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3").exists():
+            if not (self._root / f"prices_{year:04d}.sqlite3").exists():
                 target.initialize()
             if (year, month) in self._previous and not target.has_observations_after(
                 self._previous[(year, month)].sequence

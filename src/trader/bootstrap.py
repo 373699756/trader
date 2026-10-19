@@ -19,6 +19,7 @@ from trader.download.application.download_history import DownloadHistoryUseCase
 from trader.download.application.progress_message import ProgressLevel, ProgressMessage
 from trader.download.application.qfq_download_progress import QfqMessage, ReportQfqStProgress
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
+from trader.download.application.sync_data import SyncData, SyncResult, SyncTarget
 from trader.download.application.update_qfq import UpdateQfqWindows
 from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.company_evidence import (
@@ -46,12 +47,11 @@ from trader.download.infra.exchange_security_master import (
 )
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse, SelectStEligibleUniverse
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_reference_files import HistoryStEvidencePath
+from trader.download.infra.history_reference_codec import HistoryStEvidencePath
 from trader.download.infra.history_st_source import HistoryStNameSource
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_gateway import HistorySyncGateway
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
-from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
@@ -77,6 +77,7 @@ from trader.infra.settings import (
     LoadStrategySettings,
     RuntimeSettings,
 )
+from trader.infra.settings.data_paths import DataPaths
 from trader.infra.shutdown import ShutdownDeadline
 from trader.infra.workers import BoundedExecutor
 from trader.recommendation.application.long_runtime import LongRuntime, LongRuntimeDependencies
@@ -128,7 +129,7 @@ from trader.recommendation.application.runtime.supervisor import (
     RuntimeSupervisorConfig,
     SchedulerIntervalSeconds,
 )
-from trader.recommendation.domain.market.eligibility import IssuerEligibilityReason
+from trader.recommendation.domain.market.eligibility import SelectQuotePopulation
 from trader.recommendation.domain.publication.decision_identity import DecisionOverlay, ScoredDecision
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
@@ -184,7 +185,7 @@ from trader.training.application.research_audit import TryBuildCommittedResearch
 from trader.training.application.research_runtime import ResearchRuntime
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
+from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.infra.research.research_trace_index import ResearchTraceLimits, SQLiteResearchTraceIndex
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 from trader.web import CreateApp
@@ -222,28 +223,31 @@ def BuildIndustrySource(*, cancel_requested: Callable[[], bool] | None = None) -
     return BaoStockIndustryClient(fetch_rows=partial(FetchBaoStockIndustries, execute=execute))
 
 
-def ExecuteRiskDownload(
-    config_path: str | Path, *, progress: Callable[[EvidenceSyncProgress], None] | None = None
-) -> CompanyEvidenceSyncResult:
-    """Build or increment the fresh company evidence database, without legacy reads."""
-    started = time.monotonic()
+def ExecuteSync(
+    config_path: Path, target: SyncTarget, *, cancel_requested: Callable[[], bool] = lambda: False
+) -> SyncResult:
+    """Compose one sync wave with shared official population and ST evidence."""
+    from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
+
     settings = LoadRuntimeSettings(config_path)
     clock = ShanghaiClock(_utc_now)
-    population = _load_risk_st_universe(settings.reference_dir, clock.now().date(), progress)
-    remaining = 3480.0 - (time.monotonic() - started)
-    if remaining <= 0:
-        raise TimeoutError("company_task_deadline")
-    result = _sync_company_evidence(
-        settings.project_root / "data" / "risk",
-        progress,
-        CompanyEvidenceRequest(
-            tuple(item.code for item in population),
-            clock.now(),
-            budget_seconds=remaining,
+    progress = CompanyEvidenceProgress()
+    return SyncData(
+        prepare=lambda: _load_risk_st_universe(
+            settings.data_paths.reference, clock.now().date(), progress, cancel_requested=cancel_requested
         ),
-        timeout_seconds=settings.market_data.research_timeout_seconds,
-    )
-    return replace(result, elapsed_seconds=max(0.0, time.monotonic() - started))
+        market=lambda population: ExecuteQfqDownload(
+            settings.data_paths, population=population, cancel_requested=cancel_requested
+        ),
+        company=lambda population: _sync_company_evidence(
+            settings.data_paths.company.parent,
+            progress,
+            CompanyEvidenceRequest(tuple(item.code for item in population), clock.now(), budget_seconds=3480.0),
+            cancel_requested=cancel_requested,
+            timeout_seconds=settings.market_data.research_timeout_seconds,
+        ),
+        cancelled=cancel_requested,
+    ).execute(target)
 
 
 def _sync_company_evidence(
@@ -254,10 +258,10 @@ def _sync_company_evidence(
     cancel_requested: Callable[[], bool] | None = None,
     timeout_seconds: float = 8.0,
 ) -> CompanyEvidenceSyncResult:
-    with ProcessLock(root / "company_evidence.lock", label="download_risk"), ProgressHeartbeat(progress) as heartbeat:
+    with ProcessLock(root / "evidence.lock", label="sync company"), ProgressHeartbeat(progress) as heartbeat:
         with OpenExternalHttp() as disclosure_session, OpenExternalHttp() as structured_session:
             dependencies = CompanyEvidenceDependencies(
-                SQLiteCompanyEvidenceIndex(root / "company_evidence.sqlite3"),
+                SQLiteCompanyEvidenceIndex(root / "evidence.sqlite3"),
                 CninfoMarketDisclosureSource(
                     disclosure_session,
                     monotonic=time.monotonic,
@@ -284,7 +288,11 @@ def _sync_company_evidence(
 
 
 def _load_risk_st_universe(
-    reference_root: Path, as_of: date, progress: Callable[[EvidenceSyncProgress], None] | None
+    reference_root: Path,
+    as_of: date,
+    progress: Callable[[EvidenceSyncProgress], None] | None,
+    *,
+    cancel_requested: Callable[[], bool],
 ) -> tuple[BaoStockSecurity, ...]:
     universe = LoadCurrentAShareUniverse(
         partial(FetchSseListings, get=FetchExternalHttp), partial(FetchSzseListings, get=FetchExternalHttp), 15.0
@@ -298,7 +306,7 @@ def _load_risk_st_universe(
             HistoryStEvidencePath(reference_root),
             sessions.borrow,
             workers,
-            lambda: not workers.is_running(),
+            lambda: cancel_requested() or not workers.is_running(),
             report=lambda completed, total, summary: (
                 progress(
                     EvidenceSyncProgress(
@@ -395,7 +403,7 @@ def ExecuteHistoryDownload(
                         batch_size=configuration.history_workers,
                     ),
                     industry_cache=HistoryIndustryQueryCache(
-                        HistoryStEvidencePath(configuration.reference_root).with_name("industry_queries.sqlite3")
+                        HistoryStEvidencePath(configuration.reference_root).with_name("industry.sqlite3")
                     ),
                     eligibility_date=ShanghaiClock(clock or _utc_now).now().date(),
                 ),
@@ -413,9 +421,9 @@ def ExecuteHistoryDownload(
 
 
 def ExecuteQfqDownload(
-    project_root: Path,
+    paths: DataPaths,
     *,
-    reference_root: Path,
+    population: tuple[BaoStockSecurity, ...] | None = None,
     cancel_requested: Callable[[], bool] = lambda: False,
     report: Callable[[ProgressMessage], None] | None = None,
     now: Callable[[], datetime] = _utc_now,
@@ -423,10 +431,10 @@ def ExecuteQfqDownload(
     """Compose the zero-argument CLI/background use case without building the server."""
     if report is None:
         report = TerminalDownloadProgress()
-    root = project_root / "data" / "qfq"
-    history_root = project_root / "data/history"
-    v2 = SQLiteQfqWindowCache(root, "v2")
-    v3 = SQLiteQfqWindowCache(root, "v3")
+    reference_root = paths.reference
+    history_root = paths.history
+    v2 = SQLiteQfqWindowCache(paths.daily_window, "v2")
+    v3 = SQLiteQfqWindowCache(paths.daily_window, "v3")
     history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
     started = time.monotonic()
     qfq_pool = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="qfq-download")
@@ -450,6 +458,8 @@ def ExecuteQfqDownload(
             )
 
             def load_qfq_universe(as_of: date) -> tuple[BaoStockSecurity, ...]:
+                if population is not None:
+                    return population
                 official = LoadCurrentAShareUniverse(
                     partial(FetchSseListings, get=FetchExternalHttp),
                     partial(FetchSzseListings, get=FetchExternalHttp),
@@ -462,7 +472,6 @@ def ExecuteQfqDownload(
                 v2,
                 v3,
                 tencent,
-                QfqCheckpoint(root / ".checkpoint.json"),
                 cancel_requested,
                 report,
                 workers=8,
@@ -470,7 +479,7 @@ def ExecuteQfqDownload(
                 writer_pool=qfq_writer,
             )
             return QfqUpdateRunner(
-                history, updater, v2, v3, root / ".maintenance.lock", ShanghaiClock(now).now
+                history, updater, v2, v3, paths.daily_window.with_suffix(".lock"), ShanghaiClock(now).now
             ).execute()
         finally:
             deadline = ShutdownDeadline.start(30.0)
@@ -549,17 +558,15 @@ def BuildSystem(
     *,
     scoring_profile: ScoringProfileId | None = None,
     runtime_scope: ScoringProfileId | None = None,
-    budget_path: Path | None = None,
     owns_shared_runtime: bool = True,
 ) -> ApplicationSystem[
-    SQLiteResearchTraceIndex, SQLiteOutcomeEvidenceRepository, QfqDailyMaintenance, UnifiedWebServices, Flask
+    SQLiteResearchTraceIndex, SQLiteOutcomeEvidenceIndex, QfqDailyMaintenance, UnifiedWebServices, Flask
 ]:
     settings = LoadRuntimeSettings(config_path)
     if runtime_scope is not None:
         settings = replace(
             settings,
             runtime_dir=settings.runtime_dir / "profiles" / runtime_scope,
-            freeze_dir=settings.freeze_dir / runtime_scope,
         )
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=scoring_profile)
     watchlist = LoadLongWatchlist(settings.long_watchlist_path)
@@ -581,11 +588,11 @@ def BuildSystem(
         latency,
         cadence_policy,
         workers,
-        budget_path or settings.runtime_dir / "deepseek-budget.sqlite3",
+        settings.data_paths.budget,
         owns_shared_runtime,
     )
     calendar = ChinaTradingCalendar(
-        settings.runtime_dir / "calendar.json",
+        settings.data_paths.reference / "trading_calendar.json",
         fetcher=partial(
             FetchAkshareCalendar,
             execute=partial(RunIsolatedCall, cancel_requested=lambda: workers.source_lanes.is_stopped("reference")),
@@ -595,10 +602,10 @@ def BuildSystem(
     persistence = _build_persistence(context)
     profile_id = strategy.scoring_profile
     try:
-        loaded_profile = LoadScoringProfile(profile_id, training_root=settings.project_root / "data" / "train")
+        loaded_profile = LoadScoringProfile(profile_id, training_root=settings.data_paths.models)
     except ScoringArtifactsMissingError:
         loaded_profile = None
-    WarnMissingLocalData(settings.project_root, profile_id, model_missing=loaded_profile is None)
+    WarnMissingLocalData(settings.data_paths, profile_id, model_missing=loaded_profile is None)
     profile_contract = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
     training_settings = LoadProfileTrainingSettings(settings.project_root, profile_id)
     training_settings.require_profile(profile_contract)
@@ -711,9 +718,7 @@ def BuildSystem(
         market_data.history, observe_company=market_data.research.observe_publication
     )
     qfq_maintenance = QfqDailyMaintenance(
-        lambda cancel: ExecuteQfqDownload(
-            settings.project_root, reference_root=settings.reference_dir, cancel_requested=cancel, now=now
-        ),
+        lambda cancel: ExecuteQfqDownload(settings.data_paths, cancel_requested=cancel, now=now),
         now=ShanghaiClock(now).now,
         enabled=owns_shared_runtime,
     )
@@ -779,14 +784,9 @@ def BuildProfiledSystem(config_path: str | Path) -> ProfiledApplicationSystem[Fl
     """Build both production profiles with one read-only delivery surface."""
 
     settings = LoadRuntimeSettings(config_path)
-    shared_budget = settings.runtime_dir / "shared" / "deepseek-budget.sqlite3"
     systems = (
-        BuildSystem(
-            config_path, scoring_profile="v2", runtime_scope="v2", budget_path=shared_budget, owns_shared_runtime=True
-        ),
-        BuildSystem(
-            config_path, scoring_profile="v3", runtime_scope="v3", budget_path=shared_budget, owns_shared_runtime=False
-        ),
+        BuildSystem(config_path, scoring_profile="v2", runtime_scope="v2", owns_shared_runtime=True),
+        BuildSystem(config_path, scoring_profile="v3", runtime_scope="v3", owns_shared_runtime=False),
     )
     default_profile = LoadStrategySettings(settings.strategy_config_path).scoring_profile
     profiles: dict[str, UnifiedWebServices] = {system.profile_id: system.web_services for system in systems}
@@ -883,17 +883,11 @@ def _build_market_data(
     )
 
     def official_quote_codes() -> tuple[str, ...]:
-        snapshot = references.static_reference().reference
-        if snapshot is None:
-            return ()
-        observed_at = now()
-        st_reasons = {IssuerEligibilityReason.HISTORICAL_ST, IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING}
-        excluded = {item.code for item in eligibility.exclusions(observed_at) if item.reason in st_reasons}
-        codes = tuple(issuer.code for issuer in snapshot.records if not issuer.is_st and issuer.code not in excluded)
-        historical_st = history_cache.historical_st_eligibility()
-        if historical_st.status == "ready":
-            return tuple(code for code in codes if historical_st.eligible(code))
-        return codes
+        return SelectQuotePopulation(
+            references.static_reference().reference,
+            eligibility.exclusions(now()),
+            history_cache.historical_st_eligibility(),
+        )
 
     tencent_market_client = TencentClient(
         session_factory=OpenExternalHttp,
@@ -955,18 +949,18 @@ def _build_market_data(
         schema_version="market_snapshot",
         wall_clock=now,
     )
-    history_root = settings.project_root / "data" / "history"
+    history_root = settings.data_paths.history
     published_history = ReadPublishedHistoryUseCase(SQLitePublishedHistorySnapshot(history_root))
     history_cache = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(
-            SQLiteQfqWindowCache(settings.project_root / "data/qfq", "v2" if history_lookback_sessions > 61 else "v3")
+            SQLiteQfqWindowCache(settings.data_paths.daily_window, "v2" if history_lookback_sessions > 61 else "v3")
         ),
         lookback_sessions=history_lookback_sessions,
         outcome_history=published_history,
         open_dates=calendar.open_dates,
     )
     industry_source = LocalIndustrySource(
-        settings.reference_dir / "industry_queries.sqlite3",
+        settings.data_paths.reference / "industry.sqlite3",
         BuildIndustrySource(cancel_requested=lambda: source_lanes.is_stopped("baostock_reference")),
     )
     references = ReferenceLoader(
@@ -990,8 +984,9 @@ def _build_market_data(
     )
     references.load_model_industry_cache(now())
     gateway.set_security_reference_persistence_sink(references.schedule_security_master_persistence)
-    reference_root = settings.reference_dir
-    eligibility = SQLiteIssuerEligibilityIndex(reference_root, read_only=not context.owns_shared_runtime)
+    eligibility = SQLiteIssuerEligibilityIndex(
+        settings.data_paths.eligibility, read_only=not context.owns_shared_runtime
+    )
     if context.owns_shared_runtime:
         try:
             eligibility.record_manual_blacklist(
@@ -1000,9 +995,9 @@ def _build_market_data(
         except RuntimeError:
             # The typed index retains any facts it could verify; persistence degradation stays observable.
             pass
-    risk_root = settings.project_root / "data" / "risk"
+    risk_root = settings.data_paths.company.parent
     research = PublishedCompanyResearch(
-        SQLiteCompanyEvidenceReader(risk_root / "company_evidence.sqlite3"),
+        SQLiteCompanyEvidenceReader(risk_root / "evidence.sqlite3"),
         wall_clock=now,
         refresh=(
             partial(
@@ -1057,9 +1052,10 @@ def _build_market_data(
 def _build_persistence(context: RuntimeBuildContext) -> RuntimePersistenceContext:
     settings = context.settings
     runtime_database_lock = threading.Lock()
-    records = SQLiteDecisionRecords(settings.freeze_dir)
-    data_plane = SQLiteDataPlane(settings.runtime_dir)
-    outcomes = SQLiteOutcomeEvidenceRepository(settings.runtime_dir, records)
+    profile_root = settings.data_paths.recommendation(context.strategy.scoring_profile)
+    records = SQLiteDecisionRecords(profile_root / "decisions.sqlite3")
+    data_plane = SQLiteDataPlane(profile_root / "snapshots.sqlite3")
+    outcomes = SQLiteOutcomeEvidenceIndex(settings.data_paths.research(context.strategy.scoring_profile), records)
     budget = DeepSeekBudgetLedger(
         context.budget_path,
         daily_hard_limit=settings.deepseek.daily_hard_limit,
@@ -1079,7 +1075,7 @@ def _build_persistence(context: RuntimeBuildContext) -> RuntimePersistenceContex
         write_lock=runtime_database_lock,
     )
     return RuntimePersistenceContext(
-        PublicationSequence(settings.runtime_dir / "publication-sequence.sqlite3"),
+        PublicationSequence(profile_root / "snapshots.sqlite3"),
         records,
         data_plane,
         budget,
@@ -1130,7 +1126,7 @@ def _build_publication(
     query_sources = DecisionQuerySources(market_data, dependencies.outcomes, market_data.references)
     decision_queries = UnifiedDecisionQueries(tomorrow_decisions, decision_drafts, records, clock, query_sources)
     research_trace = SQLiteResearchTraceIndex(
-        settings.runtime_dir,
+        settings.data_paths.research(context.strategy.scoring_profile),
         limits=ResearchTraceLimits(events_per_trade_date=max(2048, settings.pipeline.event_queue_size * 4)),
     )
 
@@ -1193,7 +1189,9 @@ __all__ = [
     "BuildProfiledSystem",
     "BuildSystem",
     "ExecuteDownloadTrain",
-    "ExecuteRiskDownload",
+    "ExecuteSync",
+    "ExecuteHistoryDownload",
+    "ExecuteQfqDownload",
     "FetchExternalHttp",
     "OpenExternalHttp",
     "ProfiledApplicationSystem",

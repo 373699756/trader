@@ -18,7 +18,20 @@ def test_install_keeps_setuptools_metadata_out_of_source_tree(tmp_path: Path) ->
     # Reproduce a clean checkout, not caches, previous builds or unrelated local data.
     tracked = (
         subprocess.run(
-            ["git", "ls-files", "-z", "src", "pyproject.toml", "setup.py", "setup.cfg", "README.md", "LICENSE*"],
+            [
+                "git",
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "src",
+                "pyproject.toml",
+                "setup.py",
+                "setup.cfg",
+                "README.md",
+                "LICENSE*",
+            ],
             cwd=repository,
             check=True,
             capture_output=True,
@@ -27,6 +40,8 @@ def test_install_keeps_setuptools_metadata_out_of_source_tree(tmp_path: Path) ->
         .split("\0")
     )
     for relative in filter(None, tracked):
+        if not (repository / relative).is_file():
+            continue
         target = isolated_repository / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         copy2(repository / relative, target)
@@ -96,30 +111,23 @@ def test_hidden_metadata_container_is_not_discovered_as_an_empty_distribution() 
     assert probe.returncode == 0
 
 
-def test_repository_stages_profile_owned_training_artifacts() -> None:
+def test_repository_whitelists_only_portable_model_heads() -> None:
     repository = Path(__file__).parents[2]
-    ignore = (repository / ".gitignore").read_text(encoding="utf-8")
-
-    assert "/data/history/" in ignore
-    assert "/data/train/**/*" in ignore
-    for profile in ("v2", "v3"):
-        pointer = repository / "data" / "train" / profile / "active-profile.json"
-        assert f"!/data/train/{profile}/active-profile.json" in ignore
-        assert pointer.stat().st_size > 0
-    for strategy in ("tomorrow", "d25"):
-        assert f"!/data/train/v2/{strategy}/" in ignore
-        assert f"!/data/train/v2/{strategy}/.gitkeep" in ignore
-        v2_directory = repository / "data" / "train" / "v2" / strategy
-        expected_files = {".gitkeep", "active-bundle.json", "model.json", "report.json", "training-input.json"}
-        assert {path.name for path in v2_directory.iterdir()} == expected_files
-        for name in expected_files - {".gitkeep"}:
-            assert f"!/data/train/v2/{strategy}/{name}" in ignore
-            assert (v2_directory / name).stat().st_size > 0
-
-        assert f"!/data/train/v3/{strategy}/" in ignore
-        for name in ("active-bundle.json", "model.json", "report.json", "training-input.json"):
-            assert f"!/data/train/v3/{strategy}/{name}" in ignore
-            assert (repository / "data" / "train" / "v3" / strategy / name).stat().st_size > 0
-    assert "!/data/train/**/model.json" not in ignore
-    assert "!/data/train/**/report.json" not in ignore
-    assert all(pattern in ignore for pattern in ("build/", "dist/", "*.egg-info/"))
+    cases = {
+        "data/training/models/v2/tomorrow/model.json": False,
+        "data/training/models/v2/d25/metadata.json": False,
+        "data/training/models/v3/tomorrow/model.json": False,
+        "data/training/models/v3/d25/metadata.json": False,
+        "data/training/models/v3/d25/active-bundle.json": True,
+        "data/training/models/v2/active-profile.json": True,
+        "data/training/samples/v2/complete.json": True,
+        "data/recommendation/v3/decisions.sqlite3": True,
+        "data/market/history/catalog.sqlite3": True,
+    }
+    for relative, ignored in cases.items():
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "-q", relative],
+            cwd=repository,
+            check=False,
+        )
+        assert result.returncode == int(not ignored), relative

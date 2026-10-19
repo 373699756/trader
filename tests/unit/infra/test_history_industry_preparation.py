@@ -1,4 +1,6 @@
 from datetime import date, timedelta
+from contextlib import closing
+from trader.infra.sqlite_connection import OpenSqliteConnection
 
 import pytest
 
@@ -11,7 +13,7 @@ from trader.download.infra import baostock_sync_supplier as supplier_module
 from trader.download.infra.baostock_gateway import BaoStockRowGateway
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
-from trader.download.infra.history_reference_files import HistoryReferencePath
+from trader.download.infra.history_reference_codec import ReadHistoryReference
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_supplier_router import HistorySupplierRouter
 from trader.download.infra.history_sync_runner import RunHistorySync
@@ -37,7 +39,11 @@ def test_warm_industry_context_does_not_start_or_query_supplier(tmp_path, monkey
     sdk, requests = industry_source
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     calendar = BaoStockCalendar(DATES)
-    with supplier_module.BaoStockHistorySupplier(HistorySyncConfiguration()) as source:
+    with supplier_module.BaoStockHistorySupplier(
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+        )
+    ) as source:
         cold = source.load_industry_context(calendar, UNIVERSE, industry_cache=cache)
     assert requests == list(DATES)
     assert len(sdk.calls) == len(DATES)
@@ -47,7 +53,11 @@ def test_warm_industry_context_does_not_start_or_query_supplier(tmp_path, monkey
 
     monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_request", unexpected)
     monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_start", unexpected)
-    with supplier_module.BaoStockHistorySupplier(HistorySyncConfiguration()) as source:
+    with supplier_module.BaoStockHistorySupplier(
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+        )
+    ) as source:
         assert source.load_industry_context(calendar, UNIVERSE, industry_cache=cache) == cold
 
 
@@ -75,7 +85,9 @@ def test_real_request_wrapper_has_one_start_and_completion_per_industry_date(tmp
     monkeypatch.setattr(supplier_module.BaoStockHistorySupplier, "_request_once", request_once)
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     with supplier_module.BaoStockHistorySupplier(
-        HistorySyncConfiguration(),
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+        ),
         progress=StderrHistorySyncProgress(),
     ) as source:
         source.load_industry_context(BaoStockCalendar(DATES), UNIVERSE, industry_cache=cache)
@@ -90,7 +102,11 @@ def test_real_request_wrapper_has_one_start_and_completion_per_industry_date(tmp
 def test_future_observation_cannot_be_reused_at_an_earlier_cutoff(tmp_path, industry_source):
     _, requests = industry_source
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
-    with supplier_module.BaoStockHistorySupplier(HistorySyncConfiguration()) as source:
+    with supplier_module.BaoStockHistorySupplier(
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+        )
+    ) as source:
         source.load_industry_context(BaoStockCalendar(DATES), UNIVERSE, industry_cache=cache)
         requests.clear()
         source.load_industry_context(BaoStockCalendar(DATES[:-1]), UNIVERSE, industry_cache=cache)
@@ -100,7 +116,11 @@ def test_future_observation_cannot_be_reused_at_an_earlier_cutoff(tmp_path, indu
 def test_new_cutoff_fetches_only_new_query_after_more_than_thirty_days(tmp_path, industry_source):
     _, requests = industry_source
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
-    with supplier_module.BaoStockHistorySupplier(HistorySyncConfiguration()) as source:
+    with supplier_module.BaoStockHistorySupplier(
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+        )
+    ) as source:
         source.load_industry_context(BaoStockCalendar(DATES), UNIVERSE, industry_cache=cache)
         requests.clear()
         next_cutoff = DATES[-1] + timedelta(days=60)
@@ -112,26 +132,38 @@ def test_new_cutoff_fetches_only_new_query_after_more_than_thirty_days(tmp_path,
 def test_cached_industry_repairs_reference_without_supplier_or_price_requests(tmp_path, industry_source, damage):
     _, requests = industry_source
     dates = (date(2026, 9, 8), date(2026, 9, 9))
-    config = HistorySyncConfiguration(tmp_path / "history", sessions=2, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path / "history",
+        sessions=2,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path / "history").parent / "reference",
+        training_root=(tmp_path / "history").parent / "models",
+    )
     cache = HistoryIndustryQueryCache(tmp_path / "industry.sqlite3")
     prices = Prices()
     prices.dates = dates
     with supplier_module.BaoStockHistorySupplier(config) as source:
         router = HistorySupplierRouter(source, prices, lambda: UNIVERSE, StSource(), cache)
         assert RunHistorySync(config, router, clock=lambda: NOW).state == "completed"
-        control = HistoryControlIndex(config.archive_root / "control.sqlite3")
+        control = HistoryControlIndex(config.archive_root / "catalog.sqlite3")
         snapshot = control.load_published_state().snapshot
         identity = control.read_source(snapshot.source_identity_hash)
-        path = HistoryReferencePath(config.archive_root, identity.supplier_contract[12:76])
-        original = path.read_bytes()
-        if damage == "missing":
-            path.unlink()
-        else:
-            path.write_text("{}")
+        path = config.archive_root / "catalog.sqlite3"
+        original = ReadHistoryReference(path, identity.supplier_contract[12:76])
+        with closing(OpenSqliteConnection(path)) as connection, connection:
+            if damage == "missing":
+                connection.run("DELETE FROM bound_references")
+            else:
+                connection.run("UPDATE bound_references SET payload_json='{}'")
         requests.clear()
         prices.calls.clear()
-        assert RunHistorySync(config, router, clock=lambda: NOW).state == "already_current"
+        result = RunHistorySync(config, router, clock=lambda: NOW)
+        if damage == "tampered":
+            assert result.state == "failed" and result.reason == "history_reference_content_conflict"
+            return
+        assert result.state == "already_current"
     assert requests == [] and prices.calls == []
-    assert path.read_bytes() == original
+    assert ReadHistoryReference(path, identity.supplier_contract[12:76]) == original
     assert control.load_published_state().snapshot == snapshot
     assert HistorySnapshotReader(config.archive_root).reference_index(snapshot).industry_on("600001", dates[-1])

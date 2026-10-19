@@ -102,7 +102,7 @@ def test_corrupt_cached_payload_requeries_only_that_date_and_source_change_inval
     sdk = _IndustrySdk()
     original = _fetch(sdk, cache)
     with closing(OpenSqliteConnection(cache.path)) as connection, connection:
-        connection.execute("UPDATE queries SET payload='[]' WHERE day=?", (str(DATES[1]),))
+        connection.run("UPDATE queries SET payload='[]' WHERE day=?", (str(DATES[1]),))
     sdk.calls.clear()
     assert _fetch(sdk, cache) == original
     assert sdk.calls == [str(DATES[1])]

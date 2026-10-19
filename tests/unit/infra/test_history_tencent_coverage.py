@@ -40,7 +40,14 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
             return partial
 
     baseline = Baseline(days)
-    config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path).parent / "reference",
+        training_root=(tmp_path).parent / "models",
+    )
     result = RunHistorySync(
         config, _router(baseline, PartialPrices()), clock=lambda: NOW, progress=StderrHistorySyncProgress()
     )
@@ -60,7 +67,7 @@ def test_actual_tencent_coverage_controls_retry_and_survives_restart(tmp_path, c
             assert "其中待重试 2 股" in logs
     else:
         assert "完整 2 股" in logs if mode == "complete" else "失败 2 股" in logs
-    previous = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    previous = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     old_rows = HistorySnapshotReader(tmp_path).read_day(days[-1], previous)
     baseline.calls.clear()
     retry_prices = Prices()
@@ -105,11 +112,18 @@ def test_deferred_qfq_gap_is_not_successful_reuse_in_mixed_retry_summary(
     prices = MixedPrices()
     baseline = Baseline(days)
     supplier = _router(baseline, prices, _current_universe("600001", "600002", "600003", "600004"))
-    config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path).parent / "reference",
+        training_root=(tmp_path).parent / "models",
+    )
     first = RunHistorySync(config, supplier, clock=lambda: NOW)
     assert first.state == "completed" and first.unresolved_price_cells == 3
-    control = HistoryControlIndex(tmp_path / "control.sqlite3")
-    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
     previous = control.load_state().active_snapshot
     assert previous is not None
     reader = HistorySnapshotReader(tmp_path)
@@ -168,7 +182,7 @@ def test_qfq_transport_failure_preserves_old_window_and_never_calls_baostock(tmp
     updater = replace(
         _updater(tmp_path, PendingSupplier()), report=lambda message: messages.append(_plain_feedback(message))
     )
-    updater.seed((_window("600001", price=15),), "old")
+    updater.seed((_window("600001", price=15),), "old", calendar=DAYS)
     old = updater.v2.read_code("600001")
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)

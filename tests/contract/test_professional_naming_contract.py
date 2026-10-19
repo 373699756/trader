@@ -223,7 +223,7 @@ def test_tomorrow_training_sample_boundary_uses_repository_responsibility_names(
     paths = (
         SOURCE / "recommendation/infra/scoring/profiles/v3/sample_builder.py",
         SOURCE / "recommendation/infra/scoring/profiles/v3/model_fitting.py",
-        SOURCE / "recommendation/infra/scoring/profiles/v3/training_sample_repository.py",
+        SOURCE / "recommendation/infra/scoring/profiles/v3/training_sample_index.py",
     )
     violations: list[str] = []
     for path in paths:

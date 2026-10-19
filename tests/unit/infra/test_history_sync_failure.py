@@ -10,7 +10,7 @@ def test_sqlite_failure_detail_keeps_safe_error_name_without_message() -> None:
     connection = OpenSqliteConnection(":memory:")
     try:
         try:
-            connection.execute("SELECT * FROM missing_private_table")
+            connection.run("SELECT * FROM missing_private_table")
         except sqlite3.OperationalError as exc:
             detail = HistoryFailureDetail(exc)
         else:

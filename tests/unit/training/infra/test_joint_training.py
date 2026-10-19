@@ -26,6 +26,7 @@ def _requests(root: Path) -> tuple[ProfileTrainingRequest, ProfileTrainingReques
             profile,
             profile.heads,
             LoadProfileTrainingSettings(PROJECT_ROOT, profile.profile_id),
+            sample_root=(root / "train").parent / "samples",
         )
         for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE)
     )  # type: ignore[return-value]

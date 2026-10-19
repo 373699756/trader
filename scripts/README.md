@@ -19,12 +19,11 @@ behavior; they do not grant permission to write active data.
 | Tool | Owner | Network | Writes | Output | Resource boundary |
 | --- | --- | --- | --- | --- | --- |
 | `check_refactor_quality.py` | Repository quality gate | None | None; Ruff runs with `--no-cache` | stdout success; stderr violations/failure | Two sequential Ruff subprocesses, 60 s timeout each; finite repository scan, no hard RSS/total I/O limit |
-| `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models/reports/sample data under required `--train-root`; atomic result at `--output`, default `data/historyless/training-memory-result.json` | Result JSON to stdout and result file; progress to stderr | Two sequential full rebuilds; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; stage durations are recorded, with no artificial total deadline |
-| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; history revision benchmarks and qfq integrity checks write only disposable system-temporary targets, while active qfq data remains read-only; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output and stock identities are not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq copies and scans at most eight bounded board shards and emits aggregate counts; child capture has no fixed byte/RSS cap |
+| `check_tomorrow_training_memory.py` | Training evidence gate; training owns the execution | None | Models and samples under required `--train-root` and `--sample-root`; explicit external `--output` | Result JSON to stdout and result file; progress to stderr | Two sequential full rebuilds; 2 compute threads; default 2048 MiB RSS acceptance threshold measured after execution, not an enforced memory cap; stage durations are recorded, with no artificial total deadline |
+| `diagnose_runtime.py` | Unified diagnostics; owning probes in `runtime_diagnostics/` | Selected Web/vendor profiles use real HTTP; `market-factor-compare` only reads local qfq/industry databases plus explicitly selected live sources; `long-watchlist` reads financial/announcement caches and explicit historical eligibility databases offline; `browser` uses an isolated local fixture; `performance`, `history-sqlite` and `qfq-sqlite` are offline | Combined report to stdout or external `--output`; history revision benchmarks and qfq integrity checks write only disposable system-temporary targets, while active qfq data remains read-only; optional stock evidence report requires external path; Long audit rejects network and cache writes | Sanitized aggregate JSON; market-factor profile defaults to readable terminal text; child raw output and stock identities are not forwarded | Sequential children, default 180 s timeout each; market-factor per-source test loop at most 120 s and whole task at most 600 s; Long audit uses at most 8 concurrent stocks; SQLite page samples 1–100, query rounds 1–9, revision samples 1–5000; qfq audits one shared bounded database and emits aggregate counts; child capture has no fixed byte/RSS cap |
 | `generate_long_watchlist_asset.py` | Packaged Long build asset | None | Without `--check`, writes only `src/trader/web/static/long_watchlist_data.js` from `config/long_watchlist.json`; `--check` is read-only | Stale-asset message to stdout; silent success | One JSON document and one asset; no hard byte/RSS/deadline cap; does not fetch quotes |
-| `migrate_runtime_data.py` | Isolated data-layout migration | None | Explicit external source/target/backup paths; `build-references` converts a copied eligibility database; `build-freeze` flattens copied V2/V3 daily record paths without changing JSON bytes and verifies identities/checkpoints; `verify` is read-only; build/rollback use sibling lock, staging, previous and failed directories, and may remove previous staging/backup/failed copies | Aggregate manifest/status JSON to stdout | Sequential full tree copy/hash and SQLite integrity scan; hashing reads each file in full; no hard RSS/disk/deadline cap; freeze conversion rejects uncheckpointed journals, pending/corrupt records and orphaned record files, and cannot activate repository data |
-| `repack_history_partitions.py` | Explicit history SQLite maintenance; download owns coordination | None | Source/target state under maintenance lock; build/activate/rollback/finalize may replace paths and finalize releases old files; defaults are repository data paths | Aggregate status JSON to stdout; build progress to stderr | Sequential monthly compaction/verification; SQLite busy timeout 30 s; no hard RSS/disk/whole-job deadline |
-| `rename_qfq_shards.py` | Offline qfq layout migration; download owns the format | None | Default inspects only; `--apply --target-root` builds a separate external target under the source qfq directory's `.maintenance.lock` (including `--source-root`), independent of history maintenance; source is never replaced/deleted, failed staging is retained | Aggregate planned/built_verified/failed JSON to stdout; no activation | Sequential two-profile conversion, source fingerprints, per-stock equality and SQLite integrity checks; 5 s SQLite busy timeout, no hard RSS/disk/whole-job deadline |
+| `migrate_runtime_data.py` | Explicit isolated layout migration; codecs in `runtime_migration.py` | None | Required external stopped workspace copy and a new target; rejects live WAL, symlinks, conflicting identities and existing targets/staging; failed staging is retained | Aggregate candidate manifest; `verify` is read-only; no active switch | Streaming file hashes, SQLite integrity, byte-preserved decisions/checkpoints, eligibility validation, budget union, sequence high-water preservation and research routing; regenerable history/windows/models/samples are listed explicitly |
+| `repack_history_partitions.py` | Explicit annual history compaction | None | Required source `history` and sibling target `history-repacked`; external maintenance lock and activation journal; build preserves snapshot identity, explicit activation swaps whole directories, rollback retains candidate, finalize requires training evidence | Aggregate status JSON; progress to stderr | Each annual file compacted once, every monthly logical proof verified; no automatic production execution |
 | `verify_wheel_install.py` | Isolated installed-wheel release gate | Local wheel install with `--no-deps` and version check disabled; no supplier requests; pip index access is not explicitly disabled | Temporary external virtualenv and dependency `.pth`, removed on exit; input wheel/config/resources read-only | Aggregate verification JSON to stdout; exceptions can produce stderr traceback | One wheel and sequential CLI/resource checks; subprocesses and virtualenv creation have no timeout; no hard RSS/disk cap |
 
 Repeated download, training, scoring, or status workflows belong to
@@ -50,7 +49,7 @@ Tencent qfq supplier and actual updater measurements use the unified CLI:
 
 `--profile history-industry --source-timeout-seconds 15 --command-timeout-seconds 90 --output -` measures real login, calendar, and two dated industry queries, followed by a fresh supplier-process run reusing the same temporary query cache. It reports cold/warm time, queried/cached dates, and interval equality. It uses the published cutoff and up to three eligible codes for projection; supplier industry requests are market-wide, including all pages. It never fetches price history, updates active data, or measures the full multi-year preparation phase. Interrupted probes may leave an isolated temporary directory.
 
-`--profile history-space` inventories published/pending/seal files using inode-deduplicated allocated bytes; it never deletes files or infers that pending files are obsolete. `--profile history-source-compare --codes 600519 300750 688981 --history-days 251 --source-timeout-seconds 20 --command-timeout-seconds 180 --output -` compares identical active-calendar/filtered-universe inputs through BaoStock and Tencent-plus-gap pipelines. It uses real network requests and disposable system-temporary outputs only, including monthly writing, sealing and publication. Limits are 1–10 codes, 1–2000 sessions and 1–45 seconds per attempt; the outer diagnostic deadline bounds the child. A timeout may leave an isolated temporary directory for diagnosis. Neither probe modifies active history or authorizes a production source switch; a short-window win does not prove 2000-day coverage or full-market speed.
+`--profile history-space` inventories published/pending/seal files using inode-deduplicated allocated bytes; it never deletes files or infers that pending files are obsolete. `--profile history-source-compare --codes 600519 300750 688981 --history-days 251 --source-timeout-seconds 20 --command-timeout-seconds 180 --output -` compares identical active-calendar/filtered-universe inputs through BaoStock and Tencent-plus-gap pipelines. It uses real network requests and disposable system-temporary outputs only, including annual writing, sealing and publication. Limits are 1–10 codes, 1–2000 sessions and 1–45 seconds per attempt; the outer diagnostic deadline bounds the child. A timeout may leave an isolated temporary directory for diagnosis. Neither probe modifies active history or authorizes a production source switch; a short-window win does not prove 2000-day coverage or full-market speed.
 
 ```bash
 .venv/bin/python3 scripts/diagnose_runtime.py --profile tencent-download \
@@ -72,32 +71,42 @@ Audit active qfq paired publication and checkpoint state:
   --output -
 ```
 
-The probe copies the current V2/V3 board shards without taking SQLite read
-transactions on active files, rejects a copy if file or journal identity changes,
-and runs `quick_check` only on the disposable system-temporary copies. It reports
-aggregate shard/code/row counts, `quick_check`,
-journal modes, hot journals, identity shape, V2/V3 source/cutoff/calendar
-pairing, and both directions of the database/checkpoint difference. It does not
-emit stock identities or prove supplier availability. Use `tencent-download`
-separately when a bounded disposable supplier/update probe is required.
+The probe opens the shared daily window read-only, verifies both profile manifests and
+price hashes, checks SQLite integrity and WAL mode, and reports aggregate pairing
+and checkpoint differences. It checks publication identity before and after the
+audit, emits no stock identities, and does not prove supplier availability.
 
-Build a persistent migration candidate with:
+Local configuration, history-maintenance state, research readiness and offline
+performance share the existing implementations:
 
 ```bash
-.venv/bin/python3 scripts/rename_qfq_shards.py
-.venv/bin/python3 scripts/rename_qfq_shards.py --apply \
-  --target-root /absolute/outside/repository/qfq-ready
+.venv/bin/python3 scripts/diagnose_runtime.py --profile local --output -
+.venv/bin/python3 scripts/diagnose_runtime.py --profile local --scoring-profile both --output -
 ```
 
-The target must not exist. Success is `built_verified`, with `activated=false`;
-all windows, source identities and source fingerprints have been compared.
-A failure retains the sibling `.building` directory for inspection. This tool
-does not switch active data. A separately authorized switch must stop readers
-and writers, retain the full old directory, verify a common filesystem, rename
-the full verified candidate into `data/qfq`, and restart against the new layout.
-Keep the old directory outside the repository for recovery. Routine downloads
-then use `./run.sh download_qfq`; old `index.json` layouts fail explicitly until
-migrated. Neither databases nor backup data belong in Git.
+No service or supplier is required. Invalid configuration marks dependent checks
+as unexecuted. Insufficient research evidence is degraded locally; the standalone
+research profile remains strict. Performance results are separate for each profile.
+
+Build an isolated migration candidate from a stopped copy containing `data/`
+and `.runtime/trader/`:
+
+```bash
+.venv/bin/python3 scripts/migrate_runtime_data.py build \
+  --source /absolute/external/legacy-workspace \
+  --target /absolute/external/data-candidate --default-profile v2
+.venv/bin/python3 scripts/migrate_runtime_data.py verify \
+  --source /absolute/external/data-candidate
+```
+
+The default profile must reflect the old unscoped runtime's actual identity.
+Conflicting duplicate identities stop the candidate. Frozen payloads/checkpoints,
+permanent eligibility, budget request histories, reserved publication coordinates,
+outcomes and valid research evidence are preserved. History, short windows, models
+and samples are declared for regeneration; old caches remain cleanup candidates.
+The source is fingerprinted before and after; failures retain staging. Active
+switching, deletion, scheduler installation and bulk downloading require separate
+authorization. The old qfq shard conversion tool has been removed.
 
 ## BaoStock rate experiments
 
@@ -171,7 +180,7 @@ History SQLite performance is available through the unified read-only diagnostic
 .venv/bin/python3 scripts/diagnose_runtime.py --profile history-sqlite --output -
 ```
 
-It reads monthly SQLite headers, samples page classes, benchmarks latest-row,
+It reads annual SQLite headers, samples page classes, benchmarks latest-row,
 training-projection and active-gap queries, and measures bounded revision writes
 and sealing only in a disposable temporary database. It does not compact or switch the active history database. Maintenance rules
 are in [the download guide](../docs/4_下载训练.md), section 3.4;

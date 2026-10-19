@@ -14,6 +14,7 @@ from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_industry_cache import HistoryIndustryQueryCache
+from trader.infra.settings.data_paths import DataPaths
 
 from .reporting import emit_report
 
@@ -27,7 +28,7 @@ class _Progress:
 
 
 def _measure(root: Path, timeout: float) -> dict[str, object]:
-    active = HistoryControlIndex(root / "control.sqlite3").load_published_state()
+    active = HistoryControlIndex(root / "catalog.sqlite3").load_published_state()
     if active is None:
         raise ValueError("industry_probe_requires_published_context")
     universe = tuple(
@@ -41,7 +42,7 @@ def _measure(root: Path, timeout: float) -> dict[str, object]:
         cache = HistoryIndustryQueryCache(Path(temporary) / "industry_queries.sqlite3")
         project_root = Path(__file__).resolve().parents[2]
         settings = replace(
-            LoadHistorySyncConfiguration(project_root, Path(temporary) / "reference"),
+            LoadHistorySyncConfiguration(project_root, DataPaths(Path(temporary) / "data")),
             supplier_timeout_seconds=timeout,
             supplier_retries=0,
             progress_heartbeat_seconds=min(5, timeout),

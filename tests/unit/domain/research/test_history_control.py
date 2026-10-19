@@ -74,7 +74,7 @@ def _snapshot(
         calendar_hash=calendar.content_hash,
         universe_hash=universe.content_hash,
         source_identity_hash=source.content_hash,
-        partitions=(HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 6),),
+        partitions=(HistorySnapshotPartition("prices_2026.sqlite3", "a" * 64, 6, calendar_month=9),),
     )
 
 
@@ -120,7 +120,7 @@ def test_history_control_values_are_immutable_and_hash_bound() -> None:
 
 def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> None:
     with pytest.raises(ValueError, match="partition"):
-        HistorySnapshotPartition(f"partitions/2026/09/{'a' * 64}.sqlite3", "a" * 64, 6)
+        HistorySnapshotPartition(f"partitions/2026/09/{'a' * 64}.sqlite3", "a" * 64, 6, calendar_month=9)
     source = _source()
     calendar = _calendar(source)
     universe = _universe(source)
@@ -133,8 +133,8 @@ def test_history_control_rejects_invalid_progress_due_and_reminder_states() -> N
             universe.content_hash,
             source.content_hash,
             (
-                HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 6),
-                HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 6),
+                HistorySnapshotPartition("prices_2026.sqlite3", "a" * 64, 6, calendar_month=9),
+                HistorySnapshotPartition("prices_2026.sqlite3", "a" * 64, 6, calendar_month=9),
             ),
         )
     with pytest.raises(ValueError, match="checkpoint"):

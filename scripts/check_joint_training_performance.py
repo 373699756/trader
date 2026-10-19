@@ -126,6 +126,7 @@ def _run_benchmark(history_root: Path, train_root: Path, snapshot_hash: str, *, 
                 profile.heads,
                 LoadProfileTrainingSettings(_PROJECT_ROOT, profile.profile_id),
                 progress,
+                sample_root=train_root.parent / "samples",
                 expected_history_snapshot_hash=snapshot_hash,
             )
             for profile, progress in zip(profiles, progresses, strict=True)

@@ -53,6 +53,70 @@ def _options(**overrides: object) -> DiagnosticOptions:
     return replace(defaults, **overrides)
 
 
+def test_local_dual_profile_selects_only_offline_business_checks():
+    commands = build_commands(_options(profile="local", scoring_profile="both"), python_executable="/python")
+    assert tuple(command.name for command in commands) == (
+        "configuration:v2",
+        "configuration:v3",
+        "history_maintenance",
+        "research_readiness:v2",
+        "research_readiness:v3",
+        "production_performance:v2",
+        "production_performance:v3",
+    )
+    assert all("--profile" in command.argv for command in commands if command.name != "history_maintenance")
+    assert all(
+        not any(part in command.argv for part in ("serve", "sync", "train", "trader.entrypoints.server"))
+        for command in commands
+    )
+
+
+def test_local_invalid_configuration_skips_dependents_and_runs_other_configuration():
+    commands = build_commands(_options(profile="local", scoring_profile="both"), python_executable="/python")
+    called = []
+
+    def runner(command):
+        called.append(command.name)
+        return DiagnosticResult(command.name, 2, 0.0, {"status": "failed"}, None)
+
+    report = run_diagnostics("local", commands, runner=runner)
+    assert called == ["configuration:v2", "configuration:v3"]
+    skipped = [item for item in report["checks"] if not item["name"].startswith("configuration")]
+    assert len(skipped) == 5
+    assert all(item["executed"] is False and item["reason"] == "configuration_invalid" for item in skipped)
+
+
+def test_local_research_insufficiency_is_degraded_but_specialist_stays_strict():
+    result = DiagnosticResult(
+        "research_readiness",
+        0,
+        0.0,
+        {
+            "schema_version": "research_readiness",
+            "production_authority": False,
+            "history_archive": {
+                "state": "unavailable",
+                "reason": "history_snapshot_unavailable",
+                "calendar_sessions": 0,
+                "universe_count": 0,
+                "partition_count": 0,
+                "production_authority": False,
+                "point_in_time_parity": False,
+            },
+            "tomorrow_research": {
+                "status": "blocked",
+                "production_readiness": "production_adaptation_blocked",
+                "production_authority": False,
+                "input_blockers": ["tomorrow_h1_historical_data_insufficient"],
+                "production_blockers": ["production_adaptation_blocked"],
+            },
+        },
+        None,
+    )
+    assert build_report("local", (result,))["status"] == "degraded"
+    assert build_report("research", (result,))["status"] == "failed"
+
+
 def test_browser_diagnostic_seed_matches_the_current_decision_item_contract() -> None:
     index = UnifiedDecisionIndex()
     observed_at = datetime(2026, 8, 24, 13, 5, tzinfo=SHANGHAI)
@@ -104,6 +168,15 @@ def test_tencent_download_profile_uses_actual_updater_with_bounded_samples():
     offset = argv.index("--sizes")
     assert argv[offset + 1 : offset + 4] == ("10", "50", "100")
     assert argv[argv.index("--workers") + 1] == "3"
+
+
+def test_history_layout_comparison_requires_explicit_external_baseline(tmp_path):
+    args = _parser().parse_args(["--profile", "history-write", "--baseline-checkout", str(tmp_path)])
+    options, _ = _validate(args)
+    command = build_commands(options)[0]
+    assert command.argv[-2:] == ("--baseline-checkout", str(tmp_path))
+    with pytest.raises(ValueError, match="only available"):
+        _validate(_parser().parse_args(["--profile", "local", "--baseline-checkout", str(tmp_path)]))
 
 
 def test_full_profile_adds_browser_and_offline_performance_without_duplicate_probes() -> None:
@@ -159,13 +232,12 @@ def test_single_check_profiles_preserve_targeted_gate_execution(profile: str, ex
 
 
 def test_history_space_counts_shared_inodes_once_without_cleanup(tmp_path: Path) -> None:
-    month = tmp_path / "partitions/2026"
-    month.mkdir(parents=True)
-    published = month / "01.sqlite3"
+    month = tmp_path
+    published = month / "prices_2026.sqlite3"
     published.write_bytes(b"p" * 4096)
-    pending = month / ".01.pending.sqlite3"
+    pending = month / ".prices_2026.pending.sqlite3"
     pending.hardlink_to(published)
-    seal = month / ".01.seal.sqlite3"
+    seal = month / ".prices_2026.seal.sqlite3"
     seal.hardlink_to(published)
     (tmp_path / "unsafe").symlink_to(month, target_is_directory=True)
     report = inspect_history_space(tmp_path)
@@ -781,5 +853,5 @@ def test_qfq_sqlite_profile_audits_the_active_root_read_only():
     command = build_commands(options, python_executable="python3")[0]
     assert command.name == "qfq_sqlite_audit"
     assert "scripts.runtime_diagnostics.qfq_sqlite" in command.argv
-    assert "--qfq-root" in command.argv
+    assert "--database" in command.argv
     assert "--rounds" not in command.argv

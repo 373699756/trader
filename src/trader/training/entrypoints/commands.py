@@ -13,7 +13,8 @@ from pathlib import Path
 
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.download.infra.history_snapshot_inspection import InspectHistorySnapshot
-from trader.infra.settings import RuntimeSettings
+from trader.infra.settings import LoadStrategySettings, RuntimeSettings
+from trader.recommendation.domain.scoring.profile_identity import ScoringProfileId
 from trader.training.application.historical_label import HistoricalLabelPreregistrationService
 from trader.training.application.tomorrow_research_evidence import (
     DeriveTomorrowResearchRunId,
@@ -33,7 +34,7 @@ from trader.training.infra.research.h1_point_in_time_snapshot import (
     SQLiteH1PointInTimeSnapshot,
 )
 from trader.training.infra.research.historical_screening_snapshot import SQLiteHistoricalScreeningSnapshot
-from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
+from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.infra.research.research_trace_index import SQLiteResearchTraceIndex
 from trader.training.infra.research.tomorrow_historical_evidence import (
     TomorrowHistoricalEvidenceConflictError,
@@ -54,6 +55,7 @@ _TRAINING_PRIORITY_LOWERED = False
 @dataclass(frozen=True)
 class ResearchCommandOptions:
     workers: int = 5
+    profile: ScoringProfileId | None = None
 
 
 def ConfigureTrainingResources() -> None:
@@ -112,6 +114,8 @@ def RunResearchCommand(
     runtime: RuntimeSettings,
     options: ResearchCommandOptions,
 ) -> int:
+    profile = options.profile or LoadStrategySettings(runtime.strategy_config_path).scoring_profile
+    research_root = runtime.data_paths.research(profile)
     if command.startswith("research-"):
         from trader.recommendation.infra.scoring.cost_settings import LoadEvaluationCostScenarios
         from trader.training.infra.research_settings import LoadResearchSettings
@@ -119,11 +123,11 @@ def RunResearchCommand(
         LoadResearchSettings(config_path.parent)
         LoadEvaluationCostScenarios(config_path.parent)
     if command == "research-status":
-        trace = SQLiteResearchTraceIndex(runtime.runtime_dir)
+        trace = SQLiteResearchTraceIndex(research_root)
         status = trace.inspect_status()
         first_observations = trace.inspect_first_observations(limit=120)
         dates = tuple(item.trade_date for item in first_observations)
-        screening_snapshot = SQLiteHistoricalScreeningSnapshot(runtime.runtime_dir).inspect(
+        screening_snapshot = SQLiteHistoricalScreeningSnapshot(research_root).inspect(
             HISTORICAL_SCREENING_SPEC.research_identity
         )
         screening_coverage = (
@@ -134,10 +138,10 @@ def RunResearchCommand(
         screening_ready = (
             screening_snapshot.spec_hash == HISTORICAL_SCREENING_SPEC.content_hash and screening_coverage >= 0.95
         )
-        tomorrow_historical = _read_tomorrow_historical_status(runtime)
-        tomorrow_risk = _read_tomorrow_historical_risk_status(runtime)
-        tomorrow_research = _read_tomorrow_research_status(runtime)
-        history_status = _project_history_snapshot_status(InspectHistorySnapshot(_history_data_root()))
+        tomorrow_historical = _read_tomorrow_historical_status(research_root)
+        tomorrow_risk = _read_tomorrow_historical_risk_status(research_root)
+        tomorrow_research = _read_tomorrow_research_status(research_root)
+        history_status = _project_history_snapshot_status(InspectHistorySnapshot(runtime.data_paths.history))
         print(
             json.dumps(
                 {
@@ -177,7 +181,7 @@ def RunResearchCommand(
                         },
                         "promotion_authority": False,
                     },
-                    "outcomes": asdict(SQLiteOutcomeEvidenceRepository.inspect_status(runtime.runtime_dir)),
+                    "outcomes": asdict(SQLiteOutcomeEvidenceIndex.inspect_status(research_root)),
                 },
                 ensure_ascii=False,
                 sort_keys=True,
@@ -241,8 +245,8 @@ def RunJointTraining(runtime: RuntimeSettings) -> int:
     from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
     from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
-    history_root = runtime.project_root / "data/history"
-    train_root = runtime.project_root / "data/train"
+    history_root = runtime.data_paths.history
+    train_root = runtime.data_paths.models
     with ExitStack() as progress_scope:
         profiles = (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE)
         progresses = tuple(
@@ -259,6 +263,7 @@ def RunJointTraining(runtime: RuntimeSettings) -> int:
                 profile.heads,
                 LoadProfileTrainingSettings(runtime.project_root, profile.profile_id),
                 progress,
+                sample_root=runtime.data_paths.samples,
             )
             for profile, progress in zip(profiles, progresses, strict=True)
         )
@@ -274,6 +279,7 @@ def RunJointTraining(runtime: RuntimeSettings) -> int:
         except KeyboardInterrupt:
             for progress in progresses:
                 progress.publish_cancelled()
+            print(json.dumps({"schema_version": "joint_training_result", "status": "cancelled"}))
             return 130
         for progress, profile_result in zip(progresses, result.profiles, strict=True):
             failure = next((reason for head in profile_result.heads for reason in head.failure_reasons), None)
@@ -336,20 +342,10 @@ def _process_io_bytes() -> tuple[int, int] | None:
     return read_bytes, write_bytes
 
 
-def _train_data_root() -> Path:
-    """Runtime training artifacts live under the project's fixed data root."""
-    return Path(__file__).resolve().parents[4] / "data" / "train"
-
-
-def _history_data_root() -> Path:
-    """BaoStock history is a project-root data input, separate from service runtime state."""
-    return Path(__file__).resolve().parents[4] / "data" / "history"
-
-
-def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object]:
-    repository = TomorrowResearchEvidenceIndex(_train_data_root())
+def _read_tomorrow_research_status(research_root: Path) -> dict[str, object]:
+    evidence = TomorrowResearchEvidenceIndex(research_root / "experiments/tomorrow_research")
     try:
-        prerequisite = _tomorrow_research_prerequisite(runtime).inspect()
+        prerequisite = _tomorrow_research_prerequisite(research_root).inspect()
     except H1PointInTimeSnapshotConflictError:
         return {
             "status": "artifact_conflict",
@@ -366,7 +362,7 @@ def _read_tomorrow_research_status(runtime: RuntimeSettings) -> dict[str, object
             "automatic_model_update": False,
         }
     try:
-        graph = repository.load_graph()
+        graph = evidence.load_graph()
     except TomorrowResearchEvidenceIndexError:
         return {
             "status": "artifact_conflict",
@@ -439,14 +435,14 @@ def _tomorrow_research_result_payload(
     }
 
 
-def _tomorrow_research_prerequisite(runtime: RuntimeSettings) -> TomorrowLabelReadinessInspector:
-    snapshot = SQLiteH1PointInTimeSnapshot(runtime.runtime_dir)
+def _tomorrow_research_prerequisite(research_root: Path) -> TomorrowLabelReadinessInspector:
+    snapshot = SQLiteH1PointInTimeSnapshot(research_root)
     return TomorrowLabelReadinessInspector(HistoricalLabelPreregistrationService(snapshot))
 
 
-def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, object]:
+def _read_tomorrow_historical_status(research_root: Path) -> dict[str, object]:
     try:
-        return TomorrowHistoricalEvidenceIndex(runtime.runtime_dir / "tomorrow-historical").inspect()
+        return TomorrowHistoricalEvidenceIndex(research_root / "experiments").inspect()
     except TomorrowHistoricalEvidenceConflictError:
         return {
             "report_hash": "",
@@ -458,9 +454,9 @@ def _read_tomorrow_historical_status(runtime: RuntimeSettings) -> dict[str, obje
         }
 
 
-def _read_tomorrow_historical_risk_status(runtime: RuntimeSettings) -> dict[str, object]:
+def _read_tomorrow_historical_risk_status(research_root: Path) -> dict[str, object]:
     try:
-        return TomorrowHistoricalRiskEvidenceIndex(runtime.runtime_dir).inspect()
+        return TomorrowHistoricalRiskEvidenceIndex(research_root).inspect()
     except TomorrowHistoricalRiskEvidenceConflictError:
         return {
             "status": "artifact_invalid",

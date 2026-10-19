@@ -13,6 +13,7 @@ def RunV2Training(
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
+    sample_root: Path,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
     return RunProfileTraining(
@@ -23,6 +24,7 @@ def RunV2Training(
             V2_TRAINING_PROFILE.heads,
             settings,
             progress,
+            sample_root=sample_root,
         )
     )
 

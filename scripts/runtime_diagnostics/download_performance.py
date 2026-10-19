@@ -46,17 +46,17 @@ def _measure(root: Path) -> dict[str, float | int]:
     index.publish(codes, now + timedelta(minutes=1))
     repeat_publish = time.monotonic() - started
     assert reader.read(codes) == cold
-    gaps = HistoryDownloadIndex(root / "control.sqlite3")
+    gaps = HistoryDownloadIndex(root / "catalog.sqlite3")
     gaps.initialize()
-    with closing(OpenSqliteConnection(root / "control.sqlite3")) as connection, connection:
-        connection.executemany("INSERT INTO download_gaps VALUES(?,?)", ((code, "2026-10-16") for code in codes))
+    with closing(OpenSqliteConnection(root / "catalog.sqlite3")) as connection, connection:
+        connection.run_many("INSERT INTO download_gaps VALUES(?,?)", ((code, "2026-10-16") for code in codes))
     started = time.monotonic()
     # Reproduce the retired per-stock connection/query workload, only on this fixture.
     all_gaps = 0
     for code in codes:
-        with closing(OpenSqliteConnection(root / "control.sqlite3")) as connection:
+        with closing(OpenSqliteConnection(root / "catalog.sqlite3")) as connection:
             all_gaps += len(
-                connection.execute(
+                connection.run(
                     "SELECT gap.trade_date,unusable.checked_cutoff FROM download_gaps gap "
                     "LEFT JOIN download_qfq_unusable unusable ON unusable.code=gap.code AND unusable.trade_date=gap.trade_date "
                     "WHERE gap.code=? ORDER BY gap.trade_date",

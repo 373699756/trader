@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
-from trader.training.infra.sample_repository import SQLiteTrainingSampleRepository
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ class TrainingSampleCache:
     """Caller holds the profile lock; incomplete or different inputs are rebuilt."""
 
     def __init__(self, root: Path, identity: str, feature_count: int, split_hash: str) -> None:
-        self.root = root / ".sample-cache"
+        self.root = root
         self.path = self.root / "samples.sqlite3"
         self.manifest = self.root / "complete.json"
         self.identity = identity
@@ -25,18 +25,18 @@ class TrainingSampleCache:
         self.split_hash = split_hash
         self.reused = False
 
-    def open(self) -> SQLiteTrainingSampleRepository:
+    def open(self) -> SQLiteTrainingSampleIndex:
         if self.root.is_symlink() or self.path.is_symlink() or self.manifest.is_symlink():
             raise ValueError("training_sample_cache_symlink")
         self.reused = self._matches()
         if not self.reused:
             self.clear()
             self.root.mkdir(parents=True, exist_ok=True)
-        return SQLiteTrainingSampleRepository(
+        return SQLiteTrainingSampleIndex(
             self.path, self.feature_count, prepared_split_hash=self.split_hash if self.reused else None
         )
 
-    def seal(self, samples: SQLiteTrainingSampleRepository) -> None:
+    def seal(self, samples: SQLiteTrainingSampleIndex) -> None:
         samples.require_split_hash(self.split_hash)
         with self.path.open("rb") as handle:
             os.fsync(handle.fileno())

@@ -17,10 +17,12 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
         output: Path,
         *,
         settings,
+        sample_root,
         progress,
         expected_history_snapshot_hash: str,
     ):
         del progress, settings
+        assert sample_root == tmp_path / "samples"
         assert expected_history_snapshot_hash == "a" * 64
         observed.append((history, output))
         head = SimpleNamespace(
@@ -48,6 +50,8 @@ def test_training_memory_gate_requires_matching_rebuilds_and_reports_peak_rss(
         [
             "--history-root",
             str(history),
+            "--sample-root",
+            str(tmp_path / "samples"),
             "--train-root",
             str(output),
             "--expected-history-snapshot-hash",

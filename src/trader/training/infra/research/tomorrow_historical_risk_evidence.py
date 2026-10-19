@@ -20,9 +20,7 @@ class TomorrowHistoricalRiskEvidenceConflictError(RuntimeError):
 
 class TomorrowHistoricalRiskEvidenceIndex:
     def __init__(self, runtime_dir: Path) -> None:
-        self._root = (
-            runtime_dir / "tomorrow-historical-risk" / TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity
-        )
+        self._root = runtime_dir / "experiments" / TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity
 
     def seal(self, outcome: TomorrowHistoricalRiskValidationOutcome) -> str:
         report = outcome.report

@@ -21,9 +21,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_download_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["download_train"])
+    args = BuildParser().parse_args(["train"])
 
-    assert args.command == "download_train"
+    assert args.command == "train"
     assert not hasattr(args, "runtime_dir")
     assert not hasattr(args, "sessions")
     assert not hasattr(args, "mode")
@@ -39,7 +39,7 @@ def test_download_rejects_every_legacy_argument_during_parsing(arguments: tuple[
     runtime_dir = tmp_path / "must-not-exist"
 
     with pytest.raises(SystemExit):
-        BuildParser().parse_args(["download_train", *arguments])
+        BuildParser().parse_args(["train", *arguments])
 
     assert not runtime_dir.exists()
 
@@ -68,7 +68,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
 
         assert isinstance(supplier, HistorySupplierRouter)
         assert supplier._industry_cache is not None
-        assert supplier._industry_cache.path == _configuration.reference_root / "industry_queries.sqlite3"
+        assert supplier._industry_cache.path == _configuration.reference_root / "industry.sqlite3"
         progress.publish(HistorySyncProgress("supplier_calendar", "waiting", 0, 1, call_elapsed_seconds=5.0))
         return status
 
@@ -79,7 +79,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         "trader.training.entrypoints.commands.RunJointTraining",
         lambda _runtime: pytest.fail("incomplete history must block training"),
     )
-    assert Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download_train"]) == 1
+    assert Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train"]) == 1
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -120,7 +120,7 @@ def test_download_runs_the_typed_zero_argument_synchronization(
         ("failed", "initial_training_required", "tencent_qfq_invalid_price", False),
     ),
 )
-def test_download_train_uses_valid_samples_despite_reported_price_gaps(
+def test_train_uses_valid_samples_despite_reported_price_gaps(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     state: Literal["completed", "already_current", "failed"],
@@ -158,12 +158,15 @@ def test_download_train_uses_valid_samples_despite_reported_price_gaps(
         lambda runtime: calls.append(runtime) or 0,
     )
 
-    result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "download_train"])
+    result = Main(["--config", str(PROJECT_ROOT / "config" / "runtime.json"), "train"])
 
     assert result == (0 if starts_training else 1)
     assert len(calls) == int(starts_training)
     captured = capsys.readouterr()
-    assert json.loads(captured.out)["price_gaps"]["cells"] == 3267
+    if starts_training:
+        assert captured.out == ""  # The stubbed trainer emits nothing; successful history is stderr-only.
+    else:
+        assert json.loads(captured.out)["price_gaps"]["cells"] == 3267
     assert ("价格缺口待补" in captured.err) == (state != "failed")
     if starts_training:
         assert "按有效样本尝试双档训练" in captured.err
@@ -199,13 +202,12 @@ def test_download_contract_exposes_an_immutable_typed_status() -> None:
         status.state = "completed"  # type: ignore[misc]
 
 
-def test_train_tomorrow_uses_the_project_data_roots() -> None:
-    from trader.training.entrypoints.commands import _history_data_root, _train_data_root
+def test_training_uses_configured_data_roots():
+    from trader.infra.settings import LoadRuntimeSettings
 
-    root = Path(__file__).resolve().parents[2]
-
-    assert _history_data_root() == root / "data" / "history"
-    assert _train_data_root() == root / "data" / "train"
+    runtime = LoadRuntimeSettings(PROJECT_ROOT / "config/runtime.json")
+    assert runtime.data_paths.history == PROJECT_ROOT / "data/market/history"
+    assert runtime.data_paths.models == PROJECT_ROOT / "data/training/models"
 
 
 def test_train_tomorrow_is_removed_from_the_public_cli() -> None:
@@ -214,23 +216,23 @@ def test_train_tomorrow_is_removed_from_the_public_cli() -> None:
 
 
 def test_download_risk_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["download_risk"])
+    args = BuildParser().parse_args(["sync", "company"])
 
-    assert args.command == "download_risk"
+    assert (args.command, args.target) == ("sync", "company")
     assert not hasattr(args, "runtime_dir")
 
 
 def test_download_qfq_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["download_qfq"])
+    args = BuildParser().parse_args(["sync", "market"])
 
-    assert args.command == "download_qfq"
+    assert (args.command, args.target) == ("sync", "market")
     assert not hasattr(args, "runtime_dir")
 
 
-def test_download_train_is_a_zero_argument_command() -> None:
-    args = BuildParser().parse_args(["download_train"])
+def test_train_is_a_zero_argument_command() -> None:
+    args = BuildParser().parse_args(["train"])
 
-    assert args.command == "download_train"
+    assert args.command == "train"
     assert not hasattr(args, "runtime_dir")
 
 

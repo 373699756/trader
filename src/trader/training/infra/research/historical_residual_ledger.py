@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.infra.sqlite_connection import OpenSqliteConnection
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection
 from trader.training.domain.evaluation.h1_point_in_time import ResearchStrategy
 from trader.training.domain.evaluation.historical_residual_ledger import (
     HistoricalOutcomeRecord,
@@ -82,7 +81,7 @@ class SQLiteHistoricalResidualLedger:
 
     def read_joined(self, strategy: ResearchStrategy, parent_split_hash: str) -> tuple[JoinedHistoricalResidual, ...]:
         with closing(self._connect()) as connection, connection:
-            outcomes = connection.execute(
+            outcomes = connection.run(
                 "SELECT content_hash, payload FROM historical_outcome WHERE strategy = ? AND parent_split_hash = ?",
                 (strategy, parent_split_hash),
             ).fetchall()
@@ -103,7 +102,7 @@ class SQLiteHistoricalResidualLedger:
         self, strategy: ResearchStrategy, parent_split_hash: str
     ) -> tuple[HistoricalPredictionRecord, ...]:
         with closing(self._connect()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT content_hash, payload FROM historical_prediction "
                 "WHERE strategy = ? AND parent_split_hash = ? "
                 "ORDER BY trade_date, code, horizon, model_hash",
@@ -119,7 +118,7 @@ class SQLiteHistoricalResidualLedger:
 
     def _initialize(self) -> None:
         with closing(self._connect()) as connection, connection:
-            connection.executescript(
+            connection.apply_script(
                 """
                 CREATE TABLE IF NOT EXISTS historical_prediction (
                     identity TEXT PRIMARY KEY,
@@ -147,10 +146,10 @@ class SQLiteHistoricalResidualLedger:
 
     @staticmethod
     def _append_row(
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         row: _LedgerRow,
     ) -> None:
-        existing = connection.execute(
+        existing = connection.run(
             f"SELECT content_hash FROM {row.table} WHERE identity = ?", (row.identity,)
         ).fetchone()
         if existing is not None:
@@ -170,9 +169,9 @@ class SQLiteHistoricalResidualLedger:
             values.append(row.model_hash)
         values.extend((row.parent_split_hash, row.content_hash, row.payload))
         placeholders = ",".join("?" for _ in values)
-        connection.execute(f"INSERT INTO {row.table} VALUES ({placeholders})", values)
+        connection.run(f"INSERT INTO {row.table} VALUES ({placeholders})", values)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> SqliteConnection:
         return OpenSqliteConnection(self._path)
 
 

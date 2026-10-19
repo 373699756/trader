@@ -43,12 +43,10 @@ def test_h1_archive_is_idempotent_and_detects_tampering(tmp_path):
     assert manifest.completed_codes == 1
     assert archive.completed_codes("tomorrow") == frozenset({"600001"})
     with (
-        closing(
-            OpenSqliteConnection(tmp_path / "score-h1-point-in-time" / "score-h1-point-in-time.sqlite3")
-        ) as connection,
+        closing(OpenSqliteConnection(tmp_path / "experiments/h1_point_in_time/samples.sqlite3")) as connection,
         connection,
     ):
-        connection.execute("UPDATE records SET close_price = 10.7 WHERE code = '600001'")
+        connection.run("UPDATE records SET close_price = 10.7 WHERE code = '600001'")
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="payload"):
         archive.manifest(spec)
 
@@ -64,9 +62,9 @@ def test_h1_archive_rejects_retired_spec_identity_without_migration(tmp_path):
     archive = SQLiteH1PointInTimeSnapshot(tmp_path)
     spec = H1PointInTimeSpec("tomorrow")
     archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
-    database = tmp_path / "score-h1-point-in-time" / "score-h1-point-in-time.sqlite3"
+    database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute("UPDATE specs SET spec_hash = ? WHERE strategy = 'tomorrow'", ("f" * 64,))
+        connection.run("UPDATE specs SET spec_hash = ? WHERE strategy = 'tomorrow'", ("f" * 64,))
 
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="spec"):
         archive.manifest(spec)
@@ -78,8 +76,8 @@ def test_h1_archive_rejects_direct_identity_mismatch_and_universe_tampering(tmp_
     archive.register_universe(spec, (HistoricalSecurity("600001", "main", "A", False, False),))
     with pytest.raises(ValueError, match="identity"):
         archive.save_records(spec, "600002", (_record(),))
-    database = tmp_path / "score-h1-point-in-time" / "score-h1-point-in-time.sqlite3"
+    database = tmp_path / "experiments/h1_point_in_time/samples.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute("UPDATE universe SET name = 'tampered' WHERE code = '600001'")
+        connection.run("UPDATE universe SET name = 'tampered' WHERE code = '600001'")
     with pytest.raises(H1PointInTimeSnapshotConflictError, match="universe payload"):
         archive.manifest(spec)

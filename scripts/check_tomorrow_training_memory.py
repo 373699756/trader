@@ -34,12 +34,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--history-root", type=Path, required=True)
     parser.add_argument("--train-root", type=Path, required=True)
+    parser.add_argument("--sample-root", type=Path, required=True)
     parser.add_argument("--expected-history-snapshot-hash", required=True, type=_sha256)
     parser.add_argument("--max-rss-mib", type=int, default=TOMORROW_TRAINING_PEAK_RSS_MIB)
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/historyless/training-memory-result.json"),
+        required=True,
     )
     return parser
 
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         result = RunRepackV3Training(
             args.history_root.resolve(),
             args.train_root.resolve(),
+            sample_root=args.sample_root.resolve(),
             settings=settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,
@@ -61,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         repeated = RunRepackV3Training(
             args.history_root.resolve(),
             args.train_root.resolve(),
+            sample_root=args.sample_root.resolve(),
             settings=settings,
             progress=progress,
             expected_history_snapshot_hash=args.expected_history_snapshot_hash,

@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from trader.infra.settings.credentials import CREDENTIAL_FILE_NAME, ReadCredentialFile
+from trader.infra.settings.data_paths import DataPaths
 from trader.infra.settings.market_policy import (
     ParseCachePolicy as _parse_cache_policy,
 )
@@ -72,7 +73,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     path = Path(config_path).expanduser().resolve()
     raw = _read_config_sections(
         path,
-        {"runtime_dir", "freeze_dir", "reference_dir", "strategy_config", "long_watchlist"},
+        {"runtime_dir", "data_dir", "strategy_config", "long_watchlist"},
         {
             "delivery.json": {"server", "api"},
             "scheduler.json": {"pipeline"},
@@ -92,8 +93,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         raw,
         {
             "runtime_dir",
-            "freeze_dir",
-            "reference_dir",
+            "data_dir",
             "strategy_config",
             "long_watchlist",
             "server",
@@ -194,8 +194,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
     host = os.environ.get("TRADER_HOST", _text(server_raw, "host"))
     port = _environment_integer("TRADER_PORT", _integer(server_raw, "port", minimum=1, maximum=65535))
     runtime_dir = _resolve_project_path(project_root, _text(raw, "runtime_dir"))
-    freeze_dir = _resolve_project_path(project_root, _text(raw, "freeze_dir"))
-    reference_dir = _resolve_project_path(project_root, _text(raw, "reference_dir"))
+    data_paths = DataPaths(_resolve_project_path(project_root, _text(raw, "data_dir")))
     strategy_config_path = _resolve_config_path(config_dir, _text(raw, "strategy_config"))
     long_watchlist_path = _resolve_config_path(config_dir, _text(raw, "long_watchlist"))
 
@@ -208,8 +207,7 @@ def LoadRuntimeSettings(config_path: str | os.PathLike[str]) -> RuntimeSettings:
         config_path=path,
         project_root=project_root,
         runtime_dir=runtime_dir,
-        freeze_dir=freeze_dir,
-        reference_dir=reference_dir,
+        data_paths=data_paths,
         strategy_config_path=strategy_config_path,
         long_watchlist_path=long_watchlist_path,
         server=ServerSettings(

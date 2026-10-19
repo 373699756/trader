@@ -96,7 +96,7 @@ class SQLiteHistoryTrainingInputSnapshot:
     @classmethod
     def open(cls, root: Path) -> SQLiteHistoryTrainingInputSnapshot:
         archive_root = root
-        control = HistoryControlIndex(archive_root / "control.sqlite3")
+        control = HistoryControlIndex(archive_root / "catalog.sqlite3")
         try:
             state = control.load_published_state()
         except HistoryControlError as exc:

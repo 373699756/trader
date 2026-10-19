@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.infra.deepseek.budget_batch_ledger import BudgetBatchCompletion
 
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -48,15 +48,15 @@ class _HealthStateUpdate:
 class DeepSeekHealthGate:
     def __init__(
         self,
-        connect: Callable[[], AbstractContextManager[sqlite3.Connection]],
+        connect: Callable[[], AbstractContextManager[SqliteConnection]],
         policy: DeepSeekHealthPolicy,
     ) -> None:
         self._connect = connect
         self._policy = policy
 
     @staticmethod
-    def initialize(connection: sqlite3.Connection) -> None:
-        connection.executescript(
+    def initialize(connection: SqliteConnection) -> None:
+        connection.apply_script(
             """
             CREATE TABLE IF NOT EXISTS deepseek_health_events(
                 batch_id TEXT PRIMARY KEY,
@@ -85,14 +85,14 @@ class DeepSeekHealthGate:
 
     def reservation_rejection(
         self,
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         *,
         trade_date: str,
         requested_at: datetime,
         batch_id: str,
         candidate_count: int,
     ) -> str:
-        row = connection.execute(
+        row = connection.run(
             """
             SELECT mode, open_until, probe_batch_id
             FROM deepseek_health_state WHERE trade_date = ?
@@ -110,7 +110,7 @@ class DeepSeekHealthGate:
             return "circuit_open"
         if not _half_open_allowed(requested_at) or not 1 <= candidate_count <= 2 or not batch_id:
             return "circuit_open"
-        connection.execute(
+        connection.run(
             """
             UPDATE deepseek_health_state
             SET mode = 'half_open', probe_batch_id = ?, updated_at = ?
@@ -125,8 +125,8 @@ class DeepSeekHealthGate:
             return
         trade_date = completion.completed_at.date().isoformat()
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            success_calls, failed_calls = connection.execute(
+            connection.run("BEGIN IMMEDIATE")
+            success_calls, failed_calls = connection.run(
                 """
                 SELECT
                     SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END),
@@ -134,12 +134,12 @@ class DeepSeekHealthGate:
                 FROM deepseek_call_reservations WHERE batch_id = ?
                 """,
                 (completion.batch_id,),
-            ).fetchone()
+            ).require_one()
             candidate_count = int(
-                connection.execute(
+                connection.run(
                     "SELECT candidate_count FROM deepseek_review_batches WHERE batch_id = ?",
                     (completion.batch_id,),
-                ).fetchone()[0]
+                ).require_one()[0]
             )
             accepted_count = sum(
                 review.outcome.value in {"applied", "abstain"} for review in completion.reviews.values()
@@ -148,7 +148,7 @@ class DeepSeekHealthGate:
             failed = int(failed_calls or 0)
             transport_failed = failed > 0 and successful == 0
             schema_failed = completion.status == "failed" and successful > 0 and accepted_count == 0
-            connection.execute(
+            connection.run(
                 """
                 INSERT OR REPLACE INTO deepseek_health_events(
                     batch_id, trade_date, completed_at, transport_failed, schema_failed,
@@ -179,7 +179,7 @@ class DeepSeekHealthGate:
 
     def summary(self, trade_date: str) -> dict[str, object]:
         with self._connect() as connection:
-            row = connection.execute(
+            row = connection.run(
                 """
                 SELECT mode, open_until, recovery_successes, reason
                 FROM deepseek_health_state WHERE trade_date = ?
@@ -197,12 +197,12 @@ class DeepSeekHealthGate:
 
     def _advance_state(
         self,
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         outcome: _HealthOutcome,
     ) -> None:
         completion = outcome.completion
         trade_date = outcome.trade_date
-        state = connection.execute(
+        state = connection.run(
             """
             SELECT mode, probe_batch_id, recovery_successes
             FROM deepseek_health_state WHERE trade_date = ?
@@ -253,8 +253,8 @@ class DeepSeekHealthGate:
             ),
         )
 
-    def _trip_reason(self, connection: sqlite3.Connection, trade_date: str) -> str:
-        rows = connection.execute(
+    def _trip_reason(self, connection: SqliteConnection, trade_date: str) -> str:
+        rows = connection.run(
             """
             SELECT transport_failed, schema_failed
             FROM deepseek_health_events
@@ -271,10 +271,10 @@ class DeepSeekHealthGate:
                 return "consecutive_schema_failures"
         ratio = self._rolling_application_ratio(connection, trade_date)
         count = int(
-            connection.execute(
+            connection.run(
                 "SELECT COUNT(*) FROM deepseek_health_events WHERE trade_date = ?",
                 (trade_date,),
-            ).fetchone()[0]
+            ).require_one()[0]
         )
         if (
             count >= self._policy.rolling_window
@@ -286,10 +286,10 @@ class DeepSeekHealthGate:
 
     def _rolling_application_ratio(
         self,
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         trade_date: str,
     ) -> float | None:
-        rows = connection.execute(
+        rows = connection.run(
             """
             SELECT candidate_count, accepted_count
             FROM deepseek_health_events
@@ -304,7 +304,7 @@ class DeepSeekHealthGate:
 
     def _open(
         self,
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         trade_date: str,
         completed_at: datetime,
         reason: str,
@@ -323,11 +323,11 @@ class DeepSeekHealthGate:
 
     @staticmethod
     def _write_state(
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         trade_date: str,
         update: _HealthStateUpdate,
     ) -> None:
-        connection.execute(
+        connection.run(
             """
             INSERT INTO deepseek_health_state(
                 trade_date, mode, open_until, probe_batch_id, recovery_successes, reason, updated_at

@@ -31,7 +31,12 @@ from trader.download.infra.company_evidence_codec import (
     EncodeCompanySnapshot,
 )
 from trader.download.infra.company_evidence_sql import SCHEMA
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions, SqliteTransaction
+from trader.infra.sqlite_connection import (
+    OpenSqliteConnection,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteTransaction,
+)
 
 
 class SQLiteCompanyEvidenceIndex:
@@ -41,11 +46,10 @@ class SQLiteCompanyEvidenceIndex:
         self.path = path
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Iterator[SqliteConnection]:
         connection = None
         try:
             connection = OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=8, foreign_keys=True))
-            connection.row_factory = sqlite3.Row
             with connection:
                 yield connection
         except sqlite3.Error as exc:
@@ -57,24 +61,24 @@ class SQLiteCompanyEvidenceIndex:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            tables = {row[0] for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'")}
             if tables and "contract" not in tables:
                 raise ValueError("company_evidence_database_contract_mismatch")
             if "contract" in tables:
-                contract = connection.execute("SELECT identity FROM contract").fetchall()
+                contract = connection.run("SELECT identity FROM contract").fetchall()
                 if [row[0] for row in contract] != ["company_evidence"]:
                     raise ValueError("company_evidence_database_contract_mismatch")
-            connection.execute("PRAGMA journal_mode=WAL")
-            connection.executescript(SCHEMA)
+            connection.run("PRAGMA journal_mode=WAL")
+            connection.apply_script(SCHEMA)
 
     def partitions(self, markets: Sequence[Market], observed_at: datetime) -> tuple[DisclosurePartition, ...]:
         today = observed_at.date()
         cutoff = today - timedelta(days=365)
         with self._connect() as connection:
             for market in markets:
-                latest = connection.execute(
+                latest = connection.run(
                     "SELECT MAX(end) FROM partitions WHERE market=? AND complete=1", (market,)
-                ).fetchone()[0]
+                ).require_one()[0]
                 baseline_start = max(cutoff, date.fromisoformat(latest) + timedelta(days=1)) if latest else cutoff
                 for start, end in DisclosureMonths(baseline_start, today):
                     self._add_partition(connection, market, start, end)
@@ -87,7 +91,7 @@ class SQLiteCompanyEvidenceIndex:
                 if months:
                     start, end = months[today.toordinal() % len(months)]
                     self._add_partition(connection, market, start, end)
-                connection.execute(
+                connection.run(
                     "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
                     "WHERE market=? AND complete=1 AND ((start>=? AND checked_at<?) "
                     "OR (start=? AND end=? AND checked_at<?))",
@@ -100,7 +104,7 @@ class SQLiteCompanyEvidenceIndex:
                         today.isoformat(),
                     ),
                 )
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT * FROM partitions WHERE complete=0 AND end>=? ORDER BY end DESC,market,start",
                 (cutoff.isoformat(),),
             ).fetchall()
@@ -117,8 +121,8 @@ class SQLiteCompanyEvidenceIndex:
             if row["market"] in markets
         )
 
-    def _add_partition(self, connection: sqlite3.Connection, market: str, start: date, end: date) -> None:
-        connection.execute(
+    def _add_partition(self, connection: SqliteConnection, market: str, start: date, end: date) -> None:
+        connection.run(
             "INSERT OR IGNORE INTO partitions(market,start,end) VALUES(?,?,?)",
             (market, start.isoformat(), end.isoformat()),
         )
@@ -134,16 +138,16 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection:
             for item in children:
                 self._add_partition(connection, item.market, item.start, item.end)
-                connection.execute(
+                connection.run(
                     "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
                     "WHERE market=? AND start=? AND end=? AND complete=1 AND checked_at<?",
                     (*_key(item), observed_at.date().isoformat()),
                 )
-            connection.execute("DELETE FROM partitions WHERE market=? AND start=? AND end=?", _key(partition))
+            connection.run("DELETE FROM partitions WHERE market=? AND start=? AND end=?", _key(partition))
             rows = tuple(
-                connection.execute(
+                connection.run(
                     "SELECT * FROM partitions WHERE market=? AND start=? AND end=?", _key(item)
-                ).fetchone()
+                ).require_one()
                 for item in children
             )
         return tuple(
@@ -156,17 +160,17 @@ class SQLiteCompanyEvidenceIndex:
         self._validate_page(partition, page)
         received = partition.received_rows + len(page.rows)
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.run("BEGIN IMMEDIATE")
             if partition.page == 1:
-                connection.execute("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
+                connection.run("DELETE FROM partition_rows WHERE market=? AND start=? AND end=?", _key(partition))
             changes = self._write_disclosures(connection, page.rows)
             for item in page.rows:
                 for code in item.codes:
-                    connection.execute(
+                    connection.run(
                         "INSERT OR IGNORE INTO partition_rows VALUES(?,?,?,?,?)",
                         (*_key(partition), item.identity, code),
                     )
-            connection.execute(
+            connection.run(
                 "UPDATE partitions SET next_page=?,expected_rows=?,received_rows=?,complete=?,checked_at=?,failure='' "
                 "WHERE market=? AND start=? AND end=?",
                 (
@@ -180,10 +184,10 @@ class SQLiteCompanyEvidenceIndex:
             )
             # Removed/corrected listings are recognized only after a complete date slice, never after a failed page.
             if not page.has_more:
-                connection.execute(
+                connection.run(
                     "INSERT OR REPLACE INTO coverage VALUES(?,?,?,?)", (*_key(partition), observed_at.isoformat())
                 )
-                stale = connection.execute(
+                stale = connection.run(
                     "SELECT d.id,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
                     "WHERE d.source='cninfo' AND substr(d.published_at,1,10) BETWEEN ? AND ? "
                     "AND NOT EXISTS(SELECT 1 FROM partition_rows p WHERE p.market=? AND p.start=? AND p.end=? "
@@ -192,7 +196,7 @@ class SQLiteCompanyEvidenceIndex:
                 ).fetchall()
                 for row in stale:
                     if EvidenceMarket(row["code"]) == partition.market:
-                        connection.execute("DELETE FROM disclosure_codes WHERE disclosure_id=? AND code=?", tuple(row))
+                        connection.run("DELETE FROM disclosure_codes WHERE disclosure_id=? AND code=?", tuple(row))
         return changes
 
     def _validate_page(self, partition: DisclosurePartition, page: DisclosurePage) -> None:
@@ -211,7 +215,7 @@ class SQLiteCompanyEvidenceIndex:
         if partition.page > 1:
             with self._connect() as connection:
                 duplicate = duplicate or any(
-                    connection.execute(
+                    connection.run(
                         "SELECT 1 FROM partition_rows WHERE market=? AND start=? AND end=? AND source_id=? AND code=?",
                         (*_key(partition), identity, code),
                     ).fetchone()
@@ -224,7 +228,7 @@ class SQLiteCompanyEvidenceIndex:
 
     def restart_partition(self, partition: DisclosurePartition) -> None:
         with self._connect() as connection:
-            connection.execute(
+            connection.run(
                 "UPDATE partitions SET next_page=1,expected_rows=NULL,received_rows=0,complete=0 "
                 "WHERE market=? AND start=? AND end=?",
                 _key(partition),
@@ -232,14 +236,14 @@ class SQLiteCompanyEvidenceIndex:
 
     def partition_failure(self, partition: DisclosurePartition, failure: str) -> None:
         with self._connect() as connection:
-            connection.execute(
+            connection.run(
                 "UPDATE partitions SET failure=? WHERE market=? AND start=? AND end=?", (failure, *_key(partition))
             )
 
-    def _write_disclosures(self, connection: sqlite3.Connection, rows: Sequence[Disclosure]) -> int:
+    def _write_disclosures(self, connection: SqliteConnection, rows: Sequence[Disclosure]) -> int:
         changes = 0
         for item in rows:
-            cursor = connection.execute(
+            cursor = connection.run(
                 "INSERT INTO disclosures(source,source_id,kind,title,published_at,url,digest) VALUES(?,?,?,?,?,?,?) "
                 "ON CONFLICT(source,source_id) DO UPDATE SET title=excluded.title,published_at=excluded.published_at,"
                 "url=excluded.url,digest=excluded.digest,body='',body_checked=0 WHERE digest<>excluded.digest",
@@ -254,17 +258,17 @@ class SQLiteCompanyEvidenceIndex:
                 ),
             )
             changes += cursor.rowcount
-            identity = connection.execute(
+            identity = connection.run(
                 "SELECT id FROM disclosures WHERE source=? AND source_id=?", (item.source, item.identity)
-            ).fetchone()[0]
-            connection.executemany(
+            ).require_one()[0]
+            connection.run_many(
                 "INSERT OR IGNORE INTO disclosure_codes VALUES(?,?)", ((code, identity) for code in item.codes)
             )
         return changes
 
     def pending_documents(self, codes: Sequence[str], observed_at: datetime) -> tuple[Disclosure, ...]:
         with self._connect() as connection:
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
                 "WHERE kind='announcement' AND body_checked=0 AND published_at>=? ORDER BY published_at DESC",
                 ((observed_at - timedelta(days=365)).isoformat(),),
@@ -274,14 +278,14 @@ class SQLiteCompanyEvidenceIndex:
 
     def commit_document(self, item: Disclosure, text: str) -> None:
         with self._connect() as connection:
-            connection.execute(
+            connection.run(
                 "UPDATE disclosures SET body=?,body_checked=1 WHERE source=? AND source_id=? AND digest=?",
                 (text, item.source, item.identity, item.digest),
             )
 
     def component_due(self, component: str, scope: str, observed_at: datetime) -> bool:
         with self._connect() as connection:
-            row = connection.execute(
+            row = connection.run(
                 "SELECT checked_at,failure FROM component_checks WHERE component=? AND scope=?", (component, scope)
             ).fetchone()
         ttl = timedelta(minutes=15) if component in {"financial", "news"} else timedelta(hours=4)
@@ -289,7 +293,7 @@ class SQLiteCompanyEvidenceIndex:
 
     def component_since(self, component: str, scope: str, observed_at: datetime) -> date:
         with self._connect() as connection:
-            row = connection.execute(
+            row = connection.run(
                 "SELECT checked_at FROM component_checks WHERE component=? AND scope=?", (component, scope)
             ).fetchone()
         return (
@@ -300,7 +304,7 @@ class SQLiteCompanyEvidenceIndex:
 
     def structured_cursor(self, query: StructuredCompanyQuery) -> StructuredCompanyQuery:
         with self._connect() as connection:
-            row = connection.execute(
+            row = connection.run(
                 "SELECT start,end,next_page,expected_rows,received_rows FROM structured_progress WHERE component=? AND scope='market'",
                 (query.component,),
             ).fetchone()
@@ -340,7 +344,7 @@ class SQLiteCompanyEvidenceIndex:
                 placeholders = ",".join("?" for _ in codes)
                 existing = {
                     (row[0], date.fromisoformat(row[1]))
-                    for row in connection.execute(
+                    for row in connection.run(
                         f"SELECT code,day FROM structured_members WHERE component=? AND code IN ({placeholders})",
                         (page.component, *codes),
                     )
@@ -350,10 +354,10 @@ class SQLiteCompanyEvidenceIndex:
             self._restart_structured(page.component, scope)
             raise ValueError("structured_duplicate_page_rows")
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.run("BEGIN IMMEDIATE")
             if page.page == 1:
-                connection.execute("DELETE FROM structured_members WHERE component=?", (page.component,))
-            connection.executemany(
+                connection.run("DELETE FROM structured_members WHERE component=?", (page.component,))
+            connection.run_many(
                 "INSERT INTO structured_members VALUES(?,?,?,?)",
                 ((page.component, code, day.isoformat(), ratio) for code, day, ratio in members),
             )
@@ -374,7 +378,7 @@ class SQLiteCompanyEvidenceIndex:
                 )
                 for item in page.financials
             )
-            connection.executemany(
+            connection.run_many(
                 "INSERT INTO financials VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code,report_date) DO UPDATE SET "
                 "published_at=excluded.published_at,basic_eps=excluded.basic_eps,book_value_per_share=excluded.book_value_per_share,"
                 "revenue_growth_pct=excluded.revenue_growth_pct,net_profit_growth_pct=excluded.net_profit_growth_pct,"
@@ -391,25 +395,23 @@ class SQLiteCompanyEvidenceIndex:
             if page.page == page.pages:
                 if page.component != "financial":
                     before = connection.total_changes
-                    connection.execute(
+                    connection.run(
                         "DELETE FROM ratios WHERE component=? AND NOT EXISTS(SELECT 1 FROM structured_members m "
                         "WHERE m.component=ratios.component AND m.code=ratios.code AND m.day=ratios.day)",
                         (page.component,),
                     )
-                    connection.execute(
+                    connection.run(
                         "INSERT INTO ratios SELECT component,code,day,ratio_pct FROM structured_members WHERE component=? "
                         "ON CONFLICT(component,code,day) DO UPDATE SET ratio_pct=excluded.ratio_pct WHERE ratio_pct<>excluded.ratio_pct",
                         (page.component,),
                     )
                     changes += connection.total_changes - before
-                    connection.execute(
+                    connection.run(
                         "INSERT OR REPLACE INTO ratio_snapshots VALUES(?,?,?,?)",
                         (page.component, start.isoformat(), end.isoformat(), observed_at.isoformat()),
                     )
-                connection.execute(
-                    "DELETE FROM structured_progress WHERE component=? AND scope=?", (page.component, scope)
-                )
-                connection.execute(
+                connection.run("DELETE FROM structured_progress WHERE component=? AND scope=?", (page.component, scope))
+                connection.run(
                     "INSERT OR REPLACE INTO component_checks VALUES(?,?,?,'')",
                     (
                         page.component,
@@ -420,7 +422,7 @@ class SQLiteCompanyEvidenceIndex:
                     ),
                 )
             else:
-                connection.execute(
+                connection.run(
                     "INSERT OR REPLACE INTO structured_progress VALUES(?,?,?,?,?,?,?)",
                     (
                         page.component,
@@ -451,12 +453,12 @@ class SQLiteCompanyEvidenceIndex:
 
     def _restart_structured(self, component: str, scope: str) -> None:
         with self._connect() as connection:
-            connection.execute("DELETE FROM structured_progress WHERE component=? AND scope=?", (component, scope))
-            connection.execute("DELETE FROM structured_members WHERE component=?", (component,))
+            connection.run("DELETE FROM structured_progress WHERE component=? AND scope=?", (component, scope))
+            connection.run("DELETE FROM structured_members WHERE component=?", (component,))
 
     def component_failure(self, component: str, scope: str, failure: str) -> None:
         with self._connect() as connection:
-            connection.execute(
+            connection.run(
                 "INSERT INTO component_checks(component,scope,failure) VALUES(?,?,?) "
                 "ON CONFLICT(component,scope) DO UPDATE SET failure=excluded.failure",
                 (component, scope, failure),
@@ -465,7 +467,7 @@ class SQLiteCompanyEvidenceIndex:
     def commit_news(self, code: str, rows: Sequence[Disclosure], observed_at: datetime) -> int:
         with self._connect() as connection:
             changes = self._write_disclosures(connection, rows)
-            connection.execute(
+            connection.run(
                 "INSERT OR REPLACE INTO component_checks VALUES('news',?,?,'')", (code, observed_at.isoformat())
             )
         return changes
@@ -474,7 +476,7 @@ class SQLiteCompanyEvidenceIndex:
         with self._connect() as connection:
             return tuple(
                 row[0]
-                for row in connection.execute(
+                for row in connection.run(
                     "SELECT code FROM news_candidates WHERE selected_at>=? ORDER BY code",
                     ((observed_at - timedelta(days=7)).isoformat(),),
                 )
@@ -482,8 +484,8 @@ class SQLiteCompanyEvidenceIndex:
 
     def record_candidates(self, codes: Sequence[str], observed_at: datetime) -> None:
         with self._connect() as connection:
-            connection.execute("DELETE FROM news_candidates")
-            connection.executemany(
+            connection.run("DELETE FROM news_candidates")
+            connection.run_many(
                 "INSERT OR REPLACE INTO news_candidates VALUES(?,?)",
                 ((code, observed_at.isoformat()) for code in codes),
             )
@@ -491,7 +493,7 @@ class SQLiteCompanyEvidenceIndex:
     def publish(self, codes: Sequence[str], observed_at: datetime) -> int:
         # All normalized reads and the publication pointer share one transaction. No whole-file copy/merge.
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.run("BEGIN IMMEDIATE")
             digest = hashlib.sha256()
             shared = _snapshot_shared(connection, observed_at)
             for offset in range(0, len(codes), 128):
@@ -503,29 +505,29 @@ class SQLiteCompanyEvidenceIndex:
                     values.append(
                         (snapshot.code, snapshot.version, observed_at.isoformat(), EncodeCompanySnapshot(snapshot))
                     )
-                connection.executemany(
+                connection.run_many(
                     "INSERT INTO published VALUES(?,?,?,?) ON CONFLICT(code) DO UPDATE "
                     "SET version=excluded.version,published_at=excluded.published_at,payload=excluded.payload "
                     "WHERE version<>excluded.version",
                     values,
                 )
-            for row in connection.execute("SELECT version FROM published ORDER BY code"):
+            for row in connection.run("SELECT version FROM published ORDER BY code"):
                 digest.update(row[0].encode())
             version = digest.hexdigest()
-            connection.execute("INSERT OR REPLACE INTO publication VALUES(1,?,?)", (version, observed_at.isoformat()))
+            connection.run("INSERT OR REPLACE INTO publication VALUES(1,?,?)", (version, observed_at.isoformat()))
             # Only this fresh evidence database is pruned; frozen decisions and old databases are untouched.
             cutoff = (observed_at.date() - timedelta(days=365)).isoformat()
-            connection.execute(
+            connection.run(
                 "DELETE FROM disclosures WHERE (kind='announcement' AND published_at<?) OR (kind='news' AND published_at<?)",
                 (cutoff, (observed_at - timedelta(days=7)).isoformat()),
             )
-            connection.execute("DELETE FROM partitions WHERE end<?", (cutoff,))
-            connection.execute("DELETE FROM coverage WHERE end<?", (cutoff,))
-            connection.execute("DELETE FROM partition_rows WHERE end<?", (cutoff,))
-            connection.execute(
+            connection.run("DELETE FROM partitions WHERE end<?", (cutoff,))
+            connection.run("DELETE FROM coverage WHERE end<?", (cutoff,))
+            connection.run("DELETE FROM partition_rows WHERE end<?", (cutoff,))
+            connection.run(
                 "DELETE FROM financials WHERE report_date<?", ((observed_at.date() - timedelta(days=550)).isoformat(),)
             )
-            connection.execute(
+            connection.run(
                 "DELETE FROM news_candidates WHERE selected_at<?", ((observed_at - timedelta(days=7)).isoformat(),)
             )
         return len(codes)
@@ -585,22 +587,20 @@ class _SnapshotShared:
     pledge_day: str | None
 
 
-def _snapshot_shared(connection: sqlite3.Connection, now: datetime) -> _SnapshotShared:
+def _snapshot_shared(connection: SqliteConnection, now: datetime) -> _SnapshotShared:
     cutoff = (now.date() - timedelta(days=365)).isoformat()
-    pledge = connection.execute("SELECT start FROM ratio_snapshots WHERE component='pledge'").fetchone()
+    pledge = connection.run("SELECT start FROM ratio_snapshots WHERE component='pledge'").fetchone()
     return _SnapshotShared(
-        tuple(connection.execute("SELECT start,end,market FROM coverage WHERE end>=? ORDER BY start", (cutoff,))),
-        tuple(connection.execute("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
-        tuple(
-            connection.execute("SELECT DISTINCT failure,market FROM partitions WHERE end>=? AND failure<>''", (cutoff,))
-        ),
+        tuple(connection.run("SELECT start,end,market FROM coverage WHERE end>=? ORDER BY start", (cutoff,))),
+        tuple(connection.run("SELECT component,checked_at,failure FROM component_checks WHERE scope='market'")),
+        tuple(connection.run("SELECT DISTINCT failure,market FROM partitions WHERE end>=? AND failure<>''", (cutoff,))),
         pledge[0] if pledge else None,
     )
 
 
-def _snapshot_rows(connection: sqlite3.Connection, codes: tuple[str, ...], now: datetime) -> dict[str, _SnapshotRows]:
+def _snapshot_rows(connection: SqliteConnection, codes: tuple[str, ...], now: datetime) -> dict[str, _SnapshotRows]:
     placeholders = ",".join("?" for _ in codes)
-    disclosures = connection.execute(
+    disclosures = connection.run(
         "SELECT d.*,c.code FROM disclosures d JOIN disclosure_codes c ON c.disclosure_id=d.id "
         f"WHERE c.code IN ({placeholders}) AND d.published_at>=? AND d.published_at<=? ORDER BY d.published_at,d.id",
         (*codes, (now.date() - timedelta(days=365)).isoformat(), now.isoformat()),
@@ -609,18 +609,18 @@ def _snapshot_rows(connection: sqlite3.Connection, codes: tuple[str, ...], now: 
     for row in disclosures:
         documents[row["code"]].append(row)
     financials: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.execute(
+    for row in connection.run(
         f"SELECT * FROM financials WHERE code IN ({placeholders}) AND report_date>=? AND published_at<=? ORDER BY report_date",
         (*codes, (now.date() - timedelta(days=550)).isoformat(), now.isoformat()),
     ):
         financials[row["code"]].append(row)
     ratios: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.execute(
+    for row in connection.run(
         f"SELECT code,day,ratio_pct,component FROM ratios WHERE code IN ({placeholders}) ORDER BY day", codes
     ):
         ratios[row["code"]].append(row)
     checks: dict[str, list[sqlite3.Row]] = {code: [] for code in codes}
-    for row in connection.execute(
+    for row in connection.run(
         f"SELECT component,checked_at,failure,scope FROM component_checks WHERE scope IN ({placeholders})", codes
     ):
         checks[row["scope"]].append(row)
@@ -723,7 +723,7 @@ class SQLiteCompanyEvidenceReader:
             with closing(
                 OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2))
             ) as connection:
-                row = connection.execute("SELECT version FROM publication WHERE singleton=1").fetchone()
+                row = connection.run("SELECT version FROM publication WHERE singleton=1").fetchone()
                 return row[0] if row else ""
         except sqlite3.Error as exc:
             raise RuntimeError("company_snapshot_unreadable") from exc
@@ -737,14 +737,15 @@ class SQLiteCompanyEvidenceReader:
                 OpenSqliteConnection(self.path, SqliteConnectionOptions(read_only=True, timeout_seconds=2))
             ) as connection:
                 with SqliteTransaction(connection):
-                    contract = connection.execute("SELECT identity FROM contract").fetchall()
-                    if contract != [("company_evidence",)]:
+                    contract = connection.run("SELECT identity FROM contract").fetchall()
+                    if [tuple(row) for row in contract] != [("company_evidence",)]:
                         raise ValueError("company_snapshot_contract_mismatch")
                     for offset in range(0, len(codes), 128):
                         batch = tuple(codes[offset : offset + 128])
                         placeholders = ",".join("?" for _ in batch)
                         captured.extend(
-                            connection.execute(
+                            (str(row[0]), str(row[1]), str(row[2]), str(row[3]))
+                            for row in connection.run(
                                 f"SELECT code,version,published_at,payload FROM published WHERE code IN ({placeholders})",
                                 batch,
                             )

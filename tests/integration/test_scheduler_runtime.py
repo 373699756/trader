@@ -364,7 +364,7 @@ def test_publication_failure_receipts_reach_http_without_changing_valid_current(
         operation = "decision_event" if failure == "event" else "observer_enqueue"
     payload = RuntimeStatus(runtime, StatusReviewer(), lambda: {})  # type: ignore[arg-type]
     assert payload["health"]["issue_count"] > 0
-    repository = SQLiteDecisionRecords(tmp_path)
+    repository = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     repository.initialize()
     queries = UnifiedDecisionQueries(index, UnifiedDecisionDraftIndex(), repository, clock)
     stream = UnifiedDecisionEventStream()

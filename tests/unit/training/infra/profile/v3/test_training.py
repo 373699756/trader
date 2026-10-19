@@ -44,8 +44,8 @@ from trader.training.infra.profile.v3.training import (
     RunTomorrowTraining as _run_tomorrow_training,
 )
 from trader.training.infra.profile.v3.training import RunV3Training as _run_v3_training
-from trader.training.infra.profile.v3.training_sample_repository import (
-    SQLiteV3TrainingSampleRepository,
+from trader.training.infra.profile.v3.training_sample_index import (
+    SQLiteV3TrainingSampleIndex,
     V3TrainingIndustryCounts,
     V3TrainingSample,
 )
@@ -60,6 +60,7 @@ def run_v2_training(history_root: Path, train_root: Path, **kwargs):
         history_root,
         train_root,
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v2"),
+        sample_root=(train_root).parent / "samples",
         **kwargs,
     )
 
@@ -69,6 +70,7 @@ def run_v3_training(history_root: Path, train_root: Path, **kwargs):
         history_root,
         train_root,
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
+        sample_root=(train_root).parent / "samples",
         **kwargs,
     )
 
@@ -78,6 +80,7 @@ def run_tomorrow_training(history_root: Path, train_root: Path, **kwargs):
         history_root,
         train_root,
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
+        sample_root=(train_root).parent / "samples",
         **kwargs,
     )
 
@@ -175,7 +178,7 @@ def test_sample_sqlite_failure_returns_both_heads_and_releases_locks(tmp_path, m
     assert all(head.failure_reasons == ("training_database_failed",) for head in result.heads)
     assert all(not head.model_hash and not head.report_hash for head in result.heads)
     assert result.sample_database_peak_bytes > 0
-    assert not tuple((tmp_path / "train").glob("*/.sample-cache/complete.json"))
+    assert not tuple((tmp_path / "samples").glob("*/complete.json"))
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", lambda _request: None)
     retry = run_training(tmp_path / "history", tmp_path / "train")
     assert all(head.failure_reasons == ("profile_training_rows_empty",) for head in retry.heads)
@@ -221,14 +224,14 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
 
     monkeypatch.setattr("trader.training.infra.engine.BuildTrainingSamples", build_samples)
     monkeypatch.setattr(
-        "trader.training.infra.sample_repository.SQLiteTrainingSampleRepository.split_distinct_date_count",
+        "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
         lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
     )
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fail)
     first = run_training(tmp_path / "history", tmp_path / "train")
     assert first.status == "blocked"
     assert first.sample_database_peak_bytes > 0
-    assert (tmp_path / "train" / profile / ".sample-cache/complete.json").is_file()
+    assert (tmp_path / "samples" / profile / "complete.json").is_file()
     if failure is sqlite3.OperationalError:
         assert all(head.failure_reasons == ("training_database_failed",) for head in first.heads)
 
@@ -243,7 +246,7 @@ def test_fitting_failure_reuses_only_complete_samples_on_retry(tmp_path, monkeyp
     )
     second = run_training(tmp_path / "history", tmp_path / "train")
     assert second.status == "engineering_ready" and builds == 1
-    assert not (tmp_path / "train" / profile / ".sample-cache/samples.sqlite3").exists()
+    assert not (tmp_path / "samples" / profile / "samples.sqlite3").exists()
 
 
 def test_provably_insufficient_industry_rows_fail_before_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -343,7 +346,7 @@ def test_v3_training_scans_history_once_then_fits_heads_sequentially(
 
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", publish)
     monkeypatch.setattr(
-        "trader.training.infra.sample_repository.SQLiteTrainingSampleRepository.split_distinct_date_count",
+        "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
         lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
     )
 
@@ -412,7 +415,7 @@ def test_v3_training_always_fits_both_heads(tmp_path: Path, monkeypatch: pytest.
     monkeypatch.setattr("trader.training.infra.engine.FitIndustryModels", fit)
     monkeypatch.setattr("trader.training.infra.engine.PublishProfileBundles", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
-        "trader.training.infra.sample_repository.SQLiteTrainingSampleRepository.split_distinct_date_count",
+        "trader.training.infra.sample_index.SQLiteTrainingSampleIndex.split_distinct_date_count",
         lambda _self, split_name, _contract: {"training": 750, "calibration": 20, "validation": 400}[split_name],
     )
 
@@ -458,7 +461,7 @@ def test_training_does_not_open_a_second_snapshot_while_history_maintenance_is_r
             self._path = path
 
         def __enter__(self) -> None:
-            if self._path.name == ".maintenance.lock":
+            if self._path.name == ".history.lock":
                 raise HistoryMaintenanceAlreadyRunningError("busy")
 
         def __exit__(self, *_args: object) -> None:
@@ -520,9 +523,9 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
                 yield HistoryTrainingRow("600000", point.trade_date, "main", "银行", point)
             progress(66)
 
-    with SQLiteV3TrainingSampleRepository(tmp_path / "samples.sqlite3") as repository:
+    with SQLiteV3TrainingSampleIndex(tmp_path / "samples.sqlite3") as repository:
         BuildTrainingSamples(Archive(), ("600000",), TomorrowTrainingWindow(split), repository)  # type: ignore[arg-type]
-        row = repository._connection.execute(
+        row = repository._connection.run(
             "SELECT trade_date, target_t1, target_t2, target_t3, target_t4, target_t5, target_d25_aggregate "
             "FROM samples WHERE trade_date=?",
             (dates[60].isoformat(),),
@@ -532,7 +535,7 @@ def test_sample_building_creates_t1_through_t5_and_d25_from_one_stream(tmp_path:
         assert row[0] == dates[60].isoformat()
         assert row[1:] == pytest.approx((0.0,) * 6)
         assert "raw_samples" not in {
-            item[0] for item in repository._connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            item[0] for item in repository._connection.run("SELECT name FROM sqlite_master WHERE type='table'")
         }
 
 

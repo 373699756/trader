@@ -360,8 +360,8 @@ def test_http_result_preserves_provider_identity_cache_usage_and_finish_reason()
 def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path) -> None:
     database_path = tmp_path / "runtime.sqlite3"
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        connection.execute("INSERT INTO schema_meta(key, value) VALUES ('schema_version', 'N/A')")
+        connection.run("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        connection.run("INSERT INTO schema_meta(key, value) VALUES ('schema_version', 'N/A')")
 
     ledger = DeepSeekBudgetLedger(
         database_path,
@@ -373,7 +373,7 @@ def test_budget_initialize_repair_schema_version_if_missing_or_invalid(tmp_path)
     ledger.initialize()
 
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+        version = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
 
     assert version is not None
     assert int(str(version[0])) == BUDGET_SCHEMA_VERSION
@@ -392,7 +392,7 @@ def test_budget_initialize_sets_schema_version_if_absent(tmp_path) -> None:
     ledger.initialize()
 
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+        version = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
 
     assert version is not None
     assert int(str(version[0])) == BUDGET_SCHEMA_VERSION
@@ -402,17 +402,17 @@ def test_budget_connection_context_closes_after_success_and_failure(tmp_path) ->
     ledger = _budget(tmp_path / "runtime.sqlite3")
 
     with ledger._connect() as successful_connection:
-        assert successful_connection.execute("SELECT 1").fetchone() == (1,)
+        assert tuple(successful_connection.run("SELECT 1").fetchone()) == (1,)
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        successful_connection.execute("SELECT 1")
+        successful_connection.run("SELECT 1")
 
     with pytest.raises(RuntimeError, match="forced failure"):
         with ledger._connect() as failed_connection:
             raise RuntimeError("forced failure")
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        failed_connection.execute("SELECT 1")
+        failed_connection.run("SELECT 1")
 
 
 def test_budget_summary_remains_memory_only_while_sqlite_is_exclusively_locked(tmp_path) -> None:
@@ -421,7 +421,7 @@ def test_budget_summary_remains_memory_only_while_sqlite_is_exclusively_locked(t
     expected = ledger.summary("2026-08-25")
 
     with closing(OpenSqliteConnection(database_path, SqliteConnectionOptions(timeout_seconds=0.0))) as blocker, blocker:
-        blocker.execute("BEGIN EXCLUSIVE")
+        blocker.run("BEGIN EXCLUSIVE")
         assert ledger.summary("2026-08-25") == expected
 
     assert expected["by_stage"] == {
@@ -463,7 +463,7 @@ def test_http_status_remains_available_while_budget_sqlite_is_exclusively_locked
     )
 
     with closing(OpenSqliteConnection(database_path, SqliteConnectionOptions(timeout_seconds=0.0))) as blocker, blocker:
-        blocker.execute("BEGIN EXCLUSIVE")
+        blocker.run("BEGIN EXCLUSIVE")
         response = app.test_client().get("/api/status")
 
     assert response.status_code == 200
@@ -490,10 +490,12 @@ def test_budget_reservation_and_batch_roll_over_on_shanghai_midnight(tmp_path) -
     assert ledger.summary("2026-08-25")["used"] == 0
     assert ledger.summary("2026-08-26")["used"] == 1
     with closing(OpenSqliteConnection(tmp_path / "runtime.sqlite3")) as connection, connection:
-        assert connection.execute(
-            "SELECT trade_date FROM deepseek_review_batches WHERE batch_id = ?",
-            (batch_id,),
-        ).fetchone() == ("2026-08-26",)
+        assert tuple(
+            connection.run(
+                "SELECT trade_date FROM deepseek_review_batches WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        ) == ("2026-08-26",)
 
 
 def test_status_remains_read_only_when_budget_database_is_unavailable(tmp_path, monkeypatch) -> None:
@@ -643,8 +645,8 @@ def test_call_audit_replaces_raw_failure_text_with_bounded_category(tmp_path) ->
     )
 
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        audit = connection.execute("SELECT outcome, error_code FROM deepseek_calls").fetchone()
-    assert audit == ("failed", "request_failed")
+        audit = connection.run("SELECT outcome, error_code FROM deepseek_calls").fetchone()
+    assert tuple(audit) == ("failed", "request_failed")
 
 
 def test_shared_review_cache_ignores_quote_only_version_changes() -> None:
@@ -805,9 +807,9 @@ def test_reviewer_reports_missing_api_key_without_physical_call(tmp_path) -> Non
     assert status["last_physical_attempts"] == 0
     assert status["physical_call_acceptance"]["zero_call_reason"] == "api_key_missing"
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        assert connection.execute(
-            "SELECT status, physical_attempts, error FROM deepseek_review_batches"
-        ).fetchone() == ("skipped", 0, "api_key_missing")
+        assert tuple(
+            connection.run("SELECT status, physical_attempts, error FROM deepseek_review_batches").fetchone()
+        ) == ("skipped", 0, "api_key_missing")
 
 
 def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
@@ -842,14 +844,14 @@ def test_reviewer_does_not_retry_transport_failures(tmp_path) -> None:
 
     assert result[candidate.quote.code].outcome is ReviewOutcome.REJECTED
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        attempts = connection.execute(
+        attempts = connection.run(
             "SELECT status, http_status, token_count FROM deepseek_call_reservations ORDER BY rowid"
         ).fetchall()
-        audit = connection.execute(
+        audit = connection.run(
             "SELECT outcome, http_status, total_tokens, error_code FROM deepseek_calls ORDER BY requested_at"
         ).fetchall()
-    assert attempts == [("failed", 429, 0)]
-    assert audit == [("failed", 429, 0, "http_429")]
+    assert [tuple(row) for row in attempts] == [("failed", 429, 0)]
+    assert [tuple(row) for row in audit] == [("failed", 429, 0, "http_429")]
     summary = budget.summary(NOW.date().isoformat())
     assert summary["http_429_count"] == 1
     assert summary["token_count"] == 0
@@ -885,8 +887,8 @@ def test_reviewer_does_not_schedule_transport_retry_before_deadline(tmp_path) ->
     assert budget.summary(NOW.date().isoformat())["timeout_count"] == 1
     assert reviewer.status()["last_batch_status"] == "failed"
     with closing(OpenSqliteConnection(tmp_path / "runtime.sqlite3")) as connection, connection:
-        call = connection.execute("SELECT outcome, error_code FROM deepseek_calls").fetchone()
-    assert call == ("failed", "timeout")
+        call = connection.run("SELECT outcome, error_code FROM deepseek_calls").fetchone()
+    assert tuple(call) == ("failed", "timeout")
 
 
 def test_confidence_coverage_and_known_dimension_minimum_produce_candidate_abstain() -> None:
@@ -999,11 +1001,11 @@ def test_schema_repair_uses_second_and_final_physical_attempt(tmp_path) -> None:
     assert result[candidate.quote.code].outcome is ReviewOutcome.APPLIED
     assert budget.summary(NOW.date().isoformat())["used"] == 2
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        assert connection.execute("SELECT status, physical_attempts FROM deepseek_review_batches").fetchone() == (
+        assert tuple(connection.run("SELECT status, physical_attempts FROM deepseek_review_batches").fetchone()) == (
             "success",
             2,
         )
-        assert connection.execute("SELECT outcome FROM deepseek_candidate_results").fetchone() == ("applied",)
+        assert tuple(connection.run("SELECT outcome FROM deepseek_candidate_results").fetchone()) == ("applied",)
 
 
 def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path) -> None:
@@ -1037,10 +1039,13 @@ def test_partial_batch_keeps_valid_candidate_and_rejects_missing_result(tmp_path
     assert result[second.quote.code].outcome is ReviewOutcome.REJECTED
     assert reviewer.status()["last_batch_status"] == "partial"
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        assert connection.execute("SELECT status FROM deepseek_review_batches").fetchone() == ("partial",)
-        assert connection.execute(
-            "SELECT stock_code, outcome FROM deepseek_candidate_results ORDER BY stock_code"
-        ).fetchall() == [("600001", "applied"), ("600002", "rejected")]
+        assert tuple(connection.run("SELECT status FROM deepseek_review_batches").fetchone()) == ("partial",)
+        assert [
+            tuple(row)
+            for row in connection.run(
+                "SELECT stock_code, outcome FROM deepseek_candidate_results ORDER BY stock_code"
+            ).fetchall()
+        ] == [("600001", "applied"), ("600002", "rejected")]
 
 
 def test_budget_enforces_stage_limit_independently_from_strategy_limit(tmp_path) -> None:
@@ -1128,9 +1133,9 @@ def test_restart_marks_uncertain_attempt_and_batch_abandoned(tmp_path) -> None:
     assert reservation.allowed is True
     assert ledger.recover_incomplete(NOW + timedelta(minutes=2)) == 2
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        assert connection.execute("SELECT status FROM deepseek_call_reservations").fetchone() == ("abandoned",)
-        assert connection.execute("SELECT status FROM deepseek_review_batches").fetchone() == ("abandoned",)
-        assert connection.execute("SELECT outcome FROM deepseek_candidate_results").fetchone() == ("rejected",)
+        assert tuple(connection.run("SELECT status FROM deepseek_call_reservations").fetchone()) == ("abandoned",)
+        assert tuple(connection.run("SELECT status FROM deepseek_review_batches").fetchone()) == ("abandoned",)
+        assert tuple(connection.run("SELECT outcome FROM deepseek_candidate_results").fetchone()) == ("rejected",)
 
 
 def test_non_retryable_http_error_is_attempted_once() -> None:

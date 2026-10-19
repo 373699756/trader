@@ -33,15 +33,7 @@ class QfqUpdateRunner:
         rows = 0
         try:
             with HistoryMaintenanceLock(self.lock_path):
-                recovered = (*self.v2.recover_pending_transactions(), *self.v3.recover_pending_transactions())
-                if recovered:
-                    self.updater.report(
-                        QfqMessage(
-                            self.updater.monotonic() - started,
-                            "本地恢复",
-                            f"已恢复事务 {len(recovered)} 个分片",
-                        )
-                    )
+                self.v2.verify_integrity()
                 if not seed_only:
                     return self.updater.execute(self.now())
                 manifest = self.history.manifest()
@@ -67,6 +59,7 @@ class QfqUpdateRunner:
                                     if window.code in needed
                                 ),
                                 f"history:{manifest.snapshot_hash}",
+                                calendar=manifest.calendar_dates,
                             )
                         changed.update(seeded.changed_files)
                         rows += seeded.changed_rows

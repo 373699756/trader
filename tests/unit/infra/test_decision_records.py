@@ -38,10 +38,10 @@ def test_fourteen_stage_audit_restarts_and_has_identical_get_sse_projections(tmp
 
     current = replace(decision(), pipeline=replace(pipeline(), stage_snapshots=stage_snapshots()))
     expected = CommittedDecisionRecord(current, NOW, "scheduled")
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     records.commit(expected)
-    restarted = SQLiteDecisionRecords(tmp_path)
+    restarted = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     restored = restarted.load(Strategy.TOMORROW, current.trade_date)
     assert restored == expected
     queries = UnifiedDecisionQueries(UnifiedDecisionIndex(), UnifiedDecisionDraftIndex(), restarted, Clock())
@@ -52,7 +52,7 @@ def test_fourteen_stage_audit_restarts_and_has_identical_get_sse_projections(tmp
 
 
 def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     tomorrow = record()
     today = record(Strategy.TOMORROW)
@@ -67,7 +67,7 @@ def test_formal_records_are_idempotent_and_isolated_by_strategy_and_date(tmp_pat
 
 
 def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     older_at = NOW - timedelta(days=1)
     fixture = decision()
@@ -92,7 +92,7 @@ def test_formal_record_dates_are_bounded_and_newest_first(tmp_path: Path) -> Non
 
 
 def test_same_strategy_date_hash_conflict_is_rejected(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     records.commit(record())
 
@@ -100,48 +100,46 @@ def test_same_strategy_date_hash_conflict_is_rejected(tmp_path: Path) -> None:
         records.commit(record(sequence=2))
 
 
-def test_daily_layout_has_no_empty_operational_directories(tmp_path: Path) -> None:
-    for profile in ("v2", "v3"):
-        root = tmp_path / profile
-        records = SQLiteDecisionRecords(root)
-        records.initialize()
-        assert {path.name for path in root.iterdir()} == {"freeze.sqlite3"}
-        for strategy in (Strategy.TOMORROW, Strategy.D25):
-            expected = record(strategy)
-            records.commit(expected)
-            assert (root / strategy.value / f"{expected.trade_date.isoformat()}.json").is_file()
-        restarted = SQLiteDecisionRecords(root)
-        restarted.initialize()
-        assert {path.name for path in root.iterdir()} == {"freeze.sqlite3", "tomorrow", "d25"}
-        assert restarted.load(Strategy.D25, NOW.date()) == record(Strategy.D25)
-
-
-def test_legacy_layout_is_rejected_before_creating_a_second_database(tmp_path: Path) -> None:
-    (tmp_path / "decisions").mkdir()
-    with pytest.raises(DecisionRecordUnavailableError, match="offline layout migration"):
-        SQLiteDecisionRecords(tmp_path).initialize()
-    assert not (tmp_path / "freeze.sqlite3").exists()
-
-
-def test_orphan_in_daily_directory_is_quarantined_without_hiding_valid_history(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+def test_formal_records_and_payloads_share_one_database(tmp_path):
+    path = tmp_path / "decisions.sqlite3"
+    records = SQLiteDecisionRecords(path)
     records.initialize()
-    expected = record()
-    records.commit(expected)
-    orphan = tmp_path / "tomorrow" / "2000-01-01.json"
-    orphan.write_bytes(b"orphan")
+    for strategy in (Strategy.TOMORROW, Strategy.D25):
+        records.commit(record(strategy))
+    assert {item.name for item in tmp_path.iterdir() if not item.name.endswith(("-wal", "-shm"))} == {
+        "decisions.sqlite3"
+    }
+    assert not tuple(tmp_path.rglob("*.json"))
+    assert SQLiteDecisionRecords(path).load(Strategy.D25, NOW.date()) == record(Strategy.D25)
 
-    summary = records.recover()
 
-    assert summary.orphaned == 1
-    assert not orphan.exists()
-    assert records.load(Strategy.TOMORROW, expected.trade_date) == expected
-    assert records.list_dates(Strategy.TOMORROW) == (expected.trade_date,)
+def test_unversioned_legacy_database_is_rejected(tmp_path):
+    path = tmp_path / "decisions.sqlite3"
+    with closing(OpenSqliteConnection(path)) as connection:
+        connection.run("CREATE TABLE legacy(value TEXT)")
+    with pytest.raises(DecisionRecordUnavailableError):
+        SQLiteDecisionRecords(path).initialize()
+
+
+def test_failed_transaction_does_not_leave_partial_payload_or_index(tmp_path):
+    def fail(point):
+        if point == "before_commit":
+            raise KeyboardInterrupt
+
+    path = tmp_path / "decisions.sqlite3"
+    records = SQLiteDecisionRecords(path, fault_injector=fail)
+    records.initialize()
+    with pytest.raises(KeyboardInterrupt):
+        records.commit(record())
+    assert records.load(Strategy.TOMORROW, NOW.date()) is None
+    assert records.list_dates(Strategy.TOMORROW) == ()
+    SQLiteDecisionRecords(path).commit(record())
+    assert records.load(Strategy.TOMORROW, NOW.date()) == record()
 
 
 def test_same_record_is_idempotent_across_concurrent_record_instances(tmp_path: Path) -> None:
-    first = SQLiteDecisionRecords(tmp_path)
-    second = SQLiteDecisionRecords(tmp_path)
+    first = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    second = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     first.initialize()
     expected = record()
 
@@ -154,28 +152,28 @@ def test_same_record_is_idempotent_across_concurrent_record_instances(tmp_path: 
 
 def test_staged_half_commit_recovers_the_same_payload(tmp_path: Path) -> None:
     def fail_after_stage(point: str) -> None:
-        if point == "manifest_staged":
+        if point == "after_commit":
             raise RuntimeError("injected")
 
     expected = record()
-    failing = SQLiteDecisionRecords(tmp_path, fault_injector=fail_after_stage)
+    failing = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3", fault_injector=fail_after_stage)
     failing.initialize()
     with pytest.raises(RuntimeError, match="injected"):
         failing.commit(expected)
 
-    recovered = SQLiteDecisionRecords(tmp_path)
+    recovered = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     summary = recovered.recover()
 
-    assert summary.recovered == 1
+    assert summary.recovered == 0
     assert recovered.load(Strategy.TOMORROW, expected.trade_date) == expected
 
 
 def test_committed_load_hashes_file_bytes_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     expected = record()
     records.commit(expected)
-    original = decision_records_module._sha256
+    original = decision_records_module._bounded_digest
     calls = 0
 
     def count_hash(payload: bytes) -> str:
@@ -183,17 +181,17 @@ def test_committed_load_hashes_file_bytes_once(tmp_path: Path, monkeypatch: pyte
         calls += 1
         return original(payload)
 
-    monkeypatch.setattr(decision_records_module, "_sha256", count_hash)
+    monkeypatch.setattr(decision_records_module, "_bounded_digest", count_hash)
 
     assert records.load(Strategy.TOMORROW, expected.trade_date) == expected
     assert calls == 1
 
 
 def test_committed_recovery_hashes_each_file_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     records.commit(record())
-    original = decision_records_module._sha256
+    original = decision_records_module._bounded_digest
     calls = 0
 
     def count_hash(payload: bytes) -> str:
@@ -201,7 +199,7 @@ def test_committed_recovery_hashes_each_file_once(tmp_path: Path, monkeypatch: p
         calls += 1
         return original(payload)
 
-    monkeypatch.setattr(decision_records_module, "_sha256", count_hash)
+    monkeypatch.setattr(decision_records_module, "_bounded_digest", count_hash)
 
     summary = records.recover()
 
@@ -210,42 +208,38 @@ def test_committed_recovery_hashes_each_file_once(tmp_path: Path, monkeypatch: p
 
 
 def test_corrupted_committed_record_is_quarantined_and_fails_closed(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     expected = record()
     records.commit(expected)
-    payload = tmp_path / "tomorrow" / f"{expected.trade_date.isoformat()}.json"
-    payload.write_bytes(b"corrupt")
+    with closing(OpenSqliteConnection(tmp_path / "decisions.sqlite3")) as connection, connection:
+        connection.run("UPDATE decision_records SET payload=?", (b"corrupt",))
 
     summary = records.recover()
 
     assert summary.quarantined == 1
     with pytest.raises(DecisionRecordUnavailableError, match="quarantined"):
         records.load(Strategy.TOMORROW, expected.trade_date)
-    assert next((tmp_path / "quarantine").rglob("*.json")).is_file()
+    assert not tuple(tmp_path.rglob("*.json"))
 
 
-def test_invalid_manifest_path_is_quarantined_without_accessing_outside_root(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+def test_invalid_index_identity_is_quarantined_without_rewriting_payload(tmp_path):
+    path = tmp_path / "decisions.sqlite3"
+    records = SQLiteDecisionRecords(path)
     records.initialize()
-    expected = record()
-    records.commit(expected)
-    database = tmp_path / "freeze.sqlite3"
-    with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute(
-            "UPDATE decision_records SET relative_path = '../outside.json' WHERE strategy = ?",
-            (Strategy.TOMORROW.value,),
-        )
-
-    summary = records.recover()
-
-    assert summary.quarantined == 1
-    with pytest.raises(DecisionRecordUnavailableError, match="quarantined"):
-        records.load(Strategy.TOMORROW, expected.trade_date)
+    records.commit(record())
+    with closing(OpenSqliteConnection(path)) as connection, connection:
+        before = connection.run("SELECT payload FROM decision_records").require_one()[0]
+        connection.run("UPDATE decision_records SET version='invalid'")
+    assert records.recover().quarantined == 1
+    with closing(OpenSqliteConnection(path)) as connection:
+        assert connection.run("SELECT payload FROM decision_records").require_one()[0] == before
+    with pytest.raises(DecisionRecordUnavailableError):
+        records.load(Strategy.TOMORROW, NOW.date())
 
 
 def test_checkpoint_round_trip_is_verified_and_consumed(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     boundary = NOW.replace(hour=14, minute=50)
     checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
@@ -259,8 +253,8 @@ def test_checkpoint_round_trip_is_verified_and_consumed(tmp_path: Path) -> None:
 
 
 def test_concurrent_checkpoint_writers_retain_the_newest_observation(tmp_path: Path) -> None:
-    first = SQLiteDecisionRecords(tmp_path)
-    second = SQLiteDecisionRecords(tmp_path)
+    first = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
+    second = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     first.initialize()
     boundary = NOW.replace(hour=14, minute=50)
     older = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
@@ -285,16 +279,17 @@ def test_concurrent_checkpoint_writers_retain_the_newest_observation(tmp_path: P
 
 
 def test_corrupted_checkpoint_is_quarantined_and_never_restored(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     boundary = NOW.replace(hour=14, minute=50)
     checkpoint = DecisionCheckpoint(replace(decision(), observed_at=boundary - timedelta(seconds=20)), boundary)
     records.save_checkpoint(checkpoint)
-    payload = next((tmp_path / "checkpoints").rglob("*.json"))
-    payload.write_bytes(b"corrupt")
+    with closing(OpenSqliteConnection(tmp_path / "decisions.sqlite3")) as connection, connection:
+        connection.run("UPDATE decision_checkpoints SET payload=?", (b"corrupt",))
 
     summary = records.recover()
 
     assert summary.quarantined == 1
-    assert records.load_checkpoint(Strategy.TOMORROW, NOW.date()) is None
-    assert next((tmp_path / "quarantine" / "checkpoint_invalid").rglob("*.json")).is_file()
+    with pytest.raises(DecisionRecordUnavailableError, match="quarantined"):
+        records.load_checkpoint(Strategy.TOMORROW, NOW.date())
+    assert not tuple(tmp_path.rglob("*.json"))

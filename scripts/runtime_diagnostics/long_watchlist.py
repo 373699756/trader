@@ -91,7 +91,7 @@ def historical_exclusions(paths: tuple[Path, ...], observed_at: datetime) -> dic
     evidence: dict[str, list[str]] = {}
     for path in paths:
         with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection, connection:
-            for code, reason, effective_at, evidence_id in connection.execute(
+            for code, reason, effective_at, evidence_id in connection.run(
                 "SELECT code, reason, effective_at, evidence_id FROM issuer_eligibility_facts"
             ):
                 eligibility_reason = IssuerEligibilityReason(str(reason))
@@ -147,9 +147,7 @@ def main() -> int:
     parser.add_argument("--strategy", type=Path, default=PROJECT_ROOT / "config/strategy.json")
     parser.add_argument("--eligibility-evidence", type=Path, action="append", default=[])
     parser.add_argument("--evidence-output", type=Path)
-    parser.add_argument(
-        "--company-evidence-database", type=Path, default=PROJECT_ROOT / "data/risk/company_evidence.sqlite3"
-    )
+    parser.add_argument("--company-evidence-database", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--timeout-seconds", type=float, default=5)
     args = parser.parse_args()

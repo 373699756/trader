@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from trader.infra.cache_contracts import CachePolicy
+from trader.infra.settings.data_paths import DataPaths
 from trader.recommendation.domain.market.news import NewsSignalPolicy
 from trader.recommendation.domain.market.research import (
     FeatureComponentWeightPolicy,
@@ -139,8 +140,7 @@ class RuntimeSettings:
     config_path: Path
     project_root: Path
     runtime_dir: Path
-    freeze_dir: Path
-    reference_dir: Path
+    data_paths: DataPaths
     strategy_config_path: Path
     long_watchlist_path: Path
     server: ServerSettings

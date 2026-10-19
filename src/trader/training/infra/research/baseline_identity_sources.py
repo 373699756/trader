@@ -28,20 +28,14 @@ class PackagedBaselineIdentityEvidence(BaselineIdentityEvidence):
 def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineIdentityEvidence:
     strategy = LoadStrategySettings(runtime.strategy_config_path)
     strategy_hash = FileSha256(runtime.strategy_config_path)
-    design_path = runtime.project_root / "docs/02_工程设计.md"
-    strategy_doc_path = runtime.project_root / "docs/01_评分逻辑.md"
-    v2 = (
-        LoadScoringProfile("v2", training_root=runtime.project_root / "data" / "train")
-        .heads[Strategy.TOMORROW]
-        .predictor
+    design_path = runtime.project_root / "docs/2_工程设计.md"
+    strategy_doc_path = runtime.project_root / "docs/1_评分逻辑.md"
+    v2 = LoadScoringProfile("v2", training_root=runtime.data_paths.models).heads[Strategy.TOMORROW].predictor
+    v3 = LoadScoringProfile("v3", training_root=runtime.data_paths.models).heads[Strategy.TOMORROW].predictor
+    historical_archive = TomorrowHistoricalEvidenceIndex(
+        runtime.data_paths.research(strategy.scoring_profile) / "experiments"
     )
-    v3 = (
-        LoadScoringProfile("v3", training_root=runtime.project_root / "data" / "train")
-        .heads[Strategy.TOMORROW]
-        .predictor
-    )
-    historical_archive = TomorrowHistoricalEvidenceIndex(runtime.runtime_dir / "tomorrow-historical")
-    historical_source = runtime.runtime_dir / "tomorrow-historical"
+    historical_source = runtime.data_paths.research(strategy.scoring_profile) / "experiments"
     historical_conflict = False
     try:
         historical_report = historical_archive.read_report_payload()
@@ -67,14 +61,14 @@ def LoadBaselineIdentityEvidence(runtime: RuntimeSettings) -> PackagedBaselineId
             "v2_model_identity",
             "industry_ridge_lightgbm",
             v2.model_id,
-            "data/train/v2/tomorrow/model.json",
+            str(runtime.data_paths.models / "v2/tomorrow/model.json"),
             SourceHash(v2.model_hash),
         ),
         BaselineIdentityClaim(
             "v3_model_identity",
             "industry_ridge_lightgbm",
             v3.model_id,
-            "data/train/v3/tomorrow/model.json",
+            str(runtime.data_paths.models / "v3/tomorrow/model.json"),
             SourceHash(v3.model_hash),
         ),
         BaselineIdentityClaim(

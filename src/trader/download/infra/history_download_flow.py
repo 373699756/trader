@@ -36,7 +36,7 @@ from trader.download.infra.history_download_index import (
     HistoryDownloadIndex,
     HistoryDownloadTask,
 )
-from trader.download.infra.history_month_partition import HistoryMonthPartitionError
+from trader.download.infra.history_prices import HistoryPricePartitionError
 from trader.download.infra.history_storage_profile import HistoryWriteTuning
 from trader.download.infra.history_sync_failure import HistoryFailureDetail, HistorySyncFailureError
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor, WorkerResourceRejectedError
@@ -280,7 +280,7 @@ class HistoryDownloadFlow:
             return (
                 replace(prepared, failure=result.failure or "tencent_history_pending") if prepared.missing else prepared
             )
-        except HistoryMonthPartitionError:
+        except HistoryPricePartitionError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             failure = DownloadFailure(exc)

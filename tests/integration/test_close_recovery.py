@@ -84,7 +84,7 @@ def test_close_recovery_retries_downstream_without_recollecting(tmp_path: Path, 
             if failure == "settlement" and len(self.calls) == 1:
                 raise SettlementUnavailableError("controlled_settlement_failure")
 
-    records = RecoverableDecisionRecords(tmp_path)
+    records = RecoverableDecisionRecords(tmp_path / "decisions.sqlite3")
     records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(
@@ -256,7 +256,7 @@ def test_close_receipt_lifetime_and_fast_handoff(tmp_path: Path, monkeypatch, tr
     at = datetime(2026, 8, 11, 15, 5, tzinfo=SHANGHAI)
     clock, data, index = FixedClock(at), DataRefresh(), UnifiedDecisionIndex()
     cadence, settlement = _cadence(at), Settlement()
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     freezers = tuple(
         ScoredFreezeCoordinator(

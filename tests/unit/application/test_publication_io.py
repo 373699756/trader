@@ -59,7 +59,7 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
     clock = _Clock(_at(hour, minute))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
     index = UnifiedDecisionIndex()
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     current = replace(decision(strategy), observed_at=_at(14, 59, 35))
     original_hash = current.content_hash
@@ -91,7 +91,9 @@ def test_five_period_io_observation_and_cold_recovery(tmp_path: Path, strategy, 
     _assert_formal_current_and_history(index, records, clock, result.record)
     cold_index = UnifiedDecisionIndex()
     cold_tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    restored = _freezer(cold_index, SQLiteDecisionRecords(tmp_path), clock, cold_tracker, strategy)
+    restored = _freezer(
+        cold_index, SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3"), clock, cold_tracker, strategy
+    )
     assert restored.restore(clock.value.date()).record == result.record
     restored_receipt = _receipt(cold_tracker, "formal_restore")
     assert restored_receipt.output_version == result.record.decision.version
@@ -112,7 +114,7 @@ def test_write_failure_retry_keeps_sealed_content_and_exposes_real_result(tmp_pa
     index = UnifiedDecisionIndex()
     current = replace(decision(strategy), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     commit = records.commit
     attempted = []
@@ -147,7 +149,7 @@ def test_cleanup_failure_is_visible_without_revoking_formal_record(tmp_path, mon
     index = UnifiedDecisionIndex()
     current = replace(decision(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     freezer = _freezer(index, records, clock, tracker, Strategy.TOMORROW)
     assert freezer.capture_checkpoint().status == "checkpoint_saved"
@@ -200,7 +202,7 @@ def test_observation_clock_failure_cannot_block_freeze(tmp_path) -> None:
     index = UnifiedDecisionIndex()
     current = replace(decision(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     result = _freezer(index, records, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
     assert result.status == "frozen" and result.record is not None
@@ -214,7 +216,7 @@ def test_cold_lookup_after_success_reports_latest_failure(tmp_path, monkeypatch)
     index = UnifiedDecisionIndex()
     current = replace(decision(), observed_at=_at(14, 59, 35))
     assert index.publish(current, expected_version=None).accepted
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     result = _freezer(index, records, clock, tracker, Strategy.TOMORROW).freeze_scheduled()
     assert result.status == "frozen"
@@ -237,7 +239,7 @@ def test_cold_lookup_after_success_reports_latest_failure(tmp_path, monkeypatch)
 def test_ineligible_checkpoint_remains_pending_without_business_rejection(tmp_path) -> None:
     clock = _Clock(_at(15, 0))
     tracker = PublicationIoTracker(now=clock.now, monotonic=_Monotonic())
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     checkpoint = DecisionCheckpoint(FormalScoredDecision(decision()), _at(15, 0))
     records.save_checkpoint(checkpoint)

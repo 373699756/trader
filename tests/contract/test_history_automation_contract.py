@@ -18,15 +18,14 @@ from trader.download.infra.history_automation_installation import (
     PlanHistoryAutomationInstallation,
 )
 from trader.entrypoints.cli import BuildParser, Main
+from trader.infra.settings.data_paths import DataPaths
 
 
 def test_automation_cli_commands_are_zero_argument_and_check_contains_read_only_status() -> None:
     parser = BuildParser()
+    assert parser.parse_args(["sync", "history"]).command == "sync"
 
-    for command in (
-        "download_scheduled",
-        "history-automation-status",
-    ):
+    for command in ("history-automation-status",):
         assert parser.parse_args([command]).command == command
         with pytest.raises(SystemExit):
             parser.parse_args([command, "unexpected"])
@@ -105,7 +104,7 @@ def test_internal_status_command_reads_persisted_projection_without_loading_supp
     )
     monkeypatch.setattr("trader.entrypoints.cli._shanghai_now", lambda: now)
 
-    assert Main(["history-automation-status"]) == 0
+    assert Main(["--config", str(Path("config/runtime.json").resolve()), "history-automation-status"]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["state"] == "data_incomplete"
     assert payload["matured_label_days_since_training"] == 0
@@ -134,13 +133,13 @@ def test_scheduled_cli_does_not_create_a_supplier_before_weekly_cadence_is_due(m
         None,
         False,
     )
-    monkeypatch.setattr("trader.download.entrypoints.commands._repository_root", lambda: tmp_path)
     monkeypatch.setattr("trader.download.entrypoints.commands._shanghai_now", lambda: now)
     monkeypatch.setattr(
         "trader.infra.settings.LoadRuntimeSettings",
         lambda _: SimpleNamespace(
             runtime_dir=tmp_path / "runtime",
-            reference_dir=tmp_path / "data" / "reference",
+            project_root=tmp_path,
+            data_paths=DataPaths(tmp_path / "data"),
         ),
     )
     monkeypatch.setattr(
@@ -153,13 +152,13 @@ def test_scheduled_cli_does_not_create_a_supplier_before_weekly_cadence_is_due(m
         pytest.fail("a no-op scheduled wakeup must not construct a supplier")
 
     monkeypatch.setattr("trader.download.infra.baostock_sync_supplier.BaoStockHistorySupplier", unexpected_supplier)
-    assert RunDownloadCommand("download_scheduled", config_path=tmp_path / "config.json") == 0
+    assert RunDownloadCommand("sync history", config_path=tmp_path / "config.json") == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["maintenance_state"] == "not_due"
     assert payload["maintenance_reason"] == "weekly_cadence_not_due"
     assert payload["automatic_model_update"] is False
     status = replace(status, data_cutoff=None)
-    assert RunDownloadCommand("download_scheduled", config_path=tmp_path / "config.json") == 1
+    assert RunDownloadCommand("sync history", config_path=tmp_path / "config.json") == 1
     assert json.loads(capsys.readouterr().out)["maintenance_state"] == "blocked"
 
 

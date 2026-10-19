@@ -89,9 +89,15 @@ def test_terminal_and_json_show_pending_units_without_claiming_full_coverage(mon
         314.09,
         3,
     )
-    monkeypatch.setattr(bootstrap, "ExecuteRiskDownload", lambda *args, **kwargs: result)
+    from trader.download.application.sync_data import SyncResult, SyncTaskResult
+
+    monkeypatch.setattr(
+        bootstrap,
+        "ExecuteSync",
+        lambda *args, **kwargs: SyncResult((SyncTaskResult("company", "pending", company=result),)),
+    )
     config = Path(__file__).resolve().parents[3] / "config/runtime.json"
-    assert Main(["--config", str(config), "download_risk"]) == 1
-    payload = json.loads(capsys.readouterr().out)
+    assert Main(["--config", str(config), "sync", "company"]) == 1
+    payload = json.loads(capsys.readouterr().out)["tasks"][0]
     assert payload["pending_documents"] == 3 and payload["pending_partitions"] == 26
     assert payload["elapsed_seconds"] == 314.09

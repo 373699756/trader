@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -37,6 +38,7 @@ _DEFAULT_CONFIG = PROJECT_ROOT / "config" / "runtime.json"
 _MARKET_SOURCES = ("tencent", "eastmoney", "sina", "baostock")
 
 _PROFILE_CHECKS: Mapping[Profile, tuple[str, ...]] = {
+    "local": ("configuration", "history_maintenance", "research_readiness", "production_performance"),
     "web": ("web_health",),
     "history": ("history_sources",),
     "security-master": ("exchange_security_master",),
@@ -107,7 +109,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cpu-profile-dir", type=Path, help="external directory for market-factor-compare feature CPU profiles"
     )
-    parser.add_argument("--qfq-root", type=Path, default=PROJECT_ROOT / "data/qfq")
+    parser.add_argument("--qfq-database", type=Path)
+    parser.add_argument(
+        "--baseline-checkout", type=Path, help="isolated old checkout for five alternating history-write comparisons"
+    )
+    parser.add_argument("--scoring-profile", choices=("v2", "v3", "both"), default=None)
     parser.add_argument("--runtime-config", default=str(_DEFAULT_CONFIG), help="runtime JSON configuration")
     parser.add_argument("--market-sources", nargs="+", choices=_MARKET_SOURCES, default=_MARKET_SOURCES)
     parser.add_argument("--market-profiles", nargs="+", choices=("v2", "v3"), default=("v2", "v3"))
@@ -167,14 +173,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--history-root",
         type=Path,
-        default=PROJECT_ROOT / "data/history",
-        help="stable BaoStock monthly SQLite data used by the read-only history-sqlite profile",
+        default=None,
+        help="published annual SQLite data used by the read-only history-sqlite profile",
     )
     parser.add_argument(
         "--sqlite-page-sample-count",
         type=int,
         default=1,
-        help="monthly files sampled for expensive dbstat page classification",
+        help="annual files sampled for expensive dbstat page classification",
     )
     parser.add_argument(
         "--sqlite-query-rounds",
@@ -200,7 +206,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--company-evidence-database",
         type=Path,
-        default=PROJECT_ROOT / "data/risk/company_evidence.sqlite3",
+        default=None,
         help="published company evidence database (read-only)",
     )
     parser.add_argument(
@@ -279,6 +285,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
         output_format = "json"
     if output_format == "text" and args.profile != "market-factor-compare":
         raise ValueError("--format text is only available for market-factor-compare")
+    if args.baseline_checkout is not None and args.profile != "history-write":
+        raise ValueError("--baseline-checkout is only available for history-write")
     if args.cpu_profile_dir is not None and args.profile != "market-factor-compare":
         raise ValueError("--cpu-profile-dir is only available for market-factor-compare")
     return (
@@ -293,6 +301,9 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             source_interval_seconds=args.source_interval_seconds,
             history_workers=args.history_workers,
             history_days=args.history_days,
+            baseline_checkout=_external_path(args.baseline_checkout, "--baseline-checkout")
+            if args.baseline_checkout is not None
+            else None,
             history_source=args.history_source,
             tencent_history_host=args.tencent_history_host,
             web_timeout_seconds=args.web_timeout_seconds,
@@ -300,7 +311,7 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             browser_duration_seconds=args.browser_duration_seconds,
             browser_minimum_updates=args.browser_minimum_updates,
             command_timeout_seconds=args.command_timeout_seconds,
-            history_root=args.history_root.expanduser().resolve(),
+            history_root=args.history_root.expanduser().resolve() if args.history_root else None,
             sqlite_page_sample_count=args.sqlite_page_sample_count,
             sqlite_query_rounds=args.sqlite_query_rounds,
             sqlite_revision_write_sample_count=args.sqlite_revision_write_sample_count,
@@ -313,7 +324,8 @@ def _validate(args: argparse.Namespace) -> tuple[DiagnosticOptions, str]:
             company_evidence_database=args.company_evidence_database,
             eligibility_evidence=tuple(args.eligibility_evidence),
             download_sizes=tuple(args.download_sizes),
-            qfq_root=args.qfq_root.expanduser().resolve(),
+            qfq_database=args.qfq_database.expanduser().resolve() if args.qfq_database else None,
+            scoring_profile=args.scoring_profile,
             market_sources=tuple(args.market_sources),
             market_profiles=tuple(args.market_profiles),
             market_sizes=tuple(args.market_sizes),
@@ -360,15 +372,30 @@ def build_commands(
     options: DiagnosticOptions, *, python_executable: str = sys.executable
 ) -> tuple[DiagnosticCommand, ...]:
     common_timeout = options.command_timeout_seconds
+    if options.profile not in {"local", "research", "performance", "web", "runtime", "browser"}:
+        from trader.infra.settings import LoadRuntimeSettings
+
+        paths = LoadRuntimeSettings(options.runtime_config).data_paths
+        options = replace(
+            options,
+            history_root=options.history_root or paths.history,
+            qfq_database=options.qfq_database or paths.daily_window,
+            company_evidence_database=options.company_evidence_database or paths.company,
+        )
+    cli = (python_executable, "-m", "trader.entrypoints.cli", "--config", str(options.runtime_config))
     commands: dict[str, DiagnosticCommand] = {
+        "configuration": DiagnosticCommand("configuration", cli + ("validate-config",), common_timeout),
+        "history_maintenance": DiagnosticCommand(
+            "history_maintenance", cli + ("history-automation-status",), common_timeout
+        ),
         "qfq_sqlite_audit": DiagnosticCommand(
             "qfq_sqlite_audit",
             (
                 python_executable,
                 "-m",
                 "scripts.runtime_diagnostics.qfq_sqlite",
-                "--qfq-root",
-                str(options.qfq_root),
+                "--database",
+                str(options.qfq_database),
             ),
             common_timeout,
         ),
@@ -600,6 +627,9 @@ def build_commands(
                 str(min(options.download_sizes[0], 64)),
                 "--sessions",
                 str(options.history_days),
+            )
+            + (
+                ("--baseline-checkout", str(options.baseline_checkout)) if options.baseline_checkout is not None else ()
             ),
             common_timeout,
         ),
@@ -664,7 +694,7 @@ def build_commands(
         "market_factor_compare": DiagnosticCommand(
             "market_factor_compare",
             (python_executable, "-m", "scripts.runtime_diagnostics.market_factor_compare")
-            + ("--config", str(options.runtime_config), "--qfq-root", str(options.qfq_root))
+            + ("--config", str(options.runtime_config), "--qfq-database", str(options.qfq_database))
             + ("--sources", *options.market_sources)
             + ("--profiles", *options.market_profiles)
             + ("--sizes", *(str(size) for size in options.market_sizes))
@@ -697,7 +727,25 @@ def build_commands(
             min(common_timeout, options.market_task_seconds),
         ),
     }
-    return tuple(commands[name] for name in _PROFILE_CHECKS[options.profile])
+    selected: list[DiagnosticCommand] = []
+    profiles = ("v2", "v3") if options.scoring_profile == "both" else (options.scoring_profile,)
+    for name in _PROFILE_CHECKS[options.profile]:
+        command = commands[name]
+        if name not in {"configuration", "research_readiness", "production_performance"}:
+            selected.append(command)
+            continue
+        for scoring_profile in profiles:
+            if scoring_profile is None:
+                selected.append(command)
+                continue
+            arguments = ("--profile", scoring_profile)
+            argv = (
+                command.argv + arguments
+                if name == "production_performance"
+                else command.argv[:-1] + arguments + command.argv[-1:]
+            )
+            selected.append(replace(command, name=f"{name}:{scoring_profile}", argv=argv))
+    return tuple(selected)
 
 
 def _history_command(options: DiagnosticOptions, python_executable: str) -> tuple[str, ...]:
@@ -758,11 +806,30 @@ def run_diagnostics(
     *,
     runner: Runner = execute_command,
 ) -> dict[str, object]:
-    return build_report(profile, tuple(runner(command) for command in commands))
+    results: list[DiagnosticResult] = []
+    configuration_failed = False
+    for command in commands:
+        name = command.name.split(":")[0]
+        if profile == "local" and configuration_failed and name != "configuration":
+            results.append(
+                DiagnosticResult(
+                    command.name,
+                    0,
+                    0.0,
+                    {"status": "degraded", "executed": False, "reason": "configuration_invalid"},
+                    None,
+                )
+            )
+            continue
+        result = runner(command)
+        results.append(result)
+        if profile == "local" and name == "configuration" and _status(result) == "failed":
+            configuration_failed = True
+    return build_report(profile, results)
 
 
 def build_report(profile: Profile, results: Sequence[DiagnosticResult]) -> dict[str, object]:
-    checks = [_check_payload(result) for result in results]
+    checks = [_check_payload(result, local=profile == "local") for result in results]
     statuses = [check["status"] for check in checks]
     summary = {
         "passed": statuses.count("passed"),
@@ -781,11 +848,32 @@ def build_report(profile: Profile, results: Sequence[DiagnosticResult]) -> dict[
     }
 
 
-def _check_payload(result: DiagnosticResult) -> dict[str, object]:
+def _check_payload(result: DiagnosticResult, *, local: bool = False) -> dict[str, object]:
+    original_name = result.name
+    result = replace(result, name=result.name.split(":")[0])
+    if result.payload is not None and result.payload.get("executed") is False:
+        return {
+            "name": original_name,
+            "status": "degraded",
+            "executed": False,
+            "reason": result.payload.get("reason"),
+            "duration_ms": 0.0,
+        }
     status = _status(result)
+    if (
+        local
+        and result.name == "research_readiness"
+        and result.error_code is None
+        and result.payload is not None
+        and _valid_research_status(result.payload)
+        and result.return_code in (0, 1)
+        and status == "failed"
+    ):
+        status = "degraded"
     payload: dict[str, object] = {
-        "name": result.name,
+        "name": original_name,
         "status": status,
+        "executed": True,
         "duration_ms": result.duration_ms,
         "schema_version": result.payload.get("schema_version") if result.payload is not None else None,
     }
@@ -795,6 +883,9 @@ def _check_payload(result: DiagnosticResult) -> dict[str, object]:
     handler = _CHECK_DETAILS.get(result.name)
     if handler is not None:
         handler(result, source, payload)
+    findings = payload.get("findings")
+    if local and status == "degraded" and isinstance(findings, list):
+        payload["findings"] = [dict(item, severity="warning") for item in findings if isinstance(item, dict)]
     return payload
 
 
@@ -1095,7 +1186,41 @@ def _long_admission_details(
     }
 
 
+def _configuration_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    payload["summary"] = {
+        key: source.get(key)
+        for key in (
+            "status",
+            "scoring_profile",
+            "runtime_version",
+            "strategy_version",
+            "history_sessions",
+            "training_fit_dates",
+            "research_arms",
+            "failure",
+            "category",
+        )
+    }
+
+
+def _maintenance_details(_result: DiagnosticResult, source: Mapping[str, object], payload: dict[str, object]) -> None:
+    payload["summary"] = {
+        key: source.get(key)
+        for key in (
+            "state",
+            "reason",
+            "data_cutoff",
+            "label_cutoff",
+            "training_due",
+            "training_due_reason",
+            "reminder_state",
+        )
+    }
+
+
 _CHECK_DETAILS: Mapping[str, Callable[[DiagnosticResult, Mapping[str, object], dict[str, object]], None]] = {
+    "configuration": _configuration_details,
+    "history_maintenance": _maintenance_details,
     "long_watchlist_admission": _long_admission_details,
     "web_health": _web_health_details,
     "history_sources": _history_details,

@@ -27,7 +27,10 @@ def test_platform_plans_use_one_fixed_zero_argument_command_and_never_train(
     plan = PlanHistoryAutomationInstallation(request)
     rendered = "\n".join(item.content for item in plan.files)
 
-    assert "download_scheduled" in rendered
+    if platform == "macos":
+        assert plistlib.loads(plan.files[0].content.encode())["ProgramArguments"][-2:] == ["sync", "history"]
+    else:
+        assert "sync history" in rendered
     assert "train-tomorrow" not in rendered
     assert "pip install" not in rendered
     assert str(root) in rendered

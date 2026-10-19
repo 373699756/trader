@@ -6,6 +6,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from threading import Event, Lock
 
+from trader.infra.sqlite_connection import SqliteConnection
+
 
 class HistorySqliteActivity:
     def __init__(
@@ -34,7 +36,7 @@ class HistorySqliteActivity:
                 self._reported = now
 
     @contextmanager
-    def watch(self, connection: sqlite3.Connection) -> Iterator[None]:
+    def watch(self, connection: SqliteConnection) -> Iterator[None]:
         cancelled = False
 
         def check() -> int:
@@ -47,7 +49,7 @@ class HistorySqliteActivity:
             return 0
 
         self.tick()
-        connection.set_progress_handler(check, 10_000)
+        connection.observe_progress(check, 10_000)
         try:
             yield
         except sqlite3.OperationalError:
@@ -55,4 +57,4 @@ class HistorySqliteActivity:
                 raise KeyboardInterrupt from None
             raise
         finally:
-            connection.set_progress_handler(None, 0)
+            connection.observe_progress(None, 0)

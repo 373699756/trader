@@ -110,12 +110,10 @@ def _config(tmp_path: Path) -> Path:
     runtime["runtime_dir"] = str(tmp_path / "runtime")
     runtime["strategy_config"] = str(strategy_path)
     runtime["long_watchlist"] = str(config_dir / "long_watchlist.json")
-    reference_dir = tmp_path / "data" / "reference"
+    reference_dir = tmp_path / "data/market/reference"
     reference_dir.mkdir(parents=True, exist_ok=True)
-    (reference_dir / "historical_st.json").write_text("{}\n", encoding="utf-8")
-    OpenSqliteConnection(reference_dir / "industry_queries.sqlite3").close()
     for profile in (V2_TRAINING_PROFILE, V3_TRAINING_PROFILE):
-        _publish_profile(tmp_path / "data" / "train", profile)
+        _publish_profile(tmp_path / "data" / "training" / "models", profile)
     path = config_dir / "runtime.json"
     path.write_text(json.dumps(runtime), encoding="utf-8")
     return path
@@ -138,10 +136,10 @@ def test_build_system_is_lazy_and_current_only(tmp_path, monkeypatch) -> None:
 
     assert started == []
     assert not (tmp_path / "runtime").exists()
-    assert not (tmp_path / "data" / "freeze").exists()
+    assert not (tmp_path / "data/recommendation").exists()
     assert system.scheduler is not None
     assert system.records is not None
-    assert system.records._root == tmp_path / "data" / "freeze"  # noqa: SLF001
+    assert system.records._database == tmp_path / "data/recommendation/v2/decisions.sqlite3"  # noqa: SLF001
     assert system.research_trace is not None
     assert system.quote_pool.status().workers == 4
     assert system.quote_pool.is_running() is False
@@ -188,8 +186,8 @@ def test_decision_repository_initializes_only_under_the_freeze_directory(tmp_pat
 
     system.records.initialize()
 
-    freeze_root = tmp_path / "data" / "freeze"
-    assert tuple(path.name for path in freeze_root.iterdir()) == ("freeze.sqlite3",)
+    freeze_root = tmp_path / "data/recommendation/v2"
+    assert {path.name for path in freeze_root.iterdir() if path.suffix == ".sqlite3"} == {"decisions.sqlite3"}
     assert not (tmp_path / "runtime" / "decisions").exists()
 
 
@@ -202,8 +200,8 @@ def test_build_system_reads_the_same_archive_owned_by_download(tmp_path) -> None
     assert isinstance(native_data, MarketInputCoordinator)
     assert isinstance(native_data._market.history, PublishedHistoryCache)  # noqa: SLF001
     assert system.history_observer._history is native_data._market.history  # noqa: SLF001
-    configuration = LoadHistorySyncConfiguration(system.settings.project_root, system.settings.reference_dir)
-    assert native_data._market.history._history.publication.root == system.settings.project_root / "data/qfq/v2"  # noqa: SLF001
+    configuration = LoadHistorySyncConfiguration(system.settings.project_root, system.settings.data_paths)
+    assert native_data._market.history._history.publication.path == system.settings.data_paths.daily_window  # noqa: SLF001
     assert native_data._market.history._outcome_history.publication._root == configuration.archive_root  # noqa: SLF001
 
 
@@ -261,7 +259,7 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
 
     observed: list[Path] = []
     config_path = _config_with_strategy_profile(tmp_path, "v3")
-    v3_profile = LoadScoringProfile("v3", training_root=tmp_path / "data" / "train")
+    v3_profile = LoadScoringProfile("v3", training_root=tmp_path / "data" / "training" / "models")
 
     def load(profile: str, *, training_root: Path | None = None):
         assert profile == "v3"
@@ -272,7 +270,7 @@ def test_build_system_passes_project_training_root_for_v3(tmp_path, monkeypatch)
 
     BuildSystem(config_path)
 
-    assert observed == [tmp_path / "data" / "train"]
+    assert observed == [tmp_path / "data" / "training" / "models"]
 
 
 def test_reference_data_plane_recovery_is_fail_open() -> None:
@@ -307,12 +305,12 @@ def test_reference_data_plane_recovery_schedules_official_security_master_on_sta
 def test_reference_data_plane_physical_corruption_is_fail_open(tmp_path: Path) -> None:
     from unittest.mock import Mock
 
-    database = tmp_path / "market-data" / "market-data.sqlite3"
-    database.parent.mkdir(parents=True)
+    database = tmp_path / "snapshots.sqlite3"
+    database.parent.mkdir(parents=True, exist_ok=True)
     database.write_bytes(b"not-a-sqlite-database")
     market_data = Mock()
 
-    _initialize_reference_data_plane(market_data, SQLiteDataPlane(tmp_path))
+    _initialize_reference_data_plane(market_data, SQLiteDataPlane((tmp_path) / "snapshots.sqlite3"))
 
     market_data.references.recover.assert_not_called()
     market_data.research.load_report.assert_not_called()

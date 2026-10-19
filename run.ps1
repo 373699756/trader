@@ -15,15 +15,15 @@ function Show-Usage {
 日常使用（不做离线研究）:
   .\run.ps1                         以默认 V2 启动并加载共享双头模型
   .\run.ps1 --profile v2|v3         显式使用 V2 或 V3 启动
-  .\run.ps1 check                   依次校验配置、研究状态和性能门禁
   .\run.ps1 help                    查看本帮助
 
 离线研究（仅在明确执行研究任务时使用）:
-  .\run.ps1 download_train          历史维护后训练 V2/V3，复用已验证工件
-  .\run.ps1 download_qfq            更新独立 qfq 窗口
-  .\run.ps1 download_risk           增量更新公司资料
+  .\run.ps1 sync                    更新行情窗口与公司资料，自动续传
+  .\run.ps1 sync market             单独更新行情窗口
+  .\run.ps1 sync company            单独更新公司资料
+  .\run.ps1 train                   历史维护后联合训练或复用 V2/V3
 
-看板和 check 可追加 --profile v2|v3；离线数据与训练命令均为零参数。
+看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。
 
 高级配置（一般无需设置）:
   TRADER_CONFIG=C:\absolute\path\runtime.json
@@ -36,7 +36,7 @@ function Show-Usage {
 "@ | Write-Host
 }
 
-$PublicModes = @("help", "-h", "--help", "check", "download_train", "download_qfq", "download_risk")
+$PublicModes = @("help", "-h", "--help", "sync", "train")
 
 for ($Index = 0; $Index -lt $args.Count; $Index++) {
     $Argument = [string]$args[$Index]
@@ -68,13 +68,20 @@ for ($Index = 0; $Index -lt $args.Count; $Index++) {
     }
 }
 
-if ($ScoringProfileSet -and $ScoringProfile -notin @("v2", "v3")) {
+if ($ScoringProfileSet -and $ScoringProfile -notin @("v2", "v3", "both")) {
     [Console]::Error.WriteLine("评分档位只能是 v2 或 v3: $ScoringProfile")
     exit 2
 }
-if ($Mode -in @("download_train", "download_qfq", "download_risk") -and ($ScoringProfileSet -or $ForwardArgs.Count -gt 0)) {
+if (($Mode -in @("sync", "train") -and $ScoringProfileSet) -or ($Mode -eq "train" -and $ForwardArgs.Count -gt 0)) {
     [Console]::Error.WriteLine("$Mode 不接受任何参数；请只运行 .\run.ps1 $Mode。")
     exit 2
+}
+
+if ($Mode -eq "sync" -and $ForwardArgs.Count -gt 0) {
+    if ($ForwardArgs.Count -ne 1 -or $ForwardArgs[0] -notin @("market", "company")) {
+        [Console]::Error.WriteLine("用法：.\run.ps1 sync [market|company]")
+        exit 2
+    }
 }
 
 if ($Mode -in @("help", "-h", "--help")) {
@@ -82,7 +89,7 @@ if ($Mode -in @("help", "-h", "--help")) {
     exit 0
 }
 $IsServerMode = [string]::IsNullOrEmpty($Mode)
-if (-not $IsServerMode -and $Mode -notin @("check", "download_train", "download_qfq", "download_risk")) {
+if (-not $IsServerMode -and $Mode -notin @("sync", "train")) {
     [Console]::Error.WriteLine("未知命令: $Mode")
     [Console]::Error.WriteLine("日常启动直接运行: .\run.ps1")
     [Console]::Error.WriteLine("查看全部命令: .\run.ps1 help")
@@ -91,7 +98,7 @@ if (-not $IsServerMode -and $Mode -notin @("check", "download_train", "download_
 
 $VenvDir = if ($env:VENV_DIR) { $env:VENV_DIR } else { Join-Path $RootDir ".venv" }
 $IsWindowsHost = -not $PSVersionTable.ContainsKey("Platform") -or $PSVersionTable.Platform -eq "Win32NT"
-$VenvPython = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\python.exe" } else { Join-Path $VenvDir "bin/python" }
+$VenvPython = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\python.exe" } else { Join-Path $VenvDir "bin/python3" }
 $Server = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\trader-server.exe" } else { Join-Path $VenvDir "bin/trader-server" }
 $Cli = if ($IsWindowsHost) { Join-Path $VenvDir "Scripts\trader-cli.exe" } else { Join-Path $VenvDir "bin/trader-cli" }
 $SelectedEntryPoint = if ($IsServerMode) { $Server } else { $Cli }
@@ -133,7 +140,7 @@ if (-not $NeedsInstall) {
     }
 }
 if ($NeedsInstall -or $env:FORCE_INSTALL_DEPS -eq "1") {
-    & $VenvPython -m pip install --disable-pip-version-check -e $RootDir
+    & $VenvPython -m pip install --disable-pip-version-check -e $RootDir | ForEach-Object { [Console]::Error.WriteLine($_) }
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }

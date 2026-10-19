@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class SQLiteDatedQueryCache:
                 closing(OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=5))) as connection,
                 connection,
             ):
-                connection.execute(
+                connection.run(
                     f"CREATE TABLE IF NOT EXISTS {self.table} (day TEXT PRIMARY KEY, source TEXT NOT NULL, "
                     "observed_on TEXT NOT NULL, payload TEXT NOT NULL, digest TEXT NOT NULL) WITHOUT ROWID"
                 )
@@ -60,7 +60,7 @@ class SQLiteDatedQueryCache:
             ) as connection:
                 if not self._table_exists(connection):
                     return None
-                rows = connection.execute(
+                rows = connection.run(
                     f"SELECT day,source,observed_on,payload,digest FROM {self.table} "
                     "WHERE day<=? AND observed_on<=? ORDER BY day DESC LIMIT 256",
                     (as_of.isoformat(), as_of.isoformat()),
@@ -78,7 +78,7 @@ class SQLiteDatedQueryCache:
             ) as connection:
                 if not self._table_exists(connection):
                     return None
-                row = connection.execute(
+                row = connection.run(
                     f"SELECT day,source,observed_on,payload,digest FROM {self.table} WHERE "
                     + predicate
                     + " ORDER BY day DESC LIMIT 1",
@@ -90,13 +90,13 @@ class SQLiteDatedQueryCache:
             return None
         return self._verified(row, as_of)
 
-    def _table_exists(self, connection: sqlite3.Connection) -> bool:
+    def _table_exists(self, connection: SqliteConnection) -> bool:
         return (
-            connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (self.table,)).fetchone()
+            connection.run("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (self.table,)).fetchone()
             is not None
         )
 
-    def _verified(self, row: tuple[str, str, str, str, str], as_of: date) -> DatedQuery | None:
+    def _verified(self, row: sqlite3.Row, as_of: date) -> DatedQuery | None:
         try:
             query = DatedQuery(date.fromisoformat(row[0]), row[1], date.fromisoformat(row[2]), row[3], row[4])
             if not query.day <= query.observed_on <= as_of:
@@ -116,7 +116,7 @@ class SQLiteDatedQueryCache:
                 closing(OpenSqliteConnection(self.path, SqliteConnectionOptions(timeout_seconds=5))) as connection,
                 connection,
             ):
-                connection.execute(
+                connection.run(
                     f"INSERT OR REPLACE INTO {self.table} VALUES (?,?,?,?,?)",
                     (
                         day.isoformat(),

@@ -27,7 +27,6 @@ from trader.download.domain.qfq_window import CompletedDailyCutoff
 from trader.download.infra.exchange_security_master import FetchSseListings, FetchSzseListings
 from trader.download.infra.exchange_security_universe import LoadCurrentAShareUniverse
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
-from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.tencent_daily import DecodeTencentDailyPayload
 from trader.download.infra.tencent_qfq_supplier import (
@@ -78,10 +77,9 @@ def _benchmark(
                     failures[message.stock_failure_code] += 1
 
             updater = UpdateQfqWindows(
-                SQLiteQfqWindowCache(root, "v2"),
-                SQLiteQfqWindowCache(root, "v3"),
+                SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v2"),
+                SQLiteQfqWindowCache(root / "daily_window.sqlite3", "v3"),
                 sample_supplier,
-                QfqCheckpoint(root / ".checkpoint.json"),
                 lambda: False,
                 feedback,
                 workers=workers,

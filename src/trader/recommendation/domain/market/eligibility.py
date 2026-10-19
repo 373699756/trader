@@ -11,7 +11,7 @@ from typing import Literal
 
 from trader.infra.serialization.canonical_codec import CanonicalDigest
 from trader.recommendation.domain.market.models import MarketQuote
-from trader.recommendation.domain.market.static import StaticIssuer
+from trader.recommendation.domain.market.static import StaticIssuer, StaticMarketReference
 
 _CODE = re.compile(r"^[0-9]{6}$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -352,7 +352,22 @@ def _sha256(payload: dict[str, str]) -> str:
     return CanonicalDigest(payload, ensure_ascii=False)
 
 
+def SelectQuotePopulation(
+    reference: StaticMarketReference | None,
+    exclusions: tuple[IssuerEligibilityDecision, ...],
+    historical_st: HistoricalStEligibilitySnapshot,
+) -> tuple[str, ...]:
+    """Apply the existing ST-only admission before requesting current quotes."""
+    if reference is None:
+        return ()
+    st_reasons = {IssuerEligibilityReason.HISTORICAL_ST, IssuerEligibilityReason.HISTORICAL_DELISTING_WARNING}
+    excluded = {item.code for item in exclusions if item.reason in st_reasons}
+    codes = tuple(issuer.code for issuer in reference.records if not issuer.is_st and issuer.code not in excluded)
+    return tuple(code for code in codes if historical_st.eligible(code)) if historical_st.status == "ready" else codes
+
+
 __all__ = [
+    "SelectQuotePopulation",
     "HistoricalStEligibilitySnapshot",
     "IssuerEligibilityBatch",
     "IssuerEligibilityDecision",

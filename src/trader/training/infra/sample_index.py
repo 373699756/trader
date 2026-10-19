@@ -71,7 +71,7 @@ class TargetMetric:
     standard_deviation: float | None
 
 
-class SQLiteTrainingSampleRepository:
+class SQLiteTrainingSampleIndex:
     """Own one temporary SQLite database shared by both sequential fits."""
 
     def __init__(self, path: Path, feature_count: int, *, prepared_split_hash: str | None = None) -> None:
@@ -93,13 +93,13 @@ class SQLiteTrainingSampleRepository:
             raise
 
     def _initialize(self) -> None:
-        self._connection.execute(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")  # noqa: S608
-        self._connection.execute(f"PRAGMA mmap_size={TRAINING_SAMPLE_MMAP_BYTES}")  # noqa: S608
-        self._connection.execute("PRAGMA temp_store=FILE")
+        self._connection.run(f"PRAGMA cache_size=-{TRAINING_SAMPLE_CACHE_MIB * 1024}")  # noqa: S608
+        self._connection.run(f"PRAGMA mmap_size={TRAINING_SAMPLE_MMAP_BYTES}")  # noqa: S608
+        self._connection.run("PRAGMA temp_store=FILE")
         if self._prepared_split_hash is not None:
             return
         feature_columns = ", ".join(f"f{position} REAL NOT NULL" for position in range(self._feature_count))
-        self._connection.executescript(
+        self._connection.apply_script(
             f"""
             PRAGMA journal_mode=OFF;
             PRAGMA synchronous=OFF;
@@ -126,12 +126,12 @@ class SQLiteTrainingSampleRepository:
             ) WITHOUT ROWID;
             """
         )
-        self._connection.execute("BEGIN IMMEDIATE")
+        self._connection.run("BEGIN IMMEDIATE")
 
     def close(self) -> None:
         self._connection.close()
 
-    def __enter__(self) -> SQLiteTrainingSampleRepository:
+    def __enter__(self) -> SQLiteTrainingSampleIndex:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -140,7 +140,7 @@ class SQLiteTrainingSampleRepository:
     def add_final(self, samples: Iterable[TrainingSample]) -> None:
         self._counts_by_target.clear()
         placeholders = ", ".join("?" for _ in range(5 + self._feature_count + len(_TARGET_COLUMNS)))
-        self._connection.executemany(
+        self._connection.run_many(
             f"INSERT INTO samples VALUES ({placeholders})",  # noqa: S608
             (self._encode(sample) for sample in samples),
         )
@@ -155,8 +155,8 @@ class SQLiteTrainingSampleRepository:
             *((day.isoformat(), "calibration") for day in split.calibration_dates),
             *((day.isoformat(), "validation") for day in (*split.confirmation_dates, *split.daily_proxy_holdout_dates)),
         )
-        self._connection.executemany("INSERT INTO sample_split_dates VALUES (?, ?)", split_dates)
-        self._connection.execute("CREATE INDEX samples_industry_date ON samples(industry, trade_date, code)")
+        self._connection.run_many("INSERT INTO sample_split_dates VALUES (?, ?)", split_dates)
+        self._connection.run("CREATE INDEX samples_industry_date ON samples(industry, trade_date, code)")
         self._connection.commit()
         self._prepared_split_hash = split.content_hash
 
@@ -175,7 +175,7 @@ class SQLiteTrainingSampleRepository:
 
     def _prepare_industry_counts(self) -> None:
         aggregates = ",".join(f"COUNT(samples.{target})" for target in _TARGET_COLUMNS)
-        rows = self._connection.execute(
+        rows = self._connection.run(
             f"SELECT samples.industry, splits.split_name, {aggregates} FROM samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
             "GROUP BY samples.industry, splits.split_name ORDER BY samples.industry, splits.split_name"
@@ -215,7 +215,7 @@ class SQLiteTrainingSampleRepository:
         }
         feature_sql = ", ".join(f"samples.f{position}" for position in contract.feature_positions)
         target = _require_target_column(contract.target_column)
-        cursor = self._connection.execute(
+        cursor = self._connection.run(
             f"SELECT splits.split_name, {feature_sql}, samples.{target} FROM samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
             f"WHERE samples.industry=? AND samples.{target} IS NOT NULL "  # noqa: S608
@@ -244,7 +244,7 @@ class SQLiteTrainingSampleRepository:
 
     def split_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:
         target = _require_target_column(contract.target_column)
-        row = self._connection.execute(
+        row = self._connection.run(
             "SELECT COUNT(*) FROM samples JOIN sample_split_dates AS splits "
             f"ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.{target} IS NOT NULL",  # noqa: S608
             (split_name,),
@@ -253,7 +253,7 @@ class SQLiteTrainingSampleRepository:
 
     def split_distinct_date_count(self, split_name: TrainingSplitName, contract: TrainedHeadContract) -> int:
         target = _require_target_column(contract.target_column)
-        row = self._connection.execute(
+        row = self._connection.run(
             "SELECT COUNT(DISTINCT samples.trade_date) FROM samples JOIN sample_split_dates AS splits "
             f"ON splits.trade_date=samples.trade_date WHERE splits.split_name=? AND samples.{target} IS NOT NULL",  # noqa: S608
             (split_name,),
@@ -265,7 +265,7 @@ class SQLiteTrainingSampleRepository:
             f"COUNT(samples.{target}), AVG(samples.{target}), AVG(samples.{target} * samples.{target})"
             for target in _TARGET_COLUMNS
         )
-        row = self._connection.execute(
+        row = self._connection.run(
             f"SELECT {aggregates} FROM samples "  # noqa: S608
             "JOIN sample_split_dates AS splits ON splits.trade_date=samples.trade_date "
             "WHERE splits.split_name='validation'"
@@ -281,7 +281,7 @@ class SQLiteTrainingSampleRepository:
         return tuple(metrics)
 
     def count(self) -> int:
-        row = self._connection.execute("SELECT COUNT(*) FROM samples").fetchone()
+        row = self._connection.run("SELECT COUNT(*) FROM samples").fetchone()
         return int(row[0]) if row is not None else 0
 
     @property
@@ -313,7 +313,7 @@ def _empty_matrix(row_count: int, width: int) -> TrainingSampleMatrix:
 
 
 __all__ = [
-    "SQLiteTrainingSampleRepository",
+    "SQLiteTrainingSampleIndex",
     "TRAINING_SAMPLE_CACHE_MIB",
     "TRAINING_SAMPLE_MMAP_BYTES",
     "TargetMetric",

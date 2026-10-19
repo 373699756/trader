@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from collections.abc import Mapping
 from contextlib import closing
@@ -80,17 +79,15 @@ class FactorInputs:
     history_sessions: int
 
 
-def ReadReferences(runtime_dir: Path, at: datetime, industry_database: Path | None = None) -> FixedReferences:
+def ReadReferences(database: Path, at: datetime, industry_database: Path, calendar_path: Path) -> FixedReferences:
     """Do not use SQLiteDataPlane.load: it initializes its active database."""
-    database = runtime_dir / "market-data/market-data.sqlite3"
     observations: list[SourceObservation] = []
     industries: dict[str, ModelIndustryReference] = {}
     if database.is_file():
         with closing(
             OpenSqliteConnection(database, SqliteConnectionOptions(read_only=True, timeout_seconds=5))
         ) as connection:
-            connection.row_factory = sqlite3.Row
-            for row in connection.execute("SELECT * FROM security_master_recent WHERE status='committed'"):
+            for row in connection.run("SELECT * FROM security_master_recent WHERE status='committed'"):
                 record = RowToRecord("security_master_recent", row)
                 if not isinstance(record, SecurityMasterRecord):
                     raise TypeError("unexpected reference record")
@@ -128,7 +125,6 @@ def ReadReferences(runtime_dir: Path, at: datetime, industry_database: Path | No
                 str(industry_fields["model_industry_source"]),
                 str(industry_fields["model_industry_data_version"]),
             )
-    calendar_path = runtime_dir / "calendar.json"
     calendar = json.loads(calendar_path.read_text()) if calendar_path.is_file() else {}
     open_dates = tuple(sorted(date.fromisoformat(item) for item in calendar.get("dates", [])))
     return FixedReferences(
@@ -141,13 +137,13 @@ def ReadReferences(runtime_dir: Path, at: datetime, industry_database: Path | No
 
 
 def LoadFactorInputs(
-    config: Path, qfq_root: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime
+    config: Path, qfq_database: Path, profile: ScoringProfileId, codes: tuple[str, ...], at: datetime
 ) -> FactorInputs:
     started = time.monotonic()
     settings = LoadRuntimeSettings(config)
     strategy = LoadStrategySettings(settings.strategy_config_path, scoring_profile=profile)
     training = LoadProfileTrainingSettings(settings.project_root, profile)
-    cache = SQLiteQfqWindowCache(qfq_root, profile)
+    cache = SQLiteQfqWindowCache(qfq_database, profile)
     manifest = cache.manifest()
     if manifest is None:
         raise RuntimeError("qfq_snapshot_unavailable")
@@ -158,7 +154,7 @@ def LoadFactorInputs(
         raise RuntimeError("qfq_snapshot_changed")
     read_ms = (time.monotonic() - started) * 1000
     started = time.monotonic()
-    loaded = LoadScoringProfile(profile, training_root=settings.project_root / "data/train")
+    loaded = LoadScoringProfile(profile, training_root=settings.data_paths.models)
     model_heads = tuple(
         ActiveModelHead(
             strategy=target,

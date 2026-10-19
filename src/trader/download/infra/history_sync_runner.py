@@ -46,10 +46,8 @@ from trader.download.infra.history_control_index import (
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_flow import HistoryDownloadFlow, HistoryDownloadResources
 from trader.download.infra.history_download_index import HistoryDownloadBatch, HistoryDownloadIndex, HistoryDownloadTask
-from trader.download.infra.history_reference_files import (
-    HistoryReferencePath,
+from trader.download.infra.history_reference_codec import (
     ReadBoundHistoryReference,
-    WriteHistoryReference,
 )
 from trader.download.infra.history_snapshot_publication import HistoryPublication, PublishHistorySnapshot
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
@@ -170,7 +168,7 @@ class _HistorySync:
         self.control.save_source(source)
         self.control.save_calendar(calendar)
         self.control.save_universe(universe)
-        WriteHistoryReference(HistoryReferencePath(self.configuration.archive_root, reference.content_hash), reference)
+        self.control.save_reference(reference)
         batch = HistoryDownloadBatch(
             active.sequence + 1 if active else 1,
             source.content_hash,
@@ -225,9 +223,7 @@ class _HistorySync:
             self.control.save_source(current_source)
             self.control.save_calendar(current_calendar)
             self.control.save_universe(current_universe)
-            WriteHistoryReference(
-                HistoryReferencePath(self.configuration.archive_root, reference.content_hash), reference
-            )
+            self.control.save_reference(reference)
             current = HistoryDownloadBatch(
                 pending.sequence,
                 current_source.content_hash,
@@ -243,9 +239,7 @@ class _HistorySync:
         try:
             ReadBoundHistoryReference(self.configuration.archive_root, source.supplier_contract)
         except (OSError, ValueError):
-            WriteHistoryReference(
-                HistoryReferencePath(self.configuration.archive_root, reference.content_hash), reference
-            )
+            self.control.save_reference(reference)
 
     def _download(self, inputs: _BatchInput, active: HistoryActiveSnapshot | None) -> HistoryActiveSnapshot:
         root = self.configuration.archive_root
@@ -331,15 +325,19 @@ def RunHistorySync(  # noqa: PLR0913 - explicit external resource injection pres
         raise ValueError("history synchronization clock must be timezone-aware")
     observed_at = observed_at.astimezone(_SHANGHAI)
     cancel = cancel_requested or (lambda: False)
-    control = HistoryControlIndex(configuration.archive_root / "control.sqlite3")
-    index = HistoryDownloadIndex(configuration.archive_root / "control.sqlite3")
+    control = HistoryControlIndex(configuration.archive_root / "catalog.sqlite3")
+    index = HistoryDownloadIndex(configuration.archive_root / "catalog.sqlite3")
     _publish_progress(progress, "initializing", "started")
     try:
-        with HistoryMaintenanceLock(configuration.archive_root / ".maintenance.lock"):
+        with HistoryMaintenanceLock(configuration.archive_root.with_name(".history.lock")):
             storage_kind = ClassifyHistoryStorage(configuration.archive_root)
             _publish_progress(progress, "storage_profile", "completed", current_item=storage_kind)
-            if not (configuration.archive_root / "control.sqlite3").exists() and any(
-                (configuration.archive_root / "partitions").glob("*/*.sqlite3")
+            if (configuration.archive_root / "control.sqlite3").exists() or (
+                not (configuration.archive_root / "catalog.sqlite3").exists()
+                and (
+                    (configuration.archive_root / "partitions").exists()
+                    or any(configuration.archive_root.glob("prices_*.sqlite3"))
+                )
             ):
                 raise RuntimeError("history_format_requires_rebuild")
             control.initialize()
@@ -534,7 +532,7 @@ def _status(  # noqa: PLR0913 - immutable status projection keeps the public fie
 
 def _has_industry_reference(root: Path, snapshot: HistoryActiveSnapshot) -> bool:
     try:
-        source = HistoryControlIndex(root / "control.sqlite3").read_source(snapshot.source_identity_hash)
+        source = HistoryControlIndex(root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
         return bool(ReadBoundHistoryReference(root, source.supplier_contract).industry_intervals)
     except (HistoryControlError, OSError, ValueError):
         return False

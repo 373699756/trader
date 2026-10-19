@@ -19,6 +19,7 @@ def RunTomorrowTraining(
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
+    sample_root: Path,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> HeadTrainingResult:
     return RunProfileTraining(
@@ -29,6 +30,7 @@ def RunTomorrowTraining(
             V3_TRAINING_PROFILE.heads,
             settings,
             progress,
+            sample_root=sample_root,
         )
     ).heads[0]
 
@@ -38,6 +40,7 @@ def RunV3Training(
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
+    sample_root: Path,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
     return RunProfileTraining(
@@ -48,6 +51,7 @@ def RunV3Training(
             V3_TRAINING_PROFILE.heads,
             settings,
             progress,
+            sample_root=sample_root,
         )
     )
 
@@ -57,6 +61,7 @@ def RunRepackTomorrowTraining(
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
+    sample_root: Path,
     expected_history_snapshot_hash: str,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> HeadTrainingResult:
@@ -68,6 +73,7 @@ def RunRepackTomorrowTraining(
             V3_TRAINING_PROFILE.heads,
             settings,
             progress,
+            sample_root=sample_root,
             expected_history_snapshot_hash=expected_history_snapshot_hash,
         )
     ).heads[0]
@@ -78,6 +84,7 @@ def RunRepackV3Training(
     train_root: Path,
     *,
     settings: ProfileTrainingSettings,
+    sample_root: Path,
     expected_history_snapshot_hash: str,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> TrainingRunResult:
@@ -89,6 +96,7 @@ def RunRepackV3Training(
             V3_TRAINING_PROFILE.heads,
             settings,
             progress,
+            sample_root=sample_root,
             expected_history_snapshot_hash=expected_history_snapshot_hash,
         )
     )

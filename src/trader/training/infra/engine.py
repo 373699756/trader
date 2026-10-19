@@ -10,7 +10,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from importlib.metadata import version
 from pathlib import Path
@@ -60,10 +60,10 @@ from trader.training.infra.sample_builder import (
     TrainingSampleBuildRequest,
 )
 from trader.training.infra.sample_cache import SampleCacheBytes, TrainingSampleCache
-from trader.training.infra.sample_repository import (
+from trader.training.infra.sample_index import (
     TRAINING_SAMPLE_CACHE_MIB,
     TRAINING_SAMPLE_MMAP_BYTES,
-    SQLiteTrainingSampleRepository,
+    SQLiteTrainingSampleIndex,
     TargetMetric,
     TrainingSplitName,
 )
@@ -173,6 +173,7 @@ class ProfileTrainingRequest:
     profile: TrainedProfileContract
     contracts: tuple[TrainedHeadContract, ...]
     settings: ProfileTrainingSettings
+    sample_root: Path = field(kw_only=True)
     progress: TomorrowTrainingProgressPort | None = None
     expected_history_snapshot_hash: str | None = None
 
@@ -195,7 +196,7 @@ class _HeadFitRequest:
     settings: ProfileTrainingSettings
     snapshot: HistoryTrainingInputSnapshot
     split: BaoStockTrainingSplit
-    samples: SQLiteTrainingSampleRepository
+    samples: SQLiteTrainingSampleIndex
     metrics: tuple[TargetMetric, ...]
     train_root: Path
     run_id: str
@@ -219,6 +220,7 @@ def RunProfileTraining(request: ProfileTrainingRequest) -> TrainingRunResult:
         replace(
             request,
             train_root=request.train_root / request.profile.output_directory,
+            sample_root=request.sample_root / request.profile.output_directory,
         )
     )
 
@@ -242,7 +244,12 @@ def RunJointProfileTraining(
     if requests[0].history_root != requests[1].history_root or requests[0].train_root != requests[1].train_root:
         raise ValueError("joint_training_roots_mismatch")
     normalized = tuple(
-        replace(request, train_root=request.train_root / request.profile.output_directory) for request in requests
+        replace(
+            request,
+            train_root=request.train_root / request.profile.output_directory,
+            sample_root=request.sample_root / request.profile.output_directory,
+        )
+        for request in requests
     )
     started = time.monotonic()
     try:
@@ -257,7 +264,7 @@ def RunJointProfileTraining(
         )
     try:
         with ExitStack() as locks:
-            locks.enter_context(HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"))
+            locks.enter_context(HistoryMaintenanceLock(archive.archive_root.with_name(".history.lock")))
             for request in normalized:
                 request.train_root.mkdir(parents=True, exist_ok=True)
                 locks.enter_context(
@@ -417,7 +424,10 @@ def _run_training(request: ProfileTrainingRequest) -> TrainingRunResult:
         # serialized: concurrent multi-gigabyte scans make a rotating disk seek
         # bound even though the published snapshot itself is immutable.
         training_lock = request.train_root.parent / f".{request.profile.profile_id}.training.lock"
-        with HistoryMaintenanceLock(archive.archive_root / ".maintenance.lock"), HistoryMaintenanceLock(training_lock):
+        with (
+            HistoryMaintenanceLock(archive.archive_root.with_name(".history.lock")),
+            HistoryMaintenanceLock(training_lock),
+        ):
             archive = SQLiteHistoryTrainingInputSnapshot.open(request.history_root)
             try:
                 RequireHistoryPartitionRepackInactive(archive.archive_root)
@@ -589,7 +599,7 @@ def _sample_cache_for(
             ),
         )
     )
-    return TrainingSampleCache(request.train_root, cache_identity, feature_count, split.content_hash)
+    return TrainingSampleCache(request.sample_root, cache_identity, feature_count, split.content_hash)
 
 
 def _prepare_samples(request: TrainingSampleBuildRequest, cache: TrainingSampleCache) -> tuple[TargetMetric, ...]:

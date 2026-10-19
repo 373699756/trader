@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime
 
+from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.domain.publication.models import Strategy
 
 
@@ -25,23 +25,23 @@ def _stage_key(strategy: Strategy, phase: str, bucket: str) -> str:
     return bucket_key or stage_key
 
 
-def _count(connection: sqlite3.Connection, where: str, parameters: tuple[object, ...]) -> int:
+def _count(connection: SqliteConnection, where: str, parameters: tuple[object, ...]) -> int:
     return int(
-        connection.execute(
+        connection.run(
             f"SELECT COUNT(*) FROM deepseek_call_reservations WHERE {where}",
             parameters,
-        ).fetchone()[0]
+        ).require_one()[0]
     )
 
 
-def _ensure_column(connection: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
-    columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+def _ensure_column(connection: SqliteConnection, table: str, column: str, declaration: str) -> None:
+    columns = {str(row[1]) for row in connection.run(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
-        connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        connection.run(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
 
-def _current_schema_version(connection: sqlite3.Connection) -> int:
-    row = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+def _current_schema_version(connection: SqliteConnection) -> int:
+    row = connection.run("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
     if row is None:
         return 0
     try:
@@ -50,8 +50,8 @@ def _current_schema_version(connection: sqlite3.Connection) -> int:
         return 0
 
 
-def _sync_call_audit(connection: sqlite3.Connection, reservation_id: str) -> None:
-    connection.execute(
+def _sync_call_audit(connection: SqliteConnection, reservation_id: str) -> None:
+    connection.run(
         """
         INSERT INTO deepseek_calls(
             call_id, strategy, phase, model, batch_id, requested_at, completed_at,
@@ -96,7 +96,7 @@ def _sync_call_audit(connection: sqlite3.Connection, reservation_id: str) -> Non
         """,
         (reservation_id,),
     )
-    connection.execute(
+    connection.run(
         """
         DELETE FROM deepseek_calls
         WHERE call_id IN (

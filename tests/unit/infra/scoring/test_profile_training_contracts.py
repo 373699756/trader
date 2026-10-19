@@ -24,7 +24,7 @@ from trader.training.infra.sample_builder import (
     BuildTrainingSamples,
     TrainingSampleBuildRequest,
 )
-from trader.training.infra.sample_repository import SQLiteTrainingSampleRepository
+from trader.training.infra.sample_index import SQLiteTrainingSampleIndex
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -95,6 +95,7 @@ def test_profile_training_request_rejects_a_head_owned_by_another_profile(tmp_pa
             V2_TRAINING_PROFILE,
             V3_TRAINING_PROFILE.heads,
             LoadProfileTrainingSettings(PROJECT_ROOT, "v2"),
+            sample_root=(tmp_path / "train").parent / "samples",
         )
 
 
@@ -116,7 +117,7 @@ def test_v2_sample_scan_consumes_typed_rows_with_its_profile_horizon(tmp_path: P
             progress(0)
             return iter(())
 
-    with SQLiteTrainingSampleRepository(tmp_path / "samples.sqlite3", 10) as repository:
+    with SQLiteTrainingSampleIndex(tmp_path / "samples.sqlite3", 10) as repository:
         BuildTrainingSamples(
             TrainingSampleBuildRequest(
                 Archive(),  # type: ignore[arg-type]
@@ -167,10 +168,10 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
     )
     joint_source = HistorySourceFixture()
     with (
-        SQLiteTrainingSampleRepository(tmp_path / "joint-v2.sqlite3", 10) as joint_v2,
-        SQLiteTrainingSampleRepository(tmp_path / "joint-v3.sqlite3", 6) as joint_v3,
-        SQLiteTrainingSampleRepository(tmp_path / "single-v2.sqlite3", 10) as single_v2,
-        SQLiteTrainingSampleRepository(tmp_path / "single-v3.sqlite3", 6) as single_v3,
+        SQLiteTrainingSampleIndex(tmp_path / "joint-v2.sqlite3", 10) as joint_v2,
+        SQLiteTrainingSampleIndex(tmp_path / "joint-v3.sqlite3", 6) as joint_v3,
+        SQLiteTrainingSampleIndex(tmp_path / "single-v2.sqlite3", 10) as single_v2,
+        SQLiteTrainingSampleIndex(tmp_path / "single-v3.sqlite3", 6) as single_v3,
     ):
         joint_requests = tuple(
             TrainingSampleBuildRequest(joint_source, ("600000",), window, repository, profile)
@@ -186,8 +187,8 @@ def test_joint_sample_build_reads_history_once_and_matches_independent_profiles(
             row.trade_date in windows[0].readable_dates | windows[1].readable_dates for row in points
         )
         for joint, single in ((joint_v2, single_v2), (joint_v3, single_v3)):
-            assert joint._connection.execute("SELECT * FROM samples ORDER BY trade_date, code").fetchall() == (
-                single._connection.execute("SELECT * FROM samples ORDER BY trade_date, code").fetchall()
+            assert joint._connection.run("SELECT * FROM samples ORDER BY trade_date, code").fetchall() == (
+                single._connection.run("SELECT * FROM samples ORDER BY trade_date, code").fetchall()
             )
 
 

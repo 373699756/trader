@@ -75,18 +75,18 @@ def test_physical_commit_admission_rolls_back_index_and_payload_growth(tmp_path)
 
     database = tmp_path / "audit.sqlite3"
     with Connection(database, write=True) as conn:
-        conn.executescript(
+        conn.apply_script(
             "PRAGMA journal_mode=WAL; CREATE TABLE audit (id INTEGER PRIMARY KEY, payload BLOB); CREATE INDEX payload_idx ON audit(payload); INSERT INTO audit VALUES(1, 'old');"
         )
     size_before = database.stat().st_size
     with pytest.raises(ResearchTraceCapacityError, match="physical"):
         with Connection(database, write=True) as conn:
-            conn.execute("PRAGMA cache_spill=OFF")
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("INSERT INTO audit VALUES(2, zeroblob(262144))")
+            conn.run("PRAGMA cache_spill=OFF")
+            conn.run("BEGIN IMMEDIATE")
+            conn.run("INSERT INTO audit VALUES(2, zeroblob(262144))")
             TracePhysicalBudget(131072, 131072).require_commit(conn, (database,), database)
     with Connection(database, write=False) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
+        assert conn.run("SELECT COUNT(*) FROM audit").fetchone()[0] == 1
     assert database.stat().st_size == size_before
 
 
@@ -113,7 +113,7 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
     event = _persistent_event(decision())
     legacy_audit = _legacy_audit(event.decision_version, event.decision_hash)
     observation = DecisionObservation(event, legacy_audit)
-    archive = SQLiteResearchTraceIndex(tmp_path, use_legacy_layout=True)
+    archive = SQLiteResearchTraceIndex(tmp_path)
     archive.initialize()
 
     with pytest.raises(ValueError, match="read-only"):
@@ -125,9 +125,12 @@ def test_legacy_v1_event_is_readable_but_cannot_be_written_by_current_archive(tm
         legacy_schema_version=LEGACY_RESEARCH_EVENT_SCHEMA_VERSION,
         current_schema_version="research_committed_event",
     )
-    database = tmp_path / "research" / "committed-events.sqlite3"
+    database = tmp_path / "traces" / f"{event.trade_date.isoformat()}.sqlite3"
+    from trader.training.infra.research.trace_storage import InitializeDatabase
+
+    InitializeDatabase(database, set())
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute(
+        connection.run(
             """
             INSERT INTO committed_events (
                 decision_version, strategy, trade_date, observed_at,
@@ -213,9 +216,9 @@ def test_committed_event_trace_quarantines_corrupt_rows(tmp_path) -> None:
     archive.initialize()
     event = _persistent_event(decision())
     archive.record(DecisionObservation(event, _audit(event.decision_version, event.decision_hash)))
-    database = tmp_path / "research" / "committed-events" / f"{event.trade_date.isoformat()}.sqlite3"
+    database = tmp_path / "traces" / f"{event.trade_date.isoformat()}.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute(
+        connection.run(
             "UPDATE committed_events SET payload = ? WHERE decision_version = ?",
             (b"{}", event.decision_version),
         )
@@ -322,11 +325,11 @@ def test_committed_event_trace_rejects_total_bytes_without_deleting_rows(tmp_pat
     assert archive.status().retained == 1
 
 
-def test_committed_event_trace_rotates_by_trade_date_and_preserves_full_legacy_database(tmp_path) -> None:
+def test_committed_event_trace_rotates_by_trade_date_and_preserves_previous_partition(tmp_path) -> None:
     first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
-    legacy = SQLiteResearchTraceIndex(tmp_path, use_legacy_layout=True)
+    legacy = SQLiteResearchTraceIndex(tmp_path)
     legacy.record(first)
-    legacy_path = tmp_path / "research" / "committed-events.sqlite3"
+    legacy_path = tmp_path / "traces" / f"{first.event.trade_date.isoformat()}.sqlite3"
     legacy_bytes = legacy_path.read_bytes()
 
     second_identity = decision(sequence=2)
@@ -343,12 +346,12 @@ def test_committed_event_trace_rotates_by_trade_date_and_preserves_full_legacy_d
     assert partitioned.get(first.event.decision_version) == first
     assert partitioned.get(second.event.decision_version) == second
     assert partitioned.list_trade_dates(limit=4) == (second.event.trade_date, first.event.trade_date)
-    assert partitioned.status().legacy_retained == 1
+    assert partitioned.status().legacy_retained == 0
     assert partitioned.status().trade_dates == 2
     assert partitioned.status().trade_date_capacity == 120
 
 
-def test_full_legacy_partition_does_not_block_a_new_trade_date(tmp_path) -> None:
+def test_full_previous_partition_does_not_block_a_new_trade_date(tmp_path) -> None:
     first = DecisionObservation(_persistent_event(decision(sequence=1)), None)
     probe = SQLiteResearchTraceIndex(tmp_path / "probe")
     probe.record(first)
@@ -356,7 +359,6 @@ def test_full_legacy_partition_does_not_block_a_new_trade_date(tmp_path) -> None
     legacy = SQLiteResearchTraceIndex(
         tmp_path,
         limits=ResearchTraceLimits(payload_bytes=payload_bytes, trade_date_bytes=payload_bytes),
-        use_legacy_layout=True,
     )
     legacy.record(first)
 
@@ -403,7 +405,7 @@ def test_archive_capacity_rejects_a_new_partition_without_creating_an_empty_data
     with pytest.raises(ResearchTraceCapacityError, match="archive capacity"):
         archive.record(DecisionObservation(_persistent_event(next_identity), None))
 
-    rejected_partition = tmp_path / "research" / "committed-events" / f"{next_identity.trade_date.isoformat()}.sqlite3"
+    rejected_partition = tmp_path / "traces" / f"{next_identity.trade_date.isoformat()}.sqlite3"
     assert not rejected_partition.exists()
     assert archive.status().retained == 1
 

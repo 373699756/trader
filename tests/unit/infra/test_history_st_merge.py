@@ -4,7 +4,7 @@ from pathlib import Path
 from threading import Barrier
 
 from trader.download.domain.history_reference import HistoryStEvidence
-from trader.download.infra.history_reference_files import ReadStEvidence, WriteStEvidence
+from trader.download.infra.history_reference_codec import ReadStEvidence, WriteStEvidence
 from trader.download.infra.history_st_merge import MergeStEvidence
 
 

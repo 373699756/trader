@@ -126,11 +126,11 @@ def test_reviewer_runs_bounded_challenger_and_persists_model_audit(tmp_path) -> 
     assert review.challenger_actual_model == "deepseek-v4-pro-202607"
     assert review.dimensions["market_flow"].confidence == 0.6
     with closing(OpenSqliteConnection(database_path)) as connection, connection:
-        rows = connection.execute(
+        rows = connection.run(
             "SELECT model_role, requested_model, actual_model, reasoning_effort, total_tokens "
             "FROM deepseek_calls ORDER BY rowid"
         ).fetchall()
-    assert rows == [
+    assert [tuple(row) for row in rows] == [
         ("primary", "deepseek-v4-flash", "deepseek-v4-flash-202607", None, 15),
         ("challenger", "deepseek-v4-pro", "deepseek-v4-pro-202607", "high", 15),
     ]

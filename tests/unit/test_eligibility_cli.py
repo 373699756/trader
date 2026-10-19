@@ -6,13 +6,14 @@ from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 from trader.entrypoints import cli
+from trader.infra.settings.data_paths import DataPaths
 from trader.recommendation.domain.market.eligibility import IssuerEligibilityFact, IssuerEligibilityReason
 from trader.recommendation.infra.persistence.issuer_eligibility import SQLiteIssuerEligibilityIndex
 
 
 def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path, monkeypatch, capsys) -> None:
     observed_at = datetime(2026, 9, 1, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
-    eligibility_index = SQLiteIssuerEligibilityIndex(tmp_path / "data" / "reference")
+    eligibility_index = SQLiteIssuerEligibilityIndex(DataPaths(tmp_path / "data").eligibility)
     eligibility_index.record(
         (
             IssuerEligibilityFact(
@@ -31,7 +32,7 @@ def test_eligibility_list_is_read_only_and_projects_immutable_evidence(tmp_path,
         lambda _path: SimpleNamespace(
             runtime_dir=tmp_path,
             project_root=tmp_path,
-            reference_dir=tmp_path / "data" / "reference",
+            data_paths=DataPaths(tmp_path / "data"),
         ),
     )
 

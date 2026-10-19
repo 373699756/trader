@@ -83,7 +83,7 @@ def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() ->
     assert "deepseek_score*0.32" not in compact
     assert "ROUND_HALF_UP" in scoring and "168" in scoring
     assert "terminal_holdout_already_opened" in scoring
-    for command in ("download_train", "download_qfq", "download_risk"):
+    for command in ("train", "sync market", "sync company"):
         assert f"./run.sh {command}" in history
     for invariant in (
         "不依赖history",
@@ -97,7 +97,8 @@ def test_scoring_and_download_contracts_do_not_reintroduce_retired_behavior() ->
         "750",
         "LightGBM",
         "Ridge",
-        "双头全部合格后原子发布",
+        "双头全部合格后",
+        "拟合、校验或切换失败回滚上一完整组",
         "不自动训练",
         "production_authority",
     ):

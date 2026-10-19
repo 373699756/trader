@@ -1,4 +1,4 @@
-"""Local qfq windows, routed directly by exchange and board without a sidecar index."""
+"""Shared structured prices with atomic profile identities and completion facts."""
 
 from __future__ import annotations
 
@@ -8,480 +8,395 @@ import sqlite3
 from collections.abc import Iterator, Sequence
 from contextlib import closing
 from datetime import date
-from itertools import groupby
 from pathlib import Path
+from typing import TypeAlias
 
 from trader.download.application.update_qfq import QfqPairPublicationError, QfqWindowPort
 from trader.download.domain.published_history import PublishedHistoryManifest, PublishedHistoryWindow
 from trader.download.domain.qfq_window import QFQ_WINDOWS, QfqWindowSnapshot, QfqWindowState
-from trader.download.infra.qfq_codec import DecodeCell, EncodeCell
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
-
-QFQ_SHARD_NAMES = (
-    "qfq_sse_main.sqlite3",
-    "qfq_szse_main.sqlite3",
-    "qfq_szse_chinext.sqlite3",
-    "qfq_sse_star.sqlite3",
+from trader.download.infra.price_columns import (
+    PRICE_COLUMNS,
+    PRICE_SQL,
+    PriceCellFromColumns,
+    PriceColumnValues,
+    PriceValues,
 )
-_SCHEMA = """
-CREATE TABLE bars(code TEXT NOT NULL, day TEXT NOT NULL, payload TEXT NOT NULL,
- PRIMARY KEY(code,day)) WITHOUT ROWID;
-CREATE TABLE identities(code TEXT PRIMARY KEY, digest TEXT NOT NULL, source TEXT NOT NULL,
- cutoff TEXT NOT NULL, dates TEXT NOT NULL) WITHOUT ROWID;
-"""
+from trader.infra.sqlite_connection import (
+    CheckSqliteIntegrity,
+    EnsureSqliteSchema,
+    OpenSqliteConnection,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteTransaction,
+)
+
+_Rows: TypeAlias = tuple[tuple[str, PriceValues], ...]
+_SELECT = ",".join(PRICE_COLUMNS)
+_SCHEMA = SqliteSchema(
+    version=1,
+    statements=(
+        f"CREATE TABLE bars(code TEXT NOT NULL, day TEXT NOT NULL, {PRICE_SQL}, PRIMARY KEY(code,day)) WITHOUT ROWID",
+        "CREATE TABLE identities(profile TEXT NOT NULL, code TEXT NOT NULL, digest TEXT NOT NULL, "
+        "source TEXT NOT NULL, first_day TEXT NOT NULL, cutoff TEXT NOT NULL, "
+        "PRIMARY KEY(profile,code)) WITHOUT ROWID",
+        "CREATE TABLE calendars(profile TEXT NOT NULL, day TEXT NOT NULL, PRIMARY KEY(profile,day)) WITHOUT ROWID",
+        "CREATE TABLE completions(code TEXT PRIMARY KEY, day TEXT NOT NULL, source TEXT NOT NULL) WITHOUT ROWID",
+    ),
+)
 
 
-def _pair_publication_failure_reason(exc: BaseException) -> str:
-    if isinstance(exc, sqlite3.OperationalError) and any(marker in str(exc).lower() for marker in ("locked", "busy")):
-        return "qfq_pair_database_busy"
-    return "qfq_pair_publication_failed"
+def _validate_code(code: str) -> None:
+    if (
+        len(code) != 6
+        or not code.isascii()
+        or not code.isdigit()
+        or not code.startswith(
+            ("600", "601", "603", "605", "000", "001", "002", "003", "300", "301", "302", "688", "689")
+        )
+    ):
+        raise ValueError("qfq_code_invalid")
 
 
-def QfqShardName(code: str) -> str:
-    if len(code) != 6 or not code.isascii() or not code.isdigit():
-        raise ValueError("qfq code invalid")
-    if code.startswith(("600", "601", "603", "605")):
-        return QFQ_SHARD_NAMES[0]
-    if code.startswith(("000", "001", "002", "003")):
-        return QFQ_SHARD_NAMES[1]
-    if code.startswith(("300", "301", "302")):
-        return QFQ_SHARD_NAMES[2]
-    if code.startswith(("688", "689")):
-        return QFQ_SHARD_NAMES[3]
-    raise ValueError("qfq code outside supported A-share boards")
-
-
-def _digest(rows: tuple[tuple[str, str], ...]) -> str:
-    return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode("ascii")).hexdigest()
-
-
-def _window_identity(rows: tuple[tuple[str, str], ...], source: str) -> tuple[str, str, str, str]:
-    return _digest(rows), source, rows[-1][0], json.dumps([day for day, _ in rows], separators=(",", ":"))
+def _digest(rows: _Rows) -> str:
+    return hashlib.sha256(json.dumps(rows, separators=(",", ":"), allow_nan=False).encode("ascii")).hexdigest()
 
 
 class SQLiteQfqWindowCache:
-    """Single-writer derived cache; complete history remains the research authority."""
+    """Profile view; construction and absent reads have no filesystem side effects."""
 
-    def __init__(self, root: Path, profile: str) -> None:
-        windows = dict(QFQ_WINDOWS)
-        if profile not in windows:
-            raise ValueError("qfq profile must be v2 or v3")
-        self.root = root / profile
-        self.sessions = windows[profile]
+    def __init__(self, path: Path, profile: str) -> None:
+        if profile not in dict(QFQ_WINDOWS):
+            raise ValueError("qfq_profile_invalid")
+        self.path = path
+        self.profile = profile
+        self.sessions = dict(QFQ_WINDOWS)[profile]
 
-    def _ensure_layout(self) -> None:
-        if (self.root / "index.json").exists():
-            raise RuntimeError("qfq_legacy_layout_requires_migration")
-
-    def _existing_names(self) -> tuple[str, ...]:
-        self._ensure_layout()
-        return tuple(name for name in QFQ_SHARD_NAMES if (self.root / name).is_file())
-
-    def recover_pending_transactions(self) -> tuple[str, ...]:
-        """Let SQLite roll back hot journals before any read-only window checks."""
-
-        recovered: list[str] = []
-        try:
-            for name in self._existing_names():
-                path = self.root / name
-                journal = Path(f"{path}-journal")
-                if not journal.is_file() or journal.stat().st_size == 0:
-                    continue
-                if path.is_symlink() or journal.is_symlink():
-                    raise RuntimeError("qfq shard recovery path is unsafe")
-                with closing(OpenSqliteConnection(path)) as connection:
-                    if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
-                        raise RuntimeError("qfq shard recovery integrity check failed")
-                recovered.append(f"{self.root.name}/{name}")
-        except (OSError, sqlite3.Error) as exc:
-            raise RuntimeError("qfq pending transaction recovery failed") from exc
-        return tuple(recovered)
-
-    def codes(self) -> frozenset[str]:
-        try:
-            result: set[str] = set()
-            for name in self._existing_names():
-                with closing(self._read_connection(name)) as connection:
-                    for (code,) in connection.execute("SELECT code FROM identities"):
-                        if QfqShardName(code) != name:
-                            raise RuntimeError("qfq code routed to wrong shard")
-                        result.add(code)
-            return frozenset(result)
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq codes unavailable") from exc
-
-    def read_code(self, code: str) -> PublishedHistoryWindow:
-        self._ensure_layout()
-        name = QfqShardName(code)
-        if not (self.root / name).is_file():
-            return PublishedHistoryWindow(code, ())
-        try:
-            with closing(self._read_connection(name)) as connection, connection:
-                rows = self._read_rows(connection, code)
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq shard read failed") from exc
-        return PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
-
-    def read_codes(self, codes: Sequence[str]) -> tuple[PublishedHistoryWindow, ...]:
-        """Read a bounded batch while sharing one connection per touched board shard."""
-
-        self._ensure_layout()
-        grouped: dict[str, list[str]] = {}
-        for code in dict.fromkeys(codes):
-            grouped.setdefault(QfqShardName(code), []).append(code)
-        result: list[PublishedHistoryWindow] = []
-        try:
-            for name, requested in grouped.items():
-                if not (self.root / name).is_file():
-                    result.extend(PublishedHistoryWindow(code, ()) for code in requested)
-                    continue
-                with closing(self._read_connection(name)) as connection, connection:
-                    for code in requested:
-                        rows = self._read_rows(connection, code)
-                        connection.rollback()
-                        result.append(
-                            PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
-                        )
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq batch read failed") from exc
-        return tuple(sorted(result, key=lambda window: window.code))
-
-    def inspect_windows(self, allowed_codes: frozenset[str]) -> QfqWindowSnapshot:
-        """Verify stored identities in bulk without constructing domain bar objects."""
-
-        if any(len(code) != 6 or not code.isascii() or not code.isdigit() for code in allowed_codes):
-            raise ValueError("qfq inspected code set is invalid")
-        states: list[QfqWindowState] = []
-        try:
-            for name in self._existing_names():
-                with closing(self._read_connection(name)) as connection, connection:
-                    connection.execute("BEGIN")
-                    identities = {
-                        row[0]: row[1:]
-                        for row in connection.execute(
-                            "SELECT code,digest,source,cutoff,dates FROM identities ORDER BY code"
-                        )
-                    }
-                    if any(QfqShardName(code) != name for code in identities if code in allowed_codes):
-                        raise RuntimeError("qfq code routed to wrong shard")
-                    bars = connection.execute("SELECT code,day,payload FROM bars ORDER BY code,day")
-                    for code, group in groupby(bars, key=lambda row: row[0]):
-                        rows = tuple((day, payload) for _, day, payload in group)
-                        identity = identities.pop(code, None)
-                        if identity is None:
-                            continue
-                        digest, source, cutoff, dates_json = identity
-                        if code not in allowed_codes:
-                            continue
-                        verified = False
-                        dates: tuple[date, ...] = ()
-                        try:
-                            decoded_dates: object = json.loads(dates_json)
-                            if isinstance(decoded_dates, list) and all(isinstance(day, str) for day in decoded_dates):
-                                dates = tuple(date.fromisoformat(day) for day in decoded_dates)
-                                row_dates = tuple(date.fromisoformat(day) for day, _payload in rows)
-                                verified = (
-                                    bool(rows)
-                                    and len(rows) <= self.sessions
-                                    and dates == row_dates
-                                    and cutoff == rows[-1][0]
-                                    and digest == _digest(rows)
-                                )
-                        except (TypeError, ValueError):
-                            verified = False
-                        states.append(QfqWindowState(str(code), str(source), dates, verified))
-                    states.extend(
-                        QfqWindowState(str(code), str(identity[1]), (), False)
-                        for code, identity in identities.items()
-                        if code in allowed_codes
-                    )
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq window inspection failed") from exc
-        return QfqWindowSnapshot(tuple(sorted(states, key=lambda state: state.code)))
-
-    def _read_rows(self, connection: sqlite3.Connection, code: str) -> tuple[tuple[str, str], ...]:
-        if not connection.in_transaction:
-            connection.execute("BEGIN")
-        rows = tuple(connection.execute("SELECT day,payload FROM bars WHERE code=? ORDER BY day", (code,)))
-        identity = connection.execute("SELECT digest FROM identities WHERE code=?", (code,)).fetchone()
-        if not rows and identity is None:
-            return ()
-        if not rows or len(rows) > self.sessions or identity is None or _digest(rows) != identity[0]:
-            raise RuntimeError("qfq code identity mismatch")
-        return rows
-
-    def source_identity(self, code: str) -> str | None:
-        self._ensure_layout()
-        name = QfqShardName(code)
-        if not (self.root / name).is_file():
-            return None
-        try:
-            with closing(self._read_connection(name)) as connection:
-                row = connection.execute("SELECT source FROM identities WHERE code=?", (code,)).fetchone()
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq source identity unavailable") from exc
-        return str(row[0]) if row is not None else None
-
-    def retain_codes(self, allowed_codes: frozenset[str]) -> tuple[tuple[str, ...], int]:
-        """Remove derived windows outside the active published history eligibility."""
-
-        if any(len(code) != 6 or not code.isascii() or not code.isdigit() for code in allowed_codes):
-            raise ValueError("qfq allowed code set is invalid")
-        changed: list[str] = []
-        deleted_rows = 0
-        try:
-            for name in self._existing_names():
-                with closing(self._read_connection(name)) as connection:
-                    excluded = tuple(
-                        str(code)
-                        for (code,) in connection.execute("SELECT code FROM identities")
-                        if code not in allowed_codes
-                    )
-                if not excluded:
-                    continue
-                with closing(self._write_connection(name)) as connection, connection:
-                    connection.execute("BEGIN IMMEDIATE")
-                    removed = connection.executemany("DELETE FROM bars WHERE code=?", ((code,) for code in excluded))
-                    row_count = removed.rowcount
-                    connection.executemany("DELETE FROM identities WHERE code=?", ((code,) for code in excluded))
-                changed.append(f"{self.root.name}/{name}")
-                deleted_rows += row_count
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq eligibility pruning failed") from exc
-        return tuple(changed), deleted_rows
-
-    def replace_window(self, window: PublishedHistoryWindow, source_identity: str) -> tuple[tuple[str, ...], int]:
-        return self.replace_windows((window,), source_identity)
-
-    def replace_windows(
-        self, windows: Sequence[PublishedHistoryWindow], source_identity: str
-    ) -> tuple[tuple[str, ...], int]:
-        self._ensure_layout()
-        try:
-            return self._replace_windows(windows, source_identity)
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq shard update failed") from exc
-
-    def _replace_windows(
-        self, windows: Sequence[PublishedHistoryWindow], source_identity: str
-    ) -> tuple[tuple[str, ...], int]:
-        grouped: dict[str, list[tuple[str, tuple[tuple[str, str], ...]]]] = {}
-        for window in windows:
-            cells = tuple(cell for cell in window.cells[-self.sessions :] if cell.status == "complete")
-            if cells:
-                grouped.setdefault(QfqShardName(window.code), []).append(
-                    (window.code, tuple((cell.trade_date.isoformat(), EncodeCell(cell)) for cell in cells))
-                )
-        if not grouped:
-            return (), 0
-        self.root.mkdir(parents=True, exist_ok=True)
-        changed: list[str] = []
-        changed_rows = 0
-        for name, entries in grouped.items():
-            shard_changed = False
-            with closing(self._write_connection(name)) as connection, connection:
-                for code, target in entries:
-                    old = self._read_rows(connection, code)
-                    identity = connection.execute(
-                        "SELECT digest,source,cutoff,dates FROM identities WHERE code=?", (code,)
-                    ).fetchone()
-                    if old == target and identity == _window_identity(target, source_identity):
-                        continue
-                    self._write_code(connection, code, target, source_identity, previous=old)
-                    old_by_day = dict(old)
-                    new_by_day = dict(target)
-                    changed_rows += sum(
-                        old_by_day.get(day) != new_by_day.get(day) for day in old_by_day.keys() | new_by_day.keys()
-                    )
-                    shard_changed = True
-            if shard_changed:
-                changed.append(f"{self.root.name}/{name}")
-        return tuple(changed), changed_rows
-
-    def replace_paired_windows(
-        self, peer: QfqWindowPort, windows: tuple[PublishedHistoryWindow, ...], source_identity: str
-    ) -> tuple[tuple[str, ...], int]:
-        """Commit both profiles per board using SQLite's rollback super-journal."""
-        if not isinstance(peer, SQLiteQfqWindowCache) or self.root == peer.root or self.root.parent != peer.root.parent:
-            raise ValueError("qfq_pair_layout_invalid")
-        self._ensure_layout()
-        peer._ensure_layout()
-        grouped: dict[str, list[PublishedHistoryWindow]] = {}
-        for window in windows:
-            grouped.setdefault(QfqShardName(window.code), []).append(window)
-        changed: list[str] = []
-        count = 0
-        committed: list[str] = []
-        try:
-            for name, batch in grouped.items():
-                self._prepare_pair_files(peer, name)
-                board_files: list[str] = []
-                board_rows = 0
-                with closing(self._write_connection(name)) as connection, connection:
-                    connection.execute("ATTACH DATABASE ? AS paired", (str(peer.root / name),))
-                    connection.execute("PRAGMA paired.journal_mode=DELETE")
-                    connection.execute("PRAGMA paired.synchronous=FULL")
-                    connection.execute("BEGIN IMMEDIATE")
-                    for cache, schema in ((self, "main"), (peer, "paired")):
-                        shard_changed, delta = cache._write_pair_cells(connection, batch, schema, source_identity)
-                        board_rows += delta
-                        if shard_changed:
-                            board_files.append(f"{cache.root.name}/{name}")
-                changed.extend(board_files)
-                count += board_rows
-                committed.extend(window.code for window in batch)
-        except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
-            raise QfqPairPublicationError(
-                tuple(committed),
-                tuple(changed),
-                count,
-                reason=_pair_publication_failure_reason(exc),
-            ) from exc
-        return tuple(changed), count
-
-    def _prepare_pair_files(self, peer: SQLiteQfqWindowCache, name: str) -> None:
-        for cache in (self, peer):
-            if cache.root.is_symlink() or (cache.root / name).is_symlink():
-                raise ValueError("qfq_pair_path_unsafe")
-            cache.root.mkdir(parents=True, exist_ok=True)
-            if not (cache.root / name).is_file():
-                with closing(cache._write_connection(name)):
-                    pass
-        if (self.root / name).stat().st_dev != (peer.root / name).stat().st_dev:
-            raise ValueError("qfq_pair_filesystem_mismatch")
-
-    def _write_pair_cells(
-        self, connection: sqlite3.Connection, windows: Sequence[PublishedHistoryWindow], schema: str, source: str
-    ) -> tuple[bool, int]:
-        if schema not in ("main", "paired"):
-            raise ValueError("qfq_sql_schema_invalid")
-        changed, count = False, 0
-        for window in windows:
-            cells = tuple(cell for cell in window.cells[-self.sessions :] if cell.status == "complete")
-            target = tuple((cell.trade_date.isoformat(), EncodeCell(cell)) for cell in cells)
-            if not target:
-                continue
-            old = tuple(
-                connection.execute(f"SELECT day,payload FROM {schema}.bars WHERE code=? ORDER BY day", (window.code,))
-            )
-            identity = connection.execute(
-                f"SELECT digest,source,cutoff,dates FROM {schema}.identities WHERE code=?", (window.code,)
-            ).fetchone()
-            if old == target and identity == _window_identity(target, source):
-                continue
-            self._write_code(connection, window.code, target, source, schema=schema, previous=old)
-            before, after = dict(old), dict(target)
-            count += sum(before.get(day) != after.get(day) for day in before.keys() | after.keys())
-            changed = True
-        return changed, count
-
-    @staticmethod
-    def _write_code(  # noqa: PLR0913 - reuse the caller's exact preimage in the selected attached schema
-        connection: sqlite3.Connection,
-        code: str,
-        rows: tuple[tuple[str, str], ...],
-        source: str,
-        *,
-        previous: tuple[tuple[str, str], ...],
-        schema: str = "main",
-    ) -> None:
-        if schema not in ("main", "paired"):
-            raise ValueError("qfq_sql_schema_invalid")
-        existing = dict(previous)
-        incoming = dict(rows)
-        connection.executemany(
-            f"DELETE FROM {schema}.bars WHERE code=? AND day=?",
-            ((code, day) for day in existing.keys() - incoming.keys()),
+    def _connection(self, *, write: bool = False) -> SqliteConnection:
+        if self.path.is_symlink() or self.path.is_dir():
+            raise RuntimeError("qfq_path_unsafe")
+        if write:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        connection = OpenSqliteConnection(
+            self.path,
+            SqliteConnectionOptions(
+                read_only=not write,
+                journal_mode="WAL" if write else None,
+            ),
         )
-        connection.executemany(
-            f"INSERT OR REPLACE INTO {schema}.bars VALUES (?,?,?)",
-            ((code, day, payload) for day, payload in rows if existing.get(day) != payload),
-        )
-        connection.execute(
-            f"INSERT OR REPLACE INTO {schema}.identities VALUES (?,?,?,?,?)",
-            (code, *_window_identity(rows, source)),
-        )
-
-    def _write_connection(self, name: str) -> sqlite3.Connection:
-        connection = OpenSqliteConnection(self.root / name, SqliteConnectionOptions(journal_mode="DELETE"))
         try:
-            connection.execute("PRAGMA page_size=4096")
-            if not connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchone():
-                connection.executescript(_SCHEMA)
+            EnsureSqliteSchema(connection, _SCHEMA, allow_create=write)
             return connection
-        except sqlite3.Error:
+        except BaseException:
             connection.close()
             raise
 
-    def _read_connection(self, name: str) -> sqlite3.Connection:
-        path = self.root / name
-        if not path.is_file() or path.is_symlink():
-            raise RuntimeError("qfq shard missing or unsafe")
+    def verify_integrity(self) -> None:
+        if self.path.is_file():
+            with closing(self._connection(write=True)) as connection:
+                CheckSqliteIntegrity(connection)
+
+    def codes(self) -> frozenset[str]:
+        if not self.path.exists():
+            return frozenset()
+        with closing(self._connection()) as connection:
+            return frozenset(
+                row[0] for row in connection.run("SELECT code FROM identities WHERE profile=?", (self.profile,))
+            )
+
+    def completed(self, day: date, code: str, source: str) -> bool:
+        if not self.path.exists():
+            return False
+        with closing(self._connection()) as connection:
+            return (
+                connection.run(
+                    "SELECT 1 FROM completions WHERE code=? AND day=? AND source=?", (code, day.isoformat(), source)
+                ).fetchone()
+                is not None
+            )
+
+    def _rows(self, connection: SqliteConnection, code: str) -> _Rows:
+        identity = connection.run(
+            "SELECT digest,first_day,cutoff FROM identities WHERE profile=? AND code=?", (self.profile, code)
+        ).fetchone()
+        if identity is None:
+            return ()
+        rows = tuple(
+            (row[0], tuple(row[1:]))
+            for row in connection.run(
+                f"SELECT day,{_SELECT} FROM bars WHERE code=? AND day BETWEEN ? AND ? ORDER BY day",
+                (code, identity[1], identity[2]),
+            )
+        )
+        if len(rows) > self.sessions or _digest(rows) != identity[0]:
+            raise RuntimeError("qfq_code_identity_mismatch")
+        return rows
+
+    def read_code(self, code: str) -> PublishedHistoryWindow:
+        return self.read_codes((code,))[0]
+
+    def read_codes(self, codes: Sequence[str]) -> tuple[PublishedHistoryWindow, ...]:
+        requested = tuple(sorted(set(codes)))
+        for code in requested:
+            _validate_code(code)
+        if not self.path.exists():
+            return tuple(PublishedHistoryWindow(code, ()) for code in requested)
+        result: list[PublishedHistoryWindow] = []
         try:
-            return OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))
+            with closing(self._connection()) as connection:
+                for code in requested:
+                    with SqliteTransaction(connection):
+                        rows = self._rows(connection, code)
+                    result.append(
+                        PublishedHistoryWindow(
+                            code, tuple(PriceCellFromColumns(code, day, values) for day, values in rows)
+                        )
+                    )
         except sqlite3.Error as exc:
-            raise RuntimeError("qfq shard unavailable") from exc
+            raise RuntimeError("qfq_read_failed") from exc
+        return tuple(result)
+
+    def inspect_windows(self, allowed_codes: frozenset[str]) -> QfqWindowSnapshot:
+        if not self.path.exists():
+            return QfqWindowSnapshot(())
+        states: list[QfqWindowState] = []
+        with closing(self._connection()) as connection:
+            identities = connection.run(
+                "SELECT code,source FROM identities WHERE profile=? ORDER BY code", (self.profile,)
+            ).fetchall()
+            for code, source in identities:
+                if code not in allowed_codes:
+                    continue
+                try:
+                    with SqliteTransaction(connection):
+                        rows = self._rows(connection, code)
+                    states.append(QfqWindowState(code, source, tuple(date.fromisoformat(day) for day, _ in rows), True))
+                except (RuntimeError, ValueError):
+                    states.append(QfqWindowState(code, source, (), False))
+        return QfqWindowSnapshot(tuple(states))
+
+    def source_identity(self, code: str) -> str | None:
+        if not self.path.exists():
+            return None
+        with closing(self._connection()) as connection:
+            row = connection.run(
+                "SELECT source FROM identities WHERE profile=? AND code=?", (self.profile, code)
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def retain_codes(self, allowed_codes: frozenset[str]) -> tuple[tuple[str, ...], int]:
+        for code in allowed_codes:
+            _validate_code(code)
+        excluded = self.codes() - allowed_codes
+        if not excluded:
+            return (), 0
+        with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
+            connection.run_many(
+                "DELETE FROM identities WHERE profile=? AND code=?", ((self.profile, code) for code in excluded)
+            )
+            connection.run_many("DELETE FROM completions WHERE code=?", ((code,) for code in excluded))
+            deleted = connection.run("DELETE FROM bars WHERE code NOT IN (SELECT code FROM identities)").rowcount
+        return (self.path.name,), deleted
+
+    def _matches_windows(
+        self,
+        peer: SQLiteQfqWindowCache,
+        targets: tuple[tuple[str, _Rows], ...],
+        source: str,
+        calendar: tuple[date, ...],
+        completed_day: date | None,
+    ) -> bool:
+        if not self.path.is_file():
+            return False
+        with closing(self._connection()) as connection, SqliteTransaction(connection):
+            for code, target in targets:
+                actual = tuple(
+                    (row[0], tuple(row[1:]))
+                    for row in connection.run(f"SELECT day,{_SELECT} FROM bars WHERE code=? ORDER BY day", (code,))
+                )
+                if actual != target:
+                    return False
+            for cache in (self, peer):
+                days = calendar[-cache.sessions :]
+                if tuple(
+                    row[0]
+                    for row in connection.run(
+                        "SELECT day FROM calendars WHERE profile=? ORDER BY day", (cache.profile,)
+                    )
+                ) != tuple(day.isoformat() for day in days):
+                    return False
+                for code, target in targets:
+                    rows = tuple((day, values) for day, values in target if day >= days[0].isoformat())
+                    identity = connection.run(
+                        "SELECT digest,source,first_day,cutoff FROM identities WHERE profile=? AND code=?",
+                        (cache.profile, code),
+                    ).fetchone()
+                    if identity is None or tuple(identity) != (
+                        _digest(rows),
+                        source,
+                        days[0].isoformat(),
+                        days[-1].isoformat(),
+                    ):
+                        return False
+            if completed_day is not None:
+                for code, _rows in targets:
+                    if (
+                        connection.run(
+                            "SELECT 1 FROM completions WHERE code=? AND day=? AND source=?",
+                            (code, completed_day.isoformat(), source),
+                        ).fetchone()
+                        is None
+                    ):
+                        return False
+        return True
+
+    def replace_paired_windows(
+        self,
+        peer: QfqWindowPort,
+        windows: tuple[PublishedHistoryWindow, ...],
+        source_identity: str,
+        *,
+        calendar: tuple[date, ...],
+        completed_day: date | None,
+    ) -> tuple[tuple[str, ...], int]:
+        if (
+            not isinstance(peer, SQLiteQfqWindowCache)
+            or self.path != peer.path
+            or {self.profile, peer.profile} != {"v2", "v3"}
+        ):
+            raise ValueError("qfq_pair_layout_invalid")
+        if not calendar or calendar != tuple(sorted(set(calendar))) or len(calendar) > 251:
+            raise ValueError("qfq_calendar_invalid")
+        if completed_day is not None and completed_day != calendar[-1]:
+            raise ValueError("qfq_completion_day_invalid")
+        allowed_dates = frozenset(calendar)
+        for window in windows:
+            _validate_code(window.code)
+            if any(cell.trade_date not in allowed_dates for cell in window.cells):
+                raise ValueError("qfq_window_outside_calendar")
+        changed, count = False, 0
+        try:
+            targets = tuple(
+                (
+                    window.code,
+                    tuple(
+                        (cell.trade_date.isoformat(), PriceColumnValues(cell))
+                        for cell in window.cells
+                        if cell.status == "complete"
+                    ),
+                )
+                for window in windows
+            )
+            if self._matches_windows(peer, targets, source_identity, calendar, completed_day):
+                return (), 0
+            with closing(self._connection(write=True)) as connection, SqliteTransaction(connection, immediate=True):
+                for code, target in targets:
+                    old = tuple(
+                        (row[0], tuple(row[1:]))
+                        for row in connection.run(f"SELECT day,{_SELECT} FROM bars WHERE code=? ORDER BY day", (code,))
+                    )
+                    before, after = dict(old), dict(target)
+                    count += sum(before.get(day) != after.get(day) for day in before.keys() | after.keys())
+                    if old != target:
+                        changed = True
+                        connection.run_many(
+                            "DELETE FROM bars WHERE code=? AND day=?",
+                            ((code, day) for day in before.keys() - after.keys()),
+                        )
+                        connection.run_many(
+                            f"INSERT OR REPLACE INTO bars VALUES ({','.join('?' for _ in range(25))})",
+                            ((code, day, *values) for day, values in target if before.get(day) != values),
+                        )
+                    for cache in (self, peer):
+                        days = calendar[-cache.sessions :]
+                        rows = tuple((day, values) for day, values in target if day >= days[0].isoformat())
+                        identity = (_digest(rows), source_identity, days[0].isoformat(), days[-1].isoformat())
+                        previous = connection.run(
+                            "SELECT digest,source,first_day,cutoff FROM identities WHERE profile=? AND code=?",
+                            (cache.profile, code),
+                        ).fetchone()
+                        if previous is None or tuple(previous) != identity:
+                            changed = True
+                            connection.run(
+                                "INSERT OR REPLACE INTO identities VALUES (?,?,?,?,?,?)",
+                                (cache.profile, code, *identity),
+                            )
+                    if completed_day is not None:
+                        cursor = connection.run(
+                            "INSERT INTO completions VALUES (?,?,?) ON CONFLICT(code) DO UPDATE SET day=excluded.day,source=excluded.source WHERE day<>excluded.day OR source<>excluded.source",
+                            (code, completed_day.isoformat(), source_identity),
+                        )
+                        changed = changed or cursor.rowcount > 0
+                for cache in (self, peer):
+                    day_texts = tuple(day.isoformat() for day in calendar[-cache.sessions :])
+                    previous_days = tuple(
+                        row[0]
+                        for row in connection.run(
+                            "SELECT day FROM calendars WHERE profile=? ORDER BY day", (cache.profile,)
+                        )
+                    )
+                    if day_texts != previous_days:
+                        changed = True
+                        connection.run("DELETE FROM calendars WHERE profile=?", (cache.profile,))
+                        connection.run_many(
+                            "INSERT INTO calendars VALUES (?,?)", ((cache.profile, day) for day in day_texts)
+                        )
+        except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+            reason = (
+                "qfq_pair_database_busy"
+                if isinstance(exc, sqlite3.OperationalError)
+                and any(word in str(exc).lower() for word in ("locked", "busy"))
+                else "qfq_pair_publication_failed"
+            )
+            raise QfqPairPublicationError((), (), 0, reason=reason) from exc
+        return ((self.path.name,) if changed else ()), count
 
     def manifest(self) -> PublishedHistoryManifest | None:
-        try:
-            return self._manifest()
-        except (sqlite3.Error, OSError, ValueError) as exc:
-            raise RuntimeError("qfq manifest unavailable") from exc
-
-    def _manifest(self) -> PublishedHistoryManifest | None:
-        identities: list[tuple[str, str, str]] = []
-        dates: set[date] = set()
-        for name in self._existing_names():
-            with closing(self._read_connection(name)) as connection:
-                for code, digest, source, calendar_json in connection.execute(
-                    "SELECT code,digest,source,dates FROM identities"
-                ):
-                    if QfqShardName(code) != name:
-                        raise RuntimeError("qfq code routed to wrong shard")
-                    identities.append((code, digest, source))
-                    dates.update(date.fromisoformat(day) for day in json.loads(calendar_json))
-        if not identities:
+        if not self.path.exists():
             return None
-        if not dates:
-            raise RuntimeError("qfq shard identity incomplete")
-        calendar = tuple(sorted(dates))[-self.sessions :]
-        digest = hashlib.sha256(json.dumps(sorted(identities)).encode("ascii")).hexdigest()
-        return PublishedHistoryManifest(
-            digest, 1, calendar[-1], calendar, tuple(sorted(code for code, _, _ in identities))
-        )
+        try:
+            with closing(self._connection()) as connection, SqliteTransaction(connection):
+                identities = tuple(
+                    tuple(row)
+                    for row in connection.run(
+                        "SELECT code,digest,source,first_day,cutoff FROM identities WHERE profile=? ORDER BY code",
+                        (self.profile,),
+                    )
+                )
+                calendar = tuple(
+                    date.fromisoformat(row[0])
+                    for row in connection.run("SELECT day FROM calendars WHERE profile=? ORDER BY day", (self.profile,))
+                )
+            if not identities:
+                return None
+            if not calendar:
+                raise RuntimeError("qfq_calendar_missing")
+            digest = hashlib.sha256(
+                json.dumps((identities, tuple(day.isoformat() for day in calendar)), separators=(",", ":")).encode(
+                    "ascii"
+                )
+            ).hexdigest()
+            return PublishedHistoryManifest(digest, 1, calendar[-1], calendar, tuple(row[0] for row in identities))
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            raise RuntimeError("qfq_manifest_unavailable") from exc
 
     def iter_windows(self, manifest: PublishedHistoryManifest, *, sessions: int) -> Iterator[PublishedHistoryWindow]:
-        for name in self._existing_names():
-            codes = tuple(code for code in manifest.universe_codes if QfqShardName(code) == name)
-            yield from self.read_windows(manifest, codes, sessions=sessions)
+        for start in range(0, len(manifest.universe_codes), 32):
+            yield from self.read_windows(manifest, manifest.universe_codes[start : start + 32], sessions=sessions)
 
     def read_windows(
         self, manifest: PublishedHistoryManifest, codes: Sequence[str], *, sessions: int
     ) -> tuple[PublishedHistoryWindow, ...]:
-        self._ensure_layout()
-        try:
-            return self._read_windows(manifest, codes, sessions=sessions)
-        except sqlite3.Error as exc:
-            raise RuntimeError("qfq windows unavailable") from exc
-
-    def _read_windows(
-        self, manifest: PublishedHistoryManifest, codes: Sequence[str], *, sessions: int
-    ) -> tuple[PublishedHistoryWindow, ...]:
         if not 1 <= sessions <= self.sessions:
-            raise ValueError("qfq read window invalid")
-        grouped: dict[str, list[str]] = {}
+            raise ValueError("qfq_read_window_invalid")
+        if self.manifest() != manifest:
+            raise RuntimeError("qfq_publication_changed")
         allowed = frozenset(manifest.universe_codes)
-        for code in dict.fromkeys(codes):
-            name = QfqShardName(code)
-            if code in allowed and (self.root / name).is_file():
-                grouped.setdefault(name, []).append(code)
-        result: list[PublishedHistoryWindow] = []
-        for name, requested in grouped.items():
-            with closing(self._read_connection(name)) as connection, connection:
-                for code in requested:
-                    rows = self._read_rows(connection, code)[-sessions:]
-                    connection.rollback()
-                    result.append(
-                        PublishedHistoryWindow(code, tuple(DecodeCell(code, day, payload) for day, payload in rows))
-                    )
-        return tuple(sorted(result, key=lambda item: item.code))
+        first = manifest.calendar_dates[-min(sessions, len(manifest.calendar_dates))]
+        windows = tuple(
+            PublishedHistoryWindow(window.code, tuple(cell for cell in window.cells if cell.trade_date >= first))
+            for window in self.read_codes(tuple(code for code in codes if code in allowed))
+        )
+        if self.manifest() != manifest:
+            raise RuntimeError("qfq_publication_changed")
+        return windows

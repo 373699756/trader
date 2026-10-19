@@ -41,40 +41,38 @@ run.bat
 TRADER_PORT=5050 ./run.sh
 DEEPSEEK_API_KEY=your-key ./run.sh
 TRADER_CONFIG=/absolute/path/runtime.json ./run.sh
-./run.sh check
+.venv/bin/python3 scripts/diagnose_runtime.py --profile local --output -
 ./run.sh --profile v2
 ./run.sh --profile v3
 ./run.sh --profile both
-./run.sh download_train
-./run.sh download_qfq
-./run.sh download_risk
+./run.sh train
+./run.sh sync
+./run.sh sync market
+./run.sh sync company
 ./run.sh help
 ```
 
-日常启动不需要参数，默认使用 V2 并加载 `data/train/v2/{tomorrow,d25}` 双头工件；
+日常启动不需要参数，默认使用 V2 并加载 `data/training/models/v2/{tomorrow,d25}` 双头工件；
 追加 `--profile v2|v3` 可单独启动一档，`--profile both` 在同一进程启动两档；这些选择不会写回配置。双档模式的 Tomorrow/D25 结果、冻结和历史按档位隔离，Long 固定由 V2 单一采集并供两档页面只读。启动不执行训练，所选档位任一bundle损坏时失败关闭。
-`check`执行配置、研究状态和离线性能检查。`download_train`先维护完整历史，验收后在同一进程联合训练V2/V3；双档工件与当前数据、配置、实现身份完整匹配时复用。`download_qfq`独立更新在线短窗口；`download_risk`增量更新公司资料单库。三个下载入口均先确认ST资格。
+`local`诊断检查配置、只读历史维护状态、研究状态和离线性能，支持`--scoring-profile v2|v3|both`。`train`先维护完整历史，验收后在同一进程联合训练V2/V3；双档工件与当前数据、配置、实现身份完整匹配时复用。`sync market`独立更新在线短窗口；`sync company`增量更新公司资料单库。`sync`共用一次官方总体与ST准备，顺序执行market和company；单项失败继续，取消、配置或公共准备失败停止。stdout仅最终JSON，进度走stderr，退出码0/1/2/130分别表示完成、失败或待补、参数/配置错误、取消。
 
-`./run.sh download_train`使用Tencent取得完整历史的raw/qfq价格对，BaoStock只提供历史行业证据。已发布快照中的价格缺口会继续报告和补取；训练只使用有效样本，并由各档样本覆盖门禁判断能否发布。历史维护失败或参考数据不完整仍阻断训练；不跨来源拼价格。
+`./run.sh train`使用Tencent取得完整历史的raw/qfq价格对，BaoStock只提供历史行业证据。已发布快照中的价格缺口会继续报告和补取；训练只使用有效样本，并由各档样本覆盖门禁判断能否发布。历史维护失败或参考数据不完整仍阻断训练；不跨来源拼价格。
 
-`./run.sh download_qfq` 不接受参数：独立取得官方股票名单与 Tencent 日历，默认8个worker下载短窗口，不调用 BaoStock 网络。
-在线 V2/V3 分别读取 `data/qfq/v2`、`data/qfq/v3`，保留251/61根日线（250/60日特征加一根前置日线），新日进入时删除最老日线。
-两档按沪市主板、深市主板、创业板、科创板各最多四库；同板块以DELETE/FULL配对事务提交，提交后才确认断点。下载与单写入者通过有界队列并行；失败保留原有效窗口。服务只在已经运行到上海时间15:10时尝试一次日更，晚启动或失败时手工运行`download_qfq`补齐，不启动补跑或定时反复重试。
+`./run.sh sync market`：独立取得官方股票名单与 Tencent 日历，默认8个worker下载短窗口，不调用 BaoStock 网络。
+在线 V2/V3 共读 `data/market/daily_window.sqlite3`，按最近251/61个市场交易日范围读取真实raw/qfq价格对；价格、两档身份与完成断点在同一个WAL/FULL事务提交。下载与单写入者有界并行，失败保留有效窗口。后台仍仅在进程运行到15:10时尝试一次，晚启动或失败后由`sync market`续传。
 完整history继续用于训练、研究和结果结算；在线请求只读已有投影，不等待下载。
 
 历史自动化固定为“每日检查、归档周更、训练到期只提醒”。当前版本不再提供公开的安装/卸载入口；已有系统任务仍可调用内部
-`trader.entrypoints.cli download_scheduled` 零参数命令；旧任务须更新命令配置，模板已同步。每天按上海时间 15:10 和
+`trader.entrypoints.cli sync history` 零参数命令；旧任务须更新命令配置，模板已同步。每天按上海时间 15:10 和
 20:30唤醒同一维护命令，只有归档截止日落后至少7个自然日且上海时间不早于15:10才执行下载；未到期返回`not_due`，
-无归档返回`blocked`并等待手工`./run.sh download_train`初始化。手工下载不受周更门槛限制，失败后下次到期唤醒可续传。
+无归档返回`blocked`并等待手工`./run.sh train`初始化。手工下载不受周更门槛限制，失败后下次到期唤醒可续传。
 任务日志写入`.runtime/trader/logs/history-automation.log`并按大小轮转。同一训练due
 身份在每个上海日期最多通知一次；桌面通知不可用只记为 `notification_degraded`，不会把成功下载改成失败，也不会
 自动训练、切换档位或重启服务。只读 `history-automation-status` 仍可查看持久化 due、提醒和活动快照状态。
 
-历史归档只接受 `data/history/control.sqlite3` 与 `partitions/YYYY/MM.sqlite3` 月分片；文件 hash 保存在
-控制状态中用于校验，旧目录和兼容读取均不进入活动产品。
-若仍有唯一旧归档，可显式运行 `.venv/bin/python3 scripts/convert_baostock_history.py` 一次性转换；该脚本不被启动、
-Web、`check`、训练或零参数同步隐式调用。`research-status` 和统一诊断的 `research` profile 只读投影同一个
-active snapshot 身份，不会触发下载、训练或文件写入。
+历史使用 `data/market/history/catalog.sqlite3` 与 `prices_YYYY.sqlite3` 年库；逐月逻辑摘要和观察序号保留旧快照隔离，绑定参考与发布指针同库提交。旧格式不参与活动读取，重建或真实切换另行授权。
+
+冻结、运行快照、共享预算、资格与研究持久证据统一归入`data/`；`.runtime`只保留进程锁、日志和临时产物。隔离迁移使用`scripts/migrate_runtime_data.py build --source <仓库外旧工作区副本> --target <仓库外新data目录> --default-profile v2`，不替换活动数据。`research-status`和研究诊断只读同一业务状态。
 
 启动脚本只读取 `TRADER_HOST` 和 `TRADER_PORT`；旧 `HOST`/`PORT` 不再映射到 当前进程。
 
@@ -165,7 +163,7 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/trader-cli --config "$PWD/config/runtime.json" research-industry-audit \
-  --history-root "$PWD/data/history" \
+  --history-root "$PWD/data/market/history" \
   --required-sample-codes 300 \
   --tushare-access-points 120 \
   --output -
@@ -187,8 +185,8 @@ chmod 600 .token_key
 ./run.sh
 ```
 
-Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。服务从 `data/qfq` 短窗口构造历史特征，
-后台短窗口维护与 `./run.sh download_qfq` 共用 Tencent 有界并发用例；不依赖 Tushare 或 BaoStock 网络。
+Token、SDK、额度或网络不可用时，Tushare lane 会显式降级。服务从 `data/market/daily_window.sqlite3` 短窗口构造历史特征，
+后台短窗口维护与 `./run.sh sync market` 共用 Tencent 有界并发用例；不依赖 Tushare 或 BaoStock 网络。
 短窗口暂不可用时页面明确显示待下载/待更新，
 已有最近有效视图则继续降级使用。东方财富/新浪全市场实时行情、腾讯
 候选定向报价、AKShare 研究数据、本地推荐和只读 Web 继续运行。Token 不会写入配置、

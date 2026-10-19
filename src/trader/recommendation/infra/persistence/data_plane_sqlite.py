@@ -7,39 +7,29 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 
 SCHEMA_VERSION = 3
 SCHEMA_META_KEY = "schema_version"
 
 
-def Connect(database_path: Path, *, cross_thread: bool = False) -> sqlite3.Connection:
+def Connect(database_path: Path, *, cross_thread: bool = False) -> SqliteConnection:
     connection = OpenSqliteConnection(
         database_path,
         SqliteConnectionOptions(timeout_seconds=8.0, foreign_keys=True, check_same_thread=not cross_thread),
     )
-    try:
-        connection.row_factory = sqlite3.Row
-    except BaseException:
-        connection.close()
-        raise
     return connection
 
 
-def ReadConnect(database_path: Path) -> sqlite3.Connection:
+def ReadConnect(database_path: Path) -> SqliteConnection:
     connection = OpenSqliteConnection(
         database_path, SqliteConnectionOptions(read_only=True, timeout_seconds=8.0, foreign_keys=True)
     )
-    try:
-        connection.row_factory = sqlite3.Row
-    except BaseException:
-        connection.close()
-        raise
     return connection
 
 
 @contextmanager
-def ConnectionScope(database_path: Path) -> Iterator[sqlite3.Connection]:
+def ConnectionScope(database_path: Path) -> Iterator[SqliteConnection]:
     connection = Connect(database_path)
     try:
         with connection:
@@ -49,7 +39,7 @@ def ConnectionScope(database_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 @contextmanager
-def ReadConnectionScope(database_path: Path) -> Iterator[sqlite3.Connection]:
+def ReadConnectionScope(database_path: Path) -> Iterator[SqliteConnection]:
     connection = ReadConnect(database_path)
     try:
         yield connection
@@ -60,8 +50,8 @@ def ReadConnectionScope(database_path: Path) -> Iterator[sqlite3.Connection]:
 def InitializeDatabase(database_path: Path) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with ConnectionScope(database_path) as connection:
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.executescript(
+        connection.run("PRAGMA journal_mode=WAL")
+        connection.apply_script(
             """
             CREATE TABLE IF NOT EXISTS schema_meta(
                 key TEXT PRIMARY KEY,
@@ -183,18 +173,18 @@ def InitializeDatabase(database_path: Path) -> None:
         )
         ApplyMigrations(connection)
         if _current_schema_version(connection) < SCHEMA_VERSION:
-            connection.execute(
+            connection.run(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
                 (SCHEMA_META_KEY, str(SCHEMA_VERSION)),
             )
         if _current_schema_version(connection) == 0:
-            connection.execute(
+            connection.run(
                 "INSERT INTO schema_meta(key, value) VALUES (?, ?)",
                 (SCHEMA_META_KEY, str(SCHEMA_VERSION)),
             )
 
 
-def ApplyMigrations(connection: sqlite3.Connection) -> None:
+def ApplyMigrations(connection: SqliteConnection) -> None:
     """Apply migrations for all known schema versions in order."""
     current = _current_schema_version(connection)
     for version in sorted(MIGRATIONS):
@@ -202,19 +192,19 @@ def ApplyMigrations(connection: sqlite3.Connection) -> None:
             continue
         for statement in MIGRATIONS[version]:
             try:
-                connection.execute(statement)
+                connection.run(statement)
             except sqlite3.OperationalError as exc:
                 text = str(exc).lower()
                 if "duplicate column name" not in text and "no such table" not in text:
                     raise
-        connection.execute(
+        connection.run(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
             (SCHEMA_META_KEY, str(version)),
         )
 
 
-def _current_schema_version(connection: sqlite3.Connection) -> int:
-    row = connection.execute("SELECT value FROM schema_meta WHERE key = ?", (SCHEMA_META_KEY,)).fetchone()
+def _current_schema_version(connection: SqliteConnection) -> int:
+    row = connection.run("SELECT value FROM schema_meta WHERE key = ?", (SCHEMA_META_KEY,)).fetchone()
     if row is None:
         return 0
     return _parse_schema_version(row[0])

@@ -1,4 +1,4 @@
-"""Crash-safe 8 KiB physical repack of the stable BaoStock archive."""
+"""Explicit offline repack of annual price partitions."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import hashlib
 import os
 import shutil
 import sqlite3
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,7 +22,6 @@ from trader.download.infra.history_control_index import (
     HistoryControlIndex,
     HistoryMaintenanceLock,
 )
-from trader.download.infra.history_month_partition import HistoryMonthPrices
 from trader.download.infra.history_partition_repack_codec import (
     HistoryPartitionRepackCodecError,
     ReadHistoryPartitionRepackActivationJournal,
@@ -34,34 +33,30 @@ from trader.download.infra.history_partition_repack_codec import (
 from trader.download.infra.history_partition_repack_state import (
     HistoryPartitionRepackAction,
     HistoryPartitionRepackActivationJournal,
-    HistoryPartitionRepackActivationState,
     HistoryPartitionRepackBuildState,
     HistoryPartitionRepackPartitionEvidence,
     HistoryPartitionRepackRequirements,
     HistoryPartitionRepackSourceFileIdentity,
     HistoryPartitionRepackStatus,
 )
-from trader.download.infra.history_reference_files import (
-    HistoryReferencePath,
-    ReadBoundHistoryReference,
-    WriteHistoryReference,
-)
+from trader.download.infra.history_prices import HistoryPricePartition
+from trader.download.infra.price_columns import PRICE_COLUMNS
 from trader.infra.serialization.canonical_codec import CanonicalDigest
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 from trader.training.infra.model_bundles.profile_publication import InspectActiveProfileBundles
 
 RepackProgress = Callable[[int, int, str], None]
 FaultInjector = Callable[[str], None]
-_BUILD_STATE_NAME = "repack-state.json"
-_ACTIVATION_JOURNAL_NAME = "baostock-repack-activation.json"
-_CONTROL_NAME = "control.sqlite3"
-_PARTITIONS_NAME = "partitions"
+_BUILD_STATE_NAME = "history-repack-state.json"
+_ACTIVATION_JOURNAL_NAME = "history-repack-activation.json"
+_CONTROL_NAME = "catalog.sqlite3"
 _HASH_CHUNK_BYTES = 1024 * 1024
 _TABLE_QUERIES = (
     (
         "daily_records",
-        "SELECT trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash "
-        "FROM daily_records ORDER BY trade_date, code, revision_id",
+        "SELECT trade_date, code, revision_id, first_seen_sequence, board, "
+        + ", ".join(PRICE_COLUMNS)
+        + ", content_hash FROM daily_records ORDER BY trade_date, code, revision_id",
     ),
     (
         "daily_observations",
@@ -109,7 +104,7 @@ class _PartitionFacts:
 
 
 class HistoryPartitionRepackCoordinator:
-    """Build, activate, roll back and finalize one physical archive repack."""
+    """Build an isolated copy; switching and finalization require explicit calls."""
 
     def __init__(
         self,
@@ -120,71 +115,108 @@ class HistoryPartitionRepackCoordinator:
         progress: RepackProgress | None = None,
         fault_injector: FaultInjector | None = None,
     ) -> None:
-        source = source_root.expanduser().resolve()
-        target = target_root.expanduser().resolve()
-        self._layout = _validate_layout(source, target)
+        source, target = source_root.expanduser().resolve(), target_root.expanduser().resolve()
+        if source.name != "history" or target != source.with_name("history-repacked"):
+            raise HistoryPartitionRepackError("repack requires sibling history and history-repacked directories")
+        self._layout = _RepackLayout(
+            source,
+            target,
+            source.with_name("history-before-repack"),
+            source.with_name(_BUILD_STATE_NAME),
+            source.with_name(_ACTIVATION_JOURNAL_NAME),
+        )
         self._requirements = requirements or HistoryPartitionRepackRequirements()
         self._progress = progress
         self._inject = fault_injector or (lambda _stage: None)
 
     def build(self) -> HistoryPartitionRepackStatus:
         layout = self._layout
-        layout.target_root.parent.mkdir(parents=True, exist_ok=True)
-        with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
+        with HistoryMaintenanceLock(layout.source_root.with_name(".history.lock")):
             _require_no_activation_fence(layout.journal_path)
             context = _load_source_context(layout.source_root, self._requirements)
             _require_same_filesystem(layout)
-            state = self._load_or_create_build_state(context)
-            if state.completed:
-                _verify_completed_target(layout.target_root, state)
-                return _status("build", "completed", state)
-            _discard_incomplete_outputs(layout.target_root, context.active.partitions, state)
-            _require_target_layout(layout.target_root, state)
-            state = self._resume_completed_partitions(state)
-            for reference in context.active.partitions:
-                if _partition_evidence(state, reference.relative_path) is not None:
-                    continue
-                evidence = _repack_partition(
-                    layout.source_root,
-                    layout.target_root,
-                    reference,
+            if layout.state_path.exists():
+                state = ReadHistoryPartitionRepackBuildState(layout.state_path)
+                _require_state_source(state, layout, context, self._requirements)
+            else:
+                if layout.target_root.exists() and any(layout.target_root.iterdir()):
+                    raise HistoryPartitionRepackError("repack target is nonempty without trusted state")
+                _require_free_space(layout, context, self._requirements)
+                layout.target_root.mkdir(parents=True, exist_ok=True)
+                state = HistoryPartitionRepackBuildState(
+                    str(layout.source_root),
+                    str(layout.target_root),
+                    context.active.content_hash,
                     context.active.sequence,
+                    context.source_file_identity_hash,
+                    context.source_files,
+                    context.source_bytes,
+                    context.security_count,
+                    context.trading_day_count,
+                    self._requirements.expected_partition_count,
                     self._requirements.target_page_size,
-                )
-                self._inject(f"partition_replaced:{reference.relative_path}")
-                state = replace(
-                    state,
-                    partitions=tuple(sorted((*state.partitions, evidence), key=lambda item: item.relative_path)),
+                    (),
                 )
                 WriteHistoryPartitionRepackBuildState(layout.state_path, state)
-                self._publish_progress(len(state.partitions), state.expected_partition_count, reference.relative_path)
+                self._inject("build_prepared")
+            if state.completed:
+                _verify_candidate(layout.target_root, state, target=True)
+                return _status("build", "completed", state)
+            completed = {item.relative_path: item for item in state.partitions}
+            for reference in context.active.partitions:
+                evidence = completed.get(reference.relative_path)
+                if evidence is None:
+                    evidence = _repack_partition(
+                        layout.source_root, layout.target_root, reference, context.active.sequence, state.page_size
+                    )
+                    self._inject(f"partition_replaced:{reference.relative_path}")
+                    completed[reference.relative_path] = evidence
+                    state = replace(
+                        state, partitions=tuple(sorted(completed.values(), key=lambda item: item.relative_path))
+                    )
+                    WriteHistoryPartitionRepackBuildState(layout.state_path, state)
+                    if self._progress:
+                        self._progress(len(state.partitions), state.expected_partition_count, reference.relative_path)
+                elif _sha256_file(layout.target_root / reference.relative_path) != evidence.target_sha256:
+                    raise HistoryPartitionRepackError("resumed annual file differs from committed digest")
+                HistoryPricePartition.verify(layout.target_root / reference.relative_path, reference)
             _require_source_unchanged(layout.source_root, state)
             _require_size_gate(state, self._requirements)
-            target_snapshot = _build_target_control(layout, context, state)
-            self._inject("target_control_built")
-            state = replace(state, target_snapshot_hash=target_snapshot.content_hash, completed=True)
+            target_control = layout.target_root / _CONTROL_NAME
+            shutil.copyfile(layout.source_root / _CONTROL_NAME, target_control)
+            _fsync_file(target_control)
+            _fsync_directory(layout.target_root)
+            # Physical compaction changes no logical snapshot or reference identity.
+            state = replace(state, target_snapshot_hash=context.active.content_hash, completed=True)
             WriteHistoryPartitionRepackBuildState(layout.state_path, state)
-            _verify_completed_target(layout.target_root, state)
+            _verify_candidate(layout.target_root, state, target=True)
             self._inject("build_completed")
             return _status("build", "completed", state)
 
     def activate(self) -> HistoryPartitionRepackStatus:
         layout = self._layout
-        with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
-            _require_completed_state(state, layout)
-            existing = _optional_journal(layout.journal_path)
-            if existing is not None and existing.state not in {"rolled_back", "finalized"}:
-                recovered = self._recover_activation(existing, state)
-                return _activation_status("activate", recovered.state, state)
-            if existing is not None and existing.state == "finalized":
-                return _activation_status("activate", "finalized", state)
+        with HistoryMaintenanceLock(layout.source_root.with_name(".history.lock")):
+            state = self._completed_state()
+            journal = _optional_journal(layout.journal_path)
+            if journal is not None:
+                _require_journal_layout(journal, layout, state)
+                if journal.state == "finalized":
+                    return _status("activate", "finalized", state)
+                if journal.state == "finalizing":
+                    raise HistoryPartitionRepackError("resume finalization before another repack operation")
+                if journal.state != "rolled_back":
+                    if layout.source_root.exists() and layout.backup_root.exists() and not layout.target_root.exists():
+                        _verify_candidate(layout.source_root, state, target=True)
+                        WriteHistoryPartitionRepackActivationJournal(
+                            layout.journal_path, replace(journal, state="verified")
+                        )
+                        return _status("activate", "verified", state)
+                    self._restore(journal, state)
+                    return _status("activate", "rolled_back", state)
             if layout.backup_root.exists():
-                raise HistoryPartitionRepackError("history repack backup target already exists")
-            _verify_completed_target(layout.target_root, state)
-            _require_stable_snapshot(layout.source_root, state.source_snapshot_hash)
-            layout.backup_root.mkdir(parents=True)
-            _fsync_directory(layout.backup_root.parent)
+                raise HistoryPartitionRepackError("repack backup already exists")
+            _verify_candidate(layout.source_root, state, target=False)
+            _verify_candidate(layout.target_root, state, target=True)
             journal = HistoryPartitionRepackActivationJournal(
                 "prepared",
                 str(layout.source_root),
@@ -195,63 +227,55 @@ class HistoryPartitionRepackCoordinator:
             )
             WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
             self._inject("prepared")
-            journal = self._move_and_commit(
-                layout.source_root / _PARTITIONS_NAME,
-                layout.backup_root / _PARTITIONS_NAME,
-                journal,
-                "old_partitions_moved",
-            )
-            journal = self._move_and_commit(
-                layout.source_root / _CONTROL_NAME,
-                layout.backup_root / _CONTROL_NAME,
-                journal,
-                "old_control_moved",
-            )
-            journal = self._move_and_commit(
-                layout.target_root / _PARTITIONS_NAME,
-                layout.source_root / _PARTITIONS_NAME,
-                journal,
-                "new_partitions_activated",
-            )
-            journal = self._move_and_commit(
-                layout.target_root / _CONTROL_NAME,
-                layout.source_root / _CONTROL_NAME,
-                journal,
-                "new_control_activated",
-            )
-            _require_stable_target(layout, state, full_hash=False)
-            journal = replace(journal, state="verified")
+            _move_path(layout.source_root, layout.backup_root)
+            self._inject("old_root_moved")
+            journal = replace(journal, state="old_root_moved")
             WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
+            _move_path(layout.target_root, layout.source_root)
+            self._inject("new_root_activated")
+            _verify_candidate(layout.source_root, state, target=True)
+            WriteHistoryPartitionRepackActivationJournal(layout.journal_path, replace(journal, state="verified"))
             self._inject("verified")
-            return _activation_status("activate", "verified", state)
+            return _status("activate", "verified", state)
 
     def rollback(self) -> HistoryPartitionRepackStatus:
         layout = self._layout
-        with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
-            _require_completed_state(state, layout)
+        with HistoryMaintenanceLock(layout.source_root.with_name(".history.lock")):
+            state = self._completed_state()
             journal = ReadHistoryPartitionRepackActivationJournal(layout.journal_path)
             _require_journal_layout(journal, layout, state)
-            if journal.state == "finalized":
-                raise HistoryPartitionRepackError("finalized history repack cannot be rolled back")
-            if journal.state == "rolled_back":
-                _require_stable_source(layout, state, full_hash=False)
-                return _activation_status("rollback", "rolled_back", state)
-            recovered = self._restore_source_snapshot(journal, state)
-            return _activation_status("rollback", recovered.state, state)
+            if journal.state in {"finalizing", "finalized"}:
+                raise HistoryPartitionRepackError("finalized repack cannot be rolled back")
+            self._restore(journal, state)
+            return _status("rollback", "rolled_back", state)
+
+    def _restore(
+        self, journal: HistoryPartitionRepackActivationJournal, state: HistoryPartitionRepackBuildState
+    ) -> None:
+        layout = self._layout
+        if layout.backup_root.exists():
+            _verify_candidate(layout.backup_root, state, target=False)
+            if layout.source_root.exists():
+                _verify_candidate(layout.source_root, state, target=True)
+                if layout.target_root.exists():
+                    raise HistoryPartitionRepackError("rollback target already exists")
+                _move_path(layout.source_root, layout.target_root)
+            _move_path(layout.backup_root, layout.source_root)
+        _verify_candidate(layout.source_root, state, target=False)
+        WriteHistoryPartitionRepackActivationJournal(layout.journal_path, replace(journal, state="rolled_back"))
+        self._inject("rolled_back")
 
     def finalize(self, training_root: Path, memory_evidence_path: Path) -> HistoryPartitionRepackStatus:
         layout = self._layout
-        with HistoryMaintenanceLock(layout.source_root / ".maintenance.lock"):
-            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
-            _require_completed_state(state, layout)
+        with HistoryMaintenanceLock(layout.source_root.with_name(".history.lock")):
+            state = self._completed_state()
             journal = ReadHistoryPartitionRepackActivationJournal(layout.journal_path)
             _require_journal_layout(journal, layout, state)
             if journal.state == "finalized":
-                return _activation_status("finalize", "finalized", state)
-            if journal.state != "verified":
-                raise HistoryPartitionRepackError("history repack must be verified before finalization")
-            _require_stable_target(layout, state, full_hash=False)
+                return _status("finalize", "finalized", state)
+            if journal.state not in {"verified", "finalizing"}:
+                raise HistoryPartitionRepackError("repack must be verified before finalization")
+            _verify_candidate(layout.source_root, state, target=True)
             from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
 
             bundle = InspectActiveProfileBundles(training_root.resolve() / "v3", V3_TRAINING_PROFILE)[0]
@@ -262,144 +286,49 @@ class HistoryPartitionRepackCoordinator:
                 or evidence.model_hash != bundle.model_hash
                 or evidence.report_hash != bundle.report_hash
             ):
-                raise HistoryPartitionRepackError("training evidence does not match the activated archive and bundle")
-            released = _directory_size(layout.backup_root)
-            _require_safe_backup(layout, state)
-            shutil.rmtree(layout.backup_root)
+                raise HistoryPartitionRepackError("training evidence does not match repacked prices")
+            if journal.state == "verified":
+                _verify_candidate(layout.backup_root, state, target=False)
+                journal = replace(journal, state="finalizing")
+                WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
+            released = _directory_size(layout.backup_root) if layout.backup_root.exists() else 0
+            if layout.backup_root.exists():
+                shutil.rmtree(layout.backup_root)
             _fsync_directory(layout.backup_root.parent)
-            journal = replace(journal, state="finalized")
-            WriteHistoryPartitionRepackActivationJournal(layout.journal_path, journal)
-            self._inject("finalized")
-            return _activation_status("finalize", "finalized", state, released)
+            WriteHistoryPartitionRepackActivationJournal(layout.journal_path, replace(journal, state="finalized"))
+            return replace(_status("finalize", "finalized", state), released_bytes=released)
 
-    def _load_or_create_build_state(self, context: _SourceContext) -> HistoryPartitionRepackBuildState:
-        layout = self._layout
-        if layout.state_path.exists():
-            state = ReadHistoryPartitionRepackBuildState(layout.state_path)
-            _require_state_source(state, layout, context, self._requirements)
-            return state
-        if layout.target_root.exists() and any(layout.target_root.iterdir()):
-            raise HistoryPartitionRepackError("history repack target is not empty and has no trusted state")
-        _require_free_space(layout, context, self._requirements)
-        layout.target_root.mkdir(parents=True, exist_ok=True)
-        state = HistoryPartitionRepackBuildState(
-            str(layout.source_root),
-            str(layout.target_root),
-            context.active.content_hash,
-            context.active.sequence,
-            context.source_file_identity_hash,
-            context.source_files,
-            context.source_bytes,
-            context.security_count,
-            context.trading_day_count,
-            self._requirements.expected_partition_count,
-            self._requirements.target_page_size,
-            (),
-        )
-        WriteHistoryPartitionRepackBuildState(layout.state_path, state)
-        self._inject("build_prepared")
+    def _completed_state(self) -> HistoryPartitionRepackBuildState:
+        state = ReadHistoryPartitionRepackBuildState(self._layout.state_path)
+        if (
+            not state.completed
+            or state.source_root != str(self._layout.source_root)
+            or state.target_root != str(self._layout.target_root)
+        ):
+            raise HistoryPartitionRepackError("repack completed state is invalid")
         return state
 
-    def _resume_completed_partitions(self, state: HistoryPartitionRepackBuildState) -> HistoryPartitionRepackBuildState:
-        for item in state.partitions:
-            path = self._layout.target_root / item.relative_path
-            reference = HistorySnapshotPartition(
-                item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
-            )
-            HistoryMonthPrices.verify(path, reference)
-            with closing(_read_connection(path)) as connection:
-                if connection.execute("PRAGMA page_size").fetchone() != (state.page_size,):
-                    raise HistoryPartitionRepackError("resumed history repack partition page size is invalid")
-                if connection.execute("PRAGMA freelist_count").fetchone() != (0,):
-                    raise HistoryPartitionRepackError("resumed history repack partition has free pages")
-        return state
 
-    def _move_and_commit(
-        self,
-        source: Path,
-        destination: Path,
-        journal: HistoryPartitionRepackActivationJournal,
-        next_state: HistoryPartitionRepackActivationState,
-    ) -> HistoryPartitionRepackActivationJournal:
-        if not source.exists() or destination.exists() or source.is_symlink():
-            raise HistoryPartitionRepackError("history repack activation path is inconsistent")
-        os.replace(source, destination)
-        _fsync_directory(source.parent)
-        _fsync_directory(destination.parent)
-        self._inject(f"{next_state}_moved")
-        updated = replace(journal, state=next_state)
-        WriteHistoryPartitionRepackActivationJournal(self._layout.journal_path, updated)
-        self._inject(next_state)
-        return updated
-
-    def _recover_activation(
-        self,
-        journal: HistoryPartitionRepackActivationJournal,
-        state: HistoryPartitionRepackBuildState,
-    ) -> HistoryPartitionRepackActivationJournal:
-        _require_journal_layout(journal, self._layout, state)
-        if _stable_target_matches(self._layout, state, full_hash=False):
-            recovered = replace(journal, state="verified")
-            WriteHistoryPartitionRepackActivationJournal(self._layout.journal_path, recovered)
-            return recovered
-        return self._restore_source_snapshot(journal, state)
-
-    def _restore_source_snapshot(
-        self,
-        journal: HistoryPartitionRepackActivationJournal,
-        state: HistoryPartitionRepackBuildState,
-    ) -> HistoryPartitionRepackActivationJournal:
-        layout = self._layout
-        _return_new_control(layout, state)
-        _return_new_partitions(layout, state)
-        _restore_old_path(layout.backup_root / _PARTITIONS_NAME, layout.source_root / _PARTITIONS_NAME)
-        _restore_old_path(layout.backup_root / _CONTROL_NAME, layout.source_root / _CONTROL_NAME)
-        _require_stable_source(layout, state, full_hash=True)
-        if layout.backup_root.exists():
-            if any(layout.backup_root.iterdir()):
-                raise HistoryPartitionRepackError("history repack backup was not fully restored")
-            layout.backup_root.rmdir()
-            _fsync_directory(layout.backup_root.parent)
-        recovered = replace(journal, state="rolled_back")
-        WriteHistoryPartitionRepackActivationJournal(layout.journal_path, recovered)
-        self._inject("rolled_back")
-        return recovered
-
-    def _publish_progress(self, completed: int, total: int, current: str) -> None:
-        if self._progress is not None:
-            self._progress(completed, total, current)
+def RequireHistoryPartitionRepackInactive(history_root: Path) -> None:
+    _require_no_activation_fence(history_root.resolve().with_name(_ACTIVATION_JOURNAL_NAME))
 
 
-def RequireHistoryPartitionRepackInactive(archive_root: Path) -> None:
-    """Fail normal history work while a conventional repack activation is fenced."""
-
-    root = archive_root.expanduser().resolve()
-    if root.name != "history":
-        return
-    journal_path = root.parent / "historyless" / _ACTIVATION_JOURNAL_NAME
-    _require_no_activation_fence(journal_path)
-
-
-def _validate_layout(source: Path, target: Path) -> _RepackLayout:
-    if (
-        source.name != "history"
-        or target.name != "baostock"
-        or target.parent.name != "historyless"
-        or source.parent != target.parent.parent
-        or source == target
-        or source in target.parents
-        or target in source.parents
-    ):
-        raise HistoryPartitionRepackError(
-            "history repack roots must be sibling data/history and data/historyless archives"
-        )
-    return _RepackLayout(
-        source,
-        target,
-        target.parent / "baostock-before-repack",
-        target / _BUILD_STATE_NAME,
-        target.parent / _ACTIVATION_JOURNAL_NAME,
-    )
+def _verify_candidate(root: Path, state: HistoryPartitionRepackBuildState, *, target: bool) -> None:
+    _require_clean_source(root)
+    _require_stable_snapshot(root, state.source_snapshot_hash)
+    active = HistoryControlIndex(root / _CONTROL_NAME).load_state().active_snapshot
+    if active is None:
+        raise HistoryPartitionRepackError("repack snapshot missing")
+    _clear_empty_partition_sidecars({root / _CONTROL_NAME, *(root / item.relative_path for item in active.partitions)})
+    expected = {_CONTROL_NAME, *(item.relative_path for item in state.partitions)}
+    if not root.is_dir() or root.is_symlink() or {path.name for path in root.iterdir()} != expected:
+        raise HistoryPartitionRepackError("repack directory has missing or unexpected files")
+    for item in state.partitions:
+        path = root / item.relative_path
+        if path.is_symlink() or _sha256_file(path) != (item.target_sha256 if target else item.source_sha256):
+            raise HistoryPartitionRepackError("repack annual file digest mismatch")
+    for reference in active.partitions:
+        HistoryPricePartition.verify(root / reference.relative_path, reference)
 
 
 def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequirements) -> _SourceContext:
@@ -420,7 +349,7 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
     universe = next((item for item in state.universes if item.content_hash == active.universe_hash), None)
     if calendar is None or universe is None:
         raise HistoryPartitionRepackError("history repack source snapshot parents are unavailable")
-    if len(active.partitions) != requirements.expected_partition_count:
+    if len({item.relative_path for item in active.partitions}) != requirements.expected_partition_count:
         raise HistoryPartitionRepackError("history repack source partition count is invalid")
     if len(calendar.open_dates) != requirements.expected_trading_days:
         raise HistoryPartitionRepackError("history repack source trading-day count is invalid")
@@ -437,7 +366,7 @@ def _load_source_context(root: Path, requirements: HistoryPartitionRepackRequire
 
 
 def _source_files(root: Path, active: HistoryActiveSnapshot) -> tuple[HistoryPartitionRepackSourceFileIdentity, ...]:
-    paths = (_CONTROL_NAME, *(item.relative_path for item in active.partitions))
+    paths = tuple(sorted({_CONTROL_NAME, *(item.relative_path for item in active.partitions)}))
     values: list[HistoryPartitionRepackSourceFileIdentity] = []
     for relative in paths:
         path = root / relative
@@ -505,46 +434,6 @@ def _require_source_unchanged(root: Path, state: HistoryPartitionRepackBuildStat
             raise HistoryPartitionRepackError("history repack source changed during build")
 
 
-def _require_target_layout(root: Path, state: HistoryPartitionRepackBuildState) -> None:
-    allowed = {root / _BUILD_STATE_NAME}
-    if state.completed:
-        allowed.add(root / _CONTROL_NAME)
-    for item in state.partitions:
-        allowed.add(root / item.relative_path)
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise HistoryPartitionRepackError("history repack target contains a symbolic link")
-        if path.is_dir() or path in allowed:
-            continue
-        raise HistoryPartitionRepackError("history repack target contains an unknown file")
-
-
-def _discard_incomplete_outputs(
-    root: Path,
-    references: Sequence[HistorySnapshotPartition],
-    state: HistoryPartitionRepackBuildState,
-) -> None:
-    completed = frozenset(item.relative_path for item in state.partitions)
-    for reference in references:
-        if reference.relative_path in completed:
-            continue
-        destination = root / reference.relative_path
-        pending = destination.with_name(f".{destination.stem}.repack.pending.sqlite3")
-        for candidate in (destination, pending):
-            if not candidate.exists():
-                continue
-            if not candidate.is_file() or candidate.is_symlink():
-                raise HistoryPartitionRepackError("history repack incomplete partition is unsafe")
-            candidate.unlink()
-            _fsync_directory(candidate.parent)
-    control = root / _CONTROL_NAME
-    if control.exists():
-        if len(state.partitions) != state.expected_partition_count or not control.is_file() or control.is_symlink():
-            raise HistoryPartitionRepackError("history repack uncommitted target control is unsafe")
-        _remove_sqlite_files(control)
-        _fsync_directory(root)
-
-
 def _repack_partition(
     source_root: Path,
     target_root: Path,
@@ -561,11 +450,11 @@ def _repack_partition(
             raise HistoryPartitionRepackError("history repack pending partition is unsafe")
         pending.unlink()
     source_sha = _sha256_file(source)
-    HistoryMonthPrices.verify(source, reference)
+    HistoryPricePartition.verify(source, reference)
     try:
         with closing(_read_connection(source, copy_destination=True)) as connection:
-            connection.execute("PRAGMA page_size=8192")
-            connection.execute("VACUUM INTO ?", (str(pending),))
+            connection.run("PRAGMA page_size=8192")
+            connection.run("VACUUM INTO ?", (str(pending),))
     except sqlite3.Error as exc:
         raise HistoryPartitionRepackError("history partition VACUUM INTO failed") from exc
     _fsync_file(pending)
@@ -574,17 +463,17 @@ def _repack_partition(
     if source_facts != target_facts:
         raise HistoryPartitionRepackError("history repack changed logical partition content")
     with closing(_read_connection(pending)) as connection:
-        if connection.execute("PRAGMA page_size").fetchone() != (page_size,):
+        if tuple(connection.run("PRAGMA page_size").require_one()) != (page_size,):
             raise HistoryPartitionRepackError("history repack target page size is invalid")
-        if connection.execute("PRAGMA freelist_count").fetchone() != (0,):
+        if tuple(connection.run("PRAGMA freelist_count").require_one()) != (0,):
             raise HistoryPartitionRepackError("history repack target contains free pages")
-        if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
+        if tuple(connection.run("PRAGMA quick_check").require_one()) != ("ok",):
             raise HistoryPartitionRepackError("history repack target quick check failed")
-        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        if connection.run("PRAGMA foreign_key_check").fetchone() is not None:
             raise HistoryPartitionRepackError("history repack target foreign key check failed")
     target_sha = _sha256_file(pending)
     target_reference = reference
-    HistoryMonthPrices.verify(pending, target_reference)
+    HistoryPricePartition.verify(pending, target_reference)
     os.replace(pending, destination)
     _fsync_directory(destination.parent)
     return HistoryPartitionRepackPartitionEvidence(
@@ -611,24 +500,24 @@ def _partition_facts(path: Path, snapshot_sequence: int) -> _PartitionFacts:
             observations_count, observations_hash = _hash_query(connection, _TABLE_QUERIES[1][1])
             latest = cast(
                 int,
-                connection.execute(
+                connection.run(
                     "SELECT COUNT(*) FROM daily_observations AS current "
                     "WHERE current.sync_sequence <= ? AND NOT EXISTS ("
                     "SELECT 1 FROM daily_observations AS newer "
                     "WHERE newer.trade_date=current.trade_date AND newer.code=current.code "
                     "AND newer.sync_sequence <= ? AND newer.sync_sequence > current.sync_sequence)",
                     (snapshot_sequence, snapshot_sequence),
-                ).fetchone()[0],
+                ).require_one()[0],
             )
     except (sqlite3.Error, TypeError, ValueError) as exc:
         raise HistoryPartitionRepackError("history repack partition logical scan failed") from exc
     return _PartitionFacts(records_count, observations_count, latest, records_hash, observations_hash)
 
 
-def _hash_query(connection: sqlite3.Connection, query: str) -> tuple[int, str]:
+def _hash_query(connection: SqliteConnection, query: str) -> tuple[int, str]:
     digest = hashlib.sha256()
     count = 0
-    cursor = connection.execute(query)
+    cursor = connection.run(query)
     while rows := cursor.fetchmany(512):
         for row in rows:
             count += 1
@@ -653,46 +542,6 @@ def _sqlite_value(value: object) -> bytes:
     raise TypeError("history repack encountered an unsupported SQLite value")
 
 
-def _build_target_control(
-    layout: _RepackLayout,
-    context: _SourceContext,
-    state: HistoryPartitionRepackBuildState,
-) -> HistoryActiveSnapshot:
-    for source in context.control_state.sources:
-        if source.supplier_contract.startswith("history_ref_"):
-            reference = ReadBoundHistoryReference(layout.source_root, source.supplier_contract)
-            WriteHistoryReference(HistoryReferencePath(layout.target_root, reference.content_hash), reference)
-    target_control = layout.target_root / _CONTROL_NAME
-    temporary = target_control.with_name(f".{_CONTROL_NAME}.repack.pending")
-    _remove_sqlite_files(temporary)
-    shutil.copyfile(layout.source_root / _CONTROL_NAME, temporary)
-    _fsync_file(temporary)
-    references = tuple(
-        HistorySnapshotPartition(
-            item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
-        )
-        for item in state.partitions
-    )
-    target_snapshot = HistoryActiveSnapshot(
-        context.active.sequence + 1,
-        context.active.data_cutoff,
-        context.active.label_cutoff,
-        context.active.calendar_hash,
-        context.active.universe_hash,
-        context.active.source_identity_hash,
-        references,
-    )
-    repository = HistoryControlIndex(temporary)
-    repository.publish_snapshot(target_snapshot)
-    _checkpoint_sqlite(temporary)
-    os.replace(temporary, target_control)
-    _fsync_directory(target_control.parent)
-    active = HistoryControlIndex(target_control).load_state().active_snapshot
-    if active != target_snapshot:
-        raise HistoryPartitionRepackError("history repack target control publication failed")
-    return target_snapshot
-
-
 def _require_size_gate(
     state: HistoryPartitionRepackBuildState,
     requirements: HistoryPartitionRepackRequirements,
@@ -702,49 +551,6 @@ def _require_size_gate(
     reduction = 1.0 - state.target_bytes / state.source_bytes
     if state.target_bytes > requirements.maximum_target_bytes or reduction < requirements.minimum_reduction_ratio:
         raise HistoryPartitionRepackError("history repack target does not satisfy the size gate")
-
-
-def _verify_completed_target(root: Path, state: HistoryPartitionRepackBuildState) -> None:
-    if not state.completed or state.target_snapshot_hash is None:
-        raise HistoryPartitionRepackError("history repack build is not complete")
-    _require_stable_snapshot(root, state.target_snapshot_hash)
-    _require_target_layout(root, state)
-    _require_partition_set(root / _PARTITIONS_NAME, _target_references(state), full_hash=False)
-
-
-def _require_completed_state(state: HistoryPartitionRepackBuildState, layout: _RepackLayout) -> None:
-    if (
-        not state.completed
-        or state.target_snapshot_hash is None
-        or state.source_root != str(layout.source_root)
-        or state.target_root != str(layout.target_root)
-    ):
-        raise HistoryPartitionRepackError("history repack completed state is invalid")
-
-
-def _partition_evidence(
-    state: HistoryPartitionRepackBuildState,
-    relative_path: str,
-) -> HistoryPartitionRepackPartitionEvidence | None:
-    return next((item for item in state.partitions if item.relative_path == relative_path), None)
-
-
-def _target_references(state: HistoryPartitionRepackBuildState) -> tuple[HistorySnapshotPartition, ...]:
-    return tuple(
-        HistorySnapshotPartition(
-            item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
-        )
-        for item in state.partitions
-    )
-
-
-def _source_references(state: HistoryPartitionRepackBuildState) -> tuple[HistorySnapshotPartition, ...]:
-    return tuple(
-        HistorySnapshotPartition(
-            item.relative_path, item.snapshot_logical_hash, item.snapshot_row_count, item.snapshot_sequence
-        )
-        for item in state.partitions
-    )
 
 
 def _require_journal_layout(
@@ -815,118 +621,11 @@ def _clear_empty_partition_sidecars(paths: set[Path]) -> None:
         _remove_sqlite_sidecars(path)
 
 
-def _stable_target_matches(layout: _RepackLayout, state: HistoryPartitionRepackBuildState, *, full_hash: bool) -> bool:
-    try:
-        _require_stable_target(layout, state, full_hash=full_hash)
-    except (HistoryPartitionRepackError, OSError, ValueError):
-        return False
-    return True
-
-
-def _require_stable_target(layout: _RepackLayout, state: HistoryPartitionRepackBuildState, *, full_hash: bool) -> None:
-    _require_stable_snapshot(layout.source_root, cast(str, state.target_snapshot_hash))
-    _require_partition_set(layout.source_root / _PARTITIONS_NAME, _target_references(state), full_hash=full_hash)
-
-
-def _require_stable_source(layout: _RepackLayout, state: HistoryPartitionRepackBuildState, *, full_hash: bool) -> None:
-    _require_stable_snapshot(layout.source_root, state.source_snapshot_hash)
-    _require_partition_set(layout.source_root / _PARTITIONS_NAME, _source_references(state), full_hash=full_hash)
-
-
-def _require_partition_set(
-    root: Path,
-    references: Sequence[HistorySnapshotPartition],
-    *,
-    full_hash: bool,
-) -> None:
-    if not root.is_dir() or root.is_symlink():
-        raise HistoryPartitionRepackError("history repack partition directory is unavailable")
-    expected_files = {root.parent / item.relative_path for item in references}
-    expected_directories = {root}
-    for path in expected_files:
-        expected_directories.update(path.parents)
-    expected_directories = {path for path in expected_directories if path == root or root in path.parents}
-    _clear_empty_partition_sidecars(expected_files)
-    actual_files = _require_exact_partition_tree(root, expected_files, expected_directories)
-    if actual_files != expected_files:
-        raise HistoryPartitionRepackError("history repack partition path set is invalid")
-    for reference in references:
-        path = root.parent / reference.relative_path
-        if full_hash:
-            HistoryMonthPrices.verify(path, reference)
-
-
-def _require_exact_partition_tree(
-    root: Path,
-    expected_files: set[Path],
-    expected_directories: set[Path],
-) -> set[Path]:
-    actual_files: set[Path] = set()
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise HistoryPartitionRepackError("history repack partition tree contains a symbolic link")
-        if path.is_dir():
-            if path not in expected_directories:
-                raise HistoryPartitionRepackError("history repack partition tree contains an unknown directory")
-            continue
-        if not path.is_file() or path not in expected_files:
-            raise HistoryPartitionRepackError("history repack partition tree contains an unknown file")
-        actual_files.add(path)
-    return actual_files
-
-
-def _return_new_control(layout: _RepackLayout, state: HistoryPartitionRepackBuildState) -> None:
-    source = layout.source_root / _CONTROL_NAME
-    target = layout.target_root / _CONTROL_NAME
-    identity = _stable_snapshot_hash(layout.source_root) if source.exists() else None
-    if identity == state.target_snapshot_hash:
-        if target.exists():
-            raise HistoryPartitionRepackError("history repack target control already exists")
-        _move_path(source, target)
-    elif identity not in {None, state.source_snapshot_hash}:
-        raise HistoryPartitionRepackError("history repack stable control identity is unknown")
-
-
-def _return_new_partitions(layout: _RepackLayout, state: HistoryPartitionRepackBuildState) -> None:
-    source = layout.source_root / _PARTITIONS_NAME
-    target = layout.target_root / _PARTITIONS_NAME
-    if not source.exists():
-        return
-    try:
-        _require_partition_set(source, _target_references(state), full_hash=True)
-    except HistoryPartitionRepackError:
-        _require_partition_set(source, _source_references(state), full_hash=True)
-        return
-    if target.exists():
-        raise HistoryPartitionRepackError("history repack target partitions already exist")
-    _move_path(source, target)
-
-
-def _restore_old_path(source: Path, destination: Path) -> None:
-    if destination.exists():
-        return
-    if not source.exists() or source.is_symlink():
-        raise HistoryPartitionRepackError("history repack rollback evidence is unavailable")
-    _move_path(source, destination)
-
-
 def _move_path(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     os.replace(source, destination)
     _fsync_directory(source.parent)
     _fsync_directory(destination.parent)
-
-
-def _require_safe_backup(layout: _RepackLayout, state: HistoryPartitionRepackBuildState) -> None:
-    if (
-        layout.backup_root.parent != layout.target_root.parent
-        or layout.backup_root.name != "baostock-before-repack"
-        or not layout.backup_root.is_dir()
-        or layout.backup_root.is_symlink()
-    ):
-        raise HistoryPartitionRepackError("history repack backup path is unsafe")
-    _require_stable_snapshot(layout.backup_root, state.source_snapshot_hash)
-    _require_partition_set(layout.backup_root / _PARTITIONS_NAME, _source_references(state), full_hash=True)
 
 
 def _status(action: str, state_name: str, state: HistoryPartitionRepackBuildState) -> HistoryPartitionRepackStatus:
@@ -942,16 +641,7 @@ def _status(action: str, state_name: str, state: HistoryPartitionRepackBuildStat
     )
 
 
-def _activation_status(
-    action: str,
-    state_name: str,
-    state: HistoryPartitionRepackBuildState,
-    released: int = 0,
-) -> HistoryPartitionRepackStatus:
-    return replace(_status(action, state_name, state), released_bytes=released)
-
-
-def _read_connection(path: Path, *, copy_destination: bool = False) -> sqlite3.Connection:
+def _read_connection(path: Path, *, copy_destination: bool = False) -> SqliteConnection:
     connection = OpenSqliteConnection(
         path,
         SqliteConnectionOptions(
@@ -959,25 +649,13 @@ def _read_connection(path: Path, *, copy_destination: bool = False) -> sqlite3.C
         ),
     )
     try:
-        connection.execute("PRAGMA cache_size=-8192")
-        connection.execute("PRAGMA mmap_size=0")
-        connection.execute("PRAGMA temp_store=FILE")
+        connection.run("PRAGMA cache_size=-8192")
+        connection.run("PRAGMA mmap_size=0")
+        connection.run("PRAGMA temp_store=FILE")
     except BaseException:
         connection.close()
         raise
     return connection
-
-
-def _checkpoint_sqlite(path: Path) -> None:
-    try:
-        with closing(OpenSqliteConnection(path, SqliteConnectionOptions(timeout_seconds=30.0))) as connection:
-            result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-    except sqlite3.Error as exc:
-        raise HistoryPartitionRepackError("history repack control checkpoint failed") from exc
-    if result is None or result[0] != 0:
-        raise HistoryPartitionRepackError("history repack control checkpoint did not complete")
-    _remove_sqlite_sidecars(path)
-    _fsync_file(path)
 
 
 def _remove_sqlite_files(path: Path) -> None:

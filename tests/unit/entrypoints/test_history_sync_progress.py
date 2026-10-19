@@ -273,7 +273,7 @@ def test_tencent_failure_and_terminal_summary_are_distinct(capsys) -> None:
     )
 
     assert _compact_log(capsys.readouterr().err).splitlines() == [
-        "00:00:00 | download 股票进度 | 29/4400（0.66%） | 股票 600001 — | 处理 Tencent下载 | 结果 失败 "
+        "00:00:00 | sync history 股票进度 | 29/4400（0.66%） | 股票 600001 — | 处理 Tencent下载 | 结果 失败 "
         "| raw -/2000 | qfq -/2000 | 完整配对 -/2000 | 缺日 未知 "
         "| 网络 -/4400 | 落库 29/4400 | 待写 - | 下载 --:--:-- | 落库耗时 --:--:-- | 回压 --:--:-- "
         "| 总计 00:00:00 | 原因 history_tencent_overlap_conflict",
@@ -301,7 +301,7 @@ def test_tencent_completion_combines_compact_coverage_pipeline_and_durations(cap
     )
 
     assert _compact_log(capsys.readouterr().err) == (
-        "00:23:06 | download 股票进度 | 388/4400（8.82%） | 股票 000952 — | 处理 Tencent下载 | 结果 部分 "
+        "00:23:06 | sync history 股票进度 | 388/4400（8.82%） | 股票 000952 — | 处理 Tencent下载 | 结果 部分 "
         "| raw 1980/2000 | qfq 1980/2000 | 完整配对 1980/2000 | 缺日 20 "
         "| 网络 404/4400 | 落库 388/4400 | 待写 16 | 下载 00:14:03 "
         "| 落库耗时 00:38:20 | 回压 00:37:38 | 总计 00:23:06 | 原因 无\n"
@@ -399,7 +399,7 @@ def test_completed_result_keeps_machine_json_out_of_the_progress_stream(capsys) 
 def _stock_progress(**changes) -> StockDownloadProgress:
     return replace(
         StockDownloadProgress(
-            "download",
+            "sync history",
             9,
             4400,
             "688058",
@@ -424,7 +424,7 @@ def _stock_progress(**changes) -> StockDownloadProgress:
 )
 def test_stock_fields_remain_compact_across_names_and_counts(name, result, actual) -> None:
     progress = _stock_progress(
-        command="download_qfq",
+        command="sync market",
         completed=4400,
         name=name,
         result=result,

@@ -52,9 +52,11 @@ class _Publication:
         return ()
 
 
-def test_history_use_cases_delegate_to_their_single_port() -> None:
+def test_history_use_cases_delegate_to_their_single_port(tmp_path) -> None:
     archive = _Archive()
-    configuration = HistorySyncConfiguration()
+    configuration = HistorySyncConfiguration(
+        archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+    )
     supplier = object()
 
     assert DownloadHistoryUseCase(archive).execute(configuration, supplier) is not None  # type: ignore[arg-type]

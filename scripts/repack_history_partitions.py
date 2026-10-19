@@ -14,23 +14,17 @@ from trader.download.infra.history_partition_repack import (
 )
 from trader.download.infra.history_partition_repack_state import HistoryPartitionRepackStatus
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE = PROJECT_ROOT / "data/history"
-DEFAULT_TARGET = PROJECT_ROOT / "data/historyless/baostock"
-DEFAULT_TRAINING_ROOT = PROJECT_ROOT / "data/train"
-DEFAULT_MEMORY_EVIDENCE = PROJECT_ROOT / "data/historyless/training-memory-result.json"
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="action", required=True)
     for action in ("build", "activate", "rollback", "finalize"):
         command = subparsers.add_parser(action)
-        command.add_argument("--source", type=Path, default=DEFAULT_SOURCE)
-        command.add_argument("--target", type=Path, default=DEFAULT_TARGET)
+        command.add_argument("--source", type=Path, required=True)
+        command.add_argument("--target", type=Path, required=True)
         if action == "finalize":
-            command.add_argument("--training-root", type=Path, default=DEFAULT_TRAINING_ROOT)
-            command.add_argument("--memory-evidence", type=Path, default=DEFAULT_MEMORY_EVIDENCE)
+            command.add_argument("--training-root", type=Path, required=True)
+            command.add_argument("--memory-evidence", type=Path, required=True)
     return parser
 
 

@@ -100,7 +100,14 @@ def test_missing_archive_is_read_only_and_reports_the_current_snapshot_boundary(
 def test_active_monthly_snapshot_projects_typed_counts_and_optional_full_verification(tmp_path: Path) -> None:
     root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    configuration = HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    configuration = HistorySyncConfiguration(
+        root,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(root).parent / "reference",
+        training_root=(root).parent / "models",
+    )
     assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
     status = InspectHistorySnapshot(root, verify_partitions=True)
@@ -118,7 +125,14 @@ def test_active_monthly_snapshot_projects_typed_counts_and_optional_full_verific
 def test_legacy_nested_archive_is_not_discovered(tmp_path: Path) -> None:
     legacy_root = tmp_path / "history" / "baostock"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    configuration = HistorySyncConfiguration(legacy_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    configuration = HistorySyncConfiguration(
+        legacy_root,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(legacy_root).parent / "reference",
+        training_root=(legacy_root).parent / "models",
+    )
     assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
 
     status = InspectHistorySnapshot(tmp_path / "history")
@@ -130,12 +144,19 @@ def test_legacy_nested_archive_is_not_discovered(tmp_path: Path) -> None:
 def test_partition_tamper_fails_closed_without_losing_the_snapshot_identity(tmp_path: Path) -> None:
     root = tmp_path / "history"
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
-    configuration = HistorySyncConfiguration(root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    configuration = HistorySyncConfiguration(
+        root,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(root).parent / "reference",
+        training_root=(root).parent / "models",
+    )
     assert RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW).state == "completed"
     active = InspectHistorySnapshot(root)
-    partition = next((root / "partitions").glob("*/*.sqlite3"))
+    partition = next(root.glob("prices_*.sqlite3"))
     with closing(OpenSqliteConnection(partition)) as connection, connection:
-        connection.execute("UPDATE daily_records SET content_hash=?", ("0" * 64,))
+        connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
 
     verified = InspectHistorySnapshot(root, verify_partitions=True)
 

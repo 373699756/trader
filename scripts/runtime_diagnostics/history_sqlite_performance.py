@@ -22,7 +22,7 @@ from pathlib import Path
 from trader.download.domain.history_control import HistoryActiveSnapshot, HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_prices import HistoryPricePartition
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 from .reporting import emit_report
@@ -169,7 +169,7 @@ def inspect_history_space(root: Path) -> dict[str, object]:
             else "sidecar"
             if name.endswith(("-wal", "-shm", "-journal"))
             else "published"
-            if name.endswith(".sqlite3") and path.parent.name.isdigit()
+            if name.startswith("prices_") and name.endswith(".sqlite3")
             else "control_or_stage"
         )
         groups[category][0] += 1
@@ -188,7 +188,7 @@ def inspect_history_space(root: Path) -> dict[str, object]:
 
 
 def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalSummary:
-    state = HistoryControlIndex(root / "control.sqlite3").load_state()
+    state = HistoryControlIndex(root / "catalog.sqlite3").load_state()
     active = state.active_snapshot
     if active is None:
         raise RuntimeError("history SQLite has no active snapshot")
@@ -198,34 +198,35 @@ def inspect_history_sqlite(root: Path, page_sample_count: int = 1) -> _PhysicalS
     overflow_bytes = 0
     index_bytes = 0
     page_sizes: set[int] = set()
-    sampled = _sampled_positions(len(active.partitions), page_sample_count)
-    for position, reference in enumerate(active.partitions):
-        path = root / reference.relative_path
+    physical_paths = tuple(sorted({item.relative_path for item in active.partitions}))
+    sampled = _sampled_positions(len(physical_paths), page_sample_count)
+    for position, relative_path in enumerate(physical_paths):
+        path = root / relative_path
         if not path.is_file() or path.is_symlink():
             raise RuntimeError("history SQLite partition is unavailable")
         total_bytes += path.stat().st_size
         with closing(
             OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, timeout_seconds=5.0))
         ) as connection:
-            page_size = int(connection.execute("PRAGMA page_size").fetchone()[0])
+            page_size = int(connection.run("PRAGMA page_size").require_one()[0])
             page_sizes.add(page_size)
-            page_count += int(connection.execute("PRAGMA page_count").fetchone()[0])
-            free_pages += int(connection.execute("PRAGMA freelist_count").fetchone()[0])
+            page_count += int(connection.run("PRAGMA page_count").require_one()[0])
+            free_pages += int(connection.run("PRAGMA freelist_count").require_one()[0])
             if position in sampled:
                 overflow_bytes += int(
-                    connection.execute(
+                    connection.run(
                         "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat WHERE pagetype='overflow'"
-                    ).fetchone()[0]
+                    ).require_one()[0]
                 )
                 index_bytes += int(
-                    connection.execute(
+                    connection.run(
                         "SELECT COALESCE(SUM(pgsize), 0) FROM dbstat "
-                        "WHERE name IN ('history_month_code_date_idx', 'history_month_date_board_code_idx', "
-                        "'history_month_observation_code_date_idx')"
-                    ).fetchone()[0]
+                        "WHERE name IN ('history_price_code_date_idx', 'history_price_date_board_code_idx', "
+                        "'history_price_observation_code_date_idx')"
+                    ).require_one()[0]
                 )
     return _PhysicalSummary(
-        len(active.partitions),
+        len(physical_paths),
         total_bytes,
         page_count,
         free_pages,
@@ -242,7 +243,7 @@ def inspect_history_sqlite_performance(
     query_rounds: int = 3,
     revision_write_sample_count: int = 512,
 ) -> _HistorySQLitePerformanceReport:
-    control = HistoryControlIndex(root / "control.sqlite3").load_state()
+    control = HistoryControlIndex(root / "catalog.sqlite3").load_state()
     active = control.active_snapshot
     if active is None:
         raise RuntimeError("history SQLite has no active snapshot")
@@ -274,7 +275,7 @@ def _measure_queries(
     month_start = date(year, month, 1)
     month_end = min(active.data_cutoff, date(year, month, calendar.monthrange(year, month)[1]))
     with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
-        seed = connection.execute(
+        seed = connection.run(
             "SELECT trade_date, code, board FROM daily_records ORDER BY trade_date DESC, code LIMIT 1"
         ).fetchone()
     if seed is None:
@@ -289,7 +290,7 @@ def _measure_queries(
         if code_dates[0] <= _partition_end(item) and _partition_start(item) <= code_dates[-1]
     )
     trace: list[str] = []
-    traced = HistoryMonthPrices(
+    traced = HistoryPricePartition(
         path,
         year,
         month,
@@ -383,7 +384,7 @@ def _timings(
 
 def _query_plan(path: Path, statement: str) -> tuple[str, ...]:
     with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
-        rows = connection.execute(f"EXPLAIN QUERY PLAN {statement}")
+        rows = connection.run(f"EXPLAIN QUERY PLAN {statement}")
         return tuple(str(row[3]) for row in rows)
 
 
@@ -395,11 +396,11 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
     month = first.trade_date.month
     statements: list[str] = []
     with tempfile.TemporaryDirectory(prefix="trader-history-write-probe-") as directory:
-        path = Path(directory) / "partitions" / f"{year:04d}" / f"{month:02d}.sqlite3"
-        repository = HistoryMonthPrices(path, year, month)
+        path = Path(directory) / f"prices_{year:04d}.sqlite3"
+        repository = HistoryPricePartition(path, year, month)
         repository.initialize()
         before = _database_bytes(path)
-        traced = HistoryMonthPrices(path, year, month, statement_trace=statements.append)
+        traced = HistoryPricePartition(path, year, month, statement_trace=statements.append)
         started = time.perf_counter()
         traced.save_revisions(sample)
         elapsed = time.perf_counter() - started
@@ -423,15 +424,14 @@ def _measure_revision_write(sample: tuple[HistoryRevision, ...]) -> _RevisionWri
 def _partition_repository(
     root: Path,
     reference: HistorySnapshotPartition,
-) -> tuple[Path, HistoryMonthPrices]:
+) -> tuple[Path, HistoryPricePartition]:
     year, month = _partition_identity(reference)
     path = root / reference.relative_path
-    return path, HistoryMonthPrices(path, year, month)
+    return path, HistoryPricePartition(path, year, month)
 
 
 def _partition_identity(reference: HistorySnapshotPartition) -> tuple[int, int]:
-    parts = Path(reference.relative_path).parts
-    return int(parts[1]), int(Path(parts[2]).stem)
+    return reference.calendar_year, reference.calendar_month
 
 
 def _partition_start(reference: HistorySnapshotPartition) -> date:

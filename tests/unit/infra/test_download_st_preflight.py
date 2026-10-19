@@ -17,9 +17,10 @@ from trader.download.domain.company_evidence import CompanyEvidenceSyncResult
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.entrypoints.company_evidence_progress import CompanyEvidenceProgress
-from trader.download.infra.history_reference_files import ReadStEvidence, WriteStEvidence
+from trader.download.infra.history_reference_codec import ReadStEvidence, WriteStEvidence
 from trader.download.infra.tencent_qfq_supplier import TencentQfqSupplier
 from trader.infra.settings import LoadRuntimeSettings
+from trader.infra.settings.data_paths import DataPaths
 
 _ROOT = Path(__file__).resolve().parents[3]
 _DAYS = (NOW.date() - timedelta(days=2), NOW.date() - timedelta(days=1), NOW.date())
@@ -92,10 +93,10 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
         LoadRuntimeSettings(_ROOT / "config/runtime.json"),
         project_root=tmp_path,
         runtime_dir=tmp_path / "runtime",
-        reference_dir=tmp_path / "reference",
+        data_paths=DataPaths(tmp_path / "data"),
     )
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
-    evidence_path = settings.reference_dir / "historical_st.json"
+    evidence_path = settings.data_paths.reference / "historical_st.sqlite3"
     if existing_cache:
         _seed_st(evidence_path)
     events = []
@@ -103,7 +104,7 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
     if not existing_cache:
         expected_queries |= {"600001", "600003"}
 
-    def download(root, progress, request, *, timeout_seconds):
+    def download(root, progress, request, *, timeout_seconds, cancel_requested):
         codes, observed_at = request.codes, request.observed_at
         assert set(calls) == expected_queries
         assert all(session.closed for session in sessions)
@@ -113,8 +114,12 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
 
     monkeypatch.setattr(bootstrap, "_sync_company_evidence", download)
     stream = StringIO()
-    result = bootstrap.ExecuteRiskDownload("unused", progress=CompanyEvidenceProgress(stream))
-    assert result.requested_codes == 3
+    monkeypatch.setattr(
+        "trader.download.entrypoints.company_evidence_progress.CompanyEvidenceProgress",
+        lambda: CompanyEvidenceProgress(stream),
+    )
+    result = bootstrap.ExecuteSync(Path("unused"), "company")
+    assert result.tasks[0].company.requested_codes == 3
     assert events == ["business_download"]
     assert set(calls) == expected_queries
     assert {item.code for item in ReadStEvidence(evidence_path) if item.status == "ever_st"} == {
@@ -130,8 +135,8 @@ def test_risk_commands_refresh_st_then_download_only_confirmed_codes(tmp_path, m
 @pytest.mark.parametrize("command", ("history", "qfq"))
 def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, monkeypatch, st_sources, command):
     calls, sessions = st_sources
-    reference_root = tmp_path / "reference"
-    _seed_st(reference_root / "historical_st.json")
+    reference_root = DataPaths(tmp_path / "data").reference
+    _seed_st(reference_root / "historical_st.sqlite3")
     downloaded = []
 
     class Prices(TencentQfqSupplier):
@@ -160,13 +165,18 @@ def test_price_commands_complete_st_filter_before_calendar_and_prices(tmp_path, 
     if command == "history":
         result = bootstrap.ExecuteHistoryDownload(
             HistorySyncConfiguration(
-                tmp_path / "history", reference_root, sessions=3, reread_sessions=2, minimum_free_bytes=0
+                tmp_path / "history",
+                reference_root,
+                sessions=3,
+                reread_sessions=2,
+                minimum_free_bytes=0,
+                training_root=(tmp_path / "history").parent / "models",
             ),
             clock=lambda: NOW,
         )
         assert result.state == "completed", result.reason
     else:
-        result = bootstrap.ExecuteQfqDownload(tmp_path, reference_root=reference_root, now=lambda: NOW)
+        result = bootstrap.ExecuteQfqDownload(DataPaths(tmp_path / "data"), now=lambda: NOW)
         assert result.completed_codes == 3
         assert not result.needs_retry
     assert set(downloaded) == {"600001", "600005", "600007"}
@@ -179,10 +189,10 @@ def test_corrupt_st_cache_stops_risk_commands_before_business_requests(tmp_path,
         LoadRuntimeSettings(_ROOT / "config/runtime.json"),
         project_root=tmp_path,
         runtime_dir=tmp_path / "runtime",
-        reference_dir=tmp_path / "reference",
+        data_paths=DataPaths(tmp_path / "data"),
     )
-    settings.reference_dir.mkdir()
-    (settings.reference_dir / "historical_st.json").write_text("[]", encoding="utf-8")
+    settings.data_paths.reference.mkdir(parents=True)
+    (settings.data_paths.reference / "historical_st.sqlite3").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "LoadRuntimeSettings", lambda _path: settings)
 
     def forbidden(*_args, **_kwargs):
@@ -190,8 +200,8 @@ def test_corrupt_st_cache_stops_risk_commands_before_business_requests(tmp_path,
 
     monkeypatch.setattr(bootstrap, "ChinaTradingCalendar", forbidden)
     monkeypatch.setattr(bootstrap, "_sync_company_evidence", forbidden)
-    with pytest.raises(ValueError, match="history ST evidence"):
-        bootstrap.ExecuteRiskDownload("unused")
+    result = bootstrap.ExecuteSync(Path("unused"), "company")
+    assert result.exit_code == 1 and not result.tasks
     assert calls == []
     assert all(session.closed for session in sessions)
     assert not any(thread.name.startswith("risk-st-check") for thread in enumerate_threads())

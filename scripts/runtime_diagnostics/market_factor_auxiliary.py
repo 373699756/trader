@@ -27,7 +27,13 @@ class AuxiliaryInputs:
 
 
 def ProbeAuxiliary(
-    codes: tuple[str, ...], at: datetime, policy: LongResearchPolicy, timeout: float, pool: BoundedExecutor
+    codes: tuple[str, ...],
+    at: datetime,
+    policy: LongResearchPolicy,
+    timeout: float,
+    pool: BoundedExecutor,
+    *,
+    company_database: Path,
 ) -> AuxiliaryInputs:
     """Read the published risk snapshot; only minute probes contact a supplier."""
     research: dict[str, ResearchObservation] = {}
@@ -36,7 +42,7 @@ def ProbeAuxiliary(
     for index, code in enumerate(codes[:3]):
         started = time.monotonic()
         reader = PublishedCompanyResearch(
-            SQLiteCompanyEvidenceReader(Path(__file__).resolve().parents[2] / "data/risk/company_evidence.sqlite3"),
+            SQLiteCompanyEvidenceReader(company_database),
             wall_clock=lambda: at,
         )
         observation = reader.load((code,), at, include_structured=True).get(code)

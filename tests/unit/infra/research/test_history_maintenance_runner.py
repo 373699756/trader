@@ -23,6 +23,7 @@ from trader.download.domain.history_control import (
 )
 from trader.download.domain.history_maintenance import HistoryMaintenanceStatus
 from trader.download.domain.history_sync import HistorySyncConfiguration, HistorySyncProgress
+from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.infra.history_control_index import (
     HistoryControlIndex,
     HistoryMaintenanceLock,
@@ -48,9 +49,10 @@ class _Notifier:
 
 
 def _seed_due_control(root: Path) -> None:
-    repository = HistoryControlIndex(root / "control.sqlite3")
+    repository = HistoryControlIndex(root / "catalog.sqlite3")
     repository.initialize()
-    source = HistorySourceIdentity("baostock", "baostock_daily", "python-sdk", NOW)
+    reference = HistoryReferenceSnapshot(("600001",), (), (HistoryStEvidence("600001", NOW.date(), "clear"),))
+    source = HistorySourceIdentity("baostock", "baostock_daily", f"history_ref_{reference.content_hash}_fixture", NOW)
     calendar = HistoryCalendarIdentity((date(2026, 9, 9), date(2026, 9, 10)), source.content_hash)
     universe = HistoryUniverseIdentity(
         (HistorySecurityIdentity("600001", "浦发银行", "main", date(1999, 11, 10), None),),
@@ -63,7 +65,7 @@ def _seed_due_control(root: Path) -> None:
         calendar.content_hash,
         universe.content_hash,
         source.content_hash,
-        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 2),),
+        (HistorySnapshotPartition("prices_2026.sqlite3", "a" * 64, 2, calendar_month=9),),
     )
     repository.save_source(source)
     repository.save_calendar(calendar)
@@ -71,7 +73,7 @@ def _seed_due_control(root: Path) -> None:
     repository.save_due_state(
         HistoryTrainingDueState("due-20260910", "initial_training_required", None, NOW.date(), 0, False, NOW)
     )
-    repository.publish_snapshot(snapshot)
+    repository.publish_snapshot(snapshot, reference=reference)
 
 
 def _completed(root: Path) -> HistoryMaintenanceStatus:
@@ -94,7 +96,9 @@ def _completed(root: Path) -> HistoryMaintenanceStatus:
 def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_dates(tmp_path: Path) -> None:
     archive = tmp_path / "history"
     _seed_due_control(archive)
-    configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
+    configuration = HistorySyncConfiguration(
+        archive_root=archive, training_root=tmp_path / "train", reference_root=(archive).parent / "reference"
+    )
     notifier = _Notifier()
     sync_calls: list[datetime] = []
 
@@ -113,7 +117,7 @@ def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_d
     assert first.maintenance_state == "not_due"
     assert sync_calls == []
     assert sum("训练已到期" in item.body for item in notifier.notifications) == 2
-    persisted = HistoryControlIndex(archive / "control.sqlite3").load_state()
+    persisted = HistoryControlIndex(archive / "catalog.sqlite3").load_state()
     assert tuple(item.reminder_date for item in persisted.reminder_claims) == (
         date(2026, 9, 10),
         date(2026, 9, 11),
@@ -124,7 +128,9 @@ def test_scheduled_due_notification_is_atomic_across_repeated_runs_restart_and_d
 def test_notification_failure_does_not_fail_a_download_or_cadence_noop(tmp_path: Path, days, state) -> None:
     archive = tmp_path / "history"
     _seed_due_control(archive)
-    configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
+    configuration = HistorySyncConfiguration(
+        archive_root=archive, training_root=tmp_path / "train", reference_root=(archive).parent / "reference"
+    )
     notifier = _Notifier(HistoryNotificationResult("notification_degraded", "notification_service_unavailable"))
 
     status = RunScheduledHistoryMaintenance(
@@ -134,7 +140,7 @@ def test_notification_failure_does_not_fail_a_download_or_cadence_noop(tmp_path:
     assert status.maintenance_state == state
     assert status.notification_state == "notification_degraded"
     assert status.successful is True
-    reminder = HistoryControlIndex(archive / "control.sqlite3").load_state().reminders[0]
+    reminder = HistoryControlIndex(archive / "catalog.sqlite3").load_state().reminders[0]
     assert reminder.outcome == "notification_degraded"
     assert reminder.error_code == "notification_service_unavailable"
 
@@ -149,7 +155,9 @@ def test_missing_desktop_notification_service_has_a_stable_degraded_result() -> 
 
 def test_scheduled_overlap_returns_already_running_without_notification(tmp_path: Path) -> None:
     archive = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
+    configuration = HistorySyncConfiguration(
+        archive_root=archive, training_root=tmp_path / "train", reference_root=(archive).parent / "reference"
+    )
     notifier = _Notifier()
     outer_lock = HistoryMaintenanceLock(archive / ".automation.lock")
     outer_lock.acquire()
@@ -172,7 +180,9 @@ def test_scheduled_overlap_returns_already_running_without_notification(tmp_path
 def test_manual_download_overlap_is_not_misreported_as_a_completed_notification(tmp_path: Path) -> None:
     archive = tmp_path / "history"
     _seed_due_control(archive)
-    configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
+    configuration = HistorySyncConfiguration(
+        archive_root=archive, training_root=tmp_path / "train", reference_root=(archive).parent / "reference"
+    )
     notifier = _Notifier()
     overlapping = HistoryMaintenanceStatus(
         "already_running",
@@ -201,7 +211,9 @@ def test_manual_download_overlap_is_not_misreported_as_a_completed_notification(
 def test_weekly_due_failure_retries_and_successful_publication_stops_further_downloads(tmp_path: Path) -> None:
     archive = tmp_path / "history"
     _seed_due_control(archive)
-    configuration = HistorySyncConfiguration(archive_root=archive, training_root=tmp_path / "train")
+    configuration = HistorySyncConfiguration(
+        archive_root=archive, training_root=tmp_path / "train", reference_root=(archive).parent / "reference"
+    )
     calls: list[datetime] = []
     due_at = NOW + timedelta(days=7)
     notifier = _Notifier()
@@ -210,7 +222,7 @@ def test_weekly_due_failure_retries_and_successful_publication_stops_further_dow
         calls.append(due_at)
         if len(calls) == 1:
             return replace(_completed(archive), state="failed", reason="supplier_timeout")
-        repository = HistoryControlIndex(archive / "control.sqlite3")
+        repository = HistoryControlIndex(archive / "catalog.sqlite3")
         active = repository.load_state().active_snapshot
         assert active is not None
         repository.publish_snapshot(replace(active, sequence=2, data_cutoff=due_at.date()))
@@ -229,7 +241,9 @@ def test_weekly_due_failure_retries_and_successful_publication_stops_further_dow
 
 def test_automation_without_a_snapshot_requires_manual_initialization(tmp_path: Path) -> None:
     archive = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root=archive)
+    configuration = HistorySyncConfiguration(
+        archive_root=archive, reference_root=(archive).parent / "reference", training_root=(archive).parent / "models"
+    )
     notifier = _Notifier()
 
     def unexpected_sync(_progress):
@@ -241,7 +255,7 @@ def test_automation_without_a_snapshot_requires_manual_initialization(tmp_path: 
     assert status.maintenance_reason == "history_snapshot_unavailable"
     assert not status.successful
     assert notifier.notifications == []
-    assert not (archive / "control.sqlite3").exists()
+    assert not (archive / "catalog.sqlite3").exists()
 
 
 def test_task_log_rotates_and_omits_stock_detail(tmp_path: Path) -> None:

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+
+from trader.infra.sqlite_connection import SqliteConnection
 
 
 class ResearchTraceCapacityError(RuntimeError):
@@ -40,11 +41,11 @@ class TracePhysicalBudget:
         if total + pending_bytes > self.total_bytes:
             raise ResearchTraceCapacityError("research trace physical total capacity exhausted")
 
-    def require_commit(self, conn: sqlite3.Connection, databases: tuple[Path, ...], target: Path) -> None:
+    def require_commit(self, conn: SqliteConnection, databases: tuple[Path, ...], target: Path) -> None:
         # With cache spilling disabled, a transaction emits at most one WAL frame per page.
         # Reserve the whole database as a conservative bound, including index splits and growth.
-        page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
-        pages = int(conn.execute("PRAGMA page_count").fetchone()[0])
+        page_size = int(conn.run("PRAGMA page_size").require_one()[0])
+        pages = int(conn.run("PRAGMA page_count").require_one()[0])
         logical_size = pages * page_size
         target_stat = target.stat()
         block = max(4096, getattr(target_stat, "st_blksize", 4096))

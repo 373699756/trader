@@ -26,7 +26,7 @@ def RunDownload(repository_root: Path, config_path: Path, *, quiet_success: bool
     progress.publish_result(status)
     # Published price gaps remain visible; training checks effective samples per head.
     ready = status.state in {"completed", "already_current"} and status.training_due_reason != "data_incomplete"
-    if not ready or not quiet_success or status.unresolved_price_cells:
+    if not ready or not quiet_success:
         print(json.dumps(ProjectHistoryMaintenanceStatus(status), ensure_ascii=False, sort_keys=True))
     if not ready:
         print("完整历史未通过训练准入；未启动双档训练。", file=sys.stderr)
@@ -39,18 +39,23 @@ def BuildHistorySyncConfiguration(repository_root: Path, config_path: Path) -> H
     from trader.infra.settings import LoadRuntimeSettings
 
     runtime = LoadRuntimeSettings(config_path)
-    return LoadHistorySyncConfiguration(repository_root, runtime.reference_dir)
+    return LoadHistorySyncConfiguration(repository_root, runtime.data_paths)
 
 
 def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
     """Run one download-owned public command after root dispatch."""
 
-    repository_root = _repository_root()
+    from trader.infra.settings import LoadRuntimeSettings
+
+    if config_path is None:
+        raise ValueError("download command requires an explicit configuration")
+    runtime = LoadRuntimeSettings(config_path)
+    repository_root = runtime.project_root
     if command == "history-automation-status":
         from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationStatus
         from trader.download.infra.history_automation_status import ReadHistoryAutomationStatus
 
-        automation_status = ReadHistoryAutomationStatus(repository_root / "data/history", _shanghai_now())
+        automation_status = ReadHistoryAutomationStatus(runtime.data_paths.history, _shanghai_now())
         print(
             json.dumps(
                 ProjectHistoryAutomationStatus(automation_status),
@@ -59,7 +64,7 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
             )
         )
         return 0
-    if command != "download_scheduled" or config_path is None:
+    if command != "sync history":
         raise ValueError(f"unsupported download command: {command}")
     from trader.bootstrap import ExecuteHistoryDownload
     from trader.download.entrypoints.history_automation_projection import ProjectHistoryAutomationRunStatus
@@ -68,9 +73,7 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
         RotatingHistoryAutomationLog,
         RunScheduledHistoryMaintenance,
     )
-    from trader.infra.settings import LoadRuntimeSettings
 
-    runtime = LoadRuntimeSettings(config_path)
     observed_at = _shanghai_now()
     configuration = BuildHistorySyncConfiguration(repository_root, config_path)
     task_log = RotatingHistoryAutomationLog(runtime.runtime_dir / "logs/history-automation.log")
@@ -113,14 +116,6 @@ def RunDownloadCommand(command: str, *, config_path: Path | None = None) -> int:
 
 def _shanghai_now() -> datetime:
     return datetime.now(ZoneInfo("Asia/Shanghai"))
-
-
-def _repository_root() -> Path:
-    current = Path.cwd().resolve()
-    for candidate in (current, *current.parents):
-        if (candidate / "pyproject.toml").is_file() and (candidate / "src/trader").is_dir():
-            return candidate
-    return Path("/__trader_source_not_found__")
 
 
 __all__ = ["BuildHistorySyncConfiguration", "RunDownload", "RunDownloadCommand"]

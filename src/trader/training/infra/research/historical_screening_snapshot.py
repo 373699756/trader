@@ -14,7 +14,7 @@ from datetime import date
 from pathlib import Path
 from typing import cast
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 from trader.training.application.historical_backtest import HistoricalScreeningDay
 from trader.training.application.historical_screening import (
     HistoricalPriceHistoryIdentity,
@@ -28,7 +28,11 @@ from trader.training.application.tomorrow_historical_screening import (
     TomorrowHistoricalRow,
 )
 from trader.training.application.tomorrow_historical_validation import TomorrowHistoricalRiskRow
-from trader.training.domain.evaluation.historical_screening import HistoricalPriceBar, HistoricalScreeningSpec
+from trader.training.domain.evaluation.historical_screening import (
+    HISTORICAL_SCREENING_SPEC,
+    HistoricalPriceBar,
+    HistoricalScreeningSpec,
+)
 
 
 class HistoricalScreeningSnapshotConflictError(RuntimeError):
@@ -37,8 +41,8 @@ class HistoricalScreeningSnapshotConflictError(RuntimeError):
 
 class SQLiteHistoricalScreeningSnapshot:
     def __init__(self, runtime_dir: Path) -> None:
-        self._root = runtime_dir / "score-history"
-        self._database = self._root / "score-history.sqlite3"
+        self._root = runtime_dir / "experiments" / HISTORICAL_SCREENING_SPEC.research_identity
+        self._database = self._root / "samples.sqlite3"
         self._lock = threading.RLock()
 
     def register_universe(
@@ -54,7 +58,7 @@ class SQLiteHistoricalScreeningSnapshot:
             self._register_spec(connection, spec)
             existing_codes = tuple(
                 str(row[0])
-                for row in connection.execute(
+                for row in connection.run(
                     "SELECT code FROM universe WHERE research_identity = ? ORDER BY code",
                     (spec.research_identity,),
                 ).fetchall()
@@ -64,13 +68,13 @@ class SQLiteHistoricalScreeningSnapshot:
                 raise HistoricalScreeningSnapshotConflictError("historical screening universe set conflict")
             for item in ordered:
                 payload = _canonical(asdict(item))
-                existing = connection.execute(
+                existing = connection.run(
                     "SELECT payload_hash FROM universe WHERE research_identity = ? AND code = ?",
                     (spec.research_identity, item.code),
                 ).fetchone()
                 if existing is not None and str(existing[0]) != _sha256(payload):
                     raise HistoricalScreeningSnapshotConflictError("historical screening universe identity conflict")
-                connection.execute(
+                connection.run(
                     """
                     INSERT OR IGNORE INTO universe(
                         research_identity, code, board, name, is_st, is_suspended, payload_hash
@@ -91,7 +95,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return frozenset()
         with closing(self._read_connection()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT code FROM downloads WHERE research_identity = ? AND status = 'complete'",
                 (research_identity,),
             ).fetchall()
@@ -101,7 +105,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return ()
         with closing(self._read_connection()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 """
                 SELECT code, board, name, is_st, is_suspended
                 FROM universe WHERE research_identity = ? ORDER BY code
@@ -124,7 +128,7 @@ class SQLiteHistoricalScreeningSnapshot:
         with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             if (
-                connection.execute(
+                connection.run(
                     "SELECT 1 FROM universe WHERE research_identity = ? AND code = ?",
                     (spec.research_identity, code),
                 ).fetchone()
@@ -136,7 +140,7 @@ class SQLiteHistoricalScreeningSnapshot:
                 payload = _canonical(_bar_payload(bar))
                 payload_hash = _sha256(payload)
                 hashes.append(payload_hash)
-                existing = connection.execute(
+                existing = connection.run(
                     """
                     SELECT payload_hash FROM bars
                     WHERE research_identity = ? AND code = ? AND trade_date = ?
@@ -145,7 +149,7 @@ class SQLiteHistoricalScreeningSnapshot:
                 ).fetchone()
                 if existing is not None and str(existing[0]) != payload_hash:
                     raise HistoricalScreeningSnapshotConflictError("historical screening bar identity conflict")
-                connection.execute(
+                connection.run(
                     """
                     INSERT OR IGNORE INTO bars(
                         research_identity, code, trade_date, open_price, close_price, high_price, low_price,
@@ -170,7 +174,7 @@ class SQLiteHistoricalScreeningSnapshot:
                     ),
                 )
             content_hash = _sha256(_canonical({"code": code, "bars": hashes}))
-            existing_download = connection.execute(
+            existing_download = connection.run(
                 """
                 SELECT content_hash FROM downloads
                 WHERE research_identity = ? AND code = ? AND status = 'complete'
@@ -179,7 +183,7 @@ class SQLiteHistoricalScreeningSnapshot:
             ).fetchone()
             if existing_download is not None and str(existing_download[0]) != content_hash:
                 raise HistoricalScreeningSnapshotConflictError("historical screening download identity conflict")
-            connection.execute(
+            connection.run(
                 """
                 INSERT INTO downloads(research_identity, code, status, bar_count, content_hash, error_code)
                 VALUES (?, ?, 'complete', ?, ?, '')
@@ -198,7 +202,7 @@ class SQLiteHistoricalScreeningSnapshot:
         self._initialize()
         with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
-            connection.execute(
+            connection.run(
                 """
                 INSERT INTO downloads(research_identity, code, status, bar_count, content_hash, error_code)
                 VALUES (?, ?, 'failed', 0, '', ?)
@@ -216,15 +220,15 @@ class SQLiteHistoricalScreeningSnapshot:
             return HistoricalScreeningSnapshotStatus(research_identity=research_identity)
         try:
             with closing(self._read_connection()) as connection, connection:
-                spec = connection.execute(
+                spec = connection.run(
                     "SELECT spec_hash FROM specs WHERE research_identity = ?", (research_identity,)
                 ).fetchone()
                 universe_count = int(
-                    connection.execute(
+                    connection.run(
                         "SELECT COUNT(*) FROM universe WHERE research_identity = ?", (research_identity,)
-                    ).fetchone()[0]
+                    ).require_one()[0]
                 )
-                completed, failed = connection.execute(
+                completed, failed = connection.run(
                     """
                     SELECT
                         SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END),
@@ -232,14 +236,14 @@ class SQLiteHistoricalScreeningSnapshot:
                     FROM downloads WHERE research_identity = ?
                     """,
                     (research_identity,),
-                ).fetchone()
-                bar_count, first_date, last_date = connection.execute(
+                ).require_one()
+                bar_count, first_date, last_date = connection.run(
                     """
                     SELECT COUNT(*), MIN(trade_date), MAX(trade_date)
                     FROM bars WHERE research_identity = ?
                     """,
                     (research_identity,),
-                ).fetchone()
+                ).require_one()
         except sqlite3.DatabaseError:
             return HistoricalScreeningSnapshotStatus(initialized=True, research_identity=research_identity)
         return HistoricalScreeningSnapshotStatus(
@@ -259,12 +263,12 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return HistoricalScreeningSnapshotManifest(spec.research_identity, "", empty_hash, empty_hash, ())
         with closing(self._read_connection()) as connection, connection:
-            persisted_spec = connection.execute(
+            persisted_spec = connection.run(
                 "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
             ).fetchone()
             if persisted_spec is None or str(persisted_spec[0]) != spec.content_hash:
                 raise HistoricalScreeningSnapshotConflictError("historical screening spec manifest conflict")
-            universe_rows = connection.execute(
+            universe_rows = connection.run(
                 """
                 SELECT code, board, name, is_st, is_suspended, payload_hash
                 FROM universe WHERE research_identity = ? ORDER BY code
@@ -286,7 +290,7 @@ class SQLiteHistoricalScreeningSnapshot:
                 universe_identities.append((security.code, payload_hash))
             downloads = {
                 str(code): (int(bar_count), str(content_hash))
-                for code, bar_count, content_hash in connection.execute(
+                for code, bar_count, content_hash in connection.run(
                     """
                     SELECT code, bar_count, content_hash FROM downloads
                     WHERE research_identity = ? AND status = 'complete' ORDER BY code
@@ -294,7 +298,7 @@ class SQLiteHistoricalScreeningSnapshot:
                     (spec.research_identity,),
                 ).fetchall()
             }
-            bar_rows = connection.execute(
+            bar_rows = connection.run(
                 """
                 SELECT code, trade_date, open_price, close_price, high_price, low_price, volume, amount,
                        pct_change, turnover_rate, adjustment, source, payload_hash
@@ -348,7 +352,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return ()
         with closing(self._read_connection()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 _SCREENING_QUERY,
                 {
                     "identity": spec.research_identity,
@@ -385,7 +389,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return
         with closing(self._read_connection()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
                     "identity": spec.research_identity,
@@ -415,7 +419,7 @@ class SQLiteHistoricalScreeningSnapshot:
         if not self._database.is_file():
             return ()
         with closing(self._read_connection()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 _TOMORROW_HISTORICAL_QUERY,
                 {
                     "identity": spec.research_identity,
@@ -423,7 +427,7 @@ class SQLiteHistoricalScreeningSnapshot:
                     "end": spec.validation_end.isoformat(),
                 },
             ).fetchall()
-        historical_rows = _tomorrow_historical_rows(rows)
+        historical_rows = _tomorrow_historical_rows(tuple(tuple(row) for row in rows))
         return tuple(
             TomorrowHistoricalRiskRow(
                 trade_date=historical.trade_date,
@@ -449,23 +453,23 @@ class SQLiteHistoricalScreeningSnapshot:
         with self._lock:
             self._root.mkdir(parents=True, exist_ok=True)
             with closing(OpenSqliteConnection(self._database)) as connection, connection:
-                connection.executescript(_SCHEMA)
+                connection.apply_script(_SCHEMA)
 
-    def _register_spec(self, connection: sqlite3.Connection, spec: HistoricalScreeningSpec) -> None:
-        existing = connection.execute(
+    def _register_spec(self, connection: SqliteConnection, spec: HistoricalScreeningSpec) -> None:
+        existing = connection.run(
             "SELECT spec_hash FROM specs WHERE research_identity = ?", (spec.research_identity,)
         ).fetchone()
         if existing is not None and str(existing[0]) != spec.content_hash:
             raise HistoricalScreeningSnapshotConflictError("historical screening spec identity conflict")
-        connection.execute(
+        connection.run(
             "INSERT OR IGNORE INTO specs(research_identity, spec_hash) VALUES (?, ?)",
             (spec.research_identity, spec.content_hash),
         )
 
-    def _write_connection(self) -> sqlite3.Connection:
+    def _write_connection(self) -> SqliteConnection:
         return OpenSqliteConnection(self._database, SqliteConnectionOptions(timeout_seconds=30.0, foreign_keys=True))
 
-    def _read_connection(self) -> sqlite3.Connection:
+    def _read_connection(self) -> SqliteConnection:
         return OpenSqliteConnection(self._database, SqliteConnectionOptions(read_only=True))
 
 
@@ -757,7 +761,7 @@ def _tomorrow_historical_rows(rows: Sequence[tuple[object, ...]]) -> tuple[Tomor
 def _tomorrow_historical_day_rows(rows: Sequence[tuple[object, ...]]) -> tuple[TomorrowHistoricalRow, ...]:
     if not rows or len({str(row[0]) for row in rows}) != 1:
         raise ValueError("Tomorrow historical streaming rows must contain exactly one trade date")
-    return _tomorrow_historical_rows(rows)
+    return _tomorrow_historical_rows(tuple(tuple(row) for row in rows))
 
 
 def _residualize(rows: Sequence[tuple[object, ...]], momentum_column: int) -> tuple[float, ...]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -44,7 +45,7 @@ def _control_state(
         calendar.content_hash,
         universe.content_hash,
         source.content_hash,
-        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "a" * 64, 2),),
+        (HistorySnapshotPartition("prices_2026.sqlite3", "a" * 64, 2, calendar_month=9),),
     )
     due = HistoryTrainingDueState(
         "due-20260910",
@@ -64,11 +65,15 @@ def _control_state(
 
 
 def test_due_projection_uses_only_persisted_state_and_tracks_daily_reminder_phase() -> None:
-    pending = DeriveHistoryAutomationStatus(_control_state(), NOW)
+    pending = DeriveHistoryAutomationStatus(_control_state(), NOW, archive_root=Path("data/market/history"))
     claim = HistoryReminderClaim("due-20260910", NOW.date(), NOW)
-    claimed = DeriveHistoryAutomationStatus(_control_state(claims=(claim,)), NOW)
+    claimed = DeriveHistoryAutomationStatus(
+        _control_state(claims=(claim,)), NOW, archive_root=Path("data/market/history")
+    )
     reminder = HistoryReminderState("due-20260910", NOW.date(), "sent", NOW, None)
-    sent = DeriveHistoryAutomationStatus(_control_state(claims=(claim,), reminders=(reminder,)), NOW)
+    sent = DeriveHistoryAutomationStatus(
+        _control_state(claims=(claim,), reminders=(reminder,)), NOW, archive_root=Path("data/market/history")
+    )
 
     assert pending.training_due is True
     assert pending.training_due_reason == "initial_training_required"
@@ -85,6 +90,7 @@ def test_unresolved_due_becomes_pending_again_on_the_next_shanghai_date() -> Non
     status = DeriveHistoryAutomationStatus(
         _control_state(claims=(claim,), reminders=(reminder,)),
         NOW.replace(day=11),
+        archive_root=Path("data/market/history"),
     )
 
     assert status.reminder_date == date(2026, 9, 11)
@@ -92,7 +98,7 @@ def test_unresolved_due_becomes_pending_again_on_the_next_shanghai_date() -> Non
 
 
 def test_missing_control_state_fails_closed_without_fabricating_due_count() -> None:
-    status = DeriveHistoryAutomationStatus(None, NOW)
+    status = DeriveHistoryAutomationStatus(None, NOW, archive_root=Path("data/market/history"))
 
     assert status.state == "data_incomplete"
     assert status.reason == "history_control_unavailable"

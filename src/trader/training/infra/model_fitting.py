@@ -15,8 +15,8 @@ from trader.training.application.tomorrow_training import (
     TomorrowTrainingProgressPort,
 )
 from trader.training.infra.model_bundles.contracts import TrainedHeadContract
-from trader.training.infra.sample_repository import (
-    SQLiteTrainingSampleRepository,
+from trader.training.infra.sample_index import (
+    SQLiteTrainingSampleIndex,
     TrainingIndustryCounts,
 )
 
@@ -53,7 +53,7 @@ class _FitProgress:
 
 
 def FitIndustryModels(
-    samples: SQLiteTrainingSampleRepository,
+    samples: SQLiteTrainingSampleIndex,
     split: BaoStockTrainingSplit,
     contract: TrainedHeadContract,
     parameters: ModelFittingParameters,
@@ -107,7 +107,7 @@ def _fit_progress(position: int, total: int, produced: int) -> _FitProgress:
 
 
 def _fit_industry(
-    samples: SQLiteTrainingSampleRepository,
+    samples: SQLiteTrainingSampleIndex,
     counts: TrainingIndustryCounts,
     contract: TrainedHeadContract,
     parameters: ModelFittingParameters,

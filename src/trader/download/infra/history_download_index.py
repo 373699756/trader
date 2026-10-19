@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from trader.download.domain.history_maintenance import HistoryPriceGapReason, HistoryPriceGapSummary
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 
 _QFQ_UNUSABLE_RECHECK_SESSIONS = 20
 
@@ -100,16 +99,16 @@ class HistoryDownloadIndex:
     def __init__(self, path: Path) -> None:
         self._path = path
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> SqliteConnection:
         return OpenSqliteConnection(self._path)
 
     def initialize(self) -> None:
         with closing(self._connect()) as connection, connection:
-            connection.executescript(_SCHEMA)
+            connection.apply_script(_SCHEMA)
 
     def pending(self, published_sequence: int) -> HistoryDownloadBatch | None:
         with closing(self._connect()) as connection:
-            row = connection.execute(
+            row = connection.run(
                 "SELECT sequence,source_hash,calendar_hash,universe_hash,cutoff FROM download_batch"
             ).fetchone()
         if row is None or row[0] <= published_sequence:
@@ -118,9 +117,9 @@ class HistoryDownloadIndex:
 
     def begin(self, batch: HistoryDownloadBatch, tasks: tuple[HistoryDownloadTask, ...]) -> None:
         with closing(self._connect()) as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute("DELETE FROM download_tasks")
-            connection.execute(
+            connection.run("BEGIN IMMEDIATE")
+            connection.run("DELETE FROM download_tasks")
+            connection.run(
                 "INSERT OR REPLACE INTO download_batch VALUES(1,?,?,?,?,?)",
                 (
                     batch.sequence,
@@ -130,14 +129,14 @@ class HistoryDownloadIndex:
                     batch.cutoff.isoformat(),
                 ),
             )
-            connection.executemany(
+            connection.run_many(
                 "INSERT INTO download_tasks(code,dates_json) VALUES(?,?)",
                 ((task.code, json.dumps([day.isoformat() for day in task.dates])) for task in tasks),
             )
 
     def tasks(self) -> tuple[HistoryDownloadTask, ...]:
         with closing(self._connect()) as connection:
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT code,dates_json,tencent_done,attempts,failure FROM download_tasks ORDER BY code"
             ).fetchall()
         return tuple(
@@ -152,8 +151,8 @@ class HistoryDownloadIndex:
         if previous.sequence != current.sequence or previous.cutoff != current.cutoff:
             raise ValueError("history_download_identity_conflict")
         with closing(self._connect()) as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
-            updated = connection.execute(
+            connection.run("BEGIN IMMEDIATE")
+            updated = connection.run(
                 """UPDATE download_batch SET source_hash=?,calendar_hash=?,universe_hash=?
                    WHERE singleton=1 AND sequence=? AND cutoff=?
                      AND source_hash=? AND calendar_hash=? AND universe_hash=?
@@ -176,7 +175,7 @@ class HistoryDownloadIndex:
     def gap_codes(self) -> frozenset[str]:
         """Read the recovery population once, without one connection per stock."""
         with closing(self._connect()) as connection:
-            return frozenset(row[0] for row in connection.execute("SELECT DISTINCT code FROM download_gaps"))
+            return frozenset(row[0] for row in connection.run("SELECT DISTINCT code FROM download_gaps"))
 
     def gaps_by_code(self, calendar_dates: tuple[date, ...] | None = None) -> dict[str, tuple[date, ...]]:
         """One bounded-cursor scan per phase; calendar selects only retryable gaps."""
@@ -186,7 +185,7 @@ class HistoryDownloadIndex:
         last = len(positions) - 1
         grouped: dict[str, list[date]] = {}
         with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))) as connection:
-            for code, day, checked in connection.execute(
+            for code, day, checked in connection.run(
                 "SELECT g.code,g.trade_date,u.checked_cutoff FROM download_gaps g "
                 "LEFT JOIN download_qfq_unusable u ON u.code=g.code AND u.trade_date=g.trade_date "
                 "ORDER BY g.code,g.trade_date"
@@ -208,8 +207,8 @@ class HistoryDownloadIndex:
         if not completions or len({item.task.code for item in completions}) != len(completions):
             raise ValueError("history_download_completions_invalid")
         with closing(self._connect()) as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
-            cutoff_row = connection.execute("SELECT cutoff FROM download_batch WHERE singleton=1").fetchone()
+            connection.run("BEGIN IMMEDIATE")
+            cutoff_row = connection.run("SELECT cutoff FROM download_batch WHERE singleton=1").fetchone()
             if cutoff_row is None:
                 raise ValueError("history_download_batch_missing")
             checked_cutoff = cutoff_row[0]
@@ -217,40 +216,40 @@ class HistoryDownloadIndex:
             placeholders = ",".join("?" for _ in codes)
             gap_codes = {
                 row[0]
-                for row in connection.execute(
+                for row in connection.run(
                     f"SELECT DISTINCT code FROM download_gaps WHERE code IN ({placeholders})",  # noqa: S608
                     codes,
                 )
             }
             for completion in completions:
                 task = completion.task
-                connection.executemany(
+                connection.run_many(
                     "DELETE FROM download_qfq_unusable WHERE code=? AND trade_date=?",
                     ((task.code, day.isoformat()) for day in task.dates),
                 )
-                connection.executemany(
+                connection.run_many(
                     "INSERT INTO download_qfq_unusable VALUES(?,?,?)",
                     ((task.code, day.isoformat(), checked_cutoff) for day in completion.unusable_qfq_dates),
                 )
                 if task.code in gap_codes:
-                    connection.executemany(
+                    connection.run_many(
                         "DELETE FROM download_gaps WHERE code=? AND trade_date=?",
                         ((task.code, day.isoformat()) for day in task.dates),
                     )
-                connection.executemany(
+                connection.run_many(
                     "INSERT OR IGNORE INTO download_gaps VALUES(?,?)",
                     ((task.code, day.isoformat()) for day in completion.missing),
                 )
-                connection.execute(
+                connection.run(
                     "UPDATE download_tasks SET tencent_done=1,failure=? WHERE code=?",
                     (completion.failure, task.code),
                 )
 
     def begin_attempt(self, code: str) -> int:
         with closing(self._connect()) as connection, connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute("UPDATE download_tasks SET attempts=attempts+1 WHERE code=? AND attempts<3", (code,))
-            return int(connection.execute("SELECT attempts FROM download_tasks WHERE code=?", (code,)).fetchone()[0])
+            connection.run("BEGIN IMMEDIATE")
+            connection.run("UPDATE download_tasks SET attempts=attempts+1 WHERE code=? AND attempts<3", (code,))
+            return int(connection.run("SELECT attempts FROM download_tasks WHERE code=?", (code,)).require_one()[0])
 
     def gap_summary(self, codes: tuple[str, ...]) -> HistoryPriceGapSummary:
         selected = frozenset(codes)
@@ -258,7 +257,7 @@ class HistoryDownloadIndex:
         reasons: dict[str, int] = {}
         dates: list[date] = []
         with closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))) as connection:
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT g.code,CASE WHEN u.trade_date IS NOT NULL THEN 'tencent_qfq_invalid_price' "
                 "ELSE COALESCE(NULLIF(t.failure,'tencent_qfq_invalid_price'),'history_price_pending') "
                 "END AS reason,COUNT(*),MIN(g.trade_date),MAX(g.trade_date) "

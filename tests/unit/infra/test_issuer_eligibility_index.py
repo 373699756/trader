@@ -30,7 +30,7 @@ def _fact(*, evidence_hash: str = "a" * 64) -> IssuerEligibilityFact:
 
 def test_index_is_idempotent_persistent_and_filters_only_after_effective_time(tmp_path) -> None:
     root = tmp_path / "filter_config"
-    index = SQLiteIssuerEligibilityIndex(root)
+    index = SQLiteIssuerEligibilityIndex((root) / "eligibility.sqlite3")
 
     assert index.record((_fact(),)) == 1
     assert index.record((_fact(),)) == 0
@@ -40,7 +40,7 @@ def test_index_is_idempotent_persistent_and_filters_only_after_effective_time(tm
     )
     assert index.filter_codes(("600001", "600002"), OBSERVED_AT) == ("600002",)
 
-    recovered = SQLiteIssuerEligibilityIndex(root)
+    recovered = SQLiteIssuerEligibilityIndex((root) / "eligibility.sqlite3")
     assert recovered.exclusions(OBSERVED_AT)[0].code == "600001"
     assert recovered.status().excluded_count == 1
     assert recovered.status().fact_count == 1
@@ -48,7 +48,7 @@ def test_index_is_idempotent_persistent_and_filters_only_after_effective_time(tm
 
 
 def test_index_rejects_same_evidence_identity_with_different_content(tmp_path) -> None:
-    index = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
+    index = SQLiteIssuerEligibilityIndex((tmp_path / "filter_config") / "eligibility.sqlite3")
     index.record((_fact(),))
 
     with pytest.raises(IssuerEligibilityConflictError):
@@ -56,7 +56,7 @@ def test_index_rejects_same_evidence_identity_with_different_content(tmp_path) -
 
 
 def test_retired_historical_loss_remains_in_snapshot_without_excluding_issuer(tmp_path) -> None:
-    index = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
+    index = SQLiteIssuerEligibilityIndex((tmp_path / "filter_config") / "eligibility.sqlite3")
     legacy = IssuerEligibilityFact(
         code="600001",
         reason=IssuerEligibilityReason.HISTORICAL_AUDITED_LOSS,
@@ -77,14 +77,14 @@ def test_retired_historical_loss_remains_in_snapshot_without_excluding_issuer(tm
 
 def test_index_detects_tampering_without_silently_clearing_exclusions(tmp_path) -> None:
     root = tmp_path / "filter_config"
-    index = SQLiteIssuerEligibilityIndex(root)
+    index = SQLiteIssuerEligibilityIndex((root) / "eligibility.sqlite3")
     index.record((_fact(),))
-    database = next((root / "snapshots").glob("*/st_warning.sqlite3"))
+    database = root / "eligibility.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute("UPDATE issuer_eligibility_facts SET content_hash = ?", ("0" * 64,))
+        connection.run("UPDATE issuer_eligibility_facts SET content_hash = ?", ("0" * 64,))
         connection.commit()
 
-    damaged = SQLiteIssuerEligibilityIndex(root)
+    damaged = SQLiteIssuerEligibilityIndex((root) / "eligibility.sqlite3")
 
     assert damaged.status().integrity_ok is False
     assert damaged.status().last_error == "eligibility_integrity_error"
@@ -93,20 +93,22 @@ def test_index_detects_tampering_without_silently_clearing_exclusions(tmp_path) 
 
 def test_index_migrates_legacy_single_file_once(tmp_path) -> None:
     legacy = tmp_path / "issuer-eligibility.sqlite3"
-    legacy_index = SQLiteIssuerEligibilityIndex(tmp_path / "legacy")
+    legacy_index = SQLiteIssuerEligibilityIndex((tmp_path / "legacy") / "eligibility.sqlite3")
     legacy_index.record((_fact(),))
-    legacy_file = next((tmp_path / "legacy" / "snapshots").glob("*/st_warning.sqlite3"))
+    legacy_file = tmp_path / "legacy/eligibility.sqlite3"
     legacy_file.replace(legacy)
 
     root = tmp_path / "filter_config"
-    assert SQLiteIssuerEligibilityIndex.migrate_legacy_database(legacy, root) == 1
-    assert SQLiteIssuerEligibilityIndex.migrate_legacy_database(legacy, root) == 0
-    migrated = SQLiteIssuerEligibilityIndex(root, read_only=True)
+    from scripts.runtime_migration import ImportEligibility
+
+    ImportEligibility(tmp_path / "no-manifest", legacy, root / "eligibility.sqlite3")
+    ImportEligibility(tmp_path / "no-manifest", legacy, root / "eligibility.sqlite3")
+    migrated = SQLiteIssuerEligibilityIndex((root) / "eligibility.sqlite3", read_only=True)
     assert migrated.filter_codes(("600001",), OBSERVED_AT) == ()
 
 
 def test_index_refresh_boundary_is_friday_at_1500(tmp_path) -> None:
-    index = SQLiteIssuerEligibilityIndex(tmp_path / "filter_config")
+    index = SQLiteIssuerEligibilityIndex((tmp_path / "filter_config") / "eligibility.sqlite3")
     before = datetime(2026, 9, 25, 14, 59, 59, tzinfo=SHANGHAI)
     after = datetime(2026, 9, 25, 15, 0, tzinfo=SHANGHAI)
 

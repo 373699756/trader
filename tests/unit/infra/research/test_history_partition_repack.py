@@ -20,8 +20,9 @@ from trader.download.domain.history_control import (
     HistoryUniverseIdentity,
 )
 from trader.download.domain.history_revision import HistoryRevision
+from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_partition_repack import (
     HistoryPartitionRepackCoordinator,
     HistoryPartitionRepackFenceError,
@@ -110,9 +111,9 @@ def _qfq_close(revision: HistoryRevision) -> float:
 
 def _archive(tmp_path: Path) -> tuple[Path, Path, HistoryActiveSnapshot]:
     source = tmp_path / "data/history"
-    target = tmp_path / "data/historyless/baostock"
-    month = source / "partitions/2026/09.sqlite3"
-    repository = HistoryMonthPrices(month, 2026, 9)
+    target = tmp_path / "data/history-repacked"
+    month = source / "prices_2026.sqlite3"
+    repository = HistoryPricePartition(month, 2026, 9)
     repository.initialize()
     repository.save_revisions(
         (
@@ -123,12 +124,15 @@ def _archive(tmp_path: Path) -> tuple[Path, Path, HistoryActiveSnapshot]:
         )
     )
     with closing(OpenSqliteConnection(month)) as connection, connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA journal_mode=DELETE")
-        connection.execute("PRAGMA page_size=4096")
-        connection.execute("VACUUM")
+        connection.run("PRAGMA wal_checkpoint(TRUNCATE)")
+        connection.run("PRAGMA journal_mode=DELETE")
+        connection.run("PRAGMA page_size=4096")
+        connection.run("VACUUM")
     reference = repository.seal()
-    source_identity = HistorySourceIdentity("baostock", "baostock_daily", "python-sdk", NOW)
+    bound_reference = HistoryReferenceSnapshot(("600001",), (), (HistoryStEvidence("600001", NOW.date(), "clear"),))
+    source_identity = HistorySourceIdentity(
+        "baostock", "baostock_daily", f"history_ref_{bound_reference.content_hash}_fixture", NOW
+    )
     calendar = HistoryCalendarIdentity((date(2026, 9, 9), date(2026, 9, 10)), source_identity.content_hash)
     universe = HistoryUniverseIdentity(
         (HistorySecurityIdentity("600001", "浦发银行", "main", date(1999, 11, 10), None),),
@@ -143,12 +147,12 @@ def _archive(tmp_path: Path) -> tuple[Path, Path, HistoryActiveSnapshot]:
         source_identity.content_hash,
         (reference,),
     )
-    control = HistoryControlIndex(source / "control.sqlite3")
+    control = HistoryControlIndex(source / "catalog.sqlite3")
     control.initialize()
     control.save_source(source_identity)
     control.save_calendar(calendar)
     control.save_universe(universe)
-    control.publish_snapshot(snapshot)
+    control.publish_snapshot(snapshot, reference=bound_reference)
     return source, target, snapshot
 
 
@@ -171,20 +175,20 @@ def test_repack_build_is_resumable_and_preserves_revision_replay(tmp_path: Path)
 
     assert first == repeated
     assert first.state == "completed"
-    assert first.target_snapshot_hash != original.content_hash
-    with closing(OpenSqliteConnection(target / "partitions/2026/09.sqlite3")) as connection, connection:
-        assert connection.execute("PRAGMA page_size").fetchone() == (8192,)
-        assert connection.execute("PRAGMA freelist_count").fetchone() == (0,)
-    target_state = HistoryControlIndex(target / "control.sqlite3").load_state()
+    assert first.target_snapshot_hash == original.content_hash
+    with closing(OpenSqliteConnection(target / "prices_2026.sqlite3")) as connection, connection:
+        assert tuple(connection.run("PRAGMA page_size").fetchone()) == (8192,)
+        assert tuple(connection.run("PRAGMA freelist_count").fetchone()) == (0,)
+    target_state = HistoryControlIndex(target / "catalog.sqlite3").load_state()
     assert target_state.active_snapshot is not None
-    assert target_state.active_snapshot.sequence == original.sequence + 1
-    target_month = HistoryMonthPrices(target / "partitions/2026/09.sqlite3", 2026, 9)
+    assert target_state.active_snapshot.sequence == original.sequence
+    target_month = HistoryPricePartition(target / "prices_2026.sqlite3", 2026, 9)
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=1)[0]) == 10.0
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=2)[0]) == 11.0
     assert _qfq_close(target_month.read_day(date(2026, 9, 10), snapshot_sequence=3)[0]) == 10.0
 
 
-@pytest.mark.parametrize("failure_stage", ("partition_replaced:partitions/2026/09.sqlite3", "target_control_built"))
+@pytest.mark.parametrize("failure_stage", ("partition_replaced:prices_2026.sqlite3", "build_completed"))
 def test_repack_build_recovers_outputs_written_before_their_state_commit(tmp_path: Path, failure_stage: str) -> None:
     source, target, _original = _archive(tmp_path)
 
@@ -203,8 +207,8 @@ def test_repack_build_recovers_outputs_written_before_their_state_commit(tmp_pat
     completed = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).build()
 
     assert completed.state == "completed"
-    assert (target / "control.sqlite3").is_file()
-    assert (target / "partitions/2026/09.sqlite3").is_file()
+    assert (target / "catalog.sqlite3").is_file()
+    assert (target / "prices_2026.sqlite3").is_file()
 
 
 def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp_path: Path) -> None:
@@ -212,7 +216,7 @@ def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp
     HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).build()
 
     def interrupt(stage: str) -> None:
-        if stage == "old_control_moved_moved":
+        if stage == "old_root_moved":
             raise RuntimeError("simulated power loss")
 
     interrupted = HistoryPartitionRepackCoordinator(
@@ -226,8 +230,8 @@ def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp
 
     recovered = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).activate()
     assert recovered.state == "rolled_back"
-    assert HistoryControlIndex(source / "control.sqlite3").load_state().active_snapshot == original
-    assert (target / "control.sqlite3").is_file()
+    assert HistoryControlIndex(source / "catalog.sqlite3").load_state().active_snapshot == original
+    assert (target / "catalog.sqlite3").is_file()
 
     activated = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).activate()
     assert activated.state == "verified"
@@ -236,7 +240,7 @@ def test_activation_recovers_an_interrupted_move_and_can_retry_then_rollback(tmp
 
     rolled_back = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements()).rollback()
     assert rolled_back.state == "rolled_back"
-    assert HistoryControlIndex(source / "control.sqlite3").load_state().active_snapshot == original
+    assert HistoryControlIndex(source / "catalog.sqlite3").load_state().active_snapshot == original
     RequireHistoryPartitionRepackInactive(source)
 
 
@@ -257,8 +261,9 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
 
     result = RunRepackTomorrowTraining(
         source,
-        tmp_path / "data/train",
+        tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
+        sample_root=tmp_path / "samples",
         expected_history_snapshot_hash=built.target_snapshot_hash,
     )
 
@@ -266,8 +271,9 @@ def test_fenced_training_may_proceed_only_for_the_exact_activated_snapshot(
 
     mismatch = RunRepackTomorrowTraining(
         source,
-        tmp_path / "data/train",
+        tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
+        sample_root=tmp_path / "samples",
         expected_history_snapshot_hash="f" * 64,
     )
     assert mismatch.status == "blocked"
@@ -290,8 +296,9 @@ def test_fenced_v3_training_uses_one_request_for_all_heads(tmp_path: Path, monke
     monkeypatch.setattr("trader.training.infra.engine._run_locked", locked)
     result = RunRepackV3Training(
         source,
-        tmp_path / "data/train",
+        tmp_path / "data/training/models",
         settings=LoadProfileTrainingSettings(PROJECT_ROOT, "v3"),
+        sample_root=tmp_path / "samples",
         expected_history_snapshot_hash=built.target_snapshot_hash,
     )
 
@@ -308,7 +315,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     coordinator.activate()
     contract_hash = "9" * 64
     bundle = ActiveHeadBundle(
-        tmp_path / "data/train/tomorrow-v3/model.json",
+        tmp_path / "data/training/models/tomorrow-v3/model.json",
         Strategy.TOMORROW,
         original.content_hash,
         original.source_identity_hash,
@@ -325,7 +332,7 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     evaluation = EvaluateHistoryTrainingDue(
         HistoryTrainingDueQuery(
             source,
-            tmp_path / "data/train",
+            tmp_path / "data/training/models",
             NOW,
             V3_TRAINING_PROFILE,
             expected_training_contract_hash=contract_hash,
@@ -335,15 +342,16 @@ def test_physical_repack_does_not_create_revision_due_or_invalidate_training_cac
     assert built.target_snapshot_hash is not None
     assert evaluation is not None
     assert evaluation.active_snapshot.content_hash == built.target_snapshot_hash
-    assert evaluation.state.reason == "training_contract_due"
-    assert evaluation.state.training_due is True
+    assert evaluation.state.reason == "not_due"
+    assert evaluation.state.training_due is False
     assert evaluation.state.input_revision is False
     assert evaluation.revised_dates == ()
     assert evaluation.invalidated_cache_dates == ()
 
 
+@pytest.mark.parametrize("interrupted", (False, True))
 def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupted: bool
 ) -> None:
     source, target, _original = _archive(tmp_path)
     coordinator = HistoryPartitionRepackCoordinator(source, target, requirements=_requirements())
@@ -367,7 +375,7 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
     )
     memory_evidence = tmp_path / "data/historyless/memory.json"
     _write_training_memory_evidence(memory_evidence, built.target_snapshot_hash)
-    backup_partition = next((tmp_path / "data/historyless/baostock-before-repack/partitions").rglob("*.sqlite3"))
+    backup_partition = next((tmp_path / "data/history-before-repack").rglob("*.sqlite3"))
     Path(f"{backup_partition}-wal").touch()
     Path(f"{backup_partition}-shm").write_bytes(b"sqlite coordination state")
 
@@ -379,11 +387,25 @@ def test_finalize_deletes_only_the_verified_backup_after_bundle_and_memory_match
         ("model_fit", 7.0),
     )
 
-    finalized = coordinator.finalize(tmp_path / "data/train", memory_evidence)
+    if interrupted:
+        remove_tree = repack_module.shutil.rmtree
+
+        def partial_delete(path):
+            next(path.glob("prices_*.sqlite3")).unlink()
+            raise OSError("interrupted backup cleanup")
+
+        monkeypatch.setattr(repack_module.shutil, "rmtree", partial_delete)
+        with pytest.raises(OSError, match="interrupted backup cleanup"):
+            coordinator.finalize(tmp_path / "data/training/models", memory_evidence)
+        with pytest.raises(repack_module.HistoryPartitionRepackError, match="cannot be rolled back"):
+            coordinator.rollback()
+        monkeypatch.setattr(repack_module.shutil, "rmtree", remove_tree)
+
+    finalized = coordinator.finalize(tmp_path / "data/training/models", memory_evidence)
 
     assert finalized.state == "finalized"
     assert finalized.released_bytes > 0
-    assert not (tmp_path / "data/historyless/baostock-before-repack").exists()
+    assert not (tmp_path / "data/history-before-repack").exists()
     RequireHistoryPartitionRepackInactive(source)
     with pytest.raises(repack_module.HistoryPartitionRepackError, match="cannot be rolled back"):
         coordinator.rollback()
@@ -427,11 +449,11 @@ def test_finalize_refuses_to_delete_a_backup_with_unknown_content(
             (),
         ),
     )
-    unexpected = tmp_path / "data/historyless/baostock-before-repack/partitions/unexpected.txt"
+    unexpected = tmp_path / "data/history-before-repack/unexpected.txt"
     unexpected.write_text("preserve me", encoding="utf-8")
 
-    with pytest.raises(repack_module.HistoryPartitionRepackError, match="unknown file"):
-        coordinator.finalize(tmp_path / "data/train", tmp_path / "data/historyless/memory.json")
+    with pytest.raises(repack_module.HistoryPartitionRepackError, match="unexpected files"):
+        coordinator.finalize(tmp_path / "data/training/models", tmp_path / "data/historyless/memory.json")
 
     assert unexpected.read_text(encoding="utf-8") == "preserve me"
 
@@ -472,10 +494,10 @@ def test_finalize_refuses_a_backup_partition_with_pending_wal(tmp_path: Path, mo
             (),
         ),
     )
-    backup_partition = next((tmp_path / "data/historyless/baostock-before-repack/partitions").rglob("*.sqlite3"))
+    backup_partition = next((tmp_path / "data/history-before-repack").rglob("*.sqlite3"))
     Path(f"{backup_partition}-wal").write_bytes(b"pending transaction")
 
-    with pytest.raises(repack_module.HistoryPartitionRepackError, match="pending WAL"):
-        coordinator.finalize(tmp_path / "data/train", tmp_path / "data/historyless/memory.json")
+    with pytest.raises(repack_module.HistoryPartitionRepackError, match="pending SQLite"):
+        coordinator.finalize(tmp_path / "data/training/models", tmp_path / "data/historyless/memory.json")
 
     assert Path(f"{backup_partition}-wal").read_bytes() == b"pending transaction"

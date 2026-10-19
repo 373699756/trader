@@ -59,7 +59,7 @@ def _publish(index: UnifiedDecisionIndex, value: ScoredDecision) -> None:
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_checkpoint_recovers_same_decision_identity_after_restart(tmp_path: Path, strategy: Strategy) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     before = UnifiedDecisionIndex()
     current = replace(decision(strategy), observed_at=_at(14, 59, 35))
@@ -68,7 +68,7 @@ def test_checkpoint_recovers_same_decision_identity_after_restart(tmp_path: Path
 
     assert _coordinator(before, records, clock, strategy).capture_checkpoint().status == "checkpoint_saved"
 
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     restored = UnifiedDecisionIndex()
     clock.value = _at(15, 0)
     result = _coordinator(restored, records, clock, strategy).freeze_scheduled()
@@ -130,7 +130,7 @@ def _assert_formal_current_and_history(
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 @pytest.mark.parametrize("cold_read", (False, True), ids=("hot", "cold"))
 def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Strategy, cold_read: bool) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     drafts = UnifiedDecisionDraftIndex()
@@ -169,7 +169,7 @@ def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Str
     assert result.record.decision.is_formal is True
     assert result.record.decision.content_hash != current.content_hash
     if cold_read:
-        records = SQLiteDecisionRecords(tmp_path)
+        records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
         index = UnifiedDecisionIndex()
         coordinator = _coordinator(index, records, clock, strategy)
         assert UnifiedDecisionQueries(index, drafts, records, clock).current(strategy).status == "not_ready"
@@ -196,7 +196,7 @@ def test_scheduled_close_boundary_and_formal_reads(tmp_path: Path, strategy: Str
 def test_close_fallback_admission_and_recovered_formal_reads(
     tmp_path: Path, strategy: Strategy, cold_start: bool, recovery_minute: int
 ) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     current = replace(decision(strategy), observed_at=_at(14, 59, 59))
@@ -226,7 +226,7 @@ def test_close_fallback_admission_and_recovered_formal_reads(
     assert dict(result.record.decision.input_versions)["official_close"] == "official-close:20260811"
     _assert_formal_current_and_history(index, records, clock, result.record)
 
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     restored = UnifiedDecisionIndex()
     coordinator = _coordinator(restored, records, clock, strategy)
     duplicate = coordinator.freeze_close_fallback(
@@ -266,7 +266,7 @@ def test_weight_configuration_hash_participates_in_freeze_runtime_identity(tmp_p
 
 
 def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     empty = replace(decision(), observed_at=_at(14, 59, 50), items=())
@@ -286,7 +286,7 @@ def test_freeze_is_idempotent_non_overwritable_and_accepts_empty_formal_result(t
 
 
 def test_close_fallback_requires_official_close_and_never_overwrites(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     current = replace(decision(), observed_at=_at(14, 49, 50))
@@ -322,7 +322,7 @@ def test_close_fallback_requires_official_close_and_never_overwrites(tmp_path: P
 
 
 def test_d25_checkpoint_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     current = replace(
@@ -348,7 +348,7 @@ def test_d25_checkpoint_and_close_recovery_use_d25_path(tmp_path: Path) -> None:
 
 
 def test_d25_freeze_close_fallback_persists_d25_formal_record(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     current = replace(
@@ -378,7 +378,7 @@ def test_d25_freeze_close_fallback_persists_d25_formal_record(tmp_path: Path) ->
 
 
 def test_d25_empty_formal_and_tomorrow_formal_are_isolated_by_strategy(tmp_path: Path) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     tomorrow = replace(decision(Strategy.TOMORROW), observed_at=_at(14, 59, 50))
@@ -399,7 +399,7 @@ def test_d25_empty_formal_and_tomorrow_formal_are_isolated_by_strategy(tmp_path:
 
 @pytest.mark.parametrize("strategy", (Strategy.TOMORROW, Strategy.D25))
 def test_close_fallback_rejects_pending_scheduled_seal(tmp_path: Path, strategy: Strategy) -> None:
-    records = SQLiteDecisionRecords(tmp_path)
+    records = SQLiteDecisionRecords((tmp_path) / "decisions.sqlite3")
     records.initialize()
     index = UnifiedDecisionIndex()
     current = replace(decision(strategy), observed_at=_at(14, 49, 50))

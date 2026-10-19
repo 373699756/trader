@@ -35,6 +35,7 @@ from trader.download.infra.history_storage_profile import (
     HistoryWriteTuning,
 )
 from trader.download.infra.history_sync_runner import RunHistorySync
+from trader.infra.settings.data_paths import DataPaths
 from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
 
 from .reporting import emit_report
@@ -126,7 +127,7 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
         root = Path(scratch) / "history"
         project_root = Path(__file__).resolve().parents[2]
         config = replace(
-            LoadHistorySyncConfiguration(project_root, Path(scratch) / "reference"),
+            LoadHistorySyncConfiguration(project_root, DataPaths(Path(scratch) / "data")),
             archive_root=root,
             sessions=sessions,
             reread_sessions=min(5, sessions),
@@ -141,12 +142,12 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
             stage_times = _StageTimes()
             result = RunHistorySync(config, supplier, clock=_clock(now), write_tuning=tuning, progress=stage_times)
             rows = 0
-            for path in root.glob("partitions/*/[0-9][0-9].sqlite3"):
+            for path in root.glob("prices_[0-9][0-9][0-9][0-9].sqlite3"):
                 with (
                     closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection,
                     connection,
                 ):
-                    rows += connection.execute("SELECT COUNT(*) FROM daily_records").fetchone()[0]
+                    rows += connection.run("SELECT COUNT(*) FROM daily_records").require_one()[0]
             results.append(
                 {
                     "case": name,
@@ -184,11 +185,19 @@ def measure(size: int, sessions: int, tuning: HistoryWriteTuning | None = None) 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baseline-checkout", type=Path)
+    parser.add_argument("--comparison-rounds", type=int, default=5)
     parser.add_argument("--size", type=int, default=8)
     parser.add_argument("--sessions", type=int, default=2000)
     parser.add_argument("--flush-codes", type=int)
     parser.add_argument("--flush-cells", type=int)
     args = parser.parse_args()
+    if args.baseline_checkout is not None:
+        from .storage_layout_comparison import CompareLayouts
+
+        report = CompareLayouts(args.baseline_checkout, rounds=args.comparison_rounds, size=args.size)
+        emit_report(report)
+        return 0 if report["status"] == "passed" else 1
     if not 1 <= args.size <= 64 or not 5 <= args.sessions <= 2000:
         parser.error("size must be 1..64 and sessions 5..2000")
     if (args.flush_codes is None) != (args.flush_cells is None):

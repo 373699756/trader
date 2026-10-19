@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.helpers.qfq import publish_windows
+from trader.infra.settings.data_paths import DataPaths
+
 import hashlib
 import json
 import re
@@ -38,7 +41,6 @@ from trader.download.domain.qfq_window import (
     QfqWindowIncompleteError,
 )
 from trader.download.infra.history_control_index import HistoryMaintenanceLock
-from trader.download.infra.qfq_checkpoint import QfqCheckpoint
 from trader.download.infra.qfq_maintenance import QfqDailyMaintenance
 from trader.download.infra.qfq_sqlite import SQLiteQfqWindowCache
 from trader.download.infra.qfq_update_runner import QfqUpdateRunner
@@ -94,300 +96,116 @@ def _fingerprints(root: Path) -> dict[str, tuple[str, int]]:
     return {
         path.name: (hashlib.sha256(path.read_bytes()).hexdigest(), path.stat().st_mtime_ns)
         for path in root.iterdir()
-        if path.is_file()
+        if path.is_file() and path.suffix == ".sqlite3"
     }
 
 
-def test_paired_board_failure_reports_only_durable_boards(tmp_path, monkeypatch) -> None:
-    primary, peer = SQLiteQfqWindowCache(tmp_path, "v2"), SQLiteQfqWindowCache(tmp_path, "v3")
-    prepare = primary._prepare_pair_files
-
-    def fail_second(cache, name):
-        if name == "qfq_szse_chinext.sqlite3":
-            raise OSError("fixture_second_board_failed")
-        prepare(cache, name)
-
-    monkeypatch.setattr(primary, "_prepare_pair_files", fail_second)
-    with pytest.raises(QfqPairPublicationError) as failure:
-        primary.replace_paired_windows(peer, (_window("600001"), _window("300001")), "fixture")
-    assert failure.value.codes == ("600001",)
-    assert set(failure.value.files) == {"v2/qfq_sse_main.sqlite3", "v3/qfq_sse_main.sqlite3"}
-    assert failure.value.rows == 251 + 61
+def test_shared_pair_and_checkpoint_commit_once_and_noop_preserves_bytes(tmp_path):
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    windows = (_window(days=DAYS[-251:]), _window("300001", days=DAYS[-251:]))
+    changed, rows = primary.replace_paired_windows(
+        peer, windows, "fixture", calendar=DAYS[-251:], completed_day=DAYS[-1]
+    )
+    assert changed == ("daily_window.sqlite3",) and rows == 502
     assert len(primary.read_code("600001").cells) == 251
     assert len(peer.read_code("600001").cells) == 61
-    assert primary.read_code("300001").cells == peer.read_code("300001").cells == ()
+    assert primary.completed(DAYS[-1], "600001", "fixture")
+    assert not primary.completed(DAYS[-1], "600001", "other")
+    assert len(tuple(tmp_path.glob("*.sqlite3"))) == 1
+    before = _fingerprints(tmp_path)
+    assert primary.replace_paired_windows(peer, windows, "fixture", calendar=DAYS[-251:], completed_day=DAYS[-1]) == (
+        (),
+        0,
+    )
+    assert _fingerprints(tmp_path) == before
 
 
-def test_paired_database_lock_reports_stable_busy_reason(tmp_path, monkeypatch) -> None:
-    primary, peer = SQLiteQfqWindowCache(tmp_path, "v2"), SQLiteQfqWindowCache(tmp_path, "v3")
+def test_pair_failure_rolls_back_prices_both_identities_and_checkpoint(tmp_path, monkeypatch):
+    from trader.infra.sqlite_connection import SqliteConnection
 
-    def fail_locked(_peer, _name):
-        raise sqlite3.OperationalError("database is locked")
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    publish_windows(primary, (_window(),), "old")
+    original = SqliteConnection.run
 
-    monkeypatch.setattr(primary, "_prepare_pair_files", fail_locked)
-    with pytest.raises(QfqPairPublicationError, match="qfq_pair_database_busy"):
-        primary.replace_paired_windows(peer, (_window(),), "fixture")
+    def fail(self, sql, parameters=()):
+        if sql.startswith("INSERT OR REPLACE INTO identities") and parameters[0] == "v3":
+            raise sqlite3.OperationalError("fixture interrupted")
+        return original(self, sql, parameters)
+
+    monkeypatch.setattr(SqliteConnection, "run", fail)
+    with pytest.raises(QfqPairPublicationError) as error:
+        primary.replace_paired_windows(
+            peer, (_window(days=DAYS[-251:], price=12.0),), "new", calendar=DAYS[-251:], completed_day=DAYS[-1]
+        )
+    assert error.value.codes == () and error.value.rows == 0
+    assert primary.source_identity("600001") == peer.source_identity("600001") == "old"
+    assert primary.read_code("600001").cells[-1].qfq.close_price == 10.0
+    assert not primary.completed(DAYS[-1], "600001", "new")
 
 
-def test_projection_decode_does_not_block_paired_publication(tmp_path, monkeypatch) -> None:
+def test_sparse_windows_use_market_calendar_not_last_traded_rows(tmp_path):
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    window = _window(days=tuple(day for index, day in enumerate(DAYS[-251:]) if index % 3 == 0))
+    primary.replace_paired_windows(peer, (window,), "fixture", calendar=DAYS[-251:], completed_day=DAYS[-1])
+    assert peer.read_code("600001").cells == tuple(cell for cell in window.cells if cell.trade_date >= DAYS[-61])
+    assert len(peer.read_code("600001").cells) < 61
+
+
+@pytest.mark.parametrize("code", ("123", "../000001", "ABCDEF"))
+def test_invalid_code_creates_no_database(tmp_path, code):
+    cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    with pytest.raises(ValueError):
+        cache.read_code(code)
+    assert not cache.path.exists()
+
+
+def test_corrupt_prices_fail_closed(tmp_path):
+    cache = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    publish_windows(cache, (_window(),), "fixture")
+    with closing(OpenSqliteConnection(cache.path)) as connection, connection:
+        connection.run("UPDATE bars SET qfq_close=999 WHERE code='600001'")
+    with pytest.raises(RuntimeError, match="identity_mismatch"):
+        cache.read_code("600001")
+
+
+def test_projection_decode_releases_reader_before_concurrent_commit(tmp_path, monkeypatch):
     import threading
     from concurrent.futures import ThreadPoolExecutor
+    from trader.download.infra import qfq_sqlite as module
 
-    from trader.download.infra import qfq_sqlite as qfq_sqlite_module
+    primary = SQLiteQfqWindowCache(tmp_path / "daily_window.sqlite3", "v2")
+    peer = SQLiteQfqWindowCache(primary.path, "v3")
+    publish_windows(primary, (_window(),), "old")
+    started, release = threading.Event(), threading.Event()
+    decode = module.PriceCellFromColumns
 
-    primary, peer = SQLiteQfqWindowCache(tmp_path, "v2"), SQLiteQfqWindowCache(tmp_path, "v3")
-    primary.replace_paired_windows(peer, (_window("600001"), _window("600002")), "fixture")
-    projection = PublishedHistoryCache(ReadPublishedHistoryUseCase(primary), lookback_sessions=251)
-    decode_started, release_decode = threading.Event(), threading.Event()
-    decode = qfq_sqlite_module.DecodeCell
-
-    def blocked_decode(*args):
-        if not decode_started.is_set():
-            decode_started.set()
-            assert release_decode.wait(10)
+    def blocked(*args):
+        if not started.is_set():
+            started.set()
+            assert release.wait(10)
         return decode(*args)
 
-    monkeypatch.setattr(qfq_sqlite_module, "DecodeCell", blocked_decode)
-    revision = _window("600002")
-    revision = replace(
-        revision,
-        cells=(*revision.cells[:-1], ProjectHistoryCell(_cell("600002", DAYS[-1], price=11.0))),
-    )
+    monkeypatch.setattr(module, "PriceCellFromColumns", blocked)
     with ThreadPoolExecutor(max_workers=2) as pool:
-        reading = pool.submit(projection.refresh)
-        assert decode_started.wait(2)
+        reading = pool.submit(primary.read_code, "600001")
+        assert started.wait(3)
         publishing = pool.submit(
             primary.replace_paired_windows,
             peer,
-            (revision,),
-            "revision",
+            (_window(days=DAYS[-251:], price=12.0),),
+            "new",
+            calendar=DAYS[-251:],
+            completed_day=DAYS[-1],
         )
         try:
-            changed, rows = publishing.result(timeout=4)
+            assert publishing.result(timeout=4)[1] == 251
         finally:
-            release_decode.set()
-        assert set(changed) == {"v2/qfq_sse_main.sqlite3", "v3/qfq_sse_main.sqlite3"}
-        assert rows == 2
-        assert not reading.result(timeout=5)
-
-    assert projection.entries() == {}
-    assert projection.refresh()
-    assert projection.entries()["600002"].bars[-1].close == 11.0
-
-
-def test_inspection_streams_each_board_without_per_code_queries(tmp_path, monkeypatch) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    cache.replace_windows((_window("600001"), _window("600002")), "fixture")
-    read = cache._read_connection
-    statements = []
-
-    def traced(name):
-        connection = read(name)
-        connection.set_trace_callback(statements.append)
-        return connection
-
-    monkeypatch.setattr(cache, "_read_connection", traced)
-    result = cache.inspect_windows(frozenset(("600001", "600002")))
-    assert len(result.states) == 2 and all(state.verified for state in result.states)
-    assert sum(sql.startswith("SELECT") for sql in statements) == 2
-
-
-@pytest.mark.parametrize("profile,sessions", (("v2", 251), ("v3", 61)))
-def test_sqlite_rolls_windows_and_noop_is_byte_identical(tmp_path, profile, sessions) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, profile)
-    changed, count = cache.replace_window(_window(days=DAYS[:-1]), "history:seed")
-    assert changed == (f"{profile}/qfq_sse_main.sqlite3",)
-    assert not (cache.root / "index.json").exists()
-    assert count == sessions
-    before = _fingerprints(cache.root)
-    assert cache.replace_window(_window(days=DAYS[:-1]), "history:seed") == ((), 0)
-    assert _fingerprints(cache.root) == before
-    changed, count = cache.replace_window(_window(), "baostock:refresh")
-    assert count == 2
-    assert len(changed) == 1 and changed[0].endswith(".sqlite3")
-    assert tuple(cell.trade_date for cell in cache.read_code("600001").cells) == DAYS[-sessions:]
-    manifest = cache.manifest()
-    assert manifest is not None
-    assert cache.read_windows(manifest, ("600001",), sessions=sessions)[0] == cache.read_code("600001")
-
-
-def test_changed_code_does_not_rewrite_other_range(tmp_path) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    cache.replace_window(_window("600001"), "seed")
-    cache.replace_window(_window("300001"), "seed")
-    before = _fingerprints(cache.root)
-    changed, count = cache.replace_window(_window("600001", price=11.0), "revision")
-    assert changed == ("v2/qfq_sse_main.sqlite3",)
-    assert count == 251
-    assert _fingerprints(cache.root)["qfq_szse_chinext.sqlite3"] == before["qfq_szse_chinext.sqlite3"]
-
-
-def test_same_board_windows_share_one_full_sync_transaction(tmp_path, monkeypatch) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    connect = cache._write_connection
-    opened = []
-
-    def tracked(name):
-        opened.append(name)
-        return connect(name)
-
-    monkeypatch.setattr(cache, "_write_connection", tracked)
-    changed, rows = cache.replace_windows((_window("600001"), _window("600002")), "fixture")
-
-    assert opened == ["qfq_sse_main.sqlite3"]
-    assert changed == ("v2/qfq_sse_main.sqlite3",) and rows == 502
-    assert cache.codes() == frozenset({"600001", "600002"})
-
-
-def test_qfq_eligibility_prunes_existing_excluded_windows_from_both_profiles(tmp_path) -> None:
-    updater = _updater(tmp_path, Supplier(codes=("600001",)))
-    for cache in (updater.v2, updater.v3):
-        cache.replace_window(_window("600001"), "seed")
-        cache.replace_window(_window("300010"), "seed")
-
-    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-    result = updater.execute(observed)
-
-    assert result.completed_codes == 1 and result.pending_codes == 0
-    assert updater.v2.codes() == updater.v3.codes() == frozenset({"600001"})
-    assert set(result.changed_files) == {
-        "v2/qfq_sse_main.sqlite3",
-        "v2/qfq_szse_chinext.sqlite3",
-        "v3/qfq_sse_main.sqlite3",
-        "v3/qfq_szse_chinext.sqlite3",
-    }
-
-
-def test_board_routing_covers_all_profiles_without_sidecar(tmp_path) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    codes = ("600001", "605001", "000001", "003001", "300001", "301001", "302132", "688001", "689001")
-    for code in codes:
-        cache.replace_window(_window(code), "seed")
-    assert len(tuple(cache.root.glob("*.sqlite3"))) == 4
-    assert not (cache.root / "index.json").exists()
-    assert cache.codes() == frozenset(codes)
-    assert cache.read_code("600002").cells == ()
-    manifest = cache.manifest()
-    assert len(cache.read_windows(manifest, codes, sessions=20)) == len(codes)
-    assert all(len(window.cells) == 20 for window in cache.iter_windows(manifest, sessions=20))
-    assert all(len(cache.read_code(code).cells) == 251 for code in codes)
-
-
-@pytest.mark.parametrize("code", ("303132", "30213", "３０２１３２"))
-def test_unknown_or_malformed_codes_are_rejected_before_creating_a_shard(tmp_path, code) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    with pytest.raises(ValueError, match="qfq code"):
-        cache.read_code(code)
-    assert not cache.root.exists()
-
-
-def test_large_local_shard_keeps_primary_key_queries_without_splitting(tmp_path) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    cache.replace_window(_window(), "seed")
-    shard = cache.root / "qfq_sse_main.sqlite3"
-    with closing(OpenSqliteConnection(shard)) as connection, connection:
-        connection.execute("CREATE TABLE local_capacity_probe(payload BLOB)")
-        connection.execute("INSERT INTO local_capacity_probe VALUES (zeroblob(11000000))")
-        plan = connection.execute(
-            "EXPLAIN QUERY PLAN SELECT day,payload FROM bars WHERE code=? ORDER BY day", ("600001",)
-        ).fetchall()
-    assert shard.stat().st_size > 10_000_000
-    assert "PRIMARY KEY" in str(plan) and "TEMP B-TREE" not in str(plan)
-    assert len(cache.read_code("600001").cells) == 251
-    cache.replace_window(_window("600002"), "seed")
-    assert len(tuple(cache.root.glob("*.sqlite3"))) == 1
-
-
-def test_legacy_layout_fails_explicitly_without_hidden_reads(tmp_path) -> None:
-    from trader.infra.atomic_files.json import AtomicWriteJson
-
-    root = tmp_path / "v2"
-    root.mkdir()
-    AtomicWriteJson(root / "index.json", {"600001": "09375.sqlite3"})
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    with pytest.raises(RuntimeError, match="requires_migration"):
-        cache.read_code("600001")
-    with pytest.raises(RuntimeError, match="requires_migration"):
-        cache.replace_window(_window(), "seed")
-
-
-def test_tampered_cells_fail_closed(tmp_path) -> None:
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    cache.replace_window(_window(), "seed")
-    shard = next(cache.root.glob("*.sqlite3"))
-    with closing(OpenSqliteConnection(shard)) as connection, connection:
-        connection.execute("DELETE FROM bars WHERE day=?", (DAYS[-1].isoformat(),))
-    with pytest.raises(RuntimeError, match="identity mismatch"):
-        cache.read_code("600001")
-
-
-def _leave_hot_journal(shard: Path) -> None:
-    script = """
-import os
-import sys
-from pathlib import Path
-from trader.infra.sqlite_connection import OpenSqliteConnection
-
-connection = OpenSqliteConnection(Path(sys.argv[1]))
-connection.execute("PRAGMA journal_mode=DELETE")
-connection.execute("PRAGMA synchronous=FULL")
-connection.execute("PRAGMA cache_size=1")
-connection.execute("BEGIN EXCLUSIVE")
-connection.execute("UPDATE bars SET payload=payload || ' ' WHERE code='300001'")
-os._exit(0)
-"""
-    subprocess.run([sys.executable, "-c", script, str(shard)], check=True)
-
-
-def test_runner_recovers_hot_journal_before_read_only_window_checks(tmp_path) -> None:
-    supplier = Supplier(codes=("300001",))
-    updater = _updater(tmp_path, supplier)
-    updater.v2.replace_window(_window("300001"), "old-source")
-    updater.v3.replace_window(_window("300001", days=DAYS[-61:]), "old-source")
-    shard = tmp_path / "v2/qfq_szse_chinext.sqlite3"
-    journal = Path(f"{shard}-journal")
-    _leave_hot_journal(shard)
-    assert journal.is_file() and journal.stat().st_size > 0
-
-    class UnavailableHistory:
-        def manifest(self):
-            raise AssertionError("online qfq must not inspect full history")
-
-    observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
-    messages: list[str] = []
-    runner = QfqUpdateRunner(
-        UnavailableHistory(),
-        replace(updater, report=lambda message: messages.append(_plain_feedback(message))),
-        updater.v2,
-        updater.v3,
-        tmp_path / ".lock",
-        lambda: observed,
-    )
-    result = runner.execute()
-
-    assert result.completed_codes == 1 and result.pending_codes == 0
-    assert not journal.exists()
-    assert len(updater.v2.read_code("300001").cells) == 251
-    assert len(updater.v3.read_code("300001").cells) == 61
-    assert any("qfq 本地恢复 | 已恢复事务 1 个分片" in message for message in messages)
-
-
-def test_checkpoint_restart_preserves_all_codes_and_failed_write_does_not_advance(tmp_path, monkeypatch) -> None:
-    path = tmp_path / ".checkpoint.json"
-    checkpoint = QfqCheckpoint(path)
-    checkpoint.confirm_many(DAYS[-1], ("600001", "300001", "600002"), "fixture")
-    checkpoint = QfqCheckpoint(path)
-    assert all(checkpoint.completed(DAYS[-1], code, "fixture") for code in ("600001", "300001", "600002"))
-
-    def fail(*_args):
-        raise OSError("write failed")
-
-    monkeypatch.setattr("trader.download.infra.qfq_checkpoint.AtomicWriteJson", fail)
-    with pytest.raises(OSError):
-        checkpoint.confirm_many(DAYS[-1], ("600003",), "fixture")
-    assert not checkpoint.completed(DAYS[-1], "600003", "fixture")
-    assert not checkpoint.completed(DAYS[-1] + timedelta(days=1), "600001", "fixture")
-    assert not checkpoint.completed(DAYS[-1], "600001", "changed-source")
+            release.set()
+        assert reading.result(timeout=5).cells[-1].qfq.close_price == 10.0
+    assert primary.read_code("600001").cells[-1].qfq.close_price == 12.0
 
 
 @dataclass
@@ -416,10 +234,9 @@ class Supplier:
 
 def _updater(tmp_path: Path, supplier: Supplier) -> UpdateQfqWindows:
     return UpdateQfqWindows(
-        SQLiteQfqWindowCache(tmp_path, "v2"),
-        SQLiteQfqWindowCache(tmp_path, "v3"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3"),
         supplier,
-        QfqCheckpoint(tmp_path / ".checkpoint.json"),
         lambda: False,
         lambda _message: None,
     )
@@ -447,10 +264,10 @@ def test_network_continues_while_writer_is_busy_and_shutdown_waits_for_commit(
     updater = _updater(tmp_path, supplier)
     commit = updater.v2.replace_paired_windows
 
-    def blocked_commit(*args):
+    def blocked_commit(*args, **kwargs):
         writing.set()
         assert release.wait(10)
-        return commit(*args)
+        return commit(*args, **kwargs)
 
     monkeypatch.setattr(updater.v2, "replace_paired_windows", blocked_commit)
     network = BoundedExecutor(worker_count=8, queue_capacity=0, thread_name_prefix="test-qfq-network")
@@ -542,7 +359,7 @@ def test_completed_checkpoint_rechecks_missing_latest_day_when_supplier_catches_
     assert first.latest_missing_codes == 1
     assert not first.needs_retry
     source = updater.v2.inspect_windows(frozenset(("600001",))).states[0].source
-    assert updater.resume.completed(DAYS[-1], "600001", source)
+    assert updater.v2.completed(DAYS[-1], "600001", source)
     assert updater.v2.read_code("600001").cells[-1].trade_date == DAYS[-2]
     next_morning = datetime.combine(DAYS[-1] + timedelta(days=1), datetime.min.time(), tzinfo=SHANGHAI).replace(
         hour=9, minute=30
@@ -615,19 +432,19 @@ def test_unpaired_only_window_does_not_report_no_trade_data_or_success(tmp_path)
 
 
 @pytest.mark.parametrize("profile", ("v2", "v3"))
-@pytest.mark.parametrize("field,value", (("digest", "broken"), ("dates", "[]"), ("cutoff", "2000-01-01")))
+@pytest.mark.parametrize("field,value", (("digest", "broken"), ("first_day", "2099-01-01"), ("cutoff", "2000-01-01")))
 def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, profile, field, value):
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     assert updater.execute(observed).completed_codes == 1
     cache = updater.v2 if profile == "v2" else updater.v3
-    with closing(OpenSqliteConnection(cache.root / "qfq_sse_main.sqlite3")) as connection, connection:
-        connection.execute(f"UPDATE identities SET {field}=? WHERE code=?", (value, "600001"))
+    with closing(OpenSqliteConnection(cache.path)) as connection, connection:
+        connection.run(f"UPDATE identities SET {field}=? WHERE code=? AND profile=?", (value, "600001", profile))
     assert not cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 0
-    assert result.changed_files == (f"{profile}/qfq_sse_main.sqlite3",)
+    assert result.changed_files == ("daily_window.sqlite3",)
     assert result.changed_rows == 0
     assert cache.inspect_windows(frozenset(supplier.codes)).states[0].verified
     assert cache.read_code("600001").cells
@@ -638,22 +455,24 @@ def test_redownload_repairs_identity_even_when_prices_are_unchanged(tmp_path, pr
 
 
 def test_unchanged_eligibility_does_not_scan_price_rows(tmp_path, monkeypatch):
-    cache = SQLiteQfqWindowCache(tmp_path, "v2")
-    cache.replace_windows((_window("600001"), _window("600002")), "fixture")
-    read = cache._read_connection
+    cache = SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2")
+    publish_windows(cache, (_window("600001"), _window("600002")), "fixture")
+    read = cache._connection
     statements = []
 
-    def traced(name):
-        connection = read(name)
-        connection.set_trace_callback(statements.append)
+    def traced(**kwargs):
+        connection = read(**kwargs)
+        connection.observe_statements(statements.append)
         return connection
 
-    monkeypatch.setattr(cache, "_read_connection", traced)
-    before = _fingerprints(cache.root)
+    monkeypatch.setattr(cache, "_connection", traced)
+    before = _fingerprints(cache.path.parent)
     assert cache.retain_codes(frozenset(("600001", "600002"))) == ((), 0)
-    assert _fingerprints(cache.root) == before
+    assert _fingerprints(cache.path.parent) == before
     assert not any("bars" in sql for sql in statements)
-    assert cache.retain_codes(frozenset(("600001",))) == (("v2/qfq_sse_main.sqlite3",), 251)
+    assert cache.retain_codes(frozenset(("600001",))) == (("daily_window.sqlite3",), 0)
+    peer = SQLiteQfqWindowCache(cache.path, "v3")
+    assert peer.retain_codes(frozenset(("600001",))) == (("daily_window.sqlite3",), 251)
     assert cache.codes() == frozenset(("600001",))
     assert len(cache.read_code("600001").cells) == 251
 
@@ -783,11 +602,11 @@ def test_one_serial_fetch_fills_both_profiles_and_restart_skips_completed(tmp_pa
     assert len(supplier.calls) == 2
     assert len(updater.v2.read_code("600001").cells) == 251
     assert len(updater.v3.read_code("600001").cells) == 61
-    before = (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3"))
+    before = _fingerprints(tmp_path)
     result = _updater(tmp_path, supplier).execute(observed)
     assert result.skipped_codes == 2 and result.changed_files == ()
     assert len(supplier.calls) == 2
-    assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
+    assert _fingerprints(tmp_path) == before
 
 
 def test_302_stock_download_publication_and_restart(tmp_path) -> None:
@@ -806,7 +625,7 @@ def test_302_stock_download_publication_and_restart(tmp_path) -> None:
     assert result.completed_codes == 1 and result.pending_codes == 0 and result.failure_reason is None
     assert len(supplier.calls) == 1
     assert any("处理 Tencent下载 | 结果 合格" in line for line in logs)
-    assert result.changed_files == ("v2/qfq_szse_chinext.sqlite3", "v3/qfq_szse_chinext.sqlite3")
+    assert result.changed_files == ("daily_window.sqlite3",)
     for cache in (updater.v2, updater.v3):
         assert cache.codes() == frozenset({"302132"})
         manifest = cache.manifest()
@@ -854,10 +673,9 @@ def test_tencent_decimal_zero_evidence_is_published_and_reused(tmp_path, session
     supplier = TencentQfqSupplier(TencentQfqDependencies(Http, lambda _as_of: (security,), lambda: False))
     logs = []
     updater = UpdateQfqWindows(
-        SQLiteQfqWindowCache(tmp_path, "v2"),
-        SQLiteQfqWindowCache(tmp_path, "v3"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3"),
         supplier,
-        QfqCheckpoint(tmp_path / ".checkpoint.json"),
         lambda: False,
         lambda message: logs.append(_plain_feedback(message)),
     )
@@ -892,10 +710,9 @@ def test_incomplete_supplier_gap_preserves_only_returned_pairs(tmp_path) -> None
     supplier.fetch_window = incomplete
     logs = []
     updater = UpdateQfqWindows(
-        SQLiteQfqWindowCache(tmp_path, "v2"),
-        SQLiteQfqWindowCache(tmp_path, "v3"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2"),
+        SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v3"),
         supplier,
-        QfqCheckpoint(tmp_path / ".checkpoint.json"),
         lambda: False,
         lambda message: logs.append(_plain_feedback(message)),
     )
@@ -947,15 +764,15 @@ def test_all_tencent_waves_keep_incomplete_stocks_pending_without_fallback(tmp_p
         result = updater.execute(observed)
         assert result.completed_codes == 3 and result.pending_codes == 1
         assert [event[0] for event in events] == ["tencent"] * 4
-        assert sum(" | download_qfq 股票进度 | " in line for line in logs) == 4
+        assert sum(" | sync market 股票进度 | " in line for line in logs) == 4
         assert any("已处理 4/4（100.00%） | 合格 3 | 待重试 1" in line for line in logs)
         for cache in (updater.v2, updater.v3):
             assert cache.codes() == frozenset({"600001", "600002", "600003"})
-        before = (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3"))
+        before = _fingerprints(tmp_path)
         resumed = updater.execute(observed)
         assert resumed.skipped_codes == 3 and resumed.pending_codes == 1 and resumed.changed_files == ()
         assert len(events) == 4
-        assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
+        assert _fingerprints(tmp_path) == before
     finally:
         assert pool.stop(wait=True, cancel_futures=True).completed
 
@@ -994,16 +811,15 @@ def test_qfq_composition_never_constructs_baostock_for_incomplete_tencent(tmp_pa
         "BaoStockHistorySupplier",
         lambda *_args, **_kwargs: pytest.fail("qfq must not construct BaoStock"),
     )
-    with HistoryMaintenanceLock(tmp_path / "data/history/.maintenance.lock"):
+    with HistoryMaintenanceLock(tmp_path / "data/market/.history.lock"):
         result = bootstrap.ExecuteQfqDownload(
-            tmp_path,
-            reference_root=tmp_path / "data/reference",
+            DataPaths(tmp_path / "data"),
             report=lambda _message: None,
             now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
         )
     assert result.completed_codes == 0 and result.pending_codes == 2
     assert events == ["tencent", "tencent"]
-    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").codes() == frozenset()
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2").codes() == frozenset()
 
 
 def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_path, monkeypatch) -> None:
@@ -1037,7 +853,7 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
             return replace(context, universe=universe)
 
     def st_source(path, *_args, **_kwargs):
-        assert path == tmp_path / "data/reference/historical_st.json"
+        assert path == tmp_path / "data/market/reference/historical_st.sqlite3"
         return StSource()
 
     _install_download_config(tmp_path)
@@ -1046,15 +862,18 @@ def test_qfq_composition_uses_shared_st_evidence_without_published_history(tmp_p
     monkeypatch.setattr(bootstrap, "LoadCurrentAShareUniverse", lambda *_args: (eligible, excluded))
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", Tencent)
     result = bootstrap.ExecuteQfqDownload(
-        tmp_path,
-        reference_root=tmp_path / "data/reference",
+        DataPaths(tmp_path / "data"),
         report=lambda _message: None,
         now=lambda: datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16),
     )
 
     assert result.completed_codes == 1 and result.pending_codes == 0
-    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").codes() == frozenset({eligible.code})
-    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v3").codes() == frozenset({eligible.code})
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2").codes() == frozenset(
+        {eligible.code}
+    )
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v3").codes() == frozenset(
+        {eligible.code}
+    )
 
 
 def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_path, monkeypatch) -> None:
@@ -1067,16 +886,15 @@ def test_qfq_composition_rejects_another_qfq_writer_before_supplier_calls(tmp_pa
     _install_download_config(tmp_path)
     supplier = Tencent()
     monkeypatch.setattr(bootstrap, "TencentQfqSupplier", lambda _dependencies: supplier)
-    with HistoryMaintenanceLock(tmp_path / "data/qfq/.maintenance.lock"):
+    with HistoryMaintenanceLock(tmp_path / "data/market/daily_window.lock"):
         result = bootstrap.ExecuteQfqDownload(
-            tmp_path,
-            reference_root=tmp_path / "data/reference",
+            DataPaths(tmp_path / "data"),
             report=lambda _message: None,
         )
     assert result.failure_reason == "HistoryMaintenanceAlreadyRunningError"
     assert supplier.calls == []
     assert not (tmp_path / "data/qfq/.checkpoint.json").exists()
-    assert SQLiteQfqWindowCache(tmp_path / "data/qfq", "v2").codes() == frozenset()
+    assert SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", "v2").codes() == frozenset()
 
 
 def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, monkeypatch) -> None:
@@ -1107,8 +925,7 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     with ThreadPoolExecutor(max_workers=1) as pool:
         pending = pool.submit(
             bootstrap.ExecuteQfqDownload,
-            tmp_path,
-            reference_root=tmp_path / "data/reference",
+            DataPaths(tmp_path / "data"),
             report=lambda _message: None,
             now=lambda: observed,
         )
@@ -1118,10 +935,10 @@ def test_history_and_qfq_download_overlap_and_publish_independently(tmp_path, mo
     assert history_result.state == "completed" and history_result.active_snapshot_hash is not None
     assert qfq_result.failure_reason is None and qfq_result.completed_codes == 1
     assert qfq_result.pending_codes == 0
-    assert (root / "control.sqlite3").exists()
-    assert (tmp_path / "data/qfq/.checkpoint.json").exists()
+    assert (root / "catalog.sqlite3").exists()
+    assert (tmp_path / "data/market/daily_window.sqlite3").exists()
     for profile, sessions in (("v2", 251), ("v3", 61)):
-        cache = SQLiteQfqWindowCache(tmp_path / "data/qfq", profile)
+        cache = SQLiteQfqWindowCache((tmp_path / "data/market") / "daily_window.sqlite3", profile)
         assert len(cache.read_code("600001").cells) == sessions
 
 
@@ -1131,7 +948,7 @@ def test_small_tail_exact_overlap_or_bounded_revision_refetch(tmp_path, conflict
     updater = _updater(tmp_path, supplier)
     context = supplier.load_qfq_context(DAYS[-1], 251)
     source = f"fixture:{context.source_versions.content_hash}"
-    updater.seed((_window(days=DAYS[:-1]),), source)
+    updater.seed((_window(days=DAYS[:-1]),), source, calendar=DAYS[:-1])
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.pending_codes == 0
     assert supplier.calls[0][1] == DAYS[-4:]
@@ -1146,44 +963,48 @@ def test_same_day_without_checkpoint_only_rechecks_three_overlap_dates(tmp_path)
     updater = _updater(tmp_path, supplier)
     context = supplier.load_qfq_context(DAYS[-1], 251)
     source = f"fixture:{context.source_versions.content_hash}"
-    updater.seed((_window(),), source)
+    updater.seed((_window(),), source, calendar=DAYS)
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
-    assert result.changed_files == ()
+    assert result.changed_files == ("daily_window.sqlite3",)  # Completion is committed with the unchanged prices.
+    assert result.changed_rows == 0
     assert supplier.calls == [("600001", DAYS[-3:])]
 
 
 def test_interrupted_between_profiles_does_not_advance_checkpoint_and_retry_repairs(tmp_path, monkeypatch) -> None:
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
-    write = updater.v3._write_code
+    from trader.infra.sqlite_connection import SqliteConnection
 
-    def fail(connection, code, rows, source, *, schema="main", previous=None):
-        if schema == "paired":
+    write = SqliteConnection.run
+
+    def fail(connection, sql, parameters=()):
+        if sql.startswith("INSERT OR REPLACE INTO identities") and parameters[0] == "v3":
             raise RuntimeError("interrupted second profile")
-        return write(connection, code, rows, source, schema=schema, previous=previous)
+        return write(connection, sql, parameters)
 
-    monkeypatch.setattr(updater.v3, "_write_code", fail)
+    monkeypatch.setattr(SqliteConnection, "run", fail)
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.pending_codes == 1
     source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
-    assert not updater.resume.completed(DAYS[-1], "600001", source)
+    assert not updater.v2.completed(DAYS[-1], "600001", source)
     assert updater.v2.read_code("600001").cells == ()
     assert updater.v3.read_code("600001").cells == ()
-    monkeypatch.setattr(updater.v3, "_write_code", write)
+    monkeypatch.setattr(SqliteConnection, "run", write)
     result = updater.execute(observed)
     assert result.pending_codes == 0 and result.completed_codes == 1
     assert len(updater.v3.read_code("600001").cells) == 61
-    assert updater.resume.completed(DAYS[-1], "600001", source)
+    assert updater.v2.completed(DAYS[-1], "600001", source)
 
 
 def test_source_migration_ignores_legacy_checkpoint_and_refetches_full_window(tmp_path):
     supplier = Supplier()
     updater = _updater(tmp_path, supplier)
-    updater.seed((_window(),), "history:seed")
+    updater.seed((_window(),), "history:seed", calendar=DAYS)
     source = f"fixture:{supplier.load_qfq_context(DAYS[-1], 251).source_versions.content_hash}"
     # Even a valid same-day code checkpoint cannot relabel old-source rows.
-    updater.resume.confirm_many(DAYS[-1], ("600001",), source)
+    with closing(OpenSqliteConnection(updater.v2.path)) as connection, connection:
+        connection.run("INSERT INTO completions VALUES(?,?,?)", ("600001", DAYS[-1].isoformat(), source))
     result = updater.execute(datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16))
     assert result.completed_codes == 1 and result.skipped_codes == 0
     assert supplier.calls == [("600001", DAYS[-251:])]
@@ -1213,9 +1034,9 @@ def test_bounded_parallel_downloads_single_writer_and_cancelled_results_not_publ
     updater = _updater(tmp_path, supplier)
     original = updater.v2.replace_paired_windows
 
-    def write(peer, windows, identity):
+    def write(peer, windows, identity, **kwargs):
         assert threading.get_ident() == writer_ident
-        return original(peer, windows, identity)
+        return original(peer, windows, identity, **kwargs)
 
     monkeypatch.setattr(updater.v2, "replace_paired_windows", write)
     pool = BoundedExecutor(worker_count=2, queue_capacity=0, thread_name_prefix="qfq-fixture")
@@ -1240,7 +1061,7 @@ def test_one_unreadable_code_does_not_block_other_stocks(tmp_path, monkeypatch):
     updater = _updater(tmp_path, supplier)
     context = supplier.load_qfq_context(DAYS[-1], 251)
     source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
-    updater.seed((_window("600001"), _window("600002")), source)
+    updater.seed((_window("600001"), _window("600002")), source, calendar=DAYS)
     original = updater.v2.read_codes
 
     def read(codes):
@@ -1278,8 +1099,8 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
     updater = _updater(tmp_path, supplier)
     original = updater.v2.replace_paired_windows
 
-    def write(peer, windows, identity):
-        result = original(peer, windows, identity)
+    def write(peer, windows, identity, **kwargs):
+        result = original(peer, windows, identity, **kwargs)
         writes.extend(window.code for window in windows)
         return result
 
@@ -1297,7 +1118,7 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         result = updater.execute(observed)
         assert result.completed_codes == 3
         assert sorted(writes) == ["600001", "600002", "600003"]
-        stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
+        stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
         assert len(stock_progress) == 3
         assert all("处理 Tencent下载 | 结果 合格" in message for message in stock_progress)
         assert all(
@@ -1311,7 +1132,7 @@ def test_batch_progress_handles_out_of_order_completion_partial_batch_and_reuse(
         resumed = updater.execute(observed)
         assert resumed.skipped_codes == 3 and resumed.changed_files == ()
         assert len(supplier.calls) == 3
-        stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
+        stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
         assert len(stock_progress) == 3
         assert all("处理 本地复用 | 结果 复用" in message for message in stock_progress)
         assert "合格 3 | 待重试 0 | 其中复用 3" in messages[-1]
@@ -1332,13 +1153,13 @@ def test_pending_progress_uses_one_detailed_stock_line_and_preserves_old_window(
     supplier = _IncompleteSupplier(codes=("600001", "600002"))
     messages = []
     updater = replace(_updater(tmp_path, supplier), report=lambda message: messages.append(_plain_feedback(message)))
-    updater.seed((_window(),), "old-source")
+    updater.seed((_window(),), "old-source", calendar=DAYS)
     before = updater.v2.read_code("600001")
     observed = datetime.combine(DAYS[-1], datetime.min.time(), tzinfo=SHANGHAI).replace(hour=16)
     result = updater.execute(observed)
     assert result.completed_codes == 1 and result.pending_codes == 1
     assert updater.v2.read_code("600001") == before
-    stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
+    stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
     assert len(stock_progress) == 2
     pending = next(message for message in stock_progress if "600001 fixture" in message)
     assert "处理 Tencent下载 | 结果 待重试" in pending
@@ -1373,7 +1194,7 @@ def test_reused_codes_do_not_reduce_actual_download_wave_size(tmp_path):
     supplier.codes = tuple(f"60000{index}" for index in range(1, 9))
     messages = []
     result = replace(updater, report=lambda message: messages.append(_plain_feedback(message))).execute(observed)
-    stock_progress = [message for message in messages if " | download_qfq 股票进度 | " in message]
+    stock_progress = [message for message in messages if " | sync market 股票进度 | " in message]
     downloaded = [message for message in stock_progress if "处理 Tencent下载" in message]
     reused = [message for message in stock_progress if "处理 本地复用" in message]
     assert len(stock_progress) == 8 and len(downloaded) == len(reused) == 4
@@ -1394,7 +1215,7 @@ def test_preparation_pending_is_reported_without_any_download_and_hides_payload(
 
     context = supplier.load_qfq_context(DAYS[-1], 251)
     source = f"{context.source_versions.sdk_version}:{context.source_versions.content_hash}"
-    updater.seed((_window(),), source)
+    updater.seed((_window(),), source, calendar=DAYS)
 
     def read(_codes):
         raise RuntimeError("private supplier payload\nhttps://example.invalid?token=secret")
@@ -1405,7 +1226,7 @@ def test_preparation_pending_is_reported_without_any_download_and_hides_payload(
     assert result.completed_codes == 0 and result.pending_codes == 1
     assert supplier.calls == []
     assert "已处理 1/1（100.00%） | 合格 0 | 待重试 1" in messages[-1]
-    details = next(message for message in messages if " | download_qfq 股票进度 | " in message)
+    details = next(message for message in messages if " | sync market 股票进度 | " in message)
     assert "600001 fixture | 处理 本地检查 | 结果 失败" in details
     assert "raw -/251 | qfq -/251 | 完整配对 -/251 | 缺日 未知 | 原因 RuntimeError" in details
     assert "payload" not in "\n".join(messages) and "secret" not in "\n".join(messages)
@@ -1435,7 +1256,7 @@ def test_no_applicable_dates_are_counted_separately_and_elapsed_includes_context
     assert result.completed_codes == result.pending_codes == result.skipped_codes == 0
     assert supplier.calls == []
     assert messages[0].startswith("00:00:00 | qfq 准备 | ")
-    stock_progress = next(message for message in messages if " | download_qfq 股票进度 | " in message)
+    stock_progress = next(message for message in messages if " | sync market 股票进度 | " in message)
     assert "处理 无需下载 | 结果 无需下载 | raw 0/0 | qfq 0/0 | 完整配对 0/0" in stock_progress
     assert messages[-1].startswith("00:01:05 | qfq 完成 | 已处理 1/1（100.00%）")
     assert "合格 0 | 待重试 0 | 其中复用 0 | 无需下载 1 | 无真实日线 0 | 未处理 0" in messages[-1]
@@ -1466,7 +1287,7 @@ def test_cancellation_does_not_count_late_results_or_unvisited_stocks_as_process
     assert len(supplier.calls) == 1
     assert " | qfq 已取消 | 已处理 0/3（0.00%） | 合格 0 | 待重试 0" in messages[-1]
     assert "未处理 3" in messages[-1]
-    assert not any(" | download_qfq 股票进度 | " in message for message in messages)
+    assert not any(" | sync market 股票进度 | " in message for message in messages)
 
 
 def test_context_failure_reports_bounded_reason_and_preparation_elapsed(tmp_path):
@@ -1558,11 +1379,11 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
 
     full = _Archive(251, 0, ("600001", "600002"))
     reader = ReadPublishedHistoryUseCase(full)
-    short = SQLiteQfqWindowCache(tmp_path, "v2")
+    short = SQLiteQfqWindowCache((tmp_path) / "daily_window.sqlite3", "v2")
     for window in reader.iter_windows(full.current, sessions=251):
         if window.code == "600002":
             window = PublishedHistoryWindow(window.code, window.cells[:-2])
-        short.replace_window(window, "history:fixture")
+        publish_windows(short, (window,), "history:fixture")
     calendar_calls = 0
 
     def dates():
@@ -1587,7 +1408,7 @@ def test_online_projection_matches_full_history_and_keeps_settlement_independent
     assert loaded == expected
     assert projection.summaries(loaded, NOW) == original.summaries(expected, NOW)
     missing = PublishedHistoryCache(
-        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache(tmp_path / "missing", "v2")),
+        ReadPublishedHistoryUseCase(SQLiteQfqWindowCache((tmp_path / "missing") / "daily_window.sqlite3", "v2")),
         lookback_sessions=251,
         outcome_history=reader,
     )
@@ -1614,10 +1435,10 @@ def test_runner_lock_blocks_network_and_local_seeding_is_resumable(tmp_path) -> 
         assert result.failure_reason is not None
     assert supplier.calls == []
     result = runner.execute(seed_only=True)
-    assert result.completed_codes == 2 and result.changed_rows == 624
-    before = (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3"))
+    assert result.completed_codes == 2 and result.changed_rows == 502
+    before = _fingerprints(tmp_path)
     assert runner.execute(seed_only=True).changed_files == ()
-    assert (_fingerprints(tmp_path / "v2"), _fingerprints(tmp_path / "v3")) == before
+    assert _fingerprints(tmp_path) == before
     assert supplier.calls == []
 
 
@@ -1645,16 +1466,16 @@ def test_tencent_runner_never_reads_full_history_for_online_update(tmp_path):
 def test_qfq_cli_is_zero_argument_and_reports_pending(
     tmp_path, monkeypatch, capsys, pending, no_trade_data, latest_missing, exit_code
 ) -> None:
+    from trader.download.application.sync_data import SyncResult, SyncTaskResult
+
     calls = []
 
-    reference_root = tmp_path / "data/reference"
-
-    def execute(root, *, reference_root):
-        calls.append((root, reference_root))
+    def execute(config, target, **kwargs):
+        calls.append((config, target))
         from trader.download.application.progress_message import ProgressField
 
         TerminalDownloadProgress()(ProgressMessage((ProgressField("qfq fixture progress"),)))
-        return QfqUpdateResult(
+        market = QfqUpdateResult(
             DAYS[-1],
             completed_codes=100,
             pending_codes=pending,
@@ -1662,27 +1483,25 @@ def test_qfq_cli_is_zero_argument_and_reports_pending(
             no_trade_data_codes=no_trade_data,
             latest_missing_codes=latest_missing,
         )
+        return SyncResult((SyncTaskResult("market", "pending" if market.needs_retry else "completed", market=market),))
 
-    monkeypatch.setattr(
-        cli,
-        "LoadRuntimeSettings",
-        lambda _path: SimpleNamespace(project_root=tmp_path, reference_dir=reference_root),
-    )
-    monkeypatch.setattr("trader.bootstrap.ExecuteQfqDownload", execute)
-    assert cli.Main(["--config", str(tmp_path / "runtime.json"), "download_qfq"]) == exit_code
+    monkeypatch.setattr("trader.bootstrap.ExecuteSync", execute)
+    config = PROJECT_ROOT / "config/runtime.json"
+    assert cli.Main(["--config", str(config), "sync", "market"]) == exit_code
     captured = capsys.readouterr()
-    payload = json.loads(captured.out)
+    summary = json.loads(captured.out)
+    assert summary["schema_version"] == "data_sync"
+    payload = summary["tasks"][0]
     assert captured.err == "qfq fixture progress\n"
     assert payload["pending_codes"] == pending
     assert payload["no_trade_data_codes"] == no_trade_data
     assert payload["latest_missing_codes"] == latest_missing
-    assert payload["pending_reasons"] == ([{"reason": "qfq_window_incomplete", "count": pending}] if pending else [])
     assert payload["failure_reason"] is None
-    assert calls == [(tmp_path, reference_root)]
+    assert calls == [(config, "market")]
     with pytest.raises(SystemExit) as rejected:
-        cli.Main(["--config", str(tmp_path / "runtime.json"), "download_qfq", "--profile", "v3"])
+        cli.Main(["--config", str(config), "sync", "market", "--profile", "v3"])
     assert rejected.value.code == 2
-    assert calls == [(tmp_path, reference_root)]
+    assert calls == [(config, "market")]
 
 
 def test_local_extraction_heartbeat_is_visible_and_thread_stops() -> None:

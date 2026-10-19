@@ -104,10 +104,10 @@ def test_financial_exclusion_is_detected_without_announcement_cache(tmp_path: Pa
 def test_historical_exclusions_ignore_retired_annual_loss_evidence(tmp_path: Path) -> None:
     database = tmp_path / "eligibility.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute(
+        connection.run(
             "create table issuer_eligibility_facts (code text, reason text, effective_at text, evidence_id text)"
         )
-        connection.executemany(
+        connection.run_many(
             "insert into issuer_eligibility_facts values (?, ?, ?, ?)",
             (
                 (

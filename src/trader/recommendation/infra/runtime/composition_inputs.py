@@ -27,7 +27,7 @@ from trader.recommendation.infra.persistence.data_plane import SQLiteDataPlane
 from trader.recommendation.infra.persistence.decision_records import SQLiteDecisionRecords
 from trader.recommendation.infra.persistence.publication_sequence import PublicationSequence
 from trader.recommendation.infra.runtime.application_system import RuntimeWorkerResources
-from trader.training.infra.research.outcome_evidence_repository import SQLiteOutcomeEvidenceRepository
+from trader.training.infra.research.outcome_evidence_index import SQLiteOutcomeEvidenceIndex
 from trader.training.infra.research.research_trace_index import SQLiteResearchTraceIndex
 
 
@@ -51,7 +51,7 @@ class RuntimePersistenceContext:
     records: SQLiteDecisionRecords
     data_plane: SQLiteDataPlane
     budget: DeepSeekBudgetLedger
-    outcomes: SQLiteOutcomeEvidenceRepository
+    outcomes: SQLiteOutcomeEvidenceIndex
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ class RuntimePublicationDependencies:
     sequence: PublicationSequence
     records: SQLiteDecisionRecords
     market_data: MarketFeatureService
-    outcomes: SQLiteOutcomeEvidenceRepository
+    outcomes: SQLiteOutcomeEvidenceIndex
     additional_observers: tuple[DecisionEventConsumer[DecisionObservation], ...] = ()
 
 

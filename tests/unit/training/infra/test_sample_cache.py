@@ -6,7 +6,7 @@ import pytest
 from trader.download.domain.baostock_daily import BuildBaostockTrainingSplit
 from trader.infra.sqlite_connection import OpenSqliteConnection
 from trader.training.infra.sample_cache import TrainingSampleCache
-from trader.training.infra.sample_repository import TrainingSample
+from trader.training.infra.sample_index import TrainingSample
 
 
 def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
@@ -26,8 +26,8 @@ def test_complete_cache_reopens_read_only_and_input_change_rebuilds(tmp_path):
     with cache.open() as samples:
         assert cache.reused and samples.count() == 1
         samples.require_split(split)
-        assert samples._connection.execute("PRAGMA mmap_size").fetchone() == (0,)
-        assert samples._connection.execute("PRAGMA temp_store").fetchone() == (1,)
+        assert tuple(samples._connection.run("PRAGMA mmap_size").fetchone()) == (0,)
+        assert tuple(samples._connection.run("PRAGMA temp_store").fetchone()) == (1,)
     with cache.path.open("ab") as handle:
         handle.write(b"corrupted-tail")
     with cache.open() as samples:
@@ -54,10 +54,10 @@ def test_failed_sample_initialization_closes_sqlite_connection(tmp_path, monkeyp
         def __init__(self, connection):
             self.connection = connection
 
-        def execute(self, *args):
-            return self.connection.execute(*args)
+        def run(self, *args):
+            return self.connection.run(*args)
 
-        def executescript(self, _script):
+        def apply_script(self, _script):
             raise sqlite3.OperationalError("fixture cannot initialize database")
 
         def close(self):
@@ -68,11 +68,11 @@ def test_failed_sample_initialization_closes_sqlite_connection(tmp_path, monkeyp
         connections.append(connection)
         return connection
 
-    monkeypatch.setattr("trader.training.infra.sample_repository.OpenSqliteConnection", failing_connect)
+    monkeypatch.setattr("trader.training.infra.sample_index.OpenSqliteConnection", failing_connect)
     cache = TrainingSampleCache(tmp_path, "input", 1, "split")
     with pytest.raises(sqlite3.OperationalError, match="cannot initialize"):
         cache.open()
     assert not cache.manifest.exists()
     assert len(connections) == 1
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
-        connections[0].execute("SELECT 1")
+        connections[0].run("SELECT 1")

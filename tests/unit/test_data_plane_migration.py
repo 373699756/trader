@@ -17,7 +17,7 @@ def test_initialize_database_sets_schema_to_current_version(tmp_path: Path) -> N
     InitializeDatabase(database)
 
     with ConnectionScope(database) as connection:
-        version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+        version = connection.run("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
 
     assert version is not None
     assert int(str(version["value"])) == SCHEMA_VERSION
@@ -26,9 +26,9 @@ def test_initialize_database_sets_schema_to_current_version(tmp_path: Path) -> N
 def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) -> None:
     database = tmp_path / "legacy-data.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        connection.execute("INSERT INTO schema_meta(key, value) VALUES('schema_version', '1')")
-        connection.execute(
+        connection.run("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        connection.run("INSERT INTO schema_meta(key, value) VALUES('schema_version', '1')")
+        connection.run(
             """
             CREATE TABLE security_master_recent(
                 code TEXT PRIMARY KEY,
@@ -47,12 +47,11 @@ def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) ->
     InitializeDatabase(database)
 
     with ConnectionScope(database) as connection:
-        columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(security_master_recent)")}
+        columns = {str(row["name"]) for row in connection.run("PRAGMA table_info(security_master_recent)")}
         tables = {
-            str(row["name"])
-            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            str(row["name"]) for row in connection.run("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-        version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+        version = connection.run("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
 
     assert version is not None
     assert int(str(version["value"])) == SCHEMA_VERSION
@@ -66,13 +65,13 @@ def test_initialize_database_is_idempotent_for_partial_schema(tmp_path: Path) ->
 def test_initialize_database_recovers_from_invalid_schema_version(tmp_path: Path) -> None:
     database = tmp_path / "invalid-version.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        connection.execute("INSERT INTO schema_meta(key, value) VALUES('schema_version', 'N/A')")
+        connection.run("CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        connection.run("INSERT INTO schema_meta(key, value) VALUES('schema_version', 'N/A')")
 
     InitializeDatabase(database)
 
     with ConnectionScope(database) as connection:
-        version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+        version = connection.run("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
 
     assert version is not None
     assert int(str(version["value"])) == SCHEMA_VERSION
@@ -81,7 +80,7 @@ def test_initialize_database_recovers_from_invalid_schema_version(tmp_path: Path
 def test_initialize_database_handles_data_plane_schema_without_schema_meta(tmp_path: Path) -> None:
     database = tmp_path / "without-meta.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.executescript(
+        connection.apply_script(
             """
             CREATE TABLE security_master_recent(
                 code TEXT PRIMARY KEY,
@@ -99,8 +98,8 @@ def test_initialize_database_handles_data_plane_schema_without_schema_meta(tmp_p
     InitializeDatabase(database)
 
     with ConnectionScope(database) as connection:
-        version = connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
-        rows = {str(row["name"]) for row in connection.execute("PRAGMA table_info(security_master_recent)")}
+        version = connection.run("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()
+        rows = {str(row["name"]) for row in connection.run("PRAGMA table_info(security_master_recent)")}
 
     assert version is not None
     assert int(str(version["value"])) == SCHEMA_VERSION

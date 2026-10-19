@@ -17,9 +17,9 @@ from trader.recommendation.domain.publication.decision_identity import (
 )
 from trader.recommendation.domain.publication.models import RecommendationAction, Strategy
 from trader.training.domain.evaluation.models import BenchmarkReturn, OutcomeExitStatus, RecommendationOutcome
-from trader.training.infra.research.outcome_evidence_repository import (
+from trader.training.infra.research.outcome_evidence_index import (
     OutcomeEvidenceConflictError,
-    SQLiteOutcomeEvidenceRepository,
+    SQLiteOutcomeEvidenceIndex,
 )
 
 
@@ -40,7 +40,7 @@ class _Decisions:
 
 
 def _repository(tmp_path: Path, record: CommittedDecisionRecord | None = None):
-    return SQLiteOutcomeEvidenceRepository(tmp_path, _Decisions(record))
+    return SQLiteOutcomeEvidenceIndex(tmp_path, _Decisions(record))
 
 
 def _outcome(
@@ -205,7 +205,7 @@ def test_retryable_outcome_cannot_occupy_immutable_horizon(tmp_path: Path) -> No
         with pytest.raises(ValueError, match="retryable recommendation outcomes"):
             repository.save_recommendation_outcomes((retryable,))
 
-    assert not (tmp_path / "research" / "outcomes.sqlite3").exists()
+    assert not (tmp_path / "outcomes.sqlite3").exists()
 
 
 def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
@@ -213,9 +213,9 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
     repository.initialize()
     repository.save_recommendation_outcomes((_outcome(),))
 
-    database = tmp_path / "research" / "outcomes.sqlite3"
+    database = tmp_path / "outcomes.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        row = connection.execute("SELECT status, payload_hash, payload FROM recommendation_outcomes").fetchone()
+        row = connection.run("SELECT status, payload_hash, payload FROM recommendation_outcomes").fetchone()
 
     assert row is not None
     assert row[0] == "complete"
@@ -230,7 +230,7 @@ def test_outcome_schema_and_payload_are_durable(tmp_path: Path) -> None:
     assert "anchor_price" not in payload
     assert "minimum_low" not in payload
     assert "end_close" not in payload
-    status = SQLiteOutcomeEvidenceRepository.inspect_status(tmp_path)
+    status = SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path)
     assert status.initialized is True
     assert status.recommendation_outcomes == 1
     assert status.complete_outcomes == 1
@@ -248,9 +248,9 @@ def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_
 
     repository.save_recommendation_outcomes((outcome,))
 
-    database = tmp_path / "research" / "outcomes.sqlite3"
+    database = tmp_path / "outcomes.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        row = connection.execute("SELECT status, payload FROM recommendation_outcomes").fetchone()
+        row = connection.run("SELECT status, payload FROM recommendation_outcomes").fetchone()
     assert row is not None
     payload = json.loads(row[1])
     assert row[0] == "complete"
@@ -258,23 +258,23 @@ def test_complete_return_without_atr_risk_label_remains_durable_and_counted(tmp_
     assert payload["mae_atr"] is None
     assert payload["severe_drawdown"] is None
     assert payload["quality_reason"] == "atr20_unavailable"
-    assert SQLiteOutcomeEvidenceRepository.inspect_status(tmp_path).complete_outcomes == 1
+    assert SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path).complete_outcomes == 1
 
 
 def test_outcome_status_inspection_is_read_only_for_missing_database(tmp_path: Path) -> None:
-    status = SQLiteOutcomeEvidenceRepository.inspect_status(tmp_path)
+    status = SQLiteOutcomeEvidenceIndex.inspect_status(tmp_path)
 
     assert status.initialized is False
     assert status.benchmark_returns == 0
-    assert not (tmp_path / "research").exists()
+    assert not (tmp_path / "outcomes.sqlite3").exists()
 
 
 def test_benchmark_read_rejects_tampered_columns(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     repository.record_benchmark_return(BenchmarkReturn("2026-07-21", 0.6), observed_at=NOW)
-    database = tmp_path / "research" / "outcomes.sqlite3"
+    database = tmp_path / "outcomes.sqlite3"
     with closing(OpenSqliteConnection(database)) as connection, connection:
-        connection.execute("UPDATE benchmark_returns SET return_pct = 9.9")
+        connection.run("UPDATE benchmark_returns SET return_pct = 9.9")
 
     with pytest.raises(OutcomeEvidenceConflictError, match="benchmark return"):
         repository.benchmark_returns_after("2026-07-20", limit=1)

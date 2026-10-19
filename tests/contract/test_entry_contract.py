@@ -71,10 +71,8 @@ def test_cli_exposes_current_maintenance_and_explicit_offline_research_commands(
     for removed in ("migrate-v17", "recommendation-archive", "tomorrow-cutover-evidence"):
         assert removed not in help_text
     for retained in (
-        "check",
-        "download_train",
-        "download_qfq",
-        "download_risk",
+        "sync",
+        "train",
         "validate-config",
         "performance-check",
         "research-status",
@@ -114,7 +112,7 @@ def test_server_module_loads_only_authorized_background_research_consumers() -> 
         "trader.training.infra.research.trace_codec",
         "trader.infra.serialization.research_trace_validation",
         "trader.training.infra.research.trace_projection",
-        "trader.training.infra.research.outcome_evidence_repository",
+        "trader.training.infra.research.outcome_evidence_index",
         "trader.training.infra.research.research_trace_index",
         "trader.training.infra.research.trace_capacity",
     }
@@ -145,10 +143,10 @@ def test_performance_entrypoint_does_not_import_posix_resource_at_module_load() 
 def test_run_script_exposes_only_the_aggregated_public_workflows() -> None:
     shell = (ROOT / "run.sh").read_text(encoding="utf-8")
 
-    assert "check" in shell
-    assert "download_train" in shell
-    assert "download_qfq" in shell
-    assert "download_risk" in shell
+    assert "./run.sh check" not in shell
+    assert "train" in shell
+    assert "sync" in shell
+    assert "download_risk" not in shell
     assert "research-r7-dossier" not in shell
     assert "serve|app" not in shell
     for internal_stage in (
@@ -178,12 +176,15 @@ def test_run_script_help_separates_daily_commands_from_offline_research(tmp_path
     assert "./run.sh                         以默认 V2 启动并加载共享双头模型" in completed.stdout
     assert "./run.sh --profile v2|v3         单独启动 V2 或 V3" in completed.stdout
     assert "./run.sh --profile both          同一进程同时启动 V2 和 V3" in completed.stdout
-    assert "./run.sh check                   依次校验配置、研究状态和性能门禁" in completed.stdout
+    assert "scripts/diagnose_runtime.py --profile local" in completed.stdout
     assert "离线研究（仅在明确执行研究任务时使用）:" in completed.stdout
-    assert "./run.sh download_train          先维护完整历史，再联合训练 V2/V3" in completed.stdout
+    assert "./run.sh train                   历史维护后联合训练或复用 V2/V3" in completed.stdout
     assert "--allow-partial-history" not in completed.stdout
     assert "research-r7-dossier" not in completed.stdout
-    assert "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数" in completed.stdout
+    assert (
+        "看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。"
+        in completed.stdout
+    )
     assert "./run.sh serve" not in completed.stdout
     assert not missing_venv.exists()
 
@@ -211,9 +212,9 @@ def test_run_script_unknown_command_fails_before_environment_setup_with_concise_
 @pytest.mark.parametrize(
     "arguments",
     (
-        ("download_train", "--sessions", "2000"),
-        ("download_train", "--mode", "update"),
-        ("--profile", "v2", "download_train"),
+        ("train", "--sessions", "2000"),
+        ("train", "--mode", "update"),
+        ("--profile", "v2", "train"),
     ),
 )
 def test_run_script_rejects_download_arguments_before_environment_setup(
@@ -232,7 +233,7 @@ def test_run_script_rejects_download_arguments_before_environment_setup(
 
     assert completed.returncode == 2
     assert completed.stdout == ""
-    assert "download_train 不接受任何参数" in completed.stderr
+    assert "train 不接受" in completed.stderr
     assert not missing_venv.exists()
 
 
@@ -365,7 +366,7 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download_train"),
+        ("bash", str(ROOT / "run.sh"), "train"),
         cwd=ROOT,
         env={
             **os.environ,
@@ -379,11 +380,11 @@ def test_run_script_forwards_only_the_zero_argument_history_command(tmp_path: Pa
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} download_train\n"
+    assert completed.stdout == f"cli:--config {config} train\n"
 
 
 @pytest.mark.parametrize("download_result", (0, 1, 130))
-def test_download_train_stops_before_training_on_history_failure(monkeypatch, download_result):
+def test_train_stops_before_training_on_history_failure(monkeypatch, download_result):
     from trader.bootstrap import ExecuteDownloadTrain
 
     calls = []
@@ -394,7 +395,7 @@ def test_download_train_stops_before_training_on_history_failure(monkeypatch, do
     assert len(calls) == int(download_result == 0)
 
 
-def test_download_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
+def test_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     venv_bin = tmp_path / "venv" / "bin"
     venv_bin.mkdir(parents=True)
     _write_fake_entrypoint(venv_bin / "python3", "exit 99")
@@ -406,7 +407,7 @@ def test_download_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download_train"),
+        ("bash", str(ROOT / "run.sh"), "train"),
         cwd=ROOT,
         env={
             **os.environ,
@@ -422,7 +423,7 @@ def test_download_train_uses_one_bounded_linux_scope(tmp_path: Path) -> None:
     assert completed.returncode == 0
     assert "--property=MemoryHigh=4608M" in completed.stdout
     assert "--property=MemoryMax=5120M" in completed.stdout
-    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} download_train")
+    assert completed.stdout.rstrip().endswith(f"-- {venv_bin / 'trader-cli'} --config {config} train")
 
 
 def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: Path) -> None:
@@ -436,7 +437,7 @@ def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: P
     config = tmp_path / "runtime.json"
 
     completed = subprocess.run(
-        ("bash", str(ROOT / "run.sh"), "download_train"),
+        ("bash", str(ROOT / "run.sh"), "train"),
         cwd=ROOT,
         env={
             **os.environ,
@@ -450,7 +451,7 @@ def test_run_script_warns_when_history_download_scope_is_unavailable(tmp_path: P
     )
 
     assert completed.returncode == 0
-    assert completed.stdout == f"cli:--config {config} download_train\n"
+    assert completed.stdout == f"cli:--config {config} train\n"
     assert "不能提供 cgroup 硬隔离" in completed.stderr
 
 
@@ -472,40 +473,11 @@ def test_run_script_rejects_an_unknown_profile_before_environment_setup(tmp_path
     assert not missing_venv.exists()
 
 
-@pytest.mark.parametrize(
-    ("command", "extra", "expected_stages"),
-    (("check", (), ("validate-config", "research-status", "history-automation-status", "performance-check")),),
-)
-def test_cli_aggregates_all_stages_and_preserves_nonzero_gate_results(
-    command: str,
-    extra: tuple[str, ...],
-    expected_stages: tuple[str, ...],
-    monkeypatch,
-    capsys,
-) -> None:
-    calls: list[list[str]] = []
-
-    def fake_stage(argv: list[str]) -> int:
-        calls.append(argv)
-        return 1 if len(calls) == 1 else 0
-
-    monkeypatch.setattr(cli_module, "_run_group_stage", fake_stage)
-    config = ROOT / "config/runtime.json"
-
-    assert Main(["--config", str(config), "--profile", "v2", command, *extra]) == 1
-
-    assert [call[-1] if "--workers" not in call else call[-3] for call in calls] == list(expected_stages)
-    assert all(call[:4] == ["--config", str(config), "--profile", "v2"] for call in calls)
-    summary = json.loads(capsys.readouterr().out)
-    assert summary == {
-        "command": command,
-        "profile": "v2",
-        "schema_version": "trader_command_group",
-        "stages": [
-            {"command": stage, "exit_code": 1 if index == 0 else 0} for index, stage in enumerate(expected_stages)
-        ],
-        "status": "completed_with_failures",
-    }
+@pytest.mark.parametrize("command", ("check", "download_train", "download_qfq", "download_risk", "download_scheduled"))
+def test_removed_data_commands_are_rejected_before_configuration(command):
+    with pytest.raises(SystemExit) as error:
+        Main(["--config", "/unavailable/runtime.json", command])
+    assert error.value.code == 2
 
 
 def test_powershell_help_uses_the_same_command_groups() -> None:
@@ -518,16 +490,13 @@ def test_powershell_help_uses_the_same_command_groups() -> None:
     assert "research-history" not in powershell
     assert "research-screen" not in powershell
     assert "--allow-partial-history" not in powershell
-    assert "看板和 check 可追加 --profile v2|v3；离线数据与训练命令均为零参数" in powershell
+    assert "看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。" in powershell
     assert "& $SelectedEntryPoint --help" in powershell
     assert "$ProfileArgs = if ($ScoringProfileSet)" in powershell
-    assert '$ScoringProfile -notin @("v2", "v3")' in powershell
+    assert '$ScoringProfile -notin @("v2", "v3", "both")' in powershell
     assert "config\\runtime.json" in powershell
     assert "config\\v2\\runtime.json" not in powershell
-    assert (
-        '$PublicModes = @("help", "-h", "--help", "check", "download_train", "download_qfq", "download_risk")'
-        in powershell
-    )
+    assert '$PublicModes = @("help", "-h", "--help", "sync", "train")' in powershell
     assert "install-history-automation" not in powershell
     assert "uninstall-history-automation" not in powershell
 
@@ -540,7 +509,6 @@ def test_research_status_is_historical_only_and_does_not_create_runtime_files(
     runtime_dir = tmp_path / "runtime"
     history_root = tmp_path / "history"
     config = _runtime_config(tmp_path)
-    monkeypatch.setattr(research_commands, "_history_data_root", lambda: history_root)
 
     assert Main(["--config", str(config), "research-status"]) == 0
 
@@ -631,7 +599,7 @@ def test_research_status_keeps_tomorrow_graph_conflict_out_of_h1_input_blockers(
         lambda _repository: (_ for _ in ()).throw(TomorrowResearchEvidenceIndexError("graph invalid")),
     )
 
-    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config))
+    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config).data_paths.research("v2"))
 
     assert result["status"] == "artifact_conflict"
     assert result["input_prerequisite_status"] == "ready"
@@ -649,7 +617,7 @@ def test_research_status_reports_h1_conflict_as_the_input_boundary(tmp_path: Pat
 
     monkeypatch.setattr(research_commands, "_tomorrow_research_prerequisite", lambda _runtime: _BrokenPrerequisite())
 
-    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config))
+    result = research_commands._read_tomorrow_research_status(LoadRuntimeSettings(config).data_paths.research("v2"))
 
     assert result["status"] == "artifact_conflict"
     assert result["input_prerequisite_status"] == "artifact_conflict"
@@ -751,5 +719,5 @@ def test_server_lock_conflict_explains_the_existing_service_and_safe_restart(
 def test_budget_uses_its_own_database_and_never_opens_the_legacy_runtime_name() -> None:
     bootstrap = (ROOT / "src/trader/bootstrap.py").read_text(encoding="utf-8")
 
-    assert 'settings.runtime_dir / "deepseek-budget.sqlite3"' in bootstrap
+    assert "settings.data_paths.budget," in bootstrap
     assert 'settings.runtime_dir / "runtime.sqlite3"' not in bootstrap

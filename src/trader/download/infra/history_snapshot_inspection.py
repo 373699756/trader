@@ -14,11 +14,11 @@ from trader.download.domain.history_control import (
 )
 from trader.download.domain.history_snapshot_status import HistorySnapshotStatus
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
-from trader.download.infra.history_month_partition import (
-    HistoryMonthPartitionError,
-    HistoryMonthPrices,
+from trader.download.infra.history_prices import (
+    HistoryPricePartition,
+    HistoryPricePartitionError,
 )
-from trader.download.infra.history_reference_files import ReadBoundHistoryReference
+from trader.download.infra.history_reference_codec import ReadBoundHistoryReference
 
 
 class HistorySnapshotInspectionError(RuntimeError):
@@ -36,7 +36,7 @@ class ActiveHistorySnapshot:
 
 def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False) -> HistorySnapshotStatus:
     history_root = root
-    if not (history_root / "control.sqlite3").is_file():
+    if not (history_root / "catalog.sqlite3").is_file():
         return _unavailable()
     try:
         active = LoadActiveHistorySnapshot(history_root)
@@ -53,7 +53,7 @@ def InspectHistorySnapshot(root: Path, *, verify_partitions: bool = False) -> Hi
 
 def LoadActiveHistorySnapshot(root: Path) -> ActiveHistorySnapshot:
     history_root = root
-    control_path = history_root / "control.sqlite3"
+    control_path = history_root / "catalog.sqlite3"
     if not control_path.is_file():
         raise HistorySnapshotInspectionError("history_snapshot_unavailable")
     try:
@@ -78,8 +78,8 @@ def VerifyActiveHistorySnapshot(active: ActiveHistorySnapshot) -> None:
         raise HistorySnapshotInspectionError("history_reference_unavailable") from exc
     try:
         for reference in active.snapshot.partitions:
-            HistoryMonthPrices.verify(active.root / reference.relative_path, reference)
-    except (HistoryMonthPartitionError, OSError, ValueError) as exc:
+            HistoryPricePartition.verify(active.root / reference.relative_path, reference)
+    except (HistoryPricePartitionError, OSError, ValueError) as exc:
         raise HistorySnapshotInspectionError("history_snapshot_partition_invalid") from exc
 
 

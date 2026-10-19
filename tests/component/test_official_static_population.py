@@ -90,7 +90,7 @@ def test_official_population_survives_missing_and_foreign_quotes_in_read_only_pr
 
 
 def test_no_official_reference_never_substitutes_quote_population(tmp_path):
-    _, _, _, history, service = _fixture(data_plane=SQLiteDataPlane(tmp_path))
+    _, _, _, history, service = _fixture(data_plane=SQLiteDataPlane((tmp_path) / "snapshots.sqlite3"))
     batch = service.fetch_market_feature_batch(NOW)
     assert batch.features == () and history.calls == []
     assert all(s.state is StageState.NOT_READY for s in batch.static_stages)
@@ -181,7 +181,7 @@ def test_successful_same_content_refresh_updates_age_without_changing_content_id
 
 
 def test_non_st_registry_fact_is_deferred_to_second_level_filter(tmp_path):
-    registry = SQLiteIssuerEligibilityIndex(tmp_path)
+    registry = SQLiteIssuerEligibilityIndex((tmp_path) / "eligibility.sqlite3")
     registry.record((ManualBlacklistFact("300001", effective_at=NOW, config_hash="fixture"),))
     _, _, _, history, service = _fixture(
         quotes=(_quote(), _quote("300001")),
@@ -282,7 +282,7 @@ def test_expired_reference_is_reused_with_degraded_health():
 
 
 def test_per_security_persistence_is_not_treated_as_complete_population_after_recovery(tmp_path):
-    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane = SQLiteDataPlane((tmp_path) / "snapshots.sqlite3")
     _, _, _, _, first_service = _fixture(data_plane=data_plane)
     first_service.references.schedule_security_master_refresh(NOW)
     _, _, _, history, recovered = _fixture(data_plane=data_plane)

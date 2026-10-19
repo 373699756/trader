@@ -6,6 +6,7 @@ from pathlib import Path
 
 from trader.download.domain.history_sync import HistorySyncConfiguration
 from trader.download.domain.qfq_window import QFQ_WINDOWS
+from trader.infra.settings.data_paths import DataPaths
 from trader.infra.settings.parser import (
     ConfigurationError,
     Integer,
@@ -17,7 +18,7 @@ from trader.infra.settings.parser import (
 )
 
 
-def LoadHistorySyncConfiguration(project_root: Path, reference_root: Path) -> HistorySyncConfiguration:
+def LoadHistorySyncConfiguration(project_root: Path, paths: DataPaths) -> HistorySyncConfiguration:
     document = ReadJsonObject(project_root / "config" / "download.json")
     RequireExactKeys(document, {"history", "online_qfq"}, "download")
     history = RequireMapping(document, "history")
@@ -52,8 +53,8 @@ def LoadHistorySyncConfiguration(project_root: Path, reference_root: Path) -> Hi
     if windows != QFQ_WINDOWS:
         raise ConfigurationError("online qfq windows must match the active feature contracts")
     return HistorySyncConfiguration(
-        archive_root=project_root / "data" / "history",
-        reference_root=reference_root,
+        archive_root=paths.history,
+        reference_root=paths.reference,
         sessions=Integer(history, "requested_sessions", minimum=1, maximum=2000),
         reread_sessions=Integer(history, "reread_sessions", minimum=1),
         download_batch_size=Integer(history, "download_batch_size", minimum=1),
@@ -64,7 +65,7 @@ def LoadHistorySyncConfiguration(project_root: Path, reference_root: Path) -> Hi
         query_interval_seconds=Number(history, "query_interval_seconds", minimum=1.5),
         cancellation_grace_seconds=Number(history, "cancellation_grace_seconds", minimum=0.001),
         progress_heartbeat_seconds=Number(history, "progress_heartbeat_seconds", minimum=0.001),
-        training_root=project_root / "data" / "train",
+        training_root=paths.models,
     )
 
 

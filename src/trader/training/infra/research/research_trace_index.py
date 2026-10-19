@@ -57,6 +57,7 @@ from trader.infra.serialization.research_trace_validation import (
 from trader.infra.serialization.research_trace_validation import (
     TextPairs as _text_pairs,
 )
+from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.application.pipeline.freeze_publish.decision_events import (
     CommittedDecisionItem,
     DecisionCommitted,
@@ -164,13 +165,11 @@ class SQLiteResearchTraceIndex:
         runtime_root: Path,
         *,
         limits: ResearchTraceLimits | None = None,
-        use_legacy_layout: bool = False,
     ) -> None:
         limits = limits or ResearchTraceLimits()
-        self._root = runtime_root / "research"
+        self._root = runtime_root
         self._writer_lock = ProcessLock(self._root / ".trace-write.lock")
-        self._legacy_database = self._root / "committed-events.sqlite3"
-        self._partitions = self._root / "committed-events"
+        self._partitions = self._root / "traces"
         self._capacity = limits.events_per_trade_date
         self._maximum_payload_bytes = limits.payload_bytes
         self._maximum_decoded_payload_bytes = limits.decoded_payload_bytes
@@ -178,7 +177,6 @@ class SQLiteResearchTraceIndex:
         self._maximum_archive_bytes = limits.archive_bytes
         self._maximum_trade_dates = limits.trade_dates
         self._physical_budget = TracePhysicalBudget(limits.physical_trade_date_bytes, limits.physical_total_bytes)
-        self._use_legacy_layout = use_legacy_layout
         self._lock = threading.RLock()
         self._initialized_databases: set[Path] = set()
         self._recorded = 0
@@ -190,10 +188,7 @@ class SQLiteResearchTraceIndex:
         with self._lock:
             if self._initialized:
                 return
-            if self._use_legacy_layout:
-                self._initialize_database(self._legacy_database)
-            else:
-                self._partitions.mkdir(parents=True, exist_ok=True)
+            self._partitions.mkdir(parents=True, exist_ok=True)
             self._initialized = True
 
     def record(self, observation: DecisionObservation) -> None:
@@ -249,15 +244,15 @@ class SQLiteResearchTraceIndex:
             self._physical_budget.require(self._source_databases(), database, pending_bytes=65536)
             self._initialize_database(database)
             with self._connection(database, write=True) as connection:
-                connection.execute("PRAGMA cache_spill = OFF")
-                connection.execute("BEGIN IMMEDIATE")
-                retained = int(connection.execute("SELECT COUNT(*) FROM committed_events").fetchone()[0])
+                connection.run("PRAGMA cache_spill = OFF")
+                connection.run("BEGIN IMMEDIATE")
+                retained = int(connection.run("SELECT COUNT(*) FROM committed_events").require_one()[0])
                 retained_bytes = int(
-                    connection.execute("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM committed_events").fetchone()[0]
+                    connection.run("SELECT COALESCE(SUM(LENGTH(payload)), 0) FROM committed_events").require_one()[0]
                 )
                 if retained >= self._capacity or retained_bytes + len(payload) > self._maximum_total_bytes:
                     raise ResearchTraceCapacityError("research trace partition capacity exhausted")
-                connection.execute(
+                connection.run(
                     """
                     INSERT INTO committed_events (
                         decision_version, strategy, trade_date, observed_at,
@@ -283,7 +278,7 @@ class SQLiteResearchTraceIndex:
         with self._lock:
             for database in self._source_databases():
                 with self._connection(database, write=False) as connection:
-                    row = connection.execute(
+                    row = connection.run(
                         "SELECT * FROM committed_events WHERE decision_version = ?",
                         (decision_version,),
                     ).fetchone()
@@ -309,7 +304,7 @@ class SQLiteResearchTraceIndex:
         with self._lock:
             for database in self._source_databases():
                 with self._connection(database, write=False) as connection:
-                    rows = connection.execute("SELECT DISTINCT trade_date FROM committed_events").fetchall()
+                    rows = connection.run("SELECT DISTINCT trade_date FROM committed_events").fetchall()
                 dates.update(date.fromisoformat(str(row["trade_date"])) for row in rows)
         return tuple(sorted(dates, reverse=True)[:limit])
 
@@ -322,7 +317,7 @@ class SQLiteResearchTraceIndex:
         with self._lock:
             for database in self._source_databases():
                 with self._connection(database, write=False) as connection:
-                    rows = connection.execute(
+                    rows = connection.run(
                         """
                         SELECT trade_date, MIN(observed_at) AS observed_at
                         FROM committed_events
@@ -347,7 +342,7 @@ class SQLiteResearchTraceIndex:
         with self._lock:
             for database in self._source_databases(trade_date):
                 with self._connection(database, write=False) as connection:
-                    rows = connection.execute(
+                    rows = connection.run(
                         "SELECT * FROM committed_events WHERE trade_date = ?",
                         (trade_date.isoformat(),),
                     ).fetchall()
@@ -435,8 +430,6 @@ class SQLiteResearchTraceIndex:
     _connection = staticmethod(Connection)
 
     def _database_for(self, trade_date: date) -> Path:
-        if self._use_legacy_layout:
-            return self._legacy_database
         return self._partitions / f"{trade_date.isoformat()}.sqlite3"
 
     def _initialize_database(self, database: Path) -> None:
@@ -445,8 +438,8 @@ class SQLiteResearchTraceIndex:
         self._physical_budget.require(self._source_databases(), database, pending_bytes=262144)
         InitializeDatabase(database, self._initialized_databases)
         with self._connection(database, write=True) as connection:
-            connection.execute("PRAGMA cache_spill = OFF")
-            connection.execute("BEGIN IMMEDIATE")
+            connection.run("PRAGMA cache_spill = OFF")
+            connection.run("BEGIN IMMEDIATE")
             quarantined = self._quarantine_invalid_rows(connection)
             if quarantined:
                 self._physical_budget.require_commit(connection, self._source_databases(), database)
@@ -459,8 +452,6 @@ class SQLiteResearchTraceIndex:
 
     def _source_databases(self, trade_date: date | None = None) -> tuple[Path, ...]:
         databases: list[Path] = []
-        if self._legacy_database.is_file():
-            databases.append(self._legacy_database)
         if trade_date is None:
             databases.extend(self._partition_databases())
         else:
@@ -474,12 +465,12 @@ class SQLiteResearchTraceIndex:
             if not source.is_file():
                 continue
             with self._connection(source, write=False) as connection:
-                row = connection.execute(
+                row = connection.run(
                     "SELECT payload_hash, payload FROM committed_events WHERE decision_version = ?",
                     (decision_version,),
                 ).fetchone()
             if row is not None:
-                return cast(sqlite3.Row, row)
+                return row
         return None
 
     def _trace_index_summary(self) -> TraceIndexSummary:
@@ -489,32 +480,27 @@ class SQLiteResearchTraceIndex:
         dates: set[date] = set()
         for database in self._source_databases():
             with self._connection(database, write=False) as connection:
-                row = connection.execute(
+                row = connection.run(
                     "SELECT COUNT(*) retained, COALESCE(SUM(LENGTH(payload)), 0) retained_bytes FROM committed_events"
-                ).fetchone()
-                day_rows = connection.execute("SELECT DISTINCT trade_date FROM committed_events").fetchall()
+                ).require_one()
+                day_rows = connection.run("SELECT DISTINCT trade_date FROM committed_events").fetchall()
             count = int(row["retained"])
             retained += count
             retained_bytes += int(row["retained_bytes"])
             dates.update(date.fromisoformat(str(item["trade_date"])) for item in day_rows)
-            if database == self._legacy_database:
-                legacy_retained = count
         return TraceIndexSummary(retained, retained_bytes, frozenset(dates), legacy_retained)
 
     def _quarantine_database_row(self, database: Path, decision_version: str, reason: str) -> None:
-        if database == self._legacy_database:
-            self._quarantined += 1
-            return
         with self._writer_lock, self._connection(database, write=True) as connection:
-            connection.execute("PRAGMA cache_spill = OFF")
-            connection.execute("BEGIN IMMEDIATE")
+            connection.run("PRAGMA cache_spill = OFF")
+            connection.run("BEGIN IMMEDIATE")
             QuarantineRow(connection, decision_version, reason)
             self._physical_budget.require_commit(connection, self._source_databases(), database)
         self._quarantined += 1
 
-    def _quarantine_invalid_rows(self, connection: sqlite3.Connection) -> int:
+    def _quarantine_invalid_rows(self, connection: SqliteConnection) -> int:
         quarantined = 0
-        rows = connection.execute("SELECT * FROM committed_events").fetchall()
+        rows = connection.run("SELECT * FROM committed_events").fetchall()
         for row in rows:
             try:
                 observation = _verified_event(row, maximum_decoded_bytes=self._maximum_decoded_payload_bytes)
@@ -525,7 +511,7 @@ class SQLiteResearchTraceIndex:
                 quarantined += 1
         return quarantined
 
-    def _quarantine_row(self, connection: sqlite3.Connection, decision_version: str, reason: str) -> None:
+    def _quarantine_row(self, connection: SqliteConnection, decision_version: str, reason: str) -> None:
         QuarantineRow(connection, decision_version, reason)
 
 

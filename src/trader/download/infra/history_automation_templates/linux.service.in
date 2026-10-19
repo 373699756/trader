@@ -5,6 +5,6 @@ Description=Trader historical data maintenance
 [Service]
 Type=oneshot
 WorkingDirectory={{WORKING_DIRECTORY}}
-ExecStart={{PYTHON_EXECUTABLE}} -m trader.entrypoints.cli --config {{CONFIG_PATH}} download_scheduled
+ExecStart={{PYTHON_EXECUTABLE}} -m trader.entrypoints.cli --config {{CONFIG_PATH}} sync history
 Environment=PYTHONUNBUFFERED=1
 TimeoutStartSec=12h

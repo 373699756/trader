@@ -200,7 +200,14 @@ def test_baostock_login_timeout_falls_back_to_tencent_price_context(tmp_path) ->
     assert context.universe == universe
     assert context.industry_intervals == ()
     result = RunHistorySync(
-        HistorySyncConfiguration(tmp_path, sessions=len(dates), reread_sessions=2, minimum_free_bytes=0),
+        HistorySyncConfiguration(
+            tmp_path,
+            sessions=len(dates),
+            reread_sessions=2,
+            minimum_free_bytes=0,
+            reference_root=(tmp_path).parent / "reference",
+            training_root=(tmp_path).parent / "models",
+        ),
         router,
         clock=lambda: NOW,
     )
@@ -236,9 +243,16 @@ def test_tencent_first_fetches_one_whole_window(count):
 @pytest.mark.parametrize("incoming", ("missing", "qfq_basis", "raw"))
 def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, incoming):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
-    config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path).parent / "reference",
+        training_root=(tmp_path).parent / "models",
+    )
     assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
-    before = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    before = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], before)
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline = Baseline(new_dates)
@@ -247,7 +261,7 @@ def test_existing_prices_win_over_recovery_and_new_qfq_values(tmp_path: Path, in
         _router(baseline, Prices(shift=1.0, missing=incoming == "missing", conflict=incoming == "raw")),
         clock=lambda: NOW,
     )
-    state = HistoryControlIndex(tmp_path / "control.sqlite3").load_state()
+    state = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state()
     if incoming == "raw":
         assert result.state == "completed" and result.unresolved_price_cells == 2
         assert HistorySnapshotReader(tmp_path).read_day(dates[-1], before) == rows
@@ -294,7 +308,14 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
         lambda *_args: _current_universe("600001", "600002"),
     )
     result = ExecuteHistoryDownload(
-        HistorySyncConfiguration(tmp_path, sessions=2, reread_sessions=2, minimum_free_bytes=0),
+        HistorySyncConfiguration(
+            tmp_path,
+            sessions=2,
+            reread_sessions=2,
+            minimum_free_bytes=0,
+            reference_root=(tmp_path).parent / "reference",
+            training_root=(tmp_path).parent / "models",
+        ),
         clock=lambda: NOW,
     )
     assert result.state == "completed"
@@ -302,7 +323,7 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
     assert supplier_settings["configuration"].supplier_timeout_seconds == 45.0
     assert supplier_settings["configuration"].supplier_retries == 2
     assert "price_policy" not in supplier_settings
-    snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     assert snapshot is not None
     rows = HistorySnapshotReader(tmp_path).read_day(dates[-1], snapshot)
     assert rows[0].is_st is False
@@ -311,7 +332,14 @@ def test_bootstrap_wires_routing_to_real_snapshot_publication(tmp_path, monkeypa
 
 def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     dates = tuple(date(2026, 9, 7) + timedelta(days=i) for i in range(3))
-    config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path).parent / "reference",
+        training_root=(tmp_path).parent / "models",
+    )
     assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
     new_dates = tuple(day + timedelta(days=1) for day in dates)
     baseline, prices = Baseline(new_dates), Prices()
@@ -319,14 +347,21 @@ def test_valid_increment_requests_only_tail_and_publishes_new_day(tmp_path):
     assert result.state == "completed"
     assert prices.calls == [new_dates, new_dates]
     assert baseline.calls == []
-    snapshot = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     assert snapshot.sequence == 2
     assert len(HistorySnapshotReader(tmp_path).read_day(new_dates[-1], snapshot)) == 2
 
 
 def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None:
     dates = tuple(date(2026, 8, 10) + timedelta(days=i) for i in range(61))
-    config = HistorySyncConfiguration(tmp_path / "baostock", sessions=61, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path / "baostock",
+        sessions=61,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path / "baostock").parent / "reference",
+        training_root=(tmp_path / "baostock").parent / "models",
+    )
     full = _current_universe("600001", "600002")
     assert (
         RunHistorySync(config, _router(Baseline(dates, industry="银行"), Prices(), full), clock=lambda: NOW).state
@@ -345,7 +380,7 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
     assert tuple(window.code for window in archive.read_windows(manifest, ("600001", "600002"), sessions=61)) == (
         "600001",
     )
-    snapshot = HistoryControlIndex(config.archive_root / "control.sqlite3").load_state().active_snapshot
+    snapshot = HistoryControlIndex(config.archive_root / "catalog.sqlite3").load_state().active_snapshot
     assert snapshot is not None
     assert tuple(row.code for row in HistorySnapshotReader(config.archive_root).read_day(dates[-1], snapshot)) == (
         "600001",
@@ -362,7 +397,14 @@ def test_exchange_universe_shrink_publishes_only_current_codes(tmp_path) -> None
 
 def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
     dates = tuple(date(2026, 10, 7) + timedelta(days=i) for i in range(3))
-    config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path).parent / "reference",
+        training_root=(tmp_path).parent / "models",
+    )
     assert RunHistorySync(config, Baseline(dates), clock=lambda: NOW).state == "completed"
 
     class Regressed(Baseline):
@@ -379,9 +421,16 @@ def test_unmarked_supplier_universe_shrink_still_fails_closed(tmp_path) -> None:
 @pytest.mark.parametrize("failure", (TimeoutError, ValueError))
 def test_unavailable_official_universe_preserves_active_snapshot(tmp_path, failure) -> None:
     dates = tuple(date(2026, 10, 7) + timedelta(days=i) for i in range(3))
-    config = HistorySyncConfiguration(tmp_path, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path).parent / "reference",
+        training_root=(tmp_path).parent / "models",
+    )
     assert RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW).state == "completed"
-    control = HistoryControlIndex(tmp_path / "control.sqlite3")
+    control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
     before = control.load_state().active_snapshot
 
     def unavailable():
@@ -410,9 +459,9 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
     context = router.load_context(dates[-1], 2000)
     new_stock = replace(context.universe[1], listed_on=dates[-639])
     context = replace(context, universe=(context.universe[0], new_stock))
-    control = HistoryControlIndex(tmp_path / "control.sqlite3")
+    control = HistoryControlIndex(tmp_path / "catalog.sqlite3")
     control.initialize()
-    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
     index.initialize()
     tasks = _download_tasks(context, control, None, index, 5)
     assert tasks[0].dates == dates
@@ -424,7 +473,14 @@ def test_new_stock_short_history_and_existing_stock_both_use_tencent(tmp_path):
 
 def test_gap_longer_than_reread_window_includes_published_qfq_anchor(tmp_path):
     dates = tuple(date(2026, 8, 25) + timedelta(days=i) for i in range(10))
-    config = HistorySyncConfiguration(tmp_path, sessions=10, reread_sessions=2, minimum_free_bytes=0)
+    config = HistorySyncConfiguration(
+        tmp_path,
+        sessions=10,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(tmp_path).parent / "reference",
+        training_root=(tmp_path).parent / "models",
+    )
     first = RunHistorySync(config, _router(Baseline(dates), Prices()), clock=lambda: NOW)
     assert first.state == "completed"
     shifted = tuple(day + timedelta(days=6) for day in dates)
@@ -521,7 +577,7 @@ def test_failed_tencent_download_reports_the_bounded_reason(capsys):
     )
 
     line = _compact_log(capsys.readouterr().err).strip()
-    assert "download 股票进度 | 1/2" in line
+    assert "sync history 股票进度 | 1/2" in line
     assert "处理 Tencent下载 | 结果 失败" in line
     assert "原因 qfq_daily_query_failed" in line
 

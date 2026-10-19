@@ -48,8 +48,16 @@ class QfqPairPublicationError(RuntimeError):
 
 class QfqWindowPort(Protocol):
     def replace_paired_windows(
-        self, peer: QfqWindowPort, windows: tuple[PublishedHistoryWindow, ...], source_identity: str
+        self,
+        peer: QfqWindowPort,
+        windows: tuple[PublishedHistoryWindow, ...],
+        source_identity: str,
+        *,
+        calendar: tuple[date, ...],
+        completed_day: date | None,
     ) -> tuple[tuple[str, ...], int]: ...
+
+    def completed(self, day: date, code: str, source: str) -> bool: ...
 
     def read_code(self, code: str) -> PublishedHistoryWindow: ...
 
@@ -59,23 +67,11 @@ class QfqWindowPort(Protocol):
 
     def retain_codes(self, allowed_codes: frozenset[str]) -> tuple[tuple[str, ...], int]: ...
 
-    def replace_window(self, window: PublishedHistoryWindow, source_identity: str) -> tuple[tuple[str, ...], int]: ...
-
-    def replace_windows(
-        self, windows: tuple[PublishedHistoryWindow, ...], source_identity: str
-    ) -> tuple[tuple[str, ...], int]: ...
-
 
 class QfqSupplierPort(Protocol):
     def load_qfq_context(self, as_of: date, sessions: int) -> HistorySupplierContext: ...
 
     def fetch_window(self, security: BaoStockSecurity, dates: tuple[date, ...]) -> PublishedHistoryWindow: ...
-
-
-class QfqResumePort(Protocol):
-    def completed(self, day: date, code: str, source: str) -> bool: ...
-
-    def confirm_many(self, day: date, codes: tuple[str, ...], source: str) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -106,7 +102,6 @@ class UpdateQfqWindows:
     v2: QfqWindowPort
     v3: QfqWindowPort
     supplier: QfqSupplierPort
-    resume: QfqResumePort
     cancel_requested: Callable[[], bool]
     report: Callable[[ProgressMessage], None]
     workers: int = 8
@@ -118,7 +113,9 @@ class UpdateQfqWindows:
         if not 1 <= self.workers <= 12:
             raise ValueError("qfq workers must be within 1..12")
 
-    def seed(self, windows: Iterable[PublishedHistoryWindow], identity: str) -> QfqUpdateResult:
+    def seed(
+        self, windows: Iterable[PublishedHistoryWindow], identity: str, *, calendar: tuple[date, ...]
+    ) -> QfqUpdateResult:
         started = self.monotonic()
         changed: set[str] = set()
         rows = 0
@@ -126,11 +123,14 @@ class UpdateQfqWindows:
         for window in windows:
             if self.cancel_requested():
                 break
-            for cache in (self.v2, self.v3):
-                if not cache.read_code(window.code).cells:
-                    files, delta = cache.replace_window(window, identity)
-                    changed.update(files)
-                    rows += delta
+            bounded = PublishedHistoryWindow(
+                window.code, tuple(cell for cell in window.cells if cell.trade_date in calendar[-251:])
+            )
+            files, delta = self.v2.replace_paired_windows(
+                self.v3, (bounded,), identity, calendar=calendar[-251:], completed_day=None
+            )
+            changed.update(files)
+            rows += delta
             count += 1
             if count % 64 == 0:
                 self.report(
@@ -183,10 +183,7 @@ class UpdateQfqWindows:
         )
         progress.publish("就绪", f"股票 {progress.total} 只 | 截止 {progress.day} | 并发 {self.workers}")
         plans = iter(self._plans(context, progress, v2_snapshot, v3_snapshot))
-        checkpoint_codes: list[str] = []
-        failure_reason = self._download_rolling(plans, progress, checkpoint_codes)
-        if not self.cancel_requested():
-            self._flush_checkpoint(checkpoint_codes, progress, threshold=1)
+        failure_reason = self._download_rolling(plans, progress, context.calendar.open_dates[-251:])
         return progress.finish(self.cancel_requested(), failure_reason=failure_reason)
 
     def _plans(
@@ -230,7 +227,7 @@ class UpdateQfqWindows:
         )
         if (
             same_source
-            and self.resume.completed(progress.day, security.code, progress.source)
+            and self.v2.completed(progress.day, security.code, progress.source)
             and bool(dates)
             and v2_state is not None
             and bool(v2_state.dates)
@@ -270,7 +267,7 @@ class UpdateQfqWindows:
         return tuple(jobs)
 
     def _download_rolling(
-        self, plans: Iterable[_DownloadPlan], progress: QfqDownloadProgress, checkpoint_codes: list[str]
+        self, plans: Iterable[_DownloadPlan], progress: QfqDownloadProgress, calendar: tuple[date, ...]
     ) -> Literal["qfq_worker_unavailable"] | None:
         remaining = iter(plans)
         futures: dict[Future[PublishedHistoryWindow], _DownloadJob] = {}
@@ -283,8 +280,7 @@ class UpdateQfqWindows:
         try:
             while not self.cancel_requested():
                 if writing is not None and writing.done():
-                    checkpoint_codes.extend(self._accept_write(write_batch, writing.result(), progress))
-                    self._flush_checkpoint(checkpoint_codes, progress, threshold=256)
+                    self._accept_write(write_batch, writing.result(), progress)
                     writing, write_batch = None, ()
                 buffered = len(downloaded) + len(write_batch) + len(futures)
                 cells = sum(len(window.cells) for _, window in (*downloaded, *write_batch))
@@ -313,7 +309,7 @@ class UpdateQfqWindows:
                         count, batch_cells = count + 1, batch_cells + len(window.cells)
                     write_batch = tuple(downloaded[:count])
                     del downloaded[:count]
-                    writing = self._submit_write(write_batch, progress.source)
+                    writing = self._submit_write(write_batch, progress.source, calendar)
                     last_flush = self.monotonic()
                 if not futures and exhausted and not downloaded and writing is None:
                     break
@@ -341,22 +337,24 @@ class UpdateQfqWindows:
         return failure_reason
 
     def _submit_write(
-        self, batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...], source: str
+        self, batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...], source: str, calendar: tuple[date, ...]
     ) -> Future[_WriteReceipt]:
         if self.writer_pool is not None:
-            return SubmitWithBackpressure(self.writer_pool, self._write_downloaded, batch, source)
+            return SubmitWithBackpressure(self.writer_pool, self._write_downloaded, batch, source, calendar)
         result: Future[_WriteReceipt] = Future()
-        result.set_result(self._write_downloaded(batch, source))
+        result.set_result(self._write_downloaded(batch, source, calendar))
         return result
 
     def _write_downloaded(
-        self, batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...], source: str
+        self, batch: tuple[tuple[_DownloadJob, PublishedHistoryWindow], ...], source: str, calendar: tuple[date, ...]
     ) -> _WriteReceipt:
         if self.cancel_requested():
             return _WriteReceipt((), (), 0, RuntimeError("cancelled"))
         started = self.monotonic()
         try:
-            files, rows = self.v2.replace_paired_windows(self.v3, tuple(window for _, window in batch), source)
+            files, rows = self.v2.replace_paired_windows(
+                self.v3, tuple(window for _, window in batch), source, calendar=calendar, completed_day=calendar[-1]
+            )
             return _WriteReceipt(
                 tuple(window.code for _, window in batch), files, rows, write_seconds=self.monotonic() - started
             )
@@ -461,12 +459,6 @@ class UpdateQfqWindows:
                 inferred_suspended=sum(cell.status == "tencent_inferred_suspended" for cell in window.cells),
             ),
         )
-
-    def _flush_checkpoint(self, checkpoint_codes: list[str], progress: QfqDownloadProgress, *, threshold: int) -> None:
-        if self.cancel_requested() or len(checkpoint_codes) < threshold:
-            return
-        self.resume.confirm_many(progress.day, tuple(checkpoint_codes), progress.source)
-        checkpoint_codes.clear()
 
     def _download(self, job: _DownloadJob) -> PublishedHistoryWindow:
         if self.cancel_requested():

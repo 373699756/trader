@@ -10,6 +10,7 @@ from typing import Literal
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 Profile = Literal[
+    "local",
     "web",
     "history",
     "security-master",
@@ -62,7 +63,7 @@ class DiagnosticOptions:
     browser_duration_seconds: float
     browser_minimum_updates: int
     command_timeout_seconds: float
-    history_root: Path
+    history_root: Path | None
     sqlite_page_sample_count: int
     sqlite_query_rounds: int
     sqlite_revision_write_sample_count: int
@@ -72,10 +73,11 @@ class DiagnosticOptions:
     baostock_rounds: int = 1
     long_watchlist: Path = PROJECT_ROOT / "config/long_watchlist.json"
     long_evidence_output: Path | None = None
-    company_evidence_database: Path = PROJECT_ROOT / "data/risk/company_evidence.sqlite3"
+    company_evidence_database: Path | None = None
     eligibility_evidence: tuple[Path, ...] = ()
     download_sizes: tuple[int, ...] = (10, 50, 100)
-    qfq_root: Path = PROJECT_ROOT / "data/qfq"
+    qfq_database: Path | None = None
+    scoring_profile: Literal["v2", "v3", "both"] | None = None
     market_sources: tuple[str, ...] = ("tencent", "eastmoney", "sina", "baostock")
     market_profiles: tuple[str, ...] = ("v2", "v3")
     market_sizes: tuple[int, ...] = (120, 720, 0)
@@ -85,6 +87,7 @@ class DiagnosticOptions:
     market_task_seconds: float = 600.0
     output_format: str = "json"
     cpu_profile_dir: Path | None = None
+    baseline_checkout: Path | None = None
 
 
 @dataclass(frozen=True)

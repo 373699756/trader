@@ -35,19 +35,19 @@ class PublicationSequence:
                     ) as connection,
                     connection,
                 ):
-                    connection.execute("BEGIN IMMEDIATE")
+                    connection.run("BEGIN IMMEDIATE")
                     exists = (
-                        connection.execute(
+                        connection.run(
                             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='publication_sequence'"
                         ).fetchone()
                         is not None
                     )
-                    connection.execute(
+                    connection.run(
                         "CREATE TABLE IF NOT EXISTS publication_sequence "
                         "(singleton INTEGER PRIMARY KEY CHECK(singleton=1), reserved_until INTEGER NOT NULL)"
                     )
                     if not exists:
-                        connection.execute("INSERT INTO publication_sequence VALUES (1, 0)")
+                        connection.run("INSERT INTO publication_sequence VALUES (1, 0)")
                 self._reserve()
             except (OSError, sqlite3.Error) as exc:
                 raise RuntimeError("publication_sequence_unavailable") from exc
@@ -74,13 +74,13 @@ class PublicationSequence:
                 closing(OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=5.0))) as connection,
                 connection,
             ):
-                connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute("SELECT reserved_until FROM publication_sequence WHERE singleton=1").fetchone()
+                connection.run("BEGIN IMMEDIATE")
+                row = connection.run("SELECT reserved_until FROM publication_sequence WHERE singleton=1").fetchone()
                 if row is None or not isinstance(row[0], int) or row[0] < 0 or row[0] > 2**63 - 1 - self._block_size:
                     raise RuntimeError("publication_sequence_invalid")
                 start = max(row[0] + 1, minimum)
                 limit = start + self._block_size
-                connection.execute("UPDATE publication_sequence SET reserved_until=? WHERE singleton=1", (limit - 1,))
+                connection.run("UPDATE publication_sequence SET reserved_until=? WHERE singleton=1", (limit - 1,))
             self._next = start
             self._limit = limit
         except sqlite3.Error as exc:

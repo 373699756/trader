@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from collections.abc import Sequence
 from contextlib import closing
@@ -12,7 +11,7 @@ from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 from trader.training.application.h1_point_in_time import H1PointInTimeSnapshotPort
 from trader.training.application.historical_screening import HistoricalSecurity, ResearchBoard
 from trader.training.domain.evaluation.h1_point_in_time import (
@@ -61,14 +60,14 @@ class _H1RecordAudit:
 
 class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
     def __init__(self, runtime_dir: Path) -> None:
-        self._root = runtime_dir / "score-h1-point-in-time"
-        self._database = self._root / "score-h1-point-in-time.sqlite3"
+        self._root = runtime_dir / "experiments/h1_point_in_time"
+        self._database = self._root / "samples.sqlite3"
         self._lock = threading.RLock()
 
     def _initialize(self) -> None:
         self._root.mkdir(parents=True, exist_ok=True)
         with closing(self._write_connection()) as connection, connection:
-            connection.executescript(
+            connection.apply_script(
                 """
                 CREATE TABLE IF NOT EXISTS specs (
                     strategy TEXT PRIMARY KEY, research_identity TEXT NOT NULL,
@@ -107,7 +106,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             self._register_spec(connection, spec)
             existing = tuple(
                 str(row[0])
-                for row in connection.execute(
+                for row in connection.run(
                     "SELECT code FROM universe WHERE strategy = ? ORDER BY code", (spec.strategy,)
                 ).fetchall()
             )
@@ -116,13 +115,13 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                 raise H1PointInTimeSnapshotConflictError("H1 universe set conflict")
             for item in ordered:
                 payload_hash = CanonicalResearchHash(item)
-                prior = connection.execute(
+                prior = connection.run(
                     "SELECT payload_hash FROM universe WHERE strategy = ? AND code = ?",
                     (spec.strategy, item.code),
                 ).fetchone()
                 if prior is not None and str(prior[0]) != payload_hash:
                     raise H1PointInTimeSnapshotConflictError("H1 universe identity conflict")
-                connection.execute(
+                connection.run(
                     "INSERT OR IGNORE INTO universe(strategy, code, board, name, is_st, is_suspended, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     (
                         spec.strategy,
@@ -139,7 +138,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if not self._database.is_file():
             return ()
         with closing(self._read_connection()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT code, board, name, is_st, is_suspended FROM universe WHERE strategy = ? ORDER BY code",
                 (strategy,),
             ).fetchall()
@@ -152,7 +151,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         if not self._database.is_file():
             return frozenset()
         with closing(self._read_connection()) as connection, connection:
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT code FROM downloads WHERE strategy = ? AND status = 'complete'", (strategy,)
             ).fetchall()
         return frozenset(str(row[0]) for row in rows)
@@ -170,7 +169,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
             if (
-                connection.execute(
+                connection.run(
                     "SELECT 1 FROM universe WHERE strategy = ? AND code = ?", (spec.strategy, code)
                 ).fetchone()
                 is None
@@ -181,13 +180,13 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                 payload = _record_payload(record)
                 payload_hash = CanonicalResearchHash(payload)
                 hashes.append(payload_hash)
-                prior = connection.execute(
+                prior = connection.run(
                     "SELECT payload_hash FROM records WHERE strategy = ? AND code = ? AND trade_date = ?",
                     (spec.strategy, code, record.trade_date.isoformat()),
                 ).fetchone()
                 if prior is not None and str(prior[0]) != payload_hash:
                     raise H1PointInTimeSnapshotConflictError("H1 record identity conflict")
-                connection.execute(
+                connection.run(
                     """INSERT OR IGNORE INTO records(strategy, code, trade_date, observed_at, open_price, close_price, high_price, low_price, volume, amount, pct_change, turnover_rate, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, payload_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         spec.strategy,
@@ -215,13 +214,13 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
                     ),
                 )
             content_hash = CanonicalResearchHash({"code": code, "records": hashes})
-            prior_download = connection.execute(
+            prior_download = connection.run(
                 "SELECT content_hash FROM downloads WHERE strategy = ? AND code = ? AND status = 'complete'",
                 (spec.strategy, code),
             ).fetchone()
             if prior_download is not None and str(prior_download[0]) != content_hash:
                 raise H1PointInTimeSnapshotConflictError("H1 download identity conflict")
-            connection.execute(
+            connection.run(
                 "INSERT INTO downloads(strategy, code, status, record_count, content_hash, error_code) VALUES (?, ?, 'complete', ?, ?, '') ON CONFLICT(strategy, code) DO UPDATE SET status = excluded.status, record_count = excluded.record_count, content_hash = excluded.content_hash, error_code = excluded.error_code",
                 (spec.strategy, code, len(ordered), content_hash),
             )
@@ -232,7 +231,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         self._initialize()
         with closing(self._write_connection()) as connection, connection:
             self._register_spec(connection, spec)
-            connection.execute(
+            connection.run(
                 "INSERT INTO downloads(strategy, code, status, record_count, content_hash, error_code) VALUES (?, ?, 'failed', 0, '', ?) ON CONFLICT(strategy, code) DO UPDATE SET status = CASE WHEN downloads.status = 'complete' THEN downloads.status ELSE excluded.status END, error_code = CASE WHEN downloads.status = 'complete' THEN downloads.error_code ELSE excluded.error_code END",
                 (spec.strategy, code, error_code),
             )
@@ -258,12 +257,12 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
         with closing(self._read_connection()) as connection, connection:
             completed = tuple(
                 str(row[0])
-                for row in connection.execute(
+                for row in connection.run(
                     "SELECT code FROM downloads WHERE strategy = ? AND status = 'complete' ORDER BY code",
                     (spec.strategy,),
                 ).fetchall()
             )
-            rows = connection.execute(
+            rows = connection.run(
                 "SELECT code, trade_date FROM records WHERE strategy = ? ORDER BY code, trade_date",
                 (spec.strategy,),
             ).fetchall()
@@ -325,7 +324,7 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
 
     def _manifest_snapshot(self, spec: H1PointInTimeSpec) -> _H1ManifestSnapshot:
         with closing(self._read_connection()) as connection, connection:
-            persisted = connection.execute(
+            persisted = connection.run(
                 "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
             ).fetchone()
             if (
@@ -335,40 +334,44 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             ):
                 raise H1PointInTimeSnapshotConflictError("H1 spec manifest conflict")
             universe_rows = tuple(
-                connection.execute(
+                connection.run(
                     "SELECT code, board, name, is_st, is_suspended, payload_hash FROM universe WHERE strategy = ? ORDER BY code",
                     (spec.strategy,),
                 ).fetchall()
             )
             completed_rows = tuple(
-                connection.execute(
+                connection.run(
                     "SELECT code, record_count, content_hash FROM downloads WHERE strategy = ? AND status = 'complete' ORDER BY code",
                     (spec.strategy,),
                 ).fetchall()
             )
             records = tuple(
-                connection.execute(
+                connection.run(
                     "SELECT strategy, code, trade_date, observed_at, open_price, close_price, high_price, low_price, volume, amount, pct_change, turnover_rate, adjustment, source, anchor_price, anchor_volume, anchor_amount, security_state_hash, sector_hash, risk_facts_hash, tail_field_hash, payload_hash FROM records WHERE strategy = ? ORDER BY code, trade_date",
                     (spec.strategy,),
                 ).fetchall()
             )
-        return _H1ManifestSnapshot(universe_rows, completed_rows, records)
+        return _H1ManifestSnapshot(
+            tuple(tuple(row) for row in universe_rows),
+            tuple(tuple(row) for row in completed_rows),
+            tuple(tuple(row) for row in records),
+        )
 
     def inspect(self, spec: H1PointInTimeSpec) -> H1PointInTimeSnapshotStatus:
         if not self._database.is_file():
             return H1PointInTimeSnapshotStatus(strategy=spec.strategy)
         with closing(self._read_connection()) as connection, connection:
-            spec_row = connection.execute("SELECT spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)).fetchone()
+            spec_row = connection.run("SELECT spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)).fetchone()
             universe_count = int(
-                connection.execute("SELECT COUNT(*) FROM universe WHERE strategy = ?", (spec.strategy,)).fetchone()[0]
+                connection.run("SELECT COUNT(*) FROM universe WHERE strategy = ?", (spec.strategy,)).require_one()[0]
             )
-            completed, failed = connection.execute(
+            completed, failed = connection.run(
                 "SELECT SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END), SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) FROM downloads WHERE strategy = ?",
                 (spec.strategy,),
-            ).fetchone()
-            count, first_date, last_date = connection.execute(
+            ).require_one()
+            count, first_date, last_date = connection.run(
                 "SELECT COUNT(*), MIN(trade_date), MAX(trade_date) FROM records WHERE strategy = ?", (spec.strategy,)
-            ).fetchone()
+            ).require_one()
         return H1PointInTimeSnapshotStatus(
             True,
             spec.strategy,
@@ -381,23 +384,23 @@ class SQLiteH1PointInTimeSnapshot(H1PointInTimeSnapshotPort):
             str(spec_row[0]) if spec_row else "",
         )
 
-    def _register_spec(self, connection: sqlite3.Connection, spec: H1PointInTimeSpec) -> None:
-        prior = connection.execute(
+    def _register_spec(self, connection: SqliteConnection, spec: H1PointInTimeSpec) -> None:
+        prior = connection.run(
             "SELECT research_identity, spec_hash FROM specs WHERE strategy = ?", (spec.strategy,)
         ).fetchone()
         if prior is not None and (str(prior[0]) != spec.research_identity or str(prior[1]) != spec.content_hash):
             raise H1PointInTimeSnapshotConflictError("H1 spec identity conflict")
-        connection.execute(
+        connection.run(
             "INSERT OR IGNORE INTO specs(strategy, research_identity, spec_hash) VALUES (?, ?, ?)",
             (spec.strategy, spec.research_identity, spec.content_hash),
         )
 
-    def _write_connection(self) -> sqlite3.Connection:
+    def _write_connection(self) -> SqliteConnection:
         return OpenSqliteConnection(
             self._database, SqliteConnectionOptions(timeout_seconds=30, foreign_keys=True, isolation_level="IMMEDIATE")
         )
 
-    def _read_connection(self) -> sqlite3.Connection:
+    def _read_connection(self) -> SqliteConnection:
         return OpenSqliteConnection(self._database, SqliteConnectionOptions(read_only=True))
 
 

@@ -35,8 +35,10 @@ from trader.download.domain.history_control import (
     HistoryTrainingDueState,
     HistoryUniverseIdentity,
 )
+from trader.download.domain.history_reference import HistoryReferenceSnapshot
+from trader.download.infra.history_reference_codec import WriteHistoryReference
 from trader.infra.process_lock import ProcessLock, ProcessLockError
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 
 FaultInjector = Callable[[str], None]
 ControlKind = Literal[
@@ -68,9 +70,10 @@ class DiskUsageResult(Protocol):
 
 DiskUsage = Callable[[Path], DiskUsageResult]
 
-_SCHEMA_IDENTITY = "history_control_direct"
+_SCHEMA_IDENTITY = "history_catalog"
 _SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SCHEMA = """
+CREATE TABLE IF NOT EXISTS bound_references(content_hash TEXT PRIMARY KEY,payload_json TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     schema_identity TEXT NOT NULL
@@ -155,8 +158,8 @@ class HistoryControlIndex:
         if self._path.exists():
             try:
                 with closing(self._read_connection()) as connection:
-                    identity = connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
-                if identity != (_SCHEMA_IDENTITY,):
+                    identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
+                if identity is None or tuple(identity) != (_SCHEMA_IDENTITY,):
                     raise HistoryControlError("history_format_requires_rebuild")
             except sqlite3.Error as exc:
                 raise HistoryControlError("history_control_invalid") from exc
@@ -165,15 +168,15 @@ class HistoryControlIndex:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
             with closing(self._connect()) as connection, connection:
-                connection.execute("PRAGMA journal_mode=WAL")
-                connection.execute("PRAGMA synchronous=FULL")
-                connection.executescript(_SCHEMA)
-                connection.execute(
+                connection.run("PRAGMA journal_mode=WAL")
+                connection.run("PRAGMA synchronous=FULL")
+                connection.apply_script(_SCHEMA)
+                connection.run(
                     "INSERT OR IGNORE INTO metadata(singleton, schema_identity) VALUES (1, ?)",
                     (_SCHEMA_IDENTITY,),
                 )
-                identity = connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
-                if identity != (_SCHEMA_IDENTITY,):
+                identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
+                if identity is None or tuple(identity) != (_SCHEMA_IDENTITY,):
                     raise HistoryControlConflictError("history control schema identity conflicts")
         except sqlite3.Error as exc:
             raise HistoryControlError("history control initialization failed") from exc
@@ -186,11 +189,11 @@ class HistoryControlIndex:
             return HistoryControlIntegrityStatus("missing", "control_database_missing")
         try:
             with closing(self._read_connection()) as connection:
-                check = connection.execute("PRAGMA quick_check").fetchone()
-                identity = connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
+                check = connection.run("PRAGMA quick_check").fetchone()
+                identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
         except sqlite3.Error:
             return HistoryControlIntegrityStatus("corrupt", "control_database_invalid")
-        if check != ("ok",) or identity != (_SCHEMA_IDENTITY,):
+        if check is None or identity is None or tuple(check) != ("ok",) or tuple(identity) != (_SCHEMA_IDENTITY,):
             return HistoryControlIntegrityStatus("corrupt", "control_database_invalid")
         return HistoryControlIntegrityStatus("healthy", None)
 
@@ -227,14 +230,14 @@ class HistoryControlIndex:
         )
         try:
             with closing(self._connect()) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
-                existing = connection.execute(
+                connection.run("BEGIN IMMEDIATE")
+                existing = connection.run(
                     "SELECT 1 FROM immutable_records WHERE kind=? AND record_key=?",
                     ("reminder_claim", key),
                 ).fetchone()
                 if existing is not None:
                     return False
-                connection.execute(
+                connection.run(
                     "INSERT INTO immutable_records(kind, record_key, content_hash, payload_json) VALUES (?, ?, ?, ?)",
                     ("reminder_claim", key, value.content_hash, payload_json),
                 )
@@ -246,13 +249,32 @@ class HistoryControlIndex:
         key = f"{value.due_identity}:{value.reminder_date.isoformat()}"
         self._save("reminder", key, value.content_hash, _reminder_payload(value))
 
-    def publish_snapshot(self, value: HistoryActiveSnapshot) -> None:
+    def save_reference(self, reference: HistoryReferenceSnapshot) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.run("BEGIN IMMEDIATE")
+            WriteHistoryReference(connection, reference)
+
+    def publish_snapshot(
+        self, value: HistoryActiveSnapshot, *, reference: HistoryReferenceSnapshot | None = None
+    ) -> None:
         self._require_snapshot_parents(value)
+        source = self.read_source(value.source_identity_hash)
+        digest = source.supplier_contract[len("history_ref_") : len("history_ref_") + 64]
+        if (
+            not source.supplier_contract.startswith("history_ref_")
+            or reference is not None
+            and reference.content_hash != digest
+        ):
+            raise HistoryControlConflictError("history_reference_identity_conflict")
         payload = json.dumps(_snapshot_payload(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         try:
             with closing(self._connect()) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
-                current = connection.execute(
+                connection.run("BEGIN IMMEDIATE")
+                if reference is not None:
+                    WriteHistoryReference(connection, reference)
+                if connection.run("SELECT 1 FROM bound_references WHERE content_hash=?", (digest,)).fetchone() is None:
+                    raise HistoryControlConflictError("history_reference_missing")
+                current = connection.run(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
                 ).fetchone()
                 if current is not None:
@@ -261,20 +283,20 @@ class HistoryControlIndex:
                         return
                     if current_sequence >= value.sequence:
                         raise HistoryControlRegressionError("history active snapshot would regress or conflict")
-                existing = connection.execute(
+                existing = connection.run(
                     "SELECT content_hash, payload_json FROM immutable_records WHERE kind='snapshot' AND record_key=?",
                     (str(value.sequence),),
                 ).fetchone()
-                if existing is not None and existing != (value.content_hash, payload):
+                if existing is not None and tuple(existing) != (value.content_hash, payload):
                     raise HistoryControlConflictError("history immutable control identity conflicts")
-                connection.execute(
+                connection.run(
                     "INSERT OR IGNORE INTO immutable_records(kind,record_key,content_hash,payload_json) "
                     "VALUES ('snapshot',?,?,?)",
                     (str(value.sequence), value.content_hash, payload),
                 )
                 # The injection remains inside the transaction: neither row may survive alone.
                 self._fault_injector("snapshot_committed")
-                connection.execute(
+                connection.run(
                     "INSERT INTO active_snapshot(singleton, snapshot_hash, sequence) VALUES (1, ?, ?) "
                     "ON CONFLICT(singleton) DO UPDATE SET snapshot_hash=excluded.snapshot_hash, "
                     "sequence=excluded.sequence",
@@ -294,7 +316,7 @@ class HistoryControlIndex:
             with closing(self._read_connection()) as connection:
                 present = {
                     (kind, record_key)
-                    for kind, record_key in connection.execute(
+                    for kind, record_key in connection.run(
                         "SELECT kind, record_key FROM immutable_records "
                         "WHERE (kind=? AND record_key=?) OR (kind=? AND record_key=?) OR (kind=? AND record_key=?)",
                         tuple(item for pair in required for item in pair),
@@ -310,10 +332,10 @@ class HistoryControlIndex:
             raise HistoryControlError("history control database is unavailable")
         try:
             with closing(self._read_connection()) as connection:
-                rows = connection.execute(
+                rows = connection.run(
                     "SELECT kind, content_hash, payload_json FROM immutable_records ORDER BY kind, record_key"
                 ).fetchall()
-                active = connection.execute(
+                active = connection.run(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
                 ).fetchone()
         except sqlite3.Error as exc:
@@ -357,7 +379,7 @@ class HistoryControlIndex:
         """Read one immutable supplier identity without scanning historical checkpoints."""
         try:
             with closing(self._read_connection()) as connection:
-                connection.execute("PRAGMA query_only=ON")
+                connection.run("PRAGMA query_only=ON")
                 source = _read_publication_record(connection, "source", content_hash)
                 if not isinstance(source, HistorySourceIdentity):
                     raise HistoryControlError("history source identity is invalid")
@@ -369,12 +391,12 @@ class HistoryControlIndex:
         """Read and hash four publication records, never historical checkpoints."""
         try:
             with closing(self._read_connection()) as connection:
-                connection.execute("PRAGMA query_only=ON")
-                connection.execute("BEGIN")
-                identity = connection.execute("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
-                if identity != (_SCHEMA_IDENTITY,):
+                connection.run("PRAGMA query_only=ON")
+                connection.run("BEGIN")
+                identity = connection.run("SELECT schema_identity FROM metadata WHERE singleton=1").fetchone()
+                if identity is None or tuple(identity) != (_SCHEMA_IDENTITY,):
                     raise HistoryControlError("history control schema identity is invalid")
-                active = connection.execute(
+                active = connection.run(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
                 ).fetchone()
                 if active is None:
@@ -404,11 +426,11 @@ class HistoryControlIndex:
             raise HistoryControlError("history control database is unavailable")
         try:
             with closing(self._read_connection()) as connection:
-                active = connection.execute(
+                active = connection.run(
                     "SELECT snapshot_hash, sequence FROM active_snapshot WHERE singleton=1"
                 ).fetchone()
                 active_hash = cast(str | None, active[0] if active is not None else None)
-                rows = connection.execute(
+                rows = connection.run(
                     "SELECT kind, content_hash, payload_json FROM immutable_records "
                     "WHERE kind IN ('due', 'reminder_claim', 'reminder') "
                     "OR (kind='snapshot' AND content_hash=?) ORDER BY kind, record_key",
@@ -446,6 +468,7 @@ class HistoryControlIndex:
         path: Path,
         state: HistoryControlState,
         *,
+        references: tuple[HistoryReferenceSnapshot, ...],
         fault_injector: FaultInjector | None = None,
     ) -> None:
         current = cls(path)
@@ -460,6 +483,8 @@ class HistoryControlIndex:
         try:
             rebuilt = cls(temporary)
             rebuilt.initialize()
+            for reference in references:
+                rebuilt.save_reference(reference)
             _populate_rebuilt_control(rebuilt, state)
             if rebuilt.load_state() != state:
                 raise HistoryControlError("rebuilt history control state does not match its source")
@@ -477,14 +502,14 @@ class HistoryControlIndex:
         payload_json = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
         try:
             with closing(self._connect()) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
-                existing = connection.execute(
+                connection.run("BEGIN IMMEDIATE")
+                existing = connection.run(
                     "SELECT content_hash, payload_json FROM immutable_records WHERE kind=? AND record_key=?",
                     (kind, key),
                 ).fetchone()
-                if existing is not None and existing != (content_hash, payload_json):
+                if existing is not None and tuple(existing) != (content_hash, payload_json):
                     raise HistoryControlConflictError("history immutable control identity conflicts")
-                connection.execute(
+                connection.run(
                     "INSERT OR IGNORE INTO immutable_records(kind, record_key, content_hash, payload_json) "
                     "VALUES (?, ?, ?, ?)",
                     (kind, key, content_hash, payload_json),
@@ -492,15 +517,15 @@ class HistoryControlIndex:
         except sqlite3.Error as exc:
             raise HistoryControlError("history immutable control record write failed") from exc
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self) -> SqliteConnection:
         return OpenSqliteConnection(self._path, SqliteConnectionOptions(foreign_keys=True))
 
-    def _read_connection(self) -> sqlite3.Connection:
+    def _read_connection(self) -> SqliteConnection:
         return OpenSqliteConnection(self._path, SqliteConnectionOptions(read_only=True))
 
 
-def _read_publication_record(connection: sqlite3.Connection, kind: ControlKind, key: str) -> ControlRecord:
-    row = connection.execute(
+def _read_publication_record(connection: SqliteConnection, kind: ControlKind, key: str) -> ControlRecord:
+    row = connection.run(
         "SELECT content_hash, payload_json FROM immutable_records WHERE kind=? AND record_key=?", (kind, key)
     ).fetchone()
     if row is None:
@@ -660,6 +685,7 @@ def _snapshot_payload(value: HistoryActiveSnapshot) -> dict[str, object]:
                 "logical_hash": item.logical_hash,
                 "row_count": item.row_count,
                 "sequence": item.sequence,
+                "calendar_month": item.calendar_month,
             }
             for item in value.partitions
         ],
@@ -797,11 +823,12 @@ def _decode_partition(raw: object) -> HistorySnapshotPartition:
     if not isinstance(raw, dict):
         raise TypeError("history partition must be an object")
     payload = cast(dict[str, object], raw)
-    _require_keys(payload, {"relative_path", "logical_hash", "row_count", "sequence"})
+    _require_keys(payload, {"relative_path", "logical_hash", "row_count", "sequence", "calendar_month"})
     return HistorySnapshotPartition(
         _text(payload, "relative_path"),
         _text(payload, "logical_hash"),
         _integer(payload, "row_count"),
+        _integer(payload, "calendar_month"),
         _integer(payload, "sequence"),
     )
 
@@ -895,7 +922,7 @@ def _remove_sqlite_sidecars(path: Path) -> None:
 def _checkpoint_wal(path: Path) -> None:
     try:
         with closing(OpenSqliteConnection(path)) as connection:
-            result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            result = connection.run("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     except sqlite3.Error as exc:
         raise HistoryControlError("history control WAL checkpoint failed") from exc
     if result is None or result[0] != 0:

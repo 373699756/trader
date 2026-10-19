@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
+from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.domain.publication.models import Strategy
 
 _BATCH_TERMINALS = frozenset({"success", "partial", "failed", "skipped", "abandoned"})
@@ -25,7 +25,7 @@ class BudgetReportingConfig:
 class BudgetSummaryReader:
     def __init__(
         self,
-        connect: Callable[[], AbstractContextManager[sqlite3.Connection]],
+        connect: Callable[[], AbstractContextManager[SqliteConnection]],
         initialized: Callable[[], bool],
         config: BudgetReportingConfig,
     ) -> None:
@@ -42,7 +42,7 @@ class BudgetSummaryReader:
         if not self._initialized():
             return self.empty_summary()
         with self._connect() as connection:
-            rows = connection.execute(
+            rows = connection.run(
                 """
                 SELECT bucket, strategy, stage_key, status, COUNT(*)
                 FROM deepseek_call_reservations
@@ -51,14 +51,14 @@ class BudgetSummaryReader:
                 """,
                 (day,),
             ).fetchall()
-            batch_rows = connection.execute(
+            batch_rows = connection.run(
                 """
                 SELECT status, COUNT(*) FROM deepseek_review_batches
                 WHERE trade_date = ? GROUP BY status
                 """,
                 (day,),
             ).fetchall()
-            candidate_rows = connection.execute(
+            candidate_rows = connection.run(
                 """
                 SELECT r.outcome, COUNT(*)
                 FROM deepseek_candidate_results AS r
@@ -67,7 +67,7 @@ class BudgetSummaryReader:
                 """,
                 (day,),
             ).fetchall()
-            acceptance_row = connection.execute(
+            acceptance_row = connection.run(
                 """
                 SELECT
                     SUM(CASE WHEN http_status = 429 THEN 1 ELSE 0 END),
@@ -76,8 +76,8 @@ class BudgetSummaryReader:
                 FROM deepseek_call_reservations WHERE trade_date = ?
                 """,
                 (day,),
-            ).fetchone()
-            role_rows = connection.execute(
+            ).require_one()
+            role_rows = connection.run(
                 "SELECT model_role, COUNT(*) FROM deepseek_call_reservations WHERE trade_date = ? GROUP BY model_role",
                 (day,),
             ).fetchall()

@@ -16,7 +16,7 @@ from trader.download.infra.history_control_index import (
 
 
 def ReadHistoryAutomationStatus(archive_root: Path, observed_at: datetime) -> HistoryAutomationStatus:
-    repository = HistoryControlIndex(archive_root / "control.sqlite3")
+    repository = HistoryControlIndex(archive_root / "catalog.sqlite3")
     try:
         control = repository.load_automation_state()
     except HistoryControlError:

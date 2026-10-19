@@ -18,14 +18,14 @@ def test_month_reader_retries_only_lock_contention_and_closes_failed_handle(tmp_
             self.inner = OpenSqliteConnection(":memory:")
             self.closed = False
 
-        def execute(self, sql):
+        def run(self, sql):
             if sql == "PRAGMA cache_size=-8192" and len(opened) == 1:
                 error = sqlite3.OperationalError("database is locked" if code is None else "private payload")
                 if code is not None:
                     error.sqlite_errorcode = code
                     error.sqlite_errorname = "SQLITE_BUSY" if code == sqlite3.SQLITE_BUSY else "SQLITE_IOERR"
                 raise error
-            return self.inner.execute(sql)
+            return self.inner.run(sql)
 
         def close(self):
             self.closed = True
@@ -42,14 +42,14 @@ def test_month_reader_retries_only_lock_contention_and_closes_failed_handle(tmp_
     monkeypatch.setattr(history_sqlite_read_connection, "OpenSqliteConnection", connect)
     monkeypatch.setattr(history_sqlite_read_connection.time, "sleep", lambda seconds: None)
     if code != sqlite3.SQLITE_IOERR:
-        connection = history_sqlite_read_connection.OpenHistoryMonthReader(
+        connection = history_sqlite_read_connection.OpenHistoryPriceReader(
             tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None
         )
         connection.close()
         assert opened[1].closed
     else:
         with pytest.raises(sqlite3.OperationalError) as failure:
-            history_sqlite_read_connection.OpenHistoryMonthReader(
+            history_sqlite_read_connection.OpenHistoryPriceReader(
                 tmp_path / "month.sqlite3", statement_trace=None, mmap_bytes=0, activity=None
             )
         assert "SQLITE_IOERR" in HistoryFailureDetail(failure.value)

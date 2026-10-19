@@ -5,7 +5,7 @@
   <key>Label</key><string>com.local.trader.history-maintenance</string>
   <key>ProgramArguments</key><array>
     <string>{{PYTHON_EXECUTABLE}}</string><string>-m</string><string>trader.entrypoints.cli</string>
-    <string>--config</string><string>{{CONFIG_PATH}}</string><string>download_scheduled</string>
+    <string>--config</string><string>{{CONFIG_PATH}}</string><string>sync</string><string>history</string>
   </array>
   <key>WorkingDirectory</key><string>{{WORKING_DIRECTORY}}</string>
   <key>EnvironmentVariables</key><dict><key>PYTHONUNBUFFERED</key><string>1</string></dict>

@@ -19,16 +19,14 @@ class ScoringArtifactsMissingError(RuntimeError):
 def LoadScoringProfile(
     profile_id: ScoringProfileId,
     *,
-    training_root: Path | None = None,
+    training_root: Path,
 ) -> LoadedScoringProfile:
     """Load one authorized profile without exposing artifact details to callers."""
 
     if profile_id in {"v2", "v3"}:
         try:
             profile = V2_TRAINING_PROFILE if profile_id == "v2" else V3_TRAINING_PROFILE
-            inspected = InspectActiveProfileBundles(
-                (training_root or Path("data/train")) / profile.output_directory, profile
-            )
+            inspected = InspectActiveProfileBundles(training_root / profile.output_directory, profile)
             bundles = tuple(item.model for item in inspected)
             return BuildTrainedScoringProfile(profile_id, bundles)
         except FileNotFoundError as exc:

@@ -15,7 +15,7 @@ from trader.download.domain.baostock_daily import BaoStockSecurity
 from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistoryStEligibilitySummary
 from trader.download.domain.security_eligibility import IsStSecurityName
-from trader.download.infra.history_reference_files import ReadStEvidence
+from trader.download.infra.history_reference_codec import ReadStEvidence
 from trader.download.infra.history_st_merge import MergeStEvidence
 from trader.infra.http_contracts import HttpError, HttpTransport
 from trader.infra.workers import SubmitWithBackpressure, WorkerExecutor

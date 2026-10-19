@@ -17,7 +17,7 @@ from trader.download.entrypoints.history_sync_progress import StderrHistorySyncP
 from trader.download.infra.history_control_index import HistoryControlIndex
 from trader.download.infra.history_direct_prices import HistoryDirectPrices
 from trader.download.infra.history_download_index import HistoryDownloadIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices, HistoryMonthWriteSession
+from trader.download.infra.history_prices import HistoryPricePartition, HistoryPriceWriteSession
 from trader.download.infra.history_snapshot_reader import HistorySnapshotReader
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.training.infra.profile.v2.contracts import V2_TRAINING_PROFILE
@@ -63,7 +63,7 @@ def test_inferred_suspension_is_published_without_a_price_or_retry_gap(tmp_path,
     result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW, progress=progress)
     progress.publish_result(result)
     assert result.state == "completed" and result.unresolved_price_cells == 0
-    active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    active = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     reader = HistorySnapshotReader(tmp_path)
     assert all(row.cell.status == "tencent_inferred_suspended" for row in reader.read_day(DAYS[1], active))
     training = tuple(reader.iter_training_rows(active, DAYS, ("600001", "600002")))
@@ -87,7 +87,7 @@ def test_explicit_unknown_tencent_cell_remains_retryable_without_baostock(tmp_pa
     assert result.state == "completed", result.reason
     assert result.unresolved_price_cells == 2
     assert "baostock_prices" not in supplier.events
-    active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    active = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     reader = HistorySnapshotReader(tmp_path)
     cells = reader.read_day(DAYS[1], active)
     assert all(row.cell.status == "unknown_missing" for row in cells)
@@ -225,7 +225,7 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
             started.set()
             assert reached_capacity.wait(5), "network must continue while writer is blocked"
             assert network_count == 64, "completed plus in-flight payloads must stay bounded"
-            tasks = HistoryDownloadIndex(tmp_path / "parallel/control.sqlite3").tasks()
+            tasks = HistoryDownloadIndex(tmp_path / "parallel/catalog.sqlite3").tasks()
             assert not any(task.tencent_done for task in tasks)
         return original(prices, results)
 
@@ -238,13 +238,13 @@ def test_slow_writer_keeps_network_busy_and_checkpoint_waits_for_commit(tmp_path
         )
     assert result.state == "completed", result.reason
     assert count_at_write[0] < 64
-    assert all(task.tencent_done for task in HistoryDownloadIndex(config.archive_root / "control.sqlite3").tasks())
+    assert all(task.tencent_done for task in HistoryDownloadIndex(config.archive_root / "catalog.sqlite3").tasks())
     assert any(item.pipeline and item.pipeline.write_seconds > 0 for item in progress.values)
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     serial = tmp_path / "serial"
     assert RunHistorySync(_configuration(serial), ManySecurities(DAYS), clock=lambda: NOW).state == "completed"
-    parallel_snapshot = HistoryControlIndex(config.archive_root / "control.sqlite3").load_state().active_snapshot
-    serial_snapshot = HistoryControlIndex(serial / "control.sqlite3").load_state().active_snapshot
+    parallel_snapshot = HistoryControlIndex(config.archive_root / "catalog.sqlite3").load_state().active_snapshot
+    serial_snapshot = HistoryControlIndex(serial / "catalog.sqlite3").load_state().active_snapshot
     assert parallel_snapshot.content_hash == serial_snapshot.content_hash
 
 
@@ -261,7 +261,7 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
     write_sizes = []
     prepare_threads = set()
     writer_threads = set()
-    open_session = HistoryMonthPrices.open_write_session
+    open_session = HistoryPricePartition.open_write_session
     finish = HistoryDownloadIndex.finish
     commit = HistoryDirectPrices.commit_pipeline
     prepare = HistoryDirectPrices.prepare
@@ -285,7 +285,7 @@ def test_pipeline_reuses_month_connection_and_checkpoints_each_write_batch_once(
         return outcome
 
     monkeypatch.setattr(HistoryDirectPrices, "prepare", tracked_prepare)
-    monkeypatch.setattr(HistoryMonthPrices, "open_write_session", tracked_open)
+    monkeypatch.setattr(HistoryPricePartition, "open_write_session", tracked_open)
     monkeypatch.setattr(HistoryDownloadIndex, "finish", tracked_finish)
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", tracked_commit)
     with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
@@ -333,8 +333,8 @@ def test_transient_worker_and_writer_rejection_preserves_complete_history(tmp_pa
     assert result.state == "completed", result.reason
     assert download_pool.rejections == write_pool.rejections == 1
     assert len(supplier.calls) == 2
-    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
-    active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
+    active = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     assert active is not None
     assert len(HistorySnapshotReader(tmp_path).read_day(DAYS[-1], active)) == 2
     supplier.calls.clear()
@@ -359,13 +359,13 @@ def test_permanent_worker_rejection_reports_capacity_failure_and_resumes(tmp_pat
     assert failed.state == "failed" and failed.reason == "history_worker_unavailable"
     assert len(pool.codes) == 1 and 4.5 <= elapsed < 9
     assert not supplier.calls
-    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
-    assert HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot is None
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
+    assert HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot is None
 
     resumed = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert resumed.state == "completed", resumed.reason
     assert len(supplier.calls) == 2
-    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
+    assert all(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
 
 
 @pytest.mark.parametrize("failure", [OSError("disk_full"), KeyboardInterrupt()])
@@ -382,32 +382,32 @@ def test_async_write_failure_never_acknowledges_or_enters_baostock(tmp_path, mon
             _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer
         )
     assert result.state == ("failed" if isinstance(failure, OSError) else "cancelled")
-    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
     assert "baostock_prices" not in supplier.events
     monkeypatch.setattr(HistoryDirectPrices, "commit_pipeline", original)
     assert RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW).state == "completed"
 
 
-def test_async_cross_month_failure_reuses_durable_rows_on_restart(tmp_path, monkeypatch):
-    days = (date(2026, 8, 31), date(2026, 9, 1), date(2026, 9, 2))
+def test_async_cross_year_failure_reuses_durable_rows_on_restart(tmp_path, monkeypatch):
+    days = (date(2025, 12, 31), date(2026, 1, 1), date(2026, 1, 2))
     supplier = FakeSupplier(days)
-    original = HistoryMonthWriteSession.save_revision_batches
+    original = HistoryPriceWriteSession.save_revision_batches
 
-    def fail_second_month(month, revisions):
-        if revisions[0].trade_date.month == 9:
+    def fail_second_year(partition, revisions):
+        if revisions[0].trade_date.year == 2026:
             raise OSError("disk_full")
-        return original(month, revisions)
+        return original(partition, revisions)
 
-    monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", fail_second_month)
+    monkeypatch.setattr(HistoryPriceWriteSession, "save_revision_batches", fail_second_year)
     with ThreadPoolExecutor(max_workers=2) as network, ThreadPoolExecutor(max_workers=1) as writer:
         result = RunHistorySync(
             _configuration(tmp_path), supplier, clock=lambda: NOW, worker_pool=network, writer_pool=writer
         )
     assert result.state == "failed"
-    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "control.sqlite3").tasks())
-    monkeypatch.setattr(HistoryMonthWriteSession, "save_revision_batches", original)
+    assert not any(task.tencent_done for task in HistoryDownloadIndex(tmp_path / "catalog.sqlite3").tasks())
+    monkeypatch.setattr(HistoryPriceWriteSession, "save_revision_batches", original)
     monkeypatch.setattr(supplier, "fetch_tencent_window", lambda *_args: (_ for _ in ()).throw(RuntimeError("offline")))
     result = RunHistorySync(_configuration(tmp_path), supplier, clock=lambda: NOW)
     assert result.state == "completed" and result.unresolved_price_cells == 4
-    active = HistoryControlIndex(tmp_path / "control.sqlite3").load_state().active_snapshot
+    active = HistoryControlIndex(tmp_path / "catalog.sqlite3").load_state().active_snapshot
     assert all(row.cell.status == "complete" for row in HistorySnapshotReader(tmp_path).read_day(days[0], active))

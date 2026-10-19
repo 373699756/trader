@@ -18,15 +18,15 @@ usage() {
     "  ./run.sh                         以默认 V2 启动并加载共享双头模型" \
     "  ./run.sh --profile v2|v3         单独启动 V2 或 V3" \
     "  ./run.sh --profile both          同一进程同时启动 V2 和 V3" \
-    "  ./run.sh check                   依次校验配置、研究状态和性能门禁" \
     "  ./run.sh help                    查看本帮助" \
     "" \
     "离线研究（仅在明确执行研究任务时使用）:" \
-    "  ./run.sh download_qfq            Tencent并发更新短窗口，支持断点续传" \
-    "  ./run.sh download_risk           增量更新近一年公告和当前风险单库" \
-    "  ./run.sh download_train          先维护完整历史，再联合训练 V2/V3" \
+    "  ./run.sh sync                    更新行情窗口与公司资料，自动续传" \
+    "  ./run.sh sync market             单独更新行情窗口" \
+    "  ./run.sh sync company            单独更新公司资料" \
+    "  ./run.sh train                   历史维护后联合训练或复用 V2/V3" \
     "" \
-    "看板可追加 --profile v2|v3|both；check 仅支持 v2|v3；离线数据与训练命令均为零参数。" \
+    "看板可追加 --profile v2|v3|both；本地检测使用 scripts/diagnose_runtime.py --profile local。" \
     "" \
     "高级配置（一般无需设置）:" \
     "  TRADER_CONFIG=/absolute/path/runtime.json" \
@@ -54,7 +54,7 @@ while (($#)); do
       SCORING_PROFILE_SET=1
       shift
       ;;
-    help|-h|--help|check|download_train|download_qfq|download_risk)
+    help|-h|--help|sync|train)
       if ((MODE_SET)); then
         FORWARD_ARGS+=("$1")
       else
@@ -82,14 +82,19 @@ if ((SCORING_PROFILE_SET)) && [[ "$SCORING_PROFILE" != "v2" && "$SCORING_PROFILE
   exit 2
 fi
 
-if [[ "$MODE" == "check" && "$SCORING_PROFILE" == "both" ]]; then
-  printf '%s\n' 'check 请分别使用 --profile v2 和 --profile v3。' >&2
+if [[ "$MODE" == "sync" || "$MODE" == "train" ]] && ((SCORING_PROFILE_SET)); then
+  printf '%s\n' "$MODE 不接受 --profile。" >&2
   exit 2
 fi
-
-if [[ "$MODE" == "download_train" || "$MODE" == "download_qfq" || "$MODE" == "download_risk" ]] && ((SCORING_PROFILE_SET || ${#FORWARD_ARGS[@]})); then
-  printf '%s\n' "$MODE 不接受任何参数；请只运行 ./run.sh $MODE。" >&2
+if [[ "$MODE" == "train" ]] && (("${#FORWARD_ARGS[@]}" > 0)); then
+  printf '%s\n' 'train 不接受额外参数。' >&2
   exit 2
+fi
+if [[ "$MODE" == "sync" ]] && ((${#FORWARD_ARGS[@]} > 0)); then
+  if ((${#FORWARD_ARGS[@]} != 1)) || [[ "${FORWARD_ARGS[0]}" != "market" && "${FORWARD_ARGS[0]}" != "company" ]]; then
+    printf '%s\n' '用法：./run.sh sync [market|company]' >&2
+    exit 2
+  fi
 fi
 
 case "$MODE" in
@@ -100,7 +105,7 @@ case "$MODE" in
   "")
     COMMAND_KIND="server"
     ;;
-  check|download_train|download_qfq|download_risk)
+  sync|train)
     COMMAND_KIND="cli"
     ;;
   *)
@@ -111,7 +116,7 @@ case "$MODE" in
     ;;
 esac
 
-if [[ "$MODE" == "download_risk" ]]; then
+if [[ "$MODE" == "sync" ]]; then
   printf '%s: 正在检查运行环境。\n' "$MODE" >&2
 fi
 
@@ -151,7 +156,7 @@ fi
 if ((NEEDS_INSTALL)); then
   # Let pip provision the build requirements declared in pyproject.toml;
   # a fresh virtual environment may contain pip without setuptools.
-  "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR"
+  "$VENV_DIR/bin/python3" -m pip install --disable-pip-version-check -e "$ROOT_DIR" >&2
 fi
 
 export TRADER_HOST="${TRADER_HOST:-127.0.0.1}"
@@ -165,13 +170,10 @@ fi
 if [[ "$COMMAND_KIND" == "server" ]]; then
   exec "$ENTRYPOINT" --config "$CONFIG_PATH" "${PROFILE_ARGS[@]}" "${FORWARD_ARGS[@]}"
 fi
-if [[ "$MODE" == "download_qfq" ]]; then
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" download_qfq
+if [[ "$MODE" == "sync" ]]; then
+  exec "$ENTRYPOINT" --config "$CONFIG_PATH" sync "${FORWARD_ARGS[@]}"
 fi
-if [[ "$MODE" == "download_risk" ]]; then
-  exec "$ENTRYPOINT" --config "$CONFIG_PATH" "$MODE"
-fi
-if [[ "$MODE" == "download_train" ]]; then
+if [[ "$MODE" == "train" ]]; then
   TRAINING_MEMORY_HIGH=4608M
   TRAINING_MEMORY_MAX=5120M
   if [[ "$(uname -s)" == "Linux" ]]; then

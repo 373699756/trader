@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, cast
 from zoneinfo import ZoneInfo
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 from trader.recommendation.application.ports.json_values import FreezeJsonObject, JsonInput, JsonObject
 
 if TYPE_CHECKING:
@@ -219,7 +219,7 @@ class DeepSeekBudgetLedger:
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
-            connection.executescript(
+            connection.apply_script(
                 """
                 CREATE TABLE IF NOT EXISTS schema_meta(
                     key TEXT PRIMARY KEY,
@@ -345,7 +345,7 @@ class DeepSeekBudgetLedger:
         with self._connect() as connection:
             days = {
                 str(row[0])
-                for row in connection.execute(
+                for row in connection.run(
                     """
                     SELECT trade_date FROM deepseek_call_reservations
                     UNION SELECT trade_date FROM deepseek_review_batches
@@ -355,9 +355,9 @@ class DeepSeekBudgetLedger:
         for day in days:
             self._refresh_summary(day)
 
-    def _ensure_schema_version(self, connection: sqlite3.Connection) -> None:
+    def _ensure_schema_version(self, connection: SqliteConnection) -> None:
         if _current_schema_version(connection) < SCHEMA_VERSION:
-            connection.execute(
+            connection.run(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
@@ -427,13 +427,13 @@ class DeepSeekBudgetLedger:
             None,
         )
 
-    def _limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+    def _limit_rejection(self, connection: SqliteConnection, context: _ReservationContext) -> str:
         rejection = self._primary_limit_rejection(connection, context)
         if rejection or context.model_role != "challenger":
             return rejection
         return self._challenger_limit_rejection(connection, context)
 
-    def _primary_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+    def _primary_limit_rejection(self, connection: SqliteConnection, context: _ReservationContext) -> str:
         trade_date = context.trade_date
         bucket = context.bucket
         if self._health is not None:
@@ -452,7 +452,7 @@ class DeepSeekBudgetLedger:
             return "bucket_limit"
         return self._stage_limit_rejection(connection, context)
 
-    def _stage_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+    def _stage_limit_rejection(self, connection: SqliteConnection, context: _ReservationContext) -> str:
         if context.bucket == "emergency":
             normal_used = _count(
                 connection,
@@ -468,7 +468,7 @@ class DeepSeekBudgetLedger:
         )
         return "stage_limit" if stage_used >= self._stage_limits[context.stage] else ""
 
-    def _challenger_limit_rejection(self, connection: sqlite3.Connection, context: _ReservationContext) -> str:
+    def _challenger_limit_rejection(self, connection: SqliteConnection, context: _ReservationContext) -> str:
         challenger_used = _count(
             connection,
             "trade_date = ? AND strategy = ? AND model_role = 'challenger'",
@@ -485,11 +485,11 @@ class DeepSeekBudgetLedger:
 
     @staticmethod
     def _insert_reservation(
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         reservation_id: str,
         context: _ReservationContext,
     ) -> None:
-        connection.execute(
+        connection.run(
             """
             INSERT INTO deepseek_call_reservations(
                 reservation_id, trade_date, strategy, bucket, phase, stage_key,
@@ -523,7 +523,7 @@ class DeepSeekBudgetLedger:
             raise ValueError(f"invalid physical call terminal status: {status}")
         with self._write_lock:
             with self._connect() as connection:
-                row = connection.execute(
+                row = connection.run(
                     "SELECT trade_date FROM deepseek_call_reservations WHERE reservation_id = ?",
                     (reservation_id,),
                 ).fetchone()
@@ -533,7 +533,7 @@ class DeepSeekBudgetLedger:
                 completed = options.get("completed_at") or datetime.now().astimezone()
                 _require_aware(completed, "physical call completion time")
                 _begin_immediate(connection)
-                changed = connection.execute(
+                changed = connection.run(
                     """
                     UPDATE deepseek_call_reservations
                     SET status = ?, completed_at = ?, error = ?, http_status = ?, latency_ms = ?, token_count = ?,
@@ -573,20 +573,20 @@ class DeepSeekBudgetLedger:
                 _begin_immediate(connection)
                 reservation_ids = tuple(
                     str(row[0])
-                    for row in connection.execute(
+                    for row in connection.run(
                         "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
                     ).fetchall()
                 )
                 days = {
                     str(row[0])
-                    for row in connection.execute(
+                    for row in connection.run(
                         """
                         SELECT trade_date FROM deepseek_call_reservations WHERE status = 'reserved'
                         UNION SELECT trade_date FROM deepseek_review_batches WHERE status = 'running'
                         """
                     ).fetchall()
                 }
-                calls = connection.execute(
+                calls = connection.run(
                     """
                     UPDATE deepseek_call_reservations
                     SET status = 'abandoned', completed_at = ?, error = 'process_restart'
@@ -596,7 +596,7 @@ class DeepSeekBudgetLedger:
                 ).rowcount
                 for reservation_id in reservation_ids:
                     _sync_call_audit(connection, reservation_id)
-                batches = connection.execute(
+                batches = connection.run(
                     """
                     UPDATE deepseek_review_batches
                     SET status = 'abandoned', completed_at = ?, error = 'process_restart'
@@ -604,7 +604,7 @@ class DeepSeekBudgetLedger:
                     """,
                     (recovered_at.isoformat(),),
                 ).rowcount
-                connection.execute(
+                connection.run(
                     """
                     UPDATE deepseek_candidate_results
                     SET outcome = 'rejected', completed_at = ?, error = 'batch_abandoned'
@@ -624,17 +624,17 @@ class DeepSeekBudgetLedger:
                 completed_at = datetime.now().astimezone().isoformat()
                 reservation_ids = tuple(
                     str(row[0])
-                    for row in connection.execute(
+                    for row in connection.run(
                         "SELECT reservation_id FROM deepseek_call_reservations WHERE status = 'reserved'"
                     ).fetchall()
                 )
                 days = {
                     str(row[0])
-                    for row in connection.execute(
+                    for row in connection.run(
                         "SELECT DISTINCT trade_date FROM deepseek_call_reservations WHERE status = 'reserved'"
                     ).fetchall()
                 }
-                changed = connection.execute(
+                changed = connection.run(
                     """
                     UPDATE deepseek_call_reservations
                     SET status = 'abandoned', completed_at = ?, error = 'process_restart'
@@ -650,7 +650,7 @@ class DeepSeekBudgetLedger:
 
     def _batch_day(self, batch_id: str) -> str:
         with self._connect() as connection:
-            row = connection.execute(
+            row = connection.run(
                 "SELECT trade_date FROM deepseek_review_batches WHERE batch_id = ?",
                 (batch_id,),
             ).fetchone()
@@ -667,7 +667,7 @@ class DeepSeekBudgetLedger:
             self._summaries[day] = snapshot
 
     @contextmanager
-    def _connect(self) -> Iterator[sqlite3.Connection]:
+    def _connect(self) -> Iterator[SqliteConnection]:
         connection = OpenSqliteConnection(self._path, SqliteConnectionOptions(timeout_seconds=10.0, foreign_keys=True))
         try:
             with connection:
@@ -676,11 +676,11 @@ class DeepSeekBudgetLedger:
             connection.close()
 
 
-def _begin_immediate(connection: sqlite3.Connection) -> None:
+def _begin_immediate(connection: SqliteConnection) -> None:
     deadline = time.monotonic() + _BEGIN_IMMEDIATE_TIMEOUT_SECONDS
     while True:
         try:
-            connection.execute("BEGIN IMMEDIATE")
+            connection.run("BEGIN IMMEDIATE")
             return
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc).lower() or time.monotonic() >= deadline:

@@ -113,7 +113,7 @@ class QfqDownloadProgress:
             FormatStockDownloadProgress(
                 self.elapsed(),
                 StockDownloadProgress(
-                    command="download_qfq",
+                    command="sync market",
                     completed=self.processed,
                     total=self.total,
                     code=security.code,

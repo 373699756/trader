@@ -46,9 +46,9 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
             assert head["active"] is False
             assert head["model_hash"] == ""
             assert head["historical_failure_reasons"] == ["production_model_artifacts_missing"]
-        assert "./run.sh download_train" in caplog.text
-    assert "./run.sh download_qfq" in caplog.text
-    assert "history" in caplog.text
+        assert "./run.sh train" in caplog.text
+    assert "./run.sh sync market" in caplog.text
+    assert "缺少历史数据" in caplog.text
     assert started == []
     assert not (tmp_path / "data").exists()
     assert not (tmp_path / ".runtime").exists()
@@ -56,7 +56,7 @@ def test_empty_clone_keeps_web_readable_and_models_inactive(tmp_path, monkeypatc
 
 def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, caplog):
     config = _empty_config(tmp_path)
-    _publish_profile(tmp_path / "data/train", V3_TRAINING_PROFILE)
+    _publish_profile(tmp_path / "data/training/models", V3_TRAINING_PROFILE)
     system = BuildProfiledSystem(config)
     client = system.app.test_client()
 
@@ -70,14 +70,14 @@ def test_missing_profile_does_not_disable_a_complete_other_profile(tmp_path, cap
 def test_partial_profile_disables_both_heads_and_corruption_is_not_swallowed(tmp_path):
     config = _empty_config(tmp_path)
     contract = V3_TRAINING_PROFILE.heads[0]
-    _write_bundle(tmp_path / "data/train/v3" / contract.directory_name, contract)
+    _write_bundle(tmp_path / "data/training/models/v3" / contract.directory_name, contract)
     system = BuildSystem(config, scoring_profile="v3")
     scoring = system.app.test_client().get("/api/status").get_json()["scoring_profile"]
     assert all(head["active"] is False for head in scoring["heads"].values())
 
-    _publish_profile(tmp_path / "data/train", V3_TRAINING_PROFILE)
+    _publish_profile(tmp_path / "data/training/models", V3_TRAINING_PROFILE)
     metadata = (
-        InspectActiveProfileBundles(tmp_path / "data/train/v3", V3_TRAINING_PROFILE)[0].model_path.parent
+        InspectActiveProfileBundles(tmp_path / "data/training/models/v3", V3_TRAINING_PROFILE)[0].model_path.parent
         / "metadata.json"
     )
     metadata.write_text("{}", encoding="utf-8")

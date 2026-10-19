@@ -1,4 +1,4 @@
-"""SQLite boundary for one immutable-history calendar month."""
+"""Annual structured prices with revision isolation and calendar-month proofs."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import sqlite3
 from collections.abc import Callable, Collection, Generator, Iterable, Iterator
 from contextlib import closing, nullcontext
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from itertools import islice
 from pathlib import Path
 from typing import Literal, cast
@@ -20,28 +20,28 @@ from trader.download.domain.history_control import HistorySnapshotPartition
 from trader.download.domain.history_revision import HistoryRevision, HistoryTrainingPoint, HistoryTrainingRow
 from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_partition_proof import CalculateHistoryProof
-from trader.download.infra.history_revision_codec import (
-    DecodeHistoryRevision,
-    EncodeHistoryRevision,
-)
+from trader.download.infra.history_revision_codec import RevisionColumnValues, RevisionFromColumns
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.download.infra.history_sqlite_read_connection import OpenHistoryMonthReader
-from trader.download.infra.published_history_codec import DecodePublishedHistoryCell
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.download.infra.history_sqlite_read_connection import OpenHistoryPriceReader
+from trader.download.infra.price_columns import PRICE_COLUMNS, PRICE_SQL, PriceCellFromColumns, PriceValues
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    OpenSqliteConnection,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteTransaction,
+)
 
-_SCHEMA_IDENTITY = "history_direct_prices"
+_SCHEMA_IDENTITY = "history_annual_prices"
 _CODE = re.compile(r"^[0-9]{6}$")
-_HASH_CHUNK_BYTES = 1024 * 1024
-_CACHE_RELEASE_BYTES = 16 * 1024 * 1024
-_VERIFICATION_MMAP_BYTES = 256 * 1024 * 1024
 HistoryPartitionVerificationPhase = Literal["hash", "integrity", "row_count", "logical"]
 HistoryPartitionVerificationProgress = Callable[[int, int, HistoryPartitionVerificationPhase], None]
-_SCHEMA = """
+_SCHEMA_SQL = f"""
 CREATE TABLE IF NOT EXISTS metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
     schema_identity TEXT NOT NULL,
-    calendar_year INTEGER NOT NULL,
-    calendar_month INTEGER NOT NULL CHECK(calendar_month BETWEEN 1 AND 12)
+    calendar_year INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS daily_records (
     trade_date TEXT NOT NULL,
@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS daily_records (
     revision_id TEXT NOT NULL,
     first_seen_sequence INTEGER NOT NULL CHECK(first_seen_sequence > 0),
     board TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
+    {PRICE_SQL},
     content_hash TEXT NOT NULL,
     PRIMARY KEY (trade_date, code, revision_id)
 ) WITHOUT ROWID;
@@ -62,20 +62,26 @@ CREATE TABLE IF NOT EXISTS daily_observations (
     FOREIGN KEY (trade_date, code, revision_id)
         REFERENCES daily_records(trade_date, code, revision_id)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS history_month_code_date_idx
+CREATE INDEX IF NOT EXISTS history_price_code_date_idx
 ON daily_records(code, trade_date, first_seen_sequence DESC, revision_id);
-CREATE INDEX IF NOT EXISTS history_month_date_board_code_idx
+CREATE INDEX IF NOT EXISTS history_price_date_board_code_idx
 ON daily_records(trade_date, board, code, first_seen_sequence DESC, revision_id);
-CREATE INDEX IF NOT EXISTS history_month_observation_code_date_idx
+CREATE INDEX IF NOT EXISTS history_price_observation_code_date_idx
 ON daily_observations(code, trade_date, sync_sequence DESC, revision_id);
-CREATE INDEX IF NOT EXISTS history_month_sequence_idx ON daily_observations(sync_sequence);
-CREATE INDEX IF NOT EXISTS history_month_price_gap_idx
+CREATE INDEX IF NOT EXISTS history_price_sequence_idx ON daily_observations(sync_sequence);
+CREATE INDEX IF NOT EXISTS history_price_price_gap_idx
 ON daily_records(code, trade_date, revision_id)
-WHERE json_extract(payload_json, '$.cell.status') IN ('unknown_missing','qfq_missing','unadjusted_missing');
+WHERE status IN ('unknown_missing','qfq_missing','unadjusted_missing');
 """
-_REVISION_COLUMNS = """records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
-       records.board, records.payload_json, records.content_hash"""
-_DAILY_COLUMNS = "records.trade_date, records.code, json_extract(records.payload_json, '$.cell')"
+_SCHEMA = SqliteSchema(1, tuple(statement.strip() for statement in _SCHEMA_SQL.split(";") if statement.strip()))
+_PRICE_SELECT = ", ".join(f"records.{name}" for name in PRICE_COLUMNS)
+_REVISION_COLUMNS = (
+    "records.trade_date, records.code, records.revision_id, records.first_seen_sequence, records.board, "
+    + _PRICE_SELECT
+    + ", records.content_hash"
+)
+_DAILY_COLUMNS = "records.trade_date, records.code, " + _PRICE_SELECT
+_INSERT_RECORD = "INSERT INTO daily_records VALUES (" + ",".join("?" for _ in range(29)) + ")"
 _LATEST_WINDOW = """
 WITH latest AS (
     SELECT trade_date, code, revision_id,
@@ -100,7 +106,7 @@ ORDER BY records.trade_date, records.code
 _LATEST_RANGE_SQL = _LATEST_WINDOW.format(columns=_REVISION_COLUMNS, observation_filter="", record_filter="")
 _RANGE_BY_CODE = """
 SELECT {columns}
-FROM daily_records AS records INDEXED BY history_month_code_date_idx
+FROM daily_records AS records INDEXED BY history_price_code_date_idx
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
       SELECT observed.revision_id
@@ -125,8 +131,8 @@ WITH latest AS (
     WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ?
 )
 SELECT records.trade_date, records.code,
-       json_extract(records.payload_json, '$.cell.unadjusted') IS NOT NULL,
-       json_extract(records.payload_json, '$.cell.qfq') IS NOT NULL
+       records.raw_present,
+       records.qfq_present
 FROM latest
 JOIN daily_records AS records
   ON records.trade_date = latest.trade_date
@@ -157,11 +163,11 @@ _TRAINING_RANGE_SQL = """
 SELECT records.trade_date,
        records.code,
        records.board,
-       json_extract(records.payload_json, '$.cell.status'),
-       json_extract(records.payload_json, '$.cell.unadjusted.trading_status'),
-       json_extract(records.payload_json, '$.cell.qfq.trading_status'),
-       json_extract(records.payload_json, '$.cell.qfq.close_price'),
-       json_extract(records.payload_json, '$.cell.qfq.amount')
+       records.status,
+       records.raw_trading_status,
+       records.qfq_trading_status,
+       records.qfq_close,
+       records.qfq_amount
 FROM daily_records AS records
 WHERE records.trade_date BETWEEN ? AND ?
   AND records.revision_id = (
@@ -175,12 +181,10 @@ WHERE records.trade_date BETWEEN ? AND ?
 ORDER BY records.trade_date, records.code
 """
 _COUNT_CODE_BATCH_SIZE = 500
-_ALL_REVISION_SCAN_SQL = (
-    "SELECT trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash FROM daily_records"
-)
+_ALL_REVISION_SCAN_SQL = "SELECT " + _REVISION_COLUMNS + " FROM daily_records AS records"
 _EXISTING_OBSERVATIONS_SQL = """
 SELECT observations.trade_date, observations.code, observations.sync_sequence, observations.revision_id,
-       json_extract(records.payload_json, '$.cell.status')
+       records.status
 FROM requested_history_revisions AS requested
 CROSS JOIN daily_observations AS observations
 LEFT JOIN daily_records AS records
@@ -191,9 +195,9 @@ WHERE observations.trade_date=requested.trade_date
   AND observations.code=requested.code
   AND observations.sync_sequence=requested.sync_sequence
 """
-_EXISTING_REVISIONS_SQL = """
+_EXISTING_REVISIONS_SQL = f"""
 SELECT records.trade_date, records.code, records.revision_id, records.first_seen_sequence,
-       records.payload_json, records.content_hash
+       {_PRICE_SELECT}, records.content_hash
 FROM requested_history_revisions AS requested
 CROSS JOIN daily_records AS records
 WHERE records.trade_date=requested.trade_date
@@ -214,7 +218,7 @@ GROUP BY requested.trade_date, requested.code
 class _EncodedRevision:
     value: HistoryRevision
     trade_date: str
-    payload_json: str
+    price_values: PriceValues
 
     @property
     def observation_key(self) -> tuple[str, str, int]:
@@ -225,15 +229,15 @@ class _EncodedRevision:
         return self.trade_date, self.value.code, self.value.revision_id
 
 
-class HistoryMonthPartitionError(RuntimeError):
+class HistoryPricePartitionError(RuntimeError):
     """A month partition cannot be trusted or queried."""
 
 
-class HistoryMonthPartitionConflictError(HistoryMonthPartitionError):
+class HistoryPricePartitionConflictError(HistoryPricePartitionError):
     """An immutable logical row conflicts with an existing revision."""
 
 
-class HistoryMonthPrices:
+class HistoryPricePartition:
     def __init__(  # noqa: PLR0913 - physical identity and optional diagnostic/cancellation boundaries
         self,
         path: Path,
@@ -251,32 +255,40 @@ class HistoryMonthPrices:
         self._statement_trace = statement_trace
         self._activity = activity
 
+    def _month_bounds(self) -> tuple[str, str]:
+        start = date(self._calendar_year, self._calendar_month, 1)
+        end = date(self._calendar_year + (self._calendar_month == 12), self._calendar_month % 12 + 1, 1)
+        return start.isoformat(), end.isoformat()
+
+    def _clip_range(self, start: date, end: date) -> tuple[date, date]:
+        first, after = self._month_bounds()
+        return max(start, date.fromisoformat(first)), min(end, date.fromisoformat(after) - timedelta(days=1))
+
     def initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        new_database = not self._path.exists() or self._path.stat().st_size == 0
         try:
-            with closing(OpenSqliteConnection(self._path)) as connection, connection:
-                if self._statement_trace is not None:
-                    connection.set_trace_callback(self._statement_trace)
-                if new_database:
-                    connection.execute("PRAGMA page_size=8192")
-                connection.execute("PRAGMA journal_mode=WAL")
-                # One durable schema transaction, not one FULL fsync per table/index.
-                connection.executescript("BEGIN IMMEDIATE;\n" + _SCHEMA)
-                connection.execute(
-                    "INSERT OR IGNORE INTO metadata"
-                    "(singleton, schema_identity, calendar_year, calendar_month) VALUES (1, ?, ?, ?)",
-                    (_SCHEMA_IDENTITY, self._calendar_year, self._calendar_month),
+            with closing(
+                OpenSqliteConnection(
+                    self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True, page_size=8192)
                 )
+            ) as connection:
+                if self._statement_trace is not None:
+                    connection.observe_statements(self._statement_trace)
+                EnsureSqliteSchema(connection, _SCHEMA, allow_create=True)
+                with SqliteTransaction(connection, immediate=True):
+                    connection.run(
+                        "INSERT OR IGNORE INTO metadata(singleton,schema_identity,calendar_year) VALUES(1,?,?)",
+                        (_SCHEMA_IDENTITY, self._calendar_year),
+                    )
                 self._require_metadata(connection)
                 self._require_schema(connection)
         except (sqlite3.Error, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month partition initialization failed") from exc
+            raise HistoryPricePartitionError("history month partition initialization failed") from exc
         try:
             _fsync_file(self._path)
             _fsync_directory(self._path.parent)
         except OSError as exc:
-            raise HistoryMonthPartitionError("history month partition durability sync failed") from exc
+            raise HistoryPricePartitionError("history month partition durability sync failed") from exc
 
     def changed_revisions(self, revisions: tuple[HistoryRevision, ...]) -> tuple[HistoryRevision, ...]:
         """Compare bounded incoming keys with their latest visible price identity, read-only."""
@@ -285,8 +297,9 @@ class HistoryMonthPrices:
     def has_observations_after(self, sequence: int) -> bool:
         with closing(self._read_connection()) as connection:
             return (
-                connection.execute(
-                    "SELECT 1 FROM daily_observations WHERE sync_sequence>? LIMIT 1", (sequence,)
+                connection.run(
+                    "SELECT 1 FROM daily_observations WHERE sync_sequence>? AND trade_date>=? AND trade_date<? LIMIT 1",
+                    (sequence, *self._month_bounds()),
                 ).fetchone()
                 is not None
             )
@@ -299,7 +312,7 @@ class HistoryMonthPrices:
             self._require_metadata(connection)
             while batch := tuple(islice(incoming, 200)):
                 placeholders = ",".join("(?,?,?)" for _ in batch)
-                rows = connection.execute(
+                rows = connection.run(
                     "WITH requested(day,code,sequence) AS (VALUES " + placeholders + ") "
                     "SELECT (SELECT o.revision_id FROM daily_observations o "
                     "WHERE o.trade_date=r.day AND o.code=r.code AND o.sync_sequence<=r.sequence "
@@ -323,19 +336,19 @@ class HistoryMonthPrices:
                 self._require_metadata(connection)
                 while batch := tuple(islice(incoming, 4096)):
                     if shutil.disk_usage(self._path.parent).free < 64 * 1024**2:
-                        raise HistoryMonthPartitionError("disk_space_insufficient")
+                        raise HistoryPricePartitionError("disk_space_insufficient")
                     with connection:
-                        connection.execute("BEGIN IMMEDIATE")
+                        connection.run("BEGIN IMMEDIATE")
                         self._save_batch(connection, self._prepare_revisions(batch))
-                        connection.execute("DROP TABLE requested_history_revisions")
+                        connection.run("DROP TABLE requested_history_revisions")
         except sqlite3.Error as exc:
-            raise HistoryMonthPartitionError("history month revision write failed") from exc
+            raise HistoryPricePartitionError("history month revision write failed") from exc
 
     def open_write_session(
         self, *, fresh: bool = False, pending_sequence: int | None = None
-    ) -> HistoryMonthWriteSession:
+    ) -> HistoryPriceWriteSession:
         """Open one thread-confined writer reused across durable batch transactions."""
-        return HistoryMonthWriteSession(self, fresh=fresh, pending_sequence=pending_sequence)
+        return HistoryPriceWriteSession(self, fresh=fresh, pending_sequence=pending_sequence)
 
     def read_price_keys(self, keys: tuple[tuple[str, date], ...], sequence: int) -> tuple[HistoryRevision, ...]:
         """Read a bounded stock batch through exact observation/record keys on one connection."""
@@ -361,22 +374,12 @@ class HistoryMonthPrices:
                     "AND o.sync_sequence<=? ORDER BY o.sync_sequence DESC LIMIT 1)"
                 )
                 result.extend(
-                    _decode_row(row)
-                    for row in connection.execute(
+                    _decode_row(tuple(row))
+                    for row in connection.run(
                         sql, (*tuple(value for code, day in batch for value in (code, day.isoformat())), sequence)
                     )
                 )
         return tuple(result)
-
-    def contains_before(self, first_date: date) -> bool:
-        with closing(self._read_connection()) as connection:
-            self._require_metadata(connection)
-            return (
-                connection.execute(
-                    "SELECT 1 FROM daily_records WHERE trade_date<? LIMIT 1", (first_date.isoformat(),)
-                ).fetchone()
-                is not None
-            )
 
     def save_revisions(self, revisions: Iterable[HistoryRevision]) -> None:
         prepared = self._prepare_revisions(revisions)
@@ -384,13 +387,13 @@ class HistoryMonthPrices:
             return
         try:
             with closing(self._write_connection()) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
+                connection.run("BEGIN IMMEDIATE")
                 self._require_metadata(connection)
                 self._save_batch(connection, prepared)
-        except HistoryMonthPartitionConflictError:
+        except HistoryPricePartitionConflictError:
             raise
         except sqlite3.Error as exc:
-            raise HistoryMonthPartitionError("history month revision write failed") from exc
+            raise HistoryPricePartitionError("history month revision write failed") from exc
 
     def read_day(
         self,
@@ -422,14 +425,14 @@ class HistoryMonthPrices:
             self._activity.watch(connection) if self._activity else nullcontext(),
         ):
             self._require_metadata(connection)
-            rows = connection.execute(
-                "SELECT r.code,r.trade_date FROM daily_records r INDEXED BY history_month_price_gap_idx "
-                "WHERE json_extract(r.payload_json, '$.cell.status') IN "
+            rows = connection.run(
+                "SELECT r.code,r.trade_date FROM daily_records r INDEXED BY history_price_price_gap_idx "
+                "WHERE r.trade_date>=? AND r.trade_date<? AND r.status IN "
                 "('unknown_missing','qfq_missing','unadjusted_missing') "
                 "AND r.revision_id=(SELECT o.revision_id FROM daily_observations o "
                 "WHERE o.code=r.code AND o.trade_date=r.trade_date AND o.sync_sequence<=? "
                 "ORDER BY o.sync_sequence DESC LIMIT 1) ORDER BY r.code,r.trade_date",
-                (snapshot_sequence,),
+                (*self._month_bounds(), snapshot_sequence),
             ).fetchall()
         return tuple((str(code), date.fromisoformat(str(day))) for code, day in rows)
 
@@ -447,17 +450,17 @@ class HistoryMonthPrices:
             for offset in range(0, len(ordered_codes), _COUNT_CODE_BATCH_SIZE):
                 batch = ordered_codes[offset : offset + _COUNT_CODE_BATCH_SIZE]
                 placeholders = ",".join("?" for _code in batch)
-                rows = connection.execute(
+                rows = connection.run(
                     "SELECT records.code, COUNT(*) FROM daily_records AS records "
-                    "INDEXED BY history_month_price_gap_idx "
+                    "INDEXED BY history_price_price_gap_idx "
                     "WHERE records.code IN (" + placeholders + ") "
-                    "AND json_extract(records.payload_json, '$.cell.status') IN "
+                    "AND records.trade_date>=? AND records.trade_date<? AND records.status IN "
                     "('unknown_missing','qfq_missing','unadjusted_missing') "
                     "AND records.revision_id=(SELECT observations.revision_id FROM daily_observations AS observations "
                     "WHERE observations.code=records.code AND observations.trade_date=records.trade_date "
                     "AND observations.sync_sequence<=? ORDER BY observations.sync_sequence DESC LIMIT 1) "
                     "GROUP BY records.code",
-                    (*batch, snapshot_sequence),
+                    (*batch, *self._month_bounds(), snapshot_sequence),
                 ).fetchall()
                 for code, count in rows:
                     counts[str(code)] = counts.get(str(code), 0) + cast(int, count)
@@ -473,6 +476,7 @@ class HistoryMonthPrices:
     ) -> int:
         if start > end or snapshot_sequence < 1:
             raise ValueError("history month count range is invalid")
+        start, end = self._clip_range(start, end)
         ordered_codes = tuple(sorted(set(codes)))
         if any(len(code) != 6 or not code.isdigit() for code in ordered_codes):
             raise ValueError("history month count codes are invalid")
@@ -485,7 +489,7 @@ class HistoryMonthPrices:
                 for offset in range(0, len(ordered_codes), _COUNT_CODE_BATCH_SIZE):
                     batch = ordered_codes[offset : offset + _COUNT_CODE_BATCH_SIZE]
                     placeholders = ",".join("?" for _code in batch)
-                    row = connection.execute(
+                    row = connection.run(
                         "SELECT COUNT(*) FROM ("
                         "SELECT trade_date, code FROM daily_observations "
                         "WHERE sync_sequence <= ? AND trade_date BETWEEN ? AND ? "
@@ -494,30 +498,11 @@ class HistoryMonthPrices:
                         (snapshot_sequence, start.isoformat(), end.isoformat(), *batch),
                     ).fetchone()
                     if row is None:
-                        raise HistoryMonthPartitionError("history month count is unavailable")
+                        raise HistoryPricePartitionError("history month count is unavailable")
                     count += cast(int, row[0])
         except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month count failed") from exc
+            raise HistoryPricePartitionError("history month count failed") from exc
         return count
-
-    def prune_before(self, first_date: date) -> None:
-        """Remove rows outside a new rolling window from a mutable side copy."""
-        if (first_date.year, first_date.month) != (self._calendar_year, self._calendar_month):
-            raise ValueError("history rolling-window boundary does not belong to the target month")
-        try:
-            with closing(self._write_connection()) as connection, connection:
-                connection.execute("BEGIN IMMEDIATE")
-                self._require_metadata(connection)
-                connection.execute("DELETE FROM daily_observations WHERE trade_date < ?", (first_date.isoformat(),))
-                connection.execute(
-                    "DELETE FROM daily_records WHERE NOT EXISTS ("
-                    "SELECT 1 FROM daily_observations AS observations "
-                    "WHERE observations.trade_date=daily_records.trade_date "
-                    "AND observations.code=daily_records.code "
-                    "AND observations.revision_id=daily_records.revision_id)",
-                )
-        except sqlite3.Error as exc:
-            raise HistoryMonthPartitionError("history month rolling-window prune failed") from exc
 
     def iter_range(
         self,
@@ -534,21 +519,22 @@ class HistoryMonthPrices:
             raise ValueError("history month code is invalid")
         if board is not None and board not in {"main", "chinext", "star"}:
             raise ValueError("history month board is invalid")
+        start, end = self._clip_range(start, end)
         try:
             with closing(self._read_connection()) as connection:
                 self._require_metadata(connection)
                 query, filters = _latest_query(code, board)
-                cursor = connection.execute(
+                cursor = connection.run(
                     query,
                     (snapshot_sequence, start.isoformat(), end.isoformat(), *filters),
                 )
                 while rows := cursor.fetchmany(512):
                     for row in rows:
-                        yield _decode_row(row)
-        except HistoryMonthPartitionError:
+                        yield _decode_row(tuple(row))
+        except HistoryPricePartitionError:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month query failed") from exc
+            raise HistoryPricePartitionError("history month query failed") from exc
 
     def iter_range_by_code(
         self,
@@ -561,20 +547,21 @@ class HistoryMonthPrices:
 
         if start > end or snapshot_sequence < 1:
             raise ValueError("history month query range is invalid")
+        start, end = self._clip_range(start, end)
         try:
             with closing(self._read_connection()) as connection:
                 self._require_metadata(connection)
-                cursor = connection.execute(
+                cursor = connection.run(
                     _LATEST_RANGE_BY_CODE_SQL,
                     (start.isoformat(), end.isoformat(), snapshot_sequence),
                 )
                 while rows := cursor.fetchmany(512):
                     for row in rows:
-                        yield _decode_row(row)
-        except HistoryMonthPartitionError:
+                        yield _decode_row(tuple(row))
+        except HistoryPricePartitionError:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month code-ordered query failed") from exc
+            raise HistoryPricePartitionError("history month code-ordered query failed") from exc
 
     def iter_training_rows(
         self,
@@ -587,20 +574,21 @@ class HistoryMonthPrices:
 
         if start > end or snapshot_sequence < 1:
             raise ValueError("history month training range is invalid")
+        start, end = self._clip_range(start, end)
         try:
             with closing(self._read_connection()) as connection:
                 self._require_metadata(connection)
-                cursor = connection.execute(
+                cursor = connection.run(
                     _TRAINING_RANGE_SQL,
                     (start.isoformat(), end.isoformat(), snapshot_sequence),
                 )
                 while rows := cursor.fetchmany(4_096):
                     for row in rows:
-                        yield _decode_training_row(row)
-        except HistoryMonthPartitionError:
+                        yield _decode_training_row(tuple(row))
+        except HistoryPricePartitionError:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month training query failed") from exc
+            raise HistoryPricePartitionError("history month training query failed") from exc
 
     def iter_published_cells(
         self,
@@ -613,6 +601,7 @@ class HistoryMonthPrices:
         """Project sealed daily facts without materializing full revision objects."""
         if start > end or snapshot_sequence < 1 or (code is not None and _CODE.fullmatch(code) is None):
             raise ValueError("published daily query range is invalid")
+        start, end = self._clip_range(start, end)
         query = _PUBLISHED_RANGE_BY_CODE_SQL if code is None else _PUBLISHED_CODE_SQL
         parameters = (
             (start.isoformat(), end.isoformat(), snapshot_sequence)
@@ -622,12 +611,12 @@ class HistoryMonthPrices:
         try:
             with closing(self._read_connection()) as connection:
                 self._require_metadata(connection)
-                cursor = connection.execute(query, parameters)
+                cursor = connection.run(query, parameters)
                 while rows := cursor.fetchmany(512):
                     for row in rows:
-                        yield DecodePublishedHistoryCell(row)
+                        yield PriceCellFromColumns(str(row[1]), str(row[0]), cast(PriceValues, row[2:]))
         except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("published daily query failed") from exc
+            raise HistoryPricePartitionError("published daily query failed") from exc
 
     def iter_shadow_facts(
         self,
@@ -639,20 +628,21 @@ class HistoryMonthPrices:
         """Stream adjustment-presence facts without decoding revision payloads."""
         if start > end or snapshot_sequence < 1:
             raise ValueError("history month query range is invalid")
+        start, end = self._clip_range(start, end)
         try:
             with closing(self._read_connection()) as connection:
                 self._require_metadata(connection)
-                cursor = connection.execute(
+                cursor = connection.run(
                     _LATEST_SHADOW_SQL,
                     (snapshot_sequence, start.isoformat(), end.isoformat()),
                 )
                 while rows := cursor.fetchmany(2048):
                     for trade_date, code, raw_present, qfq_present in rows:
                         yield str(code), date.fromisoformat(str(trade_date)), bool(raw_present), bool(qfq_present)
-        except HistoryMonthPartitionError:
+        except HistoryPricePartitionError:
             raise
         except (sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month shadow query failed") from exc
+            raise HistoryPricePartitionError("history month shadow query failed") from exc
 
     def seal(self, sequence: int | None = None) -> HistorySnapshotPartition:
         """Produce a logical proof without copying, renaming or freezing the database."""
@@ -661,29 +651,31 @@ class HistoryMonthPrices:
                 closing(self._read_connection()) as connection,
                 self._activity.watch(connection) if self._activity else nullcontext(),
             ):
-                connection.execute("BEGIN")
+                connection.run("BEGIN")
                 self._require_metadata(connection)
                 self._require_schema(connection)
-                if connection.execute("PRAGMA quick_check").fetchone() != ("ok",):
-                    raise HistoryMonthPartitionError("history month integrity check failed")
                 if sequence is None:
-                    sequence = connection.execute(
+                    sequence = connection.run(
                         "SELECT COALESCE(MAX(sync_sequence),1) FROM daily_observations"
-                    ).fetchone()[0]
+                    ).require_one()[0]
                 proof = CalculateHistoryProof(
                     connection,
                     sequence,
+                    # Typed writes already validate the new values. Publication seals
+                    # visible identities; cold readers and offline audits verify payloads.
                     validate_payloads=False,
+                    dates=self._month_bounds(),
                     heartbeat=lambda count: self._activity.tick() if self._activity else None,
                 )
                 return HistorySnapshotPartition(
-                    f"partitions/{self._calendar_year:04d}/{self._calendar_month:02d}.sqlite3",
+                    f"prices_{self._calendar_year:04d}.sqlite3",
                     proof.logical_hash,
                     proof.row_count,
+                    self._calendar_month,
                     sequence,
                 )
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month logical proof failed") from exc
+            raise HistoryPricePartitionError("history month logical proof failed") from exc
 
     @classmethod
     def verify(
@@ -705,23 +697,23 @@ class HistoryMonthPrices:
         validate_payloads: bool = False,
     ) -> None:
         del retain_pages
-        parts = Path(reference.relative_path).parts
-        candidate = cls(path, int(parts[1]), int(Path(parts[2]).stem))
+        candidate = cls(path, reference.calendar_year, reference.calendar_month)
         try:
             with closing(candidate._read_connection()) as connection:
-                connection.execute("BEGIN")
+                connection.run("BEGIN")
                 candidate._require_metadata(connection)
                 candidate._require_schema(connection)
                 proof = CalculateHistoryProof(
                     connection,
                     reference.sequence,
                     validate_payloads=validate_payloads,
+                    dates=candidate._month_bounds(),
                     heartbeat=lambda count: progress(count, reference.row_count, "logical") if progress else None,
                 )
                 if proof.logical_hash != reference.logical_hash or proof.row_count != reference.row_count:
-                    raise HistoryMonthPartitionError("history month logical hash mismatch")
+                    raise HistoryPricePartitionError("history month logical hash mismatch")
         except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
-            raise HistoryMonthPartitionError("history month logical verification failed") from exc
+            raise HistoryPricePartitionError("history month logical verification failed") from exc
 
     def release_read_pages(self) -> None:
         """Release clean OS pages only after a sequential consumer finishes."""
@@ -732,26 +724,24 @@ class HistoryMonthPrices:
         previous_key: tuple[date, str, int, str] | None = None
         observations: dict[tuple[str, str, int], str] = {}
         for value in revisions:
-            if value.trade_date.year != self._calendar_year or value.trade_date.month != self._calendar_month:
-                raise ValueError("history revision does not belong to the target month")
+            if value.trade_date.year != self._calendar_year:
+                raise ValueError("history revision does not belong to the target year")
             key = (value.trade_date, value.code, value.first_seen_sequence, value.revision_id)
             if previous_key is not None and key < previous_key:
                 raise ValueError("history month revisions must be written in deterministic order")
-            encoded = _EncodedRevision(value, value.trade_date.isoformat(), EncodeHistoryRevision(value))
+            encoded = _EncodedRevision(value, value.trade_date.isoformat(), RevisionColumnValues(value))
             observed_revision = observations.setdefault(encoded.observation_key, value.revision_id)
             if observed_revision != value.revision_id:
-                raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
+                raise HistoryPricePartitionConflictError("history monthly revision sequence conflicts")
             prepared.append(encoded)
             previous_key = key
         return tuple(prepared)
 
     @staticmethod
-    def _insert_fresh_batch(connection: sqlite3.Connection, prepared: tuple[_EncodedRevision, ...]) -> None:
+    def _insert_fresh_batch(connection: SqliteConnection, prepared: tuple[_EncodedRevision, ...]) -> None:
         """Insert disjoint first-build keys; primary keys reject any repeated identity."""
-        connection.executemany(
-            "INSERT INTO daily_records"
-            "(trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        connection.run_many(
+            _INSERT_RECORD,
             (
                 (
                     item.trade_date,
@@ -759,49 +749,48 @@ class HistoryMonthPrices:
                     item.value.revision_id,
                     item.value.first_seen_sequence,
                     item.value.board,
-                    item.payload_json,
+                    *item.price_values,
                     item.value.content_hash,
                 )
                 for item in prepared
             ),
         )
-        connection.executemany(
+        connection.run_many(
             "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
 
     def _save_batch(
         self,
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         prepared: tuple[_EncodedRevision, ...],
         *,
         pending_sequence: int | None = None,
     ) -> None:
-        connection.execute(
+        connection.run(
             "CREATE TEMP TABLE requested_history_revisions ("
             "trade_date TEXT NOT NULL, code TEXT NOT NULL, sync_sequence INTEGER NOT NULL, "
             "revision_id TEXT NOT NULL, PRIMARY KEY (trade_date, code, sync_sequence, revision_id)"
             ") WITHOUT ROWID"
         )
-        connection.executemany(
+        connection.run_many(
             "INSERT OR IGNORE INTO requested_history_revisions VALUES (?, ?, ?, ?)",
             ((*item.observation_key, item.value.revision_id) for item in prepared),
         )
         existing_observations = {
             (cast(str, row[0]), cast(str, row[1]), cast(int, row[2])): cast(tuple[str, BaoStockCellStatus], row[3:])
-            for row in connection.execute(_EXISTING_OBSERVATIONS_SQL)
+            for row in connection.run(_EXISTING_OBSERVATIONS_SQL)
         }
         existing_revisions = {
             (cast(str, row[0]), cast(str, row[1]), cast(str, row[2])): (
                 cast(int, row[3]),
-                cast(str, row[4]),
-                cast(str, row[5]),
+                cast(PriceValues, row[4:-1]),
+                cast(str, row[-1]),
             )
-            for row in connection.execute(_EXISTING_REVISIONS_SQL)
+            for row in connection.run(_EXISTING_REVISIONS_SQL)
         }
         latest_sequences = {
-            (cast(str, row[0]), cast(str, row[1])): cast(int, row[2])
-            for row in connection.execute(_LATEST_SEQUENCES_SQL)
+            (cast(str, row[0]), cast(str, row[1])): cast(int, row[2]) for row in connection.run(_LATEST_SEQUENCES_SQL)
         }
         new_records: list[tuple[object, ...]] = []
         new_observations: list[tuple[object, ...]] = []
@@ -816,7 +805,7 @@ class HistoryMonthPrices:
                 if observed_revision == value.revision_id:
                     existing = existing_revisions.get(revision_key)
                     if existing is None:
-                        raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
+                        raise HistoryPricePartitionConflictError("history monthly observation parent is missing")
                     _require_revision_identity(existing, value)
                     continue
                 self._require_observation_upgrade(connection, item, observed, pending_sequence)
@@ -824,10 +813,10 @@ class HistoryMonthPrices:
             date_code = item.trade_date, value.code
             current_sequence = latest_sequences.get(date_code)
             if current_sequence is not None and value.first_seen_sequence < current_sequence:
-                raise HistoryMonthPartitionConflictError("history monthly revision cannot backdate content")
+                raise HistoryPricePartitionConflictError("history monthly revision cannot backdate content")
             existing = existing_revisions.get(revision_key)
             if existing is None:
-                existing = (value.first_seen_sequence, item.payload_json, value.content_hash)
+                existing = (value.first_seen_sequence, item.price_values, value.content_hash)
                 existing_revisions[revision_key] = existing
                 new_records.append(
                     (
@@ -836,7 +825,7 @@ class HistoryMonthPrices:
                         value.revision_id,
                         value.first_seen_sequence,
                         value.board,
-                        item.payload_json,
+                        *item.price_values,
                         value.content_hash,
                     )
                 )
@@ -846,24 +835,22 @@ class HistoryMonthPrices:
             existing_observations[observation_key] = (value.revision_id, value.cell.status)
             if observed is None:
                 new_observations.append((*observation_key, value.revision_id))
-        connection.executemany(
-            "INSERT INTO daily_records"
-            "(trade_date, code, revision_id, first_seen_sequence, board, payload_json, content_hash) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        connection.run_many(
+            _INSERT_RECORD,
             new_records,
         )
-        connection.executemany(
+        connection.run_many(
             "INSERT INTO daily_observations(trade_date, code, sync_sequence, revision_id) VALUES (?, ?, ?, ?)",
             new_observations,
         )
-        connection.executemany(
+        connection.run_many(
             "UPDATE daily_observations SET revision_id=? WHERE trade_date=? AND code=? AND sync_sequence=?",
             corrected_observations,
         )
 
     @staticmethod
     def _require_observation_upgrade(
-        connection: sqlite3.Connection,
+        connection: SqliteConnection,
         item: _EncodedRevision,
         observed: tuple[str, BaoStockCellStatus],
         pending_sequence: int | None,
@@ -871,43 +858,41 @@ class HistoryMonthPrices:
         value = item.value
         observed_revision, observed_status = observed
         if not value.can_upgrade_observation(observed_status, pending_sequence):
-            raise HistoryMonthPartitionConflictError("history monthly revision sequence conflicts")
+            raise HistoryPricePartitionConflictError("history monthly revision sequence conflicts")
         if observed_status not in {"qfq_missing", "unadjusted_missing"}:
             return
-        previous_row = connection.execute(
+        previous_row = connection.run(
             f"SELECT {_REVISION_COLUMNS} FROM daily_records AS records "
             "WHERE records.trade_date=? AND records.code=? AND records.revision_id=?",
             (item.trade_date, value.code, observed_revision),
         ).fetchone()
         if previous_row is None:
-            raise HistoryMonthPartitionConflictError("history monthly observation parent is missing")
-        previous_cell = _decode_row(previous_row).cell
+            raise HistoryPricePartitionConflictError("history monthly observation parent is missing")
+        previous_cell = _decode_row(tuple(previous_row)).cell
         if previous_cell.status != observed_status or not value.retains_partial_prices(previous_cell):
-            raise HistoryMonthPartitionConflictError("history monthly retained price conflicts")
+            raise HistoryPricePartitionConflictError("history monthly retained price conflicts")
 
-    def _require_metadata(self, connection: sqlite3.Connection) -> None:
-        metadata = connection.execute(
-            "SELECT schema_identity, calendar_year, calendar_month FROM metadata WHERE singleton=1"
-        ).fetchone()
-        if metadata != (_SCHEMA_IDENTITY, self._calendar_year, self._calendar_month):
-            raise HistoryMonthPartitionError("history month metadata conflicts")
+    def _require_metadata(self, connection: SqliteConnection) -> None:
+        metadata = connection.run("SELECT schema_identity, calendar_year FROM metadata WHERE singleton=1").fetchone()
+        if metadata is None or tuple(metadata) != (_SCHEMA_IDENTITY, self._calendar_year):
+            raise HistoryPricePartitionError("history month metadata conflicts")
 
-    def _require_schema(self, connection: sqlite3.Connection) -> None:
+    def _require_schema(self, connection: SqliteConnection) -> None:
         expected_indexes = {
-            "history_month_code_date_idx": (
+            "history_price_code_date_idx": (
                 "code",
                 "trade_date",
                 "first_seen_sequence",
                 "revision_id",
             ),
-            "history_month_date_board_code_idx": (
+            "history_price_date_board_code_idx": (
                 "trade_date",
                 "board",
                 "code",
                 "first_seen_sequence",
                 "revision_id",
             ),
-            "history_month_observation_code_date_idx": (
+            "history_price_observation_code_date_idx": (
                 "code",
                 "trade_date",
                 "sync_sequence",
@@ -915,74 +900,45 @@ class HistoryMonthPrices:
             ),
         }
         for name, expected in expected_indexes.items():
-            columns = tuple(row[2] for row in connection.execute(f"PRAGMA index_info('{name}')"))
+            columns = tuple(row[2] for row in connection.run(f"PRAGMA index_info('{name}')"))
             if columns != expected:
-                raise HistoryMonthPartitionError("history month index contract is invalid")
+                raise HistoryPricePartitionError("history month index contract is invalid")
         for table_name in ("daily_records", "daily_observations"):
-            table_sql_row = connection.execute(
+            table_sql_row = connection.run(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
                 (table_name,),
             ).fetchone()
             if table_sql_row is None or "WITHOUT ROWID" not in cast(str, table_sql_row[0]).upper():
-                raise HistoryMonthPartitionError("history month table contract is invalid")
+                raise HistoryPricePartitionError("history month table contract is invalid")
 
-    def _validate_all_rows(self, connection: sqlite3.Connection) -> int:
-        cursor = connection.execute(_ALL_REVISION_SCAN_SQL)
-        row_count = 0
-        while rows := cursor.fetchmany(512):
-            if self._activity is not None:
-                self._activity.tick()
-            for row in rows:
-                _decode_row(row)
-                row_count += 1
-        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
-            raise HistoryMonthPartitionError("history month observation reference is invalid")
-        first_seen_mismatch = connection.execute(
-            "SELECT 1 FROM daily_records AS records "
-            "WHERE records.first_seen_sequence != ("
-            "SELECT MIN(observations.sync_sequence) FROM daily_observations AS observations "
-            "WHERE observations.trade_date=records.trade_date AND observations.code=records.code "
-            "AND observations.revision_id=records.revision_id"
-            ") LIMIT 1"
-        ).fetchone()
-        if first_seen_mismatch is not None:
-            raise HistoryMonthPartitionError("history month first observation is inconsistent")
-        return row_count
-
-    def _write_connection(self) -> sqlite3.Connection:
+    def _write_connection(self) -> SqliteConnection:
         connection = OpenSqliteConnection(self._path, SqliteConnectionOptions(journal_mode="WAL", foreign_keys=True))
         if self._statement_trace is not None:
-            connection.set_trace_callback(self._statement_trace)
-        connection.execute("PRAGMA cache_size=-8192")
-        connection.execute("PRAGMA mmap_size=0")
-        connection.execute("PRAGMA temp_store=FILE")
+            connection.observe_statements(self._statement_trace)
+        connection.run("PRAGMA cache_size=-8192")
+        connection.run("PRAGMA mmap_size=0")
+        connection.run("PRAGMA temp_store=FILE")
         return connection
 
-    def _read_connection(self) -> sqlite3.Connection:
-        return OpenHistoryMonthReader(
+    def _read_connection(self) -> SqliteConnection:
+        return OpenHistoryPriceReader(
             self._path, statement_trace=self._statement_trace, mmap_bytes=0, activity=self._activity
         )
 
-    def _verification_connection(self) -> sqlite3.Connection:
-        return OpenHistoryMonthReader(
-            self._path,
-            statement_trace=self._statement_trace,
-            mmap_bytes=_VERIFICATION_MMAP_BYTES,
-            activity=self._activity,
-        )
 
-
-class HistoryMonthWriteSession:
+class HistoryPriceWriteSession:
     """Reuse one month's connection without weakening per-batch FULL durability."""
 
-    def __init__(self, prices: HistoryMonthPrices, *, fresh: bool = False, pending_sequence: int | None = None) -> None:
+    def __init__(
+        self, prices: HistoryPricePartition, *, fresh: bool = False, pending_sequence: int | None = None
+    ) -> None:
         self._prices = prices
         self._fresh = fresh
         self._pending_sequence = pending_sequence
         self._connection = prices._write_connection()
         try:
             prices._require_metadata(self._connection)
-        except (HistoryMonthPartitionError, sqlite3.Error):
+        except (HistoryPricePartitionError, sqlite3.Error):
             self._connection.close()
             raise
 
@@ -992,9 +948,9 @@ class HistoryMonthWriteSession:
             with self._prices._activity.watch(self._connection) if self._prices._activity else nullcontext():
                 while batch := tuple(islice(incoming, 4096)):
                     if shutil.disk_usage(self._prices._path.parent).free < 64 * 1024**2:
-                        raise HistoryMonthPartitionError("disk_space_insufficient")
+                        raise HistoryPricePartitionError("disk_space_insufficient")
                     with self._connection:
-                        self._connection.execute("BEGIN IMMEDIATE")
+                        self._connection.run("BEGIN IMMEDIATE")
                         prepared = self._prices._prepare_revisions(batch)
                         if self._fresh:
                             self._prices._insert_fresh_batch(self._connection, prepared)
@@ -1002,15 +958,15 @@ class HistoryMonthWriteSession:
                             self._prices._save_batch(
                                 self._connection, prepared, pending_sequence=self._pending_sequence
                             )
-                            self._connection.execute("DROP TABLE requested_history_revisions")
+                            self._connection.run("DROP TABLE requested_history_revisions")
         except sqlite3.Error as exc:
-            raise HistoryMonthPartitionError("history month revision write failed") from exc
+            raise HistoryPricePartitionError("history month revision write failed") from exc
 
     def close(self) -> None:
         try:
             self._connection.close()
         except sqlite3.Error as exc:
-            raise HistoryMonthPartitionError("history month writer close failed") from exc
+            raise HistoryPricePartitionError("history month writer close failed") from exc
 
 
 def _latest_query(code: str | None, board: str | None) -> tuple[str, tuple[str, ...]]:
@@ -1024,7 +980,7 @@ def _latest_query(code: str | None, board: str | None) -> tuple[str, tuple[str, 
 
 
 def _require_revision_identity(
-    existing: tuple[int, str, str],
+    existing: tuple[int, PriceValues, str],
     value: HistoryRevision,
 ) -> None:
     first_seen_sequence, existing_payload, existing_hash = existing
@@ -1036,36 +992,20 @@ def _require_revision_identity(
         value.industry,
         value.industry_classification,
     )
-    if existing_payload != EncodeHistoryRevision(persisted) or existing_hash != persisted.content_hash:
-        raise HistoryMonthPartitionConflictError("history monthly revision identity conflicts")
+    if existing_payload != RevisionColumnValues(persisted) or existing_hash != persisted.content_hash:
+        raise HistoryPricePartitionConflictError("history monthly revision identity conflicts")
 
 
 def _decode_row(row: tuple[object, ...]) -> HistoryRevision:
-    if len(row) != 7:
-        raise HistoryMonthPartitionError("history month row shape is invalid")
-    trade_date_value, code, revision_id, first_seen_sequence, board, payload_json, content_hash = row
-    if not all(
-        isinstance(value, str) for value in (trade_date_value, code, revision_id, board, payload_json, content_hash)
-    ):
-        raise HistoryMonthPartitionError("history month row fields are invalid")
-    if not isinstance(first_seen_sequence, int) or isinstance(first_seen_sequence, bool):
-        raise HistoryMonthPartitionError("history month sequence is invalid")
-    value = DecodeHistoryRevision(cast(str, payload_json))
-    if (
-        value.trade_date.isoformat() != trade_date_value
-        or value.code != code
-        or value.revision_id != revision_id
-        or value.first_seen_sequence != first_seen_sequence
-        or value.board != board
-        or value.content_hash != content_hash
-    ):
-        raise HistoryMonthPartitionError("history month row identity is inconsistent")
-    return value
+    try:
+        return RevisionFromColumns(row)
+    except (TypeError, ValueError) as exc:
+        raise HistoryPricePartitionError("history price row invalid") from exc
 
 
 def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
     if len(row) != 8:
-        raise HistoryMonthPartitionError("history month training row shape is invalid")
+        raise HistoryPricePartitionError("history month training row shape is invalid")
     trade_date_value, code, board, cell_status, raw_status, qfq_status, qfq_close, qfq_amount = row
     if (
         not isinstance(trade_date_value, str)
@@ -1083,7 +1023,7 @@ def _decode_training_row(row: tuple[object, ...]) -> HistoryTrainingRow:
         or raw_status not in {None, "trading", "suspended"}
         or qfq_status not in {None, "trading", "suspended"}
     ):
-        raise HistoryMonthPartitionError("history month training row fields are invalid")
+        raise HistoryPricePartitionError("history month training row fields are invalid")
     trade_date = date.fromisoformat(trade_date_value)
     point = (
         HistoryTrainingPoint(
@@ -1108,43 +1048,8 @@ def _training_number(value: object) -> float | None:
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise HistoryMonthPartitionError("history month training number is invalid")
+        raise HistoryPricePartitionError("history month training number is invalid")
     return float(value)
-
-
-def _sha256_file(
-    path: Path,
-    progress: HistoryPartitionVerificationProgress | None = None,
-    *,
-    release_cache: bool = True,
-) -> str:
-    digest = hashlib.sha256()
-    total = path.stat().st_size
-    with path.open("rb", buffering=0) as handle:
-        _advise_file_access(handle.fileno(), 0, 0, "POSIX_FADV_SEQUENTIAL")
-        released_offset = 0
-        offset = 0
-        for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
-            digest.update(chunk)
-            offset += len(chunk)
-            if offset - released_offset >= _CACHE_RELEASE_BYTES:
-                if release_cache:
-                    _advise_file_access(
-                        handle.fileno(), released_offset, offset - released_offset, "POSIX_FADV_DONTNEED"
-                    )
-                released_offset = offset
-                if progress is not None:
-                    progress(offset, total, "hash")
-        if release_cache and offset > released_offset:
-            _advise_file_access(
-                handle.fileno(),
-                released_offset,
-                offset - released_offset,
-                "POSIX_FADV_DONTNEED",
-            )
-        if progress is not None:
-            progress(offset, total, "hash")
-    return digest.hexdigest()
 
 
 def _advise_file_access(descriptor: int, offset: int, length: int, advice_name: str) -> None:
@@ -1188,9 +1093,9 @@ def _fsync_directory(path: Path) -> None:
 
 
 __all__ = [
-    "HistoryMonthPartitionConflictError",
-    "HistoryMonthPartitionError",
+    "HistoryPricePartitionConflictError",
+    "HistoryPricePartitionError",
     "HistoryPartitionVerificationPhase",
-    "HistoryMonthPrices",
-    "HistoryMonthWriteSession",
+    "HistoryPricePartition",
+    "HistoryPriceWriteSession",
 ]

@@ -282,7 +282,7 @@ class StderrHistorySyncProgress:
         return FormatStockDownloadProgress(
             max(0.0, now - self._started_at),
             StockDownloadProgress(
-                command="download",
+                command="sync history",
                 completed=progress.completed_units,
                 total=progress.total_units,
                 code=code,

@@ -67,7 +67,7 @@ def test_official_exchange_security_master_closes_listing_coverage_and_persists_
         listing_open_dates=lambda: (date(2020, 1, 2), date(2026, 8, 28)),
         wall_clock=lambda: observed_at,
     )
-    data_plane = SQLiteDataPlane(tmp_path)
+    data_plane = SQLiteDataPlane((tmp_path) / "snapshots.sqlite3")
     service = _service(
         gateway,
         StaticHistoryClient(),

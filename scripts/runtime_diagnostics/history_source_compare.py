@@ -26,7 +26,7 @@ from trader.download.domain.published_history import ProjectHistoryCell, Publish
 from trader.download.infra.baostock_sync_supplier import BaoStockHistorySupplier, BaoStockRequestPolicy
 from trader.download.infra.download_settings import LoadHistorySyncConfiguration
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_reference_files import ReadBoundHistoryReference
+from trader.download.infra.history_reference_codec import ReadBoundHistoryReference
 from trader.download.infra.history_supplier_router import FetchTencentHistoryWindow
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.tencent_qfq_supplier import (
@@ -35,6 +35,7 @@ from trader.download.infra.tencent_qfq_supplier import (
     TencentQfqSupplier,
     TencentSessionPool,
 )
+from trader.infra.settings.data_paths import DataPaths
 
 from .reporting import emit_report
 
@@ -60,7 +61,7 @@ class _ComparisonSupplier:
 
 
 def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) -> dict[str, object]:
-    state = HistoryControlIndex(root / "control.sqlite3").load_published_state()
+    state = HistoryControlIndex(root / "catalog.sqlite3").load_published_state()
     if state is None:
         raise ValueError("comparison_requires_published_calendar")
     reference = ReadBoundHistoryReference(root, state.source.supplier_contract)
@@ -81,7 +82,7 @@ def _compare(root: Path, codes: tuple[str, ...], sessions: int, timeout: float) 
             work = Path(temporary)
             project_root = Path(__file__).resolve().parents[2]
             config = replace(
-                LoadHistorySyncConfiguration(project_root, work / "reference"),
+                LoadHistorySyncConfiguration(project_root, DataPaths(work / "data")),
                 archive_root=work / "history",
                 training_root=work / "train",
                 sessions=sessions,

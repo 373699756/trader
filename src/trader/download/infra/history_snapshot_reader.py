@@ -21,14 +21,13 @@ from trader.download.domain.history_revision import (
 )
 from trader.download.domain.published_history import PublishedHistoryCell
 from trader.download.infra.history_control_index import HistoryControlError, HistoryControlIndex
-from trader.download.infra.history_month_partition import (
-    HistoryMonthPartitionError,
-    HistoryMonthPrices,
+from trader.download.infra.history_prices import (
     HistoryPartitionVerificationPhase,
+    HistoryPricePartition,
+    HistoryPricePartitionError,
 )
-from trader.download.infra.history_reference_files import (
+from trader.download.infra.history_reference_codec import (
     HistoryReferenceIndex,
-    HistoryReferencePath,
     ReadBoundHistoryReference,
 )
 
@@ -52,7 +51,7 @@ class _PartitionFileIdentity:
 class _VerifiedPartition:
     reference: HistorySnapshotPartition
     identity: _PartitionFileIdentity
-    repository: HistoryMonthPrices
+    partition: HistoryPricePartition
     level: Literal["logical", "full"]
 
 
@@ -123,13 +122,13 @@ def RouteHistoryMonths(start: date, end: date) -> tuple[tuple[int, int], ...]:
 class HistorySnapshotReader:
     def __init__(self, root: Path) -> None:
         self._root = root
-        self._verified: dict[str, _VerifiedPartition] = {}
+        self._verified: dict[tuple[str, int], _VerifiedPartition] = {}
         self._verification_lock = threading.Lock()
-        self._references: dict[str, tuple[tuple[int, int, int, int], HistoryReferenceIndex]] = {}
+        self._references: dict[str, HistoryReferenceIndex] = {}
 
     def reference_index(self, snapshot: HistoryActiveSnapshot) -> HistoryReferenceIndex:
         try:
-            source = HistoryControlIndex(self._root / "control.sqlite3").read_source(snapshot.source_identity_hash)
+            source = HistoryControlIndex(self._root / "catalog.sqlite3").read_source(snapshot.source_identity_hash)
         except HistoryControlError as exc:
             raise HistorySnapshotReadError("history_reference_unavailable") from exc
         if not source.supplier_contract.startswith("history_ref_"):
@@ -137,16 +136,13 @@ class HistorySnapshotReader:
         digest = source.supplier_contract[len("history_ref_") : len("history_ref_") + 64]
         if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
             raise HistorySnapshotReadError("history_reference_unavailable")
-        path = HistoryReferencePath(self._root, digest)
         try:
-            stat = path.stat()
-            identity = (stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
             cached = self._references.get(digest)
-            if cached is not None and cached[0] == identity:
-                return cached[1]
+            if cached is not None:
+                return cached
             reference = ReadBoundHistoryReference(self._root, source.supplier_contract)
             index = HistoryReferenceIndex(reference)
-            self._references[digest] = (identity, index)
+            self._references[digest] = index
             return index
         except (OSError, ValueError) as exc:
             raise HistorySnapshotReadError("history_reference_unavailable") from exc
@@ -159,7 +155,7 @@ class HistorySnapshotReader:
         self.reference_index(snapshot)
         total = len(snapshot.partitions)
         for completed, reference in enumerate(snapshot.partitions, start=1):
-            self._repository_with_trust(
+            self._partition_with_trust(
                 reference,
                 None if progress is None else _partition_progress(progress, completed, total),
                 required_level="full",
@@ -178,7 +174,7 @@ class HistorySnapshotReader:
         self.reference_index(snapshot)
         total = len(snapshot.partitions)
         for completed, reference in enumerate(snapshot.partitions, start=1):
-            self._repository_with_trust(
+            self._partition_with_trust(
                 reference,
                 None if progress is None else _partition_progress(progress, completed, total),
                 required_level=None,
@@ -202,7 +198,7 @@ class HistorySnapshotReader:
         if not eligible_codes:
             return 0
         return sum(
-            self._verified_repository(self._reference(snapshot, year, month)).count_range(
+            self._verified_partition(self._reference(snapshot, year, month)).count_range(
                 start,
                 end,
                 snapshot_sequence=self._reference(snapshot, year, month).sequence,
@@ -233,11 +229,11 @@ class HistorySnapshotReader:
         if trade_date > snapshot.data_cutoff:
             raise ValueError("history day exceeds the snapshot cutoff")
         reference = self._reference(snapshot, trade_date.year, trade_date.month)
-        repository = self._verified_repository(reference)
+        partition = self._verified_partition(reference)
         index = self.reference_index(snapshot)
         return tuple(
             index.apply(row)
-            for row in repository.read_day(trade_date, snapshot_sequence=reference.sequence, board=board)
+            for row in partition.read_day(trade_date, snapshot_sequence=reference.sequence, board=board)
             if index.eligible(row.code)
         )
 
@@ -261,10 +257,10 @@ class HistorySnapshotReader:
         rows: list[HistoryRevision] = []
         for year, month in RouteHistoryMonths(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
-            repository = self._verified_repository(reference)
+            partition = self._verified_partition(reference)
             rows.extend(
                 row
-                for row in repository.read_code(
+                for row in partition.read_code(
                     code,
                     dates[0],
                     dates[-1],
@@ -281,11 +277,11 @@ class HistorySnapshotReader:
         reference_index = self.reference_index(snapshot)
         for reference in snapshot.partitions:
             year, month = _reference_month(reference)
-            repository = self._verified_repository(reference)
+            partition = self._verified_partition(reference)
             end_day = calendar.monthrange(year, month)[1]
             yield from (
                 reference_index.apply(row)
-                for row in repository.iter_range(
+                for row in partition.iter_range(
                     date(year, month, 1),
                     date(year, month, end_day),
                     snapshot_sequence=reference.sequence,
@@ -314,8 +310,8 @@ class HistorySnapshotReader:
         self, start: date, end: date, snapshot: HistoryActiveSnapshot
     ) -> Iterator[HistoryRevision]:
         for year, month in RouteHistoryMonths(start, end):
-            repository = self._verified_repository(self._reference(snapshot, year, month))
-            yield from repository.iter_range(
+            partition = self._verified_partition(self._reference(snapshot, year, month))
+            yield from partition.iter_range(
                 start, end, snapshot_sequence=self._reference(snapshot, year, month).sequence
             )
 
@@ -330,7 +326,7 @@ class HistorySnapshotReader:
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("history range scan is invalid")
         streams = tuple(
-            self._verified_repository(self._reference(snapshot, year, month)).iter_range_by_code(
+            self._verified_partition(self._reference(snapshot, year, month)).iter_range_by_code(
                 start,
                 end,
                 snapshot_sequence=self._reference(snapshot, year, month).sequence,
@@ -366,15 +362,15 @@ class HistorySnapshotReader:
         rows: list[PublishedHistoryCell] = []
         for year, month in RouteHistoryMonths(dates[0], dates[-1]):
             reference = self._reference(snapshot, year, month)
-            repository = self._verified_repository(reference)
+            partition = self._verified_partition(reference)
             rows.extend(
                 row
-                for row in repository.iter_published_cells(
+                for row in partition.iter_published_cells(
                     dates[0], dates[-1], snapshot_sequence=reference.sequence, code=code
                 )
                 if row.trade_date in allowed
             )
-            self._verified_repository(reference)
+            self._verified_partition(reference)
         return tuple(rows)
 
     def iter_published_range_by_code(
@@ -384,7 +380,7 @@ class HistorySnapshotReader:
             raise ValueError("published history range is invalid")
         references = tuple(self._reference(snapshot, year, month) for year, month in RouteHistoryMonths(start, end))
         streams = tuple(
-            self._verified_repository(reference).iter_published_cells(start, end, snapshot_sequence=reference.sequence)
+            self._verified_partition(reference).iter_published_cells(start, end, snapshot_sequence=reference.sequence)
             for reference in references
         )
         index = self.reference_index(snapshot)
@@ -392,7 +388,7 @@ class HistorySnapshotReader:
             row for row in heapq.merge(*streams, key=lambda row: (row.code, row.trade_date)) if index.eligible(row.code)
         )
         for reference in references:
-            self._verified_repository(reference)
+            self._verified_partition(reference)
 
     def iter_shadow_facts(
         self,
@@ -404,7 +400,7 @@ class HistorySnapshotReader:
         if start > end or end > snapshot.data_cutoff:
             raise ValueError("history shadow range is invalid")
         streams = tuple(
-            self._shadow_repository(self._reference(snapshot, year, month)).iter_shadow_facts(
+            self._shadow_partition(self._reference(snapshot, year, month)).iter_shadow_facts(
                 start,
                 end,
                 snapshot_sequence=self._reference(snapshot, year, month).sequence,
@@ -425,13 +421,13 @@ class HistorySnapshotReader:
         reference_month = _reference_month(reference)
         if start > end or (start.year, start.month) != reference_month or (end.year, end.month) != reference_month:
             raise ValueError("history partition revision comparison range is invalid")
-        repository = self._verified_repository(reference)
+        partition = self._verified_partition(reference)
         try:
             before = _revision_identities(
-                repository.iter_range(start, end, snapshot_sequence=comparison.before_sequence)
+                partition.iter_range(start, end, snapshot_sequence=comparison.before_sequence)
             )
-            after = _revision_identities(repository.iter_range(start, end, snapshot_sequence=comparison.after_sequence))
-        except HistoryMonthPartitionError as exc:
+            after = _revision_identities(partition.iter_range(start, end, snapshot_sequence=comparison.after_sequence))
+        except HistoryPricePartitionError as exc:
             raise HistorySnapshotReadError("history partition revision comparison failed") from exc
         return tuple(
             sorted(day for day, code in set(before) | set(after) if before.get((day, code)) != after.get((day, code)))
@@ -453,9 +449,9 @@ class HistorySnapshotReader:
             return
         for year, month in RouteHistoryMonths(start, end):
             reference = self._reference(snapshot, year, month)
-            repository = self._verified_repository(reference)
+            partition = self._verified_partition(reference)
             yield from (
-                index.apply(row) for row in repository.read_code(code, start, end, snapshot_sequence=reference.sequence)
+                index.apply(row) for row in partition.read_code(code, start, end, snapshot_sequence=reference.sequence)
             )
 
     def iter_training_rows(
@@ -475,9 +471,9 @@ class HistorySnapshotReader:
         reference_index = self.reference_index(snapshot)
         selected = tuple(item for item in snapshot.partitions if _reference_month(item) in expected_months)
         for reference in selected:
-            repository = self._shadow_repository(reference)
+            partition = self._shadow_partition(reference)
             try:
-                for row in repository.iter_training_rows(dates[0], dates[-1], snapshot_sequence=reference.sequence):
+                for row in partition.iter_training_rows(dates[0], dates[-1], snapshot_sequence=reference.sequence):
                     if row.code not in allowed_codes or not dates[0] <= row.trade_date <= dates[-1]:
                         continue
                     processed_rows += 1
@@ -486,10 +482,10 @@ class HistorySnapshotReader:
                     yield _with_training_industry(row, reference_index)
                     if progress is not None and processed_rows % 512 == 0:
                         progress(processed_rows)
-            except (HistoryMonthPartitionError, OSError, ValueError) as exc:
+            except (HistoryPricePartitionError, OSError, ValueError) as exc:
                 raise HistorySnapshotReadError("history training partition read failed") from exc
             finally:
-                repository.release_read_pages()
+                partition.release_read_pages()
         if progress is not None:
             progress(processed_rows)
 
@@ -504,19 +500,19 @@ class HistorySnapshotReader:
             raise HistorySnapshotReadError("history snapshot month is missing")
         return matches[0]
 
-    def _verified_repository(
+    def _verified_partition(
         self,
         reference: HistorySnapshotPartition,
         progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None = None,
-    ) -> HistoryMonthPrices:
-        return self._repository_with_trust(
+    ) -> HistoryPricePartition:
+        return self._partition_with_trust(
             reference,
             progress,
             required_level=None,
             establish_level="full",
         )
 
-    def _repository_with_trust(
+    def _partition_with_trust(
         self,
         reference: HistorySnapshotPartition,
         progress: Callable[[int, int, HistoryPartitionVerificationPhase], None] | None,
@@ -524,40 +520,40 @@ class HistorySnapshotReader:
         required_level: Literal["full"] | None,
         establish_level: Literal["logical", "full"],
         retain_pages: bool = False,
-    ) -> HistoryMonthPrices:
+    ) -> HistoryPricePartition:
         path = self._root / reference.relative_path
         with self._verification_lock:
             try:
                 identity = _partition_file_identity(path)
-                existing = self._verified.get(reference.relative_path)
+                existing = self._verified.get((reference.relative_path, reference.calendar_month))
                 if (
                     existing is not None
                     and existing.reference == reference
                     and existing.identity == identity
                     and (required_level is None or existing.level == required_level)
                 ):
-                    return existing.repository
-                self._verified.pop(reference.relative_path, None)
+                    return existing.partition
+                self._verified.pop((reference.relative_path, reference.calendar_month), None)
                 if establish_level == "full":
-                    HistoryMonthPrices.verify(path, reference, progress)
+                    HistoryPricePartition.verify(path, reference, progress)
                 else:
-                    HistoryMonthPrices.verify_logical_content(path, reference, progress, retain_pages=retain_pages)
-            except (HistorySnapshotReadError, HistoryMonthPartitionError, OSError) as exc:
-                self._verified.pop(reference.relative_path, None)
+                    HistoryPricePartition.verify_logical_content(path, reference, progress, retain_pages=retain_pages)
+            except (HistorySnapshotReadError, HistoryPricePartitionError, OSError) as exc:
+                self._verified.pop((reference.relative_path, reference.calendar_month), None)
                 if isinstance(exc, HistorySnapshotReadError):
                     raise
                 raise HistorySnapshotReadError("history snapshot partition verification failed") from exc
             year, month = _reference_month(reference)
-            repository = HistoryMonthPrices(path, year, month)
-            self._verified[reference.relative_path] = _VerifiedPartition(
-                reference, identity, repository, establish_level
+            partition = HistoryPricePartition(path, year, month)
+            self._verified[(reference.relative_path, reference.calendar_month)] = _VerifiedPartition(
+                reference, identity, partition, establish_level
             )
-            return repository
+            return partition
 
-    def _shadow_repository(self, reference: HistorySnapshotPartition) -> HistoryMonthPrices:
+    def _shadow_partition(self, reference: HistorySnapshotPartition) -> HistoryPricePartition:
         """Open a read-only shadow reader without repeating sealed-file hashing."""
         year, month = _reference_month(reference)
-        return HistoryMonthPrices(
+        return HistoryPricePartition(
             self._root / reference.relative_path,
             year,
             month,
@@ -572,8 +568,7 @@ def _training_codes(codes: Collection[str]) -> frozenset[str]:
 
 
 def _reference_month(reference: HistorySnapshotPartition) -> tuple[int, int]:
-    parts = Path(reference.relative_path).parts
-    return int(parts[1]), int(Path(parts[2]).stem)
+    return reference.calendar_year, reference.calendar_month
 
 
 def _revision_identities(revisions: Iterator[HistoryRevision]) -> dict[tuple[date, str], str]:

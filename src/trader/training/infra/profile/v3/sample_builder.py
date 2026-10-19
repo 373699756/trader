@@ -2,7 +2,7 @@
 
 from trader.training.application.tomorrow_training import TomorrowTrainingProgressPort, TomorrowTrainingWindow
 from trader.training.infra.profile.v3.contracts import V3_TRAINING_PROFILE
-from trader.training.infra.profile.v3.training_sample_repository import SQLiteV3TrainingSampleRepository
+from trader.training.infra.profile.v3.training_sample_index import SQLiteV3TrainingSampleIndex
 from trader.training.infra.sample_builder import (
     AlignedSampleDates,
     ResidualizeSampleDay,
@@ -17,7 +17,7 @@ def BuildTrainingSamples(
     archive: TrainingHistorySource,
     codes: tuple[str, ...],
     window: TomorrowTrainingWindow,
-    repository: SQLiteV3TrainingSampleRepository,
+    partition: SQLiteV3TrainingSampleIndex,
     *,
     progress: TomorrowTrainingProgressPort | None = None,
 ) -> None:
@@ -26,7 +26,7 @@ def BuildTrainingSamples(
             archive,
             codes,
             window,
-            repository,
+            partition,
             V3_TRAINING_PROFILE,
             progress,
         )

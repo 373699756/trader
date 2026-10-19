@@ -1,4 +1,4 @@
-"""Open read-only month connections with bounded retry for transient locks."""
+"""Open read-only price connections with bounded retry for transient locks."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from trader.download.infra.history_sqlite_activity import HistorySqliteActivity
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 
 # SQLite primary result codes are stable across supported Python versions.
 _RETRYABLE_PRIMARY_CODES = frozenset({5, 6})  # SQLITE_BUSY, SQLITE_LOCKED
@@ -23,23 +23,23 @@ def _retryable_lock(exc: sqlite3.Error) -> bool:
     return str(exc) in _LEGACY_LOCK_MESSAGES
 
 
-def OpenHistoryMonthReader(
+def OpenHistoryPriceReader(
     path: Path,
     *,
     statement_trace: Callable[[str], None] | None,
     mmap_bytes: int,
     activity: HistorySqliteActivity | None,
-) -> sqlite3.Connection:
+) -> SqliteConnection:
     """Retry only SQLite lock contention; always close a failed connection."""
     for attempt in range(3):
-        connection: sqlite3.Connection | None = None
+        connection: SqliteConnection | None = None
         try:
             connection = OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True, foreign_keys=True))
             if statement_trace is not None:
-                connection.set_trace_callback(statement_trace)
-            connection.execute("PRAGMA cache_size=-8192")
-            connection.execute(f"PRAGMA mmap_size={mmap_bytes}")
-            connection.execute("PRAGMA temp_store=FILE")
+                connection.observe_statements(statement_trace)
+            connection.run("PRAGMA cache_size=-8192")
+            connection.run(f"PRAGMA mmap_size={mmap_bytes}")
+            connection.run("PRAGMA temp_store=FILE")
             return connection
         except sqlite3.Error as exc:
             if connection is not None:
@@ -52,4 +52,4 @@ def OpenHistoryMonthReader(
     raise AssertionError("unreachable month reader retry state")
 
 
-__all__ = ["OpenHistoryMonthReader"]
+__all__ = ["OpenHistoryPriceReader"]

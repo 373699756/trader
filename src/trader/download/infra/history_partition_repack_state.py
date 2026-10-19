@@ -1,4 +1,4 @@
-"""Typed state for the BaoStock monthly-archive physical repack."""
+"""Typed state for the annual history physical repack."""
 
 from __future__ import annotations
 
@@ -10,11 +10,9 @@ from trader.infra.serialization.fields import IsSha256Text
 
 HistoryPartitionRepackActivationState = Literal[
     "prepared",
-    "old_partitions_moved",
-    "old_control_moved",
-    "new_partitions_activated",
-    "new_control_activated",
+    "old_root_moved",
     "verified",
+    "finalizing",
     "finalized",
     "rolled_back",
 ]
@@ -62,8 +60,8 @@ class HistoryPartitionRepackPartitionEvidence:
             path.is_absolute()
             or self.snapshot_sequence < 1
             or self.snapshot_row_count < 0
-            or len(path.parts) != 3
-            or path.parts[0] != "partitions"
+            or len(path.parts) != 1
+            or not path.name.startswith("prices_")
             or path.suffix != ".sqlite3"
             or any(not IsSha256Text(value) for value in hashes)
             or min(
@@ -135,7 +133,8 @@ class HistoryPartitionRepackActivationJournal:
 
     def __post_init__(self) -> None:
         if (
-            not self.source_root
+            self.state not in {"prepared", "old_root_moved", "verified", "finalizing", "finalized", "rolled_back"}
+            or not self.source_root
             or not self.target_root
             or not self.backup_root
             or not IsSha256Text(self.source_snapshot_hash)
@@ -150,7 +149,7 @@ class HistoryPartitionRepackActivationJournal:
 
 @dataclass(frozen=True)
 class HistoryPartitionRepackRequirements:
-    expected_partition_count: int = 100
+    expected_partition_count: int = 9
     expected_trading_days: int = 2000
     target_page_size: int = 8192
     maximum_target_bytes: int = 16 * 1024 * 1024 * 1024

@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
-from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnectionOptions
+from trader.infra.sqlite_connection import OpenSqliteConnection, SqliteConnection, SqliteConnectionOptions
 
 SCHEMA = """
 PRAGMA journal_mode = WAL;
@@ -51,9 +50,8 @@ def PartitionDate(path: Path) -> date | None:
 
 
 @contextmanager
-def Connection(database: Path, *, write: bool) -> Iterator[sqlite3.Connection]:
+def Connection(database: Path, *, write: bool) -> Iterator[SqliteConnection]:
     conn = OpenSqliteConnection(database, SqliteConnectionOptions(read_only=not write))
-    conn.row_factory = sqlite3.Row
     try:
         with conn:
             yield conn
@@ -66,12 +64,12 @@ def InitializeDatabase(database: Path, initialized: set[Path]) -> None:
         return
     database.parent.mkdir(parents=True, exist_ok=True)
     with Connection(database, write=True) as conn:
-        conn.executescript(SCHEMA)
+        conn.apply_script(SCHEMA)
     initialized.add(database)
 
 
-def QuarantineRow(conn: sqlite3.Connection, decision_version: str, reason: str) -> None:
-    conn.execute(
+def QuarantineRow(conn: SqliteConnection, decision_version: str, reason: str) -> None:
+    conn.run(
         """
         INSERT OR REPLACE INTO committed_event_quarantine (
             decision_version, reason, payload_hash, payload
@@ -81,7 +79,7 @@ def QuarantineRow(conn: sqlite3.Connection, decision_version: str, reason: str) 
         """,
         (reason, decision_version),
     )
-    conn.execute("DELETE FROM committed_events WHERE decision_version = ?", (decision_version,))
+    conn.run("DELETE FROM committed_events WHERE decision_version = ?", (decision_version,))
 
 
 __all__ = ["TraceIndexSummary", "SCHEMA", "Connection", "InitializeDatabase", "PartitionDate", "QuarantineRow"]

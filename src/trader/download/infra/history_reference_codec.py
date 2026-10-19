@@ -1,11 +1,13 @@
-"""Strict codecs for file-backed history eligibility and dated industry references."""
+"""Persistence codecs for market ST evidence and snapshot-bound references."""
 
 from __future__ import annotations
 
 import json
+import sqlite3
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Collection
+from contextlib import closing
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -14,15 +16,26 @@ from typing import Literal, cast
 from trader.download.domain.baostock_daily import BaoStockIndustryInterval
 from trader.download.domain.history_reference import HistoryReferenceSnapshot, HistoryStEvidence
 from trader.download.domain.history_revision import HistoryRevision
-from trader.infra.atomic_files.json import AtomicReadJson, AtomicWriteJson
+from trader.infra.sqlite_connection import (
+    EnsureSqliteSchema,
+    OpenSqliteConnection,
+    SqliteConnection,
+    SqliteConnectionOptions,
+    SqliteSchema,
+    SqliteTransaction,
+)
+
+_ST_SCHEMA = SqliteSchema(
+    1,
+    (
+        "CREATE TABLE st_evidence(code TEXT PRIMARY KEY,checked_on TEXT NOT NULL,"
+        "status TEXT NOT NULL CHECK(status IN ('ever_st','clear','unknown'))) WITHOUT ROWID",
+    ),
+)
 
 
 def HistoryStEvidencePath(reference_root: Path) -> Path:
-    return reference_root / "historical_st.json"
-
-
-def HistoryReferencePath(history_root: Path, digest: str) -> Path:
-    return history_root / "references" / f"{digest}.json"
+    return reference_root / "historical_st.sqlite3"
 
 
 class HistoryReferenceIndex:
@@ -107,7 +120,7 @@ class HistoryReferenceIndex:
         return False
 
 
-def WriteHistoryReference(path: Path, reference: HistoryReferenceSnapshot) -> None:
+def WriteHistoryReference(connection: SqliteConnection, reference: HistoryReferenceSnapshot) -> None:
     industries: dict[str, list[list[str | None]]] = defaultdict(list)
     for item in reference.industry_intervals:
         industries[item.code].append(
@@ -118,20 +131,32 @@ def WriteHistoryReference(path: Path, reference: HistoryReferenceSnapshot) -> No
                 item.classification,
             ]
         )
-    AtomicWriteJson(
-        path,
+    payload = json.dumps(
         {
             "content_hash": reference.content_hash,
             "eligible_codes": reference.eligible_codes,
             "st_statuses": {item.code: [item.checked_on.isoformat(), item.status] for item in reference.st_evidence},
             "industries": industries,
         },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
     )
+    existing = connection.run(
+        "SELECT payload_json FROM bound_references WHERE content_hash=?", (reference.content_hash,)
+    ).fetchone()
+    if existing is not None and existing[0] != payload:
+        raise ValueError("history_reference_content_conflict")
+    connection.run("INSERT OR IGNORE INTO bound_references VALUES (?,?)", (reference.content_hash, payload))
 
 
-def ReadHistoryReference(path: Path) -> HistoryReferenceSnapshot:
+def ReadHistoryReference(path: Path, digest: str) -> HistoryReferenceSnapshot:
     try:
-        payload = AtomicReadJson(path)
+        with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
+            row = connection.run("SELECT payload_json FROM bound_references WHERE content_hash=?", (digest,)).fetchone()
+        if row is None:
+            raise ValueError("history_reference_missing")
+        payload = json.loads(row[0])
         if not isinstance(payload, dict) or set(payload) != {
             "content_hash",
             "eligible_codes",
@@ -158,7 +183,7 @@ def ReadHistoryReference(path: Path) -> HistoryReferenceSnapshot:
         if reference.content_hash != payload["content_hash"]:
             raise ValueError("history reference hash is invalid")
         return reference
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, sqlite3.Error) as exc:
         raise ValueError("history reference file is invalid") from exc
 
 
@@ -168,7 +193,7 @@ def ReadBoundHistoryReference(root: Path, supplier_contract: str) -> HistoryRefe
     digest = supplier_contract[len("history_ref_") : len("history_ref_") + 64]
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
         raise ValueError("history reference identity is invalid")
-    reference = ReadHistoryReference(HistoryReferencePath(root, digest))
+    reference = ReadHistoryReference(root / "catalog.sqlite3", digest)
     if reference.content_hash != digest:
         raise ValueError("history reference identity conflict")
     return reference
@@ -177,11 +202,28 @@ def ReadBoundHistoryReference(root: Path, supplier_contract: str) -> HistoryRefe
 def ReadStEvidence(path: Path) -> tuple[HistoryStEvidence, ...]:
     if not path.is_file():
         return ()
-    return _decode_st_rows(AtomicReadJson(path))
+    try:
+        with closing(OpenSqliteConnection(path, SqliteConnectionOptions(read_only=True))) as connection:
+            EnsureSqliteSchema(connection, _ST_SCHEMA)
+            return tuple(
+                HistoryStEvidence(code, date.fromisoformat(day), cast(Literal["ever_st", "clear", "unknown"], status))
+                for code, day, status in connection.run("SELECT code,checked_on,status FROM st_evidence ORDER BY code")
+            )
+    except sqlite3.Error as exc:
+        raise ValueError("history_st_evidence_unavailable") from exc
 
 
 def WriteStEvidence(path: Path, evidence: tuple[HistoryStEvidence, ...]) -> None:
-    AtomicWriteJson(path, {item.code: [item.checked_on.isoformat(), item.status] for item in evidence})
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(OpenSqliteConnection(path, SqliteConnectionOptions(journal_mode="WAL"))) as connection:
+        EnsureSqliteSchema(connection, _ST_SCHEMA, allow_create=True)
+        with SqliteTransaction(connection, immediate=True):
+            connection.run_many(
+                "INSERT INTO st_evidence VALUES (?,?,?) ON CONFLICT(code) DO UPDATE SET "
+                "checked_on=excluded.checked_on,status=excluded.status "
+                "WHERE checked_on<>excluded.checked_on OR status<>excluded.status",
+                ((item.code, item.checked_on.isoformat(), item.status) for item in evidence),
+            )
 
 
 def _decode_st_rows(value: object) -> tuple[HistoryStEvidence, ...]:

@@ -81,10 +81,7 @@ def test_historical_risk_artifact_tampering_fails_closed(tmp_path) -> None:  # n
     archive = TomorrowHistoricalRiskEvidenceIndex(tmp_path)
     archive.seal(_outcome())
     model_path = (
-        tmp_path
-        / "tomorrow-historical-risk"
-        / TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity
-        / "model-artifact.json"
+        tmp_path / "experiments" / TOMORROW_HISTORICAL_RISK_VALIDATION_SPEC.research_identity / "model-artifact.json"
     )
     payload = json.loads(model_path.read_text(encoding="utf-8"))
     payload["logistic_intercept"] = 9.0

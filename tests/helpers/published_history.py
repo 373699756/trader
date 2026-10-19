@@ -24,8 +24,7 @@ from trader.download.domain.history_reference import HistoryReferenceSnapshot
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.history_sync import HistorySupplierContext
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices
-from trader.download.infra.history_reference_files import HistoryReferencePath, WriteHistoryReference
+from trader.download.infra.history_prices import HistoryPricePartition
 
 
 def publish_history_fixture(
@@ -57,12 +56,11 @@ def publish_history_fixture(
     partitions: list[HistorySnapshotPartition] = []
     for (year, month), revisions in sorted(grouped.items()):
         revisions.sort(key=lambda item: (item.trade_date, item.code, item.first_seen_sequence, item.revision_id))
-        prices = HistoryMonthPrices(root / f"partitions/{year:04d}/{month:02d}.sqlite3", year, month)
+        prices = HistoryPricePartition(root / f"prices_{year:04d}.sqlite3", year, month)
         prices.initialize()
         prices.save_revisions(tuple(revisions))
         partitions.append(prices.seal())
-    WriteHistoryReference(HistoryReferencePath(root, reference.content_hash), reference)
-    control = HistoryControlIndex(root / "control.sqlite3")
+    control = HistoryControlIndex(root / "catalog.sqlite3")
     control.initialize()
     control.save_source(source)
     control.save_calendar(calendar)
@@ -76,5 +74,5 @@ def publish_history_fixture(
         source.content_hash,
         tuple(partitions),
     )
-    control.publish_snapshot(snapshot)
+    control.publish_snapshot(snapshot, reference=reference)
     return snapshot

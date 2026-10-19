@@ -36,11 +36,17 @@ class _Clock:
         return self.value
 
 
-def test_price_total_deadline_survives_page_activity_and_bounds_retries(monkeypatch) -> None:
+def test_price_total_deadline_survives_page_activity_and_bounds_retries(tmp_path, monkeypatch) -> None:
     import trader.download.infra.baostock_sync_supplier as supplier_module
 
     clock = _Clock()
-    supplier = BaoStockHistorySupplier(HistorySyncConfiguration(), monotonic=clock, price_total_seconds=180.0)
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+        ),
+        monotonic=clock,
+        price_total_seconds=180.0,
+    )
     attempts = []
 
     def request(command, state, attempt, timeout):
@@ -130,10 +136,16 @@ class _Sdk:
         return cast(BaoStockRowResult, object())
 
 
-def test_industry_date_progress_keeps_counts_and_elapsed_across_page_activity() -> None:
+def test_industry_date_progress_keeps_counts_and_elapsed_across_page_activity(tmp_path) -> None:
     clock = _Clock()
     recorder = _ProgressRecorder()
-    supplier = BaoStockHistorySupplier(HistorySyncConfiguration(), progress=recorder, monotonic=clock)
+    supplier = BaoStockHistorySupplier(
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history", reference_root=tmp_path / "reference", training_root=tmp_path / "models"
+        ),
+        progress=recorder,
+        monotonic=clock,
+    )
     attempt = _Attempt(2, 3)
     state = _RequestState("supplier_industry", "2020-07-01", 0)
     state = supplier._handle_industry_progress(
@@ -239,11 +251,14 @@ def test_preparation_pages_and_daily_calls_share_the_session_rate_timeline() -> 
     assert starts[-1] == ("universe", 14.5)
 
 
-def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage() -> None:
+def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage(tmp_path) -> None:
     recorder = _ProgressRecorder()
     clock = _Clock()
     supplier = BaoStockHistorySupplier(
         HistorySyncConfiguration(
+            archive_root=tmp_path / "history",
+            reference_root=tmp_path / "reference",
+            training_root=tmp_path / "models",
             supplier_timeout_seconds=1.0,
             supplier_retries=0,
             progress_heartbeat_seconds=0.25,
@@ -266,11 +281,14 @@ def test_supplier_reports_waiting_heartbeats_and_the_timed_out_stage() -> None:
     assert recorder.values[-1].failure_reason == "supplier_calendar_timeout"
 
 
-def test_supplier_result_handle_does_not_restart_the_call_deadline() -> None:
+def test_supplier_result_handle_does_not_restart_the_call_deadline(tmp_path) -> None:
     recorder = _ProgressRecorder()
     clock = _Clock()
     supplier = BaoStockHistorySupplier(
         HistorySyncConfiguration(
+            archive_root=tmp_path / "history",
+            reference_root=tmp_path / "reference",
+            training_root=tmp_path / "models",
             supplier_timeout_seconds=1.0,
             supplier_retries=0,
             progress_heartbeat_seconds=0.25,
@@ -288,11 +306,14 @@ def test_supplier_result_handle_does_not_restart_the_call_deadline() -> None:
     assert recorder.values[-1].call_elapsed_seconds == pytest.approx(1.0)
 
 
-def test_supplier_keeps_context_and_price_request_policies_separate(monkeypatch) -> None:
+def test_supplier_keeps_context_and_price_request_policies_separate(tmp_path, monkeypatch) -> None:
     from trader.download.infra import baostock_sync_supplier as supplier_module
 
     supplier = BaoStockHistorySupplier(
         HistorySyncConfiguration(
+            archive_root=tmp_path / "history",
+            reference_root=tmp_path / "reference",
+            training_root=tmp_path / "models",
             supplier_timeout_seconds=45.0,
             supplier_retries=2,
             progress_heartbeat_seconds=5.0,
@@ -320,11 +341,17 @@ def test_supplier_keeps_context_and_price_request_policies_separate(monkeypatch)
     ]
 
 
-def test_supplier_login_timeout_does_not_repeat_the_slow_start(monkeypatch) -> None:
+def test_supplier_login_timeout_does_not_repeat_the_slow_start(tmp_path, monkeypatch) -> None:
     from trader.download.infra import baostock_sync_supplier as supplier_module
 
     supplier = BaoStockHistorySupplier(
-        HistorySyncConfiguration(supplier_timeout_seconds=45.0, supplier_retries=2),
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history",
+            reference_root=tmp_path / "reference",
+            training_root=tmp_path / "models",
+            supplier_timeout_seconds=45.0,
+            supplier_retries=2,
+        ),
     )
     attempts = []
 
@@ -341,6 +368,7 @@ def test_supplier_login_timeout_does_not_repeat_the_slow_start(monkeypatch) -> N
 
 @pytest.mark.parametrize(("restart_session", "expected_closes"), ((False, 0), (True, 1)))
 def test_price_failure_restarts_only_an_unhealthy_supplier_session(
+    tmp_path,
     monkeypatch: pytest.MonkeyPatch,
     restart_session: bool,
     expected_closes: int,
@@ -348,7 +376,12 @@ def test_price_failure_restarts_only_an_unhealthy_supplier_session(
     from trader.download.infra import baostock_sync_supplier as supplier_module
 
     supplier = BaoStockHistorySupplier(
-        HistorySyncConfiguration(supplier_retries=0),
+        HistorySyncConfiguration(
+            archive_root=tmp_path / "history",
+            reference_root=tmp_path / "reference",
+            training_root=tmp_path / "models",
+            supplier_retries=0,
+        ),
         price_policy=BaoStockRequestPolicy(20.0, 0),
     )
     closes = 0

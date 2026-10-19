@@ -61,7 +61,7 @@ class CompanyEvidenceProgress:
             reported = set(previous.failure.split(","))
             failure = ",".join(item for item in failure.split(",") if item and item not in reported)
         print(
-            f"download_risk | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
+            f"sync company | {labels[progress.component]} | {_counts(progress, units[progress.component])}"
             + _scope(progress)
             + f" | 成功页 {progress.fetched_pages} | 变更行 {progress.changed_rows} | "
             f"累计复用 {progress.reused_partitions} | 累计 {ProgressDuration(now - self._started)} | "

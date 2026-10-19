@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.application.ports.data_plane_records import (
     DataPlaneBusyError,
     DataPlaneConflictError,
@@ -93,19 +94,18 @@ class SQLiteDataPlane:
 
     def __init__(
         self,
-        runtime_root: Path,
+        database_path: Path,
         *,
-        database_path: Path | None = None,
         buffered_writes: bool = False,
         read_only: bool = False,
     ) -> None:
-        self._runtime_root = database_path.parent if database_path is not None else runtime_root / "market-data"
-        self._database = database_path if database_path is not None else self._runtime_root / "market-data.sqlite3"
+        self._runtime_root = database_path.parent
+        self._database = database_path
         self._lock = threading.RLock()
         self._initialized = False
         self._buffered_writes = buffered_writes
         self._read_only = read_only
-        self._writer_connection: sqlite3.Connection | None = None
+        self._writer_connection: SqliteConnection | None = None
 
     def close(self) -> None:
         with self._lock:
@@ -115,7 +115,7 @@ class SQLiteDataPlane:
                 connection.close()
 
     @contextmanager
-    def _write_scope(self) -> Iterator[sqlite3.Connection]:
+    def _write_scope(self) -> Iterator[SqliteConnection]:
         self._require_writable()
         if not self._buffered_writes:
             with data_plane_sqlite.ConnectionScope(self._database) as connection:
@@ -125,7 +125,7 @@ class SQLiteDataPlane:
         if writer_connection is None:
             writer_connection = data_plane_sqlite.Connect(self._database, cross_thread=True)
             try:
-                writer_connection.execute("PRAGMA synchronous=NORMAL")
+                writer_connection.run("PRAGMA synchronous=NORMAL")
             except sqlite3.DatabaseError:
                 writer_connection.close()
                 raise
@@ -140,7 +140,7 @@ class SQLiteDataPlane:
             try:
                 if self._read_only:
                     with data_plane_sqlite.ReadConnectionScope(self._database) as connection:
-                        row = connection.execute(
+                        row = connection.run(
                             "SELECT value FROM schema_meta WHERE key = ?",
                             (data_plane_sqlite.SCHEMA_META_KEY,),
                         ).fetchone()
@@ -170,8 +170,8 @@ class SQLiteDataPlane:
         try:
             with data_plane_sqlite.ConnectionScope(self._database) as connection:
                 remaining_ms = max(0, int((wait_seconds - (time.monotonic() - started)) * 1000))
-                connection.execute(f"PRAGMA busy_timeout={remaining_ms}")
-                connection.execute("BEGIN IMMEDIATE")
+                connection.run(f"PRAGMA busy_timeout={remaining_ms}")
+                connection.run("BEGIN IMMEDIATE")
                 connection.rollback()
         except sqlite3.DatabaseError as exc:
             raise _map_sqlite_error(exc, operation="write_probe") from exc
@@ -307,7 +307,7 @@ class SQLiteDataPlane:
                 with data_plane_sqlite.ConnectionScope(self._database) as connection:
                     for profile in _PROFILES.values():
                         for table in (profile.recent_table, profile.formal_table):
-                            for row in connection.execute(
+                            for row in connection.run(
                                 f"SELECT * FROM {table} WHERE status = ?",
                                 ("staged",),
                             ).fetchall():
@@ -315,7 +315,7 @@ class SQLiteDataPlane:
                                     recovered += 1
                                 else:
                                     quarantined += 1
-                            for row in connection.execute(
+                            for row in connection.run(
                                 f"SELECT * FROM {table} WHERE status = ?",
                                 ("committed",),
                             ).fetchall():
@@ -384,7 +384,7 @@ class SQLiteDataPlane:
         with self._lock:
             try:
                 with self._read_scope() as connection:
-                    row = connection.execute(
+                    row = connection.run(
                         f"""
                         SELECT * FROM {table}
                         WHERE {_where_clause(pk_fields)} AND status = 'committed'
@@ -436,7 +436,7 @@ class SQLiteDataPlane:
         with self._lock:
             try:
                 with self._read_scope() as connection:
-                    for row in connection.execute(query, params).fetchall():
+                    for row in connection.run(query, params).fetchall():
                         if code_filter is not None:
                             candidate = _text(row["code"])
                             if candidate not in code_filter:
@@ -467,7 +467,7 @@ class SQLiteDataPlane:
 
         return tuple(result)
 
-    def _recover_staged_row(self, connection: sqlite3.Connection, table: str, row: sqlite3.Row) -> bool:
+    def _recover_staged_row(self, connection: SqliteConnection, table: str, row: sqlite3.Row) -> bool:
         try:
             recovery_payload = row["recovery_payload"]
             if recovery_payload is None:
@@ -480,7 +480,7 @@ class SQLiteDataPlane:
             _record_payload_for_table(table, payload)
             pk_fields = _pk_fields_from_table(table)
             pk_values = _identity_values_from_row(table, row)
-            connection.execute(
+            connection.run(
                 f"""
                 UPDATE {table}
                 SET
@@ -506,12 +506,12 @@ class SQLiteDataPlane:
         except (TypeError, ValueError, KeyError):
             return False
 
-    def _quarantine_row(self, connection: sqlite3.Connection, table: str, row: sqlite3.Row, reason: str) -> bool:
+    def _quarantine_row(self, connection: SqliteConnection, table: str, row: sqlite3.Row, reason: str) -> bool:
         if self._read_only:
             return False
         pk_fields = _pk_fields_from_table(table)
         pk_values = tuple(_text(row[field]) for field in pk_fields)
-        connection.execute(
+        connection.run(
             f"""
             UPDATE {table}
             SET status = 'quarantined', error = ?, recovery_payload = NULL, recovery_sha256 = ''
@@ -519,7 +519,7 @@ class SQLiteDataPlane:
             """,
             (reason, *pk_values),
         )
-        connection.execute(
+        connection.run(
             """
             INSERT OR REPLACE INTO data_plane_quarantine_audit(
                 audit_key, record_kind, record_identity, reason, observed_at
@@ -536,7 +536,7 @@ class SQLiteDataPlane:
         return True
 
     @contextmanager
-    def _read_scope(self) -> Iterator[sqlite3.Connection]:
+    def _read_scope(self) -> Iterator[SqliteConnection]:
         scope = data_plane_sqlite.ReadConnectionScope if self._read_only else data_plane_sqlite.ConnectionScope
         with scope(self._database) as connection:
             yield connection
@@ -624,7 +624,7 @@ def _prepare_write(
 
 
 def _execute_write(
-    connection: sqlite3.Connection,
+    connection: SqliteConnection,
     *,
     table: str,
     mode: Mode,
@@ -632,7 +632,7 @@ def _execute_write(
 ) -> None:
     columns = tuple(write.row)
     placeholders = ", ".join("?" for _ in columns)
-    inserted = connection.execute(
+    inserted = connection.run(
         f"""
         INSERT INTO {table} ({", ".join(columns)})
         VALUES ({placeholders})
@@ -664,7 +664,7 @@ def _execute_write(
         return
     update_fields = tuple(field for field in columns if field not in write.pk_fields)
     updates = ", ".join(f"{field}= ?" for field in update_fields)
-    connection.execute(
+    connection.run(
         f"""
         UPDATE {table} SET {updates}
         WHERE {_where_clause(write.pk_fields)}
@@ -675,14 +675,14 @@ def _execute_write(
 
 def _formal_write_allowed(
     *,
-    connection: sqlite3.Connection,
+    connection: SqliteConnection,
     table: str,
     identity: tuple[tuple[str, ...], tuple[str, ...]],
     record: Record,
     payload_hash: str,
 ) -> bool:
     pk_fields, pk_values = identity
-    existing = connection.execute(
+    existing = connection.run(
         f"SELECT * FROM {table} WHERE {_where_clause(pk_fields)}",
         pk_values,
     ).fetchone()
@@ -695,14 +695,14 @@ def _formal_write_allowed(
 
 def _recent_write_allowed(
     *,
-    connection: sqlite3.Connection,
+    connection: SqliteConnection,
     table: str,
     identity: tuple[tuple[str, ...], tuple[str, ...]],
     record: Record,
     payload_hash: str,
 ) -> bool:
     pk_fields, pk_values = identity
-    existing = connection.execute(
+    existing = connection.run(
         f"SELECT * FROM {table} WHERE {_where_clause(pk_fields)}",
         pk_values,
     ).fetchone()

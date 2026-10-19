@@ -27,8 +27,8 @@ from trader.training.application.tomorrow_training import (
 )
 from trader.training.infra.history.history_training_input import HistoryTrainingInputError, HistoryTrainingInputSnapshot
 from trader.training.infra.model_bundles.contracts import TrainedProfileContract
-from trader.training.infra.sample_repository import (
-    SQLiteTrainingSampleRepository,
+from trader.training.infra.sample_index import (
+    SQLiteTrainingSampleIndex,
     TrainingSample,
 )
 
@@ -54,7 +54,7 @@ class TrainingSampleBuildRequest:
     archive: TrainingHistorySource
     codes: tuple[str, ...]
     window: TomorrowTrainingWindow
-    repository: SQLiteTrainingSampleRepository
+    repository: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
     progress: TomorrowTrainingProgressPort | None = None
 
@@ -87,7 +87,7 @@ class _RollingCodeState:
 
 @dataclass
 class _SampleBuildState:
-    repository: SQLiteTrainingSampleRepository
+    repository: SQLiteTrainingSampleIndex
     profile: TrainedProfileContract
     progress: TomorrowTrainingProgressPort | None
     total_rows: int

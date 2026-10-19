@@ -65,7 +65,7 @@ def EvaluateHistoryTrainingDue(query: HistoryTrainingDueQuery) -> HistoryTrainin
     profile = query.profile
     strategy = query.strategy
     expected_training_contract_hash = query.expected_training_contract_hash
-    control = HistoryControlIndex(archive_root / "control.sqlite3")
+    control = HistoryControlIndex(archive_root / "catalog.sqlite3")
     try:
         state = control.load_state()
     except HistoryControlError:
@@ -185,8 +185,8 @@ def _revised_dates_since_bundle(
     end = min(baseline_label_cutoff, baseline.data_cutoff, active.data_cutoff)
     if start > end:
         return ()
-    baseline_months = {_partition_month(item.relative_path): item for item in baseline.partitions}
-    active_months = {_partition_month(item.relative_path): item for item in active.partitions}
+    baseline_months = {(item.calendar_year, item.calendar_month): item for item in baseline.partitions}
+    active_months = {(item.calendar_year, item.calendar_month): item for item in active.partitions}
     archive = HistorySnapshotReader(archive_root)
     revisions: set[date] = set()
     for year, month in RouteHistoryMonths(start, end):
@@ -210,11 +210,6 @@ def _revised_dates_since_bundle(
             )
         )
     return tuple(sorted(revisions))
-
-
-def _partition_month(relative_path: str) -> tuple[int, int]:
-    parts = PurePosixPath(relative_path).parts
-    return int(parts[1]), int(PurePosixPath(parts[2]).stem)
 
 
 def _active_bundle(

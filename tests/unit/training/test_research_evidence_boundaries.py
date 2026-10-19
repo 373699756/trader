@@ -149,7 +149,7 @@ def test_cli_rejects_invalid_boundaries_before_evidence_io(tmp_path, monkeypatch
     elif case == "details_stdout":
         argv += ["--include-details"]
     elif case == "archive_summary":
-        argv += ["--output", str(tmp_path / "input" / "control.sqlite3")]
+        argv += ["--output", str(tmp_path / "input" / "catalog.sqlite3")]
     elif case == "h1_overlap":
         command = "research-h1-capability"
         argv = ["--h1-runtime-dir", str(tmp_path / "input"), "--artifact-dir", str(tmp_path / "input" / "artifacts")]

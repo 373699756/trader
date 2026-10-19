@@ -35,7 +35,7 @@ def test_authoritative_documents_define_st_prefilter_and_two_level_runtime_filte
         "ST预过滤",
         "一级市场过滤",
         "二级公司风险过滤",
-        "data/risk/company_evidence.sqlite3",
+        "data/company/evidence.sqlite3",
         "365天",
         "同事务提交",
         "permanently_excluded",

@@ -53,7 +53,7 @@ def test_invalid_persistent_coordinate_fails_closed(tmp_path, reserved_until):
     first = PublicationSequence(path, block_size=8)
     first.initialize()
     with closing(OpenSqliteConnection(path)) as connection, connection:
-        connection.execute("UPDATE publication_sequence SET reserved_until=?", (reserved_until,))
+        connection.run("UPDATE publication_sequence SET reserved_until=?", (reserved_until,))
     with pytest.raises(RuntimeError, match="invalid"):
         PublicationSequence(path, block_size=8).initialize()
 
@@ -64,6 +64,6 @@ def test_deleted_reservation_cannot_reset_a_previous_sequence(tmp_path):
     first.initialize()
     first.allocate()
     with closing(OpenSqliteConnection(path)) as connection, connection:
-        connection.execute("DELETE FROM publication_sequence")
+        connection.run("DELETE FROM publication_sequence")
     with pytest.raises(RuntimeError, match="invalid"):
         PublicationSequence(path, block_size=8).initialize()

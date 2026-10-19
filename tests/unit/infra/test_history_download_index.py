@@ -17,7 +17,7 @@ from trader.download.infra.history_download_index import (
 def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresolved(tmp_path):
     calendar = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(41))
     task = HistoryDownloadTask("600001", calendar[:2])
-    index = HistoryDownloadIndex(tmp_path / "control.sqlite3")
+    index = HistoryDownloadIndex(tmp_path / "catalog.sqlite3")
     index.initialize()
     index.begin(HistoryDownloadBatch(1, "a" * 64, "b" * 64, "c" * 64, calendar[20]), (task,))
     index.finish((HistoryDownloadCompletion(task, task.dates, "tencent_qfq_invalid_price", (task.dates[0],)),))
@@ -45,7 +45,7 @@ def test_nonpositive_qfq_gap_is_deferred_for_20_market_sessions_and_kept_unresol
 
 
 def test_rebinding_preserves_tasks_attempts_gaps_and_recheck_dates(tmp_path):
-    path = tmp_path / "control.sqlite3"
+    path = tmp_path / "catalog.sqlite3"
     HistoryControlIndex(path).initialize()
     index = HistoryDownloadIndex(path)
     index.initialize()

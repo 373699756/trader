@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-import trader.download.infra.history_month_partition as partition_module
+import trader.download.infra.history_prices as partition_module
 from trader.download.domain.baostock_daily import BaoStockDailyCell, BaoStockDailySide, BaoStockIndustryInterval
 from trader.download.domain.history_control import (
     HistoryActiveSnapshot,
@@ -21,11 +21,7 @@ from trader.download.domain.history_reference import HistoryReferenceSnapshot, H
 from trader.download.domain.history_revision import HistoryRevision
 from trader.download.domain.published_history import ProjectHistoryCell
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices
-from trader.download.infra.history_reference_files import (
-    HistoryReferencePath,
-    WriteHistoryReference,
-)
+from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_reader import (
     HistoryPartitionRevisionComparison,
     HistorySnapshotReader,
@@ -71,19 +67,19 @@ def test_training_stream_consumes_narrow_rows_and_releases_each_month(tmp_path: 
     dates = (date(2026, 8, 31), date(2026, 9, 1))
     snapshot = _build_snapshot(tmp_path, tuple(_revision("600001", day) for day in dates))
     events = []
-    consume = HistoryMonthPrices.iter_training_rows
-    release = HistoryMonthPrices.release_read_pages
+    consume = HistoryPricePartition.iter_training_rows
+    release = HistoryPricePartition.release_read_pages
 
     def consuming(self, *args, **kwargs):
-        events.append(("consume", self._path.stem))
+        events.append(("consume", f"{self._calendar_month:02d}"))
         yield from consume(self, *args, **kwargs)
 
     def releasing(self):
-        events.append(("release", self._path.stem))
+        events.append(("release", f"{self._calendar_month:02d}"))
         release(self)
 
-    monkeypatch.setattr(HistoryMonthPrices, "iter_training_rows", consuming)
-    monkeypatch.setattr(HistoryMonthPrices, "release_read_pages", releasing)
+    monkeypatch.setattr(HistoryPricePartition, "iter_training_rows", consuming)
+    monkeypatch.setattr(HistoryPricePartition, "release_read_pages", releasing)
     rows = tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, dates, ("600001",)))
     assert len(rows) == 2
     assert events == [(phase, month) for month in ("08", "09") for phase in ("consume", "release")]
@@ -94,9 +90,7 @@ def test_training_stream_reports_invalid_projected_field_as_snapshot_error(tmp_p
     snapshot = _build_snapshot(tmp_path, (_revision("600001", day),))
     path = tmp_path / snapshot.partitions[0].relative_path
     with closing(OpenSqliteConnection(path)) as connection, connection:
-        connection.execute(
-            "UPDATE daily_records SET payload_json = json_set(payload_json, '$.cell.qfq.close_price', 'invalid')"
-        )
+        connection.run("UPDATE daily_records SET qfq_trading_status='invalid'")
 
     with pytest.raises(HistorySnapshotReadError, match="history training partition read failed"):
         tuple(HistorySnapshotReader(tmp_path).iter_training_rows(snapshot, (day,), ("600001",)))
@@ -108,8 +102,8 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         grouped[(row.trade_date.year, row.trade_date.month)].append(row)
     references: list[HistorySnapshotPartition] = []
     for (year, month), month_rows in sorted(grouped.items()):
-        path = root / f"partitions/{year:04d}/{month:02d}.sqlite3"
-        repository = HistoryMonthPrices(path, year, month)
+        path = root / f"prices_{year:04d}.sqlite3"
+        repository = HistoryPricePartition(path, year, month)
         repository.initialize()
         repository.save_revisions(tuple(month_rows))
         references.append(repository.seal())
@@ -119,15 +113,15 @@ def _build_snapshot(root: Path, rows: tuple[HistoryRevision, ...]) -> HistoryAct
         tuple(BaoStockIndustryInterval(code, date(2000, 1, 1), None, "bank", "sw") for code in codes),
         tuple(HistoryStEvidence(code, max(row.trade_date for row in rows), "clear") for code in codes),
     )
-    WriteHistoryReference(HistoryReferencePath(root, reference.content_hash), reference)
     source = HistorySourceIdentity(
         "tencent",
         "history_daily",
         f"history_ref_{reference.content_hash}_fixture",
         datetime(2026, 10, 10, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
-    control = HistoryControlIndex(root / "control.sqlite3")
+    control = HistoryControlIndex(root / "catalog.sqlite3")
     control.initialize()
+    control.save_reference(reference)
     control.save_source(source)
     return HistoryActiveSnapshot(
         max(row.first_seen_sequence for row in rows),
@@ -211,14 +205,14 @@ def test_verified_snapshot_reuses_each_partition_check_and_counts_latest_rows(
     rows = tuple(_revision(code, day) for day in dates for code in ("600001", "600002"))
     snapshot = _build_snapshot(root, rows)
     archive = HistorySnapshotReader(root)
-    original = HistoryMonthPrices.verify.__func__
+    original = HistoryPricePartition.verify.__func__
     verified: list[Path] = []
 
     def verify(cls, path: Path, reference: HistorySnapshotPartition, progress=None) -> None:
         verified.append(path)
         original(cls, path, reference, progress)
 
-    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(verify))
+    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(verify))
 
     observed: list[tuple[int, int, int, int, int, str]] = []
     archive.verify_snapshot(snapshot, lambda *values: observed.append(values))
@@ -241,7 +235,7 @@ def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
     root = tmp_path / "history"
     dates = tuple(date(2026, 8, 30) + timedelta(days=offset) for offset in range(4))
     snapshot = _build_snapshot(root, tuple(_revision("600001", day) for day in dates))
-    published = HistoryMonthPrices.verify_logical_content.__func__
+    published = HistoryPricePartition.verify_logical_content.__func__
     published_calls: list[HistorySnapshotPartition] = []
 
     def verify_published(cls, path, reference, progress=None, **kwargs):
@@ -252,11 +246,11 @@ def test_published_snapshot_reestablishes_hash_trust_without_sqlite_rescan(
         pytest.fail("training trust must not repeat SQLite quick_check and row-count scans")
 
     monkeypatch.setattr(
-        HistoryMonthPrices,
+        HistoryPricePartition,
         "verify_logical_content",
         classmethod(verify_published),
     )
-    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(unexpected_full_verify))
+    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(unexpected_full_verify))
     reader = HistorySnapshotReader(root)
     progress: list[tuple[int, int, int, int, int, str]] = []
 
@@ -274,7 +268,7 @@ def test_published_snapshot_hash_trust_rejects_changed_bytes(tmp_path: Path) -> 
     snapshot = _build_snapshot(root, (_revision("600001", day),))
     path = root / snapshot.partitions[0].relative_path
     with closing(OpenSqliteConnection(path)) as connection, connection:
-        connection.execute("UPDATE daily_records SET content_hash=?", ("0" * 64,))
+        connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
 
     with pytest.raises(HistorySnapshotReadError, match="verification failed"):
         HistorySnapshotReader(root).verify_published_snapshot(snapshot)
@@ -287,8 +281,8 @@ def test_explicit_full_verification_upgrades_published_byte_trust(
     root = tmp_path / "history"
     day = date(2026, 9, 1)
     snapshot = _build_snapshot(root, (_revision("600001", day),))
-    published = HistoryMonthPrices.verify_logical_content.__func__
-    full = HistoryMonthPrices.verify.__func__
+    published = HistoryPricePartition.verify_logical_content.__func__
+    full = HistoryPricePartition.verify.__func__
     calls: list[str] = []
 
     def verify_published(cls, path, reference, progress=None, **kwargs):
@@ -300,11 +294,11 @@ def test_explicit_full_verification_upgrades_published_byte_trust(
         return full(cls, path, reference, progress)
 
     monkeypatch.setattr(
-        HistoryMonthPrices,
+        HistoryPricePartition,
         "verify_logical_content",
         classmethod(verify_published),
     )
-    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(verify_full))
+    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(verify_full))
     reader = HistorySnapshotReader(root)
 
     reader.verify_published_snapshot(snapshot)
@@ -359,20 +353,20 @@ def test_cached_partition_trust_detects_physical_changes(tmp_path, change, monke
     day = date(2026, 9, 1)
     snapshot = _build_snapshot(root, (_revision("600001", day),))
     verified = []
-    verify = HistoryMonthPrices.verify.__func__
+    verify = HistoryPricePartition.verify.__func__
 
     def observed(cls, path, reference, progress=None):
         verified.append(reference)
         return verify(cls, path, reference, progress)
 
-    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(observed))
+    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(observed))
     reader = HistorySnapshotReader(root)
     reader.read_published_code_window("600001", (day,), snapshot)
     path = root / snapshot.partitions[0].relative_path
     previous = path.stat()
     if change == "same_size_corruption":
         with closing(OpenSqliteConnection(path)) as connection, connection:
-            connection.execute("UPDATE daily_records SET content_hash=?", ("0" * 64,))
+            connection.run("UPDATE daily_records SET content_hash=?", ("0" * 64,))
         os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
     elif change == "atomic_replace":
         replacement = path.with_suffix(".replacement")
@@ -401,15 +395,15 @@ def test_published_snapshot_reuses_unchanged_partitions_and_checks_revisions(tmp
     )
     snapshot = _build_snapshot(root, (original, revised))
     calls = []
-    verify = HistoryMonthPrices.verify.__func__
+    verify = HistoryPricePartition.verify.__func__
 
     def observe(cls, path, reference, progress=None):
         calls.append(reference)
         return verify(cls, path, reference, progress)
 
-    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(observe))
+    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(observe))
     reader = HistorySnapshotReader(root)
-    old_reference = HistoryMonthPrices(root / snapshot.partitions[0].relative_path, 2026, 9).seal(1)
+    old_reference = HistoryPricePartition(root / snapshot.partitions[0].relative_path, 2026, 9).seal(1)
     old_snapshot = replace(snapshot, sequence=1, partitions=(old_reference,))
     assert reader.read_published_code_window("600001", (day,), old_snapshot) == (ProjectHistoryCell(original.cell),)
     current = replace(snapshot, sequence=2)

@@ -55,7 +55,7 @@ def test_current_industry_rejects_corrupt_local_evidence(tmp_path) -> None:
     )
     source.fetch(_AT)
     with closing(OpenSqliteConnection(path)) as connection, connection:
-        connection.execute("UPDATE current_industry_queries SET payload='[]'")
+        connection.run("UPDATE current_industry_queries SET payload='[]'")
     assert source.load_cached(_AT) == ()
 
 
@@ -74,7 +74,7 @@ def test_current_industry_keeps_previous_valid_query_when_newest_is_corrupt(tmp_
     source.fetch(_AT)
     source.fetch(_AT + timedelta(days=7))
     with closing(OpenSqliteConnection(path)) as connection, connection:
-        connection.execute(
+        connection.run(
             "UPDATE current_industry_queries SET payload='[]' WHERE day=?",
             ((_AT + timedelta(days=7)).date().isoformat(),),
         )

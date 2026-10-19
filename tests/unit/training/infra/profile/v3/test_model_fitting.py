@@ -14,7 +14,7 @@ from trader.training.infra.model_fitting import FitIndustryModels
 from trader.training.infra.profile.v2.contracts import V2_HEAD_CONTRACTS, V2_TRAINING_PROFILE
 from trader.training.infra.profile.v3.contracts import HEAD_CONTRACTS, V3_TRAINING_PROFILE
 from trader.training.infra.sample_cache import TrainingSampleCache
-from trader.training.infra.sample_repository import TrainingSample
+from trader.training.infra.sample_index import TrainingSample
 from trader.training.infra.training_settings import LoadProfileTrainingSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[6]

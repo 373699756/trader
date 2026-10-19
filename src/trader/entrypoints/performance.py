@@ -103,6 +103,7 @@ class _CandidateUnionFixture:
 def BuildParser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--profile", choices=("v2", "v3"))
     parser.add_argument("--output", type=Path)
     parser.add_argument("--baseline", type=Path)
     return parser
@@ -127,7 +128,7 @@ def Run(
         _model_scoring_router(
             LoadScoringProfile(
                 strategy_settings.scoring_profile,
-                training_root=settings.project_root / "data" / "train",
+                training_root=settings.data_paths.models,
             ),
             LoadExecutionCostPolicy(config_path.parent),
         ),
@@ -234,7 +235,11 @@ def _model_scoring_router(profile: LoadedScoringProfile, cost_policy: ExecutionC
 
 def Main(argv: list[str] | None = None) -> int:
     args = BuildParser().parse_args(argv)
-    report = Run(args.config.resolve(), baseline_path=args.baseline.resolve() if args.baseline else None)
+    report = Run(
+        args.config.resolve(),
+        baseline_path=args.baseline.resolve() if args.baseline else None,
+        scoring_profile=args.profile,
+    )
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2)
     if args.output is not None:
         args.output.write_text(f"{payload}\n", encoding="utf-8")

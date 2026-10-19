@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from tests.helpers.qfq import publish_windows
+
 import hashlib
 import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -12,6 +15,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 import trader.training.infra.history.history_training_due as due_module
+from trader.infra.sqlite_connection import OpenSqliteConnection
 from scripts.runtime_diagnostics.history_sqlite_performance import inspect_history_sqlite_performance
 from trader.download.application.read_published_history import ReadPublishedHistoryUseCase
 from trader.download.domain.baostock_daily import (
@@ -31,7 +35,7 @@ from trader.download.domain.history_reference import HistoryStEvidence
 from trader.download.domain.history_sync import HistorySupplierContext, HistorySyncConfiguration
 from trader.download.domain.published_history import ProjectHistoryCell, PublishedHistoryWindow
 from trader.download.infra.history_control_index import HistoryControlIndex
-from trader.download.infra.history_month_partition import HistoryMonthPrices
+from trader.download.infra.history_prices import HistoryPricePartition
 from trader.download.infra.history_snapshot_reader import HistoryPartitionRevisionComparison
 from trader.download.infra.history_sync_runner import RunHistorySync
 from trader.download.infra.published_history_snapshot import SQLitePublishedHistorySnapshot
@@ -122,7 +126,14 @@ def prepared_history(tmp_path_factory: pytest.TempPathFactory):
     def prepare(root: Path, dates: tuple[date, ...]) -> HistoryMaintenanceStatus:
         if dates not in seeds:
             seed = tmp_path_factory.mktemp("published-history") / "history"
-            configuration = HistorySyncConfiguration(seed, sessions=len(dates), reread_sessions=2, minimum_free_bytes=0)
+            configuration = HistorySyncConfiguration(
+                seed,
+                sessions=len(dates),
+                reread_sessions=2,
+                minimum_free_bytes=0,
+                reference_root=(seed).parent / "reference",
+                training_root=(seed).parent / "models",
+            )
             result = RunHistorySync(configuration, _Supplier(dates), clock=lambda: NOW)
             assert result.state == "completed"
             seeds[dates] = seed, result
@@ -142,7 +153,7 @@ def test_monthly_training_input_binds_active_snapshot_and_counts_typed_rows(
     result = prepared_history(archive_root, dates)
 
     assert result.state == "completed"
-    expected_hash = HistoryControlIndex(archive_root / "control.sqlite3").load_state().active_snapshot_hash
+    expected_hash = HistoryControlIndex(archive_root / "catalog.sqlite3").load_state().active_snapshot_hash
 
     def fail_full_history_read(_self):
         raise AssertionError("training input must not load historical checkpoints")
@@ -170,7 +181,7 @@ def test_training_reader_uses_narrow_projection_without_rechecking_published_pay
     dates = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 10))
     prepared_history(archive_root, dates)
     monkeypatch.setattr(
-        HistoryMonthPrices,
+        HistoryPricePartition,
         "verify_logical_content",
         classmethod(lambda *_args, **_kwargs: pytest.fail("training must trust the published payload")),
     )
@@ -245,9 +256,9 @@ def test_history_consumers_do_not_wait_for_background_projection(
     archive = SQLitePublishedHistorySnapshot(archive_root)
     manifest = archive.manifest()
     assert manifest is not None
-    short = SQLiteQfqWindowCache(tmp_path / "qfq", "v3")
+    short = SQLiteQfqWindowCache((tmp_path / "qfq") / "daily_window.sqlite3", "v3")
     window = archive.read_windows(manifest, ("600001",), sessions=61)[0]
-    short.replace_window(window, "tencent:fixture")
+    publish_windows(short, (window,), "tencent:fixture")
     history = PublishedHistoryCache(
         ReadPublishedHistoryUseCase(short),
         lookback_sessions=61,
@@ -258,7 +269,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
     if previous_projection:
         assert history.refresh()
     # Publish a genuine new short-window identity while complete history stays stable.
-    short.replace_window(window, "tencent:fixture-updated")
+    publish_windows(short, (window,), "tencent:fixture-updated")
     new_manifest = short.manifest()
     assert new_manifest is not None and new_manifest.snapshot_hash != old_manifest.snapshot_hash
     original_windows = short.iter_windows
@@ -289,7 +300,7 @@ def test_history_consumers_do_not_wait_for_background_projection(
             assert archive.manifest() == manifest
             assert not refresh.done()
             # Online bars must never mask a corrupt independent settlement source.
-            (archive_root / "control.sqlite3").write_bytes(b"invalid")
+            (archive_root / "catalog.sqlite3").write_bytes(b"invalid")
             invalid_outcomes = pool.submit(history.read_outcome_bars, ("600001",), NOW)
             assert invalid_outcomes.result(timeout=2) == {}
             assert history.status().error_count == 1
@@ -309,13 +320,13 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
     dates = tuple(date(2026, 1, 1) + timedelta(days=offset) for offset in range(61))
     prepared_history(root, dates)
     verified = []
-    verify = HistoryMonthPrices.verify.__func__
+    verify = HistoryPricePartition.verify.__func__
 
     def observed(cls, path, reference, progress=None):
         verified.append(reference)
         return verify(cls, path, reference, progress)
 
-    monkeypatch.setattr(HistoryMonthPrices, "verify", classmethod(observed))
+    monkeypatch.setattr(HistoryPricePartition, "verify", classmethod(observed))
     archive = SQLitePublishedHistorySnapshot(tmp_path / "history")
     manifest = archive.manifest()
     history = PublishedHistoryCache(ReadPublishedHistoryUseCase(archive), lookback_sessions=61)
@@ -326,9 +337,8 @@ def test_shared_published_reader_reuses_partition_trust_for_projection_and_outco
     assert history.read_outcome_bars(("600001",), NOW)
     assert len(verified) == initial_count
     partition = root / verified[0].relative_path
-    content = bytearray(partition.read_bytes())
-    content[-1] ^= 1
-    partition.write_bytes(content)
+    with closing(OpenSqliteConnection(partition)) as connection, connection:
+        connection.run("UPDATE daily_records SET qfq_close=99 WHERE trade_date=?", (dates[0].isoformat(),))
     before = history.entries()
     assert history.read_outcome_bars(("600001",), NOW) == {}
     assert history.entries() == before
@@ -365,7 +375,7 @@ def test_recommendation_retains_the_last_valid_projection_when_the_archive_becom
     assert history.refresh() is True
     before = history.entries()
 
-    (archive_root / "control.sqlite3").write_bytes(b"invalid")
+    (archive_root / "catalog.sqlite3").write_bytes(b"invalid")
 
     assert history.refresh() is False
     assert history.entries() == before
@@ -455,10 +465,17 @@ def test_normal_new_label_day_keeps_cadence_instead_of_forcing_snapshot_rebind(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive_root = tmp_path / "history"
-    configuration = HistorySyncConfiguration(archive_root, sessions=3, reread_sessions=2, minimum_free_bytes=0)
+    configuration = HistorySyncConfiguration(
+        archive_root,
+        sessions=3,
+        reread_sessions=2,
+        minimum_free_bytes=0,
+        reference_root=(archive_root).parent / "reference",
+        training_root=(archive_root).parent / "models",
+    )
     first_dates = (date(2026, 9, 7), date(2026, 9, 8), date(2026, 9, 9))
     RunHistorySync(configuration, _Supplier(first_dates), clock=lambda: NOW)
-    baseline = HistoryControlIndex(archive_root / "control.sqlite3").load_state().active_snapshot
+    baseline = HistoryControlIndex(archive_root / "catalog.sqlite3").load_state().active_snapshot
     assert baseline is not None
     contract_hash = "9" * 64
     bundle = ActiveHeadBundle(
@@ -506,7 +523,7 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
         "a" * 64,
         "b" * 64,
         "c" * 64,
-        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "d" * 64, 1),),
+        (HistorySnapshotPartition("prices_2026.sqlite3", "d" * 64, 1, calendar_month=9),),
     )
     active = HistoryActiveSnapshot(
         2,
@@ -515,7 +532,7 @@ def test_revision_detection_compares_semantic_rows_only_in_changed_months(
         "a" * 64,
         "b" * 64,
         "c" * 64,
-        (HistorySnapshotPartition("partitions/2026/09.sqlite3", "e" * 64, 1),),
+        (HistorySnapshotPartition("prices_2026.sqlite3", "e" * 64, 1, calendar_month=9),),
     )
 
     class _Archive:

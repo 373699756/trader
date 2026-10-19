@@ -246,7 +246,7 @@ def _notify_once(
 ) -> tuple[HistoryNotificationState, str | None]:
     if maintenance is not None and maintenance.state == "already_running":
         return "not_attempted", None
-    repository = HistoryControlIndex(archive_root / "control.sqlite3")
+    repository = HistoryControlIndex(archive_root / "catalog.sqlite3")
     due_identity = due_status.due_identity
     if due_status.training_due and due_identity is not None:
         claim = HistoryReminderClaim(due_identity, observed_at.date(), observed_at)

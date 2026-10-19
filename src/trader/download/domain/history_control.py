@@ -324,6 +324,7 @@ class HistorySnapshotPartition:
     relative_path: str
     logical_hash: str
     row_count: int
+    calendar_month: int
     sequence: int = 1
 
     def __post_init__(self) -> None:
@@ -332,18 +333,17 @@ class HistorySnapshotPartition:
         _require_hash(self.logical_hash, "partition logical content")
         if (
             path.is_absolute()
-            or len(parts) != 3
-            or parts[0] != "partitions"
-            or len(parts[1]) != 4
-            or not parts[1].isdigit()
-            or len(path.stem) != 2
-            or not path.stem.isdigit()
-            or path.suffix != ".sqlite3"
-            or not 1 <= int(path.stem) <= 12
+            or len(parts) != 1
+            or re.fullmatch(r"prices_[0-9]{4}\.sqlite3", self.relative_path) is None
+            or not 1 <= self.calendar_month <= 12
             or self.row_count < 0
             or self.sequence < 1
         ):
             raise ValueError("history snapshot partition is invalid")
+
+    @property
+    def calendar_year(self) -> int:
+        return int(self.relative_path[7:11])
 
 
 @dataclass(frozen=True)
@@ -364,13 +364,12 @@ class HistoryActiveSnapshot:
             (self.source_identity_hash, "snapshot source identity"),
         ):
             _require_hash(value, label)
-        partitions = tuple(sorted(self.partitions))
-        months = tuple(PurePosixPath(item.relative_path).parts[1:] for item in partitions)
+        partitions = tuple(sorted(self.partitions, key=lambda item: (item.calendar_year, item.calendar_month)))
+        months = tuple((item.calendar_year, item.calendar_month) for item in partitions)
         if (
             self.sequence < 1
             or self.label_cutoff > self.data_cutoff
             or not partitions
-            or len({item.relative_path for item in partitions}) != len(partitions)
             or len(set(months)) != len(months)
             or any(item.sequence > self.sequence for item in partitions)
         ):

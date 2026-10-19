@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -10,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from trader.infra.sqlite_connection import SqliteConnection
 from trader.recommendation.domain.evidence.review import DeepSeekReview
 from trader.recommendation.domain.publication.models import Strategy
 from trader.recommendation.infra.deepseek.budget_audit import _require_aware, _sync_call_audit
@@ -41,7 +41,7 @@ class BudgetBatchCompletion:
 
 
 class BudgetBatchLedger:
-    def __init__(self, connect: Callable[[], AbstractContextManager[sqlite3.Connection]]) -> None:
+    def __init__(self, connect: Callable[[], AbstractContextManager[SqliteConnection]]) -> None:
         self._connect = connect
 
     def begin_batch(self, request: BudgetBatchRequest) -> str:
@@ -54,8 +54,8 @@ class BudgetBatchLedger:
             raise ValueError("DeepSeek batch cache hits must be within candidate count")
         batch_id = uuid.uuid4().hex
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+            connection.run("BEGIN IMMEDIATE")
+            connection.run(
                 """
                 INSERT INTO deepseek_review_batches(
                     batch_id, trade_date, strategy, phase, bucket, model, requested_at,
@@ -75,7 +75,7 @@ class BudgetBatchLedger:
                     request.cache_hit_count,
                 ),
             )
-            connection.executemany(
+            connection.run_many(
                 """
                 INSERT INTO deepseek_candidate_results(batch_id, stock_code, outcome)
                 VALUES (?, ?, 'pending')
@@ -92,8 +92,8 @@ class BudgetBatchLedger:
         if completion.physical_attempts < 0:
             raise ValueError("physical attempts cannot be negative")
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            changed = connection.execute(
+            connection.run("BEGIN IMMEDIATE")
+            changed = connection.run(
                 """
                 UPDATE deepseek_review_batches
                 SET completed_at = ?, status = ?, physical_attempts = ?, error = ?
@@ -115,7 +115,7 @@ class BudgetBatchLedger:
                 if code != review.code or outcome not in _CANDIDATE_TERMINALS:
                     connection.rollback()
                     raise ValueError("DeepSeek candidate result does not match its batch code")
-                updated = connection.execute(
+                updated = connection.run(
                     """
                     UPDATE deepseek_candidate_results
                     SET outcome = ?, completed_at = ?, error = ?
@@ -126,7 +126,7 @@ class BudgetBatchLedger:
                 if updated != 1:
                     connection.rollback()
                     raise ValueError(f"candidate {code} is not pending in batch {completion.batch_id}")
-            connection.execute(
+            connection.run(
                 """
                 UPDATE deepseek_candidate_results
                 SET outcome = 'rejected', completed_at = ?, error = ?
@@ -144,7 +144,7 @@ class BudgetBatchLedger:
         if count < 0:
             raise ValueError("batch cache hits cannot be negative")
         with self._connect() as connection:
-            changed = connection.execute(
+            changed = connection.run(
                 """
                 UPDATE deepseek_review_batches
                 SET cache_hit_count = ?
@@ -158,8 +158,8 @@ class BudgetBatchLedger:
     def fail_running_batch(self, batch_id: str, *, completed_at: datetime, error: str) -> bool:
         _require_aware(completed_at, "batch failure time")
         with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            changed = connection.execute(
+            connection.run("BEGIN IMMEDIATE")
+            changed = connection.run(
                 """
                 UPDATE deepseek_review_batches
                 SET completed_at = ?, status = 'failed', error = ?
@@ -170,12 +170,12 @@ class BudgetBatchLedger:
             if changed:
                 reservation_ids = tuple(
                     str(row[0])
-                    for row in connection.execute(
+                    for row in connection.run(
                         "SELECT reservation_id FROM deepseek_call_reservations WHERE batch_id = ? AND status = 'reserved'",
                         (batch_id,),
                     ).fetchall()
                 )
-                connection.execute(
+                connection.run(
                     """
                     UPDATE deepseek_candidate_results
                     SET outcome = 'rejected', completed_at = ?, error = 'batch_failed'
@@ -183,7 +183,7 @@ class BudgetBatchLedger:
                     """,
                     (completed_at.isoformat(), batch_id),
                 )
-                connection.execute(
+                connection.run(
                     """
                     UPDATE deepseek_call_reservations
                     SET status = 'abandoned', completed_at = ?, error = ?

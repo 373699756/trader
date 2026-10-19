@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DOMAIN = ROOT / "src/trader/training/domain/evaluation/evaluation.py"
 MODELS = ROOT / "src/trader/training/domain/evaluation/models.py"
 APPLICATION = ROOT / "src/trader/training/application/outcome_settlement.py"
-PERSISTENCE = ROOT / "src/trader/training/infra/research/outcome_evidence_repository.py"
+PERSISTENCE = ROOT / "src/trader/training/infra/research/outcome_evidence_index.py"
 HISTORY = ROOT / "src/trader/recommendation/infra/market_data/published_history_cache.py"
 WORK = ROOT / "docs/3_工程实施.md"
 

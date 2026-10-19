@@ -15,6 +15,32 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2] / "src" / "trader"
 PROJECT_ROOT = SOURCE_ROOT.parents[1]
 
 
+def test_native_sqlite_statements_are_owned_only_by_the_connection_primitive() -> None:
+    forbidden = []
+    for path in (*SOURCE_ROOT.rglob("*.py"), *(PROJECT_ROOT / "scripts").rglob("*.py")):
+        if path == SOURCE_ROOT / "infra/sqlite_connection.py":
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            native_connection = (
+                isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "sqlite3"
+                and node.func.attr == "connect"
+            )
+            native_statement = node.func.attr in {"executemany", "executescript"} or (
+                node.func.attr == "execute"
+                and bool(node.args)
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and node.args[0].value.lstrip().split(" ", 1)[0].upper()
+                in {"SELECT", "INSERT", "UPDATE", "DELETE", "PRAGMA", "CREATE", "BEGIN"}
+            )
+            if native_connection or native_statement:
+                forbidden.append(f"{path.relative_to(PROJECT_ROOT)}:{node.lineno}")
+    assert forbidden == []
+
+
 def test_active_product_tree_uses_precise_resource_and_state_names() -> None:
     prohibited = "life" + "cycle"
     tracked = (
@@ -289,7 +315,7 @@ def test_v3_profile_keeps_only_offline_training_implementation() -> None:
     offline_training_modules = {
         "sample_builder.py",
         "training.py",
-        "training_sample_repository.py",
+        "training_sample_index.py",
     }
     assert all((v3_root / name).is_file() for name in offline_training_modules)
     assert (shared_training_root / "model_fitting.py").is_file()
@@ -549,14 +575,16 @@ def test_domain_and_application_do_not_own_persistence_or_json_decoders() -> Non
 def test_history_month_values_and_sqlite_codec_keep_serialization_at_the_infra_boundary() -> None:
     domain_path = SOURCE_ROOT / "download/domain/history_revision.py"
     codec_path = SOURCE_ROOT / "download/infra/history_revision_codec.py"
-    partition_path = SOURCE_ROOT / "download/infra/history_month_partition.py"
+    partition_path = SOURCE_ROOT / "download/infra/history_prices.py"
     domain_source = domain_path.read_text(encoding="utf-8")
     codec_source = codec_path.read_text(encoding="utf-8")
     partition_source = partition_path.read_text(encoding="utf-8")
 
     assert "import json" not in domain_source
     assert "import sqlite3" not in domain_source
-    assert "import json" in codec_source
+    assert "import json" not in codec_source
+    assert "RevisionFromColumns" in codec_source
+    assert "PriceColumnValues" in codec_source
     assert "import sqlite3" in partition_source
     assert "history_revision_codec" in partition_source
     for automatic_projection in ("asdict(", ".__dict__", "vars("):
@@ -594,7 +622,7 @@ def test_download_business_has_one_owner_and_no_legacy_history_paths() -> None:
         "baostock_sync_supplier.py",
         "history_sync_runner.py",
         "history_control_repository.py",
-        "history_month_partition.py",
+        "history_prices.py",
     )
     assert not any((SOURCE_ROOT / "infra" / "research" / name).exists() for name in retired)
 
